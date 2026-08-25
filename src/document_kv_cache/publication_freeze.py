@@ -17,6 +17,8 @@ import json
 import os
 import platform
 import re
+import shutil
+import site
 import stat
 import subprocess
 import sys
@@ -55,7 +57,6 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_ID,
     validate_publication_campaign_plan_record,
 )
-from document_kv_cache.release_bundle import _package_wheel_issues
 from document_kv_cache.serving_env import (
     VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT,
     VLLM_RUNTIME_LOCK_FILENAME,
@@ -94,13 +95,25 @@ PUBLICATION_FREEZE_RUNTIME_LOCK_INPUT_SHA256: Final = (
 PUBLICATION_FREEZE_INPUT_BUNDLE_SHA256: Final = (
     "7ff6cf6a1553c0e844853d21de9780c75211f1be8304754da72e9cbebbd164ec"
 )
+PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_CLOSED_RECORD_SHA256: Final = (
+    "404d0ed6ae2f169d1777034c81a057e2af131d805ecd9672900bfc7221871246"
+)
+PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_FILE_SHA256: Final = (
+    "73f069467ab9c4e7071532b76efe6e2979e2aee7e7b05659c97d7c530a5a8dee"
+)
+PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_ID: Final = (
+    "vllm-0271-publication-latency-handoffs-v1"
+)
+PUBLICATION_FREEZE_LATENCY_HANDOFF_WORKERS_SHA256: Final = (
+    "d36983604b4de91446635d47918fe914b98872623615066aa335b8cb1ba31663"
+)
 PUBLICATION_FREEZE_MAX_ARTIFACT_BYTES: Final = 16 * 1024 * 1024
 PUBLICATION_FREEZE_MAX_JSON_BYTES: Final = 16 * 1024 * 1024
 PUBLICATION_FREEZE_MAX_CHECK_RECORD_BYTES: Final = 2 * 1024 * 1024
 PUBLICATION_FREEZE_MAX_COMMAND_OUTPUT_BYTES: Final = 1024 * 1024
 PUBLICATION_FREEZE_COMMAND_TAIL_BYTES: Final = 8 * 1024
 PUBLICATION_FREEZE_COMMAND_TIMEOUT_SECONDS: Final = 30 * 60
-PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 3_270
+PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 3_277
 _DEFAULT_PYTHON_EXECUTABLE: Final = Path(
     "/opt/homebrew/opt/python@3.11/bin/python3.11"
 ).resolve()
@@ -108,6 +121,60 @@ _DEFAULT_RUFF_EXECUTABLE: Final = Path(".venv/bin/ruff")
 _DEFAULT_MYPY_EXECUTABLE: Final = Path(".venv/bin/mypy")
 _GIT_EXECUTABLE: Final = Path("/usr/bin/git")
 _GZIP_EXECUTABLE: Final = Path("/usr/bin/gzip")
+_LATENCY_SEMANTIC_USER_HOME: Final = Path.home()
+_LATENCY_SEMANTIC_UV_EXECUTABLE: Final = (
+    _LATENCY_SEMANTIC_USER_HOME / ".local/bin/uv"
+)
+_LATENCY_SEMANTIC_UV_SHA256: Final = (
+    "94151d6624054c3973829c82eb718db1afc55ef9fcee499cdd94bfb852fb99f9"
+)
+_LATENCY_SEMANTIC_UV_VERSION: Final = (
+    "uv 0.11.6 (65950801c 2026-04-09 aarch64-apple-darwin)"
+)
+_LATENCY_SEMANTIC_UV_CACHE: Final = (
+    _LATENCY_SEMANTIC_USER_HOME / ".cache/uv"
+)
+_LATENCY_SEMANTIC_HF_HUB_CACHE: Final = (
+    _LATENCY_SEMANTIC_USER_HOME / ".cache/huggingface/hub"
+)
+_LATENCY_SEMANTIC_PYTHON_SHA256: Final = (
+    "3494e1ea84d8b49a17c193a9825d34abd476b7f3c2075e58c14316696fe3bf6f"
+)
+_LATENCY_SEMANTIC_TOKENIZER_SNAPSHOT_SHA256: Final = (
+    "21fbe7df7aab4932076e2eedc9ba9b1be4cfe7be2b742f05a01b2125d9186557"
+)
+_LATENCY_SEMANTIC_RUNTIME_DISTRIBUTIONS_SHA256: Final = (
+    "87d25293be5ce9b36b30b085fbea6db17f5a074f6f18b340f954a982e2bc3d7a"
+)
+_LATENCY_SEMANTIC_RUNTIME_LOCK_RELATIVE_PATH: Final = Path(
+    "src/document_kv_cache/runtime_locks/"
+    "publication-latency-semantic-py311-macos-arm64.lock"
+)
+_LATENCY_SEMANTIC_RUNTIME_LOCK_SHA256: Final = (
+    "8e26c54c74af9af63c5425e97581f3f9d1ecee00b28c7f151a607f673c14ccbb"
+)
+_LATENCY_SEMANTIC_RUNTIME_LOCK_BYTE_COUNT: Final = 30_963
+_LATENCY_SEMANTIC_SITE_PACKAGES_SHA256: Final = (
+    "26e45807542ce3fc12aac2f0d162db6268b8e964e389097b867af909ea78e780"
+)
+_LATENCY_SEMANTIC_SITE_PACKAGES_FILE_COUNT: Final = 4_753
+_LATENCY_SEMANTIC_TOKENIZER_ID: Final = "Qwen/Qwen3-4B-Instruct-2507"
+_LATENCY_SEMANTIC_TOKENIZER_REVISION: Final = (
+    "cdbee75f17c01a7cc42f958dc650907174af0554"
+)
+_LATENCY_SEMANTIC_TOKENIZER_CLASS_MODULE: Final = (
+    "transformers.models.qwen2.tokenization_qwen2"
+)
+_LATENCY_SEMANTIC_TOKENIZER_CLASS_NAME: Final = "Qwen2Tokenizer"
+_LATENCY_SEMANTIC_TOKENIZER_VOCAB_SIZE: Final = 151_643
+_LATENCY_SEMANTIC_ATTESTATION_RECORD_TYPE: Final = (
+    "cachet.publication_latency_plan_semantic_validation.v1"
+)
+_LATENCY_SEMANTIC_PREPARED_INPUT_RELATIVE_PATH: Final = Path(
+    "databricks-runs/vllm-0271-publication-prep/"
+    "prepared-v3-sha256-"
+    f"{PUBLICATION_FREEZE_INPUT_BUNDLE_SHA256}"
+)
 _FREEZE_HOME: Final = Path("/private/var/empty")
 _FREEZE_TMPDIR: Final = Path("/private/var/tmp")
 _FREEZE_PATH: Final = (
@@ -127,6 +194,67 @@ _SOURCE_REFERENCE_ROLES: Final = (
     "latency_handoff_plan",
     "full_score_inventory",
     "full_score_shard_plan",
+)
+_LATENCY_SEMANTIC_RUNTIME_DISTRIBUTIONS: Final = (
+    ("annotated-doc", "0.0.5"),
+    ("anyio", "4.14.2"),
+    ("certifi", "2026.7.22"),
+    ("click", "8.4.2"),
+    ("filelock", "3.32.4"),
+    ("fsspec", "2026.7.0"),
+    ("h11", "0.16.0"),
+    ("hf-xet", "1.6.0"),
+    ("httpcore", "1.0.9"),
+    ("httpx", "0.28.1"),
+    ("huggingface-hub", "1.28.0"),
+    ("idna", "3.19"),
+    ("markdown-it-py", "4.2.0"),
+    ("mdurl", "0.1.2"),
+    ("numpy", "2.4.6"),
+    ("packaging", "26.2"),
+    ("pygments", "2.21.0"),
+    ("pyyaml", "6.0.3"),
+    ("regex", "2026.7.19"),
+    ("rich", "15.0.0"),
+    ("safetensors", "0.8.0"),
+    ("shellingham", "1.5.4"),
+    ("tokenizers", "0.22.2"),
+    ("tqdm", "4.70.0"),
+    ("transformers", "5.12.1"),
+    ("typer", "0.27.1"),
+    ("typing-extensions", "4.16.0"),
+)
+_LATENCY_SEMANTIC_TOKENIZER_SNAPSHOT_FILES: Final = (
+    (
+        "config.json",
+        "../../blobs/6988f134db143052042f2bd6e0c897bc6a605189",
+        727,
+        "5beea1a4a34c62782bfb2f911c606741a3bab8f92d80a118fa053c28af12e8ba",
+    ),
+    (
+        "merges.txt",
+        "../../blobs/20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0",
+        1_671_839,
+        "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+    ),
+    (
+        "tokenizer.json",
+        "../../blobs/aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+        11_422_654,
+        "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    ),
+    (
+        "tokenizer_config.json",
+        "../../blobs/51c1be0d9192e7f6e6596de71d0f07d58fbc32ac",
+        9_377,
+        "a62ff0a2472a0fa1b8eaabcb57c59b58afa42a22831dc141400b6e0cf2b65ce3",
+    ),
+    (
+        "vocab.json",
+        "../../blobs/4783fe10ac3adce15ac8f358ef5462739852c569",
+        2_776_833,
+        "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+    ),
 )
 _LOCAL_CHECK_IDS: Final = (
     "canonical_plan_schema",
@@ -294,6 +422,12 @@ class _PackageBuildOutputs:
     sdist_bytes: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class _VerifiedTokenizerSnapshot:
+    sha256: str
+    files: tuple[tuple[str, str, bytes], ...]
+
+
 def build_publication_source_closure(
     inputs: PublicationSourceClosureInputs,
 ) -> dict[str, Any]:
@@ -305,6 +439,10 @@ def build_publication_source_closure(
     git = _git_identity(root)
     _require_freeze_toolchain()
     _require_freeze_build_system(root)
+    _validate_publication_latency_handoff_reference(
+        inputs.latency_handoff_plan,
+        repository_root=root,
+    )
     artifact_root = _create_directory_exclusive(
         inputs.artifact_output_root,
         "source artifact output root",
@@ -509,6 +647,10 @@ def _validate_publication_source_closure_record(
         reference_paths["campaign_plan"], pretty=True, label="campaign plan"
     )
     validate_publication_campaign_plan_record(campaign)
+    _validate_publication_latency_handoff_reference(
+        reference_paths["latency_handoff_plan"],
+        repository_root=root,
+    )
     runtime = _required_mapping(normalized, "runtime")
     _require_exact_keys(runtime, _SOURCE_RUNTIME_KEYS, "source closure runtime")
     if dict(runtime) != {
@@ -539,6 +681,723 @@ def _validate_publication_source_closure_record(
             first_build.sdist_bytes,
             "source closure source distribution versus clean-tree rebuild",
         )
+
+
+def _validate_publication_latency_handoff_reference(
+    plan_path: Path,
+    *,
+    repository_root: Path,
+) -> dict[str, Any]:
+    """Bind the retained latency plan to current exact-token semantics."""
+
+    plan = _validated_frozen_latency_handoff_plan(plan_path)
+    prepared_input_dir = _regular_directory(
+        repository_root / _LATENCY_SEMANTIC_PREPARED_INPUT_RELATIVE_PATH,
+        "latency semantic prepared input bundle",
+    )
+    observed = _run_publication_latency_semantic_subprocess(
+        plan_path=plan_path,
+        prepared_input_dir=prepared_input_dir,
+        repository_root=repository_root,
+    )
+    expected = _publication_latency_semantic_attestation(plan)
+    if observed != expected:
+        raise ValueError(
+            "source closure latency handoff semantic attestation differs"
+        )
+    return observed
+
+
+def _validated_frozen_latency_handoff_plan(plan_path: Path) -> dict[str, Any]:
+    candidate = _regular_file(plan_path, "latency handoff plan")
+    plan = _read_canonical_json(
+        candidate,
+        pretty=True,
+        label="latency handoff plan",
+    )
+    plan_digest = _required_sha256(
+        plan.get("closed_record_sha256"),
+        "latency handoff plan digest",
+    )
+    plan_payload = dict(plan)
+    plan_payload.pop("closed_record_sha256", None)
+    if plan_digest != hashlib.sha256(
+        json.dumps(
+            plan_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest():
+        raise ValueError("latency handoff plan closed_record_sha256 is invalid")
+    workers = _mapping_sequence(plan.get("workers"), "latency handoff workers")
+    items = tuple(
+        item
+        for worker in workers
+        for item in _mapping_sequence(
+            worker.get("items"),
+            "latency handoff worker items",
+        )
+    )
+    segment_contract_count = sum(
+        "segment_token_contracts" in item
+        and "segment_token_contracts_sha256" in item
+        for item in items
+    )
+    if len(items) != 384 or segment_contract_count != len(items):
+        raise ValueError(
+            "source closure latency handoff plan is semantically stale: "
+            "segment_token_contracts coverage differs"
+        )
+    sharding = _required_mapping(plan, "sharding")
+    coverage = _required_mapping(plan, "coverage")
+    if (
+        _file_sha256(candidate)
+        != PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_FILE_SHA256
+        or plan.get("closed_record_sha256")
+        != PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_CLOSED_RECORD_SHA256
+        or plan.get("plan_id") != PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_ID
+        or plan.get("input_bundle_sha256")
+        != PUBLICATION_FREEZE_INPUT_BUNDLE_SHA256
+        or plan.get("workers_sha256")
+        != PUBLICATION_FREEZE_LATENCY_HANDOFF_WORKERS_SHA256
+        or sharding.get("worker_count") != 16
+        or coverage.get("task_count") != 384
+        or coverage.get("cache_prefix_generation_tokens") != 7_323_967
+    ):
+        raise ValueError(
+            "source closure latency handoff plan differs from the frozen "
+            "semantic plan"
+        )
+    return plan
+
+
+def _publication_latency_semantic_attestation(
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "input_bundle_sha256": PUBLICATION_FREEZE_INPUT_BUNDLE_SHA256,
+        "plan_closed_record_sha256": (
+            PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_CLOSED_RECORD_SHA256
+        ),
+        "plan_file_sha256": PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_FILE_SHA256,
+        "python": PUBLICATION_FREEZE_PYTHON,
+        "record_type": _LATENCY_SEMANTIC_ATTESTATION_RECORD_TYPE,
+        "runtime_distributions_sha256": (
+            _LATENCY_SEMANTIC_RUNTIME_DISTRIBUTIONS_SHA256
+        ),
+        "runtime_lock_sha256": _LATENCY_SEMANTIC_RUNTIME_LOCK_SHA256,
+        "runtime_site_packages_sha256": (
+            _LATENCY_SEMANTIC_SITE_PACKAGES_SHA256
+        ),
+        "schema_version": 1,
+        "task_count": _required_mapping(plan, "coverage").get("task_count"),
+        "tokenizer_id": _LATENCY_SEMANTIC_TOKENIZER_ID,
+        "tokenizer_revision": _LATENCY_SEMANTIC_TOKENIZER_REVISION,
+        "tokenizer_snapshot_sha256": (
+            _LATENCY_SEMANTIC_TOKENIZER_SNAPSHOT_SHA256
+        ),
+        "validated": True,
+        "worker_count": _required_mapping(plan, "sharding").get("worker_count"),
+        "workers_sha256": PUBLICATION_FREEZE_LATENCY_HANDOFF_WORKERS_SHA256,
+    }
+
+
+def _run_publication_latency_semantic_subprocess(
+    *,
+    plan_path: Path,
+    prepared_input_dir: Path,
+    repository_root: Path,
+) -> dict[str, Any]:
+    uv = _regular_file(
+        _LATENCY_SEMANTIC_UV_EXECUTABLE,
+        "latency semantic uv executable",
+    )
+    python = _regular_file(
+        _DEFAULT_PYTHON_EXECUTABLE,
+        "latency semantic Python executable",
+    )
+    if (
+        _file_sha256(uv) != _LATENCY_SEMANTIC_UV_SHA256
+        or _file_sha256(python) != _LATENCY_SEMANTIC_PYTHON_SHA256
+    ):
+        raise RuntimeError("latency semantic executable identity differs")
+    lock_bytes = _verified_publication_latency_runtime_lock(
+        repository_root / _LATENCY_SEMANTIC_RUNTIME_LOCK_RELATIVE_PATH
+    )
+    environment = _latency_semantic_environment(repository_root)
+    version = subprocess.run(
+        (str(uv), "--version"),
+        cwd=repository_root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        timeout=30,
+    )
+    _require_bounded_bytes(version.stdout, "latency semantic uv version stdout")
+    _require_bounded_bytes(version.stderr, "latency semantic uv version stderr")
+    if (
+        version.returncode != 0
+        or version.stderr
+        or version.stdout.decode("utf-8", errors="strict").strip()
+        != _LATENCY_SEMANTIC_UV_VERSION
+    ):
+        raise RuntimeError("latency semantic uv version differs")
+    runtime_root = Path(
+        tempfile.mkdtemp(prefix="cachet-latency-semantic-", dir=_FREEZE_TMPDIR)
+    )
+    try:
+        observed_root = os.lstat(runtime_root)
+        if (
+            not stat.S_ISDIR(observed_root.st_mode)
+            or stat.S_IMODE(observed_root.st_mode) != 0o700
+        ):
+            raise RuntimeError("latency semantic temporary root is not private")
+        private_lock = runtime_root / "requirements.lock"
+        _write_exclusive(
+            private_lock,
+            lock_bytes,
+            "latency semantic private runtime lock",
+        )
+        runtime_venv = runtime_root / "runtime"
+        _run_silent_latency_semantic_command(
+            (
+                str(uv),
+                "venv",
+                str(runtime_venv),
+                "--quiet",
+                "--offline",
+                "--no-project",
+                "--no-python-downloads",
+                "--no-config",
+                "--python",
+                str(python),
+            ),
+            label="latency semantic uv venv",
+            cwd=repository_root,
+            environment=environment,
+        )
+        runtime_python = runtime_venv / "bin/python"
+        _run_silent_latency_semantic_command(
+            (
+                str(uv),
+                "pip",
+                "install",
+                "--quiet",
+                "--offline",
+                "--no-config",
+                "--no-python-downloads",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "--no-compile",
+                "--strict",
+                "--no-deps",
+                "--python",
+                str(runtime_python),
+                "-r",
+                str(private_lock),
+            ),
+            label="latency semantic hash-required install",
+            cwd=repository_root,
+            environment=environment,
+        )
+        completed = subprocess.run(
+            (
+                str(runtime_python),
+                "-S",
+                "-m",
+                "document_kv_cache.publication_freeze",
+                "latency-plan-semantic-check",
+                "--plan-json",
+                str(plan_path),
+                "--prepared-input-dir",
+                str(prepared_input_dir),
+                "--runtime-lock",
+                str(private_lock),
+            ),
+            cwd=repository_root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            timeout=PUBLICATION_FREEZE_COMMAND_TIMEOUT_SECONDS,
+        )
+        _require_bounded_bytes(completed.stdout, "latency semantic stdout")
+        _require_bounded_bytes(completed.stderr, "latency semantic stderr")
+        if completed.returncode != 0 or completed.stderr:
+            raise RuntimeError("latency handoff semantic validation failed")
+        try:
+            value = json.loads(completed.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "latency semantic output is not UTF-8 JSON"
+            ) from exc
+        if not isinstance(value, Mapping):
+            raise RuntimeError("latency semantic output is not an object")
+        record = _mapping_copy(value, "latency semantic output")
+        expected_bytes = _canonical_json_bytes(record, pretty=False)
+        if completed.stdout != expected_bytes:
+            raise RuntimeError("latency semantic output is not canonical JSON")
+        return record
+    finally:
+        shutil.rmtree(runtime_root)
+
+
+def _run_silent_latency_semantic_command(
+    command: Sequence[str],
+    *,
+    label: str,
+    cwd: Path,
+    environment: Mapping[str, str],
+) -> None:
+    completed = subprocess.run(
+        tuple(command),
+        cwd=cwd,
+        env=environment,
+        check=False,
+        capture_output=True,
+        timeout=PUBLICATION_FREEZE_COMMAND_TIMEOUT_SECONDS,
+    )
+    _require_bounded_bytes(completed.stdout, f"{label} stdout")
+    _require_bounded_bytes(completed.stderr, f"{label} stderr")
+    if completed.returncode != 0 or completed.stdout or completed.stderr:
+        raise RuntimeError(f"{label} failed")
+
+
+def _latency_semantic_environment(repository_root: Path) -> dict[str, str]:
+    environment = _base_subprocess_environment()
+    environment.update(
+        {
+            "DO_NOT_TRACK": "1",
+            "HF_HUB_CACHE": str(_LATENCY_SEMANTIC_HF_HUB_CACHE),
+            "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "HF_HUB_OFFLINE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": str((repository_root / "src").resolve()),
+            "TOKENIZERS_PARALLELISM": "false",
+            "TRANSFORMERS_OFFLINE": "1",
+            "TRANSFORMERS_VERBOSITY": "error",
+            "UV_CACHE_DIR": str(_LATENCY_SEMANTIC_UV_CACHE),
+            "UV_NO_PROGRESS": "1",
+            "UV_OFFLINE": "1",
+            "UV_PYTHON_DOWNLOADS": "never",
+        }
+    )
+    return environment
+
+
+def _run_publication_latency_semantic_check(
+    *,
+    plan_path: Path,
+    prepared_input_dir: Path,
+    runtime_lock_path: Path,
+) -> dict[str, Any]:
+    site_packages = _require_publication_latency_semantic_runtime(
+        runtime_lock_path
+    )
+    plan = _validated_frozen_latency_handoff_plan(plan_path)
+    snapshot = _require_publication_latency_tokenizer_snapshot()
+    from document_kv_cache.publication_latency_handoff_generation import (
+        validate_publication_latency_handoff_generation_plan,
+    )
+    transformers = importlib.import_module("transformers")
+    auto_tokenizer = getattr(transformers, "AutoTokenizer", None)
+    if auto_tokenizer is None:
+        raise RuntimeError("latency semantic AutoTokenizer is unavailable")
+
+    with _private_publication_latency_tokenizer_snapshot(snapshot) as private:
+        tokenizer = auto_tokenizer.from_pretrained(
+            str(private),
+            local_files_only=True,
+            trust_remote_code=False,
+            use_fast=True,
+        )
+        if (
+            type(tokenizer).__module__
+            != _LATENCY_SEMANTIC_TOKENIZER_CLASS_MODULE
+            or type(tokenizer).__name__
+            != _LATENCY_SEMANTIC_TOKENIZER_CLASS_NAME
+            or getattr(tokenizer, "is_fast", None) is not True
+            or getattr(tokenizer, "name_or_path", None) != str(private)
+            or getattr(tokenizer, "vocab_size", None)
+            != _LATENCY_SEMANTIC_TOKENIZER_VOCAB_SIZE
+        ):
+            raise RuntimeError("latency semantic tokenizer identity differs")
+        validate_publication_latency_handoff_generation_plan(
+            plan,
+            prepared_input_dir=prepared_input_dir,
+            tokenizer=tokenizer,
+        )
+    _require_semantic_site_packages_closure(site_packages)
+    attestation = _publication_latency_semantic_attestation(plan)
+    if snapshot.sha256 != attestation["tokenizer_snapshot_sha256"]:
+        raise RuntimeError("latency semantic tokenizer snapshot drift")
+    return attestation
+
+
+def _require_publication_latency_semantic_runtime(
+    runtime_lock_path: Path,
+) -> Path:
+    _verified_publication_latency_runtime_lock(runtime_lock_path)
+    if (
+        f"{platform.python_implementation()} {platform.python_version()}"
+        != PUBLICATION_FREEZE_PYTHON
+        or sys.flags.no_site != 1
+        or site.ENABLE_USER_SITE is not None
+    ):
+        raise RuntimeError("latency semantic Python runtime is not isolated")
+    if any(
+        name in sys.modules
+        for name in ("numpy", "packaging", "tokenizers", "transformers")
+    ):
+        raise RuntimeError("latency semantic package imported before verification")
+    executable = _regular_file(
+        Path(sys.executable).resolve(),
+        "latency semantic current Python executable",
+    )
+    if _file_sha256(executable) != _LATENCY_SEMANTIC_PYTHON_SHA256:
+        raise RuntimeError("latency semantic Python executable differs")
+    venv_root = _regular_directory(
+        Path(sys.executable).parent.parent,
+        "latency semantic private virtual environment",
+    )
+    site_packages = _regular_directory(
+        venv_root / "lib/python3.11/site-packages",
+        "latency semantic private site-packages",
+    )
+    observed: list[tuple[str, str]] = []
+    distributions = tuple(
+        importlib.metadata.distributions(path=[str(site_packages)])
+    )
+    for distribution in distributions:
+        try:
+            raw_name = distribution.metadata["Name"]
+        except KeyError as exc:
+            raise RuntimeError(
+                "latency semantic distribution lacks a name"
+            ) from exc
+        if not isinstance(raw_name, str) or not raw_name:
+            raise RuntimeError("latency semantic distribution lacks a name")
+        observed.append(
+            (_canonical_distribution_name(raw_name), distribution.version)
+        )
+    if tuple(sorted(observed)) != _LATENCY_SEMANTIC_RUNTIME_DISTRIBUTIONS:
+        raise RuntimeError("latency semantic distribution closure differs")
+    digest = hashlib.sha256(
+        json.dumps(
+            dict(observed),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if digest != _LATENCY_SEMANTIC_RUNTIME_DISTRIBUTIONS_SHA256:
+        raise RuntimeError("latency semantic distribution digest differs")
+    _require_semantic_distribution_records(
+        distributions,
+        virtual_environment=venv_root,
+    )
+    _require_semantic_site_packages_closure(site_packages)
+    sys.path.insert(0, str(site_packages))
+    return site_packages
+
+
+def _canonical_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def _verified_publication_latency_runtime_lock(path: Path) -> bytes:
+    candidate = _regular_file(path, "latency semantic runtime lock")
+    content = candidate.read_bytes()
+    if (
+        len(content) != _LATENCY_SEMANTIC_RUNTIME_LOCK_BYTE_COUNT
+        or hashlib.sha256(content).hexdigest()
+        != _LATENCY_SEMANTIC_RUNTIME_LOCK_SHA256
+    ):
+        raise RuntimeError("latency semantic runtime lock bytes differ")
+    requirements = _parse_hash_locked_requirements(candidate)
+    observed: list[tuple[str, str]] = []
+    for line in content.decode("utf-8", errors="strict").splitlines():
+        if line and line[0].isalnum() and "==" in line:
+            name, remainder = line.split("==", 1)
+            version = remainder.split(" ", 1)[0]
+            observed.append((_canonical_distribution_name(name), version))
+    if (
+        tuple(observed) != _LATENCY_SEMANTIC_RUNTIME_DISTRIBUTIONS
+        or tuple(requirements) != tuple(name for name, _version in observed)
+        or any(hash_count < 1 for hash_count in requirements.values())
+    ):
+        raise RuntimeError("latency semantic runtime lock closure differs")
+    return content
+
+
+def _require_semantic_distribution_records(
+    distributions: Sequence[importlib.metadata.Distribution],
+    *,
+    virtual_environment: Path,
+) -> None:
+    root = virtual_environment.resolve(strict=True)
+    for distribution in distributions:
+        files = distribution.files
+        if files is None:
+            raise RuntimeError("latency semantic distribution lacks RECORD")
+        unhashed: list[str] = []
+        for packaged in files:
+            candidate = Path(str(distribution.locate_file(packaged))).resolve(
+                strict=True
+            )
+            try:
+                candidate.relative_to(root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "latency semantic distribution escaped its environment"
+                ) from exc
+            content = _regular_file(
+                candidate,
+                "latency semantic installed distribution file",
+            ).read_bytes()
+            if packaged.hash is None:
+                unhashed.append(str(packaged))
+                continue
+            if packaged.hash.mode != "sha256" or packaged.size is None:
+                raise RuntimeError(
+                    "latency semantic distribution RECORD is not SHA-256 closed"
+                )
+            observed = base64.urlsafe_b64encode(
+                hashlib.sha256(content).digest()
+            ).decode("ascii").rstrip("=")
+            if observed != packaged.hash.value or len(content) != packaged.size:
+                raise RuntimeError(
+                    "latency semantic installed distribution bytes differ"
+                )
+        if len(unhashed) != 1 or not unhashed[0].endswith(".dist-info/RECORD"):
+            raise RuntimeError(
+                "latency semantic distribution RECORD coverage differs"
+            )
+
+
+def _semantic_site_packages_closure(
+    site_packages: Path,
+) -> tuple[int, int, str]:
+    root = _regular_directory(
+        site_packages,
+        "latency semantic private site-packages",
+    )
+    rows: list[dict[str, Any]] = []
+    record_count = 0
+    for candidate in sorted(root.rglob("*")):
+        observed = os.lstat(candidate)
+        if stat.S_ISDIR(observed.st_mode):
+            continue
+        if not stat.S_ISREG(observed.st_mode):
+            raise RuntimeError("latency semantic site-packages contains a link")
+        relative = candidate.relative_to(root).as_posix()
+        if candidate.name == "RECORD" and candidate.parent.name.endswith(
+            ".dist-info"
+        ):
+            record_count += 1
+            continue
+        content = candidate.read_bytes()
+        rows.append(
+            {
+                "byte_count": len(content),
+                "path": relative,
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    digest = hashlib.sha256(
+        json.dumps(
+            rows,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return len(rows), record_count, digest
+
+
+def _require_semantic_site_packages_closure(
+    site_packages: Path,
+    *,
+    expected_file_count: int = _LATENCY_SEMANTIC_SITE_PACKAGES_FILE_COUNT,
+    expected_record_count: int = len(_LATENCY_SEMANTIC_RUNTIME_DISTRIBUTIONS),
+    expected_sha256: str = _LATENCY_SEMANTIC_SITE_PACKAGES_SHA256,
+) -> None:
+    file_count, record_count, digest = _semantic_site_packages_closure(
+        site_packages
+    )
+    if (
+        record_count != expected_record_count
+        or file_count != expected_file_count
+        or digest != expected_sha256
+    ):
+        raise RuntimeError("latency semantic installed package closure differs")
+
+
+def _require_publication_latency_tokenizer_snapshot() -> _VerifiedTokenizerSnapshot:
+    cache_text = os.environ.get("HF_HUB_CACHE")
+    if (
+        not isinstance(cache_text, str)
+        or not cache_text
+        or not Path(cache_text).is_absolute()
+    ):
+        raise RuntimeError("latency semantic HF_HUB_CACHE is not absolute")
+    hub = _regular_directory(Path(cache_text), "latency semantic HF Hub cache")
+    model_root = _regular_directory(
+        hub / "models--Qwen--Qwen3-4B-Instruct-2507",
+        "latency semantic tokenizer model cache",
+    )
+    blob_root = _regular_directory(
+        model_root / "blobs",
+        "latency semantic tokenizer blob cache",
+    )
+    snapshot = _regular_directory(
+        model_root / "snapshots" / _LATENCY_SEMANTIC_TOKENIZER_REVISION,
+        "latency semantic tokenizer snapshot",
+    )
+    expected_names = {
+        name for name, _target, _byte_count, _sha256 in (
+            _LATENCY_SEMANTIC_TOKENIZER_SNAPSHOT_FILES
+        )
+    }
+    if {item.name for item in snapshot.iterdir()} != expected_names:
+        raise RuntimeError("latency semantic tokenizer snapshot coverage differs")
+    files: list[tuple[str, str, bytes]] = []
+    for name, target, byte_count, expected_sha256 in (
+        _LATENCY_SEMANTIC_TOKENIZER_SNAPSHOT_FILES
+    ):
+        link = snapshot / name
+        observed = os.lstat(link)
+        if not stat.S_ISLNK(observed.st_mode) or os.readlink(link) != target:
+            raise RuntimeError("latency semantic tokenizer snapshot link differs")
+        resolved = link.resolve(strict=True)
+        expected_blob = (blob_root / Path(target).name).resolve(strict=True)
+        if resolved != expected_blob:
+            raise RuntimeError("latency semantic tokenizer snapshot escaped its cache")
+        blob_stat = os.lstat(resolved)
+        if not stat.S_ISREG(blob_stat.st_mode):
+            raise RuntimeError("latency semantic tokenizer blob is not regular")
+        content = resolved.read_bytes()
+        observed_sha256 = hashlib.sha256(content).hexdigest()
+        if len(content) != byte_count or observed_sha256 != expected_sha256:
+            raise RuntimeError("latency semantic tokenizer snapshot bytes differ")
+        files.append((name, target, content))
+    frozen_files = tuple(files)
+    digest = _verified_tokenizer_snapshot_digest(frozen_files)
+    if digest != _LATENCY_SEMANTIC_TOKENIZER_SNAPSHOT_SHA256:
+        raise RuntimeError("latency semantic tokenizer snapshot digest differs")
+    return _VerifiedTokenizerSnapshot(sha256=digest, files=frozen_files)
+
+
+def _verified_tokenizer_snapshot_digest(
+    files: Sequence[tuple[str, str, bytes]],
+) -> str:
+    rows = [
+        {
+            "byte_count": len(content),
+            "name": name,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "symlink_target": target,
+        }
+        for name, target, content in files
+    ]
+    return hashlib.sha256(
+        json.dumps(
+            rows,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+class _PrivateTokenizerSnapshot:
+    def __init__(
+        self,
+        snapshot: _VerifiedTokenizerSnapshot,
+        *,
+        temporary_parent: Path = _FREEZE_TMPDIR,
+    ) -> None:
+        self._snapshot = snapshot
+        self._temporary_parent = temporary_parent
+        self._root: Path | None = None
+        self.path: Path | None = None
+
+    def __enter__(self) -> Path:
+        if self._root is not None:
+            raise RuntimeError("private tokenizer snapshot cannot be reused")
+        if (
+            _verified_tokenizer_snapshot_digest(self._snapshot.files)
+            != self._snapshot.sha256
+        ):
+            raise RuntimeError("captured tokenizer snapshot bytes differ")
+        root = Path(
+            tempfile.mkdtemp(
+                prefix="cachet-tokenizer-snapshot-",
+                dir=_regular_directory(
+                    self._temporary_parent,
+                    "private tokenizer temporary parent",
+                ),
+            )
+        )
+        self._root = root
+        try:
+            observed = os.lstat(root)
+            if (
+                not stat.S_ISDIR(observed.st_mode)
+                or stat.S_IMODE(observed.st_mode) != 0o700
+            ):
+                raise RuntimeError("private tokenizer root permissions differ")
+            path = root / "snapshot"
+            path.mkdir(mode=0o700)
+            for name, _target, content in self._snapshot.files:
+                _write_exclusive(
+                    path / name,
+                    content,
+                    f"private tokenizer {name}",
+                )
+            self.path = path
+            _require_private_tokenizer_snapshot(path, self._snapshot)
+            return path
+        except BaseException:
+            shutil.rmtree(root)
+            self._root = None
+            raise
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        try:
+            if exc_type is None and self.path is not None:
+                _require_private_tokenizer_snapshot(self.path, self._snapshot)
+        finally:
+            if self._root is not None:
+                shutil.rmtree(self._root)
+
+
+def _private_publication_latency_tokenizer_snapshot(
+    snapshot: _VerifiedTokenizerSnapshot,
+    *,
+    temporary_parent: Path = _FREEZE_TMPDIR,
+) -> _PrivateTokenizerSnapshot:
+    return _PrivateTokenizerSnapshot(
+        snapshot,
+        temporary_parent=temporary_parent,
+    )
+
+
+def _require_private_tokenizer_snapshot(
+    path: Path,
+    snapshot: _VerifiedTokenizerSnapshot,
+) -> None:
+    root = _regular_directory(path, "private tokenizer snapshot")
+    expected = {name: content for name, _target, content in snapshot.files}
+    if {item.name for item in root.iterdir()} != set(expected):
+        raise RuntimeError("private tokenizer snapshot coverage differs")
+    for name, content in expected.items():
+        candidate = _regular_file(root / name, f"private tokenizer {name}")
+        if candidate.read_bytes() != content:
+            raise RuntimeError("private tokenizer snapshot bytes changed")
 
 
 def write_publication_source_closure_json(
@@ -1927,6 +2786,8 @@ def _require_freeze_build_system(repository_root: Path) -> None:
 
 
 def _validate_cachet_wheel(path: Path) -> None:
+    from document_kv_cache.release_bundle import _package_wheel_issues
+
     issues = _package_wheel_issues(str(path), path.read_bytes(), expected_version="0.2.0")
     if issues:
         raise ValueError("Cachet wheel validation failed: " + "; ".join(issues))
@@ -2937,7 +3798,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run one non-cloud publication freeze operation."""
 
     parser = argparse.ArgumentParser(
-        description="Build source closure or execute GPU qualification preflight."
+        description=(
+            "Build source closure, validate frozen latency-plan semantics, or "
+            "execute GPU qualification preflight."
+        )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     source_parser = subparsers.add_parser("source-closure")
@@ -2946,6 +3810,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         tuple(PublicationSourceClosureInputs.__dataclass_fields__),
     )
     source_parser.add_argument("--output-json", required=True)
+    latency_parser = subparsers.add_parser("latency-plan-semantic-check")
+    latency_parser.add_argument("--plan-json", required=True)
+    latency_parser.add_argument("--prepared-input-dir", required=True)
+    latency_parser.add_argument("--runtime-lock", required=True)
     preflight_parser = subparsers.add_parser("qualification-preflight")
     required_preflight = tuple(
         field_name
@@ -2969,6 +3837,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     preflight_parser.add_argument("--output-root", required=True)
     args = parser.parse_args(argv)
+    if args.command == "latency-plan-semantic-check":
+        attestation = _run_publication_latency_semantic_check(
+            plan_path=Path(args.plan_json),
+            prepared_input_dir=Path(args.prepared_input_dir),
+            runtime_lock_path=Path(args.runtime_lock),
+        )
+        sys.stdout.buffer.write(_canonical_json_bytes(attestation, pretty=False))
+        return 0
     if args.command == "source-closure":
         source_inputs = _source_inputs_from_args(args)
         record = build_publication_source_closure(source_inputs)
@@ -3011,6 +3887,10 @@ __all__ = [
     "GPU_QUALIFICATION_LOCAL_CHECK_RECORD_TYPE",
     "GPU_QUALIFICATION_LOCAL_CHECK_SCHEMA_VERSION",
     "GPUQualificationLocalPreflightInputs",
+    "PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_CLOSED_RECORD_SHA256",
+    "PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_FILE_SHA256",
+    "PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_ID",
+    "PUBLICATION_FREEZE_LATENCY_HANDOFF_WORKERS_SHA256",
     "PUBLICATION_SOURCE_CLOSURE_RECORD_TYPE",
     "PUBLICATION_SOURCE_CLOSURE_SCHEMA_VERSION",
     "PublicationSourceClosureInputs",

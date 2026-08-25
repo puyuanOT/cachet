@@ -1,4 +1,4 @@
-# vLLM runtime locks
+# Publication runtime locks
 
 This directory contains the reviewed, hash-pinned Python dependency closure for
 the publication runtime. The vLLM wheel itself is deliberately excluded from
@@ -8,6 +8,58 @@ patched for the Cachet E5M2 contract, and installed by exact URI and SHA-256.
 `vllm-0.27.1-cu129-py311-manylinux_2_35.lock` targets the Databricks Runtime
 CPython 3.11.11 interpreter on x86_64 Linux with glibc 2.35.
 
+`publication-latency-semantic-py311-macos-arm64.lock` is the complete
+27-distribution controller-side environment used to rebuild and validate the
+frozen latency handoff plan. It targets CPython 3.11.16 on
+`aarch64-apple-darwin`. Its direct input and closed output are pinned as:
+
+- `publication-latency-semantic-py311-macos-arm64.in`:
+  `779938c5750a46931bb1a92eaadf09f83b12629542bb99a5ed2f100ec2a12034`
+- `publication-latency-semantic-py311-macos-arm64.lock`:
+  `8e26c54c74af9af63c5425e97581f3f9d1ecee00b28c7f151a607f673c14ccbb`
+
+Replay consumes those checked-in lock bytes unchanged. The authority creates a
+fresh private environment and installs the lock offline with
+`--require-hashes`, `--only-binary :all:`, and `--no-deps`; it never resolves
+an unhashed requirement or builds an sdist.
+
+## Semantic-lock regeneration
+
+The reviewed compiler identity is `uv 0.11.6 (65950801c 2026-04-09
+aarch64-apple-darwin)`, executable SHA-256
+`94151d6624054c3973829c82eb718db1afc55ef9fcee499cdd94bfb852fb99f9`.
+The reviewed interpreter is
+`/opt/homebrew/opt/python@3.11/bin/python3.11`, CPython 3.11.16. With no UV
+index environment overrides, this is the complete normative command from the
+repository root:
+
+```sh
+/Users/pliu/.local/bin/uv pip compile \
+  src/document_kv_cache/runtime_locks/publication-latency-semantic-py311-macos-arm64.in \
+  --output-file src/document_kv_cache/runtime_locks/publication-latency-semantic-py311-macos-arm64.lock \
+  --python /opt/homebrew/opt/python@3.11/bin/python3.11 \
+  --python-version 3.11.16 \
+  --python-platform aarch64-apple-darwin \
+  --only-binary :all: \
+  --generate-hashes \
+  --no-annotate \
+  --no-header \
+  --no-sources \
+  --default-index https://pypi.org/simple \
+  --index-strategy first-index \
+  --no-python-downloads \
+  --no-config \
+  --system-certs
+```
+
+That command was independently replayed byte-for-byte to the pinned lock SHA
+above. Regeneration creates only a candidate: any changed input or output
+requires review of the complete version-and-hash closure, updated lock-byte and
+installed-site closure pins in `publication_freeze.py`, and a fresh semantic
+rebuild before source authority may issue.
+
+## vLLM qualification lock
+
 Byte-for-byte artifact replay means consuming the checked-in lock unchanged,
 not recompiling it. Before installation, verify that its SHA-256 is
 `5788ee492a9a9ff48c8e1eae68cd0576fcec625263858129cc9dd918bcb856a6`, the
@@ -16,7 +68,7 @@ top of the lock records the original compiler invocation; its abbreviated
 Python version and implicit index strategy are provenance, not the normative
 regeneration recipe.
 
-Regeneration creates a new candidate lock. From the repository root, install
+Regeneration creates a new candidate vLLM lock. From the repository root, install
 the reviewed compiler with `python -m pip install uv==0.11.6`, then run:
 
 ```sh

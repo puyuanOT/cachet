@@ -39,6 +39,23 @@ _RETAINED_SOURCE_ROOT = (
     "258b3260d86a3c91156f98103c31f4a8671e49c70e31c9d5ab22a798c1c0b644"
 )
 _RETAINED_SOURCE_CLOSURE = _RETAINED_SOURCE_ROOT / "cachet-source-closure.json"
+_STALE_LATENCY_HANDOFF_PLAN = (
+    _REPOSITORY_ROOT
+    / "databricks-runs/vllm-0271-publication-prep/"
+    "publication-latency-handoff-plan-"
+    "b4778f81d0f21fbd298ecf40e5833fe38d9baa4bc31f856e9de80ed42ac6c9e8.json"
+)
+_CORRECTED_LATENCY_HANDOFF_PLAN = (
+    _REPOSITORY_ROOT
+    / "databricks-runs/vllm-0271-publication-prep/"
+    "publication-latency-handoff-plan-"
+    "404d0ed6ae2f169d1777034c81a057e2af131d805ecd9672900bfc7221871246.json"
+)
+_SEMANTIC_RUNTIME_LOCK = (
+    _REPOSITORY_ROOT
+    / "src/document_kv_cache/runtime_locks/"
+    "publication-latency-semantic-py311-macos-arm64.lock"
+)
 _WORKSPACE_CONFIG = freeze.DatabricksWorkspaceConfig(
     "https://dbc.example",
     "test-token",
@@ -102,6 +119,11 @@ def _retained_inputs(
         "_build_package_twice",
         lambda *_args, **_kwargs: (outputs, outputs),
     )
+    monkeypatch.setattr(
+        freeze,
+        "_validate_publication_latency_handoff_reference",
+        lambda *_args, **_kwargs: {},
+    )
     return freeze.PublicationSourceClosureInputs(
         repository_root=_REPOSITORY_ROOT,
         artifact_output_root=tmp_path / "source-artifacts",
@@ -139,6 +161,175 @@ def _retained_inputs(
             "full-score-shard-plan.json"
         ),
     )
+
+
+def test_source_closure_latency_semantics_reject_stale_b477_and_accept_current(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    with pytest.raises(ValueError, match="semantically stale"):
+        freeze._validate_publication_latency_handoff_reference(
+            _STALE_LATENCY_HANDOFF_PLAN,
+            repository_root=_REPOSITORY_ROOT,
+        )
+
+    plan = freeze._validated_frozen_latency_handoff_plan(
+        _CORRECTED_LATENCY_HANDOFF_PLAN
+    )
+    expected = freeze._publication_latency_semantic_attestation(plan)
+    monkeypatch.setattr(
+        freeze,
+        "_run_publication_latency_semantic_subprocess",
+        lambda **_kwargs: expected,
+    )
+    assert freeze._validate_publication_latency_handoff_reference(
+        _CORRECTED_LATENCY_HANDOFF_PLAN,
+        repository_root=_REPOSITORY_ROOT,
+    ) == expected
+
+
+def test_latency_semantic_child_rejects_alternate_valid_plan_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    alternate = json.loads(
+        _CORRECTED_LATENCY_HANDOFF_PLAN.read_text(encoding="utf-8")
+    )
+    alternate["plan_id"] = "alternate-semantically-valid-plan"
+    payload = dict(alternate)
+    payload.pop("closed_record_sha256")
+    alternate["closed_record_sha256"] = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    alternate_path = tmp_path / "alternate-latency-plan.json"
+    alternate_path.write_bytes(
+        json.dumps(
+            alternate,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+    with pytest.raises(ValueError, match="frozen semantic plan"):
+        monkeypatch.setattr(
+            freeze,
+            "_require_publication_latency_semantic_runtime",
+            lambda _path: tmp_path,
+        )
+        freeze._run_publication_latency_semantic_check(
+            plan_path=alternate_path,
+            prepared_input_dir=_REPOSITORY_ROOT,
+            runtime_lock_path=tmp_path / "unused.lock",
+        )
+
+
+def test_latency_semantic_runtime_lock_rejects_one_changed_byte(tmp_path: Path):
+    content = bytearray(_SEMANTIC_RUNTIME_LOCK.read_bytes())
+    content[-2] = ord("0") if content[-2] != ord("0") else ord("1")
+    tampered = tmp_path / "tampered-runtime.lock"
+    tampered.write_bytes(content)
+
+    with pytest.raises(RuntimeError, match="runtime lock bytes differ"):
+        freeze._verified_publication_latency_runtime_lock(tampered)
+
+
+def test_latency_semantic_site_package_tamper_keeps_identity_but_rejects(
+    tmp_path: Path,
+):
+    site_packages = tmp_path / "site-packages"
+    package = site_packages / "example_package"
+    metadata = site_packages / "example_package-1.0.dist-info"
+    package.mkdir(parents=True)
+    metadata.mkdir()
+    module = package / "__init__.py"
+    module.write_text("VALUE = 1\n", encoding="utf-8")
+    (metadata / "METADATA").write_text(
+        "Name: example-package\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (metadata / "RECORD").write_text("", encoding="utf-8")
+    file_count, record_count, digest = (
+        freeze._semantic_site_packages_closure(site_packages)
+    )
+    freeze._require_semantic_site_packages_closure(
+        site_packages,
+        expected_file_count=file_count,
+        expected_record_count=record_count,
+        expected_sha256=digest,
+    )
+
+    module.write_text("VALUE = 2\n", encoding="utf-8")
+    assert (metadata / "METADATA").read_text(encoding="utf-8") == (
+        "Name: example-package\nVersion: 1.0\n"
+    )
+    with pytest.raises(RuntimeError, match="installed package closure differs"):
+        freeze._require_semantic_site_packages_closure(
+            site_packages,
+            expected_file_count=file_count,
+            expected_record_count=record_count,
+            expected_sha256=digest,
+        )
+
+
+def test_private_tokenizer_uses_captured_bytes_after_shared_cache_mutates(
+    tmp_path: Path,
+):
+    shared = tmp_path / "shared-tokenizer.json"
+    shared.write_bytes(b"verified tokenizer bytes")
+    files = (("tokenizer.json", "../../blobs/example", shared.read_bytes()),)
+    snapshot = freeze._VerifiedTokenizerSnapshot(
+        sha256=freeze._verified_tokenizer_snapshot_digest(files),
+        files=files,
+    )
+    shared.write_bytes(b"mutated shared cache")
+
+    with freeze._private_publication_latency_tokenizer_snapshot(
+        snapshot,
+        temporary_parent=tmp_path,
+    ) as private:
+        assert (private / "tokenizer.json").read_bytes() == (
+            b"verified tokenizer bytes"
+        )
+
+
+def test_private_tokenizer_rejects_mutation_during_validation(tmp_path: Path):
+    files = (("tokenizer.json", "../../blobs/example", b"verified bytes"),)
+    snapshot = freeze._VerifiedTokenizerSnapshot(
+        sha256=freeze._verified_tokenizer_snapshot_digest(files),
+        files=files,
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot bytes changed"):
+        with freeze._private_publication_latency_tokenizer_snapshot(
+            snapshot,
+            temporary_parent=tmp_path,
+        ) as private:
+            (private / "tokenizer.json").write_bytes(b"mutated during validation")
+
+
+def test_source_closure_cannot_issue_when_latency_semantic_authority_rejects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    inputs = _retained_inputs(tmp_path, monkeypatch)
+
+    def reject(*_args, **_kwargs):
+        raise ValueError("semantic authority rejected latency plan")
+
+    monkeypatch.setattr(
+        freeze,
+        "_validate_publication_latency_handoff_reference",
+        reject,
+    )
+    with pytest.raises(ValueError, match="semantic authority rejected"):
+        freeze.build_publication_source_closure(inputs)
+    assert not inputs.artifact_output_root.exists()
 
 
 def test_source_closure_builder_propagates_the_repaired_bootstrap_pin(

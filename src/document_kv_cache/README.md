@@ -177,10 +177,18 @@ return as a production dependency.
   reject raw manifests and raw generation-result records.
 - `publication_freeze.py` builds and validates the deterministic
   `cachet.publication_source_closure.v1` record and runs the seven-check GPU
-  qualification preflight. Its canonical sibling sidecars bind exact inputs,
-  commands, tool identities, bounded outputs, and timestamps; submit, resume,
-  collect, and launch replay each rerun those checks locally before any
-  ledger, evidence-root, or Databricks HTTP effect.
+  qualification preflight. Source authority also rebuilds the frozen latency
+  handoff plan from prepared bundle `7ff6cf6a...` with the pinned Qwen tokenizer
+  in a fresh private `uv` environment installed offline with required hashes
+  from a complete 27-distribution lock. Tokenizer blobs are captured by hash,
+  copied into a private snapshot, loaded only from that snapshot, and verified
+  again after plan validation; byte-valid but semantically stale plans are
+  rejected. The exact compiler identity and regeneration command live in the
+  [runtime-lock authority](runtime_locks/README.md#semantic-lock-regeneration).
+  Its canonical sibling sidecars bind exact inputs, commands, tool identities,
+  bounded outputs, and timestamps; submit, resume, collect, and launch replay
+  each rerun those checks locally before any ledger, evidence-root, or
+  Databricks HTTP effect.
 - `publication_handoff_artifacts.py` closes portable generated-KV bundles and
   stages their verified contents onto node-local storage without regenerating
   artifacts inside timed serving jobs.
