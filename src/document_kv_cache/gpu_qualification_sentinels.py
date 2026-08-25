@@ -30,6 +30,15 @@ from document_kv_cache.vllm_smoke import (
 
 
 _RUNTIME_LOCK_ATTESTATION_ENV = "CACHET_GPU_QUALIFICATION_RUNTIME_LOCK_ATTESTATION"
+_SITE_PACKAGES_WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+_ALLOWED_SITE_PACKAGES_RELATIVE_PARTS = frozenset(
+    {
+        ("lib", "python3", "dist-packages"),
+        ("lib", "python3.11", "dist-packages"),
+        ("lib", "python3.11", "site-packages"),
+        ("local", "lib", "python3.11", "dist-packages"),
+    }
+)
 
 
 def run_gpu_qualification_sentinel(
@@ -188,14 +197,340 @@ print(verified.bundle_sha256)
     return observed
 
 
+def _directory_open_flags() -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory is None:
+        raise RuntimeError(
+            "isolated site-packages authority requires O_NOFOLLOW and O_DIRECTORY"
+        )
+    return os.O_RDONLY | no_follow | directory | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_runtime_root_no_follow(runtime_root: Path) -> int:
+    if not runtime_root.is_absolute() or ".." in runtime_root.parts:
+        raise RuntimeError("isolated runtime root is not canonical")
+    try:
+        pre_open_status = runtime_root.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(pre_open_status.st_mode):
+            raise RuntimeError("isolated runtime root is invalid")
+        if runtime_root.resolve(strict=True) != runtime_root:
+            raise RuntimeError("isolated runtime root is invalid")
+    except OSError as error:
+        raise RuntimeError("isolated runtime root is invalid") from error
+    flags = _directory_open_flags()
+    descriptor = os.open("/", flags)
+    try:
+        for component in runtime_root.parts[1:]:
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        path_status = runtime_root.stat(follow_symlinks=False)
+        opened_status = os.fstat(descriptor)
+        if (
+            not _same_file_identity(pre_open_status, opened_status)
+            or not _same_file_identity(path_status, opened_status)
+            or not stat.S_ISDIR(opened_status.st_mode)
+        ):
+            raise RuntimeError("isolated runtime root changed during validation")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_relative_no_follow(
+    runtime_root_descriptor: int,
+    relative_parts: tuple[str, ...],
+    *,
+    directory: bool,
+) -> int:
+    if not relative_parts or any(
+        not part or part in {".", ".."} or "/" in part for part in relative_parts
+    ):
+        raise RuntimeError("isolated site-packages relative path is invalid")
+    directory_flags = _directory_open_flags()
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW")
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = os.dup(runtime_root_descriptor)
+    try:
+        for index, component in enumerate(relative_parts):
+            is_leaf = index == len(relative_parts) - 1
+            flags = directory_flags if not is_leaf or directory else file_flags
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+        and stat.S_IFMT(left.st_mode) == stat.S_IFMT(right.st_mode)
+    )
+
+
+def _snapshot_site_packages_directory(
+    directory_descriptor: int,
+    relative_parts: tuple[str, ...],
+) -> list[tuple[tuple[str, ...], os.stat_result]]:
+    directory_status = os.fstat(directory_descriptor)
+    if not stat.S_ISDIR(directory_status.st_mode):
+        raise RuntimeError("isolated site-packages directory changed during scan")
+    snapshot = [(relative_parts, directory_status)]
+    try:
+        with os.scandir(directory_descriptor) as iterator:
+            children = sorted(iterator, key=lambda entry: entry.name)
+    except OSError as error:
+        raise RuntimeError("could not scan isolated site-packages directory") from error
+    for child in children:
+        try:
+            child_status = child.stat(follow_symlinks=False)
+        except OSError as error:
+            raise RuntimeError("could not inspect isolated site-packages entry") from error
+        child_parts = (*relative_parts, child.name)
+        if stat.S_ISLNK(child_status.st_mode):
+            raise RuntimeError(
+                "isolated site-packages tree contains a symbolic link"
+            )
+        if stat.S_ISDIR(child_status.st_mode):
+            try:
+                child_descriptor = os.open(
+                    child.name,
+                    _directory_open_flags(),
+                    dir_fd=directory_descriptor,
+                )
+            except OSError as error:
+                raise RuntimeError(
+                    "could not safely open isolated site-packages directory"
+                ) from error
+            try:
+                if not _same_file_identity(
+                    child_status,
+                    os.fstat(child_descriptor),
+                ):
+                    raise RuntimeError(
+                        "isolated site-packages directory changed during scan"
+                    )
+                snapshot.extend(
+                    _snapshot_site_packages_directory(
+                        child_descriptor,
+                        child_parts,
+                    )
+                )
+            finally:
+                os.close(child_descriptor)
+        elif stat.S_ISREG(child_status.st_mode):
+            if child_status.st_nlink != 1:
+                raise RuntimeError(
+                    "isolated site-packages file has an unsafe link count"
+                )
+            snapshot.append((child_parts, child_status))
+        else:
+            raise RuntimeError(
+                "isolated site-packages tree contains a non-regular entry"
+            )
+    return snapshot
+
+
+def _open_validated_site_packages_tree(
+    runtime_root: Path,
+    raw_paths: object,
+) -> tuple[int, tuple[tuple[tuple[str, ...], os.stat_result], ...]]:
+    """Open and snapshot the exact Debian package roots without following links."""
+
+    if not isinstance(raw_paths, list) or not raw_paths:
+        raise RuntimeError("isolated runtime did not report site-packages")
+    relative_roots: list[tuple[str, ...]] = []
+    seen_roots: set[tuple[str, ...]] = set()
+    for raw_path in raw_paths:
+        if (
+            not isinstance(raw_path, str)
+            or not raw_path
+            or raw_path.strip() != raw_path
+        ):
+            raise RuntimeError("isolated runtime reported an invalid site-packages path")
+        path = Path(raw_path)
+        if not path.is_absolute() or ".." in path.parts or str(path) != raw_path:
+            raise RuntimeError(f"invalid isolated site-packages path: {path}")
+        try:
+            relative = path.relative_to(runtime_root)
+        except ValueError as error:
+            raise RuntimeError(
+                f"invalid isolated site-packages path: {path}"
+            ) from error
+        if relative.parts not in _ALLOWED_SITE_PACKAGES_RELATIVE_PARTS:
+            raise RuntimeError(f"invalid isolated site-packages path: {path}")
+        if relative.parts in seen_roots:
+            raise RuntimeError(f"duplicate isolated site-packages path: {path}")
+        seen_roots.add(relative.parts)
+        relative_roots.append(relative.parts)
+
+    runtime_root_descriptor = _open_runtime_root_no_follow(runtime_root)
+    snapshot: list[tuple[tuple[str, ...], os.stat_result]] = []
+    try:
+        for relative_parts in relative_roots:
+            try:
+                package_descriptor = _open_relative_no_follow(
+                    runtime_root_descriptor,
+                    relative_parts,
+                    directory=True,
+                )
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise RuntimeError(
+                    "could not safely open isolated site-packages candidate"
+                ) from error
+            try:
+                snapshot.extend(
+                    _snapshot_site_packages_directory(
+                        package_descriptor,
+                        relative_parts,
+                    )
+                )
+            finally:
+                os.close(package_descriptor)
+        if not snapshot:
+            raise RuntimeError(
+                "isolated runtime has no existing site-packages directory"
+            )
+        if len({parts for parts, _status in snapshot}) != len(snapshot):
+            raise RuntimeError("isolated site-packages snapshot contains duplicates")
+        return runtime_root_descriptor, tuple(snapshot)
+    except BaseException:
+        os.close(runtime_root_descriptor)
+        raise
+
+
+def _validated_site_packages_tree(
+    runtime_root: Path,
+    raw_paths: object,
+) -> tuple[Path, ...]:
+    runtime_root_descriptor, snapshot = _open_validated_site_packages_tree(
+        runtime_root,
+        raw_paths,
+    )
+    os.close(runtime_root_descriptor)
+    return tuple(runtime_root.joinpath(*parts) for parts, _status in snapshot)
+
+
+def _open_snapshot_entry(
+    runtime_root_descriptor: int,
+    relative_parts: tuple[str, ...],
+    expected_status: os.stat_result,
+) -> int:
+    try:
+        descriptor = _open_relative_no_follow(
+            runtime_root_descriptor,
+            relative_parts,
+            directory=stat.S_ISDIR(expected_status.st_mode),
+        )
+    except OSError as error:
+        raise RuntimeError(
+            "could not safely reopen isolated site-packages entry"
+        ) from error
+    try:
+        reopened_status = os.fstat(descriptor)
+        if (
+            not _same_file_identity(expected_status, reopened_status)
+            or (
+                stat.S_ISREG(reopened_status.st_mode)
+                and reopened_status.st_nlink != 1
+            )
+        ):
+            raise RuntimeError(
+                "isolated site-packages entry changed after validation"
+            )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _lock_site_packages_entry_read_only(
+    runtime_root_descriptor: int,
+    relative_parts: tuple[str, ...],
+    expected_status: os.stat_result,
+) -> None:
+    descriptor = _open_snapshot_entry(
+        runtime_root_descriptor,
+        relative_parts,
+        expected_status,
+    )
+    try:
+        before_lock_status = os.fstat(descriptor)
+        before_lock_mode = stat.S_IMODE(before_lock_status.st_mode)
+        os.fchmod(
+            descriptor,
+            before_lock_mode & ~_SITE_PACKAGES_WRITE_BITS,
+        )
+        locked_status = os.fstat(descriptor)
+        if stat.S_ISREG(locked_status.st_mode) and locked_status.st_nlink != 1:
+            os.fchmod(descriptor, before_lock_mode)
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) != before_lock_mode:
+                raise RuntimeError(
+                    "could not restore isolated site-packages mode after "
+                    "a link-count change"
+                )
+            raise RuntimeError(
+                "isolated site-packages file link count changed during lockdown"
+            )
+        if locked_status.st_mode & _SITE_PACKAGES_WRITE_BITS:
+            raise RuntimeError(
+                "isolated site-packages entry remained writable after lockdown"
+            )
+    finally:
+        os.close(descriptor)
+
+
+def _site_packages_tree_read_only(runtime_root: Path, raw_paths: object) -> bool:
+    """Attest the launch-owned runtime while no concurrent modifier is allowed."""
+
+    runtime_root_descriptor, snapshot = _open_validated_site_packages_tree(
+        runtime_root,
+        raw_paths,
+    )
+    try:
+        for relative_parts, expected_status in snapshot:
+            descriptor = _open_snapshot_entry(
+                runtime_root_descriptor,
+                relative_parts,
+                expected_status,
+            )
+            try:
+                if os.fstat(descriptor).st_mode & _SITE_PACKAGES_WRITE_BITS:
+                    return False
+            finally:
+                os.close(descriptor)
+        return True
+    finally:
+        os.close(runtime_root_descriptor)
+
+
 def _make_site_packages_read_only(runtime_python: Path) -> None:
+    """Freeze the launch-owned runtime before the sentinel worker is started.
+
+    The qualification launch contract gives this dispatcher exclusive mutation
+    ownership of the new runtime until this function returns.  POSIX mode and
+    link-count checks do not provide isolation from a hostile process sharing
+    the same UID, so such a concurrent modifier is outside this contract.
+    """
+
     completed = subprocess.run(
         [
             str(runtime_python),
             "-c",
             (
                 "import json,site; "
-                "print(json.dumps([p for p in site.getsitepackages() if p]))"
+                "print(json.dumps(site.getsitepackages()))"
             ),
         ],
         check=True,
@@ -205,32 +540,26 @@ def _make_site_packages_read_only(runtime_python: Path) -> None:
         env=_pip_subprocess_environment(),
     )
     paths = json.loads(completed.stdout)
-    if not isinstance(paths, list) or not paths:
-        raise RuntimeError("isolated runtime did not report site-packages")
-    for raw_path in paths:
-        path = Path(raw_path)
-        if not path.is_dir() or path.is_symlink():
-            raise RuntimeError(f"invalid isolated site-packages path: {path}")
-        for root, directories, files in os.walk(path):
-            root_path = Path(root)
-            for name in directories:
-                child = root_path / name
-                if not child.is_symlink():
-                    child.chmod(
-                        child.stat().st_mode
-                        & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-                    )
-            for name in files:
-                child = root_path / name
-                if not child.is_symlink():
-                    child.chmod(
-                        child.stat().st_mode
-                        & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-                    )
-        path.chmod(
-            path.stat().st_mode
-            & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-        )
+    runtime_root = runtime_python.parent.parent
+    runtime_root_descriptor, snapshot = _open_validated_site_packages_tree(
+        runtime_root,
+        paths,
+    )
+    try:
+        for relative_parts, expected_status in sorted(
+            snapshot,
+            key=lambda entry: len(entry[0]),
+            reverse=True,
+        ):
+            _lock_site_packages_entry_read_only(
+                runtime_root_descriptor,
+                relative_parts,
+                expected_status,
+            )
+    finally:
+        os.close(runtime_root_descriptor)
+    if not _site_packages_tree_read_only(runtime_root, paths):
+        raise RuntimeError("isolated site-packages tree remained writable")
 
 
 def _artifact_pin(plan_record: Mapping[str, Any], key: str) -> str:

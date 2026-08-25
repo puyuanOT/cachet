@@ -254,6 +254,104 @@ GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB: Final = (
         "62f7d0aac6c1a2e9d4cb84ae074e815fb718ad179574f6d2a8b54ff2118d9437",
     ),
 )
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256: Final = (
+    "be4cb0e80e17c99d9c4bd8abb89b24efb6e1202072fb734c739d322812218c9c"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_RUNNER_SHA256: Final = (
+    "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_MANIFEST_SHA256: Final = (
+    "a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_MANIFEST_FILE_SHA256: Final = (
+    "2996e67b6c6305544c11231266500dcb9c53aa2bbc701fa6d6e626299c2ab06e"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_SHA256: Final = (
+    "2c555ea534fc3d41d3bc998fcaff8f07aedf42e1872200e39f9ed46796081607"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_FILE_COUNT: Final = 29
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_TOTAL_BYTES: Final = (
+    1_945_499
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_TERMINAL_PREFIX_SHA256: Final = (
+    "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_REASON: Final = (
+    "all fourteen hash-locked qualification runtimes installed and verified, "
+    "then failed before sentinel worker launch because the site-packages read-only "
+    "freezer rejected a nonexistent Debian local dist-packages scheme path reported "
+    "by site.getsitepackages()"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_NORMALIZED_ERROR_SHA256: Final = (
+    "8937fb907ae789c647754b2bbe9dbc4d9e167b67b8e437613260373b658c0da3"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PIP_CHECK_LOG_MARKER: Final = (
+    "No broken requirements found."
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_FREEZER_TRACE_MARKER: Final = (
+    "--> 115 _make_site_packages_read_only(runtime_python)"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_WORKER_MODULE_MARKER: Final = (
+    "document_kv_cache._gpu_qualification_sentinel_worker"
+)
+GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_ERROR_SHA256_BY_JOB: Final = (
+    (
+        "aws-g5-a10g-16k-c4-capacity",
+        "ff4a9c3082cdf1d63334f231646c0075e224baafb061df736d2a81d34d5a0682",
+    ),
+    (
+        "aws-g5-a10g-auto-backend-diagnostic",
+        "a1fb17abfb013b962bd082ef1cfe697f1607677856a16711404ebb0c39a544dd",
+    ),
+    (
+        "aws-g5-a10g-forced-triton-runtime-handoff",
+        "1544442770a99cae1b323cbf33077aa1a0f32f0b8e49d678f7bcbac8a71c33d6",
+    ),
+    (
+        "aws-g5-a10g-matched-token-logit",
+        "de8da0bb3eb3263110f86cde882d047ddf3caf7cbe37d2b82f6270131233c795",
+    ),
+    (
+        "aws-g5-a10g-packed-page-roundtrip",
+        "baee1999b43ee8e68b4dd3699eadd16407e5e03360e70de2c01c0381116be7a7",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-70",
+        "b6b3d69abdc302f0f2a90acc26a788ce835e3d2abf42c63a0fafb72f6da296d4",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-75",
+        "2670bca02ec39cc4acb997ef1550c1145ca1543eff96b02013e3e8d36407e2cc",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-80",
+        "c97f3c29f579c17ae8a2f8a707661098ddfd9fe632b73ef77b58f8effe1b35c8",
+    ),
+    (
+        "aws-g6-l4-auto-backend-diagnostic",
+        "b86c51071effabc7b29c023d907de8fc1337f06f3225656a91e0db86bbd3f130",
+    ),
+    (
+        "aws-g6-l4-forced-triton-runtime-handoff",
+        "9f9c87bb76014c2c9ec682039c8221e7bbd20e7682fb29a2ab0b70a3939eddcc",
+    ),
+    (
+        "aws-g6-l4-generation-throughput",
+        "b32c049c34fb10be220e2d6a6bbda1b6de0b07f89f142cbb11f3aeb45bb0cfe9",
+    ),
+    (
+        "aws-g6-l4-matched-token-logit",
+        "7b21ac504ec057eabcc4d625f6624aec7c23177727df496c6eda80c695db7e8f",
+    ),
+    (
+        "aws-g6-l4-packed-page-roundtrip",
+        "d412a5163fb9ce920a07a46cc7c04416a8b47bdfcbb4bca45bcca7de8cb97042",
+    ),
+    (
+        "aws-g6e-l40s-generation-throughput",
+        "fc37553551e0850b595d3a6be360fe41efdb58fb04252ca2f60f7a1b58567ca8",
+    ),
+)
 _RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR: Final = (
     "CalledProcessError: Command '['{runtime_python}', '-m', 'pip', 'install', "
     "'--extra-index-url', 'https://download.pytorch.org/whl/cu129', "
@@ -266,6 +364,9 @@ _RUNTIME_LOCK_INDEX_FAILURE_LOCK_PATH_RE: Final = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
     r"/lib/python3\.11/site-packages/document_kv_cache/runtime_locks/"
     r"vllm-0\.27\.1-cu129-py311-manylinux_2_35\.lock"
+)
+_SITE_PACKAGES_PATH_FAILURE_NORMALIZED_ERROR: Final = (
+    "RuntimeError: invalid isolated site-packages path: {invalid_site_packages}"
 )
 GPU_QUALIFICATION_ARTIFACT_KEYS: Final = (
     "cachet_source_tree_sha256",
@@ -1988,6 +2089,130 @@ def _validated_runtime_lock_index_failure_error(
     return error
 
 
+def _normalize_site_packages_path_failure_error(
+    error: str,
+    *,
+    plan_sha256: str,
+    job_id: str,
+) -> str:
+    reviewed_error = _non_empty_string(error, "site-packages path failure error")
+    reviewed_plan_sha256 = _required_sha256(plan_sha256, "plan_sha256")
+    if (
+        reviewed_plan_sha256
+        != GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256
+    ):
+        raise ValueError("site-packages path failure plan is not reviewed")
+    reviewed_job_id = _safe_id(job_id, "job_id")
+    invalid_site_packages = (
+        f"{GPU_QUALIFICATION_LOCAL_WORK_ROOT}/{reviewed_plan_sha256}/"
+        f"{reviewed_job_id}/runtime/local/lib/python3.11/dist-packages"
+    )
+    if reviewed_error.count(invalid_site_packages) != 1:
+        raise ValueError(
+            "site-packages path failure error must contain the exact planned "
+            "invalid dist-packages path once"
+        )
+    normalized = reviewed_error.replace(
+        invalid_site_packages,
+        "{invalid_site_packages}",
+    )
+    if normalized != _SITE_PACKAGES_PATH_FAILURE_NORMALIZED_ERROR:
+        raise ValueError("site-packages path failure error grammar differs")
+    if (
+        sha256(normalized.encode("utf-8")).hexdigest()
+        != GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_NORMALIZED_ERROR_SHA256
+    ):
+        raise RuntimeError("site-packages path normalized error source pin drift")
+    return normalized
+
+
+def _validated_site_packages_path_failure_error(
+    run_output: Mapping[str, Any],
+    *,
+    plan_sha256: str,
+    job_id: str,
+    expected_error_sha256: str,
+) -> str:
+    _validate_failed_run_output_schema(run_output)
+    if set(run_output) != _FAILED_RUN_OUTPUT_LOGGED_KEYS:
+        raise ValueError(
+            "site-packages path failure requires the exact logged output schema"
+        )
+    error = _non_empty_string(
+        run_output.get("error"),
+        "site-packages path failure error",
+    )
+    reviewed_error_sha256 = _required_sha256(
+        expected_error_sha256,
+        "expected_error_sha256",
+    )
+    if sha256(error.encode("utf-8")).hexdigest() != reviewed_error_sha256:
+        raise ValueError("site-packages path failure raw error is not reviewed")
+    _normalize_site_packages_path_failure_error(
+        error,
+        plan_sha256=plan_sha256,
+        job_id=job_id,
+    )
+    if run_output.get("logs_truncated") is not False:
+        raise ValueError("site-packages path failure logs must be complete")
+    logs = run_output.get("logs")
+    if (
+        type(logs) is not str
+        or logs.count(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PIP_CHECK_LOG_MARKER
+        )
+        != 2
+    ):
+        raise ValueError(
+            "site-packages path failure logs must prove exactly two successful "
+            "pip checks"
+        )
+    worker_marker = GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_WORKER_MODULE_MARKER
+    if worker_marker in logs:
+        raise ValueError(
+            "site-packages path failure logs must precede sentinel worker launch"
+        )
+    error_trace = _non_empty_string(
+        run_output.get("error_trace"),
+        "site-packages path failure error_trace",
+    )
+    normalized_trace = re.sub(r"\x1b\[[0-9;]*m", "", error_trace)
+    if (
+        normalized_trace.count(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_FREEZER_TRACE_MARKER
+        )
+        != 1
+        or worker_marker in normalized_trace
+    ):
+        raise ValueError(
+            "site-packages path failure trace must prove failure in the read-only "
+            "freezer before sentinel worker launch"
+        )
+    return error
+
+
+def _failed_attempt_evidence_tree_binding(
+    evidence_root: Path,
+) -> tuple[int, int, str]:
+    rows: list[dict[str, Any]] = []
+    total_bytes = 0
+    for path in sorted(evidence_root.iterdir(), key=lambda item: item.name):
+        validated = _validated_existing_regular_file(
+            path,
+            "failed-attempt evidence tree file",
+        )
+        byte_count = validated.stat().st_size
+        total_bytes += byte_count
+        rows.append(
+            {
+                "byte_count": byte_count,
+                "relative_path": validated.name,
+                "sha256": _file_sha256(validated),
+            }
+        )
+    return len(rows), total_bytes, _canonical_json_sha256(rows)
+
+
 def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     *,
     plan_record: Mapping[str, Any],
@@ -2006,6 +2231,11 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     expected_run_output_keys: frozenset[str],
     expected_runtime_lock_index_error_sha256_by_job: Mapping[str, str]
     | None = None,
+    expected_site_packages_path_error_sha256_by_job: Mapping[str, str]
+    | None = None,
+    expected_evidence_tree_sha256: str | None = None,
+    expected_evidence_tree_file_count: int | None = None,
+    expected_evidence_tree_total_bytes: int | None = None,
 ) -> DatabricksClusterHourLedger:
     """Reconcile one source-reviewed v2 failure closure without authority.
 
@@ -2034,9 +2264,12 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         "expected_terminal_prefix_sha256",
     )
     reason = _non_empty_string(expected_failure_reason, "expected_failure_reason")
-    if (expected_error is None) == (
-        expected_runtime_lock_index_error_sha256_by_job is None
-    ):
+    expected_error_modes = (
+        expected_error is not None,
+        expected_runtime_lock_index_error_sha256_by_job is not None,
+        expected_site_packages_path_error_sha256_by_job is not None,
+    )
+    if sum(expected_error_modes) != 1:
         raise ValueError(
             "reviewed reconciliation requires exactly one expected-error mode"
         )
@@ -2050,6 +2283,39 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         _FAILED_RUN_OUTPUT_LOGGED_KEYS,
     ):
         raise ValueError("reviewed runs/get-output schema is unsupported")
+    evidence_tree_pins = (
+        expected_evidence_tree_sha256,
+        expected_evidence_tree_file_count,
+        expected_evidence_tree_total_bytes,
+    )
+    if any(value is None for value in evidence_tree_pins) and any(
+        value is not None for value in evidence_tree_pins
+    ):
+        raise ValueError("reviewed evidence tree pins must be complete")
+    reviewed_evidence_tree_sha256 = (
+        None
+        if expected_evidence_tree_sha256 is None
+        else _required_sha256(
+            expected_evidence_tree_sha256,
+            "expected_evidence_tree_sha256",
+        )
+    )
+    reviewed_evidence_tree_file_count = (
+        None
+        if expected_evidence_tree_file_count is None
+        else _positive_int(
+            expected_evidence_tree_file_count,
+            "expected_evidence_tree_file_count",
+        )
+    )
+    reviewed_evidence_tree_total_bytes = (
+        None
+        if expected_evidence_tree_total_bytes is None
+        else _positive_int(
+            expected_evidence_tree_total_bytes,
+            "expected_evidence_tree_total_bytes",
+        )
+    )
     plan, pins = _validated_historical_qualification_plan_and_pins(plan_record)
     if (
         plan.get("closed_record_sha256") != reviewed_plan_sha256
@@ -2062,6 +2328,14 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         if expected_runtime_lock_index_error_sha256_by_job is None
         else _validated_reviewed_error_sha256_by_job(
             expected_runtime_lock_index_error_sha256_by_job,
+            contracts=contracts,
+        )
+    )
+    reviewed_site_packages_error_sha256_by_job = (
+        None
+        if expected_site_packages_path_error_sha256_by_job is None
+        else _validated_reviewed_error_sha256_by_job(
+            expected_site_packages_path_error_sha256_by_job,
             contracts=contracts,
         )
     )
@@ -2134,14 +2408,24 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         job_id = str(contract["job_id"])
         reviewed_job_error = error
         if reviewed_job_error is None:
-            if reviewed_error_sha256_by_job is None:
+            if reviewed_error_sha256_by_job is not None:
+                reviewed_job_error = _validated_runtime_lock_index_failure_error(
+                    run_output,
+                    plan_sha256=reviewed_plan_sha256,
+                    job_id=job_id,
+                    expected_error_sha256=reviewed_error_sha256_by_job[job_id],
+                )
+            elif reviewed_site_packages_error_sha256_by_job is not None:
+                reviewed_job_error = _validated_site_packages_path_failure_error(
+                    run_output,
+                    plan_sha256=reviewed_plan_sha256,
+                    job_id=job_id,
+                    expected_error_sha256=(
+                        reviewed_site_packages_error_sha256_by_job[job_id]
+                    ),
+                )
+            else:
                 raise RuntimeError("reviewed per-job error closure is unavailable")
-            reviewed_job_error = _validated_runtime_lock_index_failure_error(
-                run_output,
-                plan_sha256=reviewed_plan_sha256,
-                job_id=job_id,
-                expected_error_sha256=reviewed_error_sha256_by_job[job_id],
-            )
         entry = _failed_attempt_reconciliation_v2_entry(
             run_output,
             run=run,
@@ -2182,6 +2466,15 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     )
     if manifest.get("closed_record_sha256") != reviewed_manifest_sha256:
         raise ValueError("failed-attempt reconciliation v2 manifest is not reviewed")
+    if reviewed_evidence_tree_sha256 is not None:
+        observed_tree = _failed_attempt_evidence_tree_binding(evidence_root)
+        expected_tree = (
+            reviewed_evidence_tree_file_count,
+            reviewed_evidence_tree_total_bytes,
+            reviewed_evidence_tree_sha256,
+        )
+        if observed_tree != expected_tree:
+            raise ValueError("failed-attempt evidence tree is not reviewed")
 
     ordered = sorted(
         zip(contracts, runs, entries, strict=True),
@@ -2361,6 +2654,63 @@ def reconcile_gpu_qualification_runtime_lock_index_failure_evidence(
         expected_run_output_keys=_FAILED_RUN_OUTPUT_LOGGED_KEYS,
         expected_runtime_lock_index_error_sha256_by_job=dict(
             GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB
+        ),
+    )
+
+
+def reconcile_gpu_qualification_site_packages_path_failure_evidence(
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    runs_get_evidence_root: str | Path,
+) -> DatabricksClusterHourLedger:
+    """Account the reviewed be4cb site-packages freezer failure closure.
+
+    The source-pinned boundary requires every job's exact raw error and planned
+    invalid Debian ``dist-packages`` path, the normalized error grammar, two
+    successful pip checks, and trace proof that failure preceded worker launch.
+    The exact 29-file evidence tree is closed before the first terminal append.
+    """
+
+    return _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
+        plan_record=plan_record,
+        submit_payloads=submit_payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        runs_get_evidence_root=runs_get_evidence_root,
+        expected_plan_sha256=(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256
+        ),
+        expected_runner_sha256=(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_RUNNER_SHA256
+        ),
+        expected_manifest_closed_record_sha256=(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_MANIFEST_SHA256
+        ),
+        expected_manifest_file_sha256=(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_MANIFEST_FILE_SHA256
+        ),
+        expected_terminal_prefix_sha256=(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_TERMINAL_PREFIX_SHA256
+        ),
+        expected_failure_reason=GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_REASON,
+        expected_error=None,
+        expected_run_output_keys=_FAILED_RUN_OUTPUT_LOGGED_KEYS,
+        expected_site_packages_path_error_sha256_by_job=dict(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_ERROR_SHA256_BY_JOB
+        ),
+        expected_evidence_tree_sha256=(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_SHA256
+        ),
+        expected_evidence_tree_file_count=(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_FILE_COUNT
+        ),
+        expected_evidence_tree_total_bytes=(
+            GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_TOTAL_BYTES
         ),
     )
 
@@ -5538,6 +5888,20 @@ __all__ = [
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_REASON",
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_RUNNER_SHA256",
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_ERROR_SHA256_BY_JOB",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_FILE_COUNT",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_SHA256",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_TOTAL_BYTES",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_FREEZER_TRACE_MARKER",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_MANIFEST_FILE_SHA256",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_MANIFEST_SHA256",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_NORMALIZED_ERROR_SHA256",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PIP_CHECK_LOG_MARKER",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_REASON",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_RUNNER_SHA256",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_TERMINAL_PREFIX_SHA256",
+    "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_WORKER_MODULE_MARKER",
     "GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT",
     "GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256",
     "GPU_QUALIFICATION_DATABRICKS_PURPOSE",
@@ -5563,6 +5927,7 @@ __all__ = [
     "reconcile_gpu_qualification_bootstrap_file_global_failure_evidence",
     "reconcile_gpu_qualification_failed_attempt_evidence",
     "reconcile_gpu_qualification_runtime_lock_index_failure_evidence",
+    "reconcile_gpu_qualification_site_packages_path_failure_evidence",
     "replay_gpu_qualification_launch_authorization",
     "render_gpu_qualification_submit_payloads",
     "resume_gpu_qualification_job_submissions",

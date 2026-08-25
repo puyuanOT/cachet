@@ -858,18 +858,17 @@ def _system_cuda_version() -> str:
 
 def _site_packages_read_only() -> bool:
     import site
-    import stat
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _site_packages_tree_read_only,
+    )
 
-    for raw_path in site.getsitepackages():
-        path = Path(raw_path)
-        if not path.is_dir() or path.is_symlink():
-            return False
-        for child in (path, *path.rglob("*")):
-            if child.is_symlink():
-                continue
-            if child.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH):
-                return False
-    return True
+    try:
+        return _site_packages_tree_read_only(
+            Path(sys.prefix),
+            list(site.getsitepackages()),
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _weight_quantizer_attestation() -> dict[str, Any]:

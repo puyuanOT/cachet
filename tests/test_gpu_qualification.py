@@ -1,10 +1,17 @@
 import hashlib
 import json
+import os
+import site
+import stat
+import subprocess
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from document_kv_cache import _gpu_qualification_sentinel_worker as sentinel_worker
+from document_kv_cache import gpu_qualification_sentinels as qualification_sentinels
 from document_kv_cache.databricks_resource_ledger import DatabricksLedgerPrefix
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
@@ -86,6 +93,15 @@ PATCH_MEMBERS = {
         "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08"
     ),
 }
+
+
+def _debian_site_package_candidates(runtime_root: Path) -> list[str]:
+    return [
+        str(runtime_root / "lib" / "python3.11" / "site-packages"),
+        str(runtime_root / "local" / "lib" / "python3.11" / "dist-packages"),
+        str(runtime_root / "lib" / "python3" / "dist-packages"),
+        str(runtime_root / "lib" / "python3.11" / "dist-packages"),
+    ]
 
 
 def _weight_quantizer_attestation() -> dict[str, Any]:
@@ -586,6 +602,480 @@ def _reseal_evidence(evidence: dict[str, Any]) -> None:
             _seal(receipt)
     _seal(cloud)
     _seal(evidence)
+
+
+def test_debian_site_package_candidates_lock_down_and_attest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "bin").mkdir(parents=True)
+    runtime_root = runtime_root.resolve(strict=True)
+    actual_root = runtime_root / "lib" / "python3.11" / "site-packages"
+    nested = actual_root / "document_kv_cache"
+    nested.mkdir(parents=True)
+    payload = nested / "worker.py"
+    payload.write_text("reviewed = True\n", encoding="utf-8")
+    actual_root.chmod(0o770)
+    nested.chmod(0o770)
+    payload.chmod(0o660)
+    candidates = _debian_site_package_candidates(runtime_root)
+
+    def discover(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(candidates),
+            stderr="",
+        )
+
+    monkeypatch.setattr(qualification_sentinels.subprocess, "run", discover)
+    monkeypatch.setattr(sentinel_worker.sys, "prefix", str(runtime_root))
+    monkeypatch.setattr(site, "getsitepackages", lambda: candidates)
+    real_chmod = os.chmod
+
+    def reject_path_no_follow_chmod(*args: Any, **kwargs: Any) -> None:
+        if kwargs.get("follow_symlinks") is False:
+            raise NotImplementedError("Linux does not support no-follow chmod")
+        real_chmod(*args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", reject_path_no_follow_chmod)
+
+    assert sentinel_worker._site_packages_read_only() is False
+    qualification_sentinels._make_site_packages_read_only(
+        runtime_root / "bin" / "python"
+    )
+    locked_modes = {
+        path: stat.S_IMODE(path.stat().st_mode)
+        for path in (actual_root, nested, payload)
+    }
+    assert locked_modes == {
+        actual_root: 0o550,
+        nested: 0o550,
+        payload: 0o440,
+    }
+    assert sentinel_worker._site_packages_read_only() is True
+
+    qualification_sentinels._make_site_packages_read_only(
+        runtime_root / "bin" / "python"
+    )
+    assert {
+        path: stat.S_IMODE(path.stat().st_mode)
+        for path in (actual_root, nested, payload)
+    } == locked_modes
+
+
+def test_site_package_candidates_reject_before_any_permission_change(
+    tmp_path: Path,
+):
+    runtime_root = tmp_path / "runtime"
+    actual_root = runtime_root / "lib" / "python3.11" / "site-packages"
+    actual_root.mkdir(parents=True)
+    payload = actual_root / "worker.py"
+    payload.write_text("reviewed = True\n", encoding="utf-8")
+    actual_root.chmod(0o770)
+    payload.chmod(0o660)
+    runtime_root = runtime_root.resolve(strict=True)
+    valid = str(actual_root)
+    outside = tmp_path / "outside" / "lib" / "python3.11" / "site-packages"
+    invalid_candidates: list[object] = [
+        7,
+        "",
+        " relative/site-packages",
+        str(runtime_root / "lib" / "python3.10" / "site-packages"),
+        str(runtime_root / "lib" / "python3.11" / "unexpected"),
+        f"{runtime_root}/lib/../lib/python3.11/site-packages",
+        str(outside),
+        valid,
+    ]
+    original_modes = (
+        stat.S_IMODE(actual_root.stat().st_mode),
+        stat.S_IMODE(payload.stat().st_mode),
+    )
+    for invalid in invalid_candidates:
+        with pytest.raises(RuntimeError):
+            qualification_sentinels._validated_site_packages_tree(
+                runtime_root,
+                [valid, invalid],
+            )
+        assert (
+            stat.S_IMODE(actual_root.stat().st_mode),
+            stat.S_IMODE(payload.stat().st_mode),
+        ) == original_modes
+
+    candidate_file = runtime_root / "local" / "lib" / "python3.11" / "dist-packages"
+    candidate_file.parent.mkdir(parents=True)
+    candidate_file.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        qualification_sentinels._validated_site_packages_tree(
+            runtime_root,
+            [valid, str(candidate_file)],
+        )
+    assert (
+        stat.S_IMODE(actual_root.stat().st_mode),
+        stat.S_IMODE(payload.stat().st_mode),
+    ) == original_modes
+
+
+def test_site_package_candidates_reject_missing_and_symlink_trees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    empty_root = tmp_path / "empty-runtime"
+    empty_root.mkdir()
+    empty_root = empty_root.resolve(strict=True)
+    missing = _debian_site_package_candidates(empty_root)
+    with pytest.raises(RuntimeError, match="no existing site-packages"):
+        qualification_sentinels._validated_site_packages_tree(empty_root, missing)
+    monkeypatch.setattr(sentinel_worker.sys, "prefix", str(empty_root))
+    monkeypatch.setattr(site, "getsitepackages", lambda: missing)
+    assert sentinel_worker._site_packages_read_only() is False
+
+    runtime_root = tmp_path / "runtime"
+    actual_root = runtime_root / "lib" / "python3.11" / "site-packages"
+    actual_root.mkdir(parents=True)
+    runtime_root = runtime_root.resolve(strict=True)
+    external = tmp_path / "external"
+    external.mkdir()
+    external.chmod(0o770)
+    (actual_root / "escape").symlink_to(external, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="symbolic link"):
+        qualification_sentinels._validated_site_packages_tree(
+            runtime_root,
+            [str(actual_root)],
+        )
+    assert stat.S_IMODE(external.stat().st_mode) == 0o770
+
+    (actual_root / "escape").unlink()
+    (runtime_root / "local").symlink_to(external, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="site-packages"):
+        qualification_sentinels._validated_site_packages_tree(
+            runtime_root,
+            [
+                str(actual_root),
+                str(
+                    runtime_root
+                    / "local"
+                    / "lib"
+                    / "python3.11"
+                    / "dist-packages"
+                ),
+            ],
+        )
+
+    (runtime_root / "local").unlink()
+    dangling = runtime_root / "local" / "lib" / "python3.11" / "dist-packages"
+    dangling.parent.mkdir(parents=True)
+    dangling.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+    with pytest.raises(RuntimeError, match="site-packages"):
+        qualification_sentinels._validated_site_packages_tree(
+            runtime_root,
+            [str(actual_root), str(dangling)],
+        )
+
+    root_link = tmp_path / "runtime-link"
+    root_link.symlink_to(runtime_root, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="runtime root is invalid"):
+        qualification_sentinels._validated_site_packages_tree(
+            root_link,
+            [str(root_link / "lib" / "python3.11" / "site-packages")],
+        )
+
+
+def test_every_allowed_site_package_shape_is_accepted(tmp_path: Path):
+    allowed = (
+        ("lib", "python3", "dist-packages"),
+        ("lib", "python3.11", "dist-packages"),
+        ("lib", "python3.11", "site-packages"),
+        ("local", "lib", "python3.11", "dist-packages"),
+    )
+    for index, parts in enumerate(allowed):
+        runtime_root = tmp_path / f"runtime-{index}"
+        candidate = runtime_root.joinpath(*parts)
+        candidate.mkdir(parents=True)
+        runtime_root = runtime_root.resolve(strict=True)
+        assert qualification_sentinels._validated_site_packages_tree(
+            runtime_root,
+            [str(candidate)],
+        ) == (candidate,)
+
+
+def test_site_package_lockdown_rejects_hardlinked_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "bin").mkdir(parents=True)
+    actual_root = runtime_root / "lib" / "python3.11" / "site-packages"
+    actual_root.mkdir(parents=True)
+    reviewed_payload = actual_root / "reviewed.py"
+    reviewed_payload.write_text("reviewed = True\n", encoding="utf-8")
+    external_payload = tmp_path / "external.py"
+    external_payload.write_text("external = True\n", encoding="utf-8")
+    linked_payload = actual_root / "linked.py"
+    os.link(external_payload, linked_payload)
+    actual_root.chmod(0o770)
+    reviewed_payload.chmod(0o660)
+    external_payload.chmod(0o660)
+    runtime_root = runtime_root.resolve(strict=True)
+    candidates = _debian_site_package_candidates(runtime_root)
+
+    def discover(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(candidates),
+            stderr="",
+        )
+
+    monkeypatch.setattr(qualification_sentinels.subprocess, "run", discover)
+    monkeypatch.setattr(sentinel_worker.sys, "prefix", str(runtime_root))
+    monkeypatch.setattr(site, "getsitepackages", lambda: candidates)
+
+    assert sentinel_worker._site_packages_read_only() is False
+    with pytest.raises(RuntimeError, match="unsafe link count"):
+        qualification_sentinels._make_site_packages_read_only(
+            runtime_root / "bin" / "python"
+        )
+    assert stat.S_IMODE(actual_root.stat().st_mode) == 0o770
+    assert stat.S_IMODE(reviewed_payload.stat().st_mode) == 0o660
+    assert stat.S_IMODE(external_payload.stat().st_mode) == 0o660
+
+    linked_payload.unlink()
+    real_open_tree = qualification_sentinels._open_validated_site_packages_tree
+    raced_alias = tmp_path / "raced-alias.py"
+
+    def add_link_after_snapshot(runtime: Path, raw_paths: object):
+        descriptor, snapshot = real_open_tree(runtime, raw_paths)
+        os.link(reviewed_payload, raced_alias)
+        return descriptor, snapshot
+
+    monkeypatch.setattr(
+        qualification_sentinels,
+        "_open_validated_site_packages_tree",
+        add_link_after_snapshot,
+    )
+    with pytest.raises(RuntimeError, match="changed after validation"):
+        qualification_sentinels._make_site_packages_read_only(
+            runtime_root / "bin" / "python"
+        )
+    assert stat.S_IMODE(actual_root.stat().st_mode) == 0o770
+    assert stat.S_IMODE(reviewed_payload.stat().st_mode) == 0o660
+    assert stat.S_IMODE(raced_alias.stat().st_mode) == 0o660
+
+    raced_alias.unlink()
+    monkeypatch.setattr(
+        qualification_sentinels,
+        "_open_validated_site_packages_tree",
+        real_open_tree,
+    )
+    real_fchmod = os.fchmod
+    chmod_alias = tmp_path / "chmod-alias.py"
+    linked_during_fchmod = False
+
+    def link_during_fchmod(descriptor: int, mode: int) -> None:
+        nonlocal linked_during_fchmod
+        if (
+            not linked_during_fchmod
+            and stat.S_ISREG(os.fstat(descriptor).st_mode)
+        ):
+            os.link(reviewed_payload, chmod_alias)
+            linked_during_fchmod = True
+        real_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(qualification_sentinels.os, "fchmod", link_during_fchmod)
+    with pytest.raises(RuntimeError, match="link count changed during lockdown"):
+        qualification_sentinels._make_site_packages_read_only(
+            runtime_root / "bin" / "python"
+        )
+    assert stat.S_IMODE(actual_root.stat().st_mode) == 0o770
+    assert stat.S_IMODE(reviewed_payload.stat().st_mode) == 0o660
+    assert stat.S_IMODE(chmod_alias.stat().st_mode) == 0o660
+
+
+def test_site_package_lockdown_rejects_runtime_root_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "bin").mkdir(parents=True)
+    reviewed_root = runtime_root / "lib" / "python3.11" / "site-packages"
+    reviewed_root.mkdir(parents=True)
+    reviewed_payload = reviewed_root / "reviewed.py"
+    reviewed_payload.write_text("reviewed = True\n", encoding="utf-8")
+    reviewed_root.chmod(0o770)
+    reviewed_payload.chmod(0o660)
+    runtime_root = runtime_root.resolve(strict=True)
+
+    replacement = tmp_path / "replacement"
+    (replacement / "bin").mkdir(parents=True)
+    replacement_root = replacement / "lib" / "python3.11" / "site-packages"
+    replacement_root.mkdir(parents=True)
+    replacement_payload = replacement_root / "replacement.py"
+    replacement_payload.write_text("replacement = True\n", encoding="utf-8")
+    replacement_root.chmod(0o770)
+    replacement_payload.chmod(0o660)
+    candidates = [str(reviewed_root)]
+
+    def discover(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(candidates),
+            stderr="",
+        )
+
+    real_open = os.open
+    reviewed_backup = tmp_path / "runtime-reviewed"
+    swapped = False
+
+    def swap_before_root_open(
+        path: str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if path == "/" and dir_fd is None and not swapped:
+            runtime_root.rename(reviewed_backup)
+            replacement.rename(runtime_root)
+            swapped = True
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(qualification_sentinels.subprocess, "run", discover)
+    monkeypatch.setattr(qualification_sentinels.os, "open", swap_before_root_open)
+    try:
+        with pytest.raises(RuntimeError, match="changed during validation"):
+            qualification_sentinels._make_site_packages_read_only(
+                runtime_root / "bin" / "python"
+            )
+        assert stat.S_IMODE(
+            (reviewed_backup / "lib/python3.11/site-packages").stat().st_mode
+        ) == 0o770
+        assert stat.S_IMODE(
+            (
+                reviewed_backup
+                / "lib/python3.11/site-packages/reviewed.py"
+            ).stat().st_mode
+        ) == 0o660
+        assert stat.S_IMODE(
+            (runtime_root / "lib/python3.11/site-packages").stat().st_mode
+        ) == 0o770
+        assert stat.S_IMODE(
+            (
+                runtime_root
+                / "lib/python3.11/site-packages/replacement.py"
+            ).stat().st_mode
+        ) == 0o660
+    finally:
+        if swapped:
+            runtime_root.rename(replacement)
+            reviewed_backup.rename(runtime_root)
+
+
+def test_site_package_lockdown_rejects_post_validation_ancestor_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "bin").mkdir(parents=True)
+    reviewed_root = runtime_root / "lib" / "python3.11" / "site-packages"
+    reviewed_root.mkdir(parents=True)
+    reviewed_payload = reviewed_root / "reviewed.py"
+    reviewed_payload.write_text("reviewed = True\n", encoding="utf-8")
+    reviewed_root.chmod(0o770)
+    reviewed_payload.chmod(0o660)
+    runtime_root = runtime_root.resolve(strict=True)
+
+    external_lib = tmp_path / "external" / "lib"
+    external_root = external_lib / "python3.11" / "site-packages"
+    external_root.mkdir(parents=True)
+    external_payload = external_root / "external.py"
+    external_payload.write_text("external = True\n", encoding="utf-8")
+    external_root.chmod(0o770)
+    external_payload.chmod(0o660)
+    candidates = [str(reviewed_root)]
+
+    def discover(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(candidates),
+            stderr="",
+        )
+
+    real_open_tree = qualification_sentinels._open_validated_site_packages_tree
+    reviewed_lib = runtime_root / "lib-reviewed"
+
+    def swap_after_validation(runtime: Path, raw_paths: object):
+        descriptor, snapshot = real_open_tree(runtime, raw_paths)
+        (runtime_root / "lib").rename(reviewed_lib)
+        (runtime_root / "lib").symlink_to(external_lib, target_is_directory=True)
+        return descriptor, snapshot
+
+    monkeypatch.setattr(qualification_sentinels.subprocess, "run", discover)
+    monkeypatch.setattr(
+        qualification_sentinels,
+        "_open_validated_site_packages_tree",
+        swap_after_validation,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="safely reopen"):
+            qualification_sentinels._make_site_packages_read_only(
+                runtime_root / "bin" / "python"
+            )
+        assert stat.S_IMODE(external_root.stat().st_mode) == 0o770
+        assert stat.S_IMODE(external_payload.stat().st_mode) == 0o660
+        assert stat.S_IMODE((reviewed_lib / "python3.11/site-packages").stat().st_mode) == 0o770
+        assert stat.S_IMODE(
+            (reviewed_lib / "python3.11/site-packages/reviewed.py").stat().st_mode
+        ) == 0o660
+    finally:
+        (runtime_root / "lib").unlink()
+        reviewed_lib.rename(runtime_root / "lib")
+
+
+def test_site_package_scan_error_fails_freezer_and_worker_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime_root = tmp_path / "runtime"
+    (runtime_root / "bin").mkdir(parents=True)
+    actual_root = runtime_root / "lib" / "python3.11" / "site-packages"
+    actual_root.mkdir(parents=True)
+    payload = actual_root / "worker.py"
+    payload.write_text("reviewed = True\n", encoding="utf-8")
+    actual_root.chmod(0o770)
+    payload.chmod(0o660)
+    runtime_root = runtime_root.resolve(strict=True)
+    candidates = _debian_site_package_candidates(runtime_root)
+
+    def discover(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(candidates),
+            stderr="",
+        )
+
+    def denied_scan(_descriptor: int):
+        raise PermissionError("injected site-packages scan denial")
+
+    monkeypatch.setattr(qualification_sentinels.subprocess, "run", discover)
+    monkeypatch.setattr(qualification_sentinels.os, "scandir", denied_scan)
+    monkeypatch.setattr(sentinel_worker.sys, "prefix", str(runtime_root))
+    monkeypatch.setattr(site, "getsitepackages", lambda: candidates)
+
+    assert sentinel_worker._site_packages_read_only() is False
+    with pytest.raises(RuntimeError, match="could not scan"):
+        qualification_sentinels._make_site_packages_read_only(
+            runtime_root / "bin" / "python"
+        )
+    assert stat.S_IMODE(actual_root.stat().st_mode) == 0o770
+    assert stat.S_IMODE(payload.stat().st_mode) == 0o660
 
 
 def test_plan_freezes_the_complete_bounded_gpu_qualification_matrix():
