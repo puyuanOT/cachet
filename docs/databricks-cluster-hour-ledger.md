@@ -196,12 +196,12 @@ divergent branches. Every later phase must extend the immediately prior
 authorized prefix and acquire one atomic whole-wave lease before its first
 submission.
 
-The retained opening is now the exact 166-reservation, 28-receipt,
-166-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
-pre-run rejection, and the intermediate 138/0/138 and 152/14/152 prefixes. The
-rejected plan SHA-256, rejection-evidence file SHA-256, HTTP 400 status,
-18,292-byte observed parameters JSON versus the 10,000-byte server limit, and
-zero observed active runs remain bound in
+The retained opening is now the exact 180-reservation, 42-receipt,
+180-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
+pre-run rejection, and the intermediate 138/0/138, 152/14/152, and 166/28/166
+prefixes. The rejected plan SHA-256, rejection-evidence file SHA-256, HTTP 400
+status, 18,292-byte observed parameters JSON versus the 10,000-byte server
+limit, and zero observed active runs remain bound in
 `analysis.opening_ledger_provenance`.
 
 The first live 14-job qualification batch is a second explicit provenance hop.
@@ -224,9 +224,30 @@ with `INTERNAL_ERROR` before package installation. Direct `runs/get` and
 `8c7623aa2618066ea0ccedcba1d35a340308da04aaa040f89364bc4ea3d1b71c`
 in the exact manifest file
 `1d0246ece1d6f844420d22a26b729d3f0d971ca0b30c0bf1ef0b5a84dcf6f360`.
-Its 4,585.718 terminal cluster-seconds add 1.273810555556 GPU-hours. The
-reconciled opening balance is therefore 57.867102 GPU-hours, with zero active
-reservations and 966.132898 hours remaining under the 1,024-hour aggregate cap.
+Its 4,585.718 terminal cluster-seconds add 1.273810555556 GPU-hours.
+
+The next 14-job `SINGLE_USER` batch is retained as a fourth provenance hop.
+Plan
+`d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec`
+used reviewed runner
+`04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0`.
+All 14 runs were created, but the qualification bootstrap could not resolve
+Databricks cluster identity. Every task returned exactly
+`RuntimeError: Databricks cluster identity is unavailable; expected
+DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID` and failed at attempt zero without a
+repair. The five-key `runs/get-output` records and parent `runs/get` records
+close in manifest
+`fbb1fd4250b3fc62b58778047b12fe3775e6cffbc8641b38a00c721a9d4c768d`
+whose exact file SHA-256 is
+`06c527102283bb379ecb26a345e76467d7e1614771d9a3c8313e9ebe6d941cf9`.
+Its 4,564.259 terminal cluster-seconds add 1.267849722222 GPU-hours. Offline
+reconciliation produced the exact 180/42/180 prefix
+`376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f`
+and canonical ledger file SHA-256
+`f76cce3b68417f8d14a5e030d9eacaef3e61d17f123a2a2b5d38be5428a89b94`.
+The reconciled opening balance is therefore 59.134952 GPU-hours, with zero
+active reservations and 964.865048 hours remaining under the 1,024-hour
+aggregate cap.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
@@ -315,8 +336,8 @@ every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
 hard cap/headroom admission. The three generation workloads contain 72,871,510
 cache-prefix tokens; at the required 35 effective
 tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
-retained ledger opens the reset with 57.867102 terminal GPU-hours, leaving only
-263.787581 hours inside the protected 900-hour envelope for qualification,
+retained ledger opens the reset with 59.134952 terminal GPU-hours, leaving only
+262.519731 hours inside the protected 900-hour envelope for qualification,
 timed latency, and full-score consumers at that generation threshold.
 
 The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);

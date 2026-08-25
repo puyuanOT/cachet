@@ -109,6 +109,7 @@ GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS: Final = (
 )
 GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES: Final = 9_500
 GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE: Final = "SINGLE_USER"
+GPU_QUALIFICATION_RUN_OUTPUT_LOG_MAX_UTF8_BYTES: Final = 5 * 1024 * 1024
 GPU_QUALIFICATION_LEGACY_UC_FAILURE_PLAN_SHA256: Final = (
     "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
 )
@@ -144,6 +145,28 @@ GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_REASON: Final = (
 )
 GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_ERROR: Final = (
     "NameError: name '__file__' is not defined"
+)
+GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_PLAN_SHA256: Final = (
+    "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
+)
+GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_RUNNER_SHA256: Final = (
+    "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
+)
+GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_MANIFEST_SHA256: Final = (
+    "fbb1fd4250b3fc62b58778047b12fe3775e6cffbc8641b38a00c721a9d4c768d"
+)
+GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_MANIFEST_FILE_SHA256: Final = (
+    "06c527102283bb379ecb26a345e76467d7e1614771d9a3c8313e9ebe6d941cf9"
+)
+GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_TERMINAL_PREFIX_SHA256: Final = (
+    "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
+)
+GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_REASON: Final = (
+    "qualification bootstrap could not resolve Databricks cluster identity"
+)
+GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_ERROR: Final = (
+    "RuntimeError: Databricks cluster identity is unavailable; expected "
+    "DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID"
 )
 GPU_QUALIFICATION_ARTIFACT_KEYS: Final = (
     "cachet_source_tree_sha256",
@@ -196,6 +219,20 @@ _QUALIFICATION_PLAN_ZLIB_LEVEL: Final = 9
 _QUALIFICATION_PLAN_MAX_CANONICAL_BYTES: Final = 64 * 1024
 _QUALIFICATION_PLAN_MAX_ENCODED_CHARS: Final = (
     GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES
+)
+_DATABRICKS_CLUSTER_ID_MAX_UTF8_BYTES: Final = 256
+_DATABRICKS_CLUSTER_ID_ENV_NAMES: Final = (
+    "DATABRICKS_CLUSTER_ID",
+    "DB_CLUSTER_ID",
+)
+_DATABRICKS_CLUSTER_ID_SPARK_CONF_KEY: Final = (
+    "spark.databricks.clusterUsageTags.clusterId"
+)
+_FAILED_RUN_OUTPUT_LEGACY_KEYS: Final = frozenset(
+    {"error", "error_trace", "metadata"}
+)
+_FAILED_RUN_OUTPUT_LOGGED_KEYS: Final = frozenset(
+    {*_FAILED_RUN_OUTPUT_LEGACY_KEYS, "logs", "logs_truncated"}
 )
 _QUALIFICATION_SUBMISSION_REJECTION_KEYS: Final = frozenset(
     {
@@ -1661,11 +1698,13 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     local_preflight_evidence_path: str | Path,
     runs_get_evidence_root: str | Path,
     expected_plan_sha256: str,
+    expected_runner_sha256: str,
     expected_manifest_closed_record_sha256: str,
     expected_manifest_file_sha256: str,
     expected_terminal_prefix_sha256: str,
     expected_failure_reason: str,
     expected_error: str,
+    expected_run_output_keys: frozenset[str],
 ) -> DatabricksClusterHourLedger:
     """Reconcile one source-reviewed v2 failure closure without authority.
 
@@ -1677,6 +1716,9 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
 
     reviewed_plan_sha256 = _required_sha256(
         expected_plan_sha256, "expected_plan_sha256"
+    )
+    reviewed_runner_sha256 = _required_sha256(
+        expected_runner_sha256, "expected_runner_sha256"
     )
     reviewed_manifest_sha256 = _required_sha256(
         expected_manifest_closed_record_sha256,
@@ -1692,8 +1734,16 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     )
     reason = _non_empty_string(expected_failure_reason, "expected_failure_reason")
     error = _non_empty_string(expected_error, "expected_error")
-    plan, _pins = _validated_historical_qualification_plan_and_pins(plan_record)
-    if plan.get("closed_record_sha256") != reviewed_plan_sha256:
+    if expected_run_output_keys not in (
+        _FAILED_RUN_OUTPUT_LEGACY_KEYS,
+        _FAILED_RUN_OUTPUT_LOGGED_KEYS,
+    ):
+        raise ValueError("reviewed runs/get-output schema is unsupported")
+    plan, pins = _validated_historical_qualification_plan_and_pins(plan_record)
+    if (
+        plan.get("closed_record_sha256") != reviewed_plan_sha256
+        or pins.runner_sha256 != reviewed_runner_sha256
+    ):
         raise ValueError("failed-attempt reconciliation plan is not reviewed")
     contracts = _validated_qualification_payloads(plan, submit_payloads)
     local_preflight_binding = _non_authorizing_local_preflight_binding(
@@ -1757,6 +1807,11 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
             output_path,
             f"failed runs/get-output {contract['job_id']}",
         )
+        if set(run_output) != expected_run_output_keys:
+            raise ValueError(
+                "failed runs/get-output response differs from the reviewed "
+                "incident schema"
+            )
         entry = _failed_attempt_reconciliation_v2_entry(
             run_output,
             run=run,
@@ -1863,6 +1918,9 @@ def reconcile_gpu_qualification_bootstrap_file_global_failure_evidence(
         expected_plan_sha256=(
             GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_PLAN_SHA256
         ),
+        expected_runner_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_RUNNER_SHA256
+        ),
         expected_manifest_closed_record_sha256=(
             GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_SHA256
         ),
@@ -1876,6 +1934,54 @@ def reconcile_gpu_qualification_bootstrap_file_global_failure_evidence(
             GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_REASON
         ),
         expected_error=GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_ERROR,
+        expected_run_output_keys=_FAILED_RUN_OUTPUT_LEGACY_KEYS,
+    )
+
+
+def reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence(
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    runs_get_evidence_root: str | Path,
+) -> DatabricksClusterHourLedger:
+    """Account the reviewed d6f7 bootstrap cluster-identity failure closure.
+
+    The immutable plan, runner, exact five-key task-output schema, captured
+    manifest, incident cause, and resulting ledger prefix are source-pinned.
+    Reconciliation remains offline and validates the complete 29-file closure
+    before the first deterministic terminal-actual append.
+    """
+
+    return _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
+        plan_record=plan_record,
+        submit_payloads=submit_payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        runs_get_evidence_root=runs_get_evidence_root,
+        expected_plan_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_PLAN_SHA256
+        ),
+        expected_runner_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_RUNNER_SHA256
+        ),
+        expected_manifest_closed_record_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_MANIFEST_SHA256
+        ),
+        expected_manifest_file_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_MANIFEST_FILE_SHA256
+        ),
+        expected_terminal_prefix_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_TERMINAL_PREFIX_SHA256
+        ),
+        expected_failure_reason=(
+            GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_REASON
+        ),
+        expected_error=GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_ERROR,
+        expected_run_output_keys=_FAILED_RUN_OUTPUT_LOGGED_KEYS,
     )
 
 
@@ -2769,8 +2875,7 @@ def _failed_attempt_reconciliation_v2_entry(
 ) -> dict[str, Any]:
     """Bind one child ``runs/get-output`` failure to its parent run entry."""
 
-    if set(run_output) != {"error", "error_trace", "metadata"}:
-        raise ValueError("failed runs/get-output response has an open schema")
+    _validate_failed_run_output_schema(run_output)
     error = _non_empty_string(run_output.get("error"), "runs/get-output error")
     if error != expected_error:
         raise ValueError("failed runs/get-output error differs from the reviewed cause")
@@ -2881,6 +2986,36 @@ def _failed_attempt_reconciliation_v2_entry(
         }
     )
     return entry
+
+
+def _validate_failed_run_output_schema(run_output: Mapping[str, Any]) -> None:
+    """Validate the two reviewed Jobs ``runs/get-output`` response shapes.
+
+    Historical retained evidence predates Databricks returning inline task logs.
+    Current Spark Python task failures include ``logs`` and ``logs_truncated``.
+    Both shapes remain exact: accepting arbitrary optional fields would let an
+    unreviewed response escape the raw record/file hash closure.
+    """
+
+    observed_keys = set(run_output)
+    if observed_keys not in (
+        _FAILED_RUN_OUTPUT_LEGACY_KEYS,
+        _FAILED_RUN_OUTPUT_LOGGED_KEYS,
+    ):
+        raise ValueError("failed runs/get-output response has an open schema")
+    if observed_keys == _FAILED_RUN_OUTPUT_LEGACY_KEYS:
+        return
+    logs = run_output.get("logs")
+    if type(logs) is not str:
+        raise ValueError("runs/get-output logs must be an exact string")
+    try:
+        encoded_logs = logs.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("runs/get-output logs must be valid UTF-8") from exc
+    if len(encoded_logs) > GPU_QUALIFICATION_RUN_OUTPUT_LOG_MAX_UTF8_BYTES:
+        raise ValueError("runs/get-output logs exceed the UTF-8 byte cap")
+    if type(run_output.get("logs_truncated")) is not bool:
+        raise ValueError("runs/get-output logs_truncated must be an exact bool")
 
 
 def _failed_attempt_terminal_actual(
@@ -4819,14 +4954,95 @@ def _parse_key_value_args(values: Sequence[str], *, option_name: str) -> dict[st
 
 
 def _cloud_cluster_id() -> str:
-    for name in ("DATABRICKS_CLUSTER_ID", "DB_CLUSTER_ID"):
-        value = os.environ.get(name)
-        if value:
-            return value
-    raise RuntimeError(
-        "Databricks cluster identity is unavailable; expected "
-        "DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID"
-    )
+    """Resolve the exact task-local Databricks cluster identity.
+
+    Databricks does not guarantee that either documented cluster environment
+    variable is exported to a Spark Python task.  The driver startup SparkConf
+    is therefore also inspected.  Every source that is present must agree
+    byte-for-byte; no source wins by precedence and no controller lookup is
+    available from this worker boundary.
+    """
+
+    candidates: list[tuple[str, str]] = []
+    for name in _DATABRICKS_CLUSTER_ID_ENV_NAMES:
+        if name in os.environ:
+            candidates.append(
+                (name, _validated_cloud_cluster_id(os.environ[name], source=name))
+            )
+    spark_value = _spark_cloud_cluster_id()
+    if spark_value is not None:
+        candidates.append(
+            (
+                _DATABRICKS_CLUSTER_ID_SPARK_CONF_KEY,
+                _validated_cloud_cluster_id(
+                    spark_value,
+                    source=_DATABRICKS_CLUSTER_ID_SPARK_CONF_KEY,
+                ),
+            )
+        )
+    if not candidates:
+        raise RuntimeError("Databricks cluster identity is unavailable at runtime")
+    values = {value for _source, value in candidates}
+    if len(values) != 1:
+        raise RuntimeError("Databricks cluster identity sources are ambiguous")
+    return candidates[0][1]
+
+
+def _spark_cloud_cluster_id() -> object | None:
+    """Read the cluster ID from the active driver's startup SparkConf.
+
+    ``None`` is the only cleanly absent value.  Import, context, and Py4J
+    failures are suspicious inside a ``spark_python_task`` and must not be
+    downgraded to an environment-only success.
+    """
+
+    spark_conf = _active_spark_conf()
+    try:
+        getter = getattr(spark_conf, "get")
+        return cast(
+            object | None,
+            getter(_DATABRICKS_CLUSTER_ID_SPARK_CONF_KEY, None),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Databricks cluster identity Spark runtime lookup failed"
+        ) from exc
+
+
+def _active_spark_conf() -> object:
+    try:
+        from pyspark import SparkContext  # type: ignore[import-not-found]
+    except Exception as exc:
+        raise RuntimeError(
+            "Databricks cluster identity Spark runtime is unavailable"
+        ) from exc
+    try:
+        return cast(object, SparkContext.getOrCreate().getConf())
+    except Exception as exc:
+        raise RuntimeError(
+            "Databricks cluster identity Spark runtime lookup failed"
+        ) from exc
+
+
+def _validated_cloud_cluster_id(value: object, *, source: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"Databricks cluster identity from {source} is not a string")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            f"Databricks cluster identity from {source} is not valid UTF-8"
+        ) from exc
+    if (
+        not value
+        or value.strip() != value
+        or len(encoded) > _DATABRICKS_CLUSTER_ID_MAX_UTF8_BYTES
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError(
+            f"Databricks cluster identity from {source} is not canonical"
+        )
+    return value
 
 
 def _builtin_sentinel_runner(
@@ -4918,6 +5134,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "GPU_QUALIFICATION_ARTIFACT_KEYS",
+    "GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_ERROR",
+    "GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_MANIFEST_FILE_SHA256",
+    "GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_MANIFEST_SHA256",
+    "GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_PLAN_SHA256",
+    "GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_REASON",
+    "GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_RUNNER_SHA256",
+    "GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_TERMINAL_PREFIX_SHA256",
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_ERROR",
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_SHA256",
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_FILE_SHA256",
@@ -4945,6 +5168,7 @@ __all__ = [
     "gpu_qualification_reservation_attempt_id",
     "main",
     "pins_from_plan_record",
+    "reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence",
     "reconcile_gpu_qualification_bootstrap_file_global_failure_evidence",
     "reconcile_gpu_qualification_failed_attempt_evidence",
     "replay_gpu_qualification_launch_authorization",

@@ -1196,6 +1196,8 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     assert "N/A (runner not implemented)" in score_table
     for method in ("KV&nbsp;Packet", "CacheBlend", "InfoFlow&nbsp;KV"):
         assert method in root_readme
+    assert "59.134952 reconciled GPU-hours" in root_readme
+    assert "exact 180/42/180 post-migration append-only prefix" in root_readme
     assert "No benchmark result evidence is currently published here." in appendix_readme
     assert "Superseded result folders were removed" in appendix_readme
 
@@ -1226,11 +1228,14 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "phases use hard cap/headroom admission"
     ) in compact_ledger_doc
     assert (
-        "retained opening is now the exact 166-reservation, 28-receipt, "
-        "166-terminal prefix"
+        "retained opening is now the exact 180-reservation, 42-receipt, "
+        "180-terminal prefix"
     ) in compact_ledger_doc
     assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
-    assert "intermediate 138/0/138 and 152/14/152 prefixes" in compact_ledger_doc
+    assert (
+        "intermediate 138/0/138, 152/14/152, and 166/28/166 prefixes"
+        in compact_ledger_doc
+    )
     assert "analysis.opening_ledger_provenance" in compact_ledger_doc
     assert (
         "18,292-byte observed parameters JSON versus the 10,000-byte server "
@@ -1248,7 +1253,39 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "Its 4,585.718 terminal cluster-seconds add 1.273810555556 GPU-hours"
     ) in compact_ledger_doc
     assert (
-        "reconciled opening balance is therefore 57.867102 GPU-hours"
+        "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
+        in compact_ledger_doc
+    )
+    assert (
+        "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
+        in compact_ledger_doc
+    )
+    assert (
+        "RuntimeError: Databricks cluster identity is unavailable; expected "
+        "DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID"
+    ) in compact_ledger_doc
+    assert (
+        "fbb1fd4250b3fc62b58778047b12fe3775e6cffbc8641b38a00c721a9d4c768d"
+        in compact_ledger_doc
+    )
+    assert (
+        "06c527102283bb379ecb26a345e76467d7e1614771d9a3c8313e9ebe6d941cf9"
+        in compact_ledger_doc
+    )
+    assert (
+        "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
+        in compact_ledger_doc
+    )
+    assert (
+        "f76cce3b68417f8d14a5e030d9eacaef3e61d17f123a2a2b5d38be5428a89b94"
+        in compact_ledger_doc
+    )
+    assert (
+        "Its 4,564.259 terminal cluster-seconds add 1.267849722222 GPU-hours"
+        in compact_ledger_doc
+    )
+    assert (
+        "reconciled opening balance is therefore 59.134952 GPU-hours"
     ) in compact_ledger_doc
 
     subindex_expectations = {

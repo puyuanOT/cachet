@@ -19,9 +19,11 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_MAX_GPU_HOURS_AT_GATE,
     PUBLICATION_CAMPAIGN_LEDGER_ID,
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+    PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
@@ -60,9 +62,9 @@ def test_publication_campaign_is_the_frozen_115_job_design():
     assert record["campaign_ledger_id"] == CAMPAIGN_LEDGER_ID
     assert record["campaign_ledger_path_sha256"] == CAMPAIGN_LEDGER_PATH_SHA256
     assert record["campaign_ledger_prefix"] == CAMPAIGN_LEDGER_PREFIX.to_record()
-    assert record["campaign_ledger_prefix"]["reservation_count"] == 166
-    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 28
-    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 166
+    assert record["campaign_ledger_prefix"]["reservation_count"] == 180
+    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 42
+    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 180
     assert record["closed_record_sha256"] == PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
     assert record["campaign_opening_terminal_gpu_hours"] == (
         PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -168,7 +170,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE
             ),
             "non_generation_gpu_hours_available_after_opening_balance_and_headroom": (
-                pytest.approx(263.78758059523807)
+                pytest.approx(262.5197308730159)
             ),
             "scope": [
                 "latency_q8_handoffs",
@@ -212,9 +214,9 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 "8": 20,
                 "12": 10,
             },
-                "launch_policy": "terminal_actual_and_hard_headroom_gated",
+            "launch_policy": "terminal_actual_and_hard_headroom_gated",
         },
-        "opening_terminal_gpu_hours": pytest.approx(57.867101944444464),
+        "opening_terminal_gpu_hours": pytest.approx(59.134951666666694),
         "total_latency_jobs": 115,
         "unreserved_headroom_hours": 124.0,
     }
@@ -334,6 +336,58 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "submission_receipt_count_delta": 14,
             "terminal_actual_count_delta": 14,
             "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+            "terminal_result_state_counts": {"FAILED": 14},
+            "verification_source": "direct_runs_get_and_runs_get_output",
+        },
+        "prefix_before_cluster_identity_failure_gpu_qualification": (
+            PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX.to_record()
+        ),
+        "cluster_identity_failure_gpu_qualification": {
+            "actual_cluster_duration_seconds": 4_564.259,
+            "actual_gpu_hours": 1.2678497222222225,
+            "data_security_mode": "SINGLE_USER",
+            "expected_error": (
+                "RuntimeError: Databricks cluster identity is unavailable; expected "
+                "DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID"
+            ),
+            "failed_before_run_creation": False,
+            "failure_class": "databricks_cluster_identity_unavailable",
+            "failure_reason": (
+                "qualification bootstrap could not resolve Databricks cluster identity"
+            ),
+            "plan_sha256": (
+                "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
+            ),
+            "reconciled_ledger_file_sha256": (
+                PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+            ),
+            "reconciliation_manifest_closed_record_sha256": (
+                "fbb1fd4250b3fc62b58778047b12fe3775e6cffbc8641b38a00c721a9d4c768d"
+            ),
+            "reconciliation_manifest_file_sha256": (
+                "06c527102283bb379ecb26a345e76467d7e1614771d9a3c8313e9ebe6d941cf9"
+            ),
+            "reservation_count_delta": 14,
+            "reviewed_runner_sha256": (
+                "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
+            ),
+            "run_creation_count": 14,
+            "runs_get_output_keys": [
+                "error",
+                "error_trace",
+                "logs",
+                "logs_truncated",
+                "metadata",
+            ],
+            "single_user_name": "pliu@opentable.com",
+            "submission_receipt_count_delta": 14,
+            "task_life_cycle_state_counts": {"TERMINATED": 14},
+            "task_result_state_counts": {"FAILED": 14},
+            "terminal_actual_count_delta": 14,
+            "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+            "terminal_prefix_sha256": (
+                "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
+            ),
             "terminal_result_state_counts": {"FAILED": 14},
             "verification_source": "direct_runs_get_and_runs_get_output",
         },

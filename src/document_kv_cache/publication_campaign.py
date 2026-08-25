@@ -27,7 +27,7 @@ PUBLICATION_CAMPAIGN_RECORD_TYPE = "cachet.vllm_0271_publication_campaign.v1"
 PUBLICATION_CAMPAIGN_SCHEMA_VERSION = 1
 PUBLICATION_CAMPAIGN_ID = "vllm-0271-publication-v1"
 PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256 = (
-    "f4dd1a80a523f6d0ce3e96a1c663f2f4d95c7034430c1c95147659e0b90bad34"
+    "95e7e9b747bae357c1dccf54555de31ed8124afe28e78f0f8d32ae30a6b97c7f"
 )
 PUBLICATION_CAMPAIGN_ENGINE_VERSION = "0.27.1"
 PUBLICATION_CAMPAIGN_METHODS = ("baseline_prefill", "vanilla_prefill")
@@ -172,10 +172,13 @@ PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_UPPER_BOUND_GPU_HOURS = sum(
     timeout_hours * job_count
     for timeout_hours, job_count in PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_JOB_COUNTS
 )
-PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 57.867101944444464
+PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 59.134951666666694
 PUBLICATION_CAMPAIGN_LEDGER_ID = "representative-canary-823bd9d82a5c1730"
 PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256 = (
     "fd00fcc39375aa8c96dabba9e3e4c576ae2674dd911324622ef99293b9cfe865"
+)
+PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256 = (
+    "f76cce3b68417f8d14a5e030d9eacaef3e61d17f123a2a2b5d38be5428a89b94"
 )
 PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX = (
     DatabricksLedgerPrefix(
@@ -209,14 +212,26 @@ PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX = DatabricksLedgerPrefi
         "4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"
     ),
 )
+PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX = (
+    DatabricksLedgerPrefix(
+        ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+        reservation_count=166,
+        submission_receipt_count=28,
+        terminal_actual_count=166,
+        prefix_sha256=(
+            "273aeb12c61060ca8d7850f5583f8912fa2a44ede44ddcba030da63926bff368"
+        ),
+    )
+)
 PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
     cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
-    reservation_count=166,
-    submission_receipt_count=28,
-    terminal_actual_count=166,
+    reservation_count=180,
+    submission_receipt_count=42,
+    terminal_actual_count=180,
     prefix_sha256=(
-        "273aeb12c61060ca8d7850f5583f8912fa2a44ede44ddcba030da63926bff368"
+        "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
     ),
 )
 PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE = (
@@ -651,6 +666,59 @@ def publication_campaign_plan_to_record(
                     "submission_receipt_count_delta": 14,
                     "terminal_actual_count_delta": 14,
                     "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+                    "terminal_result_state_counts": {"FAILED": 14},
+                    "verification_source": "direct_runs_get_and_runs_get_output",
+                },
+                "prefix_before_cluster_identity_failure_gpu_qualification": (
+                    PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX.to_record()
+                ),
+                "cluster_identity_failure_gpu_qualification": {
+                    "actual_cluster_duration_seconds": 4_564.259,
+                    "actual_gpu_hours": 1.2678497222222225,
+                    "data_security_mode": "SINGLE_USER",
+                    "expected_error": (
+                        "RuntimeError: Databricks cluster identity is unavailable; "
+                        "expected DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID"
+                    ),
+                    "failed_before_run_creation": False,
+                    "failure_class": "databricks_cluster_identity_unavailable",
+                    "failure_reason": (
+                        "qualification bootstrap could not resolve Databricks "
+                        "cluster identity"
+                    ),
+                    "plan_sha256": (
+                        "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
+                    ),
+                    "reconciled_ledger_file_sha256": (
+                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                    ),
+                    "reconciliation_manifest_closed_record_sha256": (
+                        "fbb1fd4250b3fc62b58778047b12fe3775e6cffbc8641b38a00c721a9d4c768d"
+                    ),
+                    "reconciliation_manifest_file_sha256": (
+                        "06c527102283bb379ecb26a345e76467d7e1614771d9a3c8313e9ebe6d941cf9"
+                    ),
+                    "reservation_count_delta": 14,
+                    "reviewed_runner_sha256": (
+                        "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
+                    ),
+                    "run_creation_count": 14,
+                    "runs_get_output_keys": [
+                        "error",
+                        "error_trace",
+                        "logs",
+                        "logs_truncated",
+                        "metadata",
+                    ],
+                    "single_user_name": "pliu@opentable.com",
+                    "submission_receipt_count_delta": 14,
+                    "task_life_cycle_state_counts": {"TERMINATED": 14},
+                    "task_result_state_counts": {"FAILED": 14},
+                    "terminal_actual_count_delta": 14,
+                    "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+                    "terminal_prefix_sha256": (
+                        "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
+                    ),
                     "terminal_result_state_counts": {"FAILED": 14},
                     "verification_source": "direct_runs_get_and_runs_get_output",
                 },
@@ -1310,7 +1378,9 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_MIN_GENERATION_TOKENS_PER_SECOND",
     "PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE",
     "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS",
+    "PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX",
+    "PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX",

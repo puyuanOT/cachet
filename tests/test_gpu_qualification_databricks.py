@@ -4,6 +4,8 @@ import inspect
 import json
 import shutil
 import subprocess
+import sys
+import types
 import zlib
 from datetime import UTC, datetime
 from dataclasses import replace
@@ -850,6 +852,247 @@ def test_worker_cli_decodes_compact_plan_before_execution(
     with pytest.raises(ValueError, match="strict base64url"):
         qualification_job.main(corrupt_parameters)
     assert observed == {}
+
+
+def _clear_cluster_identity_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("DATABRICKS_CLUSTER_ID", "DB_CLUSTER_ID"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_worker_cluster_id_accepts_exact_environment_identity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_CLUSTER_ID", "Cluster-ID_Exact.Case")
+    monkeypatch.setattr(qualification_job, "_spark_cloud_cluster_id", lambda: None)
+
+    assert qualification_job._cloud_cluster_id() == "Cluster-ID_Exact.Case"
+
+
+def test_worker_cluster_id_accepts_agreeing_environment_and_spark_sources(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    for name in ("DATABRICKS_CLUSTER_ID", "DB_CLUSTER_ID"):
+        monkeypatch.setenv(name, "0825-121314-AbCd1234")
+    monkeypatch.setattr(
+        qualification_job,
+        "_spark_cloud_cluster_id",
+        lambda: "0825-121314-AbCd1234",
+    )
+
+    assert qualification_job._cloud_cluster_id() == "0825-121314-AbCd1234"
+
+
+def test_worker_cluster_id_uses_driver_spark_conf_when_env_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    calls: list[str] = []
+
+    class SparkConf:
+        def get(self, key: str, default: object) -> str:
+            calls.append("SparkConf.get")
+            assert key == "spark.databricks.clusterUsageTags.clusterId"
+            assert default is None
+            return "0825-121314-spark123"
+
+    class DriverSparkContext:
+        def getConf(self) -> SparkConf:
+            calls.append("SparkContext.getConf")
+            return SparkConf()
+
+    class SparkContext:
+        @classmethod
+        def getOrCreate(cls) -> DriverSparkContext:
+            calls.append("SparkContext.getOrCreate")
+            return DriverSparkContext()
+
+    fake_pyspark = types.ModuleType("pyspark")
+    fake_pyspark.SparkContext = SparkContext  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pyspark", fake_pyspark)
+    monkeypatch.delitem(sys.modules, "pyspark.sql", raising=False)
+
+    assert qualification_job._cloud_cluster_id() == "0825-121314-spark123"
+    assert calls == [
+        "SparkContext.getOrCreate",
+        "SparkContext.getConf",
+        "SparkConf.get",
+    ]
+
+
+def test_worker_cluster_id_accepts_environment_when_spark_key_is_cleanly_absent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setenv("DB_CLUSTER_ID", "0825-121314-env12345")
+
+    class SparkConf:
+        def get(self, key: str, default: object) -> object:
+            assert key == "spark.databricks.clusterUsageTags.clusterId"
+            return default
+
+    monkeypatch.setattr(qualification_job, "_active_spark_conf", SparkConf)
+
+    assert qualification_job._cloud_cluster_id() == "0825-121314-env12345"
+
+
+@pytest.mark.parametrize("value", [True, 123, b"cluster-id"])
+def test_worker_cluster_id_rejects_non_string_spark_values(
+    monkeypatch: pytest.MonkeyPatch,
+    value: object,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setattr(
+        qualification_job,
+        "_spark_cloud_cluster_id",
+        lambda: value,
+    )
+
+    with pytest.raises(ValueError, match="is not a string"):
+        qualification_job._cloud_cluster_id()
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", " cluster-id", "cluster-id ", "x" * 257],
+)
+def test_worker_cluster_id_rejects_noncanonical_values(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setenv("DB_CLUSTER_ID", value)
+    monkeypatch.setattr(qualification_job, "_spark_cloud_cluster_id", lambda: None)
+
+    with pytest.raises(ValueError, match="is not canonical"):
+        qualification_job._cloud_cluster_id()
+
+
+def test_worker_cluster_id_rejects_control_characters_from_spark(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setattr(
+        qualification_job,
+        "_spark_cloud_cluster_id",
+        lambda: "a\x00b",
+    )
+
+    with pytest.raises(ValueError, match="is not canonical"):
+        qualification_job._cloud_cluster_id()
+
+
+def test_worker_cluster_id_rejects_environment_ambiguity_without_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_CLUSTER_ID", "cluster-a")
+    monkeypatch.setenv("DB_CLUSTER_ID", "cluster-b")
+    monkeypatch.setattr(
+        qualification_job,
+        "_spark_cloud_cluster_id",
+        lambda: "cluster-a",
+    )
+
+    with pytest.raises(RuntimeError, match="sources are ambiguous"):
+        qualification_job._cloud_cluster_id()
+
+
+def test_worker_cluster_id_rejects_spark_environment_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_CLUSTER_ID", "cluster-env")
+    monkeypatch.setattr(
+        qualification_job,
+        "_spark_cloud_cluster_id",
+        lambda: "cluster-spark",
+    )
+
+    with pytest.raises(RuntimeError, match="sources are ambiguous"):
+        qualification_job._cloud_cluster_id()
+
+
+def test_worker_cluster_id_does_not_downgrade_spark_access_failure_to_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_CLUSTER_ID", "cluster-env")
+
+    def fail() -> None:
+        raise RuntimeError("Spark access failed")
+
+    monkeypatch.setattr(qualification_job, "_spark_cloud_cluster_id", fail)
+    with pytest.raises(RuntimeError, match="Spark access failed"):
+        qualification_job._cloud_cluster_id()
+
+
+def test_worker_cluster_id_rejects_missing_sources(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+    monkeypatch.setattr(qualification_job, "_spark_cloud_cluster_id", lambda: None)
+
+    with pytest.raises(RuntimeError, match="unavailable at runtime"):
+        qualification_job._cloud_cluster_id()
+
+
+def test_worker_cluster_id_rejects_spark_conf_exception(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _clear_cluster_identity_environment(monkeypatch)
+
+    class SparkConf:
+        def get(self, _key: str, _default: object) -> None:
+            raise RuntimeError("Py4J failed")
+
+    monkeypatch.setattr(qualification_job, "_active_spark_conf", SparkConf)
+    with pytest.raises(RuntimeError, match="Spark runtime lookup failed"):
+        qualification_job._cloud_cluster_id()
+
+
+def test_worker_cluster_id_rejects_missing_pyspark_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setitem(sys.modules, "pyspark", None)
+
+    with pytest.raises(RuntimeError, match="Spark runtime is unavailable"):
+        qualification_job._active_spark_conf()
+
+
+def test_worker_cluster_id_remains_exactly_bound_to_control_plane_identity():
+    contract = {
+        "job_id": "job-a",
+        "output_json": "dbfs:/Volumes/cat/schema/volume/result.json",
+        "reservation_attempt_id": "attempt-a",
+        "task_key": "task_a",
+    }
+    receipt = {"cloud_run_id": "123"}
+    run_identity = {"cloud_cluster_id": "Cluster-Exact"}
+    result = {
+        "cloud_cluster_id": "Cluster-Exact",
+        "cloud_run_id": "123",
+        "job_id": "job-a",
+        "output_json": contract["output_json"],
+        "reservation_attempt_id": "attempt-a",
+        "task_key": "task_a",
+    }
+    qualification_job._validate_result_submission_binding(
+        result,
+        contract=contract,
+        submit_receipt=receipt,
+        run_identity=run_identity,
+    )
+
+    result["cloud_cluster_id"] = "cluster-exact"
+    with pytest.raises(ValueError, match="cloud_cluster_id differs"):
+        qualification_job._validate_result_submission_binding(
+            result,
+            contract=contract,
+            submit_receipt=receipt,
+            run_identity=run_identity,
+        )
 
 
 def test_renderer_maps_only_qualification_generation_job_to_g6e_l40s():
@@ -1946,6 +2189,8 @@ def _failed_v2_capture_fixture(
                 "  File \"gpu-qualification-bootstrap.py\", line 1\n"
                 "NameError: name '__file__' is not defined\n"
             ),
+            "logs": "driver log prefix\nNameError: name '__file__' is not defined\n",
+            "logs_truncated": False,
             "metadata": {
                 "end_time": task_end,
                 "job_run_id": parent_run_id,
@@ -1973,6 +2218,79 @@ def _failed_v2_capture_fixture(
         preflight_path,
         runs,
         outputs,
+    )
+
+
+def _reviewed_logged_run_output() -> dict[str, Any]:
+    return {
+        "error": "RuntimeError: cluster identity unavailable",
+        "error_trace": "RuntimeError: cluster identity unavailable\n",
+        "logs": "driver output\n",
+        "logs_truncated": False,
+        "metadata": {},
+    }
+
+
+def test_failed_run_output_schema_accepts_historical_and_logged_shapes():
+    logged = _reviewed_logged_run_output()
+    qualification_job._validate_failed_run_output_schema(logged)
+    qualification_job._validate_failed_run_output_schema(
+        {key: value for key, value in logged.items() if not key.startswith("logs")}
+    )
+
+
+def test_failed_run_output_schema_rejects_unknown_extra_field():
+    output = _reviewed_logged_run_output()
+    output["unreviewed"] = "field"
+
+    with pytest.raises(ValueError, match="open schema"):
+        qualification_job._validate_failed_run_output_schema(output)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    [
+        ("logs", 1, "logs must be an exact string"),
+        ("logs", True, "logs must be an exact string"),
+        ("logs_truncated", 0, "logs_truncated must be an exact bool"),
+        ("logs_truncated", "false", "logs_truncated must be an exact bool"),
+    ],
+)
+def test_failed_run_output_schema_rejects_wrong_log_types(
+    field_name: str,
+    value: object,
+    message: str,
+):
+    output = _reviewed_logged_run_output()
+    output[field_name] = value
+
+    with pytest.raises(ValueError, match=message):
+        qualification_job._validate_failed_run_output_schema(output)
+
+
+def test_failed_run_output_schema_rejects_oversize_and_invalid_utf8_logs():
+    output = _reviewed_logged_run_output()
+    output["logs"] = "x" * (
+        qualification_job.GPU_QUALIFICATION_RUN_OUTPUT_LOG_MAX_UTF8_BYTES + 1
+    )
+    with pytest.raises(ValueError, match="UTF-8 byte cap"):
+        qualification_job._validate_failed_run_output_schema(output)
+
+    output["logs"] = "invalid-surrogate-\ud800"
+    with pytest.raises(ValueError, match="valid UTF-8"):
+        qualification_job._validate_failed_run_output_schema(output)
+
+
+def test_logged_run_output_tamper_changes_raw_record_and_file_bindings():
+    original = _reviewed_logged_run_output()
+    tampered = json.loads(json.dumps(original))
+    tampered["logs"] = "different driver output\n"
+
+    assert qualification_job._canonical_json_sha256(original) != (
+        qualification_job._canonical_json_sha256(tampered)
+    )
+    assert qualification_job._canonical_record_file_sha256(original) != (
+        qualification_job._canonical_record_file_sha256(tampered)
     )
 
 
@@ -2030,6 +2348,24 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
         and len(entry["run_output_file_sha256"]) == 64
         for entry in manifest["entries"]
     )
+    for entry in manifest["entries"]:
+        output_path = evidence_root / (
+            f"{entry['job_id']}.runs-get-output.json"
+        )
+        raw_output = json.loads(output_path.read_text(encoding="utf-8"))
+        assert set(raw_output) == {
+            "error",
+            "error_trace",
+            "logs",
+            "logs_truncated",
+            "metadata",
+        }
+        assert entry["run_output_file_sha256"] == qualification_job._file_sha256(
+            output_path
+        )
+        assert entry["run_output_record_sha256"] == (
+            qualification_job._canonical_json_sha256(raw_output)
+        )
     terminal_prefix = manifest["ledger_lineage"]["terminal_prefix"]
     manifest_file_sha256 = qualification_job._file_sha256(
         evidence_root / "reconciliation-manifest.json"
@@ -2055,13 +2391,51 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
             local_preflight_evidence_path=preflight_path,
             runs_get_evidence_root=evidence_root,
             expected_plan_sha256=plan["closed_record_sha256"],
+            expected_runner_sha256=GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
             expected_manifest_closed_record_sha256="0" * 64,
             expected_manifest_file_sha256=manifest_file_sha256,
             expected_terminal_prefix_sha256=terminal_prefix["prefix_sha256"],
             expected_failure_reason=failure_reason,
             expected_error=expected_error,
+            expected_run_output_keys=qualification_job._FAILED_RUN_OUTPUT_LOGGED_KEYS,
         )
     assert ledger_path.read_bytes() == before_rejected_review
+
+    tampered_output_path = evidence_root / (
+        f"{manifest['entries'][0]['job_id']}.runs-get-output.json"
+    )
+    untampered_output_bytes = tampered_output_path.read_bytes()
+    tampered_output = json.loads(untampered_output_bytes)
+    tampered_output["logs"] += "tampered\n"
+    tampered_output_path.write_bytes(
+        qualification_job._canonical_stdlib_json_bytes(
+            tampered_output,
+            pretty=False,
+        )
+        + b"\n"
+    )
+    before_tampered_review = ledger_path.read_bytes()
+    with pytest.raises(ValueError, match="entries differ"):
+        qualification_job._reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=submit_root,
+            local_preflight_evidence_path=preflight_path,
+            runs_get_evidence_root=evidence_root,
+            expected_plan_sha256=plan["closed_record_sha256"],
+            expected_runner_sha256=GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
+            expected_manifest_closed_record_sha256=manifest[
+                "closed_record_sha256"
+            ],
+            expected_manifest_file_sha256=manifest_file_sha256,
+            expected_terminal_prefix_sha256=terminal_prefix["prefix_sha256"],
+            expected_failure_reason=failure_reason,
+            expected_error=expected_error,
+            expected_run_output_keys=qualification_job._FAILED_RUN_OUTPUT_LOGGED_KEYS,
+        )
+    assert ledger_path.read_bytes() == before_tampered_review
+    tampered_output_path.write_bytes(untampered_output_bytes)
 
     reconciled = qualification_job._reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         plan_record=plan,
@@ -2071,11 +2445,13 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
         local_preflight_evidence_path=preflight_path,
         runs_get_evidence_root=evidence_root,
         expected_plan_sha256=plan["closed_record_sha256"],
+        expected_runner_sha256=GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
         expected_manifest_closed_record_sha256=manifest["closed_record_sha256"],
         expected_manifest_file_sha256=manifest_file_sha256,
         expected_terminal_prefix_sha256=terminal_prefix["prefix_sha256"],
         expected_failure_reason=failure_reason,
         expected_error=expected_error,
+        expected_run_output_keys=qualification_job._FAILED_RUN_OUTPUT_LOGGED_KEYS,
     )
     contracts = qualification_job._validated_qualification_payloads(plan, payloads)
     expected_attempt_order = [
@@ -2097,6 +2473,7 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
             local_preflight_evidence_path=preflight_path,
             runs_get_evidence_root=evidence_root,
             expected_plan_sha256=plan["closed_record_sha256"],
+            expected_runner_sha256=GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
             expected_manifest_closed_record_sha256=manifest[
                 "closed_record_sha256"
             ],
@@ -2104,6 +2481,7 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
             expected_terminal_prefix_sha256=terminal_prefix["prefix_sha256"],
             expected_failure_reason=failure_reason,
             expected_error=expected_error,
+            expected_run_output_keys=qualification_job._FAILED_RUN_OUTPUT_LOGGED_KEYS,
         )
         == reconciled
     )
@@ -2190,6 +2568,297 @@ def test_reviewed_bootstrap_file_global_wrapper_reconciles_retained_v2_closure(
         for item in reconciled.terminal_actuals[-14:]
     ) == pytest.approx(4585.717999999999)
     assert reconciled.active_reserved_cluster_hours == 0.0
+
+
+def _cluster_identity_failure_replay_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    plan_root = (
+        Path(__file__).parents[1]
+        / "databricks-runs/vllm-0271-publication-prep/"
+        "gpu-qualification-plan-sha256-"
+        "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
+    ).resolve()
+    evidence_root = plan_root / "failed-attempt-cluster-identity-v2"
+    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
+    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+    manifest = json.loads(
+        (evidence_root / "reconciliation-manifest.json").read_text()
+    )
+    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
+    active_incident = replace(
+        retained,
+        reservations=retained.reservations[:180],
+        submission_receipts=retained.submission_receipts[:42],
+        terminal_actuals=retained.terminal_actuals[:166],
+    )
+    ledger_path = tmp_path / "cluster-hours.json"
+    ledger_path.write_text(
+        json.dumps(
+            databricks_cluster_hour_ledger_to_record(active_incident),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "databricks_ledger_path_sha256",
+        lambda _path: plan["campaign_ledger_path_sha256"],
+    )
+    monkeypatch.setattr(
+        resource_ledger,
+        "databricks_ledger_path_sha256",
+        lambda _path: plan["campaign_ledger_path_sha256"],
+    )
+    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
+
+
+def _reconcile_cluster_identity_failure(
+    *,
+    plan_root: Path,
+    evidence_root: Path,
+    plan: dict[str, Any],
+    payloads: list[dict[str, Any]],
+    ledger_path: Path,
+) -> DatabricksClusterHourLedger:
+    return qualification_job.reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence(
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=plan_root / "submit-receipts",
+        local_preflight_evidence_path=(
+            plan_root / "local-preflight-valid/local-preflight-evidence.json"
+        ),
+        runs_get_evidence_root=evidence_root,
+    )
+
+
+def test_reviewed_cluster_identity_wrapper_reconciles_exact_historical_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan_root,
+        evidence_root,
+        plan,
+        payloads,
+        manifest,
+        ledger_path,
+    ) = _cluster_identity_failure_replay_fixture(tmp_path, monkeypatch)
+    live_ledger_before = _RETAINED_LEDGER_PATH.read_bytes()
+    evidence_before = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in evidence_root.iterdir()
+    }
+
+    assert len(evidence_before) == 29
+    assert all(
+        set(json.loads(path.read_text()))
+        == qualification_job._FAILED_RUN_OUTPUT_LOGGED_KEYS
+        for path in evidence_root.glob("*.runs-get-output.json")
+    )
+    reconciled = _reconcile_cluster_identity_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=ledger_path,
+    )
+
+    assert plan["closed_record_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_PLAN_SHA256
+    )
+    assert plan["runtime_contract"]["artifact_sha256"]["runner_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_RUNNER_SHA256
+    )
+    assert manifest["closed_record_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_MANIFEST_SHA256
+    )
+    assert manifest["reason"] == (
+        qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_REASON
+    )
+    assert qualification_job._file_sha256(
+        evidence_root / "reconciliation-manifest.json"
+    ) == (
+        qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_MANIFEST_FILE_SHA256
+    )
+    first_output = json.loads(
+        next(evidence_root.glob("*.runs-get-output.json")).read_text()
+    )
+    assert first_output["error"] == (
+        qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_ERROR
+    )
+    assert (
+        len(reconciled.reservations),
+        len(reconciled.submission_receipts),
+        len(reconciled.terminal_actuals),
+    ) == (180, 42, 180)
+    assert reconciled.active_reserved_cluster_hours == 0.0
+    assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
+        qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_TERMINAL_PREFIX_SHA256
+    )
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_attempt_order = [
+        contract["reservation_attempt_id"]
+        for contract in sorted(contracts, key=lambda item: item["job_id"])
+    ]
+    assert [item.attempt_id for item in reconciled.terminal_actuals[-14:]] == (
+        expected_attempt_order
+    )
+    assert sum(
+        item.actual_cluster_duration_seconds
+        for item in reconciled.terminal_actuals[-14:]
+    ) == pytest.approx(4564.259)
+    assert (
+        "reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence"
+        in qualification_job.__all__
+    )
+    assert not any(
+        name.startswith("expected_")
+        for name in inspect.signature(
+            qualification_job.reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence
+        ).parameters
+    )
+
+    closed_ledger_bytes = ledger_path.read_bytes()
+    assert (
+        _reconcile_cluster_identity_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+        == reconciled
+    )
+    assert ledger_path.read_bytes() == closed_ledger_bytes
+    assert _RETAINED_LEDGER_PATH.read_bytes() == live_ledger_before
+    assert {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in evidence_root.iterdir()
+    } == evidence_before
+
+
+def test_cluster_identity_reconciliation_resumes_canonical_partial_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan_root,
+        evidence_root,
+        plan,
+        payloads,
+        _manifest,
+        ledger_path,
+    ) = _cluster_identity_failure_replay_fixture(tmp_path, monkeypatch)
+    real_record = qualification_job.record_databricks_verified_run_terminal_actual_json
+    completed = 0
+
+    def interrupt_after_five(ledger_path_arg, *, attempt_id, run_record):
+        nonlocal completed
+        if completed == 5:
+            raise RuntimeError("simulated reconciliation interruption")
+        updated = real_record(
+            ledger_path_arg,
+            attempt_id=attempt_id,
+            run_record=run_record,
+        )
+        completed += 1
+        return updated
+
+    monkeypatch.setattr(
+        qualification_job,
+        "record_databricks_verified_run_terminal_actual_json",
+        interrupt_after_five,
+    )
+    with pytest.raises(RuntimeError, match="simulated reconciliation interruption"):
+        _reconcile_cluster_identity_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+    partial = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert len(partial.terminal_actuals) == 171
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_attempt_order = [
+        contract["reservation_attempt_id"]
+        for contract in sorted(contracts, key=lambda item: item["job_id"])
+    ]
+    assert [item.attempt_id for item in partial.terminal_actuals[-5:]] == (
+        expected_attempt_order[:5]
+    )
+
+    monkeypatch.setattr(
+        qualification_job,
+        "record_databricks_verified_run_terminal_actual_json",
+        real_record,
+    )
+    reconciled = _reconcile_cluster_identity_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=ledger_path,
+    )
+    assert [item.attempt_id for item in reconciled.terminal_actuals[-14:]] == (
+        expected_attempt_order
+    )
+    assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
+        qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_TERMINAL_PREFIX_SHA256
+    )
+    assert reconciled.active_reserved_cluster_hours == 0.0
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("extra-file", "exact batch closure"),
+        ("legacy-output-shape", "reviewed incident schema"),
+    ],
+)
+def test_cluster_identity_reconciliation_rejects_inexact_closure_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+):
+    (
+        plan_root,
+        source_evidence_root,
+        plan,
+        payloads,
+        _manifest,
+        ledger_path,
+    ) = _cluster_identity_failure_replay_fixture(tmp_path, monkeypatch)
+    evidence_root = tmp_path / "evidence-copy"
+    shutil.copytree(source_evidence_root, evidence_root)
+    if mutation == "extra-file":
+        (evidence_root / "unreviewed.json").write_text("{}\n", encoding="utf-8")
+    else:
+        output_path = next(evidence_root.glob("*.runs-get-output.json"))
+        output = json.loads(output_path.read_text())
+        output.pop("logs")
+        output.pop("logs_truncated")
+        output_path.write_text(
+            canonical_gpu_qualification_json(output) + "\n",
+            encoding="utf-8",
+        )
+    ledger_before = ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match=message):
+        _reconcile_cluster_identity_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+    assert ledger_path.read_bytes() == ledger_before
 
 
 def test_v2_failed_capture_publication_removes_partial_staging(
