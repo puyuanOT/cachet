@@ -105,6 +105,33 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "worst_case_reserved_gpu_hours": 80.0,
         },
         "core_latency_jobs": 90,
+        "cpu_control_plane": {
+            "data_security_mode": "SINGLE_USER",
+            "databricks_node_type_id": "c5d.4xlarge",
+            "full_score_tree_closure": {
+                "actions_per_wave": ["producer_ready", "consumer_evidence"],
+                "job_count": 20,
+                "task_timeout_seconds": 7_200,
+                "wave_count": 10,
+            },
+            "gpu_tasks": 0,
+            "handoff_tree_closure": {
+                "job_count": 2,
+                "stages": ["q8", "bf16"],
+                "task_timeout_seconds": 43_200,
+            },
+            "included_in_gpu_hour_ledger": False,
+            "latency_source_closure": {
+                "job_count": 1,
+                "task_timeout_seconds": 7_200,
+            },
+            "max_retries": 0,
+            "num_workers": 0,
+            "single_node": True,
+            "spark_version": "15.4.x-cpu-ml-scala2.12",
+            "timeout_upper_bound_cpu_node_hours": 66.0,
+            "total_job_count": 23,
+        },
         "full_score_execution": {
             "cache_prefix_generation_tokens": 63_455_746,
             "consumer_timeout_upper_bound_gpu_hours": 960.0,

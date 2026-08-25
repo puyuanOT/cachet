@@ -1,0 +1,1577 @@
+from __future__ import annotations
+
+import copy
+import inspect
+import json
+from dataclasses import replace
+from hashlib import sha256
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+import document_kv_cache.gpu_qualification_databricks as qualification_job
+import document_kv_cache.publication_handoff_closure_coordinator as coordinator
+from document_kv_cache.databricks_resource_ledger import (
+    DatabricksClusterHourLedger,
+    databricks_cluster_hour_ledger_to_record,
+    databricks_ledger_prefix,
+)
+from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
+from document_kv_cache.gpu_qualification import (
+    GPUQualificationArtifactPins,
+    GPUQualificationSelection,
+)
+from document_kv_cache.gpu_qualification_databricks import (
+    GPUQualificationLaunchAuthorization,
+)
+from document_kv_cache.publication_latency_handoff_generation import (
+    PublicationLatencyGeneratorHardwareQualification,
+)
+from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+
+
+VOLUME_ROOT = "dbfs:/Volumes/catalog/schema/volume"
+
+
+def _digest(label: str) -> str:
+    return sha256(label.encode("utf-8")).hexdigest()
+
+
+def _config(
+    *,
+    request_root_uri: str | None = None,
+    output_root_uri: str | None = None,
+    stage: str = "q8",
+):
+    output_root = output_root_uri or f"{VOLUME_ROOT}/handoffs/{stage}"
+    return coordinator.PublicationHandoffClosureCoordinatorConfig(
+        runner_python_file=f"{VOLUME_ROOT}/inputs/coordinator-runner.py",
+        package_wheel_uri=f"{VOLUME_ROOT}/inputs/cachet.whl",
+        package_wheel_sha256=_digest("package-wheel"),
+        runtime_lock_uri=f"{VOLUME_ROOT}/inputs/runtime.lock",
+        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+        patched_vllm_wheel_uri=f"{VOLUME_ROOT}/inputs/vllm.whl",
+        patched_vllm_wheel_sha256=_digest("patched-vllm"),
+        source_closure_uri=f"{VOLUME_ROOT}/inputs/cachet-source-closure.json",
+        cachet_source_tree_sha256=_digest("source-closure-file"),
+        request_root_uri=(
+            coordinator._handoff_closure_request_root_uri(
+                output_root, stage=stage
+            )
+            if request_root_uri is None
+            else request_root_uri
+        ),
+        source_revision="a" * 40,
+        single_user_name="publication@example.com",
+    )
+
+
+def _request(*, stage: str = "q8", large: bool = False) -> dict[str, Any]:
+    ledger = DatabricksClusterHourLedger(ledger_id="campaign-ledger")
+    ledger_record = databricks_cluster_hour_ledger_to_record(ledger)
+    prefix = databricks_ledger_prefix(ledger).to_record()
+    output_root_uri = f"{VOLUME_ROOT}/handoffs/{stage}"
+    config = _config(output_root_uri=output_root_uri, stage=stage)
+    execution_contract: dict[str, Any] = {"contract": "exact-test-contract"}
+    if large:
+        execution_contract["production_artifact_closure"] = [
+            _digest(f"artifact-{index}") for index in range(256)
+        ]
+    evidence = []
+    for worker_index in range(16):
+        item = {
+            "attempt_id": f"{stage}-worker-{worker_index:02d}",
+            "attestation_closed_record_sha256": _digest(
+                f"{stage}-attestation-closed-{worker_index}"
+            ),
+            "attestation_file_sha256": _digest(
+                f"{stage}-attestation-file-{worker_index}"
+            ),
+            "worker_index": worker_index,
+        }
+        if stage == coordinator.PUBLICATION_HANDOFF_CLOSURE_BF16_STAGE:
+            item["control_plane_status_sha256"] = _digest(
+                f"{stage}-control-{worker_index}"
+            )
+        evidence.append(item)
+    controller_lease_root = _test_controller_lease_root(stage)
+    phase_evidence = {
+        "batch_marker_closed_record_sha256": _digest("batch-marker-closed"),
+        "batch_marker_file_sha256": _digest("batch-marker-file"),
+        "phase_lease_closed_record_sha256": _digest("phase-lease-closed"),
+        "phase_lease_file_sha256": _digest("phase-lease-file"),
+        "phase_lease_root_sha256": _digest("phase-lease-root"),
+    }
+    batch = {
+        "attempt_ids": [item["attempt_id"] for item in evidence],
+        "batch_prefix": copy.deepcopy(prefix),
+        "ledger_path_sha256": _digest("controller-ledger-path"),
+        "predecessor_prefix": copy.deepcopy(prefix),
+        "submit_payload_sha256s": [
+            _digest(f"typed-submit-{index}") for index in range(16)
+        ],
+    }
+    singleton: dict[str, Any] = {
+        "batch_identity_sha256": coordinator._closure_batch_identity_sha256(batch),
+        "controller_lease_root_sha256": coordinator._controller_path_sha256(
+            controller_lease_root,
+            domain="cachet.publication.handoff_closure.controller_lease.v1",
+        ),
+        "durable_output_root_uri": output_root_uri,
+        "phase_evidence": phase_evidence,
+        "stage": stage,
+    }
+    singleton["identity_sha256"] = coordinator._canonical_sha256(
+        {
+            "domain": "cachet.publication.handoff_closure.singleton.v1",
+            **singleton,
+        }
+    )
+    attempt_id = coordinator._handoff_closure_attempt_id(singleton)
+    request: dict[str, Any] = {
+        "attempt_id": attempt_id,
+        "closed_record_sha256": "",
+        "coordinator": config.to_record(),
+        "controller_singleton": singleton,
+        "execution_contract": execution_contract,
+        "execution_contract_sha256": coordinator._canonical_sha256(execution_contract),
+        "expected_qualification_closed_record_sha256": _digest("qualification"),
+        "input_bundle_sha256": _digest("input-bundle"),
+        "ledger_lineage": {
+            "ledger_id": ledger.ledger_id,
+            "ledger_path_sha256": _digest("controller-ledger-path"),
+            "predecessor_prefix": prefix,
+            "producer_batch_prefix": prefix,
+            "terminal_prefix": prefix,
+        },
+        "ledger_snapshot": {
+            "record": ledger_record,
+            "record_sha256": coordinator._canonical_sha256(ledger_record),
+        },
+        "output_root_uri": output_root_uri,
+        "plan": {
+            "closed_record_sha256": _digest(f"{stage}-plan-closed"),
+            "file_sha256": _digest(f"{stage}-plan-file"),
+            "uri": f"{VOLUME_ROOT}/plans/{stage}-plan.json",
+        },
+        "prepared_input_root_uri": f"{VOLUME_ROOT}/prepared/main-latency",
+        "record_type": coordinator.PUBLICATION_HANDOFF_CLOSURE_REQUEST_RECORD_TYPE,
+        "request_uri": (
+            f"{config.request_root_uri}/request.json"
+        ),
+        "result_uri": coordinator._handoff_closure_result_uri(
+            output_root_uri, stage=stage
+        ),
+        "schema_version": coordinator.PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION,
+        "stage": stage,
+        "worker_evidence": evidence,
+    }
+    request["closed_record_sha256"] = coordinator._closed_record_sha256(request)
+    coordinator._validate_closure_request(request)
+    return request
+
+
+def _test_controller_lease_root(stage: str) -> Path:
+    return Path.cwd() / ".test-handoff-controller" / stage
+
+
+def _rebind_request_controller_lease(
+    request: dict[str, Any], root: str | Path
+) -> None:
+    singleton = request["controller_singleton"]
+    singleton["controller_lease_root_sha256"] = (
+        coordinator._controller_path_sha256(
+            root,
+            domain="cachet.publication.handoff_closure.controller_lease.v1",
+        )
+    )
+    identity = {key: value for key, value in singleton.items() if key != "identity_sha256"}
+    singleton["identity_sha256"] = coordinator._canonical_sha256(
+        {
+            "domain": "cachet.publication.handoff_closure.singleton.v1",
+            **identity,
+        }
+    )
+    request["attempt_id"] = coordinator._handoff_closure_attempt_id(singleton)
+    request["closed_record_sha256"] = coordinator._closed_record_sha256(request)
+
+
+def _authorize_request(
+    request: dict[str, Any],
+    *,
+    evidence_label: str = "typed-submit",
+    batch_label: str = "typed-submit",
+    controller_lease_root: str | Path | None = None,
+) -> coordinator.PublicationHandoffClosureRequestAuthorization:
+    lease_root = (
+        _test_controller_lease_root(request["stage"])
+        if controller_lease_root is None
+        else Path(controller_lease_root)
+    )
+    _rebind_request_controller_lease(request, lease_root)
+    evidence = copy.deepcopy(request["worker_evidence"])
+    lineage = request["ledger_lineage"]
+    qualified_pins = GPUQualificationArtifactPins(
+        runtime_lock_sha256=request["coordinator"]["runtime_lock_sha256"],
+        patched_vllm_wheel_sha256=request["coordinator"][
+            "patched_vllm_wheel_sha256"
+        ],
+        package_wheel_sha256=request["coordinator"]["package_wheel_sha256"],
+        cachet_source_tree_sha256=request["coordinator"][
+            "cachet_source_tree_sha256"
+        ],
+        runner_sha256=_digest("qualified-producer-runner"),
+        input_bundle_sha256=request["input_bundle_sha256"],
+    )
+    qualification_plan_sha256 = _digest("qualification-plan-closed")
+    return coordinator.PublicationHandoffClosureRequestAuthorization(
+        request=request,
+        batch_evidence={
+            "batch_authorization": {
+                "attempt_ids": [item["attempt_id"] for item in evidence],
+                "batch_prefix": copy.deepcopy(lineage["producer_batch_prefix"]),
+                "ledger_path_sha256": lineage["ledger_path_sha256"],
+                "predecessor_prefix": copy.deepcopy(
+                    lineage["predecessor_prefix"]
+                ),
+                "submit_payload_sha256s": [
+                    _digest(f"{batch_label}-{index}") for index in range(16)
+                ],
+            },
+            "phase_evidence": copy.deepcopy(
+                request["controller_singleton"]["phase_evidence"]
+            ),
+            "worker_evidence": evidence,
+        },
+        qualified_artifact_pins=qualified_pins,
+        qualification_authorization_binding={
+            "artifact_pins_sha256": coordinator._canonical_sha256(
+                qualified_pins.to_record()
+            ),
+            "authorization_causal_closure_sha256": _digest(
+                f"qualification-causal-{evidence_label}"
+            ),
+            "authorization_ledger_id": lineage["ledger_id"],
+            "authorization_ledger_path_sha256": lineage["ledger_path_sha256"],
+            "authorization_ledger_prefix": copy.deepcopy(
+                lineage["predecessor_prefix"]
+            ),
+            "evidence_closed_record_sha256": request[
+                "expected_qualification_closed_record_sha256"
+            ],
+            "evidence_file_sha256": _digest("qualification-evidence-file"),
+            "evidence_uri": "dbfs:/qualification/evidence.json",
+            "plan_closed_record_sha256": qualification_plan_sha256,
+            "plan_file_sha256": _digest("qualification-plan-file"),
+            "plan_uri": "dbfs:/qualification/plan.json",
+            "selection": {
+                "attention_backend": "TRITON_ATTN",
+                "generation_artifacts_sha256": _digest("generation-artifacts"),
+                "generation_databricks_node_type_id": "g6e.4xlarge",
+                "generation_hardware_id": "aws-g6e-l40s",
+                "generation_prefix_tokens_per_second": 40.0,
+                "gpu_memory_utilization": 0.75,
+                "plan_sha256": qualification_plan_sha256,
+            },
+        },
+        controller_lease_root=lease_root,
+        _issuer=coordinator._REQUEST_AUTHORIZATION_ISSUER,
+    )
+
+
+def _hardware_qualification(
+    monkeypatch: pytest.MonkeyPatch,
+    config: coordinator.PublicationHandoffClosureCoordinatorConfig,
+    *,
+    input_bundle_sha256: str,
+) -> PublicationLatencyGeneratorHardwareQualification:
+    selection = GPUQualificationSelection(
+        attention_backend="TRITON_ATTN",
+        gpu_memory_utilization=0.75,
+        generation_hardware_id="aws-g6e-l40s",
+        generation_databricks_node_type_id="g6e.4xlarge",
+        generation_artifacts_sha256=_digest("generation-artifacts"),
+        generation_prefix_tokens_per_second=40.0,
+        plan_sha256=_digest("qualification-plan-closed"),
+    )
+    monkeypatch.setattr(
+        coordinator._q8,
+        "validate_gpu_qualification_evidence_record",
+        lambda *_args, **_kwargs: selection,
+    )
+    return PublicationLatencyGeneratorHardwareQualification(
+        evidence_record={"closed_record_sha256": _digest("qualification")},
+        plan_record={"closed_record_sha256": selection.plan_sha256},
+        expected_campaign_id="vllm-0271-publication-v1",
+        expected_artifact_pins=GPUQualificationArtifactPins(
+            runtime_lock_sha256=config.runtime_lock_sha256,
+            patched_vllm_wheel_sha256=config.patched_vllm_wheel_sha256,
+            package_wheel_sha256=config.package_wheel_sha256,
+            cachet_source_tree_sha256=config.cachet_source_tree_sha256,
+            runner_sha256=_digest("qualified-producer-runner"),
+            input_bundle_sha256=input_bundle_sha256,
+        ),
+        evidence_uri="dbfs:/qualification/evidence.json",
+        evidence_file_sha256=_digest("qualification-evidence-file"),
+        plan_uri="dbfs:/qualification/plan.json",
+        plan_file_sha256=_digest("qualification-plan-file"),
+    )
+
+
+def _qualification_launch_authorization(
+    hardware_qualification: PublicationLatencyGeneratorHardwareQualification,
+) -> GPUQualificationLaunchAuthorization:
+    ledger = DatabricksClusterHourLedger(ledger_id="qualification-ledger")
+    prefix = databricks_ledger_prefix(ledger)
+    return GPUQualificationLaunchAuthorization(
+        selection=hardware_qualification.selection,
+        plan_sha256=hardware_qualification.selection.plan_sha256,
+        evidence_closed_record_sha256=hardware_qualification.evidence_record[
+            "closed_record_sha256"
+        ],
+        evidence_file_sha256=hardware_qualification.evidence_file_sha256,
+        ledger_id=ledger.ledger_id,
+        ledger_path_sha256=_digest("qualification-ledger-path"),
+        predecessor_prefix=prefix,
+        producer_batch_prefix=prefix,
+        ledger_prefix=prefix,
+        causal_closure_sha256=_digest("qualification-causal-closure"),
+        _issuer=qualification_job._LAUNCH_AUTHORIZATION_ISSUER,
+    )
+
+
+def _allow_synthetic_manifests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        coordinator._handoff_artifacts,
+        "_validated_bundle_record",
+        lambda record: dict(record),
+    )
+    monkeypatch.setattr(
+        coordinator._q8,
+        "_validate_publication_manifest_contract",
+        lambda _record: None,
+    )
+    monkeypatch.setattr(
+        coordinator._bf16,
+        "_validate_bf16_manifest_contract",
+        lambda _record: None,
+    )
+
+
+def _result(request: dict[str, Any], *, run_id: str = "12345") -> dict[str, Any]:
+    stage = request["stage"]
+    contexts = [8192, 16384, 32768] if stage == "q8" else [16384]
+    manifests = []
+    bundles = []
+    for context_tokens in contexts:
+        portable = _digest(f"{stage}-portable-{context_tokens}")
+        manifest: dict[str, Any] = {
+            "closed_record_sha256": "",
+            "context_tokens": context_tokens,
+            "input_bundle_sha256": request["input_bundle_sha256"],
+            "portable_bundle_sha256": portable,
+        }
+        manifest["closed_record_sha256"] = coordinator._closed_record_sha256(manifest)
+        manifest_relative = (
+            f"manifests/{context_tokens}-{portable}.json"
+            if stage == "q8"
+            else (
+                "manifests/"
+                f"{coordinator._bf16.PUBLICATION_BF16_HANDOFF_MANIFEST_FILENAME}"
+            )
+        )
+        source_relative = f"bundles/{context_tokens}-{portable}"
+        manifest_file_sha256 = sha256(
+            coordinator._canonical_json_bytes(manifest, pretty=True)
+        ).hexdigest()
+        bundle = {
+            "closed_record_sha256": manifest["closed_record_sha256"],
+            "context_tokens": context_tokens,
+            "manifest_relative_path": manifest_relative,
+            "portable_bundle_sha256": portable,
+            "source_root_relative_path": source_relative,
+        }
+        if stage == "bf16":
+            bundle["manifest_file_sha256"] = manifest_file_sha256
+        bundles.append(bundle)
+        manifests.append(
+            {
+                "closed_record_sha256": manifest["closed_record_sha256"],
+                "context_tokens": context_tokens,
+                "file_sha256": manifest_file_sha256,
+                "portable_bundle_sha256": portable,
+                "record": manifest,
+                "source_root_uri": (f"{request['output_root_uri']}/{source_relative}"),
+                "uri": f"{request['output_root_uri']}/{manifest_relative}",
+            }
+        )
+    reconciliation: dict[str, Any] = {"ledger_id": "campaign-ledger"}
+    if stage == "q8":
+        attempts = [
+            {
+                "attempt_id": request["worker_evidence"][index]["attempt_id"],
+                "attestation_closed_record_sha256": request["worker_evidence"][index][
+                    "attestation_closed_record_sha256"
+                ],
+                "attestation_file_sha256": request["worker_evidence"][index][
+                    "attestation_file_sha256"
+                ],
+                "verification_source": "direct_databricks_runs_get",
+                "worker_index": index,
+            }
+            for index in range(16)
+        ]
+        reconciliation.update(
+            {
+                "attempts": attempts,
+                "attempts_sha256": coordinator._canonical_sha256(attempts),
+            }
+        )
+    else:
+        attempts = [
+            {
+                "attempt_id": request["worker_evidence"][index]["attempt_id"],
+                "attestation_closed_record_sha256": request["worker_evidence"][index][
+                    "attestation_closed_record_sha256"
+                ],
+                "worker_index": index,
+            }
+            for index in range(16)
+        ]
+        reconciliation.update(
+            {
+                "attempt_count": 16,
+                "attempts": attempts,
+                "attempts_sha256": coordinator._canonical_sha256(attempts),
+                "verification_source": "direct_databricks_runs_get",
+            }
+        )
+    execution_record: dict[str, Any] = {
+        "accounting": {
+            "coordinator_gpu_hours": 0.0,
+            "payload_copy_count_during_closure": 0,
+            "worker_count": 16,
+        },
+        "closed_record_sha256": "",
+        "execution_contract": copy.deepcopy(request["execution_contract"]),
+        "execution_mode": (
+            coordinator._q8.PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED
+            if stage == "q8"
+            else coordinator._bf16.PUBLICATION_BF16_HANDOFF_EXECUTION_MODE
+        ),
+        "generator_hardware": {
+            "qualification_closed_record_sha256": request[
+                "expected_qualification_closed_record_sha256"
+            ]
+        },
+        "input_bundle_sha256": request["input_bundle_sha256"],
+        "ledger_reconciliation": reconciliation,
+        "plan_closed_record_sha256": request["plan"]["closed_record_sha256"],
+        "record_type": (
+            coordinator._q8.PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE
+            if stage == "q8"
+            else coordinator._bf16.PUBLICATION_BF16_HANDOFF_EXECUTION_RECORD_TYPE
+        ),
+        "schema_version": 1,
+        "serving_reuse": {},
+        "workers": [{"worker_index": index} for index in range(16)],
+    }
+    if stage == "q8":
+        execution_record["bundles"] = bundles
+        execution_record["bundles_sha256"] = coordinator._canonical_sha256(bundles)
+        execution_record["serving_reuse"] = {"context_bundles": copy.deepcopy(bundles)}
+        execution_filename = (
+            coordinator._q8.PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME
+        )
+    else:
+        execution_record["bundle"] = bundles[0]
+        execution_filename = (
+            coordinator._bf16.PUBLICATION_BF16_HANDOFF_EXECUTION_FILENAME
+        )
+    execution_record["closed_record_sha256"] = (
+        coordinator._q8._closed_record_sha256(execution_record)
+        if stage == "q8"
+        else coordinator._bf16._closed_record_sha256(execution_record)
+    )
+    result: dict[str, Any] = {
+        "closed_record_sha256": "",
+        "coordinator": {
+            "close_function": (
+                "close_publication_latency_handoff_generation_from_workers"
+                if stage == "q8"
+                else "close_publication_bf16_handoff_generation_from_workers"
+            ),
+            "node_type_id": coordinator.PUBLICATION_HANDOFF_CLOSURE_NODE_TYPE_ID,
+            "run_id": run_id,
+            "runner_sha256": coordinator.PUBLICATION_HANDOFF_CLOSURE_RUNNER_SHA256,
+            "tree_validation": "full_mounted_byte_replay",
+        },
+        "execution": {
+            "closed_record_sha256": execution_record["closed_record_sha256"],
+            "file_sha256": sha256(
+                coordinator._canonical_json_bytes(execution_record, pretty=True)
+            ).hexdigest(),
+            "record": execution_record,
+            "uri": f"{request['output_root_uri']}/{execution_filename}",
+        },
+        "ledger_lineage": copy.deepcopy(request["ledger_lineage"]),
+        "manifests": manifests,
+        "output_root_uri": request["output_root_uri"],
+        "pins": {
+            "coordinator": copy.deepcopy(request["coordinator"]),
+            "execution_contract_sha256": request["execution_contract_sha256"],
+            "input_bundle_sha256": request["input_bundle_sha256"],
+            "plan": copy.deepcopy(request["plan"]),
+            "qualification_closed_record_sha256": request[
+                "expected_qualification_closed_record_sha256"
+            ],
+        },
+        "record_type": coordinator.PUBLICATION_HANDOFF_CLOSURE_RESULT_RECORD_TYPE,
+        "request_closed_record_sha256": request["closed_record_sha256"],
+        "schema_version": coordinator.PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION,
+        "stage": stage,
+    }
+    result["closed_record_sha256"] = coordinator._closed_record_sha256(result)
+    return result
+
+
+def test_volume_uris_use_the_uc_volume_mount_not_dbfs() -> None:
+    assert coordinator._cluster_path(f"{VOLUME_ROOT}/inputs/plan.json") == Path(
+        "/Volumes/catalog/schema/volume/inputs/plan.json"
+    )
+    assert 'if uri.startswith("dbfs:/Volumes/"):' in (
+        coordinator.PUBLICATION_HANDOFF_CLOSURE_RUNNER_SCRIPT
+    )
+    assert 'return "/Volumes/" + uri.removeprefix("dbfs:/Volumes/")' in (
+        coordinator.PUBLICATION_HANDOFF_CLOSURE_RUNNER_SCRIPT
+    )
+
+
+def _terminal(payload: dict[str, Any], *, succeeded: bool = True) -> dict[str, Any]:
+    result_state = "SUCCESS" if succeeded else "FAILED"
+    return {
+        "cluster_instance": {"cluster_id": "cluster-coordinator"},
+        "end_time": 1_002_000,
+        "original_attempt_run_id": 12345,
+        "repair_history": [],
+        "run_id": 12345,
+        "run_name": payload["run_name"],
+        "start_time": 1_000_000,
+        "state": {"life_cycle_state": "TERMINATED", "result_state": result_state},
+        "tasks": [
+            {
+                "attempt_number": 0,
+                "cluster_instance": {"cluster_id": "cluster-coordinator"},
+                "end_time": 1_001_900,
+                "new_cluster": copy.deepcopy(payload["tasks"][0]["new_cluster"]),
+                "run_id": 22345,
+                "start_time": 1_000_100,
+                "state": {
+                    "life_cycle_state": "TERMINATED",
+                    "result_state": result_state,
+                },
+                "task_key": payload["tasks"][0]["task_key"],
+            }
+        ],
+    }
+
+
+def _write_collection_reservation(
+    root: Path,
+    request_authorization: coordinator.PublicationHandoffClosureRequestAuthorization,
+) -> dict[str, Any]:
+    request = dict(request_authorization.request_record)
+    payload = coordinator.render_publication_handoff_closure_submit_payload(
+        request_authorization
+    )
+    coordinator._reserve_closure_attempt(
+        request_authorization,
+        payload,
+        reservation_root=root,
+    )
+    request_bytes = coordinator._canonical_json_bytes(request, pretty=True)
+    coordinator._write_or_require_exact(
+        root / "request-upload.json",
+        coordinator._canonical_json_bytes(
+            {
+                "dbfs_uri": request["request_uri"],
+                "exclusive_bytes_proven": True,
+                "file_sha256": sha256(request_bytes).hexdigest(),
+                "size_bytes": len(request_bytes),
+            },
+            pretty=True,
+        ),
+    )
+    coordinator._write_or_require_exact(
+        root / "submit-response.json",
+        coordinator._canonical_json_bytes({"run_id": 12345}, pretty=True),
+    )
+    return payload
+
+
+def test_renderer_uses_one_cpu_task_and_a_bounded_request_pointer() -> None:
+    request = _request(large=True)
+    request_bytes = coordinator._canonical_json_bytes(request, pretty=True)
+    assert len(request_bytes) > 10_000
+
+    request_authorization = _authorize_request(request)
+    payload = coordinator.render_publication_handoff_closure_submit_payload(
+        request_authorization
+    )
+    task = payload["tasks"][0]
+    cluster = task["new_cluster"]
+    parameters = task["spark_python_task"]["parameters"]
+    assert task["max_retries"] == 0
+    assert task["timeout_seconds"] == 12 * 60 * 60
+    assert cluster["node_type_id"] == "c5d.4xlarge"
+    assert cluster["driver_node_type_id"] == "c5d.4xlarge"
+    assert cluster["num_workers"] == 0
+    assert "--request-json-b64" not in parameters
+    assert parameters[parameters.index("--request-uri") + 1] == request["request_uri"]
+    assert (
+        parameters[parameters.index("--request-file-sha256") + 1]
+        == sha256(request_bytes).hexdigest()
+    )
+    assert (
+        len(coordinator._canonical_json_bytes(parameters, pretty=False))
+        <= coordinator.PUBLICATION_HANDOFF_CLOSURE_PARAMETER_BYTES_MAX
+    )
+    assert (
+        "opener"
+        not in inspect.signature(
+            coordinator.collect_publication_handoff_closure
+        ).parameters
+    )
+
+
+def test_controller_cli_rejects_raw_request_as_launch_authority(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    request = _request(large=True)
+    request_path = tmp_path / "request.json"
+    request_path.write_bytes(coordinator._canonical_json_bytes(request, pretty=True))
+    assert coordinator.main(["render-submit", "--request", str(request_path)]) == 1
+    rendered = json.loads(capsys.readouterr().out)
+    assert rendered["ok"] is False
+    assert "raw request files are deliberately nonauthorizing" in rendered["error"]
+
+
+def test_raw_or_resealed_package_request_cannot_authorize_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request()
+    authorization = _authorize_request(request)
+    malicious = copy.deepcopy(request)
+    malicious["coordinator"]["package_wheel_uri"] = (
+        f"{VOLUME_ROOT}/inputs/malicious-cachet.whl"
+    )
+    malicious["coordinator"]["package_wheel_sha256"] = _digest("malicious-wheel")
+    malicious["closed_record_sha256"] = coordinator._closed_record_sha256(malicious)
+    coordinator._validate_closure_request(malicious)
+
+    with pytest.raises(
+        TypeError, match="PublicationHandoffClosureRequestAuthorization"
+    ):
+        coordinator.render_publication_handoff_closure_submit_payload(malicious)
+    with pytest.raises(
+        TypeError, match="PublicationHandoffClosureRequestAuthorization"
+    ):
+        coordinator.reserve_and_submit_publication_handoff_closure(
+            DatabricksWorkspaceConfig("https://workspace.example", "token"),
+            malicious,
+            reservation_root=tmp_path / "must-not-reserve",
+        )
+    with pytest.raises(TypeError, match="typed batch issuer"):
+        coordinator.PublicationHandoffClosureRequestAuthorization(
+            request=malicious,
+            batch_evidence={},
+            qualified_artifact_pins=GPUQualificationArtifactPins(
+                runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+                patched_vllm_wheel_sha256=_digest("patched-vllm"),
+                package_wheel_sha256=_digest("package-wheel"),
+                cachet_source_tree_sha256=_digest("source-closure-file"),
+                runner_sha256=_digest("qualified-producer-runner"),
+                input_bundle_sha256=_digest("input-bundle"),
+            ),
+            qualification_authorization_binding={},
+            controller_lease_root=_test_controller_lease_root("q8"),
+            _issuer=object(),
+        )
+
+    exposed = dict(authorization.request_record)
+    exposed["coordinator"]["package_wheel_sha256"] = _digest("mutated-view")
+    payload = coordinator.render_publication_handoff_closure_submit_payload(
+        authorization
+    )
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+    assert parameters[parameters.index("--package-wheel-sha256") + 1] == request[
+        "coordinator"
+    ]["package_wheel_sha256"]
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "package_wheel_sha256",
+        "patched_vllm_wheel_sha256",
+        "cachet_source_tree_sha256",
+    ],
+)
+def test_coordinator_config_must_match_qualified_producer_artifacts_before_render(
+    field_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config()
+    input_bundle_sha256 = _digest("input-bundle")
+    qualification = _hardware_qualification(
+        monkeypatch,
+        config,
+        input_bundle_sha256=input_bundle_sha256,
+    )
+    qualification_authorization = _qualification_launch_authorization(qualification)
+    coordinator._require_matching_qualified_producer(
+        config,
+        qualification,
+        qualification_authorization,
+        expected_input_bundle_sha256=input_bundle_sha256,
+        expected_qualification_closed_record_sha256=_digest("qualification"),
+    )
+    drifted = replace(config, **{field_name: _digest(f"drift-{field_name}")})
+    with pytest.raises(ValueError, match="package/source pins differ"):
+        coordinator._require_matching_qualified_producer(
+            drifted,
+            qualification,
+            qualification_authorization,
+            expected_input_bundle_sha256=input_bundle_sha256,
+            expected_qualification_closed_record_sha256=_digest("qualification"),
+        )
+
+
+def test_request_authority_rejects_qualified_pin_substitution() -> None:
+    request = _request()
+    pins = GPUQualificationArtifactPins(
+        runtime_lock_sha256=request["coordinator"]["runtime_lock_sha256"],
+        patched_vllm_wheel_sha256=request["coordinator"][
+            "patched_vllm_wheel_sha256"
+        ],
+        package_wheel_sha256=_digest("substituted-qualified-package"),
+        cachet_source_tree_sha256=request["coordinator"][
+            "cachet_source_tree_sha256"
+        ],
+        runner_sha256=_digest("qualified-producer-runner"),
+        input_bundle_sha256=request["input_bundle_sha256"],
+    )
+    with pytest.raises(ValueError, match="package/source pins differ"):
+        coordinator.PublicationHandoffClosureRequestAuthorization(
+            request=request,
+            batch_evidence={
+                "batch_authorization": {},
+                "worker_evidence": request["worker_evidence"],
+            },
+            qualified_artifact_pins=pins,
+            qualification_authorization_binding={},
+            controller_lease_root=_test_controller_lease_root("q8"),
+            _issuer=coordinator._REQUEST_AUTHORIZATION_ISSUER,
+        )
+
+
+def test_caller_resealed_qualification_and_arbitrary_pins_cannot_issue_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    input_bundle_sha256 = _digest("input-bundle")
+    qualification = _hardware_qualification(
+        monkeypatch,
+        config,
+        input_bundle_sha256=input_bundle_sha256,
+    )
+    authorization = _qualification_launch_authorization(qualification)
+    monkeypatch.setattr(
+        coordinator._q8,
+        "_validate_closed_plan_envelope",
+        lambda _record: None,
+    )
+    monkeypatch.setattr(
+        coordinator._bf16,
+        "_validate_plan_envelope",
+        lambda _record: None,
+    )
+    common = {
+        "attempt_id": "closure-attempt",
+        "coordinator_config": config,
+        "plan_uri": f"{VOLUME_ROOT}/inputs/plan.json",
+        "plan_file_sha256": _digest("plan-file"),
+        "plan_record": {
+            "closed_record_sha256": _digest("producer-plan"),
+            "input_bundle_sha256": input_bundle_sha256,
+        },
+        "prepared_input_root_uri": f"{VOLUME_ROOT}/prepared",
+        "durable_output_root_uri": f"{VOLUME_ROOT}/outputs",
+        "execution_contract": {},
+        "ledger_path": "/must-not-read-ledger.json",
+        "attempt_ids_by_worker": {},
+        "submission_authorization": object(),
+        "expected_qualification_closed_record_sha256": _digest("qualification"),
+    }
+    builders = (
+        (
+            coordinator.build_q8_handoff_closure_request,
+            {"attestations_by_worker": {}},
+        ),
+        (
+            coordinator.build_bf16_handoff_closure_request,
+            {"worker_authorizations": {}},
+        ),
+    )
+    arbitrary = PublicationLatencyGeneratorHardwareQualification(
+        evidence_record=dict(qualification.evidence_record),
+        plan_record=dict(qualification.plan_record),
+        expected_campaign_id=qualification.expected_campaign_id,
+        expected_artifact_pins=replace(
+            qualification.expected_artifact_pins,
+            package_wheel_sha256=_digest("caller-arbitrary-package"),
+        ),
+        evidence_uri=qualification.evidence_uri,
+        evidence_file_sha256=qualification.evidence_file_sha256,
+        plan_uri=qualification.plan_uri,
+        plan_file_sha256=qualification.plan_file_sha256,
+    )
+    for builder, stage_args in builders:
+        with pytest.raises(ValueError, match="package/source pins differ"):
+            builder(
+                **common,
+                **stage_args,
+                hardware_qualification=arbitrary,
+                qualification_launch_authorization=authorization,
+            )
+    resealed_evidence = replace(
+        qualification,
+        evidence_file_sha256=_digest("caller-resealed-evidence-file"),
+    )
+    for builder, stage_args in builders:
+        with pytest.raises(
+            ValueError, match="authorization evidence binding differs"
+        ):
+            builder(
+                **common,
+                **stage_args,
+                hardware_qualification=resealed_evidence,
+                qualification_launch_authorization=authorization,
+            )
+        with pytest.raises(TypeError, match="GPUQualificationLaunchAuthorization"):
+            builder(
+                **common,
+                **stage_args,
+                hardware_qualification=qualification,
+                qualification_launch_authorization=object(),
+            )
+
+
+def test_recovery_requires_the_exact_durable_batch_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request()
+    root = tmp_path / "reservation"
+    original = _authorize_request(request, controller_lease_root=root)
+    with pytest.raises(ValueError, match="typed batch evidence differs"):
+        _authorize_request(request, batch_label="substituted-batch")
+    substituted = _authorize_request(
+        request,
+        evidence_label="substituted-request-authority",
+        controller_lease_root=root,
+    )
+    _write_collection_reservation(root, original)
+    monkeypatch.setattr(
+        coordinator,
+        "get_databricks_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mismatched authority reached cloud collection")
+        ),
+    )
+    with pytest.raises(ValueError, match="reservation source binding drift"):
+        coordinator.collect_publication_handoff_closure(
+            DatabricksWorkspaceConfig("https://workspace.example", "token"),
+            reservation_root=root,
+            request_authorization=substituted,
+        )
+
+
+def test_renderer_rejects_alternate_control_root_before_databricks() -> None:
+    request = _request()
+    huge_root = f"{VOLUME_ROOT}/control/{'x' * 9_500}"
+    request["coordinator"]["request_root_uri"] = huge_root
+    request["request_uri"] = f"{huge_root}/request.json"
+    request["closed_record_sha256"] = coordinator._closed_record_sha256(request)
+    with pytest.raises(ValueError, match="request root is not singleton-derived"):
+        coordinator._validate_closure_request(request)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        f"{VOLUME_ROOT}/control/%2e%2e/request.json",
+        f"{VOLUME_ROOT}/control/../request.json",
+    ],
+)
+def test_volume_pointer_rejects_encoded_or_plain_traversal(uri: str) -> None:
+    with pytest.raises(ValueError, match="canonical|URL syntax"):
+        coordinator._canonical_volume_file_uri(uri, "request_uri")
+
+
+def test_reserve_stages_exact_request_before_post_and_replays_safely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request()
+    root = tmp_path / "reservation"
+    request_authorization = _authorize_request(
+        request, controller_lease_root=root
+    )
+    calls = {"put": 0, "post": 0}
+
+    def upload(_workspace, uri, content, *, max_bytes):
+        calls["put"] += 1
+        assert (root / "reservation.json").is_file()
+        assert uri == request["request_uri"]
+        assert content == coordinator._canonical_json_bytes(request, pretty=True)
+        assert len(content) <= max_bytes
+        return {
+            "created": calls["put"] == 1,
+            "dbfs_uri": uri,
+            "file_sha256": sha256(content).hexdigest(),
+            "size_bytes": len(content),
+        }
+
+    def submit(_workspace, payload):
+        calls["post"] += 1
+        assert (root / "request-upload.json").is_file()
+        assert payload == coordinator.render_publication_handoff_closure_submit_payload(
+            request_authorization
+        )
+        return {"run_id": 12345}
+
+    monkeypatch.setattr(
+        coordinator, "upload_databricks_volume_file_bytes_exclusive", upload
+    )
+    monkeypatch.setattr(coordinator, "submit_databricks_run", submit)
+    workspace = DatabricksWorkspaceConfig("https://workspace.example", "token")
+
+    assert coordinator.reserve_and_submit_publication_handoff_closure(
+        workspace, request_authorization, reservation_root=root
+    ) == {"run_id": 12345}
+    with pytest.raises(ValueError, match="reservation_root differs"):
+        coordinator.reserve_and_submit_publication_handoff_closure(
+            workspace,
+            request_authorization,
+            reservation_root=tmp_path / "alternate-reservation",
+        )
+    assert calls == {"put": 1, "post": 1}
+    assert coordinator.reserve_and_submit_publication_handoff_closure(
+        workspace, request_authorization, reservation_root=root
+    ) == {"run_id": 12345}
+    assert calls == {"put": 2, "post": 1}
+
+
+@pytest.mark.parametrize("stage", ["q8", "bf16"])
+def test_handoff_singleton_rejects_alternate_attempt_output_and_attestation_root(
+    stage: str,
+) -> None:
+    request = _request(stage=stage)
+    alternate_attempt = copy.deepcopy(request)
+    alternate_attempt["attempt_id"] = f"{stage}-handoff-closure-alternate"
+    alternate_attempt["closed_record_sha256"] = coordinator._closed_record_sha256(
+        alternate_attempt
+    )
+    with pytest.raises(ValueError, match="attempt identity drift"):
+        coordinator._validate_closure_request(alternate_attempt)
+
+    with pytest.raises(ValueError, match="producer phase authority"):
+        coordinator._require_submission_output_root(
+            request["output_root_uri"],
+            f"{request['output_root_uri']}-alternate",
+            stage=stage,
+        )
+
+    directory = (
+        coordinator._q8.PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY
+        if stage == "q8"
+        else coordinator._bf16.PUBLICATION_BF16_HANDOFF_ATTESTATION_DIRECTORY
+    )
+    canonical_path = (
+        Path(coordinator.local_path(request["output_root_uri"]))
+        / directory
+        / "worker-00.json"
+    )
+    coordinator._require_handoff_attestation_path(
+        canonical_path,
+        request["output_root_uri"],
+        directory=directory,
+        worker_index=0,
+        stage=stage,
+    )
+    with pytest.raises(ValueError, match="attestation path differs"):
+        coordinator._require_handoff_attestation_path(
+            canonical_path.parent.parent / "alternate" / "worker-00.json",
+            request["output_root_uri"],
+            directory=directory,
+            worker_index=0,
+            stage=stage,
+        )
+
+
+def test_mac_collector_never_resolves_dbfs_and_issues_live_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_synthetic_manifests(monkeypatch)
+    request = _request()
+    root = tmp_path / "reservation"
+    request_authorization = _authorize_request(
+        request, controller_lease_root=root
+    )
+    result = _result(request)
+    coordinator._validate_closure_result(result, request=request)
+    payload = _write_collection_reservation(root, request_authorization)
+    request_bytes = coordinator._canonical_json_bytes(request, pretty=True)
+    result_bytes = coordinator._canonical_json_bytes(result, pretty=True)
+
+    monkeypatch.setattr(
+        coordinator,
+        "_cluster_path",
+        lambda _uri: (_ for _ in ()).throw(AssertionError("Mac touched /dbfs")),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "get_databricks_run",
+        lambda _workspace, _run_id: _terminal(payload),
+    )
+
+    def download(_workspace, uri, *, max_bytes=16 * 1024 * 1024):
+        content = request_bytes if uri == request["request_uri"] else result_bytes
+        assert len(content) <= max_bytes
+        return content
+
+    monkeypatch.setattr(coordinator, "download_databricks_volume_file_bytes", download)
+    workspace = DatabricksWorkspaceConfig("https://workspace.example", "token")
+    authority = coordinator.collect_publication_handoff_closure(
+        workspace,
+        reservation_root=root,
+        request_authorization=request_authorization,
+    )
+
+    assert authority.coordinator_run_id == "12345"
+    assert authority.execution_record == result["execution"]["record"]
+    assert len(authority.manifest_records) == 3
+    assert (root / "runs-get.json").is_file()
+    assert (root / "coordinator-result.json").read_bytes() == result_bytes
+    assert (
+        coordinator.require_q8_handoff_remote_closure_authorization(
+            authority,
+            expected_output_root_uri=request["output_root_uri"],
+            expected_execution_file_sha256=result["execution"]["file_sha256"],
+            expected_input_bundle_sha256=request["input_bundle_sha256"],
+            expected_qualification_closed_record_sha256=request[
+                "expected_qualification_closed_record_sha256"
+            ],
+        )
+        is authority
+    )
+
+
+def test_collector_rejects_resealed_tampered_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_synthetic_manifests(monkeypatch)
+    request = _request()
+    root = tmp_path / "reservation"
+    request_authorization = _authorize_request(
+        request, controller_lease_root=root
+    )
+    result = _result(request)
+    result["coordinator"]["close_function"] = "forged_close"
+    result["closed_record_sha256"] = coordinator._closed_record_sha256(result)
+    payload = _write_collection_reservation(root, request_authorization)
+    request_bytes = coordinator._canonical_json_bytes(request, pretty=True)
+    result_bytes = coordinator._canonical_json_bytes(result, pretty=True)
+    monkeypatch.setattr(
+        coordinator,
+        "get_databricks_run",
+        lambda _workspace, _run_id: _terminal(payload),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "download_databricks_volume_file_bytes",
+        lambda _workspace, uri, **_kwargs: (
+            request_bytes if uri == request["request_uri"] else result_bytes
+        ),
+    )
+    workspace = DatabricksWorkspaceConfig("https://workspace.example", "token")
+    with pytest.raises(ValueError, match="full mounted closure"):
+        coordinator.collect_publication_handoff_closure(
+            workspace,
+            reservation_root=root,
+            request_authorization=request_authorization,
+        )
+
+
+@pytest.mark.parametrize("stage", ["q8", "bf16"])
+def test_compact_result_rejects_resealed_worker_batch_substitution(
+    stage: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_synthetic_manifests(monkeypatch)
+    request = _request(stage=stage)
+    result = _result(request)
+    execution = result["execution"]["record"]
+    reconciliation = execution["ledger_reconciliation"]
+    reconciliation["attempts"][0]["attempt_id"] = "substituted-attempt"
+    reconciliation["attempts_sha256"] = coordinator._canonical_sha256(
+        reconciliation["attempts"]
+    )
+    execution["closed_record_sha256"] = (
+        coordinator._q8._closed_record_sha256(execution)
+        if stage == "q8"
+        else coordinator._bf16._closed_record_sha256(execution)
+    )
+    result["execution"]["closed_record_sha256"] = execution["closed_record_sha256"]
+    result["execution"]["file_sha256"] = sha256(
+        coordinator._canonical_json_bytes(execution, pretty=True)
+    ).hexdigest()
+    result["closed_record_sha256"] = coordinator._closed_record_sha256(result)
+    with pytest.raises(ValueError, match="ledger closure is incomplete"):
+        coordinator._validate_closure_result(result, request=request)
+
+
+def test_failed_run_cannot_fetch_or_authorize_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request()
+    root = tmp_path / "reservation"
+    request_authorization = _authorize_request(
+        request, controller_lease_root=root
+    )
+    payload = _write_collection_reservation(root, request_authorization)
+    monkeypatch.setattr(
+        coordinator,
+        "get_databricks_run",
+        lambda _workspace, _run_id: _terminal(payload, succeeded=False),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "download_databricks_volume_file_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("failed coordinator fetched an artifact")
+        ),
+    )
+    workspace = DatabricksWorkspaceConfig("https://workspace.example", "token")
+    with pytest.raises(ValueError, match="not one successful"):
+        coordinator.collect_publication_handoff_closure(
+            workspace,
+            reservation_root=root,
+            request_authorization=request_authorization,
+        )
+
+
+@pytest.mark.parametrize("attempt_number", [False, 1])
+def test_nonzero_or_boolean_attempt_number_cannot_authorize_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attempt_number: object,
+) -> None:
+    request = _request()
+    root = tmp_path / "reservation"
+    request_authorization = _authorize_request(
+        request, controller_lease_root=root
+    )
+    payload = _write_collection_reservation(root, request_authorization)
+    terminal = _terminal(payload)
+    terminal["tasks"][0]["attempt_number"] = attempt_number
+    monkeypatch.setattr(
+        coordinator,
+        "get_databricks_run",
+        lambda _workspace, _run_id: terminal,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "download_databricks_volume_file_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("repaired coordinator fetched an artifact")
+        ),
+    )
+    workspace = DatabricksWorkspaceConfig("https://workspace.example", "token")
+    with pytest.raises(ValueError, match="attempt zero"):
+        coordinator.collect_publication_handoff_closure(
+            workspace,
+            reservation_root=root,
+            request_authorization=request_authorization,
+        )
+
+
+@pytest.mark.parametrize("task_run_id", [None, False, 0, "022345", 12345])
+def test_noncanonical_or_parent_equal_task_run_id_cannot_authorize_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    task_run_id: object,
+) -> None:
+    request = _request()
+    root = tmp_path / "reservation"
+    request_authorization = _authorize_request(
+        request, controller_lease_root=root
+    )
+    payload = _write_collection_reservation(root, request_authorization)
+    terminal = _terminal(payload)
+    terminal["tasks"][0]["run_id"] = task_run_id
+    monkeypatch.setattr(
+        coordinator,
+        "get_databricks_run",
+        lambda _workspace, _run_id: terminal,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "download_databricks_volume_file_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid child run ID fetched an artifact")
+        ),
+    )
+    workspace = DatabricksWorkspaceConfig("https://workspace.example", "token")
+    with pytest.raises(ValueError, match="run ID|distinct child"):
+        coordinator.collect_publication_handoff_closure(
+            workspace,
+            reservation_root=root,
+            request_authorization=request_authorization,
+        )
+
+
+def test_remote_authority_constructor_is_issuer_only() -> None:
+    with pytest.raises(TypeError, match="collector issuer"):
+        coordinator.PublicationHandoffRemoteClosureAuthorization(
+            request={},
+            result={},
+            result_file_sha256="0" * 64,
+            coordinator_run_id="12345",
+            control_plane_status_sha256="1" * 64,
+            _issuer=object(),
+        )
+
+
+@pytest.mark.parametrize("stage", ["q8", "bf16"])
+def test_remote_ledger_snapshot_override_is_coordinator_issuer_only(
+    stage: str, tmp_path: Path
+) -> None:
+    ledger = DatabricksClusterHourLedger(ledger_id="campaign-ledger")
+    common = {
+        "prepared_input_dir": tmp_path,
+        "durable_output_root": tmp_path,
+        "tokenizer": object(),
+        "config": object(),
+        "ledger_path": tmp_path / "missing-ledger.json",
+        "attempt_ids_by_worker": {},
+        "_ledger_snapshot": ledger,
+        "_ledger_path_sha256": _digest("ledger-path"),
+        "_remote_ledger_issuer": object(),
+    }
+    with pytest.raises(TypeError, match="coordinator issuer"):
+        if stage == "q8":
+            coordinator._q8.close_publication_latency_handoff_generation_from_workers(
+                {}, attestations_by_worker={}, **common
+            )
+        else:
+            coordinator._bf16.close_publication_bf16_handoff_generation_from_workers(
+                {}, worker_authorizations={}, **common
+            )
+
+
+@pytest.mark.parametrize("stage", ["q8", "bf16"])
+def test_mounted_coordinator_calls_existing_closer_with_remote_ledger_snapshot(
+    stage: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request(stage=stage)
+    root = tmp_path / stage
+    root.mkdir()
+    prepared = tmp_path / f"{stage}-prepared"
+    prepared.mkdir()
+    plan = {"closed_record_sha256": request["plan"]["closed_record_sha256"]}
+    plan_bytes = coordinator._canonical_json_bytes(plan, pretty=True)
+    plan_path = tmp_path / f"{stage}-plan.json"
+    plan_path.write_bytes(plan_bytes)
+    request["plan"]["file_sha256"] = sha256(plan_bytes).hexdigest()
+    request["closed_record_sha256"] = coordinator._closed_record_sha256(request)
+    coordinator._validate_closure_request(request)
+    result_path = tmp_path / f"{stage}-result.json"
+    paths = {
+        request["output_root_uri"]: root,
+        request["prepared_input_root_uri"]: prepared,
+        request["plan"]["uri"]: plan_path,
+        request["result_uri"]: result_path,
+    }
+    monkeypatch.setattr(coordinator, "_cluster_path", lambda uri: paths[uri])
+    monkeypatch.setattr(coordinator, "_verify_source_closure", lambda _record: None)
+    tokenizer = object()
+    monkeypatch.setattr(coordinator, "load_main_latency_tokenizer", lambda: tokenizer)
+    captured: dict[str, Any] = {}
+    closed = SimpleNamespace(stage=stage)
+
+    def close(_plan, **kwargs):
+        captured.update(kwargs)
+        return closed
+
+    if stage == "q8":
+        monkeypatch.setattr(
+            coordinator._q8,
+            "_execution_config_from_record",
+            lambda _record: "q8-config",
+        )
+        monkeypatch.setattr(
+            coordinator._q8,
+            "close_publication_latency_handoff_generation_from_workers",
+            close,
+        )
+    else:
+        monkeypatch.setattr(
+            coordinator._bf16,
+            "_execution_config_from_record",
+            lambda _record: "bf16-config",
+        )
+        monkeypatch.setattr(
+            coordinator._bf16,
+            "close_publication_bf16_handoff_generation_from_workers",
+            close,
+        )
+    compact = {
+        "closed_record_sha256": _digest(f"{stage}-compact"),
+        "stage": stage,
+    }
+
+    def build_compact(_request, *, closed: Any, coordinator_run_id: str):
+        assert closed is not None
+        assert coordinator_run_id == "12345"
+        return compact
+
+    monkeypatch.setattr(coordinator, "_build_compact_result", build_compact)
+    assert (
+        coordinator.run_publication_handoff_closure_coordinator(
+            request, coordinator_run_id="12345"
+        )
+        == compact
+    )
+    assert captured["prepared_input_dir"] == prepared
+    assert captured["durable_output_root"] == root
+    assert captured["tokenizer"] is tokenizer
+    assert captured["ledger_path"] == Path(
+        "/local_disk0/cachet-remote-ledger-snapshot.json"
+    )
+    assert captured["_ledger_snapshot"].ledger_id == "campaign-ledger"
+    assert (
+        captured["_ledger_path_sha256"]
+        == request["ledger_lineage"]["ledger_path_sha256"]
+    )
+    if stage == "q8":
+        assert (
+            captured["_expected_producer_batch_prefix"].to_record()
+            == request["ledger_lineage"]["producer_batch_prefix"]
+        )
+    assert set(captured["attempt_ids_by_worker"]) == set(range(16))
+    evidence_name = (
+        "attestations_by_worker" if stage == "q8" else "worker_authorizations"
+    )
+    assert set(captured[evidence_name]) == set(range(16))
+
+
+@pytest.mark.parametrize("stage", ["q8", "bf16"])
+@pytest.mark.parametrize("recovery", ["execution", "compact"])
+def test_mounted_recovery_runs_full_post_close_replay(
+    stage: str,
+    recovery: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(stage=stage)
+    root = tmp_path / stage
+    root.mkdir()
+    prepared = tmp_path / f"{stage}-prepared"
+    prepared.mkdir()
+    plan = {"closed_record_sha256": request["plan"]["closed_record_sha256"]}
+    plan_bytes = coordinator._canonical_json_bytes(plan, pretty=True)
+    plan_path = tmp_path / f"{stage}-plan.json"
+    plan_path.write_bytes(plan_bytes)
+    request["plan"]["file_sha256"] = sha256(plan_bytes).hexdigest()
+    request["closed_record_sha256"] = coordinator._closed_record_sha256(request)
+    result_path = tmp_path / f"{stage}-result.json"
+    paths = {
+        request["output_root_uri"]: root,
+        request["prepared_input_root_uri"]: prepared,
+        request["plan"]["uri"]: plan_path,
+        request["result_uri"]: result_path,
+    }
+    monkeypatch.setattr(coordinator, "_cluster_path", lambda uri: paths[uri])
+    monkeypatch.setattr(coordinator, "_verify_source_closure", lambda _record: None)
+    monkeypatch.setattr(coordinator, "load_main_latency_tokenizer", lambda: object())
+    compact = {
+        "closed_record_sha256": "",
+        "coordinator": {"run_id": "12345"},
+        "stage": stage,
+    }
+    compact["closed_record_sha256"] = coordinator._closed_record_sha256(compact)
+    closed = SimpleNamespace(stage=stage)
+    captured: dict[str, Any] = {}
+
+    def replay(_plan, **kwargs):
+        captured.update(kwargs)
+        return closed
+
+    if stage == "q8":
+        execution_path = (
+            root / coordinator._q8.PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME
+        )
+        monkeypatch.setattr(
+            coordinator._q8, "_execution_config_from_record", lambda _record: "config"
+        )
+        monkeypatch.setattr(
+            coordinator._q8,
+            "_replay_closed_publication_latency_handoff_generation",
+            replay,
+        )
+        monkeypatch.setattr(
+            coordinator._q8,
+            "close_publication_latency_handoff_generation_from_workers",
+            lambda *_args, **_kwargs: pytest.fail("recovery must not close again"),
+        )
+    else:
+        execution_path = root / coordinator._bf16.PUBLICATION_BF16_HANDOFF_EXECUTION_FILENAME
+        monkeypatch.setattr(
+            coordinator._bf16,
+            "_execution_config_from_record",
+            lambda _record: "config",
+        )
+        monkeypatch.setattr(
+            coordinator._bf16,
+            "_replay_closed_publication_bf16_handoff_generation",
+            replay,
+        )
+        monkeypatch.setattr(
+            coordinator._bf16,
+            "close_publication_bf16_handoff_generation_from_workers",
+            lambda *_args, **_kwargs: pytest.fail("recovery must not close again"),
+        )
+    if recovery == "execution":
+        execution_path.write_bytes(b"closed execution marker")
+    else:
+        result_path.write_bytes(coordinator._canonical_json_bytes(compact, pretty=True))
+        monkeypatch.setattr(
+            coordinator, "_validate_closure_result", lambda *_args, **_kwargs: None
+        )
+    monkeypatch.setattr(
+        coordinator,
+        "_build_compact_result",
+        lambda _request, *, closed, coordinator_run_id: compact,
+    )
+
+    assert coordinator.run_publication_handoff_closure_coordinator(
+        request, coordinator_run_id="12345"
+    ) == compact
+    assert captured["ledger_snapshot"].ledger_id == "campaign-ledger"
+    assert captured["ledger_path_sha256"] == request["ledger_lineage"][
+        "ledger_path_sha256"
+    ]
+    assert captured["expected_producer_batch_prefix"].to_record() == request[
+        "ledger_lineage"
+    ]["producer_batch_prefix"]
+    issuer = (
+        coordinator._q8._POST_CLOSE_REPLAY_ISSUER
+        if stage == "q8"
+        else coordinator._bf16._POST_CLOSE_REPLAY_ISSUER
+    )
+    assert captured["_issuer"] is issuer
+
+
+@pytest.mark.parametrize("stage", ["q8", "bf16"])
+def test_existing_resealed_compact_result_must_equal_fresh_replay(
+    stage: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request(stage=stage)
+    root = tmp_path / stage
+    root.mkdir()
+    prepared = tmp_path / f"{stage}-prepared"
+    prepared.mkdir()
+    plan = {"closed_record_sha256": request["plan"]["closed_record_sha256"]}
+    plan_bytes = coordinator._canonical_json_bytes(plan, pretty=True)
+    plan_path = tmp_path / f"{stage}-plan.json"
+    plan_path.write_bytes(plan_bytes)
+    request["plan"]["file_sha256"] = sha256(plan_bytes).hexdigest()
+    request["closed_record_sha256"] = coordinator._closed_record_sha256(request)
+    result_path = tmp_path / f"{stage}-result.json"
+    paths = {
+        request["output_root_uri"]: root,
+        request["prepared_input_root_uri"]: prepared,
+        request["plan"]["uri"]: plan_path,
+        request["result_uri"]: result_path,
+    }
+    monkeypatch.setattr(coordinator, "_cluster_path", lambda uri: paths[uri])
+    monkeypatch.setattr(coordinator, "_verify_source_closure", lambda _record: None)
+    monkeypatch.setattr(coordinator, "load_main_latency_tokenizer", lambda: object())
+    expected = {
+        "closed_record_sha256": "",
+        "coordinator": {"run_id": "12345"},
+        "stage": stage,
+    }
+    expected["closed_record_sha256"] = coordinator._closed_record_sha256(expected)
+    resealed = copy.deepcopy(expected)
+    resealed["unreviewed_resealed_field"] = True
+    resealed["closed_record_sha256"] = coordinator._closed_record_sha256(resealed)
+    result_path.write_bytes(coordinator._canonical_json_bytes(resealed, pretty=True))
+    monkeypatch.setattr(
+        coordinator, "_validate_closure_result", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_build_compact_result",
+        lambda _request, *, closed, coordinator_run_id: expected,
+    )
+    if stage == "q8":
+        monkeypatch.setattr(
+            coordinator._q8, "_execution_config_from_record", lambda _record: object()
+        )
+        monkeypatch.setattr(
+            coordinator._q8,
+            "_replay_closed_publication_latency_handoff_generation",
+            lambda *_args, **_kwargs: SimpleNamespace(stage=stage),
+        )
+    else:
+        monkeypatch.setattr(
+            coordinator._bf16, "_execution_config_from_record", lambda _record: object()
+        )
+        monkeypatch.setattr(
+            coordinator._bf16,
+            "_replay_closed_publication_bf16_handoff_generation",
+            lambda *_args, **_kwargs: SimpleNamespace(stage=stage),
+        )
+    with pytest.raises(ValueError, match="differs from full post-close replay"):
+        coordinator.run_publication_handoff_closure_coordinator(
+            request, coordinator_run_id="12345"
+        )
+
+
+@pytest.mark.parametrize("stage", ["q8", "bf16"])
+def test_post_close_replay_helpers_are_coordinator_issuer_only(
+    stage: str, tmp_path: Path
+) -> None:
+    common = {
+        "prepared_input_dir": tmp_path,
+        "durable_output_root": tmp_path,
+        "tokenizer": object(),
+        "config": object(),
+        "ledger_snapshot": DatabricksClusterHourLedger(ledger_id="ledger"),
+        "ledger_path_sha256": _digest("ledger-path"),
+        "expected_producer_batch_prefix": databricks_ledger_prefix(
+            DatabricksClusterHourLedger(ledger_id="ledger")
+        ),
+        "attempt_ids_by_worker": {},
+        "_issuer": object(),
+    }
+    with pytest.raises(TypeError, match="coordinator issuer"):
+        if stage == "q8":
+            coordinator._q8._replay_closed_publication_latency_handoff_generation(
+                {}, attestations_by_worker={}, **common
+            )
+        else:
+            coordinator._bf16._replay_closed_publication_bf16_handoff_generation(
+                {}, worker_authorizations={}, **common
+            )

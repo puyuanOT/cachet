@@ -202,6 +202,9 @@ Publication requires all of the following:
 - qualified L4/A10G/L40S runtime artifacts as applicable;
 - 16 independent Q8 and 16 independent BF16 no-retry L40S
   handoff-generation attestations;
+- 23 attempt-zero, no-retry CPU coordinator attestations (two Q8/BF16 tree
+  closers, one latency-source closer, and 20 full-score ready/evidence closers),
+  each proving zero GPU-ledger mutation;
 - matched fresh-cluster latency execution records for all planned cells;
 - the corrected complete paired score execution record;
 - resource, cache-state, and Databricks control-plane attestations; and

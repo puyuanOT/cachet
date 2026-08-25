@@ -48,7 +48,17 @@ __all__ = [
     "DATABRICKS_PROFILE_AUTH_MODES",
     "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
     "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
+    "DATABRICKS_ACTIVE_RUNS_MAX_ENTRIES",
+    "DATABRICKS_ACTIVE_RUNS_MAX_PAGES",
+    "DATABRICKS_API_PAGE_MAX_BYTES",
+    "DATABRICKS_API_PAGE_TOKEN_MAX_BYTES",
+    "DATABRICKS_NODE_TYPES_MAX_ENTRIES",
+    "DATABRICKS_VOLUME_DIRECTORY_MAX_ENTRIES",
+    "DATABRICKS_VOLUME_DIRECTORY_MAX_PAGES",
+    "DATABRICKS_VOLUME_DIRECTORY_MAX_PAGE_TOKEN_BYTES",
     "DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES",
+    "DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES",
+    "DATABRICKS_VOLUME_FILE_MAX_UPLOAD_BYTES",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
     "DatabricksPreReservedPostClaimExistsError",
@@ -67,6 +77,12 @@ __all__ = [
     "reserve_and_submit_databricks_run_json",
     "get_databricks_run",
     "download_databricks_volume_file_bytes",
+    "stream_databricks_volume_file_sha256",
+    "get_databricks_volume_file_metadata",
+    "list_active_databricks_runs",
+    "list_databricks_node_types",
+    "list_databricks_volume_directory",
+    "upload_databricks_volume_file_bytes_exclusive",
     "put_databricks_dbfs_file",
     "plan_databricks_stage_and_submit",
     "stage_and_submit_databricks_run",
@@ -85,7 +101,19 @@ DEFAULT_DATABRICKS_CONFIG_FILE = "~/.databrickscfg"
 DEFAULT_DATABRICKS_TIMEOUT_SECONDS = 60.0
 DATABRICKS_PROFILE_AUTH_MODES = ("auto", "static", "sdk")
 DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES = 1_000_000
+DATABRICKS_ACTIVE_RUNS_MAX_ENTRIES = 256
+DATABRICKS_ACTIVE_RUNS_MAX_PAGES = 64
+DATABRICKS_API_PAGE_MAX_BYTES = 16 * 1024 * 1024
+DATABRICKS_API_PAGE_TOKEN_MAX_BYTES = 4_096
+DATABRICKS_NODE_TYPES_MAX_ENTRIES = 1_024
+DATABRICKS_VOLUME_DIRECTORY_MAX_ENTRIES = 4_096
+DATABRICKS_VOLUME_DIRECTORY_MAX_PAGES = 64
+DATABRICKS_VOLUME_DIRECTORY_MAX_PAGE_TOKEN_BYTES = 4_096
 DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES = 1024 * 1024 * 1024
+DATABRICKS_VOLUME_FILE_MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+_DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES = 1024 * 1024
+_DATABRICKS_ACTIVE_RUNS_PAGE_SIZE = 20
 _DATABRICKS_ERROR_BODY_MAX_BYTES = 64 * 1024
 DATABRICKS_AUTH_CHECK_RECORD_TYPE = "document_kv.databricks_auth_check.v1"
 DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
@@ -234,6 +262,7 @@ class DatabricksHTTPResponse(Protocol):
 
 class DatabricksBinaryHTTPResponse(Protocol):
     status: int
+    headers: Mapping[str, str]
 
     def __enter__(self) -> "DatabricksBinaryHTTPResponse": ...
 
@@ -1033,6 +1062,170 @@ def get_databricks_run(
     )
 
 
+def list_active_databricks_runs(
+    config: DatabricksWorkspaceConfig,
+    *,
+    max_runs: int = DATABRICKS_ACTIVE_RUNS_MAX_ENTRIES,
+    opener: DatabricksBinaryURLOpener | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Return a bounded, sanitized snapshot of every active Jobs run."""
+
+    _validate_databricks_entry_cap(
+        max_runs,
+        upper_bound=DATABRICKS_ACTIVE_RUNS_MAX_ENTRIES,
+        label="max_runs",
+    )
+    resolved_opener = (
+        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    runs: dict[int, dict[str, Any]] = {}
+    seen_tokens: set[str] = set()
+    page_token: str | None = None
+    page_count = 0
+    while True:
+        page_count += 1
+        if page_count > DATABRICKS_ACTIVE_RUNS_MAX_PAGES:
+            raise RuntimeError(
+                "Databricks active-runs snapshot exceeds the controller page cap"
+            )
+        page_limit = min(_DATABRICKS_ACTIVE_RUNS_PAGE_SIZE, max_runs - len(runs))
+        if page_limit <= 0:
+            raise RuntimeError(
+                "Databricks active-runs snapshot exceeds the controller entry cap"
+            )
+        query = {"active_only": "true", "limit": str(page_limit)}
+        if page_token is not None:
+            query["page_token"] = page_token
+        request = urllib.request.Request(
+            f"{config.normalized_host}/api/2.1/jobs/runs/list?"
+            f"{urllib.parse.urlencode(query)}",
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {config.token}",
+            },
+        )
+        page = _bounded_databricks_json_object(
+            config,
+            request,
+            max_bytes=DATABRICKS_API_PAGE_MAX_BYTES,
+            opener=resolved_opener,
+            label="Databricks active-runs snapshot",
+        )
+        if set(page) - {"has_more", "next_page_token", "prev_page_token", "runs"}:
+            raise RuntimeError("Databricks active-runs response schema drift")
+        raw_runs = page.get("runs", [])
+        if not isinstance(raw_runs, list) or len(raw_runs) > page_limit:
+            raise RuntimeError("Databricks active-runs page entry cap drift")
+        for raw_run in raw_runs:
+            run = _validated_active_databricks_run(raw_run, token=config.token)
+            run_id = cast(int, run["run_id"])
+            if run_id in runs:
+                raise RuntimeError("Databricks active-runs response duplicates run_id")
+            runs[run_id] = run
+            if len(runs) > max_runs:
+                raise RuntimeError(
+                    "Databricks active-runs snapshot exceeds the controller entry cap"
+                )
+        has_more = page.get("has_more")
+        if has_more is not None and type(has_more) is not bool:
+            raise RuntimeError("Databricks active-runs has_more is invalid")
+        _validated_optional_databricks_page_token(
+            page.get("prev_page_token"),
+            label="Databricks active-runs prev_page_token",
+        )
+        next_page_token = _validated_optional_databricks_page_token(
+            page.get("next_page_token"),
+            label="Databricks active-runs next_page_token",
+        )
+        if next_page_token is None:
+            if has_more is True:
+                raise RuntimeError(
+                    "Databricks active-runs response omitted its next page token"
+                )
+            break
+        if has_more is False:
+            raise RuntimeError(
+                "Databricks active-runs pagination metadata is contradictory"
+            )
+        if next_page_token in seen_tokens:
+            raise RuntimeError("Databricks active-runs page token repeated")
+        if len(runs) >= max_runs:
+            raise RuntimeError(
+                "Databricks active-runs snapshot exceeds the controller entry cap"
+            )
+        seen_tokens.add(next_page_token)
+        page_token = next_page_token
+    return tuple(runs[run_id] for run_id in sorted(runs))
+
+
+def list_databricks_node_types(
+    config: DatabricksWorkspaceConfig,
+    *,
+    max_node_types: int = DATABRICKS_NODE_TYPES_MAX_ENTRIES,
+    opener: DatabricksBinaryURLOpener | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Return the bounded set of launchable node-type identifiers."""
+
+    _validate_databricks_entry_cap(
+        max_node_types,
+        upper_bound=DATABRICKS_NODE_TYPES_MAX_ENTRIES,
+        label="max_node_types",
+    )
+    request = urllib.request.Request(
+        f"{config.normalized_host}/api/2.0/clusters/list-node-types",
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {config.token}",
+        },
+    )
+    resolved_opener = (
+        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    response = _bounded_databricks_json_object(
+        config,
+        request,
+        max_bytes=DATABRICKS_API_PAGE_MAX_BYTES,
+        opener=resolved_opener,
+        label="Databricks node-types snapshot",
+    )
+    if "node_types" not in response or set(response) - {"node_types", "success"}:
+        raise RuntimeError("Databricks node-types response schema drift")
+    if "success" in response and (
+        not isinstance(response["success"], Mapping) or response["success"]
+    ):
+        raise RuntimeError("Databricks node-types success marker drift")
+    raw_node_types = response.get("node_types")
+    if not isinstance(raw_node_types, list):
+        raise RuntimeError("Databricks node-types response must contain an array")
+    if len(raw_node_types) > max_node_types:
+        raise RuntimeError(
+            "Databricks node-types snapshot exceeds the controller entry cap"
+        )
+    node_types: dict[str, dict[str, Any]] = {}
+    for raw_node_type in raw_node_types:
+        if not isinstance(raw_node_type, Mapping):
+            raise RuntimeError("Databricks node-type entry must be an object")
+        node_type_id = _validated_databricks_identifier(
+            raw_node_type.get("node_type_id"),
+            label="Databricks node_type_id",
+        )
+        _require_databricks_non_secret_text(
+            node_type_id,
+            token=config.token,
+            label="Databricks node_type_id",
+        )
+        if node_type_id in node_types:
+            raise RuntimeError("Databricks node-types response duplicates node_type_id")
+        node_types[node_type_id] = {"node_type_id": node_type_id}
+    return tuple(node_types[node_type_id] for node_type_id in sorted(node_types))
+
+
 def download_databricks_volume_file_bytes(
     config: DatabricksWorkspaceConfig,
     dbfs_uri: str,
@@ -1101,6 +1294,424 @@ def download_databricks_volume_file_bytes(
             f"more than {max_bytes} bytes"
         )
     return content
+
+
+def stream_databricks_volume_file_sha256(
+    config: DatabricksWorkspaceConfig,
+    dbfs_uri: str,
+    *,
+    max_bytes: int = DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES,
+    opener: DatabricksBinaryURLOpener | None = None,
+) -> dict[str, Any]:
+    """Stream one canonical Volume file and return its exact identity.
+
+    The response is never accumulated in controller memory.  A mandatory
+    ``Content-Length`` is admitted before the first body byte, every read is
+    bounded to one MiB, and an explicit EOF probe rejects trailing bytes.
+    """
+
+    volume_path = _canonical_databricks_volume_file_path(dbfs_uri)
+    _validate_databricks_volume_byte_cap(
+        max_bytes,
+        upper_bound=DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES,
+        label="max_bytes",
+    )
+    encoded_path = urllib.parse.quote(volume_path, safe="/-._~")
+    request = urllib.request.Request(
+        f"{config.normalized_host}/api/2.0/fs/files{encoded_path}",
+        method="GET",
+        headers={
+            "Accept": "application/octet-stream",
+            "Accept-Encoding": "identity",
+            "Authorization": f"Bearer {config.token}",
+        },
+    )
+    resolved_opener = (
+        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    try:
+        with resolved_opener(request, timeout=config.timeout_seconds) as response:
+            status = getattr(response, "status", None)
+            if status != 200:
+                raise RuntimeError(
+                    "Databricks Files API stream returned unexpected HTTP "
+                    f"status {status!r}"
+                )
+            raw_headers = getattr(response, "headers", None)
+            if raw_headers is None or not hasattr(raw_headers, "get"):
+                raise RuntimeError(
+                    "Databricks Files API stream response headers are missing"
+                )
+            content_length = _required_databricks_content_length(
+                raw_headers.get("content-length"),
+                max_bytes=max_bytes,
+                label="Databricks Files API stream",
+            )
+            content_encoding = raw_headers.get("content-encoding")
+            if content_encoding not in (None, "", "identity"):
+                raise RuntimeError(
+                    "Databricks Files API stream content-encoding is not identity"
+                )
+            digest = hashlib.sha256()
+            size_bytes = 0
+            while size_bytes < content_length:
+                read_size = min(
+                    _DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES,
+                    content_length - size_bytes,
+                )
+                chunk = response.read(read_size)
+                if type(chunk) is not bytes:
+                    raise RuntimeError(
+                        "Databricks Files API stream chunk must be bytes"
+                    )
+                if not chunk:
+                    raise RuntimeError(
+                        "Databricks Files API stream ended before content-length"
+                    )
+                if len(chunk) > read_size:
+                    raise RuntimeError(
+                        "Databricks Files API stream exceeded the chunk byte cap"
+                    )
+                size_bytes += len(chunk)
+                if size_bytes > max_bytes:
+                    raise RuntimeError(
+                        "Databricks Files API stream exceeds the controller byte cap"
+                    )
+                digest.update(chunk)
+            eof = response.read(1)
+            if type(eof) is not bytes:
+                raise RuntimeError("Databricks Files API EOF probe must return bytes")
+            if eof:
+                raise RuntimeError(
+                    "Databricks Files API stream contains bytes beyond content-length"
+                )
+    except urllib.error.HTTPError as exc:
+        raise _databricks_binary_http_error(exc, token=config.token) from exc
+    except urllib.error.URLError as exc:
+        reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
+        raise RuntimeError(f"Databricks request failed: {reason}") from exc
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise RuntimeError(reason or "Databricks Files API stream failed") from exc
+    if size_bytes != content_length:
+        raise AssertionError("Databricks Files API stream size accounting drift")
+    return {
+        "dbfs_uri": dbfs_uri,
+        "file_sha256": digest.hexdigest(),
+        "size_bytes": size_bytes,
+    }
+
+
+def get_databricks_volume_file_metadata(
+    config: DatabricksWorkspaceConfig,
+    dbfs_uri: str,
+    *,
+    max_bytes: int = DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
+    opener: DatabricksBinaryURLOpener | None = None,
+) -> dict[str, Any]:
+    """Read bounded metadata for one canonical UC Volume file via ``HEAD``.
+
+    The Files API exposes file metadata in standard response headers.  A
+    content length above *max_bytes* is rejected so a caller cannot use a
+    successful metadata probe to authorize an unbounded controller download.
+    """
+
+    volume_path = _canonical_databricks_volume_file_path(dbfs_uri)
+    _validate_databricks_volume_byte_cap(
+        max_bytes,
+        upper_bound=DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
+        label="max_bytes",
+    )
+    encoded_path = urllib.parse.quote(volume_path, safe="/-._~")
+    request = urllib.request.Request(
+        f"{config.normalized_host}/api/2.0/fs/files{encoded_path}",
+        method="HEAD",
+        headers={
+            "Accept": "application/octet-stream",
+            "Authorization": f"Bearer {config.token}",
+        },
+    )
+    resolved_opener = (
+        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    try:
+        with resolved_opener(request, timeout=config.timeout_seconds) as response:
+            status = getattr(response, "status", None)
+            if status != 200:
+                raise RuntimeError(
+                    "Databricks Files API metadata returned unexpected HTTP "
+                    f"status {status!r}"
+                )
+            raw_headers = getattr(response, "headers", None)
+            if raw_headers is None or not hasattr(raw_headers, "get"):
+                raise RuntimeError(
+                    "Databricks Files API metadata response headers are missing"
+                )
+            content_length_raw = raw_headers.get("content-length")
+            content_type_raw = raw_headers.get("content-type")
+            last_modified_raw = raw_headers.get("last-modified")
+            unexpected_body = response.read(1)
+    except urllib.error.HTTPError as exc:
+        raise _databricks_binary_http_error(exc, token=config.token) from exc
+    except urllib.error.URLError as exc:
+        reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
+        raise RuntimeError(f"Databricks request failed: {reason}") from exc
+    if unexpected_body != b"":
+        raise RuntimeError("Databricks Files API metadata response body is not empty")
+    try:
+        content_length = int(content_length_raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Databricks Files API metadata content-length is invalid"
+        ) from exc
+    if content_length < 0 or content_length > max_bytes:
+        raise RuntimeError(
+            "Databricks Files API metadata content-length exceeds the controller "
+            f"byte cap: {content_length} > {max_bytes}"
+        )
+    metadata: dict[str, Any] = {
+        "content_length": content_length,
+        "dbfs_uri": dbfs_uri,
+    }
+    if content_type_raw is not None:
+        metadata["content_type"] = _validated_databricks_metadata_header(
+            content_type_raw, "content-type"
+        )
+    if last_modified_raw is not None:
+        metadata["last_modified"] = _validated_databricks_metadata_header(
+            last_modified_raw, "last-modified"
+        )
+    return metadata
+
+
+def upload_databricks_volume_file_bytes_exclusive(
+    config: DatabricksWorkspaceConfig,
+    dbfs_uri: str,
+    content: bytes,
+    *,
+    max_bytes: int = DATABRICKS_VOLUME_FILE_MAX_UPLOAD_BYTES,
+    opener: DatabricksBinaryURLOpener | None = None,
+    readback_opener: DatabricksBinaryURLOpener | None = None,
+) -> dict[str, Any]:
+    """Exclusively publish bounded bytes to a canonical UC Volume file.
+
+    Every PUT explicitly sends ``overwrite=false``.  If an earlier identical
+    PUT won, or the original response was lost, a bounded authenticated GET
+    converts that replay into success only when the existing bytes match
+    exactly.  Different bytes always fail closed and are never overwritten.
+    """
+
+    volume_path = _canonical_databricks_volume_file_path(dbfs_uri)
+    _validate_databricks_volume_byte_cap(
+        max_bytes,
+        upper_bound=DATABRICKS_VOLUME_FILE_MAX_UPLOAD_BYTES,
+        label="max_bytes",
+    )
+    if type(content) is not bytes:
+        raise TypeError("content must be bytes")
+    if len(content) > max_bytes:
+        raise ValueError(
+            "content exceeds the Databricks Files API controller upload cap: "
+            f"{len(content)} > {max_bytes}"
+        )
+    encoded_path = urllib.parse.quote(volume_path, safe="/-._~")
+    request = urllib.request.Request(
+        f"{config.normalized_host}/api/2.0/fs/files{encoded_path}?overwrite=false",
+        data=content,
+        method="PUT",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {config.token}",
+            "Content-Type": "application/octet-stream",
+        },
+    )
+    resolved_opener = (
+        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    replay_reason: BaseException | None = None
+    try:
+        with resolved_opener(request, timeout=config.timeout_seconds) as response:
+            status = getattr(response, "status", None)
+            if status != 204:
+                raise RuntimeError(
+                    "Databricks Files API exclusive upload returned unexpected "
+                    f"HTTP status {status!r}"
+                )
+            response_body = response.read(1)
+            if response_body != b"":
+                raise RuntimeError(
+                    "Databricks Files API exclusive upload response body is not empty"
+                )
+    except urllib.error.HTTPError as exc:
+        if exc.code not in {400, 409}:
+            raise _databricks_binary_http_error(exc, token=config.token) from exc
+        replay_reason = exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        replay_reason = exc
+    if replay_reason is not None:
+        resolved_readback_opener = readback_opener
+        if resolved_readback_opener is None:
+            resolved_readback_opener = opener
+        try:
+            existing = download_databricks_volume_file_bytes(
+                config,
+                dbfs_uri,
+                max_bytes=max_bytes,
+                opener=resolved_readback_opener,
+            )
+        except Exception as readback_error:
+            if isinstance(replay_reason, urllib.error.HTTPError):
+                formatted = _databricks_binary_http_error(
+                    replay_reason, token=config.token
+                )
+                raise RuntimeError(
+                    f"{formatted}; exclusive upload readback did not prove replay"
+                ) from readback_error
+            reason = _redact_databricks_secret_text(
+                str(replay_reason), token=config.token
+            )
+            raise RuntimeError(
+                "Databricks Files API exclusive upload outcome was uncertain and "
+                f"readback did not prove replay: {reason}"
+            ) from readback_error
+        if existing != content:
+            raise RuntimeError(
+                "Databricks Files API exclusive upload conflicts with different "
+                "existing bytes"
+            ) from replay_reason
+        created = False
+    else:
+        created = True
+    return {
+        "created": created,
+        "dbfs_uri": dbfs_uri,
+        "file_sha256": hashlib.sha256(content).hexdigest(),
+        "size_bytes": len(content),
+    }
+
+
+def list_databricks_volume_directory(
+    config: DatabricksWorkspaceConfig,
+    dbfs_uri: str,
+    *,
+    max_entries: int = DATABRICKS_VOLUME_DIRECTORY_MAX_ENTRIES,
+    opener: DatabricksBinaryURLOpener | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Return one complete, bounded UC Volume directory listing.
+
+    Pagination terminates only when ``next_page_token`` is absent.  Every
+    returned entry must be one canonical direct child of *dbfs_uri*; duplicate
+    paths, token cycles, malformed metadata, and listings above the controller
+    cap fail closed.  This is metadata-only transport: callers must use
+    :func:`download_databricks_volume_file_bytes` for explicitly bounded files.
+    """
+
+    directory_path = _canonical_databricks_volume_directory_path(dbfs_uri)
+    if (
+        type(max_entries) is not int
+        or max_entries < 0
+        or max_entries > DATABRICKS_VOLUME_DIRECTORY_MAX_ENTRIES
+    ):
+        raise ValueError(
+            "max_entries must be a non-negative integer no greater than "
+            f"{DATABRICKS_VOLUME_DIRECTORY_MAX_ENTRIES}"
+        )
+    resolved_opener = (
+        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    encoded_path = urllib.parse.quote(directory_path, safe="/-._~")
+    entries: dict[str, dict[str, Any]] = {}
+    seen_tokens: set[str] = set()
+    page_token: str | None = None
+    page_count = 0
+    while True:
+        page_count += 1
+        if page_count > DATABRICKS_VOLUME_DIRECTORY_MAX_PAGES:
+            raise RuntimeError(
+                "Databricks Files API directory listing exceeds the controller "
+                f"page cap: more than {DATABRICKS_VOLUME_DIRECTORY_MAX_PAGES} pages"
+            )
+        query = {"page_size": "1000"}
+        if page_token is not None:
+            query["page_token"] = page_token
+        request = urllib.request.Request(
+            f"{config.normalized_host}/api/2.0/fs/directories{encoded_path}?"
+            f"{urllib.parse.urlencode(query)}",
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {config.token}",
+            },
+        )
+        raw_page = _bounded_databricks_binary_response(
+            config,
+            request,
+            max_bytes=DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
+            opener=resolved_opener,
+            label="Databricks Files API directory listing",
+        )
+        try:
+            page = json.loads(raw_page)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "Databricks Files API directory listing was not valid UTF-8 JSON"
+            ) from exc
+        if not isinstance(page, dict) or set(page) - {
+            "contents",
+            "next_page_token",
+        }:
+            raise RuntimeError("Databricks Files API directory listing schema drift")
+        contents = page.get("contents")
+        if not isinstance(contents, list):
+            raise RuntimeError(
+                "Databricks Files API directory listing contents must be an array"
+            )
+        for raw_entry in contents:
+            entry = _validated_databricks_volume_directory_entry(
+                raw_entry,
+                parent_path=directory_path,
+            )
+            entry_path = cast(str, entry["path"])
+            if entry_path in entries:
+                raise RuntimeError(
+                    "Databricks Files API directory listing contains duplicate paths"
+                )
+            entries[entry_path] = entry
+            if len(entries) > max_entries:
+                raise RuntimeError(
+                    "Databricks Files API directory listing exceeds the controller "
+                    f"entry cap: more than {max_entries} entries"
+                )
+        next_token = page.get("next_page_token")
+        if next_token is None:
+            break
+        if not isinstance(next_token, str) or not next_token:
+            raise RuntimeError(
+                "Databricks Files API directory next_page_token is invalid"
+            )
+        if (
+            len(next_token.encode("utf-8"))
+            > DATABRICKS_VOLUME_DIRECTORY_MAX_PAGE_TOKEN_BYTES
+        ):
+            raise RuntimeError(
+                "Databricks Files API directory next_page_token exceeds the "
+                "controller byte cap"
+            )
+        if next_token in seen_tokens:
+            raise RuntimeError(
+                "Databricks Files API directory pagination token repeated"
+            )
+        seen_tokens.add(next_token)
+        page_token = next_token
+    return tuple(entries[path] for path in sorted(entries))
 
 
 def put_databricks_dbfs_file(
@@ -2703,6 +3314,306 @@ def _canonical_databricks_volume_file_path(dbfs_uri: str) -> str:
             "dbfs:/Volumes/<catalog>/<schema>/<volume>/<file> URI"
         )
     return path.as_posix()
+
+
+def _canonical_databricks_volume_directory_path(dbfs_uri: str) -> str:
+    if not isinstance(dbfs_uri, str) or not dbfs_uri:
+        raise ValueError("dbfs_uri must be a non-empty string")
+    if not dbfs_uri.startswith("dbfs:"):
+        raise ValueError("Databricks Files API listing requires a dbfs:/Volumes URI")
+    raw_path = dbfs_uri.removeprefix("dbfs:")
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw_path):
+        raise ValueError("dbfs:/Volumes URI cannot contain control characters")
+    if any(character in raw_path for character in ("?", "#", "%", "\\")):
+        raise ValueError(
+            "dbfs:/Volumes URI must be a canonical path without URL syntax"
+        )
+    path = PurePosixPath(raw_path)
+    if (
+        not raw_path.startswith("/Volumes/")
+        or path.as_posix() != raw_path
+        or len(path.parts) < 5
+        or path.parts[:2] != ("/", "Volumes")
+        or any(part in {"", ".", ".."} for part in path.parts[1:])
+    ):
+        raise ValueError(
+            "Databricks Files API listing requires one canonical "
+            "dbfs:/Volumes/<catalog>/<schema>/<volume>[/<directory>] URI"
+        )
+    return path.as_posix()
+
+
+def _validated_databricks_volume_directory_entry(
+    value: Any,
+    *,
+    parent_path: str,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError("Databricks Files API directory entry must be an object")
+    is_directory = value.get("is_directory")
+    expected_keys = (
+        {"is_directory", "name", "path"}
+        if is_directory is True
+        else {"file_size", "is_directory", "last_modified", "name", "path"}
+    )
+    if set(value) != expected_keys or type(is_directory) is not bool:
+        raise RuntimeError("Databricks Files API directory entry schema drift")
+    name = value.get("name")
+    entry_path = value.get("path")
+    if (
+        not isinstance(name, str)
+        or not name
+        or name in {".", ".."}
+        or "/" in name
+        or not isinstance(entry_path, str)
+    ):
+        raise RuntimeError("Databricks Files API directory entry name/path is invalid")
+    canonical_entry_path = (
+        entry_path.removesuffix("/") if is_directory is True else entry_path
+    )
+    if (is_directory is True) != entry_path.endswith("/"):
+        raise RuntimeError("Databricks Files API directory entry path kind is invalid")
+    parsed_path = PurePosixPath(canonical_entry_path)
+    if (
+        parsed_path.as_posix() != canonical_entry_path
+        or parsed_path.parent.as_posix() != parent_path
+        or parsed_path.name != name
+    ):
+        raise RuntimeError(
+            "Databricks Files API directory entry is not a canonical direct child"
+        )
+    if is_directory is False:
+        last_modified = value.get("last_modified")
+        if type(last_modified) is not int or last_modified < 0:
+            raise RuntimeError(
+                "Databricks Files API directory entry last_modified is invalid"
+            )
+        file_size = value.get("file_size")
+        if type(file_size) is not int or file_size < 0:
+            raise RuntimeError(
+                "Databricks Files API directory entry file_size is invalid"
+            )
+    return dict(value)
+
+
+def _validate_databricks_volume_byte_cap(
+    value: int,
+    *,
+    upper_bound: int,
+    label: str,
+) -> None:
+    if type(value) is not int or value <= 0 or value > upper_bound:
+        raise ValueError(
+            f"{label} must be a positive integer no greater than {upper_bound}"
+        )
+
+
+def _validate_databricks_entry_cap(
+    value: int,
+    *,
+    upper_bound: int,
+    label: str,
+) -> None:
+    if type(value) is not int or value <= 0 or value > upper_bound:
+        raise ValueError(
+            f"{label} must be a positive integer no greater than {upper_bound}"
+        )
+
+
+def _required_databricks_content_length(
+    value: Any,
+    *,
+    max_bytes: int,
+    label: str,
+) -> int:
+    if (
+        not isinstance(value, str)
+        or len(value) > 20
+        or re.fullmatch(r"[0-9]+", value) is None
+    ):
+        raise RuntimeError(f"{label} content-length is missing or invalid")
+    content_length = int(value)
+    if content_length > max_bytes:
+        raise RuntimeError(
+            f"{label} content-length exceeds the controller byte cap: "
+            f"{content_length} > {max_bytes}"
+        )
+    return content_length
+
+
+def _validated_optional_databricks_page_token(
+    value: Any,
+    *,
+    label: str,
+) -> str | None:
+    if value in (None, ""):
+        return None
+    if (
+        not isinstance(value, str)
+        or len(value.encode("utf-8")) > DATABRICKS_API_PAGE_TOKEN_MAX_BYTES
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise RuntimeError(f"{label} is invalid or exceeds the token byte cap")
+    return value
+
+
+def _validated_databricks_identifier(value: Any, *, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value.encode("utf-8")) > 256
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise RuntimeError(f"{label} is invalid")
+    return value
+
+
+def _require_databricks_non_secret_text(
+    value: str,
+    *,
+    token: str,
+    label: str,
+) -> None:
+    if _redact_databricks_secret_text(value, token=token) != value:
+        raise RuntimeError(f"{label} contains secret-like text")
+
+
+def _validated_active_databricks_run(
+    value: Any,
+    *,
+    token: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Databricks active-run entry must be an object")
+    run_id = value.get("run_id")
+    if type(run_id) is not int or run_id <= 0:
+        raise RuntimeError("Databricks active-run run_id is invalid")
+    state = value.get("state")
+    if not isinstance(state, Mapping):
+        raise RuntimeError("Databricks active-run state is invalid")
+    life_cycle_state = _validated_databricks_identifier(
+        state.get("life_cycle_state"),
+        label="Databricks active-run life_cycle_state",
+    )
+    _require_databricks_non_secret_text(
+        life_cycle_state,
+        token=token,
+        label="Databricks active-run life_cycle_state",
+    )
+    return {
+        "life_cycle_state": life_cycle_state,
+        "run_id": run_id,
+    }
+
+
+def _validated_databricks_metadata_header(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 1_024
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise RuntimeError(f"Databricks Files API metadata {label} is invalid")
+    return value
+
+
+def _databricks_binary_http_error(
+    error: urllib.error.HTTPError,
+    *,
+    token: str,
+) -> RuntimeError:
+    try:
+        error_content = error.read(_DATABRICKS_ERROR_BODY_MAX_BYTES + 1)
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=token)
+        return RuntimeError(
+            f"Databricks request failed with HTTP {error.code}; "
+            f"error body read failed: {reason}"
+        )
+    if type(error_content) is not bytes:
+        return RuntimeError(
+            f"Databricks request failed with HTTP {error.code}; "
+            "error body was not bytes"
+        )
+    if len(error_content) > _DATABRICKS_ERROR_BODY_MAX_BYTES:
+        error_content = (
+            error_content[:_DATABRICKS_ERROR_BODY_MAX_BYTES] + b"...[truncated]"
+        )
+    body = error_content.decode("utf-8", errors="replace")
+    return RuntimeError(_format_databricks_http_error(error.code, body, token=token))
+
+
+def _bounded_databricks_binary_response(
+    config: DatabricksWorkspaceConfig,
+    request: urllib.request.Request,
+    *,
+    max_bytes: int,
+    opener: DatabricksBinaryURLOpener,
+    label: str,
+) -> bytes:
+    try:
+        with opener(request, timeout=config.timeout_seconds) as response:
+            status = getattr(response, "status", None)
+            if status != 200:
+                raise RuntimeError(
+                    f"{label} returned unexpected HTTP status {status!r}"
+                )
+            content = response.read(max_bytes + 1)
+    except urllib.error.HTTPError as exc:
+        raise _databricks_binary_http_error(exc, token=config.token) from exc
+    except urllib.error.URLError as exc:
+        reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
+        raise RuntimeError(f"Databricks request failed: {reason}") from exc
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise RuntimeError(f"{label} failed: {reason}") from exc
+    if not isinstance(content, bytes):
+        raise RuntimeError(f"{label} response body must be bytes")
+    if len(content) > max_bytes:
+        raise RuntimeError(
+            f"{label} response exceeds the controller byte cap: "
+            f"more than {max_bytes} bytes"
+        )
+    return content
+
+
+def _bounded_databricks_json_object(
+    config: DatabricksWorkspaceConfig,
+    request: urllib.request.Request,
+    *,
+    max_bytes: int,
+    opener: DatabricksBinaryURLOpener,
+    label: str,
+) -> dict[str, Any]:
+    raw = _bounded_databricks_binary_response(
+        config,
+        request,
+        max_bytes=max_bytes,
+        opener=opener,
+        label=label,
+    )
+    try:
+        parsed = json.loads(
+            raw,
+            object_pairs_hook=_unique_databricks_json_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{label} was not valid UTF-8 JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"{label} JSON must be an object")
+    return parsed
+
+
+def _unique_databricks_json_object(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeError("Databricks response JSON contains a duplicate key")
+        result[key] = value
+    return result
 
 
 def _format_databricks_http_error(

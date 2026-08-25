@@ -10,6 +10,7 @@ import pytest
 
 import cachet.full_score_execution as cachet_full_score
 import document_kv_cache.full_score_execution as full_score
+import document_kv_cache.full_score_remote_control as full_score_remote
 from document_kv_cache.benchmark_handoffs import (
     BenchmarkHandoffEntry,
     BenchmarkHandoffManifest,
@@ -403,6 +404,74 @@ def _phase_payloads(campaign, wave_index, role):
     ]
 
 
+def _volume_campaign(campaign):
+    volume = "dbfs:/Volumes/catalog/schema/volume"
+    runtime = replace(
+        campaign["bundle"].runtime,
+        runtime_contract_uri=f"{volume}/runtime/contract.json",
+        runtime_lock_uri=f"{volume}/runtime/runtime.lock",
+        patched_vllm_wheel_uri=f"{volume}/runtime/patched-vllm.whl",
+        vllm_wheel_install_spec=(
+            "vllm @ file:///Volumes/catalog/schema/volume/runtime/"
+            f"patched-vllm.whl#sha256={campaign['bundle'].runtime.patched_vllm_wheel_sha256}"
+        ),
+    )
+    qualification = replace(
+        campaign["bundle"].gpu_qualification,
+        plan_uri=f"{volume}/qualification/plan.json",
+        evidence_uri=f"{volume}/qualification/evidence.json",
+    )
+    bundle = replace(
+        campaign["bundle"],
+        inventory_uri=f"{volume}/inputs/inventory.json",
+        shard_plan_uri=f"{volume}/inputs/shards.json",
+        execution_plan_uri=f"{volume}/inputs/execution.json",
+        source_jsonl_uris={
+            dataset: f"{volume}/inputs/{dataset}.jsonl"
+            for dataset in SUPPORTED_V1_DATASETS
+        },
+        durable_output_root=f"{volume}/full-score",
+        runtime=runtime,
+        runner_python_file=f"{volume}/runtime/full-score-runner.py",
+        package_wheel_uri=f"{volume}/runtime/cachet.whl",
+        gpu_qualification=qualification,
+    )
+    payloads = full_score.build_full_score_worker_payloads(
+        campaign["inventory"],
+        campaign["shard_plan"],
+        campaign["execution_plan"],
+        config=bundle,
+    )
+    job = replace(
+        campaign["job"],
+        runner_python_file=bundle.runner_python_file,
+        worker_payload_uri_template=f"{volume}/workers/{{worker_index}}.json",
+        package_wheel_uri=bundle.package_wheel_uri,
+        runtime_lock_uri=runtime.runtime_lock_uri,
+        patched_vllm_wheel_uri=runtime.patched_vllm_wheel_uri,
+        gpu_qualification=qualification,
+    )
+    worker_files = {}
+    worker_root = campaign["tmp_path"] / "volume-worker-payloads"
+    worker_root.mkdir(exist_ok=True)
+    for payload in payloads:
+        label = (
+            f"wave-{payload['wave_index']:03d}-{payload['role']}-"
+            f"{payload['worker_index']:02d}"
+        )
+        uri = job.worker_payload_uri_template.format(worker_index=label)
+        path = worker_root / f"{label}.json"
+        path.write_bytes(full_score._canonical_pretty_json_bytes(payload))
+        worker_files[uri] = path
+    return {
+        **campaign,
+        "bundle": bundle,
+        "job": job,
+        "payloads": payloads,
+        "worker_files": worker_files,
+    }
+
+
 def _ready_records(campaign, wave_index):
     wave = campaign["execution_plan"]["waves"][wave_index]
     contract = campaign["payloads"][0]["generator_artifact_contract"]
@@ -524,6 +593,164 @@ def _wave_completion(campaign, wave_index):
         )
     record["governed_evidence_files"] = bindings
     return _close(record)
+
+
+def _remote_wave_completion_authorization(campaign, wave_index):
+    completion = _wave_completion(campaign, wave_index)
+    durable_root = "dbfs:/Volumes/catalog/schema/volume/full-score"
+    cas_root = campaign["tmp_path"] / f"remote-wave-{wave_index:03d}-cas"
+    cas_root.mkdir()
+    bindings = []
+    compact_files = {}
+    for shard_id in completion["shard_ids"]:
+        shard = next(
+            shard
+            for shard in campaign["execution_plan"]["waves"][wave_index]["shards"]
+            if shard["shard_id"] == shard_id
+        )
+        evidence = _close(
+            {
+                "authorization_scope": (
+                    full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+                ),
+                "closed_record_sha256": "",
+                "durable_evidence_committed": True,
+                "execution_plan_sha256": campaign["execution_plan"][
+                    "closed_record_sha256"
+                ],
+                "method_wall_clock": "time.monotonic_ns",
+                "method_wall_seconds": {
+                    "baseline_prefill": 10.0,
+                    "vanilla_prefill": 14.0,
+                },
+                "paired_examples": [
+                    {
+                        "dataset": item["dataset"],
+                        "example_id": item["example_id"],
+                        "methods": {
+                            method: {"completion_tokens": 2}
+                            for method in full_score.FULL_SCORE_METHODS
+                        },
+                    }
+                    for item in shard["items"]
+                ],
+                "record_type": full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE,
+                "schema_version": full_score.FULL_SCORE_SHARD_EVIDENCE_SCHEMA_VERSION,
+                "scorers": full_score._scorer_contract_record(),
+                "shard_id": shard_id,
+                "shard_items_sha256": shard["items_sha256"],
+                "wave_index": wave_index,
+            }
+        )
+        deletion = _close(
+            {
+                "authorization_scope": (
+                    full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+                ),
+                "closed_record_sha256": "",
+                "evidence_closed_record_sha256": evidence[
+                    "closed_record_sha256"
+                ],
+                "execution_plan_sha256": campaign["execution_plan"][
+                    "closed_record_sha256"
+                ],
+                "lifecycle": ["delete_ephemeral_q8_kv"],
+                "record_type": (
+                    full_score.FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE
+                ),
+                "schema_version": (
+                    full_score.FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION
+                ),
+                "shard_id": shard_id,
+                "wave_index": wave_index,
+            }
+        )
+        evidence_path = cas_root / f"{shard_id}-evidence.json"
+        deletion_path = cas_root / f"{shard_id}-deletion.json"
+        evidence_path.write_bytes(
+            full_score._canonical_pretty_json_bytes(evidence)
+        )
+        deletion_path.write_bytes(
+            full_score._canonical_pretty_json_bytes(deletion)
+        )
+        evidence_uri = full_score_remote._consumer_evidence_artifact_uri(
+            durable_root,
+            wave_index=wave_index,
+            shard_id=shard_id,
+            filename="evidence.json",
+        )
+        deletion_uri = full_score_remote._consumer_evidence_artifact_uri(
+            durable_root,
+            wave_index=wave_index,
+            shard_id=shard_id,
+            filename="deletion-attestation.json",
+        )
+        compact_files[evidence_uri] = evidence_path
+        compact_files[deletion_uri] = deletion_path
+        bindings.append(
+            {
+                "deletion_file_sha256": sha256(
+                    deletion_path.read_bytes()
+                ).hexdigest(),
+                "deletion_record_sha256": deletion["closed_record_sha256"],
+                "deletion_uri": deletion_uri,
+                "evidence_file_sha256": sha256(
+                    evidence_path.read_bytes()
+                ).hexdigest(),
+                "evidence_record_sha256": evidence["closed_record_sha256"],
+                "evidence_uri": evidence_uri,
+                "shard_id": shard_id,
+            }
+        )
+    completion["governed_evidence_files"] = [
+        {
+            "deletion_file_sha256": binding["deletion_file_sha256"],
+            "deletion_path": binding["deletion_uri"],
+            "evidence_file_sha256": binding["evidence_file_sha256"],
+            "evidence_path": binding["evidence_uri"],
+            "shard_id": binding["shard_id"],
+        }
+        for binding in bindings
+    ]
+    _close(completion)
+    authorization = full_score_remote.FullScoreRemoteTreeAuthorization(
+        action="consumer_evidence",
+        execution_plan_sha256=campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        wave_index=wave_index,
+        durable_output_root=durable_root,
+        request_sha256=_digest(f"remote-request-{wave_index}"),
+        result_uri=(
+            f"{durable_root}/control/wave-{wave_index:03d}-completion.json"
+        ),
+        result_file_sha256=sha256(
+            full_score._canonical_pretty_json_bytes(completion)
+        ).hexdigest(),
+        result_record_sha256=completion["closed_record_sha256"],
+        result_record=completion,
+        attestation_uri=(
+            f"{durable_root}/control/wave-{wave_index:03d}-attestation.json"
+        ),
+        attestation_file_sha256=_digest(f"remote-attestation-file-{wave_index}"),
+        attestation_record_sha256=_digest(
+            f"remote-attestation-record-{wave_index}"
+        ),
+        coordinator_run_id=str(98_000 + wave_index),
+        coordinator_run_record_sha256=_digest(f"remote-run-{wave_index}"),
+        controller_authorization_record_sha256=_digest(
+            f"remote-controller-authorization-{wave_index}"
+        ),
+        runs_get_receipt_record_sha256=_digest(
+            f"remote-runs-get-{wave_index}"
+        ),
+        phase_terminal_record_sha256=_digest(
+            f"remote-consumer-terminal-{wave_index}"
+        ),
+        evidence_bindings=bindings,
+        _issuer=full_score_remote._REMOTE_AUTHORIZATION_ISSUER,
+    )
+    return completion, authorization, compact_files
 
 
 def _producer_completion(campaign, wave_index):
@@ -1484,6 +1711,90 @@ def test_consumer_reservation_requires_exact_live_ready_trees(campaign, monkeypa
     assert ledger_path.read_bytes() == before
 
 
+def test_mac_consumer_render_and_submit_validation_use_remote_tree_authority(
+    campaign,
+    monkeypatch,
+):
+    completion = _producer_completion(campaign, 0)
+    consumers = _phase_payloads(campaign, 0, "consumer")
+    authority = object()
+    authority_calls = []
+
+    def require_remote(value, **kwargs):
+        assert value is authority
+        assert kwargs["completion_record"] == completion
+        assert kwargs["completion_uri"] == "dbfs:/remote/control/completion.json"
+        authority_calls.append(kwargs)
+        return value
+
+    monkeypatch.setattr(
+        full_score_remote,
+        "require_full_score_remote_ready_authorization",
+        require_remote,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_validate_governed_producer_ready_phase",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Mac controller must not traverse the remote ready tree"
+        ),
+    )
+    submit = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        consumers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id="wave-000-consumer-remote-ready",
+        producer_phase_completion=completion,
+        producer_phase_completion_uri="dbfs:/remote/control/completion.json",
+        remote_ready_authorization=authority,
+        compact_artifact_resolver=lambda _uri: pytest.fail(
+            "renderer must use the collected non-record authority"
+        ),
+    )
+    compact_root = campaign["tmp_path"] / "compact-cas"
+    compact_root.mkdir()
+    resolved = {}
+    for task, payload in zip(submit["tasks"], consumers, strict=True):
+        parameters = task["spark_python_task"]["parameters"]
+        uri = parameters[parameters.index("--worker-payload-json") + 1]
+        path = compact_root / f"worker-{payload['worker_index']:02d}.json"
+        path.write_bytes(full_score._canonical_pretty_json_bytes(payload))
+        resolved[uri] = path
+    completion_path = compact_root / "completion.json"
+    completion_path.write_bytes(full_score._canonical_pretty_json_bytes(completion))
+    resolved["dbfs:/remote/control/completion.json"] = completion_path
+
+    bindings = full_score._validated_full_score_phase_submit_payload(
+        campaign["execution_plan"],
+        submit,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=0,
+        phase="consumer",
+        require_governed_consumer_ready_phase=True,
+        remote_ready_authorization=authority,
+        compact_artifact_resolver=resolved.__getitem__,
+    )
+
+    assert len(bindings) == 16
+    assert len(authority_calls) == 2
+
+
+def test_full_score_workers_use_volume_mounts_for_volume_uris():
+    uri = "dbfs:/Volumes/catalog/schema/volume/durable/worker.json"
+
+    assert full_score._cluster_path(uri) == Path(
+        "/Volumes/catalog/schema/volume/durable/worker.json"
+    )
+    assert 'if uri.startswith("dbfs:/Volumes/")' in full_score.FULL_SCORE_RUNNER_SCRIPT
+    assert 'return "/Volumes/"' in full_score.FULL_SCORE_RUNNER_SCRIPT
+
+
 def test_governed_terminal_billing_and_wave_zero_reservation_are_file_bound(
     campaign,
 ):
@@ -2246,6 +2557,9 @@ def test_publication_aggregate_requires_current_final_consumer_authority(campaig
         ledger_path_sha256=databricks_ledger_path_sha256(ledger_path),
         predecessor_prefix=producer_authorization.predecessor_prefix,
         ledger_prefix=producer_authorization.ledger_prefix,
+        phase_lease_root=(
+            ledger_path.with_name(f"{ledger_path.name}.full-score-phase-leases")
+        ),
         terminal_record_sha256=(
             producer_authorization.terminal_record_sha256
         ),
@@ -2958,6 +3272,803 @@ def test_live_p90_gate_replays_matched_blocks_and_authorizes_next_phase(campaign
         )
 
 
+def test_remote_prior_wave_replay_uses_only_issuer_cas_on_mac(
+    campaign,
+    monkeypatch,
+):
+    completion, authorization, compact_files = (
+        _remote_wave_completion_authorization(campaign, 0)
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_validate_shard_evidence_record",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_validate_full_score_deletion_attestation",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_cluster_path",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Mac prior-wave replay must not resolve /dbfs"
+        ),
+    )
+
+    full_score._validate_prior_wave_completion(
+        completion,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        replay_raw_evidence=True,
+        expected_wave_index=0,
+        expected_execution_plan_sha256=campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        remote_consumer_authorization=authorization,
+        compact_artifact_resolver=compact_files.__getitem__,
+    )
+
+    missing_uri = authorization.evidence_bindings[0]["deletion_uri"]
+    missing = dict(compact_files)
+    del missing[missing_uri]
+    with pytest.raises(KeyError):
+        full_score._validate_prior_wave_completion(
+            completion,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            replay_raw_evidence=True,
+            expected_wave_index=0,
+            expected_execution_plan_sha256=campaign["execution_plan"][
+                "closed_record_sha256"
+            ],
+            remote_consumer_authorization=authorization,
+            compact_artifact_resolver=missing.__getitem__,
+        )
+
+
+def test_remote_cas_threads_wave0_into_wave1_render_reserve_and_replay(
+    campaign,
+    monkeypatch,
+):
+    completion, remote_authorization, compact_files = (
+        _remote_wave_completion_authorization(campaign, 0)
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_validate_shard_evidence_record",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_validate_full_score_deletion_attestation",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_cluster_path",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Mac wave-boundary control must not resolve /dbfs"
+        ),
+    )
+
+    ledger_path = campaign["tmp_path"] / "remote-wave-boundary-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    historical_payload = {
+        "run_name": "remote-wave-boundary-history",
+        "tasks": [
+            {
+                "max_retries": 0,
+                "new_cluster": {},
+                "task_key": "historical_task",
+                "timeout_seconds": 3_600,
+            }
+        ],
+        "timeout_seconds": 3_600,
+    }
+    reserve_databricks_run_attempt_json(
+        ledger_path,
+        historical_payload,
+        attempt_id="remote-wave-boundary-history",
+        workload_id="remote-wave-boundary-history",
+    )
+    historical_ledger = record_databricks_run_terminal_actual_json(
+        ledger_path,
+        attempt_id="remote-wave-boundary-history",
+        terminal_state="succeeded",
+        actual_cluster_duration_seconds=1_000.0,
+    )
+    predecessor_prefix = databricks_ledger_prefix(historical_ledger)
+    predecessor_authorization = object()
+    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
+
+    def require_predecessor(value, **_kwargs):
+        assert value is predecessor_authorization
+        return predecessor_prefix, {
+            "authorization_sha256": _digest("remote-prior-consumer"),
+            "kind": "full_score_phase_terminal",
+            "ledger_path_sha256": ledger_path_sha256,
+            "ledger_prefix": predecessor_prefix.to_record(),
+            "phase": "consumer",
+            "terminal_record_sha256": _digest("remote-prior-terminal"),
+            "wave_index": 0,
+        }
+
+    monkeypatch.setattr(
+        full_score,
+        "_require_full_score_phase_predecessor_authorization",
+        require_predecessor,
+    )
+    durable_root = remote_authorization.durable_output_root
+    wave_zero_shards = campaign["execution_plan"]["waves"][0]["shards"]
+    producer_terminal = _close(
+        {
+            "closed_record_sha256": "",
+            "ledger": {
+                "ledger_path_sha256": ledger_path_sha256,
+                "terminal_prefix": predecessor_prefix.to_record(),
+            },
+            "phase": "producer",
+            "task_billing": [
+                {
+                    "billed_gpu_seconds": 12.0,
+                    "durable_output_root": durable_root,
+                    "shard_id": shard["shard_id"],
+                }
+                for shard in wave_zero_shards
+            ],
+            "wave_index": 0,
+        }
+    )
+    consumer_terminal = _close(
+        {
+            "closed_record_sha256": "",
+            "ledger": {
+                "ledger_path_sha256": ledger_path_sha256,
+                "predecessor_prefix": predecessor_prefix.to_record(),
+                "terminal_prefix": predecessor_prefix.to_record(),
+            },
+            "phase": "consumer",
+            "task_billing": [
+                {
+                    "billed_gpu_seconds": 30.0,
+                    "durable_output_root": durable_root,
+                    "shard_id": shard["shard_id"],
+                }
+                for shard in wave_zero_shards
+            ],
+            "wave_index": 0,
+        }
+    )
+    producer_terminal_path = campaign["tmp_path"] / "producer-terminal.json"
+    consumer_terminal_path = campaign["tmp_path"] / "consumer-terminal.json"
+    producer_terminal_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(producer_terminal)
+    )
+    consumer_terminal_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(consumer_terminal)
+    )
+    compact_files[str(producer_terminal_path)] = producer_terminal_path
+    compact_files[str(consumer_terminal_path)] = consumer_terminal_path
+
+    def load_terminal(path, **_kwargs):
+        return (
+            producer_terminal
+            if Path(path) == producer_terminal_path
+            else consumer_terminal
+        )
+
+    monkeypatch.setattr(
+        full_score,
+        "load_governed_full_score_phase_terminal_record",
+        load_terminal,
+    )
+    local_blocks = {
+        block["shard_id"]: block for block in _matched_blocks(campaign, 0)
+    }
+
+    def build_matched(_execution_plan, *, shard_id, **_kwargs):
+        return copy.deepcopy(local_blocks[shard_id])
+
+    monkeypatch.setattr(
+        full_score,
+        "build_full_score_matched_billing_block",
+        build_matched,
+    )
+    block_uris = []
+    for shard in wave_zero_shards:
+        shard_id = shard["shard_id"]
+        evidence_directory = (
+            f"{durable_root}/evidence/wave-000/{shard_id}"
+        )
+        block = full_score.build_governed_full_score_matched_billing_block(
+            campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            evidence_dir=evidence_directory,
+            producer_terminal_path=producer_terminal_path,
+            consumer_terminal_path=consumer_terminal_path,
+            ledger_path=ledger_path,
+            remote_consumer_authorization=remote_authorization,
+            compact_artifact_resolver=compact_files.__getitem__,
+        )
+        block_uri = f"{durable_root}/control/matched/{shard_id}.json"
+        block_path = campaign["tmp_path"] / f"matched-{shard_id}.json"
+        block_path.write_bytes(full_score._canonical_pretty_json_bytes(block))
+        compact_files[block_uri] = block_path
+        block_uris.append(block_uri)
+    compact_files.update(campaign["worker_files"])
+
+    wave_one_producers = _phase_payloads(campaign, 1, "producer")
+    reservation = full_score.full_score_wave_worst_case_gpu_hours(
+        wave_one_producers
+    )
+    diagnostic = full_score.build_full_score_live_p90_budget_admission(
+        campaign["execution_plan"],
+        list(local_blocks.values()),
+        next_wave_index=1,
+        ledger_terminal_actual_gpu_hours=(
+            historical_ledger.terminal_actual_cluster_hours
+        ),
+        ledger_active_reserved_gpu_hours=0.0,
+        next_wave_reserved_gpu_hours=reservation,
+    )
+    attempt_id = "remote-wave-001-producer"
+    candidate = full_score._build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        wave_one_producers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        prior_wave_completion=completion,
+        remote_consumer_authorization=remote_authorization,
+        compact_artifact_resolver=compact_files.__getitem__,
+        budget_admission=diagnostic,
+        publication_authorizing=False,
+    )
+    candidate = full_score.bind_databricks_run_idempotency_token(
+        candidate,
+        attempt_id=attempt_id,
+    )
+    admission = full_score.build_governed_full_score_live_p90_budget_admission(
+        campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        completed_block_paths=block_uris,
+        next_wave_index=1,
+        next_phase="producer",
+        attempt_id=attempt_id,
+        next_submit_payload=candidate,
+        ledger_path=ledger_path,
+        predecessor_authorization=predecessor_authorization,
+        remote_consumer_authorizations=[remote_authorization],
+        compact_artifact_resolver=compact_files.__getitem__,
+    )
+    admission_uri = f"{durable_root}/control/wave-001-p90.json"
+    admission_path = campaign["tmp_path"] / "remote-wave-001-p90.json"
+    admission_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(admission)
+    )
+    compact_files[admission_uri] = admission_path
+
+    rendered = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        wave_one_producers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+        prior_wave_completion=completion,
+        remote_consumer_authorizations=[remote_authorization],
+        compact_artifact_resolver=compact_files.__getitem__,
+        budget_admission_path=admission_uri,
+        ledger_path=ledger_path,
+        predecessor_authorization=predecessor_authorization,
+    )
+    assert rendered == candidate
+    _updated, submission_authorization = (
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            rendered,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=1,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=predecessor_authorization,
+            budget_admission_path=admission_uri,
+            remote_consumer_authorizations=[remote_authorization],
+            compact_artifact_resolver=compact_files.__getitem__,
+        )
+    )
+    replayed = full_score.replay_governed_full_score_phase_submission_authorization(
+        ledger_path,
+        rendered,
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=1,
+        phase="producer",
+        attempt_id=attempt_id,
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        predecessor_authorization=predecessor_authorization,
+        budget_admission_path=admission_uri,
+        remote_consumer_authorizations=[remote_authorization],
+        compact_artifact_resolver=compact_files.__getitem__,
+    )
+    assert replayed == submission_authorization
+
+
+def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
+    campaign,
+    monkeypatch,
+):
+    local_worker_files = campaign["worker_files"]
+    campaign = _volume_campaign(campaign)
+    local_worker_files.update(campaign["worker_files"])
+    workspace = DatabricksWorkspaceConfig(
+        "https://dbc.example/",
+        "secret-token",
+    )
+    remote_files = {
+        uri: path.read_bytes() for uri, path in campaign["worker_files"].items()
+    }
+
+    def download(_workspace, uri, *, max_bytes):
+        assert _workspace is workspace
+        content = remote_files[uri]
+        assert len(content) <= max_bytes
+        return content
+
+    def upload(_workspace, uri, content, *, max_bytes):
+        assert _workspace is workspace
+        assert len(content) <= max_bytes
+        existing = remote_files.get(uri)
+        if existing is not None and existing != content:
+            raise ValueError("exclusive publication conflict")
+        remote_files[uri] = content
+        return {
+            "created": existing is None,
+            "dbfs_uri": uri,
+            "file_sha256": sha256(content).hexdigest(),
+            "size_bytes": len(content),
+        }
+
+    monkeypatch.setattr(
+        full_score_remote,
+        "download_databricks_volume_file_bytes",
+        download,
+    )
+    monkeypatch.setattr(
+        full_score_remote,
+        "upload_databricks_volume_file_bytes_exclusive",
+        upload,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_cluster_path",
+        lambda *_args, **_kwargs: pytest.fail(
+            "stock-Mac publication control must not resolve /dbfs or /Volumes"
+        ),
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_validate_shard_evidence_record",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_validate_full_score_deletion_attestation",
+        lambda *args, **kwargs: None,
+    )
+
+    cas = full_score_remote.FullScoreCompactArtifactCAS(
+        campaign["tmp_path"] / "stock-mac-cas"
+    )
+    compact_io = full_score_remote.FullScoreRemoteCompactArtifactIO(
+        workspace,
+        cas,
+    )
+    for uri in sorted(campaign["worker_files"]):
+        compact_io.download(uri)
+
+    ledger_path = campaign["tmp_path"] / "stock-mac-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    campaign["latency_collection_authorization"].ledger_prefix = (
+        databricks_ledger_prefix(
+            read_databricks_cluster_hour_ledger_json(ledger_path)
+        )
+    )
+    durable_root = campaign["bundle"].durable_output_root
+
+    producer_attempt_id = "stock-mac-wave-000-producer"
+    producer_submit = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=producer_attempt_id,
+        compact_artifact_resolver=cas.resolve,
+    )
+    producer_opener = _RoutingDatabricksOpener(
+        submit_payload={"run_id": 81_001},
+        run_payload=_terminal_run_record(producer_submit, run_id=81_001),
+    )
+    _response, producer_submission_authorization = (
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            workspace,
+            producer_submit,
+            ledger_path=ledger_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=producer_attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+            compact_artifact_resolver=cas.resolve,
+            opener=producer_opener,
+        )
+    )
+    producer_submit_uri = (
+        f"{durable_root}/control/phase/wave-000-producer-submit.json"
+    )
+    producer_run_uri = (
+        f"{durable_root}/control/phase/wave-000-producer-runs-get.json"
+    )
+    producer_terminal_uri = (
+        f"{durable_root}/control/phase/wave-000-producer-terminal.json"
+    )
+    remote_files[producer_submit_uri] = (
+        full_score._canonical_pretty_json_bytes(producer_submit)
+    )
+    producer_terminal, producer_authorization = (
+        full_score_remote.collect_governed_full_score_remote_phase_attempt(
+            workspace,
+            cas=cas,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+            submission_authorization=producer_submission_authorization,
+            submit_payload_uri=producer_submit_uri,
+            control_plane_run_uri=producer_run_uri,
+            terminal_record_uri=producer_terminal_uri,
+            opener=producer_opener,
+        )
+    )
+
+    producer_completion = _producer_completion(campaign, 0)
+    producer_completion_uri = (
+        f"{durable_root}/control/producer-ready/wave-000-completion.json"
+    )
+    producer_completion_bytes = full_score._canonical_pretty_json_bytes(
+        producer_completion
+    )
+    remote_files[producer_completion_uri] = producer_completion_bytes
+    compact_io.download(producer_completion_uri)
+    ready_authorization = full_score_remote.FullScoreRemoteTreeAuthorization(
+        action="producer_ready",
+        execution_plan_sha256=campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        wave_index=0,
+        durable_output_root=durable_root,
+        request_sha256=_digest("stock-mac-producer-request"),
+        result_uri=producer_completion_uri,
+        result_file_sha256=sha256(producer_completion_bytes).hexdigest(),
+        result_record_sha256=producer_completion["closed_record_sha256"],
+        result_record=producer_completion,
+        attestation_uri=(
+            f"{durable_root}/control/producer-ready/wave-000-attestation.json"
+        ),
+        attestation_file_sha256=_digest("stock-mac-producer-attestation-file"),
+        attestation_record_sha256=_digest(
+            "stock-mac-producer-attestation-record"
+        ),
+        coordinator_run_id="91001",
+        coordinator_run_record_sha256=_digest("stock-mac-producer-run"),
+        controller_authorization_record_sha256=_digest(
+            "stock-mac-producer-controller-authorization"
+        ),
+        runs_get_receipt_record_sha256=_digest(
+            "stock-mac-producer-runs-get"
+        ),
+        phase_terminal_record_sha256=producer_terminal[
+            "closed_record_sha256"
+        ],
+        evidence_bindings=(),
+        _issuer=full_score_remote._REMOTE_AUTHORIZATION_ISSUER,
+    )
+
+    consumer_attempt_id = "stock-mac-wave-000-consumer"
+    consumer_submit = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "consumer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=consumer_attempt_id,
+        producer_phase_completion=producer_completion,
+        producer_phase_completion_uri=producer_completion_uri,
+        remote_ready_authorization=ready_authorization,
+        compact_artifact_resolver=cas.resolve,
+    )
+    consumer_opener = _RoutingDatabricksOpener(
+        submit_payload={"run_id": 82_001},
+        run_payload=_terminal_run_record(consumer_submit, run_id=82_001),
+    )
+    _response, consumer_submission_authorization = (
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            workspace,
+            consumer_submit,
+            ledger_path=ledger_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="consumer",
+            attempt_id=consumer_attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=producer_authorization,
+            remote_ready_authorization=ready_authorization,
+            compact_artifact_resolver=cas.resolve,
+            opener=consumer_opener,
+        )
+    )
+    consumer_submit_uri = (
+        f"{durable_root}/control/phase/wave-000-consumer-submit.json"
+    )
+    consumer_run_uri = (
+        f"{durable_root}/control/phase/wave-000-consumer-runs-get.json"
+    )
+    consumer_terminal_uri = (
+        f"{durable_root}/control/phase/wave-000-consumer-terminal.json"
+    )
+    remote_files[consumer_submit_uri] = (
+        full_score._canonical_pretty_json_bytes(consumer_submit)
+    )
+    consumer_terminal, consumer_authorization = (
+        full_score_remote.collect_governed_full_score_remote_phase_attempt(
+            workspace,
+            cas=cas,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+            submission_authorization=consumer_submission_authorization,
+            submit_payload_uri=consumer_submit_uri,
+            control_plane_run_uri=consumer_run_uri,
+            terminal_record_uri=consumer_terminal_uri,
+            opener=consumer_opener,
+        )
+    )
+
+    wave_completion, fixture_evidence_authorization, evidence_files = (
+        _remote_wave_completion_authorization(campaign, 0)
+    )
+    remote_files.update(
+        {uri: path.read_bytes() for uri, path in evidence_files.items()}
+    )
+    evidence_authorization = full_score_remote.FullScoreRemoteTreeAuthorization(
+        action=fixture_evidence_authorization.action,
+        execution_plan_sha256=(
+            fixture_evidence_authorization.execution_plan_sha256
+        ),
+        wave_index=fixture_evidence_authorization.wave_index,
+        durable_output_root=fixture_evidence_authorization.durable_output_root,
+        request_sha256=fixture_evidence_authorization.request_sha256,
+        result_uri=fixture_evidence_authorization.result_uri,
+        result_file_sha256=fixture_evidence_authorization.result_file_sha256,
+        result_record_sha256=(
+            fixture_evidence_authorization.result_record_sha256
+        ),
+        result_record=fixture_evidence_authorization.result_record,
+        attestation_uri=fixture_evidence_authorization.attestation_uri,
+        attestation_file_sha256=(
+            fixture_evidence_authorization.attestation_file_sha256
+        ),
+        attestation_record_sha256=(
+            fixture_evidence_authorization.attestation_record_sha256
+        ),
+        coordinator_run_id=fixture_evidence_authorization.coordinator_run_id,
+        coordinator_run_record_sha256=(
+            fixture_evidence_authorization.coordinator_run_record_sha256
+        ),
+        controller_authorization_record_sha256=(
+            fixture_evidence_authorization.controller_authorization_record_sha256
+        ),
+        runs_get_receipt_record_sha256=(
+            fixture_evidence_authorization.runs_get_receipt_record_sha256
+        ),
+        phase_terminal_record_sha256=consumer_terminal[
+            "closed_record_sha256"
+        ],
+        evidence_bindings=fixture_evidence_authorization.evidence_bindings,
+        _issuer=full_score_remote._REMOTE_AUTHORIZATION_ISSUER,
+    )
+    matched_block_uris = []
+    matched_blocks = []
+    for shard_id in wave_completion["shard_ids"]:
+        evidence_directory = (
+            f"{durable_root}/evidence/wave-000/{shard_id}"
+        )
+        block_uri = (
+            f"{durable_root}/control/matched/wave-000/{shard_id}.json"
+        )
+        block = (
+            full_score_remote.write_governed_full_score_remote_matched_billing_block(
+                workspace,
+                cas=cas,
+                path=block_uri,
+                execution_plan=campaign["execution_plan"],
+                inventory=campaign["inventory"],
+                shard_plan=campaign["shard_plan"],
+                evidence_dir=evidence_directory,
+                producer_terminal_uri=producer_terminal_uri,
+                consumer_terminal_uri=consumer_terminal_uri,
+                ledger_path=ledger_path,
+                remote_consumer_authorization=evidence_authorization,
+            )
+        )
+        matched_block_uris.append(block_uri)
+        matched_blocks.append(block)
+
+    wave_one_producers = _phase_payloads(campaign, 1, "producer")
+    wave_one_attempt_id = "stock-mac-wave-001-producer"
+    reservation = full_score.full_score_wave_worst_case_gpu_hours(
+        wave_one_producers
+    )
+    live_ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    diagnostic = full_score.build_full_score_live_p90_budget_admission(
+        campaign["execution_plan"],
+        matched_blocks,
+        next_wave_index=1,
+        ledger_terminal_actual_gpu_hours=(
+            live_ledger.terminal_actual_cluster_hours
+        ),
+        ledger_active_reserved_gpu_hours=0.0,
+        next_wave_reserved_gpu_hours=reservation,
+    )
+    candidate = full_score._build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        wave_one_producers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        prior_wave_completion=wave_completion,
+        remote_consumer_authorization=evidence_authorization,
+        compact_artifact_resolver=cas.resolve,
+        budget_admission=diagnostic,
+        publication_authorizing=False,
+    )
+    candidate = full_score.bind_databricks_run_idempotency_token(
+        candidate,
+        attempt_id=wave_one_attempt_id,
+    )
+    admission_uri = (
+        f"{durable_root}/control/admission/wave-001-producer-p90.json"
+    )
+    admission = (
+        full_score_remote.write_governed_full_score_remote_live_p90_budget_admission(
+            workspace,
+            cas=cas,
+            path=admission_uri,
+            execution_plan=campaign["execution_plan"],
+            completed_block_paths=matched_block_uris,
+            remote_consumer_authorizations=[evidence_authorization],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            next_wave_index=1,
+            next_phase="producer",
+            attempt_id=wave_one_attempt_id,
+            next_submit_payload=candidate,
+            ledger_path=ledger_path,
+            predecessor_authorization=consumer_authorization,
+        )
+    )
+    rendered = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        wave_one_producers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=wave_one_attempt_id,
+        prior_wave_completion=wave_completion,
+        remote_consumer_authorizations=[evidence_authorization],
+        compact_artifact_resolver=cas.resolve,
+        budget_admission_path=admission_uri,
+        ledger_path=ledger_path,
+        predecessor_authorization=consumer_authorization,
+    )
+    assert rendered == candidate
+    _ledger, submission_authorization = (
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            rendered,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=1,
+            phase="producer",
+            attempt_id=wave_one_attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=consumer_authorization,
+            budget_admission_path=admission_uri,
+            remote_consumer_authorizations=[evidence_authorization],
+            compact_artifact_resolver=cas.resolve,
+        )
+    )
+    replayed = full_score.replay_governed_full_score_phase_submission_authorization(
+        ledger_path,
+        rendered,
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=1,
+        phase="producer",
+        attempt_id=wave_one_attempt_id,
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        predecessor_authorization=consumer_authorization,
+        budget_admission_path=admission_uri,
+        remote_consumer_authorizations=[evidence_authorization],
+        compact_artifact_resolver=cas.resolve,
+    )
+    assert replayed == submission_authorization
+    assert admission["admitted"] is True
+    for uri in (
+        producer_run_uri,
+        producer_terminal_uri,
+        consumer_run_uri,
+        consumer_terminal_uri,
+        admission_uri,
+        *matched_block_uris,
+    ):
+        assert cas.resolve(uri).read_bytes() == remote_files[uri]
+
+
 def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
     campaign,
     monkeypatch,
@@ -3605,6 +4716,11 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
     publication_evidence["authorization_scope"] = (
         full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
     )
+    publication_evidence["execution_plan_sha256"] = execution_plan[
+        "closed_record_sha256"
+    ]
+    publication_evidence["ready_shard_sha256"] = _digest("publication-ready")
+    publication_evidence["wave_index"] = 0
     _close(publication_evidence)
     deletion = _close(
         {
@@ -3615,7 +4731,22 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
             "evidence_closed_record_sha256": publication_evidence[
                 "closed_record_sha256"
             ],
+            "execution_plan_sha256": execution_plan["closed_record_sha256"],
+            "lifecycle": [
+                "verify_ready_shard",
+                "baseline_inference",
+                "vanilla_inference",
+                "validate_paired_outputs",
+                "commit_durable_evidence",
+                "delete_ephemeral_q8_kv",
+            ],
+            "ready_shard_sha256": publication_evidence[
+                "ready_shard_sha256"
+            ],
+            "record_type": full_score.FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE,
+            "schema_version": full_score.FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION,
             "shard_id": shard["shard_id"],
+            "wave_index": 0,
         }
     )
     evidence_directory = tmp_path / "publication-evidence" / shard["shard_id"]
@@ -3628,18 +4759,8 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
     deletion_path.write_bytes(full_score._canonical_pretty_json_bytes(deletion))
     monkeypatch.setattr(
         full_score,
-        "load_governed_full_score_shard_evidence",
-        lambda *_args, **_kwargs: (publication_evidence, deletion),
-    )
-    monkeypatch.setattr(
-        full_score,
         "_validate_shard_evidence_record",
         lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        full_score,
-        "_require_shared_dbfs_path",
-        lambda value, _field_name: str(value),
     )
     aggregate_submit_sha256 = _digest("aggregate-final-submit")
     aggregate_reservation = DatabricksClusterHourReservation(
@@ -3706,20 +4827,73 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         ),
         predecessor_prefix=aggregate_predecessor,
         ledger_prefix=aggregate_terminal_prefix,
+        phase_lease_root=aggregate_ledger_path.with_name(
+            f"{aggregate_ledger_path.name}.full-score-phase-leases"
+        ),
         terminal_record_sha256=aggregate_terminal_record_sha256,
         causal_closure_sha256=aggregate_causal_closure,
         _issuer=full_score._FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
     )
+    durable_root = "dbfs:/Volumes/catalog/schema/volume/durable"
+    evidence_uri = full_score_remote._consumer_evidence_artifact_uri(
+        durable_root,
+        wave_index=0,
+        shard_id=shard["shard_id"],
+        filename="evidence.json",
+    )
+    deletion_uri = full_score_remote._consumer_evidence_artifact_uri(
+        durable_root,
+        wave_index=0,
+        shard_id=shard["shard_id"],
+        filename="deletion-attestation.json",
+    )
+    evidence_binding = {
+        "deletion_file_sha256": sha256(deletion_path.read_bytes()).hexdigest(),
+        "deletion_record_sha256": deletion["closed_record_sha256"],
+        "deletion_uri": deletion_uri,
+        "evidence_file_sha256": sha256(evidence_path.read_bytes()).hexdigest(),
+        "evidence_record_sha256": publication_evidence["closed_record_sha256"],
+        "evidence_uri": evidence_uri,
+        "shard_id": shard["shard_id"],
+    }
+    remote_authorization = SimpleNamespace(
+        controller_authorization_record_sha256=_digest("remote-authorization"),
+        coordinator_run_id="97101",
+        evidence_bindings=(evidence_binding,),
+        phase_terminal_record_sha256=aggregate_terminal_record_sha256,
+        runs_get_receipt_record_sha256=_digest("remote-runs-get-receipt"),
+        wave_index=0,
+    )
+
+    def require_remote_authorizations(authorizations, **_kwargs):
+        assert list(authorizations) == [remote_authorization]
+        return (remote_authorization,)
+
+    monkeypatch.setattr(
+        full_score_remote,
+        "require_full_score_remote_consumer_evidence_authorizations",
+        require_remote_authorizations,
+    )
+    compact_files = {evidence_uri: evidence_path, deletion_uri: deletion_path}
+    monkeypatch.setattr(
+        full_score,
+        "_cluster_path",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Mac publication aggregation must not resolve /dbfs"
+        ),
+    )
     publication_aggregate = full_score.aggregate_full_score_shard_evidence(
         inventory,
         plan,
-        [evidence_directory],
+        [],
         authorization_scope=(
             full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
         ),
         execution_plan=execution_plan,
         final_consumer_authorization=final_consumer_authorization,
         ledger_path=aggregate_ledger_path,
+        remote_consumer_authorizations=[remote_authorization],
+        compact_artifact_resolver=lambda uri: compact_files[uri],
     )
     aggregate_lineage = publication_aggregate["publication_lineage"]
     assert aggregate_lineage["ledger_path_sha256"] == (
@@ -3737,21 +4911,62 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
     )
     assert aggregate_lineage["evidence"] == [
         {
-            "deletion_file_sha256": sha256(deletion_path.read_bytes()).hexdigest(),
-            "deletion_record_sha256": deletion["closed_record_sha256"],
-            "directory_path_sha256": full_score._canonical_sha256(
-                {
-                    "domain": "cachet.full_score_aggregate_evidence_path.v1",
-                    "path": str(evidence_directory),
-                }
+            **evidence_binding,
+            "authorization_record_sha256": (
+                remote_authorization.controller_authorization_record_sha256
             ),
-            "evidence_file_sha256": sha256(evidence_path.read_bytes()).hexdigest(),
-            "evidence_record_sha256": publication_evidence[
-                "closed_record_sha256"
-            ],
-            "shard_id": shard["shard_id"],
+            "wave_index": 0,
         }
     ]
+    assert aggregate_lineage["remote_consumer_authorizations"] == [
+        {
+            "authorization_record_sha256": (
+                remote_authorization.controller_authorization_record_sha256
+            ),
+            "coordinator_run_id": remote_authorization.coordinator_run_id,
+            "runs_get_receipt_record_sha256": (
+                remote_authorization.runs_get_receipt_record_sha256
+            ),
+            "wave_index": 0,
+        }
+    ]
+    original_evidence_bytes = evidence_path.read_bytes()
+    evidence_path.write_bytes(original_evidence_bytes + b" ")
+    with pytest.raises(ValueError, match="CAS evidence binding drift"):
+        full_score.aggregate_full_score_shard_evidence(
+            inventory,
+            plan,
+            [],
+            authorization_scope=(
+                full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+            ),
+            execution_plan=execution_plan,
+            final_consumer_authorization=final_consumer_authorization,
+            ledger_path=aggregate_ledger_path,
+            remote_consumer_authorizations=[remote_authorization],
+            compact_artifact_resolver=lambda uri: compact_files[uri],
+        )
+    evidence_path.write_bytes(original_evidence_bytes)
+
+    def missing_deletion(uri):
+        if uri == deletion_uri:
+            raise ValueError("compact artifact URI is not bound in the CAS")
+        return compact_files[uri]
+
+    with pytest.raises(ValueError, match="not bound in the CAS"):
+        full_score.aggregate_full_score_shard_evidence(
+            inventory,
+            plan,
+            [],
+            authorization_scope=(
+                full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+            ),
+            execution_plan=execution_plan,
+            final_consumer_authorization=final_consumer_authorization,
+            ledger_path=aggregate_ledger_path,
+            remote_consumer_authorizations=[remote_authorization],
+            compact_artifact_resolver=missing_deletion,
+        )
     aggregate = full_score.aggregate_full_score_shard_evidence(
         inventory,
         plan,

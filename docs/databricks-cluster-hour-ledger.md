@@ -262,6 +262,18 @@ after closure. Publication use requires all 16 direct `runs/get` terminal
 attestations, unique parent/task/cluster IDs, attempt zero with no repair, and a
 content-addressed manifest that stages to node-local NVMe without regeneration.
 
+Large durable trees are verified where they are mounted; they are never mirrored
+to the Mac controller. The closed control plane therefore adds exactly 23
+single-node, no-retry `c5d.4xlarge` CPU jobs on
+`15.4.x-cpu-ml-scala2.12`: two 12-hour-bounded Q8/BF16 handoff closers, one
+two-hour-bounded latency-source closer, and 20 two-hour-bounded full-score
+ready/evidence closers (producer plus consumer for each of ten waves). Their
+66 CPU-node-hour timeout envelope is recorded separately: all jobs declare zero
+GPU tasks, do not reserve or mutate the 1,024-hour GPU ledger, and must preserve
+the immediately preceding GPU-ledger prefix byte-for-byte. The Mac accepts only
+compact issuer capabilities after direct attempt-zero `runs/get` evidence and
+authenticated, bounded Unity Catalog Files API transport.
+
 The closed budget inventory is intentionally more explicit than a single
 timeout sum:
 
@@ -273,6 +285,7 @@ timeout sum:
 | Timed latency/resource campaign | 65 jobs at 4h, 20 at 6h, 20 at 8h, 10 at 12h | 660 GPU-hours |
 | Full-score Q8 producer phases | 160 shards in ten 16-task phases | 960 GPU-hours |
 | Full-score paired consumer phases | 160 shards in ten 16-task phases | 960 GPU-hours |
+| Remote closure control plane | 23 single-node CPU jobs | 66 CPU-node-hours; 0 GPU-hours |
 
 The timeout upper bounds are safety envelopes, not a claim that all phases can
 consume them. Qualification, handoff generation, and timed latency are admitted

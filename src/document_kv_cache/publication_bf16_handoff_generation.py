@@ -26,7 +26,12 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Final, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+
+if TYPE_CHECKING:
+    from document_kv_cache.publication_handoff_closure_coordinator import (
+        PublicationHandoffRemoteClosureAuthorization,
+    )
 
 from document_kv_cache._benchmark_datasets import _example_from_record
 from document_kv_cache.artifact_identity import TokenContract, token_ids_digest
@@ -136,8 +141,9 @@ from document_kv_cache.publication_latency_handoff_generation import (
     PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT,
     PUBLICATION_LATENCY_HANDOFF_TRANSFORMERS_VERSION,
     PublicationLatencyGeneratorHardwareQualification,
-    PublicationLatencyHandoffServingAuthorization,
-    resolve_publication_latency_serving_handoff_bundle,
+    _post_close_jsonl_objects,
+    _post_close_rebased_generated_row,
+    _post_close_regular_file_inventory,
 )
 from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
 from document_kv_cache.storage import local_path
@@ -219,6 +225,8 @@ _SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 _SUBMISSION_AUTHORIZATION_ISSUER = object()
 _WORKER_AUTHORIZATION_ISSUER = object()
 _SERVING_AUTHORIZATION_ISSUER = object()
+_REMOTE_CLOSURE_LEDGER_ISSUER = object()
+_POST_CLOSE_REPLAY_ISSUER = object()
 
 
 class PublicationBF16GeneratorFactory(Protocol):
@@ -436,12 +444,17 @@ class PublicationBF16HandoffSubmissionAuthorization:
     phase_lease_closed_record_sha256: str
     batch_marker_file_sha256: str
     batch_marker_closed_record_sha256: str
+    q8_remote_closure_binding_sha256: str
+    _q8_remote_closure_binding_canonical_bytes: bytes
+    durable_output_root: str
 
     def __init__(
         self,
         *,
         batch_authorization: DatabricksBatchReservationAuthorization,
         phase_lease_root: str | Path,
+        q8_remote_closure_binding: Mapping[str, Any],
+        durable_output_root: str,
         _issuer: object,
     ) -> None:
         if _issuer is not _SUBMISSION_AUTHORIZATION_ISSUER:
@@ -453,8 +466,16 @@ class PublicationBF16HandoffSubmissionAuthorization:
         ):
             raise TypeError("batch_authorization has the wrong type")
         root = Path(phase_lease_root).expanduser().absolute()
+        binding = _json_object(
+            _canonical_json_bytes(q8_remote_closure_binding, pretty=False),
+            field_name="Q8 remote closure binding",
+        )
+        output_root = _normalized_bf16_durable_output_root(durable_output_root)
         lease, marker = _validate_bf16_submission_phase_files(
-            root, batch_authorization
+            root,
+            batch_authorization,
+            q8_remote_closure_binding=binding,
+            durable_output_root=output_root,
         )
         root = root.resolve(strict=True)
         object.__setattr__(self, "batch_authorization", batch_authorization)
@@ -483,6 +504,26 @@ class PublicationBF16HandoffSubmissionAuthorization:
             self,
             "batch_marker_closed_record_sha256",
             _required_string(marker, "closed_record_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "q8_remote_closure_binding_sha256",
+            _canonical_sha256(binding),
+        )
+        object.__setattr__(
+            self,
+            "_q8_remote_closure_binding_canonical_bytes",
+            _canonical_json_bytes(binding, pretty=False),
+        )
+        object.__setattr__(self, "durable_output_root", output_root)
+
+    @property
+    def q8_remote_closure_binding(self) -> Mapping[str, Any]:
+        return MappingProxyType(
+            _json_object(
+                self._q8_remote_closure_binding_canonical_bytes,
+                field_name="authorized Q8 remote closure binding",
+            )
         )
 
 
@@ -1007,18 +1048,22 @@ def build_databricks_publication_bf16_handoff_submit_payloads(
     *,
     ledger_path: str | Path,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    q8_handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
 ) -> tuple[dict[str, Any], ...]:
     """Render sixteen capability-authorized, independent one-GPU submissions."""
 
+    _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     if not isinstance(config, DatabricksPublicationBF16HandoffJobConfig):
         raise TypeError("config has the wrong type")
+    payloads = tuple(worker_payloads)
+    expected_input, expected_qualification = _bf16_remote_predecessor_pins(payloads)
     _require_matching_predecessor_ledger(
         ledger_path,
         qualification_launch_authorization,
-        q8_handoff_serving_authorization,
+        q8_handoff_remote_closure_authorization,
+        expected_input_bundle_sha256=expected_input,
+        expected_qualification_closed_record_sha256=expected_qualification,
     )
-    payloads = tuple(worker_payloads)
     if len(payloads) != PUBLICATION_BF16_HANDOFF_WORKER_COUNT:
         raise ValueError("production BF16 generation requires sixteen workers")
     submissions: list[dict[str, Any]] = []
@@ -1127,34 +1172,173 @@ def publication_bf16_handoff_worker_attempt_id(
 def _require_matching_predecessor_ledger(
     ledger_path: str | Path,
     authorization: GPUQualificationLaunchAuthorization,
-    q8_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_authorization: PublicationHandoffRemoteClosureAuthorization,
+    *,
+    expected_input_bundle_sha256: str,
+    expected_qualification_closed_record_sha256: str,
+    expected_q8_ledger_prefix: DatabricksLedgerPrefix | None = None,
 ) -> DatabricksClusterHourLedger:
     if not isinstance(authorization, GPUQualificationLaunchAuthorization):
         raise TypeError(
             "qualification_launch_authorization must be a "
             "GPUQualificationLaunchAuthorization"
         )
+    from document_kv_cache.publication_handoff_closure_coordinator import (
+        require_q8_handoff_remote_closure_predecessor_authorization,
+    )
+
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    if not isinstance(q8_authorization, PublicationLatencyHandoffServingAuthorization):
-        raise TypeError("BF16 launch requires Q8 handoff serving authority")
-    resolve_publication_latency_serving_handoff_bundle(
+    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
+    live_prefix = databricks_ledger_prefix(ledger)
+    q8_prefix = (
+        live_prefix
+        if expected_q8_ledger_prefix is None
+        else expected_q8_ledger_prefix
+    )
+    require_databricks_ledger_prefix(ledger, q8_prefix)
+    q8_remote = require_q8_handoff_remote_closure_predecessor_authorization(
         q8_authorization,
-        context_tokens=PUBLICATION_BF16_HANDOFF_CONTEXT_TOKENS,
+        expected_ledger_id=ledger.ledger_id,
+        expected_ledger_path_sha256=ledger_path_sha256,
+        expected_ledger_prefix=q8_prefix,
+        expected_input_bundle_sha256=expected_input_bundle_sha256,
+        expected_qualification_closed_record_sha256=(
+            expected_qualification_closed_record_sha256
+        ),
     )
     if (
         ledger.ledger_id != authorization.ledger_id
-        or ledger.ledger_id != q8_authorization.ledger_id
+        or ledger.ledger_id != q8_remote.ledger_id
     ):
         raise ValueError("BF16 ledger differs from predecessor authorities")
-    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
     if (
         ledger_path_sha256 != authorization.ledger_path_sha256
-        or ledger_path_sha256 != q8_authorization.ledger_path_sha256
+        or ledger_path_sha256 != q8_remote.ledger_path_sha256
     ):
         raise ValueError("BF16 ledger path differs from predecessor authorities")
     require_databricks_ledger_prefix(ledger, authorization.ledger_prefix)
-    require_databricks_ledger_prefix(ledger, q8_authorization.ledger_prefix)
     return ledger
+
+
+def _bf16_remote_predecessor_pins(
+    worker_payloads: Sequence[Mapping[str, Any]],
+) -> tuple[str, str]:
+    values = tuple(worker_payloads)
+    if not values:
+        raise ValueError("BF16 predecessor binding requires worker payloads")
+    bindings = {
+        (
+            _require_sha256(
+                payload.get("input_bundle_sha256"),
+                "input_bundle_sha256",
+            ),
+            _require_sha256(
+                _required_mapping(
+                    payload, "generator_hardware_qualification"
+                ).get("evidence_closed_record_sha256"),
+                "qualification evidence_closed_record_sha256",
+            ),
+        )
+        for payload in values
+    }
+    if len(bindings) != 1:
+        raise ValueError("BF16 workers disagree on Q8 predecessor input/qualification")
+    return next(iter(bindings))
+
+
+def _q8_remote_closure_binding(
+    authorization: object,
+    *,
+    expected_input_bundle_sha256: str,
+    expected_qualification_closed_record_sha256: str,
+) -> dict[str, Any]:
+    _require_q8_remote_closure_type(authorization)
+    from document_kv_cache.publication_handoff_closure_coordinator import (
+        PublicationHandoffRemoteClosureAuthorization,
+    )
+
+    if not isinstance(authorization, PublicationHandoffRemoteClosureAuthorization):
+        raise AssertionError("Q8 remote closure type guard drift")
+    return {
+        "causal_closure_sha256": authorization.causal_closure_sha256,
+        "execution_file_sha256": authorization.execution_file_sha256,
+        "input_bundle_sha256": _require_sha256(
+            expected_input_bundle_sha256, "expected_input_bundle_sha256"
+        ),
+        "ledger_id": authorization.ledger_id,
+        "ledger_path_sha256": authorization.ledger_path_sha256,
+        "ledger_prefix": authorization.ledger_prefix.to_record(),
+        "qualification_closed_record_sha256": _require_sha256(
+            expected_qualification_closed_record_sha256,
+            "expected_qualification_closed_record_sha256",
+        ),
+        "request_closed_record_sha256": (
+            authorization.request_closed_record_sha256
+        ),
+        "result_closed_record_sha256": authorization.result_closed_record_sha256,
+        "result_file_sha256": authorization.result_file_sha256,
+    }
+
+
+def _require_q8_remote_closure_type(authorization: object) -> None:
+    from document_kv_cache.publication_handoff_closure_coordinator import (
+        PublicationHandoffRemoteClosureAuthorization,
+    )
+
+    if not isinstance(authorization, PublicationHandoffRemoteClosureAuthorization):
+        raise TypeError(
+            "BF16 predecessor requires "
+            "PublicationHandoffRemoteClosureAuthorization"
+        )
+
+
+def _require_submission_q8_remote_closure(
+    ledger_path: str | Path,
+    authorization: object,
+    submission_authorization: PublicationBF16HandoffSubmissionAuthorization,
+) -> DatabricksBatchReservationAuthorization:
+    from document_kv_cache.publication_handoff_closure_coordinator import (
+        require_q8_handoff_remote_closure_predecessor_authorization,
+    )
+
+    _require_q8_remote_closure_type(authorization)
+    batch = require_publication_bf16_handoff_submission_authorization(
+        submission_authorization
+    )
+    binding = dict(submission_authorization.q8_remote_closure_binding)
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    require_databricks_ledger_prefix(ledger, batch.predecessor_prefix)
+    require_databricks_ledger_prefix(ledger, batch.batch_prefix)
+    remote = require_q8_handoff_remote_closure_predecessor_authorization(
+        authorization,
+        expected_ledger_id=ledger.ledger_id,
+        expected_ledger_path_sha256=databricks_ledger_path_sha256(ledger_path),
+        expected_ledger_prefix=batch.predecessor_prefix,
+        expected_input_bundle_sha256=_required_string(
+            binding, "input_bundle_sha256"
+        ),
+        expected_qualification_closed_record_sha256=_required_string(
+            binding, "qualification_closed_record_sha256"
+        ),
+    )
+    observed = _q8_remote_closure_binding(
+        remote,
+        expected_input_bundle_sha256=_required_string(
+            binding, "input_bundle_sha256"
+        ),
+        expected_qualification_closed_record_sha256=_required_string(
+            binding, "qualification_closed_record_sha256"
+        ),
+    )
+    if (
+        observed != binding
+        or _canonical_sha256(binding)
+        != submission_authorization.q8_remote_closure_binding_sha256
+        or batch.ledger_path_sha256 != binding.get("ledger_path_sha256")
+        or batch.predecessor_prefix.to_record() != binding.get("ledger_prefix")
+    ):
+        raise ValueError("BF16 phase lease Q8 remote closure binding drift")
+    return batch
 
 
 def reserve_publication_bf16_handoff_worker_attempt_json(
@@ -1165,10 +1349,11 @@ def reserve_publication_bf16_handoff_worker_attempt_json(
     worker_index: int,
     attempt_id: str,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    q8_handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
 ) -> DatabricksClusterHourLedger:
     """Capability-check and reserve one exact five-hour producer payload."""
 
+    _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
     _validate_launch_binding(
         submit_payload,
@@ -1178,10 +1363,15 @@ def reserve_publication_bf16_handoff_worker_attempt_json(
         expected_worker_sha256=expected_worker_sha256,
     )
     path = Path(ledger_path)
+    expected_input, expected_qualification = _bf16_remote_predecessor_pins(
+        (worker_payload,)
+    )
     _require_matching_predecessor_ledger(
         path,
         qualification_launch_authorization,
-        q8_handoff_serving_authorization,
+        q8_handoff_remote_closure_authorization,
+        expected_input_bundle_sha256=expected_input,
+        expected_qualification_closed_record_sha256=expected_qualification,
     )
     raise RuntimeError(
         "single-worker BF16 reservation is nonpublication; use the exact 16-worker wave"
@@ -1196,7 +1386,7 @@ def reserve_publication_bf16_handoff_worker_attempt_json(
             worker_payload=worker_payload,
             worker_index_value=worker_index,
             authorization=qualification_launch_authorization,
-            q8_authorization=q8_handoff_serving_authorization,
+            q8_authorization=q8_handoff_remote_closure_authorization,
             expected_worker_sha256=expected_worker_sha256,
         ),
     )
@@ -1211,11 +1401,12 @@ def reserve_and_submit_publication_bf16_handoff_worker(
     worker_index: int,
     attempt_id: str,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    q8_handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     opener: DatabricksURLOpener | None = None,
 ) -> dict[str, Any]:
     """Reserve exact bytes, submit them, and durably receipt-bind the cloud run."""
 
+    _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
     _validate_launch_binding(
         submit_payload,
@@ -1225,10 +1416,15 @@ def reserve_and_submit_publication_bf16_handoff_worker(
         expected_worker_sha256=expected_worker_sha256,
     )
     path = Path(ledger_path)
+    expected_input, expected_qualification = _bf16_remote_predecessor_pins(
+        (worker_payload,)
+    )
     _require_matching_predecessor_ledger(
         path,
         qualification_launch_authorization,
-        q8_handoff_serving_authorization,
+        q8_handoff_remote_closure_authorization,
+        expected_input_bundle_sha256=expected_input,
+        expected_qualification_closed_record_sha256=expected_qualification,
     )
     raise RuntimeError(
         "single-worker BF16 submission is nonpublication; use the exact 16-worker wave"
@@ -1244,7 +1440,7 @@ def reserve_and_submit_publication_bf16_handoff_worker(
             worker_payload=worker_payload,
             worker_index_value=worker_index,
             authorization=qualification_launch_authorization,
-            q8_authorization=q8_handoff_serving_authorization,
+            q8_authorization=q8_handoff_remote_closure_authorization,
             expected_worker_sha256=expected_worker_sha256,
         ),
         opener=opener,
@@ -1260,7 +1456,7 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
     attempt_ids_by_worker: Mapping[int, str],
     phase_lease_root: str | Path,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    q8_handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     opener: DatabricksURLOpener | None = None,
 ) -> tuple[
     tuple[dict[str, Any], ...],
@@ -1268,6 +1464,7 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
 ]:
     """Atomically admit all sixteen BF16 producers before the first POST."""
 
+    _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     submissions = tuple(submit_payloads)
     workers = tuple(worker_payloads)
     indexes = tuple(range(PUBLICATION_BF16_HANDOFF_WORKER_COUNT))
@@ -1275,14 +1472,21 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
         raise ValueError("BF16 production wave requires exactly sixteen members")
     if set(attempt_ids_by_worker) != set(indexes):
         raise ValueError("BF16 attempt IDs must cover workers 0..15 exactly")
-    predecessor = q8_handoff_serving_authorization.ledger_prefix
+    durable_output_root = _common_bf16_durable_output_root(workers)
+    expected_input, expected_qualification = _bf16_remote_predecessor_pins(workers)
     live = _require_matching_predecessor_ledger(
         ledger_path,
         qualification_launch_authorization,
-        q8_handoff_serving_authorization,
+        q8_handoff_remote_closure_authorization,
+        expected_input_bundle_sha256=expected_input,
+        expected_qualification_closed_record_sha256=expected_qualification,
     )
-    if databricks_ledger_prefix(live) != predecessor:
-        raise ValueError("BF16 predecessor is not the complete live ledger")
+    predecessor = databricks_ledger_prefix(live)
+    q8_remote_binding = _q8_remote_closure_binding(
+        q8_handoff_remote_closure_authorization,
+        expected_input_bundle_sha256=expected_input,
+        expected_qualification_closed_record_sha256=expected_qualification,
+    )
     attempts = tuple(attempt_ids_by_worker[index] for index in indexes)
     expected_attempts = tuple(
         publication_bf16_handoff_worker_attempt_id(workers[index], worker_index=index)
@@ -1328,8 +1532,10 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
     lease = {
         "attempt_ids": list(attempts),
         "closed_record_sha256": "",
-        "ledger_path_sha256": q8_handoff_serving_authorization.ledger_path_sha256,
+        "durable_output_root": durable_output_root,
+        "ledger_path_sha256": q8_remote_binding["ledger_path_sha256"],
         "predecessor_prefix": predecessor.to_record(),
+        "q8_remote_closure": q8_remote_binding,
         "record_type": "cachet.publication_bf16_handoff_phase_lease.v1",
         "submit_payload_sha256": payload_digests,
     }
@@ -1343,7 +1549,7 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
         snapshots: tuple[Mapping[str, Any], ...],
     ) -> None:
         if databricks_ledger_path_sha256(ledger_path) != (
-            q8_handoff_serving_authorization.ledger_path_sha256
+            q8_remote_binding["ledger_path_sha256"]
         ):
             raise ValueError("BF16 batch ledger path binding drift")
         require_databricks_ledger_prefix(batch_live, predecessor)
@@ -1424,7 +1630,10 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
     _write_json_exclusive(batch_record, lease_root / "batch-reserved.json")
     _sync_directory(lease_root)
     submission_authorization = _issue_bf16_submission_authorization(
-        batch_authorization, lease_root
+        batch_authorization,
+        lease_root,
+        q8_remote_closure_binding=q8_remote_binding,
+        durable_output_root=durable_output_root,
     )
 
     responses: list[dict[str, Any]] = []
@@ -1482,7 +1691,7 @@ def resume_publication_bf16_handoff_worker_wave(
     attempt_ids_by_worker: Mapping[int, str],
     phase_lease_root: str | Path,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    q8_handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     opener: DatabricksURLOpener | None = None,
 ) -> tuple[
     tuple[dict[str, Any], ...],
@@ -1490,6 +1699,7 @@ def resume_publication_bf16_handoff_worker_wave(
 ]:
     """Resume the exact BF16 producer wave from its durable phase lease."""
 
+    _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     submissions = tuple(submit_payloads)
     workers = tuple(worker_payloads)
     indexes = tuple(range(PUBLICATION_BF16_HANDOFF_WORKER_COUNT))
@@ -1497,11 +1707,23 @@ def resume_publication_bf16_handoff_worker_wave(
         raise ValueError("BF16 production wave requires exactly sixteen members")
     if set(attempt_ids_by_worker) != set(indexes):
         raise ValueError("BF16 attempt IDs must cover workers 0..15 exactly")
-    predecessor = q8_handoff_serving_authorization.ledger_prefix
+    durable_output_root = _common_bf16_durable_output_root(workers)
+    expected_input, expected_qualification = _bf16_remote_predecessor_pins(workers)
+    q8_remote_binding = _q8_remote_closure_binding(
+        q8_handoff_remote_closure_authorization,
+        expected_input_bundle_sha256=expected_input,
+        expected_qualification_closed_record_sha256=expected_qualification,
+    )
+    predecessor = databricks_ledger_prefix_from_record(
+        _required_mapping(q8_remote_binding, "ledger_prefix")
+    )
     live = _require_matching_predecessor_ledger(
         ledger_path,
         qualification_launch_authorization,
-        q8_handoff_serving_authorization,
+        q8_handoff_remote_closure_authorization,
+        expected_input_bundle_sha256=expected_input,
+        expected_qualification_closed_record_sha256=expected_qualification,
+        expected_q8_ledger_prefix=predecessor,
     )
     require_databricks_ledger_prefix(live, predecessor)
     attempts = tuple(attempt_ids_by_worker[index] for index in indexes)
@@ -1543,8 +1765,10 @@ def resume_publication_bf16_handoff_worker_wave(
     expected_lease: dict[str, Any] = {
         "attempt_ids": list(attempts),
         "closed_record_sha256": "",
-        "ledger_path_sha256": q8_handoff_serving_authorization.ledger_path_sha256,
+        "durable_output_root": durable_output_root,
+        "ledger_path_sha256": q8_remote_binding["ledger_path_sha256"],
         "predecessor_prefix": predecessor.to_record(),
+        "q8_remote_closure": q8_remote_binding,
         "record_type": "cachet.publication_bf16_handoff_phase_lease.v1",
         "submit_payload_sha256": payload_digests,
     }
@@ -1574,7 +1798,10 @@ def resume_publication_bf16_handoff_worker_wave(
         _write_json_exclusive(expected_batch, batch_path)
         _sync_directory(lease_root)
     submission_authorization = _issue_bf16_submission_authorization(
-        batch_authorization, lease_root
+        batch_authorization,
+        lease_root,
+        q8_remote_closure_binding=q8_remote_binding,
+        durable_output_root=durable_output_root,
     )
     responses: list[dict[str, Any]] = []
     for index, submit_payload in zip(indexes, submissions, strict=True):
@@ -1659,6 +1886,8 @@ def require_publication_bf16_handoff_submission_authorization(
     lease, marker = _validate_bf16_submission_phase_files(
         authorization.phase_lease_root,
         authorization.batch_authorization,
+        q8_remote_closure_binding=authorization.q8_remote_closure_binding,
+        durable_output_root=authorization.durable_output_root,
     )
     observed = (
         _bf16_phase_lease_root_sha256(authorization.phase_lease_root),
@@ -1666,6 +1895,7 @@ def require_publication_bf16_handoff_submission_authorization(
         _required_string(lease, "closed_record_sha256"),
         _file_sha256(authorization.phase_lease_root / "batch-reserved.json"),
         _required_string(marker, "closed_record_sha256"),
+        _canonical_sha256(_required_mapping(lease, "q8_remote_closure")),
     )
     expected = (
         authorization.phase_lease_root_sha256,
@@ -1673,6 +1903,7 @@ def require_publication_bf16_handoff_submission_authorization(
         authorization.phase_lease_closed_record_sha256,
         authorization.batch_marker_file_sha256,
         authorization.batch_marker_closed_record_sha256,
+        authorization.q8_remote_closure_binding_sha256,
     )
     if observed != expected:
         raise ValueError("BF16 durable phase authorization evidence drift")
@@ -1682,10 +1913,15 @@ def require_publication_bf16_handoff_submission_authorization(
 def _issue_bf16_submission_authorization(
     batch_authorization: DatabricksBatchReservationAuthorization,
     phase_lease_root: Path,
+    *,
+    q8_remote_closure_binding: Mapping[str, Any],
+    durable_output_root: str,
 ) -> PublicationBF16HandoffSubmissionAuthorization:
     return PublicationBF16HandoffSubmissionAuthorization(
         batch_authorization=batch_authorization,
         phase_lease_root=phase_lease_root,
+        q8_remote_closure_binding=q8_remote_closure_binding,
+        durable_output_root=durable_output_root,
         _issuer=_SUBMISSION_AUTHORIZATION_ISSUER,
     )
 
@@ -1693,6 +1929,9 @@ def _issue_bf16_submission_authorization(
 def _validate_bf16_submission_phase_files(
     phase_lease_root: Path,
     batch_authorization: DatabricksBatchReservationAuthorization,
+    *,
+    q8_remote_closure_binding: Mapping[str, Any],
+    durable_output_root: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(batch_authorization, DatabricksBatchReservationAuthorization):
         raise TypeError("BF16 phase batch authorization has the wrong type")
@@ -1704,8 +1943,12 @@ def _validate_bf16_submission_phase_files(
     expected_lease: dict[str, Any] = {
         "attempt_ids": list(batch_authorization.attempt_ids),
         "closed_record_sha256": "",
+        "durable_output_root": _normalized_bf16_durable_output_root(
+            durable_output_root
+        ),
         "ledger_path_sha256": batch_authorization.ledger_path_sha256,
         "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
+        "q8_remote_closure": dict(q8_remote_closure_binding),
         "record_type": "cachet.publication_bf16_handoff_phase_lease.v1",
         "submit_payload_sha256": list(
             batch_authorization.submit_payload_sha256s
@@ -1728,6 +1971,26 @@ def _validate_bf16_submission_phase_files(
     if marker != expected_marker:
         raise ValueError("BF16 batch marker differs from the authorized atomic batch")
     return lease, marker
+
+
+def _normalized_bf16_durable_output_root(value: object) -> str:
+    if not isinstance(value, str) or not value.rstrip("/"):
+        raise ValueError("BF16 durable_output_root must be a non-empty string")
+    return value.rstrip("/")
+
+
+def _common_bf16_durable_output_root(
+    worker_payloads: Sequence[Mapping[str, Any]],
+) -> str:
+    roots = {
+        _normalized_bf16_durable_output_root(
+            _required_string(payload, "durable_output_root")
+        )
+        for payload in worker_payloads
+    }
+    if len(roots) != 1:
+        raise ValueError("BF16 workers must share one durable_output_root")
+    return next(iter(roots))
 
 
 def _bf16_phase_lease_root_sha256(path: Path) -> str:
@@ -2207,7 +2470,7 @@ def _reservation_validator(
     worker_payload: Mapping[str, Any],
     worker_index_value: int,
     authorization: GPUQualificationLaunchAuthorization,
-    q8_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_authorization: PublicationHandoffRemoteClosureAuthorization,
     expected_worker_sha256: str,
 ) -> Callable[[DatabricksClusterHourReservation, Mapping[str, Any]], None]:
     def validate(
@@ -2227,6 +2490,15 @@ def _reservation_validator(
             ledger_path,
             authorization,
             q8_authorization,
+            expected_input_bundle_sha256=_required_string(
+                worker_payload, "input_bundle_sha256"
+            ),
+            expected_qualification_closed_record_sha256=_required_string(
+                _required_mapping(
+                    worker_payload, "generator_hardware_qualification"
+                ),
+                "evidence_closed_record_sha256",
+            ),
         )
         if ledger.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
             raise ValueError("BF16 generation requires the 1024-hour ledger")
@@ -2975,15 +3247,18 @@ def collect_publication_bf16_handoff_worker_attestation(
     durable_output_root: str | Path,
     worker_index: int,
     attempt_id: str,
-    q8_handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     submission_authorization: PublicationBF16HandoffSubmissionAuthorization,
 ) -> PublicationBF16HandoffWorkerAuthorization:
     """Collect one direct ``runs/get`` response and causally close its ledger event."""
 
+    _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     if not isinstance(workspace, DatabricksWorkspaceConfig):
         raise TypeError("workspace has the wrong type")
-    require_publication_bf16_handoff_submission_authorization(
-        submission_authorization
+    batch_reservation_authorization = _require_submission_q8_remote_closure(
+        ledger_path,
+        q8_handoff_remote_closure_authorization,
+        submission_authorization,
     )
     _worker_index(worker_index)
     _validate_submit_payload(submit_payload, worker_index_value=worker_index)
@@ -3001,7 +3276,7 @@ def collect_publication_bf16_handoff_worker_attestation(
         durable_output_root=durable_output_root,
         worker_index=worker_index,
         attempt_id=attempt_id,
-        q8_handoff_serving_authorization=q8_handoff_serving_authorization,
+        q8_handoff_remote_closure_authorization=q8_handoff_remote_closure_authorization,
         submission_authorization=submission_authorization,
     )
     root = Path(local_path(str(durable_output_root))).expanduser().absolute()
@@ -3049,7 +3324,7 @@ def collect_publication_bf16_handoff_worker_attestation(
         binding=binding,
         attempt_id=attempt_id,
         ledger_id=updated.ledger_id,
-        ledger_path_sha256=q8_handoff_serving_authorization.ledger_path_sha256,
+        ledger_path_sha256=batch_reservation_authorization.ledger_path_sha256,
         producer_batch_prefix=(
             submission_authorization.batch_authorization.batch_prefix
         ),
@@ -3070,7 +3345,7 @@ def _build_databricks_attestation(
     durable_output_root: str | Path,
     worker_index: int,
     attempt_id: str,
-    q8_handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     submission_authorization: PublicationBF16HandoffSubmissionAuthorization,
 ) -> dict[str, Any]:
     snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(
@@ -3085,18 +3360,14 @@ def _build_databricks_attestation(
     _validate_submit_payload(snapshot, worker_index_value=worker_index)
     submit_payload_sha256 = sha256(canonical_payload).hexdigest()
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    batch_reservation_authorization = (
-        require_publication_bf16_handoff_submission_authorization(
-            submission_authorization
-        )
+    batch_reservation_authorization = _require_submission_q8_remote_closure(
+        ledger_path,
+        q8_handoff_remote_closure_authorization,
+        submission_authorization,
     )
     if (
-        batch_reservation_authorization.predecessor_prefix
-        != q8_handoff_serving_authorization.ledger_prefix
-        or batch_reservation_authorization.ledger_path_sha256
-        != q8_handoff_serving_authorization.ledger_path_sha256
-        or databricks_ledger_path_sha256(ledger_path)
-        != q8_handoff_serving_authorization.ledger_path_sha256
+        databricks_ledger_path_sha256(ledger_path)
+        != batch_reservation_authorization.ledger_path_sha256
     ):
         raise ValueError("BF16 attestation batch/ledger authority drift")
     if attempt_id not in batch_reservation_authorization.attempt_ids:
@@ -3221,7 +3492,7 @@ def _build_databricks_attestation(
         "attempt": {
             "attempt_id": attempt_id,
             "ledger_id": ledger.ledger_id,
-            "ledger_path_sha256": q8_handoff_serving_authorization.ledger_path_sha256,
+            "ledger_path_sha256": batch_reservation_authorization.ledger_path_sha256,
             "producer_batch_prefix": (
                 batch_reservation_authorization.batch_prefix.to_record()
             ),
@@ -3460,6 +3731,7 @@ def _ledger_reconciliation(
     durable_output_root: str | Path,
     worker_authorizations: Mapping[int, PublicationBF16HandoffWorkerAuthorization],
     _ledger: DatabricksClusterHourLedger | None = None,
+    _ledger_path_sha256: str | None = None,
 ) -> dict[str, Any]:
     expected_workers = set(range(PUBLICATION_BF16_HANDOFF_WORKER_COUNT))
     if set(attempt_ids_by_worker) != expected_workers:
@@ -3477,6 +3749,11 @@ def _ledger_reconciliation(
         read_databricks_cluster_hour_ledger_json(ledger_path)
         if _ledger is None
         else _ledger
+    )
+    ledger_path_binding = (
+        databricks_ledger_path_sha256(ledger_path)
+        if _ledger_path_sha256 is None
+        else _require_sha256(_ledger_path_sha256, "ledger_path_sha256")
     )
     reservations = {item.attempt_id: item for item in ledger.reservations}
     receipts = {item.attempt_id: item for item in ledger.submission_receipts}
@@ -3521,8 +3798,7 @@ def _ledger_reconciliation(
         if (
             authority.attempt_id != attempt_id
             or authority.ledger_id != ledger.ledger_id
-            or authority.ledger_path_sha256
-            != databricks_ledger_path_sha256(ledger_path)
+            or authority.ledger_path_sha256 != ledger_path_binding
             or authority.control_plane_status_sha256
             != cloud.get("control_plane_status_sha256")
             or attempt.get("attempt_id") != attempt_id
@@ -3620,8 +3896,23 @@ def close_publication_bf16_handoff_generation_from_workers(
     attempt_ids_by_worker: Mapping[int, str],
     worker_authorizations: Mapping[int, PublicationBF16HandoffWorkerAuthorization],
     source_paths: Mapping[str, str | Path] | None = None,
+    _ledger_snapshot: DatabricksClusterHourLedger | None = None,
+    _ledger_path_sha256: str | None = None,
+    _remote_ledger_issuer: object | None = None,
 ) -> PublicationBF16HandoffGenerationResult:
     """Verify all sixteen producer closures and publish one 16k bundle by rename."""
+
+    if (
+        _ledger_snapshot is not None
+        or _ledger_path_sha256 is not None
+        or _remote_ledger_issuer is not None
+    ):
+        if _remote_ledger_issuer is not _REMOTE_CLOSURE_LEDGER_ISSUER:
+            raise TypeError("remote ledger snapshot requires the coordinator issuer")
+        if not isinstance(_ledger_snapshot, DatabricksClusterHourLedger) or (
+            _ledger_path_sha256 is None
+        ):
+            raise ValueError("remote ledger snapshot and path digest are both required")
 
     validate_publication_bf16_handoff_generation_plan(
         plan,
@@ -3647,6 +3938,8 @@ def close_publication_bf16_handoff_generation_from_workers(
         attempt_ids_by_worker=attempt_ids_by_worker,
         durable_output_root=root,
         worker_authorizations=worker_authorizations,
+        _ledger=_ledger_snapshot,
+        _ledger_path_sha256=_ledger_path_sha256,
     )
     actuals = {
         _required_int(item, "worker_index"): _required_positive_number(
@@ -3841,6 +4134,509 @@ def close_publication_bf16_handoff_generation_from_workers(
     _sync_file(execution_path)
     _sync_directory(root)
     return read_publication_bf16_handoff_generation_result(root)
+
+
+def _replay_closed_publication_bf16_handoff_generation(
+    plan: Mapping[str, Any],
+    *,
+    prepared_input_dir: str | Path,
+    durable_output_root: str | Path,
+    tokenizer: MainLatencyTokenizer,
+    config: PublicationBF16HandoffExecutionConfig,
+    ledger_snapshot: DatabricksClusterHourLedger,
+    ledger_path_sha256: str,
+    expected_producer_batch_prefix: DatabricksLedgerPrefix,
+    attempt_ids_by_worker: Mapping[int, str],
+    worker_authorizations: Mapping[int, PublicationBF16HandoffWorkerAuthorization],
+    source_paths: Mapping[str, str | Path] | None = None,
+    _issuer: object | None = None,
+) -> PublicationBF16HandoffGenerationResult:
+    """Reopen every raw BF16 producer byte after content-addressed rename."""
+
+    if _issuer is not _POST_CLOSE_REPLAY_ISSUER:
+        raise TypeError("post-close BF16 replay requires the coordinator issuer")
+    if not isinstance(config, PublicationBF16HandoffExecutionConfig):
+        raise TypeError("config must be a PublicationBF16HandoffExecutionConfig")
+    if not isinstance(ledger_snapshot, DatabricksClusterHourLedger):
+        raise TypeError("ledger_snapshot must be a DatabricksClusterHourLedger")
+    if not isinstance(expected_producer_batch_prefix, DatabricksLedgerPrefix):
+        raise TypeError("expected_producer_batch_prefix has the wrong type")
+    path_digest = _require_sha256(ledger_path_sha256, "ledger_path_sha256")
+    expected_workers = set(range(PUBLICATION_BF16_HANDOFF_WORKER_COUNT))
+    if set(worker_authorizations) != expected_workers or any(
+        authority.producer_batch_prefix != expected_producer_batch_prefix
+        for authority in worker_authorizations.values()
+    ):
+        raise ValueError("post-close BF16 worker authorities bind the wrong batch")
+    validate_publication_bf16_handoff_generation_plan(
+        plan,
+        prepared_input_dir=prepared_input_dir,
+        tokenizer=tokenizer,
+        source_paths=source_paths,
+    )
+    root = Path(local_path(str(durable_output_root))).expanduser().absolute()
+    result = read_publication_bf16_handoff_generation_result(root)
+    execution = result.record
+    _require_exact_mapping_keys(
+        execution,
+        {
+            "accounting",
+            "bundle",
+            "closed_record_sha256",
+            "coverage",
+            "execution_contract",
+            "execution_mode",
+            "generator_hardware",
+            "input_bundle_sha256",
+            "ledger_reconciliation",
+            "plan_closed_record_sha256",
+            "record_type",
+            "schema_version",
+            "serving_reuse",
+            "workers",
+        },
+        label="post-close BF16 execution",
+    )
+    if (
+        execution.get("execution_contract") != _execution_config_record(config)
+        or execution.get("plan_closed_record_sha256")
+        != plan.get("closed_record_sha256")
+        or execution.get("input_bundle_sha256") != plan.get("input_bundle_sha256")
+    ):
+        raise ValueError("post-close BF16 plan/input/config binding drift")
+    reconciliation = _ledger_reconciliation(
+        Path("/local_disk0/cachet-post-close-ledger-snapshot.json"),
+        attempt_ids_by_worker=attempt_ids_by_worker,
+        durable_output_root=root,
+        worker_authorizations=worker_authorizations,
+        _ledger=ledger_snapshot,
+        _ledger_path_sha256=path_digest,
+    )
+    if dict(_required_mapping(execution, "ledger_reconciliation")) != reconciliation:
+        raise ValueError("post-close BF16 ledger reconciliation drift")
+    attempts = _mapping_sequence(
+        reconciliation.get("attempts"), "post-close BF16 reconciliation attempts"
+    )
+    attempt_by_worker = {
+        _required_int(item, "worker_index"): item for item in attempts
+    }
+    if set(attempt_by_worker) != expected_workers:
+        raise ValueError("post-close BF16 ledger worker coverage drift")
+
+    bundle = _required_mapping(execution, "bundle")
+    manifest_path = _confined_relative_path(
+        root,
+        _required_string(bundle, "manifest_relative_path"),
+        field_name="post-close BF16 manifest",
+    )
+    source_root = _confined_relative_path(
+        root,
+        _required_string(bundle, "source_root_relative_path"),
+        field_name="post-close BF16 source root",
+    )
+    manifest = read_publication_latency_handoff_bundle(manifest_path)
+    manifest_file_sequence = _mapping_sequence(manifest.get("files"), "manifest.files")
+    manifest_files = {
+        _required_string(item, "relative_name"): item
+        for item in manifest_file_sequence
+    }
+    if len(manifest_files) != len(manifest_file_sequence):
+        raise ValueError("post-close BF16 manifest contains duplicate file names")
+    expected_bundle_paths = {
+        source_root / PurePosixPath(relative_name) for relative_name in manifest_files
+    }
+    manifest_entries: dict[tuple[str, str], Mapping[str, Any]] = {}
+    final_rows: dict[str, tuple[dict[str, Any], ...]] = {}
+    for dataset_record in _mapping_sequence(manifest.get("datasets"), "datasets"):
+        dataset = _required_string(dataset_record, "dataset")
+        dataset_path = source_root / PurePosixPath(
+            _required_string(dataset_record, "relative_name")
+        )
+        final_rows[dataset] = _post_close_jsonl_objects(dataset_path)
+        for entry in _mapping_sequence(dataset_record.get("entries"), "dataset.entries"):
+            identity = (dataset, _required_string(entry, "example_id"))
+            if identity in manifest_entries:
+                raise ValueError("post-close BF16 manifest identity duplication")
+            manifest_entries[identity] = entry
+
+    workers = _mapping_sequence(plan.get("workers"), "workers")
+    if len(workers) != PUBLICATION_BF16_HANDOFF_WORKER_COUNT:
+        raise ValueError("post-close BF16 plan requires sixteen workers")
+    expected_result_paths: set[Path] = set()
+    expected_record_paths: set[Path] = set()
+    expected_attestation_paths = {
+        authority.binding.path.absolute()
+        for authority in worker_authorizations.values()
+    }
+    observed_bundle_records: dict[str, Mapping[str, Any]] = {}
+    worker_rows: list[dict[str, Any]] = []
+    worker_results: list[dict[str, Any]] = []
+    all_task_ids: list[str] = []
+    qualification_records: list[Mapping[str, Any]] = []
+    qualification_closures: set[str] = set()
+    observed_hardware_sha256: set[str] = set()
+    for worker_index, worker in enumerate(workers):
+        if _required_int(worker, "worker_index") != worker_index:
+            raise ValueError("post-close BF16 plan worker order drift")
+        result_path = root / "worker-results" / f"worker-{worker_index:02d}.json"
+        expected_result_paths.add(result_path)
+        worker_result = _read_worker_result(result_path)
+        _require_exact_mapping_keys(
+            worker_result,
+            {
+                "accounting",
+                "bundle_files",
+                "bundle_files_sha256",
+                "closed_record_sha256",
+                "execution_contract",
+                "execution_mode",
+                "generator_hardware",
+                "input_bundle_sha256",
+                "partial_record_file",
+                "plan_closed_record_sha256",
+                "record_type",
+                "schema_version",
+                "task_ids",
+                "task_ids_sha256",
+                "worker_id",
+                "worker_index",
+            },
+            label="post-close BF16 worker result",
+        )
+        if (
+            worker_result.get("worker_index") != worker_index
+            or worker_result.get("worker_id") != worker.get("worker_id")
+            or worker_result.get("plan_closed_record_sha256")
+            != plan.get("closed_record_sha256")
+            or worker_result.get("input_bundle_sha256")
+            != plan.get("input_bundle_sha256")
+            or worker_result.get("execution_contract")
+            != _execution_config_record(config)
+        ):
+            raise ValueError("post-close BF16 worker source/config binding drift")
+        planned_items = _mapping_sequence(worker.get("items"), "worker.items")
+        expected_task_ids = sorted(
+            _required_string(item, "task_id") for item in planned_items
+        )
+        if worker_result.get("task_ids") != expected_task_ids or worker_result.get(
+            "task_ids_sha256"
+        ) != _canonical_sha256(expected_task_ids):
+            raise ValueError("post-close BF16 worker task closure drift")
+        all_task_ids.extend(expected_task_ids)
+
+        bundle_files = _mapping_sequence(worker_result.get("bundle_files"), "bundle_files")
+        if worker_result.get("bundle_files_sha256") != _canonical_sha256(bundle_files):
+            raise ValueError("post-close BF16 worker bundle closure drift")
+        worker_bundle_bytes = 0
+        expected_prefix = f"pending/16384/worker-{worker_index:02d}/"
+        for file_record in bundle_files:
+            _require_exact_mapping_keys(
+                file_record,
+                {"byte_count", "relative_path", "sha256"},
+                label="post-close BF16 worker bundle file",
+            )
+            preclose_relative = _required_string(file_record, "relative_path")
+            if not preclose_relative.startswith(expected_prefix):
+                raise ValueError("post-close BF16 worker bundle path drift")
+            final_relative = preclose_relative.removeprefix("pending/16384/")
+            if final_relative in observed_bundle_records:
+                raise ValueError("post-close BF16 worker bundle path duplication")
+            manifest_file = manifest_files.get(final_relative)
+            expected_file_record = (
+                {
+                    "byte_count": manifest_file.get("byte_count"),
+                    "relative_path": preclose_relative,
+                    "sha256": manifest_file.get("sha256"),
+                }
+                if manifest_file is not None
+                and manifest_file.get("role") in {"handoff_json", "payload"}
+                else None
+            )
+            if expected_file_record != dict(file_record):
+                raise ValueError(
+                    "post-close BF16 worker file differs from finalized manifest"
+                )
+            observed_bundle_records[final_relative] = file_record
+            worker_bundle_bytes += _required_int(file_record, "byte_count")
+
+        partial = _required_mapping(worker_result, "partial_record_file")
+        _require_exact_mapping_keys(
+            partial,
+            {"byte_count", "record_count", "relative_path", "sha256"},
+            label="post-close BF16 worker record file",
+        )
+        expected_relative = f"worker-records/worker-{worker_index:02d}.jsonl"
+        if partial.get("relative_path") != expected_relative:
+            raise ValueError("post-close BF16 worker-record path drift")
+        record_path = _confined_relative_path(
+            root,
+            expected_relative,
+            field_name="post-close BF16 worker record",
+        )
+        expected_record_paths.add(record_path)
+        _verify_file_record(record_path, partial)
+        rows = _canonical_jsonl_records(record_path)
+        expected_identities = {
+            (_required_string(item, "dataset"), _required_string(item, "example_id"))
+            for item in planned_items
+        }
+        observed_identities = {
+            (_required_string(row, "dataset"), _required_string(row, "example_id"))
+            for row in rows
+        }
+        if (
+            len(rows) != len(planned_items)
+            or partial.get("record_count") != len(planned_items)
+            or observed_identities != expected_identities
+        ):
+            raise ValueError("post-close BF16 worker-record identity drift")
+        plan_by_identity = {
+            (_required_string(item, "dataset"), _required_string(item, "example_id")): item
+            for item in planned_items
+        }
+        for row in rows:
+            identity = (
+                _required_string(row, "dataset"),
+                _required_string(row, "example_id"),
+            )
+            manifest_entry = manifest_entries.get(identity)
+            if manifest_entry is None:
+                raise ValueError("post-close BF16 row is absent from the manifest")
+            rebased = _post_close_rebased_generated_row(
+                row,
+                source_root=source_root,
+                manifest_entry=manifest_entry,
+                arm_id=PUBLICATION_BF16_HANDOFF_ARM_ID,
+            )
+            planned = plan_by_identity[identity]
+            expected_contracts = [
+                dict(item)
+                for item in _mapping_sequence(
+                    planned.get("segment_token_contracts"), "segment_token_contracts"
+                )
+            ]
+            if (
+                _handoff_total_tokens(rebased)
+                != _required_int(planned, "cache_prefix_tokens")
+                or _handoff_segment_token_contracts(rebased) != expected_contracts
+            ):
+                raise ValueError("post-close BF16 handoff differs from the exact plan")
+            worker_rows.append(dict(row))
+
+        worker_accounting = _required_mapping(worker_result, "accounting")
+        _require_exact_mapping_keys(
+            worker_accounting,
+            {
+                "cache_prefix_tokens",
+                "durable_byte_count",
+                "durable_sync_seconds",
+                "generation_seconds",
+                "includes_generation_payload_hash_and_durable_sync",
+                "input_token_slots",
+                "producer_metered_seconds",
+            },
+            label="post-close BF16 worker accounting",
+        )
+        _required_positive_number(worker_accounting, "generation_seconds")
+        _nonnegative_duration(
+            _required_number(worker_accounting, "durable_sync_seconds")
+        )
+        metered = _required_positive_number(
+            worker_accounting, "producer_metered_seconds"
+        )
+        if (
+            worker_accounting.get("cache_prefix_tokens")
+            != sum(_required_int(item, "cache_prefix_tokens") for item in planned_items)
+            or worker_accounting.get("input_token_slots")
+            != sum(_required_int(item, "input_token_slots") for item in planned_items)
+            or worker_accounting.get("durable_byte_count")
+            != worker_bundle_bytes + _required_int(partial, "byte_count")
+            or worker_accounting.get(
+                "includes_generation_payload_hash_and_durable_sync"
+            )
+            is not True
+        ):
+            raise ValueError("post-close BF16 worker accounting drift")
+        attempt = attempt_by_worker[worker_index]
+        if (
+            _required_positive_number(attempt, "actual_gpu_duration_seconds")
+            + 1e-12
+            < metered
+        ):
+            raise ValueError("post-close BF16 worker metering exceeds ledger actual")
+        authority = worker_authorizations[worker_index]
+        attestation = read_publication_bf16_handoff_attestation(
+            authority.binding,
+            durable_output_root=root,
+        )
+        attested_result = _required_mapping(attestation, "worker_result")
+        if (
+            attested_result.get("file_sha256") != _file_sha256(result_path)
+            or attested_result.get("closed_record_sha256")
+            != worker_result.get("closed_record_sha256")
+        ):
+            raise ValueError("post-close BF16 worker/attestation evidence drift")
+        hardware = _required_mapping(worker_result, "generator_hardware")
+        _require_exact_mapping_keys(
+            hardware,
+            {"observed", "qualification"},
+            label="post-close BF16 worker hardware",
+        )
+        qualification = _required_mapping(hardware, "qualification")
+        _validate_qualification_record(qualification)
+        observed = _required_mapping(hardware, "observed")
+        _validate_observed_l40s_hardware(observed)
+        qualification_records.append(qualification)
+        qualification_closures.add(
+            _required_string(qualification, "evidence_closed_record_sha256")
+        )
+        observed_hardware_sha256.add(_canonical_sha256(observed))
+        worker_results.append(worker_result)
+
+    expected_worker_files = {
+        relative_name: item
+        for relative_name, item in manifest_files.items()
+        if item.get("role") in {"handoff_json", "payload"}
+    }
+    if set(observed_bundle_records) != set(expected_worker_files):
+        raise ValueError("post-close BF16 worker bundle inventory drift")
+    for dataset in SUPPORTED_V1_DATASETS:
+        expected_rows = tuple(
+            sorted(
+                (row for row in worker_rows if row.get("dataset") == dataset),
+                key=lambda row: _required_string(row, "example_id"),
+            )
+        )
+        if final_rows.get(dataset) != expected_rows:
+            raise ValueError(
+                "post-close BF16 worker records differ from finalized datasets"
+            )
+
+    result_paths = _post_close_regular_file_inventory(
+        root / "worker-results", label="post-close BF16 worker-results"
+    )
+    record_paths = _post_close_regular_file_inventory(
+        root / "worker-records", label="post-close BF16 worker-records"
+    )
+    attestation_paths = _post_close_regular_file_inventory(
+        root / PUBLICATION_BF16_HANDOFF_ATTESTATION_DIRECTORY,
+        label="post-close BF16 attestations",
+    )
+    manifest_paths = _post_close_regular_file_inventory(
+        root / "manifests", label="post-close BF16 manifests"
+    )
+    bundle_paths = _post_close_regular_file_inventory(
+        root / "bundles", label="post-close BF16 bundles"
+    )
+    if (
+        result_paths != expected_result_paths
+        or record_paths != expected_record_paths
+        or attestation_paths != expected_attestation_paths
+        or manifest_paths != {manifest_path}
+        or bundle_paths != expected_bundle_paths
+    ):
+        raise ValueError("post-close BF16 durable file inventory drift")
+    if len(qualification_closures) != 1 or len(
+        {_canonical_sha256(item) for item in qualification_records}
+    ) != 1:
+        raise ValueError("post-close BF16 hardware qualification drift")
+    _verify_bound_hardware_qualification_file(qualification_records[0])
+    planned_task_ids = _plan_task_ids(plan)
+    if Counter(all_task_ids) != Counter(planned_task_ids) or len(
+        set(all_task_ids)
+    ) != len(all_task_ids):
+        raise ValueError("post-close BF16 task coverage drift")
+
+    actuals = {
+        index: _required_positive_number(
+            attempt_by_worker[index], "actual_gpu_duration_seconds"
+        )
+        for index in range(PUBLICATION_BF16_HANDOFF_WORKER_COUNT)
+    }
+    expected_execution_workers = [
+        {
+            "charged_gpu_seconds": actuals[index],
+            "producer_metered_seconds": _required_mapping(
+                worker_results[index], "accounting"
+            )["producer_metered_seconds"],
+            "result_closed_record_sha256": worker_results[index][
+                "closed_record_sha256"
+            ],
+            "result_relative_path": f"worker-results/worker-{index:02d}.json",
+            "worker_index": index,
+        }
+        for index in range(PUBLICATION_BF16_HANDOFF_WORKER_COUNT)
+    ]
+    if list(_mapping_sequence(execution.get("workers"), "workers")) != (
+        expected_execution_workers
+    ):
+        raise ValueError("post-close BF16 execution worker closure drift")
+    cache_prefix_tokens = _required_int(
+        _required_mapping(plan, "coverage"), "cache_prefix_generation_tokens"
+    )
+    input_token_slots = _required_int(
+        _required_mapping(plan, "coverage"), "input_token_slots"
+    )
+    expected_coverage = {
+        "cache_prefix_generation_tokens": cache_prefix_tokens,
+        "dataset_count": len(SUPPORTED_V1_DATASETS),
+        "examples_per_dataset": PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET,
+        "generated_task_count": len(all_task_ids),
+        "input_token_slots": input_token_slots,
+        "task_ids_sha256": _canonical_sha256(sorted(all_task_ids)),
+    }
+    if dict(_required_mapping(execution, "coverage")) != expected_coverage:
+        raise ValueError("post-close BF16 execution task closure drift")
+    expected_hardware = {
+        "hardware_target": PUBLICATION_LATENCY_HANDOFF_GENERATOR_HARDWARE_TARGET,
+        "node_type_id": PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID,
+        "observed_hardware_identity_sha256": sorted(observed_hardware_sha256),
+        "qualification_closed_record_sha256": next(iter(qualification_closures)),
+    }
+    if dict(_required_mapping(execution, "generator_hardware")) != expected_hardware:
+        raise ValueError("post-close BF16 execution hardware closure drift")
+    charged_seconds = sum(actuals.values())
+    accounting = _required_mapping(execution, "accounting")
+    coordinator_seconds = _required_positive_number(
+        accounting, "coordinator_wall_seconds"
+    )
+    durable_paths = (
+        bundle_paths | manifest_paths | record_paths | result_paths | attestation_paths
+    )
+    expected_accounting = {
+        "charged_gpu_hours": charged_seconds / 3600.0,
+        "charged_gpu_seconds": charged_seconds,
+        "coordinator_gpu_hours": 0.0,
+        "coordinator_wall_seconds": coordinator_seconds,
+        "cost_model": "sum_independent_one_gpu_worker_terminal_lifecycles",
+        "durable_byte_count": sum(path.stat().st_size for path in durable_paths),
+        "end_to_end_cache_prefix_tokens_per_gpu_second": (
+            cache_prefix_tokens / charged_seconds
+        ),
+        "end_to_end_input_token_slots_per_gpu_second": (
+            input_token_slots / charged_seconds
+        ),
+        "end_to_end_wall_seconds": max(actuals.values()),
+        "full_launch_min_tokens_per_gpu_second": (
+            PUBLICATION_CAMPAIGN_MIN_GENERATION_TOKENS_PER_SECOND
+        ),
+        "full_launch_throughput_gate_passed": (
+            cache_prefix_tokens / charged_seconds
+            >= PUBLICATION_CAMPAIGN_MIN_GENERATION_TOKENS_PER_SECOND
+        ),
+        "includes_bootstrap_generation_hash_and_durable_write": True,
+        "payload_copy_count_during_closure": 0,
+        "worker_count": PUBLICATION_BF16_HANDOFF_WORKER_COUNT,
+    }
+    if dict(accounting) != expected_accounting:
+        raise ValueError("post-close BF16 execution accounting closure drift")
+    if dict(_required_mapping(execution, "serving_reuse")) != {
+        "regenerate_inside_timed_serving_jobs": False,
+        "required_action": "validate_manifest_then_stage_content_addressed_bundle",
+        "stage_target": "node_local_nvme",
+    }:
+        raise ValueError("post-close BF16 serving reuse closure drift")
+    return result
 
 
 def _validate_worker_result(
@@ -4056,13 +4852,14 @@ def authorize_publication_bf16_handoff_serving(
     *,
     ledger_path: str | Path,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    q8_handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
+    q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     submission_authorization: PublicationBF16HandoffSubmissionAuthorization,
     attempt_ids_by_worker: Mapping[int, str],
     worker_authorizations: Mapping[int, PublicationBF16HandoffWorkerAuthorization],
 ) -> PublicationBF16HandoffServingAuthorization:
     """Issue non-record serving authority after replaying all live worker joins."""
 
+    _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     if not isinstance(result, PublicationBF16HandoffGenerationResult):
         raise TypeError("result has the wrong type")
     verified = read_publication_bf16_handoff_generation_result(result.root)
@@ -4072,12 +4869,25 @@ def authorize_publication_bf16_handoff_serving(
         "closed_record_sha256"
     ):
         raise ValueError("BF16 generation result changed before authorization")
+    hardware = _required_mapping(verified.record, "generator_hardware")
+    batch_reservation_authorization = _require_submission_q8_remote_closure(
+        ledger_path,
+        q8_handoff_remote_closure_authorization,
+        submission_authorization,
+    )
+    q8_prefix = batch_reservation_authorization.predecessor_prefix
     predecessor_ledger = _require_matching_predecessor_ledger(
         ledger_path,
         qualification_launch_authorization,
-        q8_handoff_serving_authorization,
+        q8_handoff_remote_closure_authorization,
+        expected_input_bundle_sha256=_required_string(
+            verified.record, "input_bundle_sha256"
+        ),
+        expected_qualification_closed_record_sha256=_required_string(
+            hardware, "qualification_closed_record_sha256"
+        ),
+        expected_q8_ledger_prefix=q8_prefix,
     )
-    hardware = _required_mapping(verified.record, "generator_hardware")
     if hardware.get("qualification_closed_record_sha256") != (
         qualification_launch_authorization.evidence_closed_record_sha256
     ):
@@ -4101,26 +4911,19 @@ def authorize_publication_bf16_handoff_serving(
     expected_payload_digests = tuple(
         _required_string(item, "submit_payload_sha256") for item in attempts
     )
-    batch_reservation_authorization = (
-        require_publication_bf16_handoff_submission_authorization(
-            submission_authorization
-        )
-    )
     batch_prefix = require_databricks_batch_reservation_authorization(
         batch_reservation_authorization,
-        expected_predecessor_prefix=q8_handoff_serving_authorization.ledger_prefix,
+        expected_predecessor_prefix=q8_prefix,
         expected_attempt_ids=expected_attempt_ids,
         expected_submit_payload_sha256s=expected_payload_digests,
     )
     require_databricks_ledger_prefix(predecessor_ledger, batch_prefix)
     final_ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     if databricks_ledger_path_sha256(ledger_path) != (
-        q8_handoff_serving_authorization.ledger_path_sha256
+        batch_reservation_authorization.ledger_path_sha256
     ):
         raise ValueError("BF16 ledger path changed during serving authorization")
-    require_databricks_ledger_prefix(
-        final_ledger, q8_handoff_serving_authorization.ledger_prefix
-    )
+    require_databricks_ledger_prefix(final_ledger, q8_prefix)
     require_databricks_ledger_prefix(final_ledger, batch_prefix)
     final_reconciliation = _ledger_reconciliation(
         ledger_path,
@@ -4138,15 +4941,15 @@ def authorize_publication_bf16_handoff_serving(
     )
     causal_closure = {
         "ledger_prefix": ledger_prefix.to_record(),
-        "predecessor_prefix": q8_handoff_serving_authorization.ledger_prefix.to_record(),
+        "predecessor_prefix": q8_prefix.to_record(),
         "producer_batch_prefix": batch_prefix.to_record(),
         "reconciliation": reconciliation,
     }
     return PublicationBF16HandoffServingAuthorization(
         result=verified,
         ledger_id=final_ledger.ledger_id,
-        ledger_path_sha256=q8_handoff_serving_authorization.ledger_path_sha256,
-        predecessor_prefix=q8_handoff_serving_authorization.ledger_prefix,
+        ledger_path_sha256=batch_reservation_authorization.ledger_path_sha256,
+        predecessor_prefix=q8_prefix,
         producer_batch_prefix=batch_prefix,
         ledger_prefix=ledger_prefix,
         causal_closure_sha256=_canonical_sha256(causal_closure),
@@ -4599,6 +5402,17 @@ def _required_mapping(value: Mapping[str, Any], field_name: str) -> Mapping[str,
     if not isinstance(observed, Mapping):
         raise ValueError(f"{field_name} must be an object")
     return observed
+
+
+def _require_exact_mapping_keys(
+    value: Mapping[str, Any], expected: set[str], *, label: str
+) -> None:
+    actual = set(value)
+    if actual != expected:
+        raise ValueError(
+            f"{label} must use a closed schema; "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
 
 
 def _mapping_sequence(value: Any, field_name: str) -> tuple[Mapping[str, Any], ...]:

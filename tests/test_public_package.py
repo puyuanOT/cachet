@@ -568,6 +568,7 @@ EXPECTED_PUBLIC_SUBMODULES = frozenset(
     'engine_probe',
     'engine_protocol',
     'full_score_execution',
+    'full_score_remote_control',
     'github_governance',
     'gpu_qualification',
     'gpu_qualification_databricks',
@@ -589,7 +590,9 @@ EXPECTED_PUBLIC_SUBMODULES = frozenset(
     'probe_fixtures',
     'publication_campaign',
     'publication_bf16_handoff_generation',
+    'publication_freeze',
     'publication_handoff_artifacts',
+    'publication_handoff_closure_coordinator',
     'publication_inputs',
     'publication_latency_handoff_generation',
     'publication_latency_execution',
@@ -636,6 +639,7 @@ EXPECTED_CONSOLE_SCRIPTS = {
     'cachet-native-probe-factories': 'cachet.native_probe_factories:main',
     'cachet-native-probe-scaffold': 'cachet.adapter_scaffold:main',
     'cachet-pr-evidence': 'cachet.pr_evidence:main',
+    'cachet-publication-freeze': 'cachet.publication_freeze:main',
     'cachet-prepare-main-latency-inputs': 'cachet.main_latency_inputs:main_latency_inputs_main',
     'cachet-prepare-representative-hotpotqa': 'cachet.dataset_prep:representative_hotpotqa_main',
     'cachet-release-bundle': 'cachet.release_bundle:main',
@@ -671,6 +675,7 @@ EXPECTED_CONSOLE_SCRIPTS = {
     'document-kv-native-probe-factories': 'document_kv_cache.native_probe_factories:main',
     'document-kv-native-probe-scaffold': 'document_kv_cache.adapter_scaffold:main',
     'document-kv-pr-evidence': 'document_kv_cache.pr_evidence:main',
+    'document-kv-publication-freeze': 'document_kv_cache.publication_freeze:main',
     'document-kv-prepare-main-latency-inputs': 'document_kv_cache.main_latency_inputs:main_latency_inputs_main',
     'document-kv-prepare-representative-hotpotqa': 'document_kv_cache.dataset_prep:representative_hotpotqa_main',
     'document-kv-release-bundle': 'document_kv_cache.release_bundle:main',
@@ -984,6 +989,20 @@ def test_cachet_cli_module_facades_execute_with_python_m():
 
     assert "usage:" in result.stdout
     assert "benchmark_plan" in result.stdout
+
+    for module_name in (
+        "cachet.publication_freeze",
+        "document_kv_cache.publication_freeze",
+    ):
+        freeze_result = subprocess.run(
+            [sys.executable, "-m", module_name, "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert "usage:" in freeze_result.stdout
+        assert "qualification-preflight" in freeze_result.stdout
 
 
 def test_cachet_adapter_facades_delegate_to_vendored_compatibility_packages():

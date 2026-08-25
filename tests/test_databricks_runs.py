@@ -16,10 +16,20 @@ from document_kv_cache._hardware_targets import (
 from document_kv_cache.databricks_runs import (
     DEFAULT_DATABRICKS_HOST_ENV,
     DEFAULT_DATABRICKS_TOKEN_ENV,
+    DATABRICKS_ACTIVE_RUNS_MAX_ENTRIES,
+    DATABRICKS_ACTIVE_RUNS_MAX_PAGES,
+    DATABRICKS_API_PAGE_MAX_BYTES,
+    DATABRICKS_API_PAGE_TOKEN_MAX_BYTES,
+    DATABRICKS_NODE_TYPES_MAX_ENTRIES,
     DATABRICKS_PROFILE_AUTH_MODES,
     DATABRICKS_AUTH_CHECK_RECORD_TYPE,
     DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
+    DATABRICKS_VOLUME_DIRECTORY_MAX_ENTRIES,
+    DATABRICKS_VOLUME_DIRECTORY_MAX_PAGES,
+    DATABRICKS_VOLUME_DIRECTORY_MAX_PAGE_TOKEN_BYTES,
     DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
+    DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES,
+    DATABRICKS_VOLUME_FILE_MAX_UPLOAD_BYTES,
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
     DatabricksWorkspaceConfig,
@@ -31,7 +41,11 @@ from document_kv_cache.databricks_runs import (
     databricks_workspace_config_from_profile,
     databricks_workspace_config_from_sdk_profile,
     download_databricks_volume_file_bytes,
+    get_databricks_volume_file_metadata,
     get_databricks_run,
+    list_active_databricks_runs,
+    list_databricks_node_types,
+    list_databricks_volume_directory,
     plan_databricks_stage_and_submit,
     put_databricks_dbfs_file,
     read_databricks_run_submit_payload,
@@ -41,9 +55,11 @@ from document_kv_cache.databricks_runs import (
     stage_and_submit_databricks_run,
     submit_databricks_run,
     submit_pre_reserved_databricks_run,
+    stream_databricks_volume_file_sha256,
     summarize_databricks_run,
     summarize_databricks_run_submit_payload,
     validate_databricks_run_status_sidecar,
+    upload_databricks_volume_file_bytes_exclusive,
     write_databricks_run_response_json,
 )
 from document_kv_cache.databricks_resource_ledger import (
@@ -850,6 +866,801 @@ def test_download_databricks_volume_file_bytes_sanitizes_http_errors():
     assert error_body.read_limits == [
         public_databricks_runs._DATABRICKS_ERROR_BODY_MAX_BYTES + 1
     ]
+
+
+def test_stream_volume_file_sha256_is_authenticated_bounded_and_unbuffered():
+    chunk_size = public_databricks_runs._DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES
+    content = b"a" * chunk_size + b"b" * chunk_size + b"tail"
+    opener = _StreamingBinaryOpener(content)
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=13
+    )
+
+    record = stream_databricks_volume_file_sha256(
+        config,
+        "dbfs:/Volumes/catalog/schema/volume/runtime/package wheel.whl",
+        max_bytes=len(content),
+        opener=opener,
+    )
+
+    assert record == {
+        "dbfs_uri": "dbfs:/Volumes/catalog/schema/volume/runtime/package wheel.whl",
+        "file_sha256": hashlib.sha256(content).hexdigest(),
+        "size_bytes": len(content),
+    }
+    request = opener.requests[0]
+    assert request.full_url.endswith("/runtime/package%20wheel.whl")
+    assert request.get_method() == "GET"
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert request.headers["Accept"] == "application/octet-stream"
+    assert request.headers["Accept-encoding"] == "identity"
+    assert opener.timeouts == [13]
+    assert opener.response.read_limits == [chunk_size, chunk_size, 4, 1]
+    assert max(opener.response.read_limits) == chunk_size
+
+
+@pytest.mark.parametrize(
+    ("headers", "error_match"),
+    (
+        ({}, "content-length.*missing or invalid"),
+        ({"content-length": "not-an-int"}, "content-length.*missing or invalid"),
+        ({"content-length": "5"}, "content-length exceeds.*byte cap"),
+        (
+            {"content-length": "4", "content-encoding": "gzip"},
+            "content-encoding is not identity",
+        ),
+    ),
+)
+def test_stream_volume_file_sha256_rejects_content_length_before_body(
+    headers,
+    error_match,
+):
+    opener = _StreamingBinaryOpener(b"12345", headers=headers)
+
+    with pytest.raises(RuntimeError, match=error_match):
+        stream_databricks_volume_file_sha256(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/catalog/schema/volume/runtime/package.whl",
+            max_bytes=4,
+            opener=opener,
+        )
+
+    assert opener.response.read_limits == []
+
+
+def test_stream_volume_file_sha256_rejects_short_trailing_and_oversized_chunks():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    uri = "dbfs:/Volumes/catalog/schema/volume/runtime/package.whl"
+
+    short = _StreamingBinaryOpener(b"1234", headers={"content-length": "5"})
+    with pytest.raises(RuntimeError, match="ended before content-length"):
+        stream_databricks_volume_file_sha256(config, uri, opener=short)
+
+    trailing = _StreamingBinaryOpener(b"12345", headers={"content-length": "4"})
+    with pytest.raises(RuntimeError, match="bytes beyond content-length"):
+        stream_databricks_volume_file_sha256(config, uri, opener=trailing)
+
+    oversized_chunk = _BinaryOpener(
+        b"12",
+        headers={"content-length": "1"},
+    )
+    with pytest.raises(RuntimeError, match="chunk byte cap"):
+        stream_databricks_volume_file_sha256(config, uri, opener=oversized_chunk)
+
+
+def test_stream_volume_file_sha256_caps_inputs_status_and_redacts_errors():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    uri = "dbfs:/Volumes/catalog/schema/volume/runtime/package.whl"
+    opener = _StreamingBinaryOpener(b"")
+    for invalid_cap in (False, 0, DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES + 1):
+        with pytest.raises(ValueError, match="max_bytes"):
+            stream_databricks_volume_file_sha256(
+                config,
+                uri,
+                max_bytes=invalid_cap,
+                opener=opener,
+            )
+    with pytest.raises(ValueError, match="canonical"):
+        stream_databricks_volume_file_sha256(
+            config,
+            "dbfs:/Volumes/catalog/schema/volume/runtime/../package.whl",
+            opener=opener,
+        )
+    assert opener.requests == []
+
+    with pytest.raises(RuntimeError, match="unexpected HTTP status"):
+        stream_databricks_volume_file_sha256(
+            config,
+            uri,
+            opener=_StreamingBinaryOpener(b"", status=206),
+        )
+
+    error_body = _BytesFile(b'{"message":"Bearer secret-token"}')
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/package.whl",
+        403,
+        "Forbidden",
+        {},
+        error_body,
+    )
+    with pytest.raises(RuntimeError, match="HTTP 403") as excinfo:
+        stream_databricks_volume_file_sha256(
+            config,
+            uri,
+            opener=_HTTPErrorOpener(error),
+        )
+    assert "secret-token" not in str(excinfo.value)
+    assert error_body.read_limits == [
+        public_databricks_runs._DATABRICKS_ERROR_BODY_MAX_BYTES + 1
+    ]
+
+
+def test_list_active_runs_is_paginated_bounded_sorted_and_sanitized():
+    opener = _SequentialBinaryOpener(
+        [
+            {
+                "has_more": True,
+                "next_page_token": "opaque+/= token",
+                "runs": [
+                    {
+                        "run_id": 22,
+                        "run_name": "second",
+                        "state": {
+                            "life_cycle_state": "RUNNING",
+                            "state_message": "Bearer secret-token",
+                        },
+                    }
+                ],
+            },
+            {
+                "has_more": False,
+                "prev_page_token": "previous",
+                "runs": [
+                    {
+                        "run_id": 11,
+                        "run_name": "first",
+                        "state": {"life_cycle_state": "QUEUED"},
+                    }
+                ],
+            },
+        ]
+    )
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=17
+    )
+
+    runs = list_active_databricks_runs(config, opener=opener)
+
+    assert runs == (
+        {"life_cycle_state": "QUEUED", "run_id": 11},
+        {"life_cycle_state": "RUNNING", "run_id": 22},
+    )
+    assert "secret-token" not in json.dumps(runs)
+    assert opener.requests[0].full_url.endswith(
+        "/api/2.1/jobs/runs/list?active_only=true&limit=20"
+    )
+    assert opener.requests[1].full_url.endswith(
+        "active_only=true&limit=20&page_token=opaque%2B%2F%3D+token"
+    )
+    assert all(
+        request.headers["Authorization"] == "Bearer secret-token"
+        for request in opener.requests
+    )
+    assert opener.timeouts == [17, 17]
+
+
+def test_list_active_runs_empty_snapshot_and_entry_cap_fail_closed():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    assert (
+        list_active_databricks_runs(
+            config,
+            opener=_SequentialBinaryOpener([{}]),
+        )
+        == ()
+    )
+
+    invalid_cap_opener = _SequentialBinaryOpener([])
+    for invalid_cap in (False, 0, DATABRICKS_ACTIVE_RUNS_MAX_ENTRIES + 1):
+        with pytest.raises(ValueError, match="max_runs"):
+            list_active_databricks_runs(
+                config,
+                max_runs=invalid_cap,
+                opener=invalid_cap_opener,
+            )
+    assert invalid_cap_opener.requests == []
+
+    too_many = _SequentialBinaryOpener(
+        [
+            {
+                "runs": [
+                    {"run_id": 1, "state": {"life_cycle_state": "RUNNING"}},
+                    {"run_id": 2, "state": {"life_cycle_state": "RUNNING"}},
+                ]
+            }
+        ]
+    )
+    with pytest.raises(RuntimeError, match="page entry cap"):
+        list_active_databricks_runs(config, max_runs=1, opener=too_many)
+
+
+def test_list_active_runs_rejects_duplicate_cycle_oversized_token_and_page_dos():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    run = {"run_id": 1, "state": {"life_cycle_state": "RUNNING"}}
+    duplicate = _SequentialBinaryOpener(
+        [
+            {"runs": [run], "next_page_token": "next"},
+            {"runs": [run]},
+        ]
+    )
+    with pytest.raises(RuntimeError, match="duplicates run_id"):
+        list_active_databricks_runs(config, opener=duplicate)
+
+    cycle = _SequentialBinaryOpener(
+        [
+            {"runs": [], "next_page_token": "next"},
+            {"runs": [], "next_page_token": "next"},
+        ]
+    )
+    with pytest.raises(RuntimeError, match="token repeated"):
+        list_active_databricks_runs(config, opener=cycle)
+
+    oversized_token = _SequentialBinaryOpener(
+        [
+            {
+                "runs": [],
+                "next_page_token": "x" * (DATABRICKS_API_PAGE_TOKEN_MAX_BYTES + 1),
+            }
+        ]
+    )
+    with pytest.raises(RuntimeError, match="token byte cap"):
+        list_active_databricks_runs(config, opener=oversized_token)
+    assert len(oversized_token.requests) == 1
+
+    page_dos = _SequentialBinaryOpener(
+        [
+            {"runs": [], "next_page_token": f"unique-{index}"}
+            for index in range(DATABRICKS_ACTIVE_RUNS_MAX_PAGES)
+        ]
+    )
+    with pytest.raises(RuntimeError, match="page cap"):
+        list_active_databricks_runs(config, opener=page_dos)
+    assert len(page_dos.requests) == DATABRICKS_ACTIVE_RUNS_MAX_PAGES
+
+
+def test_list_active_runs_caps_response_bytes_and_redacts_http_error():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    with pytest.raises(RuntimeError, match="duplicate key"):
+        list_active_databricks_runs(
+            config,
+            opener=_BinaryOpener(b'{"runs":[],"runs":[]}'),
+        )
+
+    with pytest.raises(RuntimeError, match="secret-like text") as secret_exc:
+        list_active_databricks_runs(
+            config,
+            opener=_SequentialBinaryOpener(
+                [
+                    {
+                        "runs": [
+                            {
+                                "run_id": 1,
+                                "state": {"life_cycle_state": "secret-token"},
+                            }
+                        ]
+                    }
+                ]
+            ),
+        )
+    assert "secret-token" not in str(secret_exc.value)
+
+    with pytest.raises(RuntimeError, match="response exceeds.*byte cap"):
+        list_active_databricks_runs(
+            config,
+            opener=_BinaryOpener(b"x" * (DATABRICKS_API_PAGE_MAX_BYTES + 1)),
+        )
+
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.1/jobs/runs/list",
+        403,
+        "Forbidden",
+        {},
+        _BytesFile(b'{"message":"Bearer secret-token"}'),
+    )
+    with pytest.raises(RuntimeError, match="HTTP 403") as excinfo:
+        list_active_databricks_runs(config, opener=_HTTPErrorOpener(error))
+    assert "secret-token" not in str(excinfo.value)
+
+
+def test_list_node_types_is_authenticated_bounded_sorted_and_sanitized():
+    opener = _SequentialBinaryOpener(
+        [
+            {
+                "node_types": [
+                    {
+                        "node_type_id": "g6e.4xlarge",
+                        "description": "Bearer secret-token",
+                    },
+                    {"node_type_id": "g5.8xlarge", "memory_mb": 131072},
+                    {"node_type_id": "g6.8xlarge", "num_cores": 32},
+                ],
+                "success": {},
+            }
+        ]
+    )
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=19
+    )
+
+    node_types = list_databricks_node_types(config, opener=opener)
+
+    assert node_types == (
+        {"node_type_id": "g5.8xlarge"},
+        {"node_type_id": "g6.8xlarge"},
+        {"node_type_id": "g6e.4xlarge"},
+    )
+    assert "secret-token" not in json.dumps(node_types)
+    request = opener.requests[0]
+    assert request.full_url == ("https://dbc.example/api/2.0/clusters/list-node-types")
+    assert request.get_method() == "GET"
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert opener.timeouts == [19]
+
+
+def test_list_node_types_rejects_caps_schema_duplicates_and_invalid_ids():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    invalid_cap_opener = _SequentialBinaryOpener([])
+    for invalid_cap in (False, 0, DATABRICKS_NODE_TYPES_MAX_ENTRIES + 1):
+        with pytest.raises(ValueError, match="max_node_types"):
+            list_databricks_node_types(
+                config,
+                max_node_types=invalid_cap,
+                opener=invalid_cap_opener,
+            )
+    assert invalid_cap_opener.requests == []
+
+    cases = (
+        ({"node_types": [], "unexpected": True}, "schema drift"),
+        ({"node_types": [], "success": {"unexpected": True}}, "success marker"),
+        ({"node_types": [{"node_type_id": " bad "}]}, "node_type_id.*invalid"),
+        (
+            {"node_types": [{"node_type_id": "secret-token"}]},
+            "secret-like text",
+        ),
+        (
+            {
+                "node_types": [
+                    {"node_type_id": "g5.8xlarge"},
+                    {"node_type_id": "g5.8xlarge"},
+                ]
+            },
+            "duplicates node_type_id",
+        ),
+    )
+    for response, error_match in cases:
+        with pytest.raises(RuntimeError, match=error_match):
+            list_databricks_node_types(
+                config,
+                opener=_SequentialBinaryOpener([response]),
+            )
+
+    with pytest.raises(RuntimeError, match="entry cap"):
+        list_databricks_node_types(
+            config,
+            max_node_types=1,
+            opener=_SequentialBinaryOpener(
+                [
+                    {
+                        "node_types": [
+                            {"node_type_id": "g5.8xlarge"},
+                            {"node_type_id": "g6.8xlarge"},
+                        ]
+                    }
+                ]
+            ),
+        )
+
+
+def test_list_databricks_volume_directory_is_authenticated_paginated_and_sorted():
+    opener = _SequentialBinaryOpener(
+        [
+            {
+                "contents": [
+                    {
+                        "file_size": 9,
+                        "is_directory": False,
+                        "last_modified": 12,
+                        "name": "z.json",
+                        "path": "/Volumes/catalog/schema/volume/results/z.json",
+                    }
+                ],
+                "next_page_token": "opaque+/= token",
+            },
+            {
+                "contents": [
+                    {
+                        "is_directory": True,
+                        "name": "a",
+                        "path": "/Volumes/catalog/schema/volume/results/a/",
+                    }
+                ]
+            },
+        ]
+    )
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=11
+    )
+
+    entries = list_databricks_volume_directory(
+        config,
+        "dbfs:/Volumes/catalog/schema/volume/results",
+        opener=opener,
+    )
+
+    assert [entry["name"] for entry in entries] == ["a", "z.json"]
+    assert entries[0] == {
+        "is_directory": True,
+        "name": "a",
+        "path": "/Volumes/catalog/schema/volume/results/a/",
+    }
+    assert entries[1] == {
+        "file_size": 9,
+        "is_directory": False,
+        "last_modified": 12,
+        "name": "z.json",
+        "path": "/Volumes/catalog/schema/volume/results/z.json",
+    }
+    assert opener.requests[0].full_url.endswith(
+        "/directories/Volumes/catalog/schema/volume/results?page_size=1000"
+    )
+    assert opener.requests[1].full_url.endswith(
+        "?page_size=1000&page_token=opaque%2B%2F%3D+token"
+    )
+    assert all(
+        request.headers["Authorization"] == "Bearer secret-token"
+        for request in opener.requests
+    )
+    assert opener.timeouts == [11, 11]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        {
+            "is_directory": True,
+            "last_modified": 1,
+            "name": "directory",
+            "path": "/Volumes/catalog/schema/volume/results/directory/",
+        },
+        {
+            "is_directory": True,
+            "name": "directory",
+            "path": "/Volumes/catalog/schema/volume/results/directory",
+        },
+        {
+            "file_size": 1,
+            "is_directory": False,
+            "last_modified": 1,
+            "name": "file.json",
+            "path": "/Volumes/catalog/schema/volume/results/file.json/",
+        },
+    ),
+)
+def test_list_databricks_volume_directory_rejects_cross_kind_entry_shapes(entry):
+    opener = _SequentialBinaryOpener([{"contents": [entry]}])
+
+    with pytest.raises(RuntimeError, match="schema drift|path kind"):
+        list_databricks_volume_directory(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/catalog/schema/volume/results",
+            opener=opener,
+        )
+
+
+@pytest.mark.parametrize(
+    "uri",
+    (
+        "",
+        "/Volumes/catalog/schema/volume/results",
+        "dbfs:/Volumes/catalog/schema",
+        "dbfs:/Volumes/catalog/schema/volume/",
+        "dbfs:/Volumes/catalog/schema/volume/results/../nested",
+        "dbfs:/Volumes/catalog/schema/volume/results%2Fnested",
+    ),
+)
+def test_list_databricks_volume_directory_rejects_unsafe_uri(uri):
+    opener = _SequentialBinaryOpener([])
+
+    with pytest.raises(ValueError, match="dbfs_uri|dbfs:/Volumes|canonical"):
+        list_databricks_volume_directory(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            uri,
+            opener=opener,
+        )
+
+    assert opener.requests == []
+
+
+def test_list_databricks_volume_directory_rejects_tamper_cap_and_token_cycle():
+    parent = "/Volumes/catalog/schema/volume/results"
+    malformed = _SequentialBinaryOpener(
+        [
+            {
+                "contents": [
+                    {
+                        "file_size": 1,
+                        "is_directory": False,
+                        "last_modified": 1,
+                        "name": "x",
+                        "path": parent + "/nested/x",
+                    }
+                ]
+            }
+        ]
+    )
+    with pytest.raises(RuntimeError, match="direct child"):
+        list_databricks_volume_directory(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:" + parent,
+            opener=malformed,
+        )
+
+    entry = {
+        "file_size": 1,
+        "is_directory": False,
+        "last_modified": 1,
+        "name": "x",
+        "path": parent + "/x",
+    }
+    capped = _SequentialBinaryOpener([{"contents": [entry]}])
+    with pytest.raises(RuntimeError, match="entry cap"):
+        list_databricks_volume_directory(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:" + parent,
+            max_entries=0,
+            opener=capped,
+        )
+    with pytest.raises(ValueError, match="max_entries"):
+        list_databricks_volume_directory(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:" + parent,
+            max_entries=DATABRICKS_VOLUME_DIRECTORY_MAX_ENTRIES + 1,
+            opener=_SequentialBinaryOpener([]),
+        )
+
+    cycle = _SequentialBinaryOpener(
+        [
+            {"contents": [], "next_page_token": "next"},
+            {"contents": [], "next_page_token": "next"},
+        ]
+    )
+    with pytest.raises(RuntimeError, match="token repeated"):
+        list_databricks_volume_directory(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:" + parent,
+            opener=cycle,
+        )
+
+
+def test_list_databricks_volume_directory_caps_unique_empty_pages():
+    opener = _SequentialBinaryOpener(
+        [
+            {"contents": [], "next_page_token": f"unique-{index}"}
+            for index in range(DATABRICKS_VOLUME_DIRECTORY_MAX_PAGES)
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="page cap"):
+        list_databricks_volume_directory(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/catalog/schema/volume/results",
+            opener=opener,
+        )
+
+    assert len(opener.requests) == DATABRICKS_VOLUME_DIRECTORY_MAX_PAGES
+
+
+def test_list_databricks_volume_directory_caps_page_token_before_next_request():
+    opener = _SequentialBinaryOpener(
+        [
+            {
+                "contents": [],
+                "next_page_token": "x"
+                * (DATABRICKS_VOLUME_DIRECTORY_MAX_PAGE_TOKEN_BYTES + 1),
+            }
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="next_page_token.*byte cap"):
+        list_databricks_volume_directory(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/catalog/schema/volume/results",
+            opener=opener,
+        )
+
+    assert len(opener.requests) == 1
+
+
+def test_get_databricks_volume_file_metadata_uses_authenticated_head_and_cap():
+    opener = _BinaryOpener(
+        b"",
+        headers={
+            "content-length": "17",
+            "content-type": "application/json",
+            "last-modified": "Mon, 24 Aug 2026 12:34:56 GMT",
+        },
+    )
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=7
+    )
+
+    metadata = get_databricks_volume_file_metadata(
+        config,
+        "dbfs:/Volumes/catalog/schema/volume/control/request file.json",
+        max_bytes=17,
+        opener=opener,
+    )
+
+    assert metadata["content_length"] == 17
+    assert metadata["content_type"] == "application/json"
+    request = opener.requests[0]
+    assert request.get_method() == "HEAD"
+    assert request.full_url.endswith("/control/request%20file.json")
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert opener.response.read_limits == [1]
+
+
+def test_get_databricks_volume_file_metadata_rejects_unsafe_oversize_and_redacts():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    opener = _BinaryOpener(b"", headers={"content-length": "0"})
+    with pytest.raises(ValueError, match="canonical"):
+        get_databricks_volume_file_metadata(
+            config,
+            "dbfs:/Volumes/c/s/v/../request.json",
+            opener=opener,
+        )
+    assert opener.requests == []
+
+    with pytest.raises(RuntimeError, match="byte cap"):
+        get_databricks_volume_file_metadata(
+            config,
+            "dbfs:/Volumes/c/s/v/request.json",
+            max_bytes=4,
+            opener=_BinaryOpener(b"", headers={"content-length": "5"}),
+        )
+
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/request.json",
+        403,
+        "Forbidden",
+        {},
+        _BytesFile(b'{"message":"Bearer secret-token"}'),
+    )
+    with pytest.raises(RuntimeError, match="HTTP 403") as excinfo:
+        get_databricks_volume_file_metadata(
+            config,
+            "dbfs:/Volumes/c/s/v/request.json",
+            opener=_HTTPErrorOpener(error),
+        )
+    assert "secret-token" not in str(excinfo.value)
+
+
+def test_upload_databricks_volume_file_bytes_exclusive_uses_raw_no_overwrite_put():
+    content = b'{"canonical":true}\n'
+    opener = _BinaryOpener(b"", status=204)
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=8
+    )
+
+    record = upload_databricks_volume_file_bytes_exclusive(
+        config,
+        "dbfs:/Volumes/catalog/schema/volume/control/request file.json",
+        content,
+        opener=opener,
+    )
+
+    assert record["created"] is True
+    assert record["file_sha256"] == hashlib.sha256(content).hexdigest()
+    request = opener.requests[0]
+    assert request.get_method() == "PUT"
+    assert request.full_url.endswith("request%20file.json?overwrite=false")
+    assert request.data == content
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert request.headers["Content-type"] == "application/octet-stream"
+
+
+@pytest.mark.parametrize("failure", ("conflict", "lost-response"))
+def test_upload_databricks_volume_file_bytes_exclusive_replays_identical_bytes(
+    failure,
+):
+    content = b"canonical-request"
+    if failure == "conflict":
+        error = urllib.error.HTTPError(
+            "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/request.json",
+            409,
+            "Conflict",
+            {},
+            _BytesFile(b'{"error_code":"RESOURCE_ALREADY_EXISTS"}'),
+        )
+        put_opener = _HTTPErrorOpener(error)
+    else:
+        put_opener = _ExceptionOpener(TimeoutError("accepted response lost"))
+    readback = _BinaryOpener(content)
+
+    record = upload_databricks_volume_file_bytes_exclusive(
+        DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+        "dbfs:/Volumes/c/s/v/request.json",
+        content,
+        opener=put_opener,
+        readback_opener=readback,
+    )
+
+    assert record["created"] is False
+    assert readback.requests[0].get_method() == "GET"
+
+
+def test_upload_databricks_volume_file_bytes_exclusive_rejects_conflict_and_caps():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/request.json",
+        409,
+        "Conflict",
+        {},
+        _BytesFile(b'{"error_code":"RESOURCE_ALREADY_EXISTS"}'),
+    )
+    with pytest.raises(RuntimeError, match="different existing bytes"):
+        upload_databricks_volume_file_bytes_exclusive(
+            config,
+            "dbfs:/Volumes/c/s/v/request.json",
+            b"wanted",
+            opener=_HTTPErrorOpener(error),
+            readback_opener=_BinaryOpener(b"different"),
+        )
+
+    opener = _BinaryOpener(b"", status=204)
+    with pytest.raises(ValueError, match="canonical"):
+        upload_databricks_volume_file_bytes_exclusive(
+            config,
+            "dbfs:/Volumes/c/s/v/../request.json",
+            b"request",
+            opener=opener,
+        )
+    with pytest.raises(ValueError, match="upload cap"):
+        upload_databricks_volume_file_bytes_exclusive(
+            config,
+            "dbfs:/Volumes/c/s/v/request.json",
+            b"12345",
+            max_bytes=4,
+            opener=opener,
+        )
+    with pytest.raises(ValueError, match="max_bytes"):
+        upload_databricks_volume_file_bytes_exclusive(
+            config,
+            "dbfs:/Volumes/c/s/v/request.json",
+            b"request",
+            max_bytes=DATABRICKS_VOLUME_FILE_MAX_UPLOAD_BYTES + 1,
+            opener=opener,
+        )
+    assert opener.requests == []
+
+
+def test_upload_databricks_volume_file_bytes_exclusive_redacts_http_errors():
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/request.json",
+        403,
+        "Forbidden",
+        {},
+        _BytesFile(b'{"message":"Bearer secret-token token=secret-token"}'),
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 403") as excinfo:
+        upload_databricks_volume_file_bytes_exclusive(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/request.json",
+            b"request",
+            opener=_HTTPErrorOpener(error),
+        )
+
+    assert "secret-token" not in str(excinfo.value)
 
 
 def test_put_databricks_dbfs_file_posts_base64_payload_with_bearer_token(tmp_path):
@@ -1970,10 +2781,10 @@ class _SequentialOpener:
 
 
 class _BinaryResponse:
-    status = 200
-
-    def __init__(self, payload):
+    def __init__(self, payload, *, status=200, headers=None):
         self._payload = payload
+        self.status = status
+        self.headers = {} if headers is None else dict(headers)
         self.read_limits = []
 
     def __enter__(self):
@@ -1988,8 +2799,8 @@ class _BinaryResponse:
 
 
 class _BinaryOpener:
-    def __init__(self, payload):
-        self.response = _BinaryResponse(payload)
+    def __init__(self, payload, *, status=200, headers=None):
+        self.response = _BinaryResponse(payload, status=status, headers=headers)
         self.requests = []
         self.timeouts = []
 
@@ -1999,7 +2810,73 @@ class _BinaryOpener:
         return self.response
 
 
+class _StreamingBinaryResponse:
+    def __init__(self, payload, *, status=200, headers=None):
+        self._payload = payload
+        self._offset = 0
+        self.status = status
+        self.headers = (
+            {"content-length": str(len(payload))} if headers is None else dict(headers)
+        )
+        self.read_limits = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, amt=-1):
+        self.read_limits.append(amt)
+        if amt < 0:
+            end = len(self._payload)
+        else:
+            end = min(len(self._payload), self._offset + amt)
+        chunk = self._payload[self._offset : end]
+        self._offset = end
+        return chunk
+
+
+class _StreamingBinaryOpener:
+    def __init__(self, payload, *, status=200, headers=None):
+        self.response = _StreamingBinaryResponse(
+            payload,
+            status=status,
+            headers=headers,
+        )
+        self.requests = []
+        self.timeouts = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        self.timeouts.append(timeout)
+        return self.response
+
+
+class _SequentialBinaryOpener:
+    def __init__(self, payloads):
+        self._payloads = list(payloads)
+        self.requests = []
+        self.timeouts = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        self.timeouts.append(timeout)
+        payload = self._payloads.pop(0)
+        if not isinstance(payload, bytes):
+            payload = json.dumps(payload).encode("utf-8")
+        return _BinaryResponse(payload)
+
+
 class _HTTPErrorOpener:
+    def __init__(self, error):
+        self._error = error
+
+    def __call__(self, request, *, timeout):
+        raise self._error
+
+
+class _ExceptionOpener:
     def __init__(self, error):
         self._error = error
 

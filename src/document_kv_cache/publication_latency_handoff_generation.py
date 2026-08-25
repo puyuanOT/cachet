@@ -224,6 +224,8 @@ import sys
 
 
 def _cluster_path(uri: str) -> str:
+    if uri.startswith("dbfs:/Volumes/"):
+        return "/Volumes/" + uri.removeprefix("dbfs:/Volumes/")
     if uri.startswith("dbfs:/"):
         return "/dbfs/" + uri.removeprefix("dbfs:/").lstrip("/")
     return uri
@@ -328,6 +330,8 @@ _PLAN_ORDER_DOMAIN = "cachet.publication.latency_handoff.lpt.v1"
 _SHA256_LENGTH = 64
 _SUBMISSION_AUTHORIZATION_ISSUER = object()
 _SERVING_AUTHORIZATION_ISSUER = object()
+_REMOTE_CLOSURE_LEDGER_ISSUER = object()
+_POST_CLOSE_REPLAY_ISSUER = object()
 
 
 class PublicationLatencyGeneratorFactory(Protocol):
@@ -640,12 +644,14 @@ class PublicationLatencyHandoffSubmissionAuthorization:
     phase_lease_closed_record_sha256: str
     batch_marker_file_sha256: str
     batch_marker_closed_record_sha256: str
+    durable_output_root: str
 
     def __init__(
         self,
         *,
         batch_authorization: DatabricksBatchReservationAuthorization,
         phase_lease_root: str | Path,
+        durable_output_root: str,
         _issuer: object,
     ) -> None:
         if _issuer is not _SUBMISSION_AUTHORIZATION_ISSUER:
@@ -657,8 +663,11 @@ class PublicationLatencyHandoffSubmissionAuthorization:
         ):
             raise TypeError("batch_authorization has the wrong type")
         root = Path(phase_lease_root).expanduser().absolute()
+        output_root = _normalized_q8_durable_output_root(durable_output_root)
         lease, marker = _validate_q8_submission_phase_files(
-            root, batch_authorization
+            root,
+            batch_authorization,
+            durable_output_root=output_root,
         )
         root = root.resolve(strict=True)
         object.__setattr__(self, "batch_authorization", batch_authorization)
@@ -688,6 +697,7 @@ class PublicationLatencyHandoffSubmissionAuthorization:
             "batch_marker_closed_record_sha256",
             _required_string(marker, "closed_record_sha256"),
         )
+        object.__setattr__(self, "durable_output_root", output_root)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -1538,6 +1548,7 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
         raise ValueError("Q8 production wave requires exactly sixteen members")
     if set(attempt_ids_by_worker) != set(worker_indexes):
         raise ValueError("Q8 attempt IDs must cover workers 0..15 exactly")
+    durable_output_root = _common_q8_durable_output_root(workers)
     predecessor = qualification_launch_authorization.ledger_prefix
     live = _require_matching_qualification_ledger(
         ledger_path,
@@ -1597,6 +1608,7 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
     lease_record: dict[str, Any] = {
         "attempt_ids": list(attempts),
         "closed_record_sha256": "",
+        "durable_output_root": durable_output_root,
         "ledger_path_sha256": qualification_launch_authorization.ledger_path_sha256,
         "predecessor_prefix": predecessor.to_record(),
         "record_type": "cachet.publication_q8_handoff_phase_lease.v1",
@@ -1695,7 +1707,9 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
     _sync_file(lease_root / "batch-reserved.json")
     _sync_directory(lease_root)
     submission_authorization = _issue_q8_submission_authorization(
-        batch_authorization, lease_root
+        batch_authorization,
+        lease_root,
+        durable_output_root=durable_output_root,
     )
 
     responses: list[dict[str, Any]] = []
@@ -1771,6 +1785,7 @@ def resume_publication_latency_handoff_worker_wave(
         raise ValueError("Q8 production wave requires exactly sixteen members")
     if set(attempt_ids_by_worker) != set(indexes):
         raise ValueError("Q8 attempt IDs must cover workers 0..15 exactly")
+    durable_output_root = _common_q8_durable_output_root(workers)
     predecessor = qualification_launch_authorization.ledger_prefix
     live = _require_matching_qualification_ledger(
         ledger_path, qualification_launch_authorization
@@ -1827,6 +1842,7 @@ def resume_publication_latency_handoff_worker_wave(
     expected_lease: dict[str, Any] = {
         "attempt_ids": list(attempts),
         "closed_record_sha256": "",
+        "durable_output_root": durable_output_root,
         "ledger_path_sha256": qualification_launch_authorization.ledger_path_sha256,
         "predecessor_prefix": predecessor.to_record(),
         "record_type": "cachet.publication_q8_handoff_phase_lease.v1",
@@ -1859,7 +1875,9 @@ def resume_publication_latency_handoff_worker_wave(
         _sync_file(batch_path)
         _sync_directory(lease_root)
     submission_authorization = _issue_q8_submission_authorization(
-        batch_authorization, lease_root
+        batch_authorization,
+        lease_root,
+        durable_output_root=durable_output_root,
     )
     responses: list[dict[str, Any]] = []
     for index, submit_payload in zip(indexes, submissions, strict=True):
@@ -1948,6 +1966,7 @@ def require_publication_latency_handoff_submission_authorization(
     lease, marker = _validate_q8_submission_phase_files(
         authorization.phase_lease_root,
         authorization.batch_authorization,
+        durable_output_root=authorization.durable_output_root,
     )
     observed = (
         _q8_phase_lease_root_sha256(authorization.phase_lease_root),
@@ -1971,10 +1990,13 @@ def require_publication_latency_handoff_submission_authorization(
 def _issue_q8_submission_authorization(
     batch_authorization: DatabricksBatchReservationAuthorization,
     phase_lease_root: Path,
+    *,
+    durable_output_root: str,
 ) -> PublicationLatencyHandoffSubmissionAuthorization:
     return PublicationLatencyHandoffSubmissionAuthorization(
         batch_authorization=batch_authorization,
         phase_lease_root=phase_lease_root,
+        durable_output_root=durable_output_root,
         _issuer=_SUBMISSION_AUTHORIZATION_ISSUER,
     )
 
@@ -1982,6 +2004,8 @@ def _issue_q8_submission_authorization(
 def _validate_q8_submission_phase_files(
     phase_lease_root: Path,
     batch_authorization: DatabricksBatchReservationAuthorization,
+    *,
+    durable_output_root: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(batch_authorization, DatabricksBatchReservationAuthorization):
         raise TypeError("Q8 phase batch authorization has the wrong type")
@@ -1995,6 +2019,9 @@ def _validate_q8_submission_phase_files(
     expected_lease: dict[str, Any] = {
         "attempt_ids": list(batch_authorization.attempt_ids),
         "closed_record_sha256": "",
+        "durable_output_root": _normalized_q8_durable_output_root(
+            durable_output_root
+        ),
         "ledger_path_sha256": batch_authorization.ledger_path_sha256,
         "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
         "record_type": "cachet.publication_q8_handoff_phase_lease.v1",
@@ -2019,6 +2046,26 @@ def _validate_q8_submission_phase_files(
     if marker != expected_marker:
         raise ValueError("Q8 batch marker differs from the authorized atomic batch")
     return lease, marker
+
+
+def _normalized_q8_durable_output_root(value: object) -> str:
+    if not isinstance(value, str) or not value.rstrip("/"):
+        raise ValueError("Q8 durable_output_root must be a non-empty string")
+    return value.rstrip("/")
+
+
+def _common_q8_durable_output_root(
+    worker_payloads: Sequence[Mapping[str, Any]],
+) -> str:
+    roots = {
+        _normalized_q8_durable_output_root(
+            _required_string(payload, "durable_output_root")
+        )
+        for payload in worker_payloads
+    }
+    if len(roots) != 1:
+        raise ValueError("Q8 workers must share one durable_output_root")
+    return next(iter(roots))
 
 
 def _q8_phase_lease_root_sha256(path: Path) -> str:
@@ -2523,6 +2570,8 @@ def _publication_latency_handoff_ledger_reconciliation(
         PublicationLatencyHandoffDatabricksAttestationBinding,
     ],
     _ledger: DatabricksClusterHourLedger | None = None,
+    _ledger_path_sha256: str | None = None,
+    _expected_producer_batch_prefix: DatabricksLedgerPrefix | None = None,
 ) -> dict[str, Any]:
     expected_workers = set(range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS))
     if set(attempt_ids_by_worker) != expected_workers:
@@ -2533,6 +2582,14 @@ def _publication_latency_handoff_ledger_reconciliation(
         read_databricks_cluster_hour_ledger_json(ledger_path)
         if _ledger is None
         else _ledger
+    )
+    ledger_path_binding = (
+        databricks_ledger_path_sha256(ledger_path)
+        if _ledger_path_sha256 is None
+        else _require_sha256(
+            _ledger_path_sha256,
+            field_name="ledger_path_sha256",
+        )
     )
     reservations = {item.attempt_id: item for item in ledger.reservations}
     receipts = {item.attempt_id: item for item in ledger.submission_receipts}
@@ -2576,8 +2633,7 @@ def _publication_latency_handoff_ledger_reconciliation(
         if (
             attested_attempt.get("attempt_id") != attempt_id
             or attested_attempt.get("ledger_id") != ledger.ledger_id
-            or attested_attempt.get("ledger_path_sha256")
-            != databricks_ledger_path_sha256(ledger_path)
+            or attested_attempt.get("ledger_path_sha256") != ledger_path_binding
             or attested_attempt.get("workload_id") != reservation.workload_id
             or attested_attempt.get("submit_payload_sha256")
             != reservation.submit_payload_sha256
@@ -2638,6 +2694,12 @@ def _publication_latency_handoff_ledger_reconciliation(
         )
     if len(producer_batch_prefixes) != 1:
         raise ValueError("producer attestations bind different atomic batches")
+    if _expected_producer_batch_prefix is not None:
+        if not isinstance(_expected_producer_batch_prefix, DatabricksLedgerPrefix):
+            raise TypeError("expected producer batch prefix has the wrong type")
+        require_databricks_ledger_prefix(ledger, _expected_producer_batch_prefix)
+        if producer_batch_prefixes != {_expected_producer_batch_prefix.prefix_sha256}:
+            raise ValueError("producer attestations bind the wrong atomic batch")
     record = {
         "attempts": attempts,
         "attempts_sha256": _canonical_sha256(attempts),
@@ -2880,8 +2942,29 @@ def close_publication_latency_handoff_generation_from_workers(
     ],
     source_paths: Mapping[str, str | Path] | None = None,
     clock: Callable[[], float] = time.perf_counter,
+    _ledger_snapshot: DatabricksClusterHourLedger | None = None,
+    _ledger_path_sha256: str | None = None,
+    _expected_producer_batch_prefix: DatabricksLedgerPrefix | None = None,
+    _remote_ledger_issuer: object | None = None,
 ) -> PublicationLatencyHandoffGenerationResult:
     """Verify sixteen worker closures and close three bundles without copying KV."""
+
+    if (
+        _ledger_snapshot is not None
+        or _ledger_path_sha256 is not None
+        or _expected_producer_batch_prefix is not None
+        or _remote_ledger_issuer is not None
+    ):
+        if _remote_ledger_issuer is not _REMOTE_CLOSURE_LEDGER_ISSUER:
+            raise TypeError("remote ledger snapshot requires the coordinator issuer")
+        if (
+            not isinstance(_ledger_snapshot, DatabricksClusterHourLedger)
+            or (_ledger_path_sha256 is None)
+            or not isinstance(_expected_producer_batch_prefix, DatabricksLedgerPrefix)
+        ):
+            raise ValueError(
+                "remote ledger snapshot, path digest, and batch prefix are required"
+            )
 
     validate_publication_latency_handoff_generation_plan(
         record,
@@ -2903,18 +2986,38 @@ def close_publication_latency_handoff_generation_from_workers(
         target = root / reserved
         if target.exists() or target.is_symlink():
             raise FileExistsError(f"coordinator output is not fresh: {target}")
-    actuals = publication_latency_handoff_terminal_actual_gpu_seconds_from_ledger(
-        ledger_path,
-        attempt_ids_by_worker=attempt_ids_by_worker,
-        durable_output_root=root,
-        attestations_by_worker=attestations_by_worker,
-    )
+    actuals: dict[int, float]
+    if _ledger_snapshot is None:
+        actuals = publication_latency_handoff_terminal_actual_gpu_seconds_from_ledger(
+            ledger_path,
+            attempt_ids_by_worker=attempt_ids_by_worker,
+            durable_output_root=root,
+            attestations_by_worker=attestations_by_worker,
+        )
     ledger_reconciliation = _publication_latency_handoff_ledger_reconciliation(
         ledger_path,
         attempt_ids_by_worker=attempt_ids_by_worker,
         durable_output_root=root,
         attestations_by_worker=attestations_by_worker,
+        _ledger=_ledger_snapshot,
+        _ledger_path_sha256=_ledger_path_sha256,
+        _expected_producer_batch_prefix=_expected_producer_batch_prefix,
     )
+    if _ledger_snapshot is not None:
+        actuals = {
+            _required_int(item, "worker_index"): _required_positive_number(
+                item,
+                "actual_gpu_duration_seconds",
+            )
+            for item in _mapping_sequence(
+                ledger_reconciliation.get("attempts"),
+                field_name="ledger reconciliation attempts",
+            )
+        }
+        actuals = _validated_terminal_actual_gpu_seconds(
+            actuals,
+            worker_count=PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS,
+        )
     coordinator_start = clock()
     worker_results: list[dict[str, Any]] = []
     all_batches: list[_WorkerBatchResult] = []
@@ -3100,6 +3203,619 @@ def close_publication_latency_handoff_generation_from_workers(
     _sync_file(execution_path)
     _sync_directory(root)
     return read_publication_latency_handoff_generation_result(root)
+
+
+def _replay_closed_publication_latency_handoff_generation(
+    plan: Mapping[str, Any],
+    *,
+    prepared_input_dir: str | Path,
+    durable_output_root: str | Path,
+    tokenizer: MainLatencyTokenizer,
+    config: PublicationLatencyHandoffExecutionConfig,
+    ledger_snapshot: DatabricksClusterHourLedger,
+    ledger_path_sha256: str,
+    expected_producer_batch_prefix: DatabricksLedgerPrefix,
+    attempt_ids_by_worker: Mapping[int, str],
+    attestations_by_worker: Mapping[
+        int, PublicationLatencyHandoffDatabricksAttestationBinding
+    ],
+    source_paths: Mapping[str, str | Path] | None = None,
+    _issuer: object | None = None,
+) -> PublicationLatencyHandoffGenerationResult:
+    """Reopen every raw Q8 producer byte after the pending tree was renamed."""
+
+    if _issuer is not _POST_CLOSE_REPLAY_ISSUER:
+        raise TypeError("post-close Q8 replay requires the coordinator issuer")
+    if not isinstance(config, PublicationLatencyHandoffExecutionConfig):
+        raise TypeError("config must be a PublicationLatencyHandoffExecutionConfig")
+    if not isinstance(ledger_snapshot, DatabricksClusterHourLedger):
+        raise TypeError("ledger_snapshot must be a DatabricksClusterHourLedger")
+    if not isinstance(expected_producer_batch_prefix, DatabricksLedgerPrefix):
+        raise TypeError("expected_producer_batch_prefix has the wrong type")
+    path_digest = _require_sha256(
+        ledger_path_sha256,
+        field_name="ledger_path_sha256",
+    )
+    validate_publication_latency_handoff_generation_plan(
+        plan,
+        prepared_input_dir=prepared_input_dir,
+        tokenizer=tokenizer,
+        source_paths=source_paths,
+    )
+    root = Path(local_path(str(durable_output_root))).expanduser().resolve()
+    result = read_publication_latency_handoff_generation_result(root)
+    execution = result.record
+    _require_exact_mapping_keys(
+        execution,
+        {
+            "accounting",
+            "bundles",
+            "bundles_sha256",
+            "closed_record_sha256",
+            "coverage",
+            "execution_contract",
+            "execution_mode",
+            "generator_hardware",
+            "input_bundle_sha256",
+            "ledger_reconciliation",
+            "plan_closed_record_sha256",
+            "record_type",
+            "schema_version",
+            "serving_reuse",
+            "workers",
+        },
+        label="post-close Q8 execution",
+    )
+    if (
+        execution.get("execution_contract") != _execution_config_record(config)
+        or execution.get("plan_closed_record_sha256")
+        != plan.get("closed_record_sha256")
+        or execution.get("input_bundle_sha256") != plan.get("input_bundle_sha256")
+    ):
+        raise ValueError("post-close Q8 plan/input/config binding drift")
+
+    reconciliation = _publication_latency_handoff_ledger_reconciliation(
+        Path("/local_disk0/cachet-post-close-ledger-snapshot.json"),
+        attempt_ids_by_worker=attempt_ids_by_worker,
+        durable_output_root=root,
+        attestations_by_worker=attestations_by_worker,
+        _ledger=ledger_snapshot,
+        _ledger_path_sha256=path_digest,
+        _expected_producer_batch_prefix=expected_producer_batch_prefix,
+    )
+    if dict(_required_mapping(execution, "ledger_reconciliation")) != reconciliation:
+        raise ValueError("post-close Q8 ledger reconciliation drift")
+    attempts = _mapping_sequence(
+        reconciliation.get("attempts"),
+        field_name="post-close Q8 reconciliation attempts",
+    )
+    attempt_by_worker = {
+        _required_int(item, "worker_index"): item for item in attempts
+    }
+    if set(attempt_by_worker) != set(
+        range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS)
+    ):
+        raise ValueError("post-close Q8 ledger worker coverage drift")
+
+    bundle_records = _mapping_sequence(execution.get("bundles"), field_name="bundles")
+    bundle_by_context = {
+        _required_int(item, "context_tokens"): item for item in bundle_records
+    }
+    if set(bundle_by_context) != set(PUBLICATION_CAMPAIGN_CONTEXT_TOKENS):
+        raise ValueError("post-close Q8 bundle context coverage drift")
+    manifest_paths: set[Path] = set()
+    expected_bundle_paths: set[Path] = set()
+    source_roots: dict[int, Path] = {}
+    manifest_files: dict[int, dict[str, Mapping[str, Any]]] = {}
+    manifest_entries: dict[int, dict[tuple[str, str], Mapping[str, Any]]] = {}
+    final_rows: dict[tuple[int, str], tuple[dict[str, Any], ...]] = {}
+    for context_tokens in PUBLICATION_CAMPAIGN_CONTEXT_TOKENS:
+        bundle = bundle_by_context[context_tokens]
+        manifest_path = _confined_relative_path(
+            root,
+            _required_string(bundle, "manifest_relative_path"),
+            field_name="post-close Q8 manifest",
+        )
+        source_root = _confined_relative_path(
+            root,
+            _required_string(bundle, "source_root_relative_path"),
+            field_name="post-close Q8 source root",
+        )
+        manifest = read_publication_latency_handoff_bundle(manifest_path)
+        manifest_paths.add(manifest_path)
+        source_roots[context_tokens] = source_root
+        files = {
+            _required_string(item, "relative_name"): item
+            for item in _mapping_sequence(manifest.get("files"), field_name="files")
+        }
+        if len(files) != len(
+            _mapping_sequence(manifest.get("files"), field_name="files")
+        ):
+            raise ValueError("post-close Q8 manifest contains duplicate file names")
+        manifest_files[context_tokens] = files
+        expected_bundle_paths.update(
+            source_root / PurePosixPath(relative_name) for relative_name in files
+        )
+        entries: dict[tuple[str, str], Mapping[str, Any]] = {}
+        for dataset_record in _mapping_sequence(
+            manifest.get("datasets"), field_name="datasets"
+        ):
+            dataset = _required_string(dataset_record, "dataset")
+            dataset_path = source_root / PurePosixPath(
+                _required_string(dataset_record, "relative_name")
+            )
+            final_rows[(context_tokens, dataset)] = _post_close_jsonl_objects(
+                dataset_path
+            )
+            for entry in _mapping_sequence(
+                dataset_record.get("entries"), field_name="dataset.entries"
+            ):
+                identity = (dataset, _required_string(entry, "example_id"))
+                if identity in entries:
+                    raise ValueError("post-close Q8 manifest identity duplication")
+                entries[identity] = entry
+        manifest_entries[context_tokens] = entries
+
+    workers = _mapping_sequence(plan.get("workers"), field_name="workers")
+    if len(workers) != PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS:
+        raise ValueError("post-close Q8 plan requires sixteen workers")
+    expected_result_paths: set[Path] = set()
+    expected_record_paths: set[Path] = set()
+    expected_attestation_paths = {
+        binding.path.resolve() for binding in attestations_by_worker.values()
+    }
+    observed_bundle_records: dict[int, dict[str, Mapping[str, Any]]] = {
+        context: {} for context in PUBLICATION_CAMPAIGN_CONTEXT_TOKENS
+    }
+    rows_by_context: dict[int, list[dict[str, Any]]] = {
+        context: [] for context in PUBLICATION_CAMPAIGN_CONTEXT_TOKENS
+    }
+    worker_results: list[dict[str, Any]] = []
+    all_task_ids: list[str] = []
+    qualification_records: list[Mapping[str, Any]] = []
+    qualification_closures: set[str] = set()
+    observed_hardware_sha256: set[str] = set()
+    for worker_index, worker in enumerate(workers):
+        if _required_int(worker, "worker_index") != worker_index:
+            raise ValueError("post-close Q8 plan worker order drift")
+        result_path = root / "worker-results" / f"worker-{worker_index:02d}.json"
+        expected_result_paths.add(result_path)
+        worker_result = _read_worker_result(result_path)
+        _require_exact_mapping_keys(
+            worker_result,
+            {
+                "accounting",
+                "bundle_files",
+                "bundle_files_sha256",
+                "closed_record_sha256",
+                "execution_contract",
+                "generator_hardware",
+                "input_bundle_sha256",
+                "partial_record_files",
+                "plan_closed_record_sha256",
+                "record_type",
+                "schema_version",
+                "task_ids",
+                "task_ids_sha256",
+                "worker_id",
+                "worker_index",
+            },
+            label="post-close Q8 worker result",
+        )
+        if (
+            worker_result.get("worker_index") != worker_index
+            or worker_result.get("worker_id") != worker.get("worker_id")
+            or worker_result.get("plan_closed_record_sha256")
+            != plan.get("closed_record_sha256")
+            or worker_result.get("input_bundle_sha256")
+            != plan.get("input_bundle_sha256")
+            or worker_result.get("execution_contract")
+            != _execution_config_record(config)
+        ):
+            raise ValueError("post-close Q8 worker source/config binding drift")
+        planned_items = _mapping_sequence(worker.get("items"), field_name="worker.items")
+        expected_task_ids = sorted(
+            _required_string(item, "task_id") for item in planned_items
+        )
+        if worker_result.get("task_ids") != expected_task_ids or worker_result.get(
+            "task_ids_sha256"
+        ) != _canonical_sha256(expected_task_ids):
+            raise ValueError("post-close Q8 worker task closure drift")
+        all_task_ids.extend(expected_task_ids)
+
+        bundle_files = _mapping_sequence(
+            worker_result.get("bundle_files"), field_name="bundle_files"
+        )
+        if worker_result.get("bundle_files_sha256") != _canonical_sha256(bundle_files):
+            raise ValueError("post-close Q8 worker bundle closure drift")
+        worker_bundle_bytes = 0
+        for file_record in bundle_files:
+            _require_exact_mapping_keys(
+                file_record,
+                {"byte_count", "context_tokens", "relative_name", "sha256"},
+                label="post-close Q8 worker bundle file",
+            )
+            context_tokens = _required_int(file_record, "context_tokens")
+            relative_name = _required_string(file_record, "relative_name")
+            expected_prefix = f"worker-{worker_index:02d}/"
+            if (
+                context_tokens not in source_roots
+                or not relative_name.startswith(expected_prefix)
+                or relative_name in observed_bundle_records[context_tokens]
+            ):
+                raise ValueError("post-close Q8 worker bundle path drift")
+            manifest_file = manifest_files[context_tokens].get(relative_name)
+            expected_file_record = (
+                {
+                    "byte_count": manifest_file.get("byte_count"),
+                    "context_tokens": context_tokens,
+                    "relative_name": relative_name,
+                    "sha256": manifest_file.get("sha256"),
+                }
+                if manifest_file is not None
+                and manifest_file.get("role") in {"handoff_json", "payload"}
+                else None
+            )
+            if expected_file_record != dict(file_record):
+                raise ValueError(
+                    "post-close Q8 worker file differs from finalized manifest"
+                )
+            observed_bundle_records[context_tokens][relative_name] = file_record
+            worker_bundle_bytes += _required_int(file_record, "byte_count")
+
+        partial_files = _mapping_sequence(
+            worker_result.get("partial_record_files"),
+            field_name="partial_record_files",
+        )
+        expected_contexts = {
+            _required_int(item, "context_tokens") for item in planned_items
+        }
+        seen_contexts: set[int] = set()
+        worker_record_bytes = 0
+        for file_record in partial_files:
+            _require_exact_mapping_keys(
+                file_record,
+                {
+                    "byte_count",
+                    "context_tokens",
+                    "record_count",
+                    "relative_path",
+                    "sha256",
+                },
+                label="post-close Q8 worker record file",
+            )
+            context_tokens = _required_int(file_record, "context_tokens")
+            expected_relative = (
+                f"worker-records/worker-{worker_index:02d}/{context_tokens}.jsonl"
+            )
+            if (
+                context_tokens not in expected_contexts
+                or context_tokens in seen_contexts
+                or file_record.get("relative_path") != expected_relative
+            ):
+                raise ValueError("post-close Q8 worker-record path/coverage drift")
+            record_path = _confined_relative_path(
+                root,
+                expected_relative,
+                field_name="post-close Q8 worker record",
+            )
+            expected_record_paths.add(record_path)
+            _verify_file_record(record_path, file_record)
+            rows = _canonical_jsonl_records(record_path)
+            items = tuple(
+                item
+                for item in planned_items
+                if item.get("context_tokens") == context_tokens
+            )
+            expected_identities = {
+                (_required_string(item, "dataset"), _required_string(item, "example_id"))
+                for item in items
+            }
+            observed_identities = {
+                (_required_string(row, "dataset"), _required_string(row, "example_id"))
+                for row in rows
+            }
+            if (
+                len(rows) != len(items)
+                or file_record.get("record_count") != len(items)
+                or observed_identities != expected_identities
+            ):
+                raise ValueError("post-close Q8 worker-record identity drift")
+            plan_by_identity = {
+                (_required_string(item, "dataset"), _required_string(item, "example_id")): item
+                for item in items
+            }
+            for row in rows:
+                identity = (
+                    _required_string(row, "dataset"),
+                    _required_string(row, "example_id"),
+                )
+                manifest_entry = manifest_entries[context_tokens].get(identity)
+                if manifest_entry is None:
+                    raise ValueError("post-close Q8 row is absent from the manifest")
+                rebased = _post_close_rebased_generated_row(
+                    row,
+                    source_root=source_roots[context_tokens],
+                    manifest_entry=manifest_entry,
+                    arm_id=PUBLICATION_LATENCY_HANDOFF_ARM_ID,
+                )
+                planned = plan_by_identity[identity]
+                expected_contracts = [
+                    dict(item)
+                    for item in _mapping_sequence(
+                        planned.get("segment_token_contracts"),
+                        field_name="segment_token_contracts",
+                    )
+                ]
+                if (
+                    _handoff_total_tokens(rebased)
+                    != _required_int(planned, "cache_prefix_tokens")
+                    or _handoff_segment_token_contracts(rebased)
+                    != expected_contracts
+                ):
+                    raise ValueError("post-close Q8 handoff differs from the exact plan")
+                rows_by_context[context_tokens].append(dict(row))
+            seen_contexts.add(context_tokens)
+            worker_record_bytes += _required_int(file_record, "byte_count")
+        if seen_contexts != expected_contexts:
+            raise ValueError("post-close Q8 worker-record context coverage drift")
+
+        worker_accounting = _required_mapping(worker_result, "accounting")
+        _require_exact_mapping_keys(
+            worker_accounting,
+            {
+                "cache_prefix_tokens",
+                "durable_byte_count",
+                "generation_seconds",
+                "includes_generation_payload_hash_and_durable_sync",
+                "input_token_slots",
+                "producer_metered_seconds",
+            },
+            label="post-close Q8 worker accounting",
+        )
+        _required_positive_number(worker_accounting, "generation_seconds")
+        metered = _required_positive_number(
+            worker_accounting, "producer_metered_seconds"
+        )
+        if (
+            worker_accounting.get("cache_prefix_tokens")
+            != worker.get("cache_prefix_tokens")
+            or worker_accounting.get("input_token_slots")
+            != worker.get("input_token_slots")
+            or worker_accounting.get("durable_byte_count")
+            != worker_bundle_bytes + worker_record_bytes
+            or worker_accounting.get(
+                "includes_generation_payload_hash_and_durable_sync"
+            )
+            is not True
+        ):
+            raise ValueError("post-close Q8 worker accounting drift")
+        attempt = attempt_by_worker[worker_index]
+        if (
+            _file_sha256(result_path) != attempt.get("worker_result_file_sha256")
+            or worker_result.get("closed_record_sha256")
+            != attempt.get("worker_result_closed_record_sha256")
+            or _required_positive_number(attempt, "actual_gpu_duration_seconds")
+            + 1e-12
+            < metered
+        ):
+            raise ValueError("post-close Q8 worker/ledger evidence drift")
+        hardware = _required_mapping(worker_result, "generator_hardware")
+        _require_exact_mapping_keys(
+            hardware,
+            {"observed", "qualification"},
+            label="post-close Q8 worker hardware",
+        )
+        qualification = _required_mapping(hardware, "qualification")
+        _validate_hardware_qualification_record(qualification)
+        observed = _required_mapping(hardware, "observed")
+        _validate_observed_l40s_hardware(observed)
+        qualification_records.append(qualification)
+        qualification_closures.add(
+            _required_string(qualification, "evidence_closed_record_sha256")
+        )
+        observed_hardware_sha256.add(_canonical_sha256(observed))
+        worker_results.append(worker_result)
+
+    for context_tokens in PUBLICATION_CAMPAIGN_CONTEXT_TOKENS:
+        expected_worker_files = {
+            relative_name: item
+            for relative_name, item in manifest_files[context_tokens].items()
+            if item.get("role") in {"handoff_json", "payload"}
+        }
+        observed = observed_bundle_records[context_tokens]
+        if set(observed) != set(expected_worker_files):
+            raise ValueError("post-close Q8 worker bundle inventory drift")
+        for dataset in SUPPORTED_V1_DATASETS:
+            expected_rows = tuple(
+                sorted(
+                    (
+                        row
+                        for row in rows_by_context[context_tokens]
+                        if row.get("dataset") == dataset
+                    ),
+                    key=lambda row: _required_string(row, "example_id"),
+                )
+            )
+            if final_rows.get((context_tokens, dataset)) != expected_rows:
+                raise ValueError(
+                    "post-close Q8 worker records differ from finalized datasets"
+                )
+
+    result_paths = _post_close_regular_file_inventory(
+        root / "worker-results", label="post-close Q8 worker-results"
+    )
+    record_paths = _post_close_regular_file_inventory(
+        root / "worker-records", label="post-close Q8 worker-records"
+    )
+    attestation_paths = _post_close_regular_file_inventory(
+        root / PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY,
+        label="post-close Q8 attestations",
+    )
+    actual_manifest_paths = _post_close_regular_file_inventory(
+        root / "manifests", label="post-close Q8 manifests"
+    )
+    actual_bundle_paths = _post_close_regular_file_inventory(
+        root / "bundles", label="post-close Q8 bundles"
+    )
+    if (
+        result_paths != expected_result_paths
+        or record_paths != expected_record_paths
+        or attestation_paths != expected_attestation_paths
+        or actual_manifest_paths != manifest_paths
+        or actual_bundle_paths != expected_bundle_paths
+    ):
+        raise ValueError("post-close Q8 durable file inventory drift")
+    if len(qualification_closures) != 1 or len(
+        {_canonical_sha256(item) for item in qualification_records}
+    ) != 1:
+        raise ValueError("post-close Q8 hardware qualification drift")
+    _verify_bound_hardware_qualification_file(qualification_records[0])
+
+    planned_task_ids = _plan_task_ids(plan)
+    if Counter(all_task_ids) != Counter(planned_task_ids) or len(
+        set(all_task_ids)
+    ) != len(all_task_ids):
+        raise ValueError("post-close Q8 task coverage drift")
+    actuals = {
+        index: _required_positive_number(
+            attempt_by_worker[index], "actual_gpu_duration_seconds"
+        )
+        for index in range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS)
+    }
+    expected_workers = [
+        {
+            "charged_gpu_seconds": actuals[index],
+            "producer_metered_seconds": _required_mapping(
+                worker_results[index], "accounting"
+            )["producer_metered_seconds"],
+            "result_closed_record_sha256": worker_results[index][
+                "closed_record_sha256"
+            ],
+            "result_relative_path": f"worker-results/worker-{index:02d}.json",
+            "worker_index": index,
+        }
+        for index in range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS)
+    ]
+    if list(_mapping_sequence(execution.get("workers"), field_name="workers")) != (
+        expected_workers
+    ):
+        raise ValueError("post-close Q8 execution worker closure drift")
+    cache_prefix_tokens = _coverage_int(plan, "cache_prefix_generation_tokens")
+    input_token_slots = _coverage_int(plan, "input_token_slots")
+    expected_coverage: dict[str, Any] = {
+        "cache_prefix_generation_tokens": cache_prefix_tokens,
+        "context_bundle_count": len(PUBLICATION_CAMPAIGN_CONTEXT_TOKENS),
+        "generated_task_count": len(all_task_ids),
+        "input_token_slots": input_token_slots,
+        "no_duplicate_tasks": True,
+        "task_ids_sha256": _canonical_sha256(sorted(all_task_ids)),
+    }
+    if dict(_required_mapping(execution, "coverage")) != expected_coverage:
+        raise ValueError("post-close Q8 execution task closure drift")
+    expected_hardware = {
+        "hardware_target": PUBLICATION_LATENCY_HANDOFF_GENERATOR_HARDWARE_TARGET,
+        "node_type_id": PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID,
+        "observed_hardware_identity_sha256": sorted(observed_hardware_sha256),
+        "qualification_closed_record_sha256": next(iter(qualification_closures)),
+    }
+    if dict(_required_mapping(execution, "generator_hardware")) != expected_hardware:
+        raise ValueError("post-close Q8 execution hardware closure drift")
+    charged_seconds = sum(actuals.values())
+    accounting = _required_mapping(execution, "accounting")
+    coordinator_seconds = _required_positive_number(
+        accounting, "coordinator_wall_seconds"
+    )
+    durable_paths = (
+        actual_bundle_paths
+        | actual_manifest_paths
+        | record_paths
+        | result_paths
+        | attestation_paths
+    )
+    expected_accounting = {
+        "charged_gpu_hours": charged_seconds / 3600.0,
+        "charged_gpu_seconds": charged_seconds,
+        "coordinator_gpu_hours": 0.0,
+        "coordinator_wall_seconds": coordinator_seconds,
+        "cost_model": "sum_independent_one_gpu_worker_terminal_lifecycles",
+        "durable_byte_count": sum(path.stat().st_size for path in durable_paths),
+        "end_to_end_cache_prefix_tokens_per_gpu_second": (
+            cache_prefix_tokens / charged_seconds
+        ),
+        "end_to_end_input_token_slots_per_gpu_second": (
+            input_token_slots / charged_seconds
+        ),
+        "end_to_end_wall_seconds": max(actuals.values()),
+        "full_launch_min_tokens_per_gpu_second": (
+            PUBLICATION_CAMPAIGN_MIN_GENERATION_TOKENS_PER_SECOND
+        ),
+        "full_launch_throughput_gate_passed": (
+            cache_prefix_tokens / charged_seconds
+            >= PUBLICATION_CAMPAIGN_MIN_GENERATION_TOKENS_PER_SECOND
+        ),
+        "includes_bootstrap_generation_hash_and_durable_write": True,
+        "payload_copy_count_during_closure": 0,
+        "worker_count": PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS,
+    }
+    if dict(accounting) != expected_accounting:
+        raise ValueError("post-close Q8 execution accounting closure drift")
+    return result
+
+
+def _post_close_rebased_generated_row(
+    row: Mapping[str, Any],
+    *,
+    source_root: Path,
+    manifest_entry: Mapping[str, Any],
+    arm_id: str,
+) -> dict[str, Any]:
+    """Point a pre-close enriched row at the same files beneath its final root."""
+
+    rebased = dict(row)
+    arms = dict(_required_mapping(row, "arm_kv_transfer_params"))
+    params = dict(_required_mapping(arms, arm_id))
+    bindings = {
+        DOCUMENT_KV_HANDOFF_JSON_PARAM: _required_string(
+            manifest_entry, "handoff_relative_name"
+        ),
+        DOCUMENT_KV_PAYLOAD_URI_PARAM: _required_string(
+            manifest_entry, "payload_relative_name"
+        ),
+    }
+    for field_name, relative_name in bindings.items():
+        original = _required_string(params, field_name).replace("\\", "/")
+        if not original.endswith(f"/{relative_name}"):
+            raise ValueError("pre-close worker path does not rebase to the manifest")
+        params[field_name] = str(source_root / PurePosixPath(relative_name))
+    arms[arm_id] = params
+    rebased["arm_kv_transfer_params"] = arms
+    return rebased
+
+
+def _post_close_regular_file_inventory(root: Path, *, label: str) -> set[Path]:
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError(f"{label} must be one real directory")
+    files: set[Path] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"{label} contains a symlink")
+        if path.is_file():
+            files.add(path)
+        elif not path.is_dir():
+            raise ValueError(f"{label} contains a non-regular entry")
+    return files
+
+
+def _post_close_jsonl_objects(path: Path) -> tuple[dict[str, Any], ...]:
+    content = path.read_bytes()
+    if not content or not content.endswith(b"\n"):
+        raise ValueError("post-close dataset JSONL must be non-empty and terminated")
+    rows: list[dict[str, Any]] = []
+    for line in content.splitlines():
+        value = _json_object(line, field_name="post-close dataset row")
+        rows.append(value)
+    return tuple(rows)
 
 
 def _hardware_qualification_record(

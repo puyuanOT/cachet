@@ -116,6 +116,11 @@ return as a production dependency.
 - `full_score_execution.py` renders and validates the token-balanced,
   wave-gated producer/Baseline/Vanilla jobs for the complete paired score
   campaign, including immutable shard evidence and live GPU-hour admission.
+- `full_score_remote_control.py` runs exact full-score ready/evidence tree
+  verification on governed single-node CPU jobs, while the Mac controller
+  retains only bounded, causally closed result/evidence JSON in a locked
+  content-addressed mirror; publication aggregation never mounts `/dbfs` or
+  mirrors Q8 KV payloads.
 - `gpu_qualification.py` defines the closed L4/A10G/L40S vLLM 0.27.1
   qualification plan and validates local inputs, cloud execution records,
   safe 32k GPU-memory-utilization selection, and byte-identical segmented
@@ -170,9 +175,18 @@ return as a production dependency.
   issuer; `resolve_publication_bf16_handoff_bundle(...)`,
   `require_publication_bf16_handoff_serving_authorization(...)`, and staging
   reject raw manifests and raw generation-result records.
+- `publication_freeze.py` builds and validates the deterministic
+  `cachet.publication_source_closure.v1` record and runs the seven-check GPU
+  qualification preflight. Its canonical sibling sidecars bind exact inputs,
+  commands, tool identities, bounded outputs, and timestamps; submit, resume,
+  collect, and launch replay each rerun those checks locally before any
+  ledger, evidence-root, or Databricks HTTP effect.
 - `publication_handoff_artifacts.py` closes portable generated-KV bundles and
   stages their verified contents onto node-local storage without regenerating
   artifacts inside timed serving jobs.
+- `publication_handoff_closure_coordinator.py` verifies Q8/BF16 handoff trees
+  on governed CPU jobs and returns bounded, replayable closure records without
+  mirroring durable KV payloads to the controller.
 - `publication_latency_handoff_generation.py` token-balances all 384 latency
   generation identities across 16 independent one-GPU persistent producers,
   hash-verifies their shared-durable outputs, closes content-addressed Q8
@@ -278,6 +292,7 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-databricks-job`
 - `document-kv-databricks-runs`
 - `document-kv-databricks-resource-ledger`
+- `document-kv-publication-freeze`
 - `document-kv-storage-benchmark`
 - `document-kv-storage-benchmark-databricks-job`
 - `document-kv-templates`
@@ -316,6 +331,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-databricks-job`
 - `cachet-databricks-runs`
 - `cachet-databricks-resource-ledger`
+- `cachet-publication-freeze`
 - `cachet-storage-benchmark`
 - `cachet-storage-benchmark-databricks-job`
 - `cachet-templates`

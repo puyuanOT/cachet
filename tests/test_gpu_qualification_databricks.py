@@ -83,6 +83,30 @@ _RETAINED_LEDGER_PATH = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_expensive_live_preflight_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep Databricks unit tests focused; publication_freeze tests the replay."""
+
+    def validate(
+        path: Path,
+        *,
+        plan: dict[str, Any],
+        submit_payloads: tuple[dict[str, Any], ...],
+        config: DatabricksWorkspaceConfig,
+        require_fresh_workspace: bool,
+    ) -> dict[str, Any]:
+        del plan, submit_payloads, config, require_fresh_workspace
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(
+        qualification_job,
+        "_require_gpu_qualification_local_preflight_bundle",
+        validate,
+    )
+
+
 class _FakeResponse:
     status = 200
 
@@ -1008,6 +1032,92 @@ def test_submitter_rejects_invalid_local_preflight_without_ledger_or_post_side_e
     assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 138
     assert opener.requests == []
     assert not receipt_root.exists()
+
+
+def test_all_authority_boundaries_require_live_preflight_bundle_before_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ledger_path = tmp_path / "cluster-hours.json"
+    _copy_retained_campaign_ledger(ledger_path, monkeypatch)
+    ledger_before = ledger_path.read_bytes()
+    plan = _plan()
+    payloads = _render(plan, _artifact_uris())
+    preflight = _write_local_preflight(plan, tmp_path / "local-preflight.json")
+    opener = _SequentialOpener([{"run_id": 1}])
+
+    def reject_live_bundle(
+        _path: Path,
+        *,
+        plan: dict[str, Any],
+        submit_payloads: tuple[dict[str, Any], ...],
+        config: DatabricksWorkspaceConfig,
+        require_fresh_workspace: bool,
+    ) -> dict[str, Any]:
+        del plan, config, require_fresh_workspace
+        assert submit_payloads is not payloads
+        assert tuple(submit_payloads) == payloads
+        raise RuntimeError("live seven-check replay rejected")
+
+    monkeypatch.setattr(
+        qualification_job,
+        "_require_gpu_qualification_local_preflight_bundle",
+        reject_live_bundle,
+    )
+    operations = (
+        lambda: submit_gpu_qualification_jobs(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=tmp_path / "submit-root",
+            local_preflight_evidence_path=preflight,
+            opener=opener,
+        ),
+        lambda: resume_gpu_qualification_job_submissions(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=tmp_path / "resume-root",
+            local_preflight_evidence_path=preflight,
+            opener=opener,
+        ),
+        lambda: collect_gpu_qualification_evidence(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=tmp_path / "collect-submit-root",
+            local_preflight_evidence_path=preflight,
+            terminal_receipt_root=tmp_path / "terminal-root",
+            evidence_output_json=tmp_path / "qualification-evidence.json",
+        ),
+        lambda: qualification_job.replay_gpu_qualification_launch_authorization(
+            config=DatabricksWorkspaceConfig(
+                "https://dbc.example", "secret-token"
+            ),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=tmp_path / "replay-submit-root",
+            local_preflight_evidence_path=preflight,
+            terminal_receipt_root=tmp_path / "replay-terminal-root",
+            evidence_path=tmp_path / "replay-evidence.json",
+            expected_campaign_id=CAMPAIGN_ID,
+            expected_artifact_pins=_pins(),
+        ),
+    )
+    for operation in operations:
+        with pytest.raises(RuntimeError, match="live seven-check replay rejected"):
+            operation()
+
+    assert ledger_path.read_bytes() == ledger_before
+    assert opener.requests == []
+    assert not (tmp_path / "submit-root").exists()
+    assert not (tmp_path / "resume-root").exists()
+    assert not (tmp_path / "terminal-root").exists()
+    assert not (tmp_path / "replay-terminal-root").exists()
 
 
 def test_submitter_preexisting_phase_lease_leaves_zero_reservations_and_posts(

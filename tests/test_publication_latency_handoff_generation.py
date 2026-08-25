@@ -1018,7 +1018,7 @@ def test_q8_wave_resumes_lost_first_response_and_unclaimed_members(
         next_run_id += 1
         return response
 
-    responses, _batch = resume_publication_latency_handoff_worker_wave(
+    responses, batch = resume_publication_latency_handoff_worker_wave(
         DatabricksWorkspaceConfig("https://dbc.example", "token"),
         submissions,
         ledger_path=ledger_path,
@@ -1032,6 +1032,22 @@ def test_q8_wave_resumes_lost_first_response_and_unclaimed_members(
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert len(ledger.reservations) == len(ledger.submission_receipts) == 16
     assert (phase_root / "batch-reserved.json").is_file()
+    assert batch.durable_output_root == worker_payloads[0]["durable_output_root"]
+    alternate_roots = [copy.deepcopy(item) for item in worker_payloads]
+    alternate_roots[0]["durable_output_root"] += "-alternate"
+    with pytest.raises(ValueError, match="share one durable_output_root"):
+        resume_publication_latency_handoff_worker_wave(
+            DatabricksWorkspaceConfig("https://dbc.example", "token"),
+            submissions,
+            ledger_path=ledger_path,
+            worker_payloads=alternate_roots,
+            attempt_ids_by_worker=attempts,
+            phase_lease_root=phase_root,
+            qualification_launch_authorization=authorization,
+            opener=lambda *_args, **_kwargs: pytest.fail(
+                "alternate Q8 output root must not POST"
+            ),
+        )
 
 
 def test_distributed_workers_close_without_copy_and_render_independent_jobs(
@@ -1438,6 +1454,54 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
     assert {item["verification_source"] for item in reconciled_attempts} == {
         "direct_databricks_runs_get"
     }
+    def replay_closed_result():
+        return generation._replay_closed_publication_latency_handoff_generation(
+            plan,
+            prepared_input_dir=prepared.output_dir,
+            durable_output_root=durable_root,
+            tokenizer=tokenizer,
+            config=config,
+            ledger_snapshot=read_databricks_cluster_hour_ledger_json(ledger_path),
+            ledger_path_sha256=databricks_ledger_path_sha256(ledger_path),
+            expected_producer_batch_prefix=(
+                batch_authorization.batch_authorization.batch_prefix
+            ),
+            attempt_ids_by_worker=attempt_ids,
+            attestations_by_worker=attestations,
+            _issuer=generation._POST_CLOSE_REPLAY_ISSUER,
+        )
+
+    replayed = replay_closed_result()
+    assert replayed.record == result.record
+    worker_record_path = durable_root / "worker-records" / "worker-00" / "8192.jsonl"
+    worker_record_bytes = worker_record_path.read_bytes()
+    worker_record_path.write_bytes(
+        bytes([worker_record_bytes[0] ^ 1]) + worker_record_bytes[1:]
+    )
+    with pytest.raises(ValueError, match="SHA-256 drift"):
+        replay_closed_result()
+    worker_record_path.write_bytes(worker_record_bytes)
+    worker_record_path.unlink()
+    with pytest.raises(ValueError):
+        replay_closed_result()
+    worker_record_path.write_bytes(worker_record_bytes)
+    extra_record_path = durable_root / "worker-records" / "unexpected.jsonl"
+    extra_record_path.write_bytes(worker_record_bytes)
+    with pytest.raises(ValueError):
+        replay_closed_result()
+    extra_record_path.unlink()
+    execution_bytes = result.execution_record_path.read_bytes()
+    resealed_execution = json.loads(execution_bytes)
+    resealed_execution["unreviewed_resealed_field"] = True
+    resealed_execution["closed_record_sha256"] = generation._closed_record_sha256(
+        resealed_execution
+    )
+    result.execution_record_path.write_bytes(
+        generation._canonical_json_bytes(resealed_execution, pretty=True)
+    )
+    with pytest.raises(ValueError, match="closed schema"):
+        replay_closed_result()
+    result.execution_record_path.write_bytes(execution_bytes)
     assert (
         len(
             list(

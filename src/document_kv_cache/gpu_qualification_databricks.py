@@ -562,10 +562,24 @@ def _qualification_batch_requests(
     )
 
 
+def _qualification_contract_submit_payloads(
+    contracts: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Return the immutable canonical snapshots later consumed by submission."""
+
+    return tuple(
+        _required_mapping(contract.get("payload"), "qualification contract payload")
+        for contract in contracts
+    )
+
+
 def _validated_local_preflight_binding(
     path: str | Path,
     *,
     plan: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    config: DatabricksWorkspaceConfig,
+    require_fresh_workspace: bool,
 ) -> tuple[dict[str, str], datetime, dict[str, Any]]:
     preflight_path = _validated_existing_regular_file(
         path, "local_preflight_evidence_path"
@@ -580,6 +594,15 @@ def _validated_local_preflight_binding(
         record,
         plan_sha256=plan_sha256,
     )
+    authoritative_record = _require_gpu_qualification_local_preflight_bundle(
+        preflight_path,
+        plan=plan,
+        submit_payloads=submit_payloads,
+        config=config,
+        require_fresh_workspace=require_fresh_workspace,
+    )
+    if authoritative_record != record:
+        raise ValueError("live local preflight bundle record differs")
     binding = {
         "completed_at_utc": _non_empty_string(
             record.get("completed_at_utc"), "local preflight completed_at_utc"
@@ -597,6 +620,30 @@ def _validated_local_preflight_binding(
         ),
     }
     return binding, completed_at, record
+
+
+def _require_gpu_qualification_local_preflight_bundle(
+    path: Path,
+    *,
+    plan: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    config: DatabricksWorkspaceConfig,
+    require_fresh_workspace: bool,
+) -> dict[str, Any]:
+    # Local import avoids a module cycle: publication_freeze uses this module's
+    # reviewed payload renderer while this authority boundary consumes its
+    # live, non-injectable seven-check replay.
+    from document_kv_cache.publication_freeze import (
+        validate_gpu_qualification_local_preflight_bundle,
+    )
+
+    return validate_gpu_qualification_local_preflight_bundle(
+        path,
+        plan_record=plan,
+        submit_payloads=submit_payloads,
+        workspace_config=config,
+        require_fresh_workspace=require_fresh_workspace,
+    )
 
 
 def _require_local_preflight_before_submission(
@@ -867,6 +914,9 @@ def submit_gpu_qualification_jobs(
         _validated_local_preflight_binding(
             local_preflight_evidence_path,
             plan=plan,
+            submit_payloads=_qualification_contract_submit_payloads(contracts),
+            config=config,
+            require_fresh_workspace=True,
         )
     )
     _require_local_preflight_before_submission(
@@ -1038,6 +1088,9 @@ def resume_gpu_qualification_job_submissions(
         _validated_local_preflight_binding(
             local_preflight_evidence_path,
             plan=plan,
+            submit_payloads=_qualification_contract_submit_payloads(contracts),
+            config=config,
+            require_fresh_workspace=False,
         )
     )
     _require_local_preflight_before_submission(
@@ -1324,6 +1377,9 @@ def collect_gpu_qualification_evidence(
         _validated_local_preflight_binding(
             local_preflight_evidence_path,
             plan=plan,
+            submit_payloads=_qualification_contract_submit_payloads(contracts),
+            config=config,
+            require_fresh_workspace=False,
         )
     )
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
@@ -1466,6 +1522,7 @@ def collect_gpu_qualification_evidence(
     evidence_path = Path(evidence_output_json)
     _write_canonical_exclusive(evidence, evidence_path)
     authorization = replay_gpu_qualification_launch_authorization(
+        config=config,
         plan_record=plan,
         submit_payloads=submit_payloads,
         ledger_path=ledger_path,
@@ -1481,6 +1538,7 @@ def collect_gpu_qualification_evidence(
 
 def replay_gpu_qualification_launch_authorization(
     *,
+    config: DatabricksWorkspaceConfig,
     plan_record: Mapping[str, Any],
     submit_payloads: Sequence[Mapping[str, Any]],
     ledger_path: str | Path,
@@ -1508,6 +1566,9 @@ def replay_gpu_qualification_launch_authorization(
         _validated_local_preflight_binding(
             local_preflight_evidence_path,
             plan=plan,
+            submit_payloads=_qualification_contract_submit_payloads(contracts),
+            config=config,
+            require_fresh_workspace=False,
         )
     )
     ledger_file = _validated_existing_regular_file(ledger_path, "ledger_path")

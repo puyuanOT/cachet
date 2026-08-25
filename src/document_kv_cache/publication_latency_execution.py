@@ -1,8 +1,9 @@
 """Governed execution and analysis for the frozen 115-job latency campaign.
 
-The module deliberately separates four authorities:
+The module deliberately separates five authorities:
 
 * a closed controller plan proves the frozen factorial and immutable inputs;
+* issuer-only CPU closures authenticate mounted sources without a Mac DBFS mount;
 * one Databricks run per cell proves physical deployment isolation;
 * direct ``jobs/runs/get`` plus the resource ledger proves terminal billing;
 * a sealed collection, never caller-supplied scalar measurements, authorizes the
@@ -21,7 +22,7 @@ import shutil
 import stat
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -78,13 +79,18 @@ from document_kv_cache.databricks_resource_ledger import (
     reserve_databricks_run_attempt_batch_authorized_json,
 )
 from document_kv_cache.databricks_runs import (
+    DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
     DatabricksURLOpener,
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
+    download_databricks_volume_file_bytes,
     get_databricks_run,
+    list_databricks_volume_directory,
     require_databricks_run_idempotency_token,
     resume_pre_reserved_databricks_run,
+    submit_databricks_run,
     submit_pre_reserved_databricks_run,
+    upload_databricks_volume_file_bytes_exclusive,
 )
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_DECODE_HEADROOM_TOKENS,
@@ -135,25 +141,27 @@ from document_kv_cache.publication_handoff_artifacts import (
     validate_publication_latency_handoff_bundle,
 )
 from document_kv_cache.publication_inputs import (
+    PUBLICATION_STORAGE_INPUTS_RECORD_TYPE,
+    PUBLICATION_STORAGE_INPUTS_SCHEMA_VERSION,
     PublicationLatencyExample,
-    load_publication_storage_selection_examples,
     project_publication_latency_request_order,
+    select_publication_storage_examples,
     validate_publication_latency_block_schedule,
-    validate_publication_storage_block_schedule,
     validate_publication_storage_inputs_record,
+    validate_publication_storage_block_schedule,
 )
 from document_kv_cache.publication_bf16_handoff_generation import (
     PUBLICATION_BF16_HANDOFF_EXECUTION_MODE,
     PUBLICATION_BF16_HANDOFF_WORKER_COUNT,
-    PublicationBF16HandoffServingAuthorization,
-    read_publication_bf16_handoff_generation_result,
-    require_publication_bf16_handoff_serving_authorization,
+)
+from document_kv_cache.publication_handoff_closure_coordinator import (
+    PublicationHandoffRemoteClosureAuthorization,
+    require_bf16_handoff_remote_closure_authorization,
+    require_q8_handoff_remote_closure_authorization,
 )
 from document_kv_cache.publication_latency_handoff_generation import (
     PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED,
-    PublicationLatencyHandoffServingAuthorization,
     read_publication_latency_handoff_generation_result,
-    require_publication_latency_handoff_serving_authorization,
 )
 from document_kv_cache.serving_env import (
     VLLM_PATCHED_WHEEL_SHA256_ENV,
@@ -186,6 +194,24 @@ PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE: Final = (
     "cachet.publication_latency_estimation_summary.v1"
 )
 PUBLICATION_LATENCY_SCHEMA_VERSION: Final = 1
+PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_RECORD_TYPE: Final = (
+    "cachet.publication_latency_source_closure_request.v1"
+)
+PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_AUTHORIZATION_RECORD_TYPE: Final = (
+    "cachet.publication_latency_source_closure_request_authorization.v1"
+)
+PUBLICATION_LATENCY_SOURCE_CLOSURE_RESULT_RECORD_TYPE: Final = (
+    "cachet.publication_latency_source_closure_result.v1"
+)
+PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION: Final = 1
+PUBLICATION_LATENCY_SOURCE_CLOSURE_NODE_TYPE_ID: Final = "c5d.4xlarge"
+PUBLICATION_LATENCY_SOURCE_CLOSURE_SPARK_VERSION: Final = (
+    "15.4.x-cpu-ml-scala2.12"
+)
+PUBLICATION_LATENCY_SOURCE_CLOSURE_TIMEOUT_SECONDS: Final = 2 * 60 * 60
+PUBLICATION_LATENCY_SOURCE_CLOSURE_MAX_BYTES: Final = (
+    DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES
+)
 PUBLICATION_LATENCY_RUN_TIMEOUT_SECONDS: Final = 12 * 60 * 60
 PUBLICATION_LATENCY_TASK_MAX_RETRIES: Final = 0
 PUBLICATION_LATENCY_MAX_OUTPUT_TOKENS: Final = 256
@@ -215,6 +241,28 @@ PUBLICATION_LATENCY_RUNTIME_TELEMETRY_FILENAME: Final = "runtime-telemetry.json"
 PUBLICATION_LATENCY_PROMPT_BUDGET_FILENAME: Final = "prompt-token-budget.json"
 PUBLICATION_LATENCY_IMPORT_PROBE_FILENAME: Final = "vllm-import-probe.json"
 PUBLICATION_LATENCY_RUNNER_FILENAME: Final = "run_publication_latency.py"
+PUBLICATION_LATENCY_REMOTE_RESULT_MAX_BYTES: Final = (
+    DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES
+)
+PUBLICATION_LATENCY_REMOTE_ARTIFACT_MAX_BYTES: Final = (
+    DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES
+)
+PUBLICATION_LATENCY_CONTROL_PLANE_MAX_BYTES: Final = 16 * 1024 * 1024
+PUBLICATION_LATENCY_REMOTE_TREE_MAX_BYTES: Final = 64 * 1024 * 1024
+PUBLICATION_LATENCY_REMOTE_DIRECTORY_MAX_BYTES: Final = 128 * 1024 * 1024
+PUBLICATION_LATENCY_REMOTE_TREE_MAX_FILES: Final = 10
+PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES: Final = frozenset(
+    {
+        "prepared-handoff-coverage.json",
+        "prepared-handoff-generation.json",
+        "prewarm-cache-prefix.json",
+        "vllm-server.log",
+    }
+)
+PUBLICATION_LATENCY_REMOTE_DIRECTORY_MAX_FILES: Final = (
+    PUBLICATION_LATENCY_REMOTE_TREE_MAX_FILES
+    + len(PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES)
+)
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CLOUD_ID_RE = re.compile(r"[1-9][0-9]*\Z")
@@ -242,6 +290,8 @@ import sys
 
 
 def _cluster_path(uri: str) -> str:
+    if uri.startswith("dbfs:/Volumes/"):
+        return "/Volumes/" + uri.removeprefix("dbfs:/Volumes/")
     if uri.startswith("dbfs:/"):
         return "/dbfs/" + uri.removeprefix("dbfs:/").lstrip("/")
     if uri.startswith("file:"):
@@ -308,6 +358,471 @@ if __name__ == "__main__":
 PUBLICATION_LATENCY_RUNNER_SHA256: Final = sha256(
     PUBLICATION_LATENCY_RUNNER_SCRIPT.encode("utf-8")
 ).hexdigest()
+
+PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT = r"""from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+
+
+def _volume_path(uri: str) -> str:
+    prefix = "dbfs:/Volumes/"
+    if not uri.startswith(prefix):
+        raise ValueError("source-closure artifacts must use dbfs:/Volumes URIs")
+    return "/Volumes/" + uri.removeprefix(prefix)
+
+
+def _sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verified(uri: str, expected: str, label: str) -> str:
+    path = _volume_path(uri)
+    if _sha256(path) != expected:
+        raise ValueError(label + " SHA-256 drift")
+    return path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runner-sha256", required=True)
+    parser.add_argument("--package-wheel-uri", required=True)
+    parser.add_argument("--package-wheel-sha256", required=True)
+    parser.add_argument("--runtime-lock-uri", required=True)
+    parser.add_argument("--runtime-lock-sha256", required=True)
+    parser.add_argument("--patched-vllm-wheel-uri", required=True)
+    parser.add_argument("--patched-vllm-wheel-sha256", required=True)
+    parser.add_argument("--runtime-venv-dir", required=True)
+    parser.add_argument("--request-uri", required=True)
+    parser.add_argument("--request-file-sha256", required=True)
+    parser.add_argument("--request-closed-record-sha256", required=True)
+    parser.add_argument("--coordinator-run-id", required=True)
+    args = parser.parse_args()
+    if _sha256(__file__) != args.runner_sha256:
+        raise ValueError("source-closure runner SHA-256 drift")
+    package_wheel = _verified(
+        args.package_wheel_uri,
+        args.package_wheel_sha256,
+        "source-closure package wheel",
+    )
+    runtime_lock = _verified(
+        args.runtime_lock_uri,
+        args.runtime_lock_sha256,
+        "source-closure runtime lock",
+    )
+    patched_wheel = _verified(
+        args.patched_vllm_wheel_uri,
+        args.patched_vllm_wheel_sha256,
+        "source-closure patched vLLM wheel",
+    )
+    request = _verified(
+        args.request_uri,
+        args.request_file_sha256,
+        "source-closure request file",
+    )
+    venv_dir = os.path.abspath(args.runtime_venv_dir)
+    if not venv_dir.startswith("/local_disk0/"):
+        raise ValueError("source-closure runtime venv escaped /local_disk0")
+    if os.path.exists(venv_dir):
+        raise FileExistsError("refusing to reuse an unverified source-closure runtime")
+    subprocess.check_call([sys.executable, "-m", "venv", venv_dir])
+    venv_python = os.path.join(venv_dir, "bin", "python")
+    pip = [venv_python, "-m", "pip"]
+    subprocess.check_call(
+        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", runtime_lock]
+    )
+    subprocess.check_call([*pip, "install", "--no-deps", patched_wheel])
+    subprocess.check_call([*pip, "install", "--no-deps", package_wheel])
+    subprocess.check_call([*pip, "check"])
+    expected_spec = (
+        "vllm @ file://" + os.path.abspath(patched_wheel)
+        + "#sha256=" + args.patched_vllm_wheel_sha256
+    )
+    verifier = (
+        "import json,sys; from document_kv_cache.serving_env import "
+        "verify_installed_vllm_runtime_lock as verify; "
+        "print(json.dumps(verify(sys.argv[1]), sort_keys=True))"
+    )
+    verified = subprocess.check_output(
+        [venv_python, "-c", verifier, expected_spec], text=True
+    )
+    if json.loads(verified).get("ok") is not True:
+        raise RuntimeError("source-closure locked runtime verification failed")
+    env = dict(os.environ)
+    env["CACHET_LATENCY_SOURCE_CLOSURE_LOCKED_RUNTIME"] = (
+        args.runtime_lock_sha256
+    )
+    os.execve(
+        venv_python,
+        [
+            venv_python,
+            "-m",
+            "document_kv_cache.publication_latency_execution",
+            "run-source-closure",
+            "--request-path",
+            request,
+            "--expected-request-file-sha256",
+            args.request_file_sha256,
+            "--expected-request-closed-record-sha256",
+            args.request_closed_record_sha256,
+            "--coordinator-run-id",
+            args.coordinator_run_id,
+        ],
+        env,
+    )
+
+
+if __name__ == "__main__":
+    main()
+"""
+PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SHA256: Final = sha256(
+    PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT.encode("utf-8")
+).hexdigest()
+PUBLICATION_LATENCY_SOURCE_CLOSURE_EXCLUDED_ROLES: Final = frozenset(
+    {"handoff_execution", "bf16_handoff_execution", "bf16_handoff_manifest"}
+)
+_SOURCE_CLOSURE_AUTHORIZATION_ISSUER = object()
+_SOURCE_CLOSURE_REQUEST_AUTHORIZATION_ISSUER = object()
+_SOURCE_CLOSURE_SUBMISSION_AUTHORIZATION_ISSUER = object()
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationLatencySourceClosureCoordinatorConfig:
+    """Immutable single-node CPU topology for the mounted source verifier."""
+
+    runner_python_file: str
+    package_wheel_uri: str
+    package_wheel_sha256: str
+    runtime_lock_uri: str
+    runtime_lock_sha256: str
+    patched_vllm_wheel_uri: str
+    patched_vllm_wheel_sha256: str
+    request_root_uri: str
+    result_root_uri: str
+    single_user_name: str
+    runner_sha256: str = PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SHA256
+    node_type_id: str = PUBLICATION_LATENCY_SOURCE_CLOSURE_NODE_TYPE_ID
+    spark_version: str = PUBLICATION_LATENCY_SOURCE_CLOSURE_SPARK_VERSION
+    data_security_mode: str = "SINGLE_USER"
+    timeout_seconds: int = PUBLICATION_LATENCY_SOURCE_CLOSURE_TIMEOUT_SECONDS
+    runtime_venv_dir: str = "/local_disk0/cachet-latency-source-closure-runtime"
+    custom_tags: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for field_name, label in (
+            ("runner_python_file", "source-closure runner URI"),
+            ("package_wheel_uri", "source-closure package wheel URI"),
+            ("runtime_lock_uri", "source-closure runtime lock URI"),
+            ("patched_vllm_wheel_uri", "source-closure patched vLLM wheel URI"),
+            ("request_root_uri", "source-closure request root URI"),
+            ("result_root_uri", "source-closure result root URI"),
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _databricks_volume_uri(getattr(self, field_name), label),
+            )
+        for field_name in (
+            "package_wheel_sha256",
+            "runtime_lock_sha256",
+            "patched_vllm_wheel_sha256",
+        ):
+            _require_sha256_value(getattr(self, field_name), field_name)
+        if self.runner_sha256 != PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SHA256:
+            raise ValueError("source-closure runner SHA-256 drift")
+        if self.node_type_id != PUBLICATION_LATENCY_SOURCE_CLOSURE_NODE_TYPE_ID:
+            raise ValueError("source closure must use c5d.4xlarge")
+        if self.spark_version != PUBLICATION_LATENCY_SOURCE_CLOSURE_SPARK_VERSION:
+            raise ValueError("source-closure Databricks Runtime drift")
+        if self.data_security_mode != "SINGLE_USER":
+            raise ValueError("source closure requires SINGLE_USER mode")
+        if not isinstance(self.single_user_name, str) or not self.single_user_name:
+            raise ValueError("source closure requires a single-user principal")
+        if self.timeout_seconds != PUBLICATION_LATENCY_SOURCE_CLOSURE_TIMEOUT_SECONDS:
+            raise ValueError("source-closure timeout is frozen to two hours")
+        runtime_root = PurePosixPath(self.runtime_venv_dir)
+        if (
+            not self.runtime_venv_dir.startswith("/local_disk0/")
+            or runtime_root.as_posix() != self.runtime_venv_dir
+            or any(part in {"", ".", ".."} for part in runtime_root.parts[1:])
+        ):
+            raise ValueError(
+                "source-closure runtime venv must be canonical under /local_disk0"
+            )
+        if not isinstance(self.custom_tags, Mapping) or any(
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, str)
+            or not value
+            for key, value in self.custom_tags.items()
+        ):
+            raise ValueError("source-closure custom tags must be non-empty strings")
+        object.__setattr__(self, "custom_tags", MappingProxyType(dict(self.custom_tags)))
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "custom_tags": dict(self.custom_tags),
+            "data_security_mode": self.data_security_mode,
+            "node_type_id": self.node_type_id,
+            "package_wheel_sha256": self.package_wheel_sha256,
+            "package_wheel_uri": self.package_wheel_uri,
+            "patched_vllm_wheel_sha256": self.patched_vllm_wheel_sha256,
+            "patched_vllm_wheel_uri": self.patched_vllm_wheel_uri,
+            "request_root_uri": self.request_root_uri,
+            "result_root_uri": self.result_root_uri,
+            "runtime_lock_sha256": self.runtime_lock_sha256,
+            "runtime_lock_uri": self.runtime_lock_uri,
+            "runtime_venv_dir": self.runtime_venv_dir,
+            "runner_python_file": self.runner_python_file,
+            "runner_sha256": self.runner_sha256,
+            "single_user_name": self.single_user_name,
+            "spark_version": self.spark_version,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PublicationLatencySourceClosureRequestAuthorization:
+    """Issuer-only authority over one builder-validated CPU closure request."""
+
+    request_closed_record_sha256: str
+    request_file_sha256: str
+    authorization_record_sha256: str
+    phase_lease_root: Path
+    _request_json: str = field(repr=False)
+    _authorization_json: str = field(repr=False)
+
+    def __init__(
+        self,
+        *,
+        request: Mapping[str, Any],
+        phase_lease_root: str | Path,
+        _issuer: object,
+    ) -> None:
+        if _issuer is not _SOURCE_CLOSURE_REQUEST_AUTHORIZATION_ISSUER:
+            raise TypeError("source-closure request authority is issuer-only")
+        validate_publication_latency_source_closure_request(request)
+        normalized_request = cast(dict[str, Any], json.loads(_canonical_json(request)))
+        authorization_record = _source_closure_request_authorization_record(
+            normalized_request
+        )
+        request_closed_record_sha256 = _required_sha256(
+            normalized_request, "closed_record_sha256"
+        )
+        request_file_sha256 = sha256(
+            _pretty_json_bytes(normalized_request)
+        ).hexdigest()
+        if (
+            authorization_record.get("request_closed_record_sha256")
+            != request_closed_record_sha256
+            or authorization_record.get("request_file_sha256")
+            != request_file_sha256
+        ):
+            raise ValueError("source-closure request authority binding drift")
+        object.__setattr__(
+            self, "request_closed_record_sha256", request_closed_record_sha256
+        )
+        object.__setattr__(self, "request_file_sha256", request_file_sha256)
+        object.__setattr__(
+            self,
+            "authorization_record_sha256",
+            _required_sha256(authorization_record, "closed_record_sha256"),
+        )
+        object.__setattr__(self, "_request_json", _canonical_json(normalized_request))
+        object.__setattr__(
+            self, "_authorization_json", _canonical_json(authorization_record)
+        )
+        lease_root = Path(phase_lease_root).expanduser().absolute()
+        _reject_existing_symlink_ancestors(
+            lease_root, "source-closure phase lease"
+        )
+        object.__setattr__(self, "phase_lease_root", lease_root)
+
+    @property
+    def request_record(self) -> Mapping[str, Any]:
+        """Return a fresh detached copy of the authorized request bytes."""
+
+        return self.to_record()
+
+    def to_record(self) -> dict[str, Any]:
+        """Return the detached structural request for persistence or collection."""
+
+        return cast(dict[str, Any], json.loads(self._request_json))
+
+    @property
+    def authorization_record(self) -> Mapping[str, Any]:
+        """Return a fresh copy of the exact restart-safe authorization receipt."""
+
+        return cast(dict[str, Any], json.loads(self._authorization_json))
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PublicationLatencySourceClosureSubmissionAuthorization:
+    """Issuer-only authority over one idempotently submitted CPU verifier."""
+
+    request_closed_record_sha256: str
+    request_authorization_record_sha256: str
+    ledger_path_sha256: str
+    predecessor_prefix: DatabricksLedgerPrefix
+    run_id: str
+    submit_payload_sha256: str
+    submit_response_sha256: str
+
+    def __init__(
+        self,
+        *,
+        request_closed_record_sha256: str,
+        request_authorization_record_sha256: str,
+        ledger_path_sha256: str,
+        predecessor_prefix: DatabricksLedgerPrefix,
+        run_id: str,
+        submit_payload_sha256: str,
+        submit_response_sha256: str,
+        _issuer: object,
+    ) -> None:
+        if _issuer is not _SOURCE_CLOSURE_SUBMISSION_AUTHORIZATION_ISSUER:
+            raise TypeError("source-closure submission authority is issuer-only")
+        object.__setattr__(
+            self,
+            "request_closed_record_sha256",
+            _require_sha256_value(
+                request_closed_record_sha256, "request_closed_record_sha256"
+            ),
+        )
+        object.__setattr__(
+            self,
+            "request_authorization_record_sha256",
+            _require_sha256_value(
+                request_authorization_record_sha256,
+                "request_authorization_record_sha256",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "ledger_path_sha256",
+            _require_sha256_value(ledger_path_sha256, "ledger_path_sha256"),
+        )
+        if not isinstance(predecessor_prefix, DatabricksLedgerPrefix):
+            raise TypeError("source-closure predecessor prefix has the wrong type")
+        object.__setattr__(self, "predecessor_prefix", predecessor_prefix)
+        object.__setattr__(self, "run_id", _databricks_id(run_id, "source run ID"))
+        object.__setattr__(
+            self,
+            "submit_payload_sha256",
+            _require_sha256_value(submit_payload_sha256, "submit_payload_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "submit_response_sha256",
+            _require_sha256_value(submit_response_sha256, "submit_response_sha256"),
+        )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PublicationLatencySourceClosureAuthorization:
+    """Issuer-only authority over remotely rehashed non-handoff inputs."""
+
+    request_closed_record_sha256: str
+    request_file_sha256: str
+    result_uri: str
+    result_file_sha256: str
+    result_closed_record_sha256: str
+    artifacts_sha256: str
+    coordinator_run_id: str
+    control_plane_status_sha256: str
+    ledger_id: str
+    ledger_path_sha256: str
+    predecessor_prefix: DatabricksLedgerPrefix
+    ledger_prefix: DatabricksLedgerPrefix
+    causal_closure_sha256: str
+    request_record: Mapping[str, Any]
+    result_record: Mapping[str, Any]
+
+    def __init__(
+        self,
+        *,
+        request: Mapping[str, Any],
+        result: Mapping[str, Any],
+        result_file_sha256: str,
+        coordinator_run_id: str,
+        control_plane_status_sha256: str,
+        ledger_prefix: DatabricksLedgerPrefix,
+        _issuer: object,
+    ) -> None:
+        if _issuer is not _SOURCE_CLOSURE_AUTHORIZATION_ISSUER:
+            raise TypeError("source-closure authority requires the collector issuer")
+        validate_publication_latency_source_closure_request(request)
+        validate_publication_latency_source_closure_result(result, request=request)
+        run_id = _databricks_id(coordinator_run_id, "source coordinator run ID")
+        control_sha = _require_sha256_value(
+            control_plane_status_sha256, "control_plane_status_sha256"
+        )
+        result_sha = _require_sha256_value(result_file_sha256, "result_file_sha256")
+        if result_sha != sha256(
+            (_canonical_json(result) + "\n").encode("utf-8")
+        ).hexdigest():
+            raise ValueError("source-closure result file SHA-256 drift")
+        if _mapping(result, "coordinator").get("run_id") != run_id:
+            raise ValueError("source-closure result belongs to another run")
+        lineage = _mapping(request, "ledger_lineage")
+        predecessor = databricks_ledger_prefix_from_record(
+            _mapping(lineage, "predecessor_prefix")
+        )
+        if not isinstance(ledger_prefix, DatabricksLedgerPrefix):
+            raise TypeError("source-closure ledger prefixes have the wrong type")
+        if ledger_prefix.ledger_id != predecessor.ledger_id:
+            raise ValueError("source-closure ledger prefix identity drift")
+        if ledger_prefix != predecessor:
+            raise ValueError("source closure must not mutate the GPU campaign ledger")
+        request_file_sha = sha256(_pretty_json_bytes(request)).hexdigest()
+        causal = _canonical_sha256(
+            {
+                "control_plane_status_sha256": control_sha,
+                "coordinator_run_id": run_id,
+                "ledger_prefix": ledger_prefix.to_record(),
+                "request_closed_record_sha256": request["closed_record_sha256"],
+                "request_file_sha256": request_file_sha,
+                "result_closed_record_sha256": result["closed_record_sha256"],
+                "result_file_sha256": result_sha,
+            }
+        )
+        normalized_request = json.loads(_canonical_json(request))
+        normalized_result = json.loads(_canonical_json(result))
+        object.__setattr__(
+            self, "request_closed_record_sha256", request["closed_record_sha256"]
+        )
+        object.__setattr__(self, "request_file_sha256", request_file_sha)
+        object.__setattr__(self, "result_uri", _required_string(request, "result_uri"))
+        object.__setattr__(self, "result_file_sha256", result_sha)
+        object.__setattr__(
+            self, "result_closed_record_sha256", result["closed_record_sha256"]
+        )
+        object.__setattr__(
+            self, "artifacts_sha256", _required_sha256(result, "artifacts_sha256")
+        )
+        object.__setattr__(self, "coordinator_run_id", run_id)
+        object.__setattr__(self, "control_plane_status_sha256", control_sha)
+        object.__setattr__(self, "ledger_id", _required_string(lineage, "ledger_id"))
+        object.__setattr__(
+            self,
+            "ledger_path_sha256",
+            _required_sha256(lineage, "ledger_path_sha256"),
+        )
+        object.__setattr__(self, "predecessor_prefix", predecessor)
+        object.__setattr__(self, "ledger_prefix", ledger_prefix)
+        object.__setattr__(self, "causal_closure_sha256", causal)
+        object.__setattr__(
+            self, "request_record", MappingProxyType(normalized_request)
+        )
+        object.__setattr__(self, "result_record", MappingProxyType(normalized_result))
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,6 +930,1060 @@ def _final_artifact_roles() -> tuple[str, ...]:
     return tuple(roles)
 
 
+def build_publication_latency_source_closure_request(
+    *,
+    attempt_id: str | None = None,
+    coordinator_config: PublicationLatencySourceClosureCoordinatorConfig,
+    campaign_plan_record: Mapping[str, Any],
+    schedule_records: Mapping[int, Mapping[str, Any]],
+    storage_schedule_records: Mapping[int, Mapping[str, Any]],
+    qualification_plan_record: Mapping[str, Any],
+    qualification_evidence_record: Mapping[str, Any],
+    qualification_artifact_pins: GPUQualificationArtifactPins,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    storage_inputs_record: Mapping[str, Any],
+    final_artifacts: PublicationLatencyFinalArtifactPins,
+    ledger_path: str | Path,
+) -> PublicationLatencySourceClosureRequestAuthorization:
+    """Close one governed CPU request for every non-handoff source byte."""
+
+    if not isinstance(
+        coordinator_config, PublicationLatencySourceClosureCoordinatorConfig
+    ):
+        raise TypeError("coordinator_config has the wrong type")
+    if not isinstance(qualification_artifact_pins, GPUQualificationArtifactPins):
+        raise TypeError("qualification_artifact_pins has the wrong type")
+    if not isinstance(final_artifacts, PublicationLatencyFinalArtifactPins):
+        raise TypeError("final_artifacts has the wrong type")
+    if final_artifacts.file("runner").sha256 != PUBLICATION_LATENCY_RUNNER_SHA256:
+        raise ValueError("source closure requires the reviewed latency runner")
+    if final_artifacts.file("package_wheel").sha256 != (
+        qualification_artifact_pins.package_wheel_sha256
+    ):
+        raise ValueError("source-closure package wheel differs from qualification")
+    if (
+        final_artifacts.file("patched_vllm_wheel").sha256
+        != qualification_artifact_pins.patched_vllm_wheel_sha256
+        or final_artifacts.file("patched_vllm_wheel").sha256
+        != GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
+    ):
+        raise ValueError("source-closure patched vLLM wheel differs from qualification")
+    if (
+        final_artifacts.file("runtime_lock").sha256
+        != qualification_artifact_pins.runtime_lock_sha256
+        or final_artifacts.file("runtime_lock").sha256 != VLLM_RUNTIME_LOCK_SHA256
+    ):
+        raise ValueError("source-closure runtime lock differs from qualification")
+    validate_publication_campaign_plan_record(campaign_plan_record)
+    selection = validate_gpu_qualification_evidence_record(
+        qualification_evidence_record,
+        plan_record=qualification_plan_record,
+        expected_campaign_id=_required_string(campaign_plan_record, "campaign_id"),
+        expected_artifact_pins=qualification_artifact_pins,
+    )
+    if coordinator_config.package_wheel_sha256 != final_artifacts.file(
+        "package_wheel"
+    ).sha256 or not _same_durable_file_location(
+        coordinator_config.package_wheel_uri,
+        final_artifacts.file("package_wheel").uri,
+    ):
+        raise ValueError("source coordinator package wheel differs from final artifacts")
+    if (
+        coordinator_config.runtime_lock_sha256
+        != final_artifacts.file("runtime_lock").sha256
+        or not _same_durable_file_location(
+            coordinator_config.runtime_lock_uri,
+            final_artifacts.file("runtime_lock").uri,
+        )
+        or coordinator_config.patched_vllm_wheel_sha256
+        != final_artifacts.file("patched_vllm_wheel").sha256
+        or not _same_durable_file_location(
+            coordinator_config.patched_vllm_wheel_uri,
+            final_artifacts.file("patched_vllm_wheel").uri,
+        )
+    ):
+        raise ValueError("source coordinator locked runtime differs from final artifacts")
+    qualification_closed = _required_sha256(
+        qualification_evidence_record, "closed_record_sha256"
+    )
+    q8 = require_q8_handoff_remote_closure_authorization(
+        handoff_serving_authorization,
+        expected_output_root_uri=final_artifacts.handoff_generation_root_uri,
+        expected_execution_file_sha256=final_artifacts.file(
+            "handoff_execution"
+        ).sha256,
+        expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        expected_qualification_closed_record_sha256=qualification_closed,
+    )
+    bf16 = require_bf16_handoff_remote_closure_authorization(
+        bf16_handoff_serving_authorization,
+        expected_output_root_uri=final_artifacts.bf16_handoff_generation_root_uri,
+        expected_execution_file_sha256=final_artifacts.file(
+            "bf16_handoff_execution"
+        ).sha256,
+        expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        expected_qualification_closed_record_sha256=qualification_closed,
+    )
+    _require_handoff_closure_runtime_pins(
+        q8,
+        expected_final_artifacts=final_artifacts,
+        expected_qualification_artifact_pins=qualification_artifact_pins,
+    )
+    _require_handoff_closure_runtime_pins(
+        bf16,
+        expected_final_artifacts=final_artifacts,
+        expected_qualification_artifact_pins=qualification_artifact_pins,
+    )
+    if bf16.predecessor_prefix != q8.ledger_prefix:
+        raise ValueError("source closure requires BF16 to extend Q8")
+    ledger_file = Path(ledger_path).expanduser().absolute()
+    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_file)
+    if ledger_path_sha256 != bf16.ledger_path_sha256:
+        raise ValueError("source closure ledger path differs from BF16")
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_file)
+    require_databricks_ledger_prefix(ledger, bf16.ledger_prefix)
+    if databricks_ledger_prefix(ledger) != bf16.ledger_prefix:
+        raise ValueError("BF16 is not the complete live source-closure predecessor")
+
+    schedule_bindings = _source_closure_schedule_bindings(
+        schedule_records,
+        expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        final_artifacts=final_artifacts,
+        storage=False,
+    )
+    source_examples = _schedule_examples(schedule_records[1])
+    if any(
+        _schedule_examples(schedule_records[block]) != source_examples
+        for block in range(2, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+    ):
+        raise ValueError("source-closure main schedules have different identities")
+    storage_schedule_bindings = _source_closure_schedule_bindings(
+        storage_schedule_records,
+        expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        final_artifacts=final_artifacts,
+        storage=True,
+        source_examples=source_examples,
+    )
+    _validate_remote_publication_storage_inputs_record(
+        storage_inputs_record,
+        source_examples=source_examples,
+        schedule_records=storage_schedule_records,
+        expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        final_artifacts=final_artifacts,
+    )
+    record_bindings = {
+        "campaign": _source_closure_record_binding(
+            final_artifacts.file("campaign_plan"), campaign_plan_record
+        ),
+        "qualification_evidence": _source_closure_record_binding(
+            final_artifacts.file("qualification_evidence"),
+            qualification_evidence_record,
+        ),
+        "qualification_plan": _source_closure_record_binding(
+            final_artifacts.file("qualification_plan"), qualification_plan_record
+        ),
+        "schedules": schedule_bindings,
+        "storage_inputs": _source_closure_record_binding(
+            final_artifacts.file("storage_inputs"), storage_inputs_record
+        ),
+        "storage_schedules": storage_schedule_bindings,
+    }
+    expected_semantic = _source_closure_expected_semantic(
+        campaign_plan_record=campaign_plan_record,
+        qualification_plan_record=qualification_plan_record,
+        qualification_evidence_record=qualification_evidence_record,
+        selection=selection,
+        schedule_bindings=schedule_bindings,
+        storage_schedule_bindings=storage_schedule_bindings,
+        storage_inputs_record=storage_inputs_record,
+    )
+    handoff_closures = {
+        "bf16": _remote_handoff_authorization_binding(bf16),
+        "q8": _remote_handoff_authorization_binding(q8),
+    }
+    singleton_identity_sha256 = _canonical_sha256(
+        {
+            "artifacts": final_artifacts.to_record(),
+            "domain": "cachet.publication.latency_source_closure.singleton.v1",
+            "expected_semantic": expected_semantic,
+            "handoff_closures": handoff_closures,
+            "ledger_lineage": {
+                "ledger_id": bf16.ledger_id,
+                "ledger_path_sha256": ledger_path_sha256,
+                "predecessor_prefix": bf16.ledger_prefix.to_record(),
+            },
+            "qualification_artifact_pins": qualification_artifact_pins.to_record(),
+            "record_bindings": record_bindings,
+        }
+    )
+    normalized_attempt_id = _publication_latency_source_closure_attempt_id(
+        singleton_identity_sha256
+    )
+    if attempt_id is not None and _safe_id(
+        attempt_id, "source-closure attempt ID"
+    ) != normalized_attempt_id:
+        raise ValueError("source-closure attempt_id differs from singleton identity")
+    expected_request_root, expected_result_root = (
+        publication_latency_source_closure_control_roots(
+            q8.output_root_uri,
+            bf16.output_root_uri,
+        )
+    )
+    if (
+        coordinator_config.request_root_uri != expected_request_root
+        or coordinator_config.result_root_uri != expected_result_root
+    ):
+        raise ValueError(
+            "source-closure control roots differ from authenticated handoff outputs"
+        )
+    request_uri = _join_durable_uri(expected_request_root, "request.json")
+    result_uri = _join_durable_uri(expected_result_root, "result.json")
+    record: dict[str, Any] = {
+        "attempt_id": normalized_attempt_id,
+        "closed_record_sha256": "",
+        "coordinator": coordinator_config.to_record(),
+        "expected_semantic": expected_semantic,
+        "final_artifacts": final_artifacts.to_record(),
+        "handoff_closures": handoff_closures,
+        "input_bundle_sha256": qualification_artifact_pins.input_bundle_sha256,
+        "ledger_lineage": {
+            "ledger_id": bf16.ledger_id,
+            "ledger_path_sha256": ledger_path_sha256,
+            "predecessor_prefix": bf16.ledger_prefix.to_record(),
+        },
+        "qualification_artifact_pins": qualification_artifact_pins.to_record(),
+        "record_bindings": record_bindings,
+        "record_type": PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_RECORD_TYPE,
+        "request_uri": request_uri,
+        "result_uri": result_uri,
+        "schema_version": PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION,
+        "singleton_identity_sha256": singleton_identity_sha256,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    validate_publication_latency_source_closure_request(record)
+    return PublicationLatencySourceClosureRequestAuthorization(
+        request=record,
+        phase_lease_root=_source_closure_phase_lease_root(
+            ledger_file, singleton_identity_sha256=singleton_identity_sha256
+        ),
+        _issuer=_SOURCE_CLOSURE_REQUEST_AUTHORIZATION_ISSUER,
+    )
+
+
+def validate_publication_latency_source_closure_request(
+    record: Mapping[str, Any],
+) -> None:
+    _require_exact_keys(
+        record,
+        {
+            "attempt_id",
+            "closed_record_sha256",
+            "coordinator",
+            "expected_semantic",
+            "final_artifacts",
+            "handoff_closures",
+            "input_bundle_sha256",
+            "ledger_lineage",
+            "qualification_artifact_pins",
+            "record_bindings",
+            "record_type",
+            "request_uri",
+            "result_uri",
+            "schema_version",
+            "singleton_identity_sha256",
+        },
+        "publication latency source-closure request",
+    )
+    if (
+        record.get("record_type")
+        != PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+    ):
+        raise ValueError("publication latency source-closure request envelope drift")
+    if len(_pretty_json_bytes(record)) > PUBLICATION_LATENCY_SOURCE_CLOSURE_MAX_BYTES:
+        raise ValueError("publication latency source-closure request exceeds byte cap")
+    singleton_identity_sha256 = _required_sha256(
+        record, "singleton_identity_sha256"
+    )
+    if singleton_identity_sha256 != _source_closure_singleton_identity_from_request(
+        record
+    ):
+        raise ValueError("source-closure singleton identity digest drift")
+    if _safe_id(record.get("attempt_id"), "source-closure attempt ID") != (
+        _publication_latency_source_closure_attempt_id(singleton_identity_sha256)
+    ):
+        raise ValueError("source-closure attempt identity drift")
+    request_uri = _databricks_volume_uri(
+        _required_string(record, "request_uri"), "source-closure request URI"
+    )
+    result_uri = _databricks_volume_uri(
+        _required_string(record, "result_uri"), "source-closure result URI"
+    )
+    if request_uri == result_uri:
+        raise ValueError("source-closure request/result URI collision")
+    coordinator = _mapping(record, "coordinator")
+    config = _source_closure_config_from_record(coordinator)
+    closures = _mapping(record, "handoff_closures")
+    q8_output = _required_string(_mapping(closures, "q8"), "output_root_uri")
+    bf16_output = _required_string(_mapping(closures, "bf16"), "output_root_uri")
+    expected_request_root, expected_result_root = (
+        publication_latency_source_closure_control_roots(
+            q8_output,
+            bf16_output,
+        )
+    )
+    if (
+        config.request_root_uri != expected_request_root
+        or config.result_root_uri != expected_result_root
+        or request_uri != _join_durable_uri(expected_request_root, "request.json")
+        or result_uri != _join_durable_uri(expected_result_root, "result.json")
+    ):
+        raise ValueError("source-closure control URI/root singleton drift")
+    pins = GPUQualificationArtifactPins(
+        **dict(_mapping(record, "qualification_artifact_pins"))
+    )
+    if record.get("input_bundle_sha256") != pins.input_bundle_sha256:
+        raise ValueError("source-closure input bundle pin drift")
+    final_artifacts = _final_artifacts_from_record(
+        _mapping(record, "final_artifacts")
+    )
+    if (
+        final_artifacts.file("runner").sha256
+        != PUBLICATION_LATENCY_RUNNER_SHA256
+        or final_artifacts.file("package_wheel").sha256
+        != pins.package_wheel_sha256
+        or final_artifacts.file("patched_vllm_wheel").sha256
+        != pins.patched_vllm_wheel_sha256
+        or final_artifacts.file("patched_vllm_wheel").sha256
+        != GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
+        or final_artifacts.file("runtime_lock").sha256
+        != pins.runtime_lock_sha256
+        or final_artifacts.file("runtime_lock").sha256
+        != VLLM_RUNTIME_LOCK_SHA256
+    ):
+        raise ValueError("source-closure reviewed runtime artifact pin drift")
+    if (
+        config.package_wheel_sha256 != final_artifacts.file("package_wheel").sha256
+        or not _same_durable_file_location(
+            config.package_wheel_uri,
+            final_artifacts.file("package_wheel").uri,
+        )
+    ):
+        raise ValueError("source-closure coordinator package binding drift")
+    if (
+        config.runtime_lock_sha256 != final_artifacts.file("runtime_lock").sha256
+        or not _same_durable_file_location(
+            config.runtime_lock_uri,
+            final_artifacts.file("runtime_lock").uri,
+        )
+        or config.patched_vllm_wheel_sha256
+        != final_artifacts.file("patched_vllm_wheel").sha256
+        or not _same_durable_file_location(
+            config.patched_vllm_wheel_uri,
+            final_artifacts.file("patched_vllm_wheel").uri,
+        )
+    ):
+        raise ValueError("source-closure coordinator locked-runtime binding drift")
+    lineage = _mapping(record, "ledger_lineage")
+    _require_exact_keys(
+        lineage,
+        {"ledger_id", "ledger_path_sha256", "predecessor_prefix"},
+        "source-closure ledger lineage",
+    )
+    ledger_id = _required_string(lineage, "ledger_id")
+    _required_sha256(lineage, "ledger_path_sha256")
+    predecessor = databricks_ledger_prefix_from_record(
+        _mapping(lineage, "predecessor_prefix")
+    )
+    if predecessor.ledger_id != ledger_id:
+        raise ValueError("source-closure predecessor ledger identity drift")
+    _require_exact_keys(closures, {"bf16", "q8"}, "source handoff closures")
+    for stage in ("q8", "bf16"):
+        binding = _mapping(closures, stage)
+        _require_exact_keys(
+            binding,
+            {
+                "control_plane_status_sha256",
+                "coordinator_run_id",
+                "execution_closed_record_sha256",
+                "execution_file_sha256",
+                "execution_uri",
+                "output_root_uri",
+                "request_closed_record_sha256",
+                "result_closed_record_sha256",
+                "result_file_sha256",
+                "result_uri",
+                "stage",
+            },
+            f"source {stage} handoff closure",
+        )
+        if binding.get("stage") != stage:
+            raise ValueError("source handoff closure stage drift")
+        for name in (
+            "control_plane_status_sha256",
+            "execution_closed_record_sha256",
+            "execution_file_sha256",
+            "request_closed_record_sha256",
+            "result_closed_record_sha256",
+            "result_file_sha256",
+        ):
+            _required_sha256(binding, name)
+        _databricks_id(binding.get("coordinator_run_id"), "handoff coordinator run")
+        _databricks_volume_uri(binding.get("execution_uri"), "handoff execution URI")
+        _databricks_volume_uri(binding.get("output_root_uri"), "handoff output root URI")
+        _databricks_volume_uri(binding.get("result_uri"), "handoff result URI")
+        execution_artifact = final_artifacts.file(
+            "handoff_execution" if stage == "q8" else "bf16_handoff_execution"
+        )
+        if (
+            binding.get("execution_file_sha256") != execution_artifact.sha256
+            or binding.get("execution_uri")
+            != _databricks_volume_uri(
+                execution_artifact.uri, f"source {stage} execution artifact URI"
+            )
+        ):
+            raise ValueError(f"source {stage} handoff execution artifact drift")
+    bindings = _mapping(record, "record_bindings")
+    _require_exact_keys(
+        bindings,
+        {
+            "campaign",
+            "qualification_evidence",
+            "qualification_plan",
+            "schedules",
+            "storage_inputs",
+            "storage_schedules",
+        },
+        "source-closure record bindings",
+    )
+    for name in (
+        "campaign",
+        "qualification_evidence",
+        "qualification_plan",
+        "storage_inputs",
+    ):
+        _validate_source_closure_record_binding(
+            _mapping(bindings, name), name, expected_kind="record"
+        )
+    for name, expected_kind in (
+        ("schedules", "schedule"),
+        ("storage_schedules", "storage_schedule"),
+    ):
+        values = _mapping_sequence(bindings, name)
+        if len(values) != PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS:
+            raise ValueError(f"source-closure {name} coverage drift")
+        for block, binding in enumerate(values, 1):
+            _validate_source_closure_record_binding(
+                binding, name, expected_kind=expected_kind
+            )
+            if binding.get("deployment_block") != block:
+                raise ValueError(f"source-closure {name} block order drift")
+    expected_semantic = _mapping(record, "expected_semantic")
+    _validate_source_closure_semantic(expected_semantic)
+    _validate_source_closure_record_binding_closure(
+        bindings,
+        final_artifacts=final_artifacts,
+        expected_semantic=expected_semantic,
+    )
+
+
+def _source_closure_request_authorization_record(
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind the builder-reviewed request into one durable restart receipt."""
+
+    validate_publication_latency_source_closure_request(request)
+    coordinator = _mapping(request, "coordinator")
+    config = _source_closure_config_from_record(coordinator)
+    final_artifacts_record = _mapping(request, "final_artifacts")
+    final_artifacts = _final_artifacts_from_record(final_artifacts_record)
+    qualification_pins = _mapping(request, "qualification_artifact_pins")
+    package_artifact = final_artifacts.file("package_wheel")
+    if (
+        config.package_wheel_sha256 != package_artifact.sha256
+        or not _same_durable_file_location(
+            config.package_wheel_uri, package_artifact.uri
+        )
+        or qualification_pins.get("package_wheel_sha256")
+        != package_artifact.sha256
+    ):
+        raise ValueError("source-closure authorized package binding drift")
+    record: dict[str, Any] = {
+        "attempt_id": _required_string(request, "attempt_id"),
+        "closed_record_sha256": "",
+        "coordinator_sha256": _canonical_sha256(coordinator),
+        "final_artifacts_sha256": _canonical_sha256(final_artifacts_record),
+        "ledger_lineage_sha256": _canonical_sha256(
+            _mapping(request, "ledger_lineage")
+        ),
+        "package_wheel_sha256": package_artifact.sha256,
+        "package_wheel_uri": config.package_wheel_uri,
+        "qualification_artifact_pins_sha256": _canonical_sha256(
+            qualification_pins
+        ),
+        "record_type": (
+            PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_AUTHORIZATION_RECORD_TYPE
+        ),
+        "request_closed_record_sha256": _required_sha256(
+            request, "closed_record_sha256"
+        ),
+        "request_file_sha256": sha256(_pretty_json_bytes(request)).hexdigest(),
+        "request_uri": _required_string(request, "request_uri"),
+        "schema_version": PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    _validate_source_closure_request_authorization_record(record)
+    return record
+
+
+def _validate_source_closure_request_authorization_record(
+    record: Mapping[str, Any],
+) -> None:
+    _require_exact_keys(
+        record,
+        {
+            "attempt_id",
+            "closed_record_sha256",
+            "coordinator_sha256",
+            "final_artifacts_sha256",
+            "ledger_lineage_sha256",
+            "package_wheel_sha256",
+            "package_wheel_uri",
+            "qualification_artifact_pins_sha256",
+            "record_type",
+            "request_closed_record_sha256",
+            "request_file_sha256",
+            "request_uri",
+            "schema_version",
+        },
+        "source-closure request authorization",
+    )
+    if (
+        record.get("record_type")
+        != PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_AUTHORIZATION_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+    ):
+        raise ValueError("source-closure request authorization envelope drift")
+    _safe_id(record.get("attempt_id"), "source-closure authorized attempt ID")
+    for field_name in (
+        "coordinator_sha256",
+        "final_artifacts_sha256",
+        "ledger_lineage_sha256",
+        "package_wheel_sha256",
+        "qualification_artifact_pins_sha256",
+        "request_closed_record_sha256",
+        "request_file_sha256",
+    ):
+        _required_sha256(record, field_name)
+    _databricks_volume_uri(
+        record.get("package_wheel_uri"), "authorized package wheel URI"
+    )
+    _databricks_volume_uri(record.get("request_uri"), "authorized request URI")
+
+
+def _require_source_closure_request_authorization(
+    authorization: object,
+) -> PublicationLatencySourceClosureRequestAuthorization:
+    if not isinstance(
+        authorization, PublicationLatencySourceClosureRequestAuthorization
+    ):
+        raise TypeError(
+            "source closure requires "
+            "PublicationLatencySourceClosureRequestAuthorization"
+        )
+    request = authorization.request_record
+    expected = _source_closure_request_authorization_record(request)
+    if (
+        dict(authorization.authorization_record) != expected
+        or authorization.authorization_record_sha256
+        != expected["closed_record_sha256"]
+        or authorization.request_closed_record_sha256
+        != expected["request_closed_record_sha256"]
+        or authorization.request_file_sha256 != expected["request_file_sha256"]
+    ):
+        raise ValueError("source-closure request authorization drift")
+    return authorization
+
+
+def validate_publication_latency_source_closure_result(
+    record: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any],
+) -> None:
+    validate_publication_latency_source_closure_request(request)
+    _require_exact_keys(
+        record,
+        {
+            "artifacts",
+            "artifacts_sha256",
+            "closed_record_sha256",
+            "coordinator",
+            "record_type",
+            "request_closed_record_sha256",
+            "schema_version",
+            "semantic",
+        },
+        "publication latency source-closure result",
+    )
+    if (
+        record.get("record_type")
+        != PUBLICATION_LATENCY_SOURCE_CLOSURE_RESULT_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+        or record.get("request_closed_record_sha256")
+        != request.get("closed_record_sha256")
+    ):
+        raise ValueError("publication latency source-closure result envelope drift")
+    if len(_canonical_json_bytes(record)) > (
+        PUBLICATION_LATENCY_SOURCE_CLOSURE_MAX_BYTES
+    ):
+        raise ValueError("publication latency source-closure result exceeds byte cap")
+    coordinator = _mapping(record, "coordinator")
+    _require_exact_keys(coordinator, {"run_id"}, "source-closure result coordinator")
+    _databricks_id(coordinator.get("run_id"), "source-closure coordinator run ID")
+    expected_files = [
+        item
+        for item in _mapping_sequence(_mapping(request, "final_artifacts"), "files")
+        if item.get("role") not in PUBLICATION_LATENCY_SOURCE_CLOSURE_EXCLUDED_ROLES
+    ]
+    artifacts = _mapping_sequence(record, "artifacts")
+    if len(artifacts) != len(expected_files):
+        raise ValueError("source-closure artifact coverage is incomplete")
+    for artifact, expected in zip(artifacts, expected_files, strict=True):
+        _require_exact_keys(
+            artifact,
+            {"byte_count", "role", "sha256", "uri"},
+            "source-closure artifact",
+        )
+        if (
+            artifact.get("role") != expected.get("role")
+            or artifact.get("sha256") != expected.get("sha256")
+            or artifact.get("uri") != expected.get("uri")
+            or _positive_int(
+                artifact.get("byte_count"), "source-closure artifact byte count"
+            )
+            <= 0
+        ):
+            raise ValueError("source-closure artifact binding drift")
+    if record.get("artifacts_sha256") != _canonical_sha256(artifacts):
+        raise ValueError("source-closure artifact inventory digest drift")
+    semantic = _mapping(record, "semantic")
+    _validate_source_closure_semantic(semantic)
+    if dict(semantic) != dict(_mapping(request, "expected_semantic")):
+        raise ValueError("source-closure semantic validation result drift")
+
+
+def _source_closure_schedule_bindings(
+    schedule_records: Mapping[int, Mapping[str, Any]],
+    *,
+    expected_input_bundle_sha256: str,
+    final_artifacts: PublicationLatencyFinalArtifactPins,
+    storage: bool,
+    source_examples: Sequence[PublicationLatencyExample] | None = None,
+) -> list[dict[str, Any]]:
+    if set(schedule_records) != set(
+        range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+    ):
+        raise ValueError("source closure requires exactly five schedule blocks")
+    bindings: list[dict[str, Any]] = []
+    for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1):
+        schedule = schedule_records[block]
+        if storage:
+            if source_examples is None:
+                raise ValueError("storage closure requires main source identities")
+            validate_publication_storage_block_schedule(
+                schedule,
+                source_examples=source_examples,
+                expected_input_bundle_sha256=expected_input_bundle_sha256,
+            )
+            role = f"storage_schedule_block_{block:02d}"
+        else:
+            validate_publication_latency_block_schedule(
+                schedule,
+                examples=_schedule_examples(schedule),
+                expected_input_bundle_sha256=expected_input_bundle_sha256,
+            )
+            role = f"schedule_block_{block:02d}"
+        if schedule.get("deployment_block") != block:
+            raise ValueError("source-closure schedule deployment block drift")
+        binding = _source_closure_record_binding(
+            final_artifacts.file(role), schedule
+        )
+        binding.update(
+            {
+                "deployment_block": block,
+                "requests_sha256": _required_sha256(schedule, "requests_sha256"),
+                "seed_sha256": _required_sha256(schedule, "seed_sha256"),
+            }
+        )
+        if storage:
+            binding["selection_sha256"] = _required_sha256(
+                _mapping(_mapping(schedule, "protocol"), "selection"),
+                "selection_sha256",
+            )
+        bindings.append(binding)
+    return bindings
+
+
+def _source_closure_record_binding(
+    artifact: PublicationLatencyArtifactFile,
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not _canonical_json_file_sha256_matches(record, artifact.sha256):
+        raise ValueError(f"source-closure {artifact.role} file SHA-256 drift")
+    return {
+        "closed_record_sha256": _required_sha256(record, "closed_record_sha256"),
+        "file_sha256": artifact.sha256,
+        "role": artifact.role,
+        "uri": _databricks_volume_uri(
+            artifact.uri, f"source-closure {artifact.role} URI"
+        ),
+    }
+
+
+def _validate_source_closure_record_binding(
+    binding: Mapping[str, Any],
+    field_name: str,
+    *,
+    expected_kind: str | None = None,
+) -> None:
+    base = {"closed_record_sha256", "file_sha256", "role", "uri"}
+    schedule = {"deployment_block", "requests_sha256", "seed_sha256"}
+    schemas = {
+        "record": base,
+        "schedule": base | schedule,
+        "storage_schedule": base | schedule | {"selection_sha256"},
+    }
+    if expected_kind is not None and expected_kind not in schemas:
+        raise ValueError("source-closure binding validator kind drift")
+    allowed = (schemas[expected_kind],) if expected_kind else tuple(schemas.values())
+    if set(binding) not in allowed:
+        raise ValueError(f"source-closure {field_name} binding schema drift")
+    _safe_id(binding.get("role"), f"source-closure {field_name} role")
+    _databricks_volume_uri(
+        binding.get("uri"), f"source-closure {field_name} URI"
+    )
+    _required_sha256(binding, "closed_record_sha256")
+    _required_sha256(binding, "file_sha256")
+    if "deployment_block" in binding:
+        block = _required_int(binding, "deployment_block")
+        if not 1 <= block <= PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS:
+            raise ValueError("source-closure schedule block is outside the design")
+        _required_sha256(binding, "requests_sha256")
+        _required_sha256(binding, "seed_sha256")
+    if "selection_sha256" in binding:
+        _required_sha256(binding, "selection_sha256")
+
+
+def _validate_source_closure_record_binding_closure(
+    bindings: Mapping[str, Any],
+    *,
+    final_artifacts: PublicationLatencyFinalArtifactPins,
+    expected_semantic: Mapping[str, Any],
+) -> None:
+    named_roles = {
+        "campaign": "campaign_plan",
+        "qualification_evidence": "qualification_evidence",
+        "qualification_plan": "qualification_plan",
+        "storage_inputs": "storage_inputs",
+    }
+    semantic_digests = {
+        "campaign": "campaign_closed_record_sha256",
+        "qualification_evidence": (
+            "qualification_evidence_closed_record_sha256"
+        ),
+        "qualification_plan": "qualification_plan_closed_record_sha256",
+    }
+    for name, role in named_roles.items():
+        binding = _mapping(bindings, name)
+        _require_source_closure_binding_artifact(
+            binding, final_artifacts=final_artifacts, expected_role=role
+        )
+        if name == "storage_inputs":
+            expected_closed = _required_sha256(
+                _mapping(expected_semantic, "storage_inputs"),
+                "closed_record_sha256",
+            )
+        else:
+            expected_closed = _required_sha256(
+                expected_semantic, semantic_digests[name]
+            )
+        if binding.get("closed_record_sha256") != expected_closed:
+            raise ValueError(f"source-closure {name} semantic binding drift")
+
+    for name, role_prefix in (
+        ("schedules", "schedule_block"),
+        ("storage_schedules", "storage_schedule_block"),
+    ):
+        rows = _mapping_sequence(bindings, name)
+        semantic_rows = _mapping_sequence(expected_semantic, name)
+        for block, (binding, semantic) in enumerate(
+            zip(rows, semantic_rows, strict=True), 1
+        ):
+            _require_source_closure_binding_artifact(
+                binding,
+                final_artifacts=final_artifacts,
+                expected_role=f"{role_prefix}_{block:02d}",
+            )
+            for digest_name in (
+                "closed_record_sha256",
+                "requests_sha256",
+                "seed_sha256",
+            ):
+                if binding.get(digest_name) != semantic.get(digest_name):
+                    raise ValueError(
+                        f"source-closure {name} semantic binding drift"
+                    )
+            if name == "storage_schedules" and binding.get(
+                "selection_sha256"
+            ) != semantic.get("selection_sha256"):
+                raise ValueError("source-closure storage selection binding drift")
+
+
+def _require_source_closure_binding_artifact(
+    binding: Mapping[str, Any],
+    *,
+    final_artifacts: PublicationLatencyFinalArtifactPins,
+    expected_role: str,
+) -> None:
+    artifact = final_artifacts.file(expected_role)
+    if (
+        binding.get("role") != expected_role
+        or binding.get("file_sha256") != artifact.sha256
+        or binding.get("uri")
+        != _databricks_volume_uri(
+            artifact.uri, f"source-closure {expected_role} artifact URI"
+        )
+    ):
+        raise ValueError(f"source-closure {expected_role} artifact binding drift")
+
+
+def _source_closure_expected_semantic(
+    *,
+    campaign_plan_record: Mapping[str, Any],
+    qualification_plan_record: Mapping[str, Any],
+    qualification_evidence_record: Mapping[str, Any],
+    selection: GPUQualificationSelection,
+    schedule_bindings: Sequence[Mapping[str, Any]],
+    storage_schedule_bindings: Sequence[Mapping[str, Any]],
+    storage_inputs_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "campaign_closed_record_sha256": _required_sha256(
+            campaign_plan_record, "closed_record_sha256"
+        ),
+        "qualification_evidence_closed_record_sha256": _required_sha256(
+            qualification_evidence_record, "closed_record_sha256"
+        ),
+        "qualification_plan_closed_record_sha256": _required_sha256(
+            qualification_plan_record, "closed_record_sha256"
+        ),
+        "qualification_selection": _selection_record(selection),
+        "schedules": [
+            {
+                "closed_record_sha256": item["closed_record_sha256"],
+                "deployment_block": item["deployment_block"],
+                "requests_sha256": item["requests_sha256"],
+                "seed_sha256": item["seed_sha256"],
+            }
+            for item in schedule_bindings
+        ],
+        "storage_inputs": {
+            "closed_record_sha256": _required_sha256(
+                storage_inputs_record, "closed_record_sha256"
+            ),
+            "selection_sha256": _required_sha256(
+                _mapping(storage_inputs_record, "selection_protocol"),
+                "selection_sha256",
+            ),
+        },
+        "storage_schedules": [
+            {
+                "closed_record_sha256": item["closed_record_sha256"],
+                "deployment_block": item["deployment_block"],
+                "requests_sha256": item["requests_sha256"],
+                "seed_sha256": item["seed_sha256"],
+                "selection_sha256": item["selection_sha256"],
+            }
+            for item in storage_schedule_bindings
+        ],
+    }
+
+
+def _validate_source_closure_semantic(value: Mapping[str, Any]) -> None:
+    _require_exact_keys(
+        value,
+        {
+            "campaign_closed_record_sha256",
+            "qualification_evidence_closed_record_sha256",
+            "qualification_plan_closed_record_sha256",
+            "qualification_selection",
+            "schedules",
+            "storage_inputs",
+            "storage_schedules",
+        },
+        "source-closure semantic record",
+    )
+    for name in (
+        "campaign_closed_record_sha256",
+        "qualification_evidence_closed_record_sha256",
+        "qualification_plan_closed_record_sha256",
+    ):
+        _required_sha256(value, name)
+    selection = _mapping(value, "qualification_selection")
+    _require_exact_keys(
+        selection,
+        {
+            "attention_backend",
+            "generation_artifacts_sha256",
+            "generation_databricks_node_type_id",
+            "generation_hardware_id",
+            "generation_prefix_tokens_per_second",
+            "gpu_memory_utilization",
+            "plan_sha256",
+        },
+        "source-closure qualification selection",
+    )
+    _required_sha256(selection, "generation_artifacts_sha256")
+    _required_sha256(selection, "plan_sha256")
+    for name, storage in (("schedules", False), ("storage_schedules", True)):
+        rows = _mapping_sequence(value, name)
+        if len(rows) != PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS:
+            raise ValueError(f"source-closure {name} semantic coverage drift")
+        for block, row in enumerate(rows, 1):
+            expected_keys = {
+                "closed_record_sha256",
+                "deployment_block",
+                "requests_sha256",
+                "seed_sha256",
+            }
+            if storage:
+                expected_keys.add("selection_sha256")
+            _require_exact_keys(row, expected_keys, f"source-closure {name} row")
+            if row.get("deployment_block") != block:
+                raise ValueError(f"source-closure {name} block order drift")
+            for digest in expected_keys.difference({"deployment_block"}):
+                _required_sha256(row, digest)
+    storage_inputs = _mapping(value, "storage_inputs")
+    _require_exact_keys(
+        storage_inputs,
+        {"closed_record_sha256", "selection_sha256"},
+        "source-closure storage inputs semantic",
+    )
+    _required_sha256(storage_inputs, "closed_record_sha256")
+    _required_sha256(storage_inputs, "selection_sha256")
+
+
+def _source_closure_semantic_from_plan_sources(
+    sources: Mapping[str, Any],
+) -> dict[str, Any]:
+    qualification = _mapping(sources, "qualification")
+    return {
+        "campaign_closed_record_sha256": _required_sha256(
+            _mapping(sources, "campaign"), "closed_record_sha256"
+        ),
+        "qualification_evidence_closed_record_sha256": _required_sha256(
+            _mapping(qualification, "evidence"), "closed_record_sha256"
+        ),
+        "qualification_plan_closed_record_sha256": _required_sha256(
+            _mapping(qualification, "plan"), "closed_record_sha256"
+        ),
+        "qualification_selection": dict(_mapping(qualification, "selection")),
+        "schedules": [
+            {
+                "closed_record_sha256": _required_sha256(
+                    item, "closed_record_sha256"
+                ),
+                "deployment_block": _required_int(item, "deployment_block"),
+                "requests_sha256": _required_sha256(item, "requests_sha256"),
+                "seed_sha256": _required_sha256(item, "seed_sha256"),
+            }
+            for item in _mapping_sequence(sources, "schedules")
+        ],
+        "storage_inputs": {
+            "closed_record_sha256": _required_sha256(
+                _mapping(sources, "storage_inputs"), "closed_record_sha256"
+            ),
+            "selection_sha256": _required_sha256(
+                _mapping(sources, "storage_inputs"), "selection_sha256"
+            ),
+        },
+        "storage_schedules": [
+            {
+                "closed_record_sha256": _required_sha256(
+                    item, "closed_record_sha256"
+                ),
+                "deployment_block": _required_int(item, "deployment_block"),
+                "requests_sha256": _required_sha256(item, "requests_sha256"),
+                "seed_sha256": _required_sha256(item, "seed_sha256"),
+                "selection_sha256": _required_sha256(item, "selection_sha256"),
+            }
+            for item in _mapping_sequence(sources, "storage_schedules")
+        ],
+    }
+
+
+def _source_closure_config_from_record(
+    record: Mapping[str, Any],
+) -> PublicationLatencySourceClosureCoordinatorConfig:
+    _require_exact_keys(
+        record,
+        {
+            "custom_tags",
+            "data_security_mode",
+            "node_type_id",
+            "package_wheel_sha256",
+            "package_wheel_uri",
+            "patched_vllm_wheel_sha256",
+            "patched_vllm_wheel_uri",
+            "request_root_uri",
+            "result_root_uri",
+            "runner_python_file",
+            "runner_sha256",
+            "runtime_lock_sha256",
+            "runtime_lock_uri",
+            "runtime_venv_dir",
+            "single_user_name",
+            "spark_version",
+            "timeout_seconds",
+        },
+        "source-closure coordinator config",
+    )
+    tags = _mapping(record, "custom_tags")
+    config = PublicationLatencySourceClosureCoordinatorConfig(
+        runner_python_file=_required_string(record, "runner_python_file"),
+        package_wheel_uri=_required_string(record, "package_wheel_uri"),
+        package_wheel_sha256=_required_sha256(record, "package_wheel_sha256"),
+        runtime_lock_uri=_required_string(record, "runtime_lock_uri"),
+        runtime_lock_sha256=_required_sha256(record, "runtime_lock_sha256"),
+        patched_vllm_wheel_uri=_required_string(
+            record, "patched_vllm_wheel_uri"
+        ),
+        patched_vllm_wheel_sha256=_required_sha256(
+            record, "patched_vllm_wheel_sha256"
+        ),
+        request_root_uri=_required_string(record, "request_root_uri"),
+        result_root_uri=_required_string(record, "result_root_uri"),
+        single_user_name=_required_string(record, "single_user_name"),
+        runner_sha256=_required_sha256(record, "runner_sha256"),
+        node_type_id=_required_string(record, "node_type_id"),
+        spark_version=_required_string(record, "spark_version"),
+        data_security_mode=_required_string(record, "data_security_mode"),
+        timeout_seconds=_required_int(record, "timeout_seconds"),
+        runtime_venv_dir=_required_string(record, "runtime_venv_dir"),
+        custom_tags=cast(Mapping[str, str], tags),
+    )
+    if config.to_record() != dict(record):
+        raise ValueError("source-closure coordinator config normalization drift")
+    return config
+
+
 def write_publication_latency_runner_script(path: str | Path) -> Path:
     """Write the reviewed bootstrap runner once."""
 
@@ -428,6 +1997,742 @@ def write_publication_latency_runner_script(path: str | Path) -> Path:
     return destination
 
 
+def write_publication_latency_source_closure_runner_script(
+    path: str | Path,
+) -> Path:
+    """Write the reviewed source-closure bootstrap once."""
+
+    destination = Path(path)
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(
+            f"publication latency source-closure runner exists: {destination}"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT, encoding="utf-8"
+    )
+    return destination
+
+
+def render_publication_latency_source_closure_submit_payload(
+    request_authorization: PublicationLatencySourceClosureRequestAuthorization,
+) -> dict[str, Any]:
+    """Render one idempotent, no-retry c5d CPU source verifier."""
+
+    authorization = _require_source_closure_request_authorization(
+        request_authorization
+    )
+    return _render_publication_latency_source_closure_submit_payload_from_request(
+        authorization.request_record
+    )
+
+
+def _render_publication_latency_source_closure_submit_payload_from_request(
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Render from bytes already authenticated at a typed controller boundary."""
+
+    validate_publication_latency_source_closure_request(request)
+    config = _source_closure_config_from_record(_mapping(request, "coordinator"))
+    request_bytes = _pretty_json_bytes(request)
+    parameters = [
+        "--runner-sha256",
+        config.runner_sha256,
+        "--package-wheel-uri",
+        config.package_wheel_uri,
+        "--package-wheel-sha256",
+        config.package_wheel_sha256,
+        "--runtime-lock-uri",
+        config.runtime_lock_uri,
+        "--runtime-lock-sha256",
+        config.runtime_lock_sha256,
+        "--patched-vllm-wheel-uri",
+        config.patched_vllm_wheel_uri,
+        "--patched-vllm-wheel-sha256",
+        config.patched_vllm_wheel_sha256,
+        "--runtime-venv-dir",
+        config.runtime_venv_dir,
+        "--request-uri",
+        _required_string(request, "request_uri"),
+        "--request-file-sha256",
+        sha256(request_bytes).hexdigest(),
+        "--request-closed-record-sha256",
+        _required_sha256(request, "closed_record_sha256"),
+        "--coordinator-run-id",
+        _DATABRICKS_JOB_RUN_ID_TEMPLATE,
+    ]
+    if len(_canonical_json(parameters).encode("utf-8")) > 9_500:
+        raise ValueError("source-closure runner parameters exceed the compact cap")
+    payload = {
+        "run_name": "cachet-vllm-0271-publication-latency-source-closure",
+        "tasks": [
+            {
+                "max_retries": 0,
+                "new_cluster": {
+                    "aws_attributes": {"availability": "ON_DEMAND", "zone_id": "auto"},
+                    "custom_tags": {
+                        **dict(config.custom_tags),
+                        "ResourceClass": "SingleNode",
+                        "campaign": "vllm-0271-publication-v1",
+                        "purpose": "cachet-vllm-0271-latency-source-closure",
+                        "request_sha256": request["closed_record_sha256"][:32],
+                    },
+                    "data_security_mode": config.data_security_mode,
+                    "driver_node_type_id": config.node_type_id,
+                    "node_type_id": config.node_type_id,
+                    "num_workers": 0,
+                    "single_user_name": config.single_user_name,
+                    "spark_conf": {
+                        "spark.databricks.cluster.profile": "singleNode",
+                        "spark.master": "local[*]",
+                    },
+                    "spark_version": config.spark_version,
+                },
+                "spark_python_task": {
+                    "parameters": parameters,
+                    "python_file": config.runner_python_file,
+                },
+                "task_key": "publication_latency_source_closure",
+                "timeout_seconds": config.timeout_seconds,
+            }
+        ],
+        "timeout_seconds": config.timeout_seconds,
+    }
+    return bind_databricks_run_idempotency_token(
+        payload, attempt_id=_required_string(request, "attempt_id")
+    )
+
+
+def run_publication_latency_source_closure_coordinator(
+    request_path: str | Path,
+    *,
+    expected_request_file_sha256: str,
+    expected_request_closed_record_sha256: str,
+    coordinator_run_id: str,
+) -> dict[str, Any]:
+    """Rehash and semantically validate every non-handoff source on Volume."""
+
+    path = Path(request_path)
+    _verify_regular_file_sha256(
+        path,
+        _require_sha256_value(
+            expected_request_file_sha256, "expected_request_file_sha256"
+        ),
+        "source-closure request",
+    )
+    request_bytes = path.read_bytes()
+    request = _canonical_pretty_remote_json_record(
+        request_bytes, field_name="source-closure request"
+    )
+    validate_publication_latency_source_closure_request(request)
+    if request.get("closed_record_sha256") != _require_sha256_value(
+        expected_request_closed_record_sha256,
+        "expected_request_closed_record_sha256",
+    ):
+        raise ValueError("source-closure request closed digest drift")
+    run_id = _databricks_id(coordinator_run_id, "source coordinator run ID")
+    final_artifacts = _final_artifacts_from_record(
+        _mapping(request, "final_artifacts")
+    )
+    artifact_records: list[dict[str, Any]] = []
+    for artifact in final_artifacts.files:
+        if artifact.role in PUBLICATION_LATENCY_SOURCE_CLOSURE_EXCLUDED_ROLES:
+            continue
+        artifact_path = _cluster_path(artifact.uri)
+        _verify_regular_file_sha256(
+            artifact_path, artifact.sha256, f"source artifact {artifact.role}"
+        )
+        byte_count = artifact_path.stat().st_size
+        if byte_count <= 0:
+            raise ValueError(f"source artifact {artifact.role} is empty")
+        artifact_records.append(
+            {
+                "byte_count": byte_count,
+                "role": artifact.role,
+                "sha256": artifact.sha256,
+                "uri": artifact.uri,
+            }
+        )
+
+    bindings = _mapping(request, "record_bindings")
+    campaign = _read_source_closure_bound_record(
+        _mapping(bindings, "campaign"), "campaign"
+    )
+    qualification_plan = _read_source_closure_bound_record(
+        _mapping(bindings, "qualification_plan"), "qualification plan"
+    )
+    qualification_evidence = _read_source_closure_bound_record(
+        _mapping(bindings, "qualification_evidence"), "qualification evidence"
+    )
+    storage_inputs = _read_source_closure_bound_record(
+        _mapping(bindings, "storage_inputs"), "storage inputs"
+    )
+    schedule_records = {
+        _required_int(binding, "deployment_block"): _read_source_closure_bound_record(
+            binding, "publication schedule"
+        )
+        for binding in _mapping_sequence(bindings, "schedules")
+    }
+    storage_schedule_records = {
+        _required_int(binding, "deployment_block"): _read_source_closure_bound_record(
+            binding, "publication storage schedule"
+        )
+        for binding in _mapping_sequence(bindings, "storage_schedules")
+    }
+    validate_publication_campaign_plan_record(campaign)
+    pins = GPUQualificationArtifactPins(
+        **dict(_mapping(request, "qualification_artifact_pins"))
+    )
+    selection = validate_gpu_qualification_evidence_record(
+        qualification_evidence,
+        plan_record=qualification_plan,
+        expected_campaign_id=_required_string(campaign, "campaign_id"),
+        expected_artifact_pins=pins,
+    )
+    schedule_bindings = _source_closure_schedule_bindings(
+        schedule_records,
+        expected_input_bundle_sha256=pins.input_bundle_sha256,
+        final_artifacts=final_artifacts,
+        storage=False,
+    )
+    source_examples = _schedule_examples(schedule_records[1])
+    if any(
+        _schedule_examples(schedule_records[block]) != source_examples
+        for block in range(2, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+    ):
+        raise ValueError("remotely validated schedules use different identities")
+    storage_schedule_bindings = _source_closure_schedule_bindings(
+        storage_schedule_records,
+        expected_input_bundle_sha256=pins.input_bundle_sha256,
+        final_artifacts=final_artifacts,
+        storage=True,
+        source_examples=source_examples,
+    )
+    storage_source_paths = {
+        dataset: _cluster_path(final_artifacts.file(f"input_16384_{dataset}").uri)
+        for dataset in SUPPORTED_V1_DATASETS
+    }
+    validate_publication_storage_inputs_record(
+        storage_inputs,
+        source_paths=storage_source_paths,
+        schedule_records=storage_schedule_records,
+        expected_input_bundle_sha256=pins.input_bundle_sha256,
+    )
+    observed_semantic = _source_closure_expected_semantic(
+        campaign_plan_record=campaign,
+        qualification_plan_record=qualification_plan,
+        qualification_evidence_record=qualification_evidence,
+        selection=selection,
+        schedule_bindings=schedule_bindings,
+        storage_schedule_bindings=storage_schedule_bindings,
+        storage_inputs_record=storage_inputs,
+    )
+    if observed_semantic != dict(_mapping(request, "expected_semantic")):
+        raise ValueError("source-closure mounted semantic result differs from request")
+    result: dict[str, Any] = {
+        "artifacts": artifact_records,
+        "artifacts_sha256": _canonical_sha256(artifact_records),
+        "closed_record_sha256": "",
+        "coordinator": {"run_id": run_id},
+        "record_type": PUBLICATION_LATENCY_SOURCE_CLOSURE_RESULT_RECORD_TYPE,
+        "request_closed_record_sha256": request["closed_record_sha256"],
+        "schema_version": PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION,
+        "semantic": observed_semantic,
+    }
+    result["closed_record_sha256"] = _closed_record_sha256(result)
+    validate_publication_latency_source_closure_result(result, request=request)
+    result_path = _cluster_path(_required_string(request, "result_uri"))
+    _write_or_require_exact_bytes(
+        result_path, (_canonical_json(result) + "\n").encode("utf-8")
+    )
+    return result
+
+
+def _read_source_closure_bound_record(
+    binding: Mapping[str, Any], field_name: str
+) -> dict[str, Any]:
+    _validate_source_closure_record_binding(binding, field_name)
+    path = _cluster_path(_required_string(binding, "uri"))
+    _verify_regular_file_sha256(
+        path, _required_sha256(binding, "file_sha256"), field_name
+    )
+    record = _read_json_file(path, field_name)
+    if record.get("closed_record_sha256") != binding.get("closed_record_sha256"):
+        raise ValueError(f"source-closure {field_name} closed digest drift")
+    return record
+
+
+def submit_publication_latency_source_closure(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    request_authorization: PublicationLatencySourceClosureRequestAuthorization,
+    ledger_path: str | Path,
+    phase_lease_root: str | Path,
+    opener: DatabricksURLOpener | None = None,
+) -> tuple[dict[str, Any], PublicationLatencySourceClosureSubmissionAuthorization]:
+    """Durably stage and idempotently submit one unmetered CPU verifier."""
+
+    authorization = _require_source_closure_request_authorization(
+        request_authorization
+    )
+    _require_source_closure_phase_lease_root(authorization, phase_lease_root)
+    request = authorization.request_record
+    if not isinstance(workspace, DatabricksWorkspaceConfig):
+        raise TypeError("workspace has the wrong type")
+    payload = render_publication_latency_source_closure_submit_payload(authorization)
+    ledger_file = Path(ledger_path).expanduser().absolute()
+    predecessor = databricks_ledger_prefix_from_record(
+        _mapping(_mapping(request, "ledger_lineage"), "predecessor_prefix")
+    )
+    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_file)
+    if ledger_path_sha256 != _required_sha256(
+        _mapping(request, "ledger_lineage"), "ledger_path_sha256"
+    ):
+        raise ValueError("source-closure ledger path binding drift")
+    live = read_databricks_cluster_hour_ledger_json(ledger_file)
+    require_databricks_ledger_prefix(live, predecessor)
+    if databricks_ledger_prefix(live) != predecessor:
+        raise ValueError("source-closure predecessor is not the complete live ledger")
+    lease_root = _create_latency_phase_lease_root(phase_lease_root)
+    _write_canonical_json_exclusive(lease_root / "request.json", request)
+    _write_canonical_json_exclusive(
+        lease_root / "request-authorization.json",
+        authorization.authorization_record,
+    )
+    _write_canonical_json_exclusive(lease_root / "submit-payload.json", payload)
+    return _submit_or_resume_publication_latency_source_closure(
+        workspace,
+        request_authorization=authorization,
+        payload=payload,
+        ledger_file=ledger_file,
+        lease_root=lease_root,
+        predecessor=predecessor,
+        opener=opener,
+    )
+
+
+def resume_publication_latency_source_closure(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    request_authorization: PublicationLatencySourceClosureRequestAuthorization,
+    ledger_path: str | Path,
+    phase_lease_root: str | Path,
+    opener: DatabricksURLOpener | None = None,
+) -> tuple[dict[str, Any], PublicationLatencySourceClosureSubmissionAuthorization]:
+    """Recover any source-closure crash point with the identical wire body."""
+
+    expected_authorization = _require_source_closure_request_authorization(
+        request_authorization
+    )
+    _require_source_closure_phase_lease_root(
+        expected_authorization, phase_lease_root
+    )
+    if not isinstance(workspace, DatabricksWorkspaceConfig):
+        raise TypeError("workspace has the wrong type")
+    lease_root = Path(phase_lease_root).expanduser().absolute()
+    _reject_existing_symlink_ancestors(lease_root, "source-closure phase lease")
+    if not lease_root.is_dir() or lease_root.is_symlink():
+        raise ValueError("source-closure phase lease must be an existing directory")
+    authorization_record = _read_latency_controller_record(
+        lease_root / "request-authorization.json",
+        "source-closure request authorization",
+    )
+    request = _read_latency_controller_record(
+        lease_root / "request.json", "source-closure request"
+    )
+    if (
+        request != expected_authorization.request_record
+        or authorization_record
+        != dict(expected_authorization.authorization_record)
+    ):
+        raise ValueError(
+            "source-closure durable request differs from the replayed authority"
+        )
+    authorization = expected_authorization
+    payload_path = lease_root / "submit-payload.json"
+    payload = _read_json_file(payload_path, "source-closure submit payload")
+    if payload_path.read_bytes() != _canonical_json_bytes(payload):
+        raise ValueError("source-closure submit payload is not canonical JSON")
+    if payload != render_publication_latency_source_closure_submit_payload(
+        authorization
+    ):
+        raise ValueError("source-closure reserved submit payload drift")
+    _require_source_closure_durable_authorization_bindings(
+        lease_root, authorization
+    )
+    ledger_file = Path(ledger_path).expanduser().absolute()
+    lineage = _mapping(request, "ledger_lineage")
+    if databricks_ledger_path_sha256(ledger_file) != _required_sha256(
+        lineage, "ledger_path_sha256"
+    ):
+        raise ValueError("source-closure resume ledger path drift")
+    predecessor = databricks_ledger_prefix_from_record(
+        _mapping(lineage, "predecessor_prefix")
+    )
+    _require_unchanged_source_closure_gpu_ledger(ledger_file, predecessor)
+    return _submit_or_resume_publication_latency_source_closure(
+        workspace,
+        request_authorization=authorization,
+        payload=payload,
+        ledger_file=ledger_file,
+        lease_root=lease_root,
+        predecessor=predecessor,
+        opener=opener,
+    )
+
+
+def _require_source_closure_durable_authorization_bindings(
+    lease_root: Path,
+    authorization: PublicationLatencySourceClosureRequestAuthorization,
+) -> None:
+    """Pin every already-durable crash receipt to the issuer's request authority."""
+
+    expected = authorization.authorization_record_sha256
+    for filename, label in (
+        ("request-upload.json", "source-closure request upload"),
+        ("post-intent.json", "source-closure post intent"),
+        ("submit-response.json", "source-closure submit response"),
+    ):
+        path = lease_root / filename
+        if not path.exists() and not path.is_symlink():
+            continue
+        record = _read_latency_controller_record(path, label)
+        if record.get("request_authorization_record_sha256") != expected:
+            raise ValueError(f"{label} request authorization binding drift")
+
+
+def _require_source_closure_phase_lease_root(
+    authorization: PublicationLatencySourceClosureRequestAuthorization,
+    value: str | Path,
+) -> Path:
+    root = Path(value).expanduser().absolute()
+    _reject_existing_symlink_ancestors(root, "source-closure phase lease")
+    if root != authorization.phase_lease_root:
+        raise ValueError(
+            "source-closure phase_lease_root differs from singleton authority"
+        )
+    return root
+
+
+def _submit_or_resume_publication_latency_source_closure(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    request_authorization: PublicationLatencySourceClosureRequestAuthorization,
+    payload: Mapping[str, Any],
+    ledger_file: Path,
+    lease_root: Path,
+    predecessor: DatabricksLedgerPrefix,
+    opener: DatabricksURLOpener | None,
+) -> tuple[dict[str, Any], PublicationLatencySourceClosureSubmissionAuthorization]:
+    authorization = _require_source_closure_request_authorization(
+        request_authorization
+    )
+    request = authorization.request_record
+    if payload != render_publication_latency_source_closure_submit_payload(
+        authorization
+    ):
+        raise ValueError("source-closure submit payload/request authority drift")
+    _require_unchanged_source_closure_gpu_ledger(ledger_file, predecessor)
+    request_bytes = _pretty_json_bytes(request)
+    upload = upload_databricks_volume_file_bytes_exclusive(
+        workspace,
+        _required_string(request, "request_uri"),
+        request_bytes,
+        max_bytes=PUBLICATION_LATENCY_SOURCE_CLOSURE_MAX_BYTES,
+    )
+    upload_record = {
+        "closed_record_sha256": "",
+        "dbfs_uri": upload.get("dbfs_uri"),
+        "file_sha256": upload.get("file_sha256"),
+        "record_type": "cachet.publication_latency_source_upload.v1",
+        "request_authorization_record_sha256": (
+            authorization.authorization_record_sha256
+        ),
+        "size_bytes": upload.get("size_bytes"),
+    }
+    if (
+        upload.get("created") not in {True, False}
+        or upload_record["dbfs_uri"] != request.get("request_uri")
+        or upload_record["file_sha256"] != sha256(request_bytes).hexdigest()
+        or upload_record["size_bytes"] != len(request_bytes)
+    ):
+        raise ValueError("source-closure request upload receipt drift")
+    upload_record["closed_record_sha256"] = _closed_record_sha256(upload_record)
+    _write_or_require_exact_bytes(
+        lease_root / "request-upload.json", _canonical_json_bytes(upload_record)
+    )
+    _require_unchanged_source_closure_gpu_ledger(ledger_file, predecessor)
+    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
+    payload_sha = sha256(canonical_payload).hexdigest()
+    idempotency_token = require_databricks_run_idempotency_token(
+        snapshot, attempt_id=_required_string(request, "attempt_id")
+    )
+    post_intent = {
+        "closed_record_sha256": "",
+        "gpu_ledger_path_sha256": databricks_ledger_path_sha256(ledger_file),
+        "gpu_ledger_prefix": predecessor.to_record(),
+        "idempotency_token": idempotency_token,
+        "record_type": "cachet.publication_latency_source_post_intent.v1",
+        "request_authorization_record_sha256": (
+            authorization.authorization_record_sha256
+        ),
+        "request_file_byte_count": len(request_bytes),
+        "request_file_sha256": sha256(request_bytes).hexdigest(),
+        "submit_payload_byte_count": len(canonical_payload),
+        "submit_payload_sha256": payload_sha,
+    }
+    post_intent["closed_record_sha256"] = _closed_record_sha256(post_intent)
+    _write_or_require_exact_bytes(
+        lease_root / "post-intent.json", _canonical_json_bytes(post_intent)
+    )
+    response_path = lease_root / "submit-response.json"
+    if response_path.exists() or response_path.is_symlink():
+        response_record = _read_latency_controller_record(
+            response_path, "source-closure submit response"
+        )
+        if response_record.get("request_authorization_record_sha256") != (
+            authorization.authorization_record_sha256
+        ):
+            raise ValueError("source-closure response request authority drift")
+        run_id = _databricks_id(
+            response_record.get("run_id"), "source-closure submit run ID"
+        )
+        response_sha = _required_sha256(
+            response_record, "submit_response_sha256"
+        )
+    else:
+        response = (
+            submit_databricks_run(workspace, dict(payload))
+            if opener is None
+            else submit_databricks_run(workspace, dict(payload), opener=opener)
+        )
+        run_id = _databricks_id(
+            response.get("run_id"), "source-closure submit run ID"
+        )
+        response_sha = _canonical_sha256(response)
+        response_record = {
+            "closed_record_sha256": "",
+            "record_type": "cachet.publication_latency_source_submit_response.v1",
+            "request_authorization_record_sha256": (
+                authorization.authorization_record_sha256
+            ),
+            "run_id": run_id,
+            "submit_response_sha256": response_sha,
+        }
+        response_record["closed_record_sha256"] = _closed_record_sha256(
+            response_record
+        )
+        _write_or_require_exact_bytes(
+            response_path, _canonical_json_bytes(response_record)
+        )
+    _require_unchanged_source_closure_gpu_ledger(ledger_file, predecessor)
+    record = {
+        "closed_record_sha256": "",
+        "request_authorization_record_sha256": (
+            authorization.authorization_record_sha256
+        ),
+        "request_closed_record_sha256": request["closed_record_sha256"],
+        "request_file_byte_count": len(request_bytes),
+        "record_type": "cachet.publication_latency_source_submission.v1",
+        "run_id": run_id,
+        "submit_payload_byte_count": len(canonical_payload),
+        "submit_payload_sha256": payload_sha,
+        "submit_response_sha256": response_sha,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    submission_authorization = PublicationLatencySourceClosureSubmissionAuthorization(
+        request_closed_record_sha256=_required_sha256(
+            request, "closed_record_sha256"
+        ),
+        request_authorization_record_sha256=(
+            authorization.authorization_record_sha256
+        ),
+        ledger_path_sha256=databricks_ledger_path_sha256(ledger_file),
+        predecessor_prefix=predecessor,
+        run_id=run_id,
+        submit_payload_sha256=payload_sha,
+        submit_response_sha256=response_sha,
+        _issuer=_SOURCE_CLOSURE_SUBMISSION_AUTHORIZATION_ISSUER,
+    )
+    return record, submission_authorization
+
+
+def _require_unchanged_source_closure_gpu_ledger(
+    ledger_file: Path,
+    predecessor: DatabricksLedgerPrefix,
+) -> None:
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_file)
+    require_databricks_ledger_prefix(ledger, predecessor)
+    if databricks_ledger_prefix(ledger) != predecessor:
+        raise ValueError("source closure must not mutate or race the GPU ledger")
+
+
+def collect_publication_latency_source_closure(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    request: Mapping[str, Any],
+    submission_authorization: PublicationLatencySourceClosureSubmissionAuthorization,
+    ledger_path: str | Path,
+    controller_cas_root: str | Path,
+) -> PublicationLatencySourceClosureAuthorization:
+    """Collect direct status and compact closure without mounting DBFS on Mac."""
+
+    if not isinstance(workspace, DatabricksWorkspaceConfig):
+        raise TypeError("workspace has the wrong type")
+    validate_publication_latency_source_closure_request(request)
+    if not isinstance(
+        submission_authorization, PublicationLatencySourceClosureSubmissionAuthorization
+    ):
+        raise TypeError("source closure collection requires submission authority")
+    request_sha = _required_sha256(request, "closed_record_sha256")
+    request_authorization_record = _source_closure_request_authorization_record(
+        request
+    )
+    ledger_file = Path(ledger_path).expanduser().absolute()
+    if (
+        submission_authorization.request_closed_record_sha256 != request_sha
+        or submission_authorization.request_authorization_record_sha256
+        != request_authorization_record["closed_record_sha256"]
+        or submission_authorization.ledger_path_sha256
+        != databricks_ledger_path_sha256(ledger_file)
+    ):
+        raise ValueError("source-closure submission authority binding drift")
+    payload = _render_publication_latency_source_closure_submit_payload_from_request(
+        request
+    )
+    _snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
+    if submission_authorization.submit_payload_sha256 != sha256(
+        canonical_payload
+    ).hexdigest():
+        raise ValueError("source-closure submitted payload binding drift")
+    _require_unchanged_source_closure_gpu_ledger(
+        ledger_file, submission_authorization.predecessor_prefix
+    )
+    run_id = submission_authorization.run_id
+    run = get_databricks_run(workspace, run_id)
+    identity = _validate_source_closure_control_plane_run(
+        run,
+        submit_payload=payload,
+        receipt_run_id=run_id,
+    )
+    if identity["terminal_state"] != "succeeded":
+        raise RuntimeError("publication latency source-closure coordinator failed")
+    control_sha = _control_plane_status_sha256(run)
+    request_bytes = download_databricks_volume_file_bytes(
+        workspace,
+        _required_string(request, "request_uri"),
+        max_bytes=PUBLICATION_LATENCY_SOURCE_CLOSURE_MAX_BYTES,
+    )
+    if request_bytes != _pretty_json_bytes(request):
+        raise ValueError("remote source-closure request bytes drift")
+    result_bytes = download_databricks_volume_file_bytes(
+        workspace,
+        _required_string(request, "result_uri"),
+        max_bytes=PUBLICATION_LATENCY_SOURCE_CLOSURE_MAX_BYTES,
+    )
+    result = _canonical_remote_json_record(
+        result_bytes, field_name="source-closure coordinator result"
+    )
+    validate_publication_latency_source_closure_result(result, request=request)
+    if _mapping(result, "coordinator").get("run_id") != run_id:
+        raise ValueError("source-closure result/control-plane run identity drift")
+    for raw in (request_bytes, result_bytes, _control_plane_status_bytes(run)):
+        _store_publication_latency_controller_cas_bytes(controller_cas_root, raw)
+    _require_unchanged_source_closure_gpu_ledger(
+        ledger_file, submission_authorization.predecessor_prefix
+    )
+    return PublicationLatencySourceClosureAuthorization(
+        request=request,
+        result=result,
+        result_file_sha256=sha256(result_bytes).hexdigest(),
+        coordinator_run_id=run_id,
+        control_plane_status_sha256=control_sha,
+        ledger_prefix=submission_authorization.predecessor_prefix,
+        _issuer=_SOURCE_CLOSURE_AUTHORIZATION_ISSUER,
+    )
+
+
+def require_publication_latency_source_closure_authorization(
+    authorization: object,
+    *,
+    expected_final_artifacts: PublicationLatencyFinalArtifactPins,
+    expected_qualification_artifact_pins: GPUQualificationArtifactPins,
+    expected_semantic: Mapping[str, Any],
+    expected_predecessor_prefix: DatabricksLedgerPrefix,
+    expected_q8_handoff_authorization: PublicationHandoffRemoteClosureAuthorization,
+    expected_bf16_handoff_authorization: PublicationHandoffRemoteClosureAuthorization,
+) -> PublicationLatencySourceClosureAuthorization:
+    """Replay one exact issuer capability against immutable source identities."""
+
+    if not isinstance(authorization, PublicationLatencySourceClosureAuthorization):
+        raise TypeError(
+            "latency launch requires PublicationLatencySourceClosureAuthorization"
+        )
+    if not isinstance(expected_final_artifacts, PublicationLatencyFinalArtifactPins):
+        raise TypeError("expected_final_artifacts has the wrong type")
+    if not isinstance(
+        expected_qualification_artifact_pins, GPUQualificationArtifactPins
+    ):
+        raise TypeError("expected_qualification_artifact_pins has the wrong type")
+    validate_publication_latency_source_closure_result(
+        authorization.result_record, request=authorization.request_record
+    )
+    request = authorization.request_record
+    request_pins = GPUQualificationArtifactPins(
+        **dict(_mapping(request, "qualification_artifact_pins"))
+    )
+    if request_pins != expected_qualification_artifact_pins:
+        raise ValueError("publication latency source-closure qualification pin drift")
+    for handoff_authorization in (
+        expected_q8_handoff_authorization,
+        expected_bf16_handoff_authorization,
+    ):
+        _require_handoff_closure_runtime_pins(
+            handoff_authorization,
+            expected_final_artifacts=expected_final_artifacts,
+            expected_qualification_artifact_pins=request_pins,
+        )
+    expected_handoff_closures = {
+        "bf16": _remote_handoff_authorization_binding(
+            expected_bf16_handoff_authorization
+        ),
+        "q8": _remote_handoff_authorization_binding(
+            expected_q8_handoff_authorization
+        ),
+    }
+    if (
+        dict(_mapping(request, "final_artifacts"))
+        != expected_final_artifacts.to_record()
+        or request.get("input_bundle_sha256")
+        != expected_qualification_artifact_pins.input_bundle_sha256
+        or dict(_mapping(request, "expected_semantic")) != dict(expected_semantic)
+        or dict(_mapping(request, "handoff_closures"))
+        != expected_handoff_closures
+        or authorization.predecessor_prefix != expected_predecessor_prefix
+        or authorization.request_closed_record_sha256
+        != request.get("closed_record_sha256")
+        or authorization.result_closed_record_sha256
+        != authorization.result_record.get("closed_record_sha256")
+        or authorization.artifacts_sha256
+        != authorization.result_record.get("artifacts_sha256")
+    ):
+        raise ValueError("publication latency source-closure authority binding drift")
+    expected_causal = _canonical_sha256(
+        {
+            "control_plane_status_sha256": authorization.control_plane_status_sha256,
+            "coordinator_run_id": authorization.coordinator_run_id,
+            "ledger_prefix": authorization.ledger_prefix.to_record(),
+            "request_closed_record_sha256": authorization.request_closed_record_sha256,
+            "request_file_sha256": authorization.request_file_sha256,
+            "result_closed_record_sha256": authorization.result_closed_record_sha256,
+            "result_file_sha256": authorization.result_file_sha256,
+        }
+    )
+    if expected_causal != authorization.causal_closure_sha256:
+        raise ValueError("publication latency source-closure causal binding drift")
+    return authorization
+
+
 def build_publication_latency_execution_plan(
     *,
     campaign_plan_record: Mapping[str, Any],
@@ -437,8 +2742,9 @@ def build_publication_latency_execution_plan(
     qualification_evidence_record: Mapping[str, Any],
     qualification_artifact_pins: GPUQualificationArtifactPins,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
     storage_inputs_record: Mapping[str, Any],
     final_artifacts: PublicationLatencyFinalArtifactPins,
 ) -> dict[str, Any]:
@@ -514,8 +2820,9 @@ def build_publication_latency_execution_plan(
         raise ValueError("GPU qualification plan differs from the campaign binding")
 
     handoff_execution_file = final_artifacts.file("handoff_execution")
-    authenticated_handoff = require_publication_latency_handoff_serving_authorization(
+    authenticated_handoff = require_q8_handoff_remote_closure_authorization(
         handoff_serving_authorization,
+        expected_output_root_uri=final_artifacts.handoff_generation_root_uri,
         expected_execution_file_sha256=handoff_execution_file.sha256,
         expected_input_bundle_sha256=(qualification_artifact_pins.input_bundle_sha256),
         expected_qualification_closed_record_sha256=_required_sha256(
@@ -523,40 +2830,32 @@ def build_publication_latency_execution_plan(
             "closed_record_sha256",
         ),
     )
+    handoff_execution = authenticated_handoff.execution_record
     if (
-        authenticated_handoff.record.get("execution_mode")
+        handoff_execution.get("execution_mode")
         != PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED
     ):
         raise ValueError("latency serving requires the distributed handoff result")
-    handoff_accounting = _mapping(authenticated_handoff.record, "accounting")
+    handoff_accounting = _mapping(handoff_execution, "accounting")
     if handoff_accounting.get("full_launch_throughput_gate_passed") is not True:
         raise ValueError("distributed handoff result did not pass its launch gate")
     if (
-        _file_sha256(authenticated_handoff.execution_record_path)
-        != handoff_execution_file.sha256
-        or _cluster_path(handoff_execution_file.uri).absolute()
-        != authenticated_handoff.execution_record_path.absolute()
-        or _cluster_path(final_artifacts.handoff_generation_root_uri).absolute()
-        != authenticated_handoff.root.absolute()
+        authenticated_handoff.execution_file_sha256 != handoff_execution_file.sha256
+        or authenticated_handoff.execution_uri != handoff_execution_file.uri
+        or authenticated_handoff.output_root_uri
+        != final_artifacts.handoff_generation_root_uri
     ):
         raise ValueError("handoff execution file pin is stale")
-    if authenticated_handoff.record.get("input_bundle_sha256") != (
+    if handoff_execution.get("input_bundle_sha256") != (
         qualification_artifact_pins.input_bundle_sha256
     ):
         raise ValueError("handoff input bundle differs from qualification")
-    generator_hardware = _mapping(authenticated_handoff.record, "generator_hardware")
+    generator_hardware = _mapping(handoff_execution, "generator_hardware")
     if generator_hardware.get("qualification_closed_record_sha256") != (
         qualification_evidence_record.get("closed_record_sha256")
     ):
         raise ValueError("handoff generation used a different GPU qualification")
 
-    storage_source_paths = {
-        dataset: _cluster_path(final_artifacts.file(f"input_16384_{dataset}").uri)
-        for dataset in SUPPORTED_V1_DATASETS
-    }
-    storage_source_examples = load_publication_storage_selection_examples(
-        storage_source_paths
-    )
     schedule_bindings = _validated_schedule_bindings(
         campaign_id=campaign_id,
         schedule_records=schedule_records,
@@ -566,6 +2865,16 @@ def build_publication_latency_execution_plan(
         expected_request_count=PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
         expected_workload_id="main",
     )
+    main_examples_by_block = {
+        block: _schedule_examples(schedule_records[block])
+        for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+    }
+    storage_source_examples = main_examples_by_block[1]
+    if any(
+        examples != storage_source_examples
+        for examples in main_examples_by_block.values()
+    ):
+        raise ValueError("main latency schedules do not share one source identity set")
     storage_schedule_bindings = _validated_schedule_bindings(
         campaign_id=campaign_id,
         schedule_records=storage_schedule_records,
@@ -576,15 +2885,17 @@ def build_publication_latency_execution_plan(
         expected_workload_id="storage",
         storage_source_examples=storage_source_examples,
     )
-    validate_publication_storage_inputs_record(
+    _validate_remote_publication_storage_inputs_record(
         storage_inputs_record,
-        source_paths=storage_source_paths,
+        source_examples=storage_source_examples,
         schedule_records=storage_schedule_records,
         expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        final_artifacts=final_artifacts,
     )
     storage_inputs_artifact = final_artifacts.file("storage_inputs")
-    if _file_sha256(_cluster_path(storage_inputs_artifact.uri)) != (
-        storage_inputs_artifact.sha256
+    if not _canonical_json_file_sha256_matches(
+        storage_inputs_record,
+        storage_inputs_artifact.sha256,
     ):
         raise ValueError("storage input record final artifact hash drift")
     storage_input_files = {
@@ -598,29 +2909,74 @@ def build_publication_latency_execution_plan(
         )
         if (
             artifact.sha256 != file_record.get("sha256")
-            or _cluster_path(artifact.uri).absolute()
-            != Path(_required_string(file_record, "uri")).absolute()
+            or not _same_durable_file_location(
+                artifact.uri,
+                _required_string(file_record, "uri"),
+            )
         ):
             raise ValueError("storage input final artifact binding drift")
     bf16_binding = _validated_bf16_generation_binding(
         bf16_handoff_serving_authorization,
         expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        expected_qualification_closed_record_sha256=_required_sha256(
+            qualification_evidence_record,
+            "closed_record_sha256",
+        ),
         final_artifacts=final_artifacts,
+    )
+    source_closure_schedule_bindings = _source_closure_schedule_bindings(
+        schedule_records,
+        expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        final_artifacts=final_artifacts,
+        storage=False,
+    )
+    source_closure_storage_schedule_bindings = _source_closure_schedule_bindings(
+        storage_schedule_records,
+        expected_input_bundle_sha256=qualification_artifact_pins.input_bundle_sha256,
+        final_artifacts=final_artifacts,
+        storage=True,
+        source_examples=storage_source_examples,
+    )
+    expected_source_semantic = _source_closure_expected_semantic(
+        campaign_plan_record=campaign_plan_record,
+        qualification_plan_record=qualification_plan_record,
+        qualification_evidence_record=qualification_evidence_record,
+        selection=selection,
+        schedule_bindings=source_closure_schedule_bindings,
+        storage_schedule_bindings=source_closure_storage_schedule_bindings,
+        storage_inputs_record=storage_inputs_record,
+    )
+    authenticated_source_closure = (
+        require_publication_latency_source_closure_authorization(
+            source_closure_authorization,
+            expected_final_artifacts=final_artifacts,
+            expected_qualification_artifact_pins=qualification_artifact_pins,
+            expected_semantic=expected_source_semantic,
+            expected_predecessor_prefix=(
+                bf16_handoff_serving_authorization.ledger_prefix
+            ),
+            expected_q8_handoff_authorization=handoff_serving_authorization,
+            expected_bf16_handoff_authorization=(
+                bf16_handoff_serving_authorization
+            ),
+        )
     )
     authorization_ledger_ids = {
         qualification_launch_authorization.ledger_id,
         handoff_serving_authorization.ledger_id,
         bf16_handoff_serving_authorization.ledger_id,
+        authenticated_source_closure.ledger_id,
     }
     if authorization_ledger_ids != {campaign_ledger_id}:
         raise ValueError(
-            "GPU qualification, Q8 handoff, and BF16 handoff must share one "
+            "GPU qualification, Q8, BF16, and source closure must share one "
             "publication campaign ledger"
         )
     authorization_ledger_paths = {
         qualification_launch_authorization.ledger_path_sha256,
         handoff_serving_authorization.ledger_path_sha256,
         bf16_handoff_serving_authorization.ledger_path_sha256,
+        authenticated_source_closure.ledger_path_sha256,
     }
     if authorization_ledger_paths != {campaign_ledger_path_sha256}:
         raise ValueError("publication authorities use a different campaign ledger path")
@@ -646,14 +3002,38 @@ def build_publication_latency_execution_plan(
         campaign_ledger_prefix.reservation_count
     ):
         raise ValueError("qualification authority does not extend campaign genesis")
-    if handoff_serving_authorization.predecessor_prefix != (
-        qualification_launch_authorization.ledger_prefix
+    _require_remote_handoff_phase_order(
+        qualification_prefix=qualification_launch_authorization.ledger_prefix,
+        q8_predecessor_prefix=handoff_serving_authorization.predecessor_prefix,
+        q8_terminal_prefix=handoff_serving_authorization.ledger_prefix,
+        bf16_predecessor_prefix=bf16_handoff_serving_authorization.predecessor_prefix,
+    )
+    if authenticated_source_closure.predecessor_prefix != (
+        bf16_handoff_serving_authorization.ledger_prefix
     ):
-        raise ValueError("Q8 authority does not extend qualification in phase order")
-    if bf16_handoff_serving_authorization.predecessor_prefix != (
-        handoff_serving_authorization.ledger_prefix
+        raise ValueError("source closure does not extend BF16 in phase order")
+    for source_record, source_file, label in (
+        (
+            campaign_plan_record,
+            final_artifacts.file("campaign_plan"),
+            "campaign plan",
+        ),
+        (
+            qualification_plan_record,
+            final_artifacts.file("qualification_plan"),
+            "qualification plan",
+        ),
+        (
+            qualification_evidence_record,
+            final_artifacts.file("qualification_evidence"),
+            "qualification evidence",
+        ),
     ):
-        raise ValueError("BF16 authority does not extend Q8 in phase order")
+        if not _canonical_json_file_sha256_matches(
+            source_record,
+            source_file.sha256,
+        ):
+            raise ValueError(f"{label} final artifact hash drift")
     campaign_binding = {
         **final_artifacts.file("campaign_plan").to_record(),
         "closed_record_sha256": _required_sha256(
@@ -704,11 +3084,14 @@ def build_publication_latency_execution_plan(
             "producer_batch_prefix": (
                 handoff_serving_authorization.producer_batch_prefix.to_record()
             ),
+            "remote_closure": _remote_handoff_authorization_binding(
+                handoff_serving_authorization
+            ),
         },
         "execution": {
             **handoff_execution_file.to_record(),
             "closed_record_sha256": _required_sha256(
-                authenticated_handoff.record,
+                handoff_execution,
                 "closed_record_sha256",
             ),
         },
@@ -725,6 +3108,9 @@ def build_publication_latency_execution_plan(
         "handoff_generation": handoff_binding,
         "qualification": qualification_binding,
         "schedules": schedule_bindings,
+        "source_closure": _source_closure_authorization_binding(
+            authenticated_source_closure
+        ),
         "storage_schedules": storage_schedule_bindings,
         "storage_inputs": {
             **final_artifacts.file("storage_inputs").to_record(),
@@ -848,6 +3234,7 @@ def validate_publication_latency_execution_plan_record(
             "handoff_generation",
             "qualification",
             "schedules",
+            "source_closure",
             "storage_schedules",
             "storage_inputs",
         },
@@ -963,6 +3350,7 @@ def validate_publication_latency_execution_plan_record(
                 "ledger_prefix",
                 "predecessor_prefix",
                 "producer_batch_prefix",
+                "remote_closure",
             },
             f"{label} authorization binding",
         )
@@ -983,6 +3371,53 @@ def validate_publication_latency_execution_plan_record(
             )
             if prefix.ledger_id != campaign_ledger_id:
                 raise ValueError(f"{label} {prefix_name} identity drift")
+        remote_closure = _mapping(source_authorization, "remote_closure")
+        _require_exact_keys(
+            remote_closure,
+            {
+                "control_plane_status_sha256",
+                "coordinator_run_id",
+                "execution_closed_record_sha256",
+                "execution_file_sha256",
+                "execution_uri",
+                "request_closed_record_sha256",
+                "result_closed_record_sha256",
+                "result_file_sha256",
+                "result_uri",
+                "stage",
+            },
+            f"{label} remote closure binding",
+        )
+        expected_stage = "q8" if label == "Q8 handoff" else "bf16"
+        if remote_closure.get("stage") != expected_stage:
+            raise ValueError(f"{label} remote closure stage drift")
+        _databricks_id(remote_closure.get("coordinator_run_id"), "coordinator run ID")
+        _durable_uri(
+            _required_string(remote_closure, "execution_uri"),
+            f"{label} remote execution URI",
+        )
+        _durable_uri(
+            _required_string(remote_closure, "result_uri"),
+            f"{label} remote result URI",
+        )
+        for digest_name in (
+            "control_plane_status_sha256",
+            "execution_closed_record_sha256",
+            "execution_file_sha256",
+            "request_closed_record_sha256",
+            "result_closed_record_sha256",
+            "result_file_sha256",
+        ):
+            _required_sha256(remote_closure, digest_name)
+        source_execution = _mapping(source_binding, "execution")
+        if (
+            source_execution.get("uri") != remote_closure.get("execution_uri")
+            or source_execution.get("sha256")
+            != remote_closure.get("execution_file_sha256")
+            or source_execution.get("closed_record_sha256")
+            != remote_closure.get("execution_closed_record_sha256")
+        ):
+            raise ValueError(f"{label} remote execution binding drift")
     q8_authorization_binding = _mapping(handoff_binding, "authorization")
     bf16_authorization_binding = _mapping(bf16_binding, "authorization")
     if _mapping(q8_authorization_binding, "predecessor_prefix") != (
@@ -993,6 +3428,64 @@ def validate_publication_latency_execution_plan_record(
         _mapping(q8_authorization_binding, "ledger_prefix")
     ):
         raise ValueError("BF16 predecessor is not the Q8 terminal prefix")
+    source_closure_binding = _mapping(sources, "source_closure")
+    _require_exact_keys(
+        source_closure_binding,
+        {
+            "artifacts_sha256",
+            "causal_closure_sha256",
+            "control_plane_status_sha256",
+            "coordinator_run_id",
+            "ledger_id",
+            "ledger_path_sha256",
+            "ledger_prefix",
+            "predecessor_prefix",
+            "request_closed_record_sha256",
+            "request_file_sha256",
+            "result_closed_record_sha256",
+            "result_file_sha256",
+            "result_uri",
+        },
+        "publication latency source-closure binding",
+    )
+    for digest_name in (
+        "artifacts_sha256",
+        "causal_closure_sha256",
+        "control_plane_status_sha256",
+        "request_closed_record_sha256",
+        "request_file_sha256",
+        "result_closed_record_sha256",
+        "result_file_sha256",
+    ):
+        _required_sha256(source_closure_binding, digest_name)
+    _databricks_id(
+        source_closure_binding.get("coordinator_run_id"),
+        "source-closure coordinator run ID",
+    )
+    _databricks_volume_uri(
+        source_closure_binding.get("result_uri"), "source-closure result URI"
+    )
+    if (
+        source_closure_binding.get("ledger_id") != campaign_ledger_id
+        or source_closure_binding.get("ledger_path_sha256")
+        != campaign_ledger_path_sha256
+        or _mapping(source_closure_binding, "predecessor_prefix")
+        != _mapping(bf16_authorization_binding, "ledger_prefix")
+    ):
+        raise ValueError("source closure is not the BF16 campaign successor")
+    for prefix_name in (
+        "predecessor_prefix",
+        "ledger_prefix",
+    ):
+        prefix = databricks_ledger_prefix_from_record(
+            _mapping(source_closure_binding, prefix_name)
+        )
+        if prefix.ledger_id != campaign_ledger_id:
+            raise ValueError("source-closure ledger prefix identity drift")
+    if _mapping(source_closure_binding, "ledger_prefix") != _mapping(
+        source_closure_binding, "predecessor_prefix"
+    ):
+        raise ValueError("source closure must not append to the GPU ledger")
     if _required_string(authorization_binding, "ledger_id") != campaign_ledger_id:
         raise ValueError("GPU qualification uses a different campaign ledger")
     runtime = _mapping(record, "runtime_policy")
@@ -1128,6 +3621,8 @@ def _validated_schedule_bindings(
         ):
             raise ValueError("latency schedule request closure is incomplete")
         file = final_artifacts.file(f"{role_prefix}_{block:02d}")
+        if not _canonical_json_file_sha256_matches(schedule, file.sha256):
+            raise ValueError("publication schedule final artifact hash drift")
         binding = {
             **file.to_record(),
             "closed_record_sha256": _required_sha256(
@@ -1147,52 +3642,173 @@ def _validated_schedule_bindings(
     return bindings
 
 
-def _validated_bf16_generation_binding(
-    authorization: PublicationBF16HandoffServingAuthorization,
+def _validate_remote_publication_storage_inputs_record(
+    record: Mapping[str, Any],
     *,
+    source_examples: Sequence[PublicationLatencyExample],
+    schedule_records: Mapping[int, Mapping[str, Any]],
     expected_input_bundle_sha256: str,
     final_artifacts: PublicationLatencyFinalArtifactPins,
-) -> dict[str, Any]:
-    if not isinstance(authorization, PublicationBF16HandoffServingAuthorization):
-        raise TypeError(
-            "bf16_handoff_serving_authorization must be a collector-issued "
-            "PublicationBF16HandoffServingAuthorization"
-        )
-    manifest_artifact = final_artifacts.file("bf16_handoff_manifest")
-    authenticated = require_publication_bf16_handoff_serving_authorization(
-        authorization,
-        expected_manifest_file_sha256=manifest_artifact.sha256,
-        expected_manifest_closed_record_sha256=(
-            authorization.manifest_closed_record_sha256
-        ),
-        expected_input_bundle_sha256=expected_input_bundle_sha256,
+) -> None:
+    """Validate compact storage inputs without reopening mounted source rows."""
+
+    _require_exact_keys(
+        record,
+        {
+            "closed_record_sha256",
+            "files",
+            "input_bundle_sha256",
+            "output_root",
+            "record_type",
+            "schedule_bindings",
+            "schema_version",
+            "selection_protocol",
+        },
+        "publication storage inputs",
     )
-    manifest = authenticated.manifest
-    execution = authenticated.record
-    execution_artifact = final_artifacts.file("bf16_handoff_execution")
-    bound_paths = (
-        (
-            manifest_artifact,
-            authenticated.manifest_path,
-            "BF16 manifest",
-        ),
-        (
-            execution_artifact,
-            authenticated.execution_record_path,
-            "BF16 execution record",
-        ),
-    )
-    for artifact, authenticated_path, label in bound_paths:
-        if (
-            _cluster_path(artifact.uri).absolute() != authenticated_path.absolute()
-            or _file_sha256(authenticated_path) != artifact.sha256
-        ):
-            raise ValueError(f"{label} final artifact pin drift")
     if (
-        _cluster_path(final_artifacts.bf16_handoff_generation_root_uri).absolute()
-        != authenticated.root.absolute()
-        or _cluster_path(final_artifacts.bf16_handoff_source_root_uri).absolute()
-        != authenticated.source_root.absolute()
+        record.get("record_type") != PUBLICATION_STORAGE_INPUTS_RECORD_TYPE
+        or record.get("schema_version") != PUBLICATION_STORAGE_INPUTS_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+        or record.get("input_bundle_sha256") != expected_input_bundle_sha256
+    ):
+        raise ValueError("publication storage input envelope is invalid")
+    selected = select_publication_storage_examples(
+        source_examples,
+        input_bundle_sha256=expected_input_bundle_sha256,
+    )
+    selected_ids = {
+        dataset: sorted(
+            item.example_id for item in selected if item.dataset == dataset
+        )
+        for dataset in SUPPORTED_V1_DATASETS
+    }
+    expected_schedule_bindings: list[dict[str, Any]] = []
+    selection_records: list[Mapping[str, Any]] = []
+    for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1):
+        schedule = schedule_records[block]
+        validate_publication_storage_block_schedule(
+            schedule,
+            source_examples=source_examples,
+            expected_input_bundle_sha256=expected_input_bundle_sha256,
+        )
+        selection = _mapping(_mapping(schedule, "protocol"), "selection")
+        selection_records.append(selection)
+        expected_schedule_bindings.append(
+            {
+                "closed_record_sha256": _required_sha256(
+                    schedule,
+                    "closed_record_sha256",
+                ),
+                "deployment_block": block,
+                "requests_sha256": _required_sha256(schedule, "requests_sha256"),
+                "selection_sha256": _required_sha256(
+                    selection,
+                    "selection_sha256",
+                ),
+            }
+        )
+    if any(selection != selection_records[0] for selection in selection_records):
+        raise ValueError("publication storage schedule selections are inconsistent")
+    selection = selection_records[0]
+    expected_selection_protocol = {
+        **dict(selection),
+        "examples_per_dataset": PUBLICATION_CAMPAIGN_STORAGE_EXAMPLES_PER_DATASET,
+        "repeats_per_example": PUBLICATION_CAMPAIGN_STORAGE_REPEATS_PER_EXAMPLE,
+        "request_count": PUBLICATION_CAMPAIGN_STORAGE_REQUESTS_PER_CELL,
+        "source_row_bytes_preserved": True,
+    }
+    if (
+        _mapping_sequence(record, "schedule_bindings")
+        != expected_schedule_bindings
+        or dict(_mapping(record, "selection_protocol"))
+        != expected_selection_protocol
+    ):
+        raise ValueError("publication storage schedule/selection binding drift")
+    files = _mapping_sequence(record, "files")
+    if tuple(item.get("dataset") for item in files) != tuple(SUPPORTED_V1_DATASETS):
+        raise ValueError("publication storage input dataset coverage is incomplete")
+    output_root = _normalized_volume_path(
+        _required_string(record, "output_root"),
+        "publication storage output root",
+    )
+    for item in files:
+        _require_exact_keys(
+            item,
+            {
+                "byte_count",
+                "dataset",
+                "identities",
+                "record_count",
+                "rows_sha256",
+                "sha256",
+                "source_sha256",
+                "uri",
+            },
+            "publication storage input file",
+        )
+        dataset = _required_string(item, "dataset")
+        artifact = final_artifacts.file(f"storage_input_16384_{dataset}")
+        source_artifact = final_artifacts.file(f"input_16384_{dataset}")
+        identities = item.get("identities")
+        if (
+            not isinstance(identities, list)
+            or identities != selected_ids[dataset]
+            or _required_int(item, "record_count")
+            != PUBLICATION_CAMPAIGN_STORAGE_EXAMPLES_PER_DATASET
+            or _positive_int(item.get("byte_count"), "storage input byte count") <= 0
+            or _required_sha256(item, "sha256") != artifact.sha256
+            or _required_sha256(item, "source_sha256") != source_artifact.sha256
+            or _normalized_volume_path(
+                _required_string(item, "uri"),
+                "publication storage input URI",
+            ).parent
+            != output_root
+            or not _same_durable_file_location(
+                artifact.uri,
+                _required_string(item, "uri"),
+            )
+        ):
+            raise ValueError("publication storage input file binding drift")
+        _required_sha256(item, "rows_sha256")
+
+
+def _validated_bf16_generation_binding(
+    authorization: PublicationHandoffRemoteClosureAuthorization,
+    *,
+    expected_input_bundle_sha256: str,
+    expected_qualification_closed_record_sha256: str,
+    final_artifacts: PublicationLatencyFinalArtifactPins,
+) -> dict[str, Any]:
+    if not isinstance(authorization, PublicationHandoffRemoteClosureAuthorization):
+        raise TypeError(
+            "bf16_handoff_serving_authorization must be a coordinator-issued "
+            "PublicationHandoffRemoteClosureAuthorization"
+    )
+    manifest_artifact = final_artifacts.file("bf16_handoff_manifest")
+    execution_artifact = final_artifacts.file("bf16_handoff_execution")
+    authenticated = require_bf16_handoff_remote_closure_authorization(
+        authorization,
+        expected_output_root_uri=final_artifacts.bf16_handoff_generation_root_uri,
+        expected_execution_file_sha256=execution_artifact.sha256,
+        expected_input_bundle_sha256=expected_input_bundle_sha256,
+        expected_qualification_closed_record_sha256=(
+            expected_qualification_closed_record_sha256
+        ),
+    )
+    manifest_bindings = _mapping_sequence(authenticated.result_record, "manifests")
+    if len(manifest_bindings) != 1 or len(authenticated.manifest_records) != 1:
+        raise ValueError("BF16 remote closure must contain exactly one manifest")
+    manifest_binding = manifest_bindings[0]
+    manifest = authenticated.manifest_records[0]
+    execution = authenticated.execution_record
+    if (
+        authenticated.execution_uri != execution_artifact.uri
+        or authenticated.execution_file_sha256 != execution_artifact.sha256
+        or manifest_binding.get("uri") != manifest_artifact.uri
+        or manifest_binding.get("file_sha256") != manifest_artifact.sha256
+        or manifest_binding.get("source_root_uri")
+        != final_artifacts.bf16_handoff_source_root_uri
     ):
         raise ValueError("BF16 generation/source root final artifact pin drift")
     if manifest.get("input_bundle_sha256") != expected_input_bundle_sha256:
@@ -1242,6 +3858,7 @@ def _validated_bf16_generation_binding(
             "ledger_prefix": authorization.ledger_prefix.to_record(),
             "predecessor_prefix": authorization.predecessor_prefix.to_record(),
             "producer_batch_prefix": authorization.producer_batch_prefix.to_record(),
+            "remote_closure": _remote_handoff_authorization_binding(authorization),
         },
         "execution": {
             **execution_artifact.to_record(),
@@ -1307,6 +3924,217 @@ def _selection_record(selection: GPUQualificationSelection) -> dict[str, Any]:
         "gpu_memory_utilization": selection.gpu_memory_utilization,
         "plan_sha256": selection.plan_sha256,
     }
+
+
+def _remote_handoff_authorization_binding(
+    authorization: PublicationHandoffRemoteClosureAuthorization,
+) -> dict[str, Any]:
+    if not isinstance(authorization, PublicationHandoffRemoteClosureAuthorization):
+        raise TypeError("remote handoff closure authorization has the wrong type")
+    return {
+        "control_plane_status_sha256": authorization.control_plane_status_sha256,
+        "coordinator_run_id": authorization.coordinator_run_id,
+        "execution_closed_record_sha256": (
+            authorization.execution_closed_record_sha256
+        ),
+        "execution_file_sha256": authorization.execution_file_sha256,
+        "execution_uri": authorization.execution_uri,
+        "output_root_uri": authorization.output_root_uri,
+        "request_closed_record_sha256": (
+            authorization.request_closed_record_sha256
+        ),
+        "result_closed_record_sha256": authorization.result_closed_record_sha256,
+        "result_file_sha256": authorization.result_file_sha256,
+        "result_uri": authorization.result_uri,
+        "stage": authorization.stage,
+    }
+
+
+def _source_closure_singleton_identity_from_request(
+    request: Mapping[str, Any],
+) -> str:
+    return _canonical_sha256(
+        {
+            "artifacts": dict(_mapping(request, "final_artifacts")),
+            "domain": "cachet.publication.latency_source_closure.singleton.v1",
+            "expected_semantic": dict(_mapping(request, "expected_semantic")),
+            "handoff_closures": dict(_mapping(request, "handoff_closures")),
+            "ledger_lineage": dict(_mapping(request, "ledger_lineage")),
+            "qualification_artifact_pins": dict(
+                _mapping(request, "qualification_artifact_pins")
+            ),
+            "record_bindings": dict(_mapping(request, "record_bindings")),
+        }
+    )
+
+
+def _publication_latency_source_closure_attempt_id(
+    singleton_identity_sha256: str,
+) -> str:
+    identity = _require_sha256_value(
+        singleton_identity_sha256, "source-closure singleton identity"
+    )
+    return f"latency-source-closure-{identity[:24]}"
+
+
+def publication_latency_source_closure_control_roots(
+    q8_output_root_uri: str,
+    bf16_output_root_uri: str,
+) -> tuple[str, str]:
+    q8 = _normalized_volume_path(q8_output_root_uri, "Q8 output root")
+    bf16 = _normalized_volume_path(bf16_output_root_uri, "BF16 output root")
+    common_parts: list[str] = []
+    for q8_part, bf16_part in zip(q8.parts, bf16.parts, strict=False):
+        if q8_part != bf16_part:
+            break
+        common_parts.append(q8_part)
+    if len(common_parts) < 5:
+        raise ValueError("source-closure handoff outputs must share one UC volume")
+    common = PurePosixPath(*common_parts).as_posix()
+    output_pair_identity = _canonical_sha256(
+        {
+            "bf16_output_root_uri": _databricks_volume_uri(
+                bf16_output_root_uri, "BF16 output root"
+            ),
+            "domain": "cachet.publication.latency_source_closure.control_root.v1",
+            "q8_output_root_uri": _databricks_volume_uri(
+                q8_output_root_uri, "Q8 output root"
+            ),
+        }
+    )
+    control = _join_durable_uri(
+        "dbfs:" + common,
+        "publication-latency-source-closure-control",
+        output_pair_identity[:32],
+    )
+    return (
+        _join_durable_uri(control, "requests"),
+        _join_durable_uri(control, "results"),
+    )
+
+
+def _source_closure_phase_lease_root(
+    ledger_path: str | Path,
+    *,
+    singleton_identity_sha256: str,
+) -> Path:
+    ledger = Path(ledger_path).expanduser().absolute()
+    identity = _require_sha256_value(
+        singleton_identity_sha256, "source-closure singleton identity"
+    )
+    root = ledger.parent / (
+        f".{ledger.name}.latency-source-closure-{identity[:24]}.lease"
+    )
+    _reject_existing_symlink_ancestors(root, "source-closure phase lease")
+    return root
+
+
+def _require_handoff_closure_runtime_pins(
+    authorization: PublicationHandoffRemoteClosureAuthorization,
+    *,
+    expected_final_artifacts: PublicationLatencyFinalArtifactPins,
+    expected_qualification_artifact_pins: GPUQualificationArtifactPins,
+) -> None:
+    if not isinstance(authorization, PublicationHandoffRemoteClosureAuthorization):
+        raise TypeError("handoff runtime closure authorization has the wrong type")
+    coordinator = _mapping(authorization.request_record, "coordinator")
+    expected_output_root = (
+        expected_final_artifacts.handoff_generation_root_uri
+        if authorization.stage == "q8"
+        else expected_final_artifacts.bf16_handoff_generation_root_uri
+    )
+    if (
+        not _same_durable_file_location(
+            authorization.output_root_uri, expected_output_root
+        )
+        or authorization.request_record.get("input_bundle_sha256")
+        != expected_qualification_artifact_pins.input_bundle_sha256
+    ):
+        raise ValueError(f"{authorization.stage} handoff source-root binding drift")
+    if authorization.stage == "bf16":
+        manifests = _mapping_sequence(authorization.result_record, "manifests")
+        if len(manifests) != 1 or not _same_durable_file_location(
+            _required_string(manifests[0], "source_root_uri"),
+            expected_final_artifacts.bf16_handoff_source_root_uri,
+        ):
+            raise ValueError("bf16 handoff manifest source-root binding drift")
+    expected_files = {
+        "package_wheel": ("package_wheel_uri", "package_wheel_sha256"),
+        "patched_vllm_wheel": (
+            "patched_vllm_wheel_uri",
+            "patched_vllm_wheel_sha256",
+        ),
+        "runtime_lock": ("runtime_lock_uri", "runtime_lock_sha256"),
+    }
+    for role, (uri_name, digest_name) in expected_files.items():
+        artifact = expected_final_artifacts.file(role)
+        if (
+            coordinator.get(digest_name) != artifact.sha256
+            or not _same_durable_file_location(
+                _required_string(coordinator, uri_name), artifact.uri
+            )
+        ):
+            raise ValueError(
+                f"{authorization.stage} handoff {role} runtime binding drift"
+            )
+    if (
+        coordinator.get("source_revision")
+        != expected_final_artifacts.source_revision
+        or coordinator.get("cachet_source_tree_sha256")
+        != expected_qualification_artifact_pins.cachet_source_tree_sha256
+        or coordinator.get("package_wheel_sha256")
+        != expected_qualification_artifact_pins.package_wheel_sha256
+        or coordinator.get("patched_vllm_wheel_sha256")
+        != expected_qualification_artifact_pins.patched_vllm_wheel_sha256
+        or coordinator.get("runtime_lock_sha256")
+        != expected_qualification_artifact_pins.runtime_lock_sha256
+    ):
+        raise ValueError(f"{authorization.stage} handoff package/source pin drift")
+
+
+def _source_closure_authorization_binding(
+    authorization: PublicationLatencySourceClosureAuthorization,
+) -> dict[str, Any]:
+    if not isinstance(authorization, PublicationLatencySourceClosureAuthorization):
+        raise TypeError("source-closure authorization has the wrong type")
+    return {
+        "artifacts_sha256": authorization.artifacts_sha256,
+        "causal_closure_sha256": authorization.causal_closure_sha256,
+        "control_plane_status_sha256": authorization.control_plane_status_sha256,
+        "coordinator_run_id": authorization.coordinator_run_id,
+        "ledger_id": authorization.ledger_id,
+        "ledger_path_sha256": authorization.ledger_path_sha256,
+        "ledger_prefix": authorization.ledger_prefix.to_record(),
+        "predecessor_prefix": authorization.predecessor_prefix.to_record(),
+        "request_closed_record_sha256": (
+            authorization.request_closed_record_sha256
+        ),
+        "request_file_sha256": authorization.request_file_sha256,
+        "result_closed_record_sha256": authorization.result_closed_record_sha256,
+        "result_file_sha256": authorization.result_file_sha256,
+        "result_uri": authorization.result_uri,
+    }
+
+
+def _require_remote_handoff_phase_order(
+    *,
+    qualification_prefix: DatabricksLedgerPrefix,
+    q8_predecessor_prefix: DatabricksLedgerPrefix,
+    q8_terminal_prefix: DatabricksLedgerPrefix,
+    bf16_predecessor_prefix: DatabricksLedgerPrefix,
+) -> None:
+    prefixes = (
+        qualification_prefix,
+        q8_predecessor_prefix,
+        q8_terminal_prefix,
+        bf16_predecessor_prefix,
+    )
+    if any(not isinstance(item, DatabricksLedgerPrefix) for item in prefixes):
+        raise TypeError("remote handoff phase order requires ledger-prefix authorities")
+    if q8_predecessor_prefix != qualification_prefix:
+        raise ValueError("Q8 authority does not extend qualification in phase order")
+    if bf16_predecessor_prefix != q8_terminal_prefix:
+        raise ValueError("BF16 authority does not extend Q8 in phase order")
 
 
 def _core_job_descriptor(cell: Mapping[str, Any]) -> dict[str, Any]:
@@ -1613,8 +4441,9 @@ def render_publication_latency_job_record(
     job_id: str,
     *,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
 ) -> dict[str, Any]:
     """Render a worker only after all replay-backed launch authorities."""
 
@@ -1623,8 +4452,14 @@ def render_publication_latency_job_record(
         qualification_launch_authorization,
         handoff_serving_authorization,
         bf16_handoff_serving_authorization,
+        source_closure_authorization,
     )
-    validate_publication_latency_execution_sources(execution_plan_record)
+    validate_publication_latency_execution_sources(
+        execution_plan_record,
+        handoff_serving_authorization=handoff_serving_authorization,
+        bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
+        source_closure_authorization=source_closure_authorization,
+    )
     return _render_publication_latency_job_record(execution_plan_record, job_id)
 
 
@@ -2029,8 +4864,9 @@ def build_databricks_publication_latency_run_submit_payload(
     job_id: str,
     *,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
 ) -> dict[str, Any]:
     """Render one task only after all replay-backed launch authorities."""
 
@@ -2039,8 +4875,14 @@ def build_databricks_publication_latency_run_submit_payload(
         qualification_launch_authorization,
         handoff_serving_authorization,
         bf16_handoff_serving_authorization,
+        source_closure_authorization,
     )
-    validate_publication_latency_execution_sources(execution_plan_record)
+    validate_publication_latency_execution_sources(
+        execution_plan_record,
+        handoff_serving_authorization=handoff_serving_authorization,
+        bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
+        source_closure_authorization=source_closure_authorization,
+    )
     return _build_databricks_publication_latency_run_submit_payload(
         execution_plan_record, job_id
     )
@@ -2136,8 +4978,9 @@ def publication_latency_submit_payloads(
     execution_plan_record: Mapping[str, Any],
     *,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
 ) -> tuple[dict[str, Any], ...]:
     """Return all 115 payloads in canonical campaign order."""
 
@@ -2146,8 +4989,14 @@ def publication_latency_submit_payloads(
         qualification_launch_authorization,
         handoff_serving_authorization,
         bf16_handoff_serving_authorization,
+        source_closure_authorization,
     )
-    validate_publication_latency_execution_sources(execution_plan_record)
+    validate_publication_latency_execution_sources(
+        execution_plan_record,
+        handoff_serving_authorization=handoff_serving_authorization,
+        bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
+        source_closure_authorization=source_closure_authorization,
+    )
     payloads = tuple(
         _build_databricks_publication_latency_run_submit_payload(
             execution_plan_record,
@@ -2264,8 +5113,9 @@ def submit_publication_latency_launch_wave(
     *,
     execution_plan_record: Mapping[str, Any],
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
     ledger_path: str | Path,
     wave_index: int,
     phase_lease_root: str | Path,
@@ -2279,8 +5129,14 @@ def submit_publication_latency_launch_wave(
         qualification_launch_authorization,
         handoff_serving_authorization,
         bf16_handoff_serving_authorization,
+        source_closure_authorization,
     )
-    validate_publication_latency_execution_sources(execution_plan_record)
+    validate_publication_latency_execution_sources(
+        execution_plan_record,
+        handoff_serving_authorization=handoff_serving_authorization,
+        bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
+        source_closure_authorization=source_closure_authorization,
+    )
     if type(wave_index) is not int or wave_index < 0:
         raise ValueError("wave_index must be a non-negative integer")
     waves = _mapping_sequence(execution_plan_record, "launch_waves")
@@ -2524,8 +5380,9 @@ def resume_publication_latency_launch_wave(
     *,
     execution_plan_record: Mapping[str, Any],
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
     ledger_path: str | Path,
     wave_index: int,
     phase_lease_root: str | Path,
@@ -2539,8 +5396,14 @@ def resume_publication_latency_launch_wave(
         qualification_launch_authorization,
         handoff_serving_authorization,
         bf16_handoff_serving_authorization,
+        source_closure_authorization,
     )
-    validate_publication_latency_execution_sources(execution_plan_record)
+    validate_publication_latency_execution_sources(
+        execution_plan_record,
+        handoff_serving_authorization=handoff_serving_authorization,
+        bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
+        source_closure_authorization=source_closure_authorization,
+    )
     waves = _mapping_sequence(execution_plan_record, "launch_waves")
     if type(wave_index) is not int or not 0 <= wave_index < len(waves):
         raise ValueError("wave_index is outside the execution plan")
@@ -2781,16 +5644,216 @@ def _latency_reservation_validator(
     return validate
 
 
+@dataclass(frozen=True, slots=True)
+class _PublicationLatencyRemoteResult:
+    record: Mapping[str, Any]
+    result_tree: Mapping[str, Any]
+    result_file_sha256: str
+    result_file_byte_count: int
+    result_tree_sha256: str
+    result_tree_file_count: int
+    result_tree_total_bytes: int
+
+
+def _collect_remote_publication_latency_result(
+    config: DatabricksWorkspaceConfig,
+    *,
+    job_record: Mapping[str, Any],
+    controller_cas_root: str | Path,
+) -> _PublicationLatencyRemoteResult:
+    """Fetch and authenticate one exact result tree without a DBFS mount."""
+
+    output = _mapping(job_record, "output")
+    directory_uri = _databricks_volume_uri(
+        _required_string(output, "directory_uri"),
+        "latency result directory URI",
+    )
+    result_uri = _databricks_volume_uri(
+        _required_string(output, "result_uri"),
+        "latency result URI",
+    )
+    if result_uri != _join_durable_uri(
+        directory_uri,
+        PUBLICATION_LATENCY_RESULT_FILENAME,
+    ):
+        raise ValueError("latency result URI is not the exact result directory child")
+
+    result_bytes = download_databricks_volume_file_bytes(
+        config,
+        result_uri,
+        max_bytes=PUBLICATION_LATENCY_REMOTE_RESULT_MAX_BYTES,
+    )
+    result = _canonical_remote_json_record(
+        result_bytes,
+        field_name=f"latency result {job_record.get('job_id')}",
+    )
+    result_file_sha256 = sha256(result_bytes).hexdigest()
+    _store_publication_latency_controller_cas_bytes(
+        controller_cas_root,
+        result_bytes,
+    )
+    validate_publication_latency_job_result_record(
+        result,
+        expected_job_record=job_record,
+        verify_files=False,
+    )
+
+    result_files = _mapping_sequence(result, "files")
+    if len(result_files) + 1 > PUBLICATION_LATENCY_REMOTE_TREE_MAX_FILES:
+        raise ValueError("latency result tree exceeds the closed file-count cap")
+    expected_by_path: dict[str, tuple[str, str, str | None]] = {
+        result_uri.removeprefix("dbfs:"): (
+            "result_seal",
+            result_uri,
+            result_file_sha256,
+        )
+    }
+    for item in result_files:
+        role = _safe_id(item.get("role"), "latency result file role")
+        uri = _databricks_volume_uri(
+            _required_string(item, "uri"),
+            f"latency result file {role} URI",
+        )
+        path = PurePosixPath(uri.removeprefix("dbfs:"))
+        if path.parent.as_posix() != directory_uri.removeprefix("dbfs:"):
+            raise ValueError("latency result file escaped its exact result directory")
+        raw_path = path.as_posix()
+        if raw_path in expected_by_path:
+            raise ValueError("latency result tree contains a duplicate file path")
+        expected_by_path[raw_path] = (
+            role,
+            uri,
+            _required_sha256(item, "sha256"),
+        )
+
+    listing = list_databricks_volume_directory(
+        config,
+        directory_uri,
+        max_entries=PUBLICATION_LATENCY_REMOTE_DIRECTORY_MAX_FILES,
+    )
+    listed_by_path = {
+        _required_string(item, "path"): item
+        for item in listing
+    }
+    missing = sorted(set(expected_by_path).difference(listed_by_path))
+    extra = sorted(set(listed_by_path).difference(expected_by_path))
+    unexpected_extra = [
+        path
+        for path in extra
+        if PurePosixPath(path).name
+        not in PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES
+    ]
+    if missing or unexpected_extra:
+        raise ValueError(
+            "latency remote result directory closure drift: "
+            f"missing={missing}, extra={unexpected_extra}"
+        )
+    if any(item.get("is_directory") is not False for item in listing):
+        raise ValueError("latency remote result tree must contain files only")
+    directory_total_bytes = sum(
+        _nonnegative_int(item.get("file_size"), "remote result file_size")
+        for item in listing
+    )
+    if directory_total_bytes > PUBLICATION_LATENCY_REMOTE_DIRECTORY_MAX_BYTES:
+        raise ValueError("latency remote result directory exceeds the byte cap")
+    listed_total_bytes = sum(
+        _required_int(listed_by_path[path], "file_size")
+        for path in expected_by_path
+    )
+    if listed_total_bytes > PUBLICATION_LATENCY_REMOTE_TREE_MAX_BYTES:
+        raise ValueError("latency remote result tree exceeds the controller byte cap")
+    result_listing = listed_by_path[result_uri.removeprefix("dbfs:")]
+    if result_listing.get("file_size") != len(result_bytes):
+        raise ValueError("latency result seal size differs from the directory listing")
+
+    tree_files: list[dict[str, Any]] = [
+        {
+            "byte_count": len(result_bytes),
+            "role": "result_seal",
+            "sha256": result_file_sha256,
+            "uri": result_uri,
+        }
+    ]
+    downloaded_total_bytes = len(result_bytes)
+    for item in result_files:
+        role = _required_string(item, "role")
+        uri = _databricks_volume_uri(
+            _required_string(item, "uri"),
+            f"latency result file {role} URI",
+        )
+        expected_sha256 = _required_sha256(item, "sha256")
+        raw = download_databricks_volume_file_bytes(
+            config,
+            uri,
+            max_bytes=PUBLICATION_LATENCY_REMOTE_ARTIFACT_MAX_BYTES,
+        )
+        observed_sha256 = sha256(raw).hexdigest()
+        if observed_sha256 != expected_sha256:
+            raise ValueError(f"latency result file {role} SHA-256 mismatch")
+        listing_entry = listed_by_path[uri.removeprefix("dbfs:")]
+        if listing_entry.get("file_size") != len(raw):
+            raise ValueError(
+                f"latency result file {role} size differs from the directory listing"
+            )
+        downloaded_total_bytes += len(raw)
+        if downloaded_total_bytes > PUBLICATION_LATENCY_REMOTE_TREE_MAX_BYTES:
+            raise ValueError(
+                "latency downloaded result tree exceeds the controller byte cap"
+            )
+        _store_publication_latency_controller_cas_bytes(controller_cas_root, raw)
+        tree_files.append(
+            {
+                "byte_count": len(raw),
+                "role": role,
+                "sha256": observed_sha256,
+                "uri": uri,
+            }
+        )
+    if downloaded_total_bytes != listed_total_bytes:
+        raise ValueError("latency result tree byte closure differs from its listing")
+    final_listing = list_databricks_volume_directory(
+        config,
+        directory_uri,
+        max_entries=PUBLICATION_LATENCY_REMOTE_DIRECTORY_MAX_FILES,
+    )
+    if final_listing != listing:
+        raise ValueError("latency remote result directory changed during collection")
+    tree = {
+        "auxiliary_files": [
+            {
+                "byte_count": _required_int(listed_by_path[path], "file_size"),
+                "uri": "dbfs:" + path,
+            }
+            for path in extra
+        ],
+        "directory_uri": directory_uri,
+        "file_count": len(tree_files),
+        "files": tree_files,
+        "total_bytes": downloaded_total_bytes,
+    }
+    return _PublicationLatencyRemoteResult(
+        record=MappingProxyType(result),
+        result_tree=MappingProxyType(tree),
+        result_file_sha256=result_file_sha256,
+        result_file_byte_count=len(result_bytes),
+        result_tree_sha256=_canonical_sha256(tree),
+        result_tree_file_count=len(tree_files),
+        result_tree_total_bytes=downloaded_total_bytes,
+    )
+
+
 def collect_publication_latency_launch_wave(
     config: DatabricksWorkspaceConfig,
     *,
     execution_plan_record: Mapping[str, Any],
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
     ledger_path: str | Path,
     wave_index: int,
     submission_authorization: PublicationLatencyWaveSubmissionAuthorization,
+    controller_cas_root: str | Path,
 ) -> tuple[dict[str, Any], PublicationLatencyWaveAuthorization]:
     """Reconcile one completed wave so the next deterministic wave may launch."""
 
@@ -2799,8 +5862,14 @@ def collect_publication_latency_launch_wave(
         qualification_launch_authorization,
         handoff_serving_authorization,
         bf16_handoff_serving_authorization,
+        source_closure_authorization,
     )
-    validate_publication_latency_execution_sources(execution_plan_record)
+    validate_publication_latency_execution_sources(
+        execution_plan_record,
+        handoff_serving_authorization=handoff_serving_authorization,
+        bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
+        source_closure_authorization=source_closure_authorization,
+    )
     waves = _mapping_sequence(execution_plan_record, "launch_waves")
     if type(wave_index) is not int or not 0 <= wave_index < len(waves):
         raise ValueError("wave_index is outside the execution plan")
@@ -2888,15 +5957,12 @@ def collect_publication_latency_launch_wave(
             or identity["terminal_state"] != "succeeded"
         ):
             raise RuntimeError(f"publication latency wave job {job_id!r} failed")
-        result_path = _cluster_path(
-            _required_string(_mapping(job, "output"), "result_uri")
+        remote_result = _collect_remote_publication_latency_result(
+            config,
+            job_record=job,
+            controller_cas_root=controller_cas_root,
         )
-        result = _read_json_file(result_path, f"latency result {job_id}")
-        validate_publication_latency_job_result_record(
-            result,
-            expected_job_record=job,
-            verify_files=True,
-        )
+        result = remote_result.record
         result_identity = _mapping(result, "task_identity")
         if (
             result_identity.get("cloud_run_id") != receipt.run_id
@@ -2904,6 +5970,10 @@ def collect_publication_latency_launch_wave(
         ):
             raise ValueError("wave result/control-plane identity drift")
         status_sha256 = _control_plane_status_sha256(run)
+        _store_publication_latency_controller_cas_bytes(
+            controller_cas_root,
+            _control_plane_status_bytes(run),
+        )
         if actual.control_plane_status_sha256 != status_sha256:
             raise RuntimeError("wave ledger/control-plane status digest drift")
         for observed, value in (
@@ -2926,7 +5996,12 @@ def collect_publication_latency_launch_wave(
                 "result_closed_record_sha256": _required_sha256(
                     result, "closed_record_sha256"
                 ),
-                "result_file_sha256": _file_sha256(result_path),
+                "result_file_byte_count": remote_result.result_file_byte_count,
+                "result_file_sha256": remote_result.result_file_sha256,
+                "result_tree": dict(remote_result.result_tree),
+                "result_tree_file_count": remote_result.result_tree_file_count,
+                "result_tree_sha256": remote_result.result_tree_sha256,
+                "result_tree_total_bytes": remote_result.result_tree_total_bytes,
                 "run_id": receipt.run_id,
                 "task_run_id": identity["task_run_id"],
             }
@@ -2943,8 +6018,6 @@ def collect_publication_latency_launch_wave(
         "wave_index": wave_index,
     }
     final_ledger = read_databricks_cluster_hour_ledger_json(ledger_file)
-    if databricks_ledger_path_sha256(ledger_file) != ledger_path_sha256:
-        raise RuntimeError("latency ledger path changed during collection")
     if databricks_ledger_path_sha256(ledger_file) != ledger_path_sha256:
         raise RuntimeError("wave ledger path changed during collection")
     require_databricks_ledger_prefix(final_ledger, batch_prefix)
@@ -3053,10 +6126,12 @@ def collect_publication_latency_campaign(
     *,
     execution_plan_record: Mapping[str, Any],
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
     final_wave_authorization: PublicationLatencyWaveAuthorization,
     ledger_path: str | Path,
+    controller_cas_root: str | Path,
 ) -> tuple[dict[str, Any], PublicationLatencyCollectionAuthorization]:
     """Join runs/get, receipt ledger, and all 115 sealed result artifacts."""
 
@@ -3065,8 +6140,14 @@ def collect_publication_latency_campaign(
         qualification_launch_authorization,
         handoff_serving_authorization,
         bf16_handoff_serving_authorization,
+        source_closure_authorization,
     )
-    validate_publication_latency_execution_sources(execution_plan_record)
+    validate_publication_latency_execution_sources(
+        execution_plan_record,
+        handoff_serving_authorization=handoff_serving_authorization,
+        bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
+        source_closure_authorization=source_closure_authorization,
+    )
     ledger_file = Path(ledger_path)
     initial_ledger = read_databricks_cluster_hour_ledger_json(ledger_file)
     campaign_ledger_id = _required_string(
@@ -3176,15 +6257,12 @@ def collect_publication_latency_campaign(
             or actual.control_plane_status_sha256 != status_sha256
         ):
             raise RuntimeError("latency ledger terminal causal binding drift")
-        result_path = _cluster_path(
-            _required_string(_mapping(job, "output"), "result_uri")
+        remote_result = _collect_remote_publication_latency_result(
+            config,
+            job_record=job,
+            controller_cas_root=controller_cas_root,
         )
-        result = _read_json_file(result_path, f"latency result {job_id}")
-        validate_publication_latency_job_result_record(
-            result,
-            expected_job_record=job,
-            verify_files=True,
-        )
+        result = remote_result.record
         result_identity = _mapping(result, "task_identity")
         if (
             result_identity.get("cloud_run_id") != receipt.run_id
@@ -3201,6 +6279,10 @@ def collect_publication_latency_campaign(
                 raise ValueError(f"latency {label} values must be unique")
             observed.add(value)
         actual_record = _terminal_actual_record(actual)
+        _store_publication_latency_controller_cas_bytes(
+            controller_cas_root,
+            _control_plane_status_bytes(run),
+        )
         terminal_receipt: dict[str, Any] = {
             "attempt_id": attempt_id,
             "cluster_id": identity["cluster_id"],
@@ -3211,13 +6293,18 @@ def collect_publication_latency_campaign(
             "result_closed_record_sha256": _required_sha256(
                 result, "closed_record_sha256"
             ),
-            "result_file_sha256": _file_sha256(result_path),
+            "result_file_byte_count": remote_result.result_file_byte_count,
+            "result_file_sha256": remote_result.result_file_sha256,
+            "result_tree": dict(remote_result.result_tree),
+            "result_tree_file_count": remote_result.result_tree_file_count,
+            "result_tree_sha256": remote_result.result_tree_sha256,
+            "result_tree_total_bytes": remote_result.result_tree_total_bytes,
             "run_id": receipt.run_id,
             "submit_payload_sha256": receipt.submit_payload_sha256,
             "task_run_id": identity["task_run_id"],
         }
         terminal_receipts.append(terminal_receipt)
-        results.append(result)
+        results.append(dict(result))
 
     final_ledger = read_databricks_cluster_hour_ledger_json(ledger_file)
     if final_ledger.ledger_id != campaign_ledger_id:
@@ -3373,6 +6460,7 @@ def validate_publication_latency_collection_record(
             "ledger_terminal_actual_sha256",
             "result_closed_record_sha256",
             "result_file_sha256",
+            "result_tree_sha256",
             "submit_payload_sha256",
         ):
             _required_sha256(receipt, field_name)
@@ -3380,6 +6468,148 @@ def validate_publication_latency_collection_record(
             _mapping(receipt, "ledger_terminal_actual")
         ):
             raise ValueError("publication latency terminal actual digest drift")
+        result_tree = _mapping(receipt, "result_tree")
+        _require_exact_keys(
+            result_tree,
+            {
+                "auxiliary_files",
+                "directory_uri",
+                "file_count",
+                "files",
+                "total_bytes",
+            },
+            "publication latency remote result tree",
+        )
+        result_file_byte_count = _positive_int(
+            receipt.get("result_file_byte_count"),
+            "latency result file byte count",
+        )
+        result_tree_file_count = _positive_int(
+            receipt.get("result_tree_file_count"),
+            "latency result tree file count",
+        )
+        result_tree_total_bytes = _positive_int(
+            receipt.get("result_tree_total_bytes"),
+            "latency result tree total bytes",
+        )
+        if (
+            receipt.get("result_tree_sha256") != _canonical_sha256(result_tree)
+            or result_tree_file_count != len(_mapping_sequence(result_tree, "files"))
+            or result_tree_file_count
+            != len(_mapping_sequence(result, "files")) + 1
+            or result_tree_total_bytes
+            != _positive_int(
+                result_tree.get("total_bytes"),
+                "latency result tree total bytes",
+            )
+            or result_tree.get("file_count") != result_tree_file_count
+            or result_tree.get("total_bytes") != result_tree_total_bytes
+            or _required_string(result_tree, "directory_uri")
+            != _databricks_volume_uri(
+                _required_string(_mapping(job, "output"), "directory_uri"),
+                "latency collection result directory URI",
+            )
+        ):
+            raise ValueError("publication latency result tree receipt binding drift")
+        tree_files = _mapping_sequence(result_tree, "files")
+        auxiliary_files = _mapping_sequence(result_tree, "auxiliary_files")
+        result_directory_path = _normalized_volume_path(
+            _required_string(result_tree, "directory_uri"),
+            "latency result tree directory URI",
+        )
+        auxiliary_uris: set[str] = set()
+        auxiliary_total_bytes = 0
+        for auxiliary in auxiliary_files:
+            _require_exact_keys(
+                auxiliary,
+                {"byte_count", "uri"},
+                "publication latency auxiliary result file",
+            )
+            auxiliary_uri = _databricks_volume_uri(
+                _required_string(auxiliary, "uri"),
+                "publication latency auxiliary result URI",
+            )
+            auxiliary_path = _normalized_volume_path(
+                auxiliary_uri,
+                "publication latency auxiliary result URI",
+            )
+            auxiliary_total_bytes += _nonnegative_int(
+                auxiliary.get("byte_count"),
+                "publication latency auxiliary result byte count",
+            )
+            if (
+                auxiliary_path.parent != result_directory_path
+                or auxiliary_path.name
+                not in PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES
+                or auxiliary_uri in auxiliary_uris
+            ):
+                raise ValueError("publication latency auxiliary result tree drift")
+            auxiliary_uris.add(auxiliary_uri)
+        referenced_tree_uris = {
+            _databricks_volume_uri(
+                _required_string(item, "uri"),
+                "publication latency referenced result tree URI",
+            )
+            for item in tree_files
+        }
+        if auxiliary_uris.intersection(referenced_tree_uris):
+            raise ValueError("publication latency auxiliary/referenced tree overlap")
+        if (
+            auxiliary_total_bytes + result_tree_total_bytes
+            > PUBLICATION_LATENCY_REMOTE_DIRECTORY_MAX_BYTES
+        ):
+            raise ValueError("publication latency result directory exceeds byte cap")
+        result_seal = tree_files[0]
+        for tree_file in tree_files:
+            _require_exact_keys(
+                tree_file,
+                {"byte_count", "role", "sha256", "uri"},
+                "publication latency referenced result tree file",
+            )
+            _safe_id(tree_file.get("role"), "latency result tree file role")
+            _required_sha256(tree_file, "sha256")
+            _databricks_volume_uri(
+                tree_file.get("uri"), "latency result tree file URI"
+            )
+        if sum(
+            _positive_int(item.get("byte_count"), "latency tree file byte count")
+            for item in tree_files
+        ) != result_tree_total_bytes:
+            raise ValueError("publication latency result tree byte sum drift")
+        if (
+            result_seal.get("role") != "result_seal"
+            or result_seal.get("sha256") != receipt.get("result_file_sha256")
+            or result_seal.get("byte_count") != result_file_byte_count
+            or result_seal.get("uri")
+            != _databricks_volume_uri(
+                _required_string(_mapping(job, "output"), "result_uri"),
+                "latency collection result URI",
+            )
+            or result_file_byte_count > PUBLICATION_LATENCY_REMOTE_RESULT_MAX_BYTES
+            or result_tree_file_count > PUBLICATION_LATENCY_REMOTE_TREE_MAX_FILES
+            or result_tree_total_bytes > PUBLICATION_LATENCY_REMOTE_TREE_MAX_BYTES
+        ):
+            raise ValueError("publication latency result seal tree binding drift")
+        for result_file, tree_file in zip(
+            _mapping_sequence(result, "files"),
+            tree_files[1:],
+            strict=True,
+        ):
+            if (
+                result_file.get("role") != tree_file.get("role")
+                or result_file.get("sha256") != tree_file.get("sha256")
+                or _databricks_volume_uri(
+                    _required_string(result_file, "uri"),
+                    "latency collection referenced result URI",
+                )
+                != tree_file.get("uri")
+                or _positive_int(
+                    tree_file.get("byte_count"),
+                    "latency result tree file byte count",
+                )
+                > PUBLICATION_LATENCY_REMOTE_ARTIFACT_MAX_BYTES
+            ):
+                raise ValueError("publication latency referenced result tree drift")
     if (
         len({item.get("run_id") for item in receipts}) != len(receipts)
         or len({item.get("task_run_id") for item in receipts}) != len(receipts)
@@ -3395,8 +6625,9 @@ def aggregate_publication_latency_campaign(
     *,
     execution_plan_record: Mapping[str, Any],
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
-    handoff_serving_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_serving_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
 ) -> dict[str, Any]:
     """Produce estimation-only paired hierarchical bootstrap summaries."""
 
@@ -3409,8 +6640,14 @@ def aggregate_publication_latency_campaign(
         qualification_launch_authorization,
         handoff_serving_authorization,
         bf16_handoff_serving_authorization,
+        source_closure_authorization,
     )
-    validate_publication_latency_execution_sources(execution_plan_record)
+    validate_publication_latency_execution_sources(
+        execution_plan_record,
+        handoff_serving_authorization=handoff_serving_authorization,
+        bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
+        source_closure_authorization=source_closure_authorization,
+    )
     collection = json.loads(_canonical_json(authorization.collection))
     if not isinstance(collection, dict):  # pragma: no cover - normalized capability.
         raise TypeError("authorized latency collection is invalid")
@@ -4212,204 +7449,173 @@ def _validate_submit_payload(
 
 def validate_publication_latency_execution_sources(
     execution_plan_record: Mapping[str, Any],
+    *,
+    handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
 ) -> None:
-    """Re-read every controller source file and reject stale plan bindings."""
+    """Replay the closed plan and compact authorities without mounted paths."""
 
     validate_publication_latency_execution_plan_record(execution_plan_record)
     sources = _mapping(execution_plan_record, "sources")
-    campaign_binding = _mapping(sources, "campaign")
-    campaign = _read_bound_json_uri(campaign_binding, "campaign plan")
-    validate_publication_campaign_plan_record(campaign)
-    if (
-        campaign.get("closed_record_sha256")
-        != campaign_binding.get("closed_record_sha256")
-        or campaign.get("campaign_ledger_id") != sources.get("campaign_ledger_id")
-        or campaign.get("campaign_ledger_prefix")
-        != sources.get("campaign_ledger_prefix")
-    ):
-        raise ValueError("campaign plan record binding drift")
-
     qualification = _mapping(sources, "qualification")
-    qualification_plan = _read_bound_json_uri(
-        _mapping(qualification, "plan"), "qualification plan"
-    )
-    qualification_evidence = _read_bound_json_uri(
-        _mapping(qualification, "evidence"), "qualification evidence"
-    )
+    qualification_evidence = _mapping(qualification, "evidence")
     pins = GPUQualificationArtifactPins(
         **dict(_mapping(qualification, "artifact_pins"))
     )
-    observed_selection = validate_gpu_qualification_evidence_record(
-        qualification_evidence,
-        plan_record=qualification_plan,
-        expected_campaign_id=_required_string(execution_plan_record, "campaign_id"),
-        expected_artifact_pins=pins,
-    )
-    if _selection_record(observed_selection) != dict(
-        _mapping(qualification, "selection")
-    ):
-        raise ValueError("qualification selection binding drift")
-    if (
-        qualification_plan.get("campaign_record_sha256")
-        != campaign.get("closed_record_sha256")
-        or qualification_plan.get("campaign_ledger_id")
-        != sources.get("campaign_ledger_id")
-        or qualification_plan.get("campaign_ledger_prefix")
-        != sources.get("campaign_ledger_prefix")
-    ):
-        raise ValueError("qualification/campaign ledger binding drift")
-
-    main_schedule_bindings = _mapping_sequence(sources, "schedules")
-    storage_schedule_bindings = _mapping_sequence(sources, "storage_schedules")
-    schedule_bindings = [*main_schedule_bindings, *storage_schedule_bindings]
-    final_artifacts = _final_artifacts_from_record(_mapping(sources, "final_artifacts"))
-    storage_source_paths = {
-        dataset: _cluster_path(final_artifacts.file(f"input_16384_{dataset}").uri)
-        for dataset in SUPPORTED_V1_DATASETS
-    }
-    storage_source_examples = load_publication_storage_selection_examples(
-        storage_source_paths
-    )
-    observed_storage_schedules: dict[int, Mapping[str, Any]] = {}
-    for binding in schedule_bindings:
-        schedule = _read_bound_json_uri(binding, "publication schedule")
-        is_storage = binding in storage_schedule_bindings
-        if is_storage:
-            validate_publication_storage_block_schedule(
-                schedule,
-                source_examples=storage_source_examples,
-                expected_input_bundle_sha256=pins.input_bundle_sha256,
-            )
-        else:
-            validate_publication_latency_block_schedule(
-                schedule,
-                examples=_schedule_examples(schedule),
-                expected_input_bundle_sha256=pins.input_bundle_sha256,
-            )
-        for field_name in (
-            "closed_record_sha256",
-            "deployment_block",
-            "requests_sha256",
-            "seed_sha256",
-        ):
-            if schedule.get(field_name) != binding.get(field_name):
-                raise ValueError(f"publication schedule {field_name} binding drift")
-        if is_storage:
-            if _mapping(_mapping(schedule, "protocol"), "selection").get(
-                "selection_sha256"
-            ) != binding.get("selection_sha256"):
-                raise ValueError("publication storage selection binding drift")
-            observed_storage_schedules[_required_int(schedule, "deployment_block")] = (
-                schedule
-            )
-
-    storage_inputs_binding = _mapping(sources, "storage_inputs")
-    storage_inputs = _read_bound_json_uri(
-        storage_inputs_binding, "publication storage inputs"
-    )
-    if storage_inputs.get("closed_record_sha256") != storage_inputs_binding.get(
-        "closed_record_sha256"
-    ) or _mapping(storage_inputs, "selection_protocol").get(
-        "selection_sha256"
-    ) != storage_inputs_binding.get("selection_sha256"):
-        raise ValueError("publication storage input record binding drift")
-    validate_publication_storage_inputs_record(
-        storage_inputs,
-        source_paths=storage_source_paths,
-        schedule_records=observed_storage_schedules,
-        expected_input_bundle_sha256=pins.input_bundle_sha256,
-    )
-
-    for artifact in final_artifacts.files:
-        path = _cluster_path(artifact.uri)
-        _verify_regular_file_sha256(path, artifact.sha256, f"artifact {artifact.role}")
-
     handoff = _mapping(sources, "handoff_generation")
-    authenticated = read_publication_latency_handoff_generation_result(
-        _cluster_path(_required_string(handoff, "output_root_uri"))
-    )
     execution = _mapping(handoff, "execution")
+    authenticated = require_q8_handoff_remote_closure_authorization(
+        handoff_serving_authorization,
+        expected_output_root_uri=_required_string(handoff, "output_root_uri"),
+        expected_execution_file_sha256=_required_sha256(execution, "sha256"),
+        expected_input_bundle_sha256=pins.input_bundle_sha256,
+        expected_qualification_closed_record_sha256=_required_sha256(
+            qualification_evidence,
+            "closed_record_sha256",
+        ),
+    )
     authenticated_handoff_reconciliation = _mapping(
-        authenticated.record, "ledger_reconciliation"
+        authenticated.execution_record, "ledger_reconciliation"
     )
     handoff_authorization_binding = _mapping(handoff, "authorization")
-    q8_causal_closure = _canonical_sha256(
-        {
-            "direct_control_plane_status_sha256": [
-                _required_sha256(item, "control_plane_status_sha256")
-                for item in _mapping_sequence(
-                    authenticated_handoff_reconciliation,
-                    "attempts",
-                )
-            ],
-            "ledger_reconciliation": dict(authenticated_handoff_reconciliation),
-        }
-    )
     if (
-        authenticated.record.get("closed_record_sha256")
+        authenticated.execution_record.get("closed_record_sha256")
         != execution.get("closed_record_sha256")
-        or _file_sha256(authenticated.execution_record_path) != execution.get("sha256")
-        or authenticated.execution_record_path.absolute()
-        != _cluster_path(_required_string(execution, "uri")).absolute()
-        or authenticated.record.get("execution_mode")
+        or authenticated.execution_file_sha256 != execution.get("sha256")
+        or authenticated.execution_uri != execution.get("uri")
+        or authenticated.execution_record.get("execution_mode")
         != PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED
         or handoff_authorization_binding.get("causal_closure_sha256")
-        != q8_causal_closure
+        != authenticated.causal_closure_sha256
+        or handoff_authorization_binding.get("remote_closure")
+        != _remote_handoff_authorization_binding(authenticated)
         or handoff_authorization_binding.get("ledger_id")
         != authenticated_handoff_reconciliation.get("ledger_id")
     ):
         raise ValueError("distributed handoff source binding drift")
-    if _mapping(authenticated.record, "generator_hardware").get(
+    if _mapping(authenticated.execution_record, "generator_hardware").get(
         "qualification_closed_record_sha256"
     ) != qualification_evidence.get("closed_record_sha256"):
         raise ValueError("distributed handoff qualification binding drift")
 
     bf16 = _mapping(sources, "bf16_handoff")
-    authenticated_bf16 = read_publication_bf16_handoff_generation_result(
-        _cluster_path(_required_string(bf16, "output_root_uri"))
-    )
     bf16_execution_binding = _mapping(bf16, "execution")
+    authenticated_bf16 = require_bf16_handoff_remote_closure_authorization(
+        bf16_handoff_serving_authorization,
+        expected_output_root_uri=_required_string(bf16, "output_root_uri"),
+        expected_execution_file_sha256=_required_sha256(
+            bf16_execution_binding,
+            "sha256",
+        ),
+        expected_input_bundle_sha256=pins.input_bundle_sha256,
+        expected_qualification_closed_record_sha256=_required_sha256(
+            qualification_evidence,
+            "closed_record_sha256",
+        ),
+    )
     bf16_accounting_binding = _mapping(bf16, "accounting")
     bf16_authorization_binding = _mapping(bf16, "authorization")
     authenticated_bf16_reconciliation = _mapping(
-        authenticated_bf16.record, "ledger_reconciliation"
+        authenticated_bf16.execution_record, "ledger_reconciliation"
     )
     if (
-        authenticated_bf16.record.get("closed_record_sha256")
+        authenticated_bf16.execution_record.get("closed_record_sha256")
         != bf16_execution_binding.get("closed_record_sha256")
-        or authenticated_bf16.record.get("execution_mode")
+        or authenticated_bf16.execution_record.get("execution_mode")
         != bf16_execution_binding.get("execution_mode")
-        or _file_sha256(authenticated_bf16.execution_record_path)
+        or authenticated_bf16.execution_file_sha256
         != bf16_execution_binding.get("sha256")
-        or authenticated_bf16.execution_record_path.absolute()
-        != _cluster_path(_required_string(bf16_execution_binding, "uri")).absolute()
+        or authenticated_bf16.execution_uri != bf16_execution_binding.get("uri")
         or _canonical_sha256(authenticated_bf16_reconciliation)
         != bf16.get("ledger_reconciliation_sha256")
         or bf16_authorization_binding.get("causal_closure_sha256")
-        != bf16.get("ledger_reconciliation_sha256")
+        != authenticated_bf16.causal_closure_sha256
+        or bf16_authorization_binding.get("remote_closure")
+        != _remote_handoff_authorization_binding(authenticated_bf16)
         or bf16_authorization_binding.get("ledger_id")
         != authenticated_bf16_reconciliation.get("ledger_id")
-        or _canonical_sha256(_mapping(authenticated_bf16.record, "accounting"))
+        or _canonical_sha256(
+            _mapping(authenticated_bf16.execution_record, "accounting")
+        )
         != bf16_accounting_binding.get("closed_sha256")
     ):
         raise ValueError("distributed BF16 generation source binding drift")
     bf16_manifest_binding = _mapping(bf16, "manifest")
-    bf16_manifest = authenticated_bf16.manifest
-    validate_publication_latency_handoff_bundle(
-        bf16_manifest,
-        bundle_root=_cluster_path(_required_string(bf16, "source_root_uri")),
+    remote_bf16_manifests = _mapping_sequence(
+        authenticated_bf16.result_record,
+        "manifests",
     )
     if (
-        bf16_manifest.get("closed_record_sha256")
+        len(remote_bf16_manifests) != 1
+        or authenticated_bf16.manifest_records[0].get("closed_record_sha256")
         != bf16_manifest_binding.get("closed_record_sha256")
-        or _file_sha256(authenticated_bf16.manifest_path)
+        or remote_bf16_manifests[0].get("file_sha256")
         != bf16_manifest_binding.get("sha256")
-        or authenticated_bf16.manifest_path.absolute()
-        != _cluster_path(_required_string(bf16_manifest_binding, "uri")).absolute()
-        or authenticated_bf16.source_root.absolute()
-        != _cluster_path(_required_string(bf16, "source_root_uri")).absolute()
+        or remote_bf16_manifests[0].get("uri")
+        != bf16_manifest_binding.get("uri")
+        or remote_bf16_manifests[0].get("source_root_uri")
+        != bf16.get("source_root_uri")
     ):
         raise ValueError("BF16 handoff source binding drift")
+    expected_source_semantic = _source_closure_semantic_from_plan_sources(sources)
+    authenticated_source = require_publication_latency_source_closure_authorization(
+        source_closure_authorization,
+        expected_final_artifacts=_final_artifacts_from_record(
+            _mapping(sources, "final_artifacts")
+        ),
+        expected_qualification_artifact_pins=pins,
+        expected_semantic=expected_source_semantic,
+        expected_predecessor_prefix=bf16_handoff_serving_authorization.ledger_prefix,
+        expected_q8_handoff_authorization=handoff_serving_authorization,
+        expected_bf16_handoff_authorization=bf16_handoff_serving_authorization,
+    )
+    if _source_closure_authorization_binding(authenticated_source) != dict(
+        _mapping(sources, "source_closure")
+    ):
+        raise ValueError("publication latency source-closure plan binding drift")
+    qualification_authorization_binding = _mapping(
+        qualification,
+        "authorization",
+    )
+    for label, authorization, binding in (
+        (
+            "Q8",
+            handoff_serving_authorization,
+            handoff_authorization_binding,
+        ),
+        (
+            "BF16",
+            bf16_handoff_serving_authorization,
+            bf16_authorization_binding,
+        ),
+    ):
+        if (
+            authorization.ledger_id != binding.get("ledger_id")
+            or authorization.ledger_path_sha256
+            != binding.get("ledger_path_sha256")
+            or authorization.ledger_prefix.to_record()
+            != binding.get("ledger_prefix")
+            or authorization.predecessor_prefix.to_record()
+            != binding.get("predecessor_prefix")
+            or authorization.producer_batch_prefix.to_record()
+            != binding.get("producer_batch_prefix")
+        ):
+            raise ValueError(f"{label} remote source ledger binding drift")
+    _require_remote_handoff_phase_order(
+        qualification_prefix=databricks_ledger_prefix_from_record(
+            _mapping(qualification_authorization_binding, "ledger_prefix")
+        ),
+        q8_predecessor_prefix=handoff_serving_authorization.predecessor_prefix,
+        q8_terminal_prefix=handoff_serving_authorization.ledger_prefix,
+        bf16_predecessor_prefix=(
+            bf16_handoff_serving_authorization.predecessor_prefix
+        ),
+    )
+    if source_closure_authorization.predecessor_prefix != (
+        bf16_handoff_serving_authorization.ledger_prefix
+    ):
+        raise ValueError("source closure does not extend BF16 in phase order")
 
 
 def publication_latency_vllm_config(
@@ -5444,8 +8650,9 @@ def _validate_cache_telemetry_summary(
 def _require_latency_launch_authorization(
     execution_plan_record: Mapping[str, Any],
     qualification_authorization: GPUQualificationLaunchAuthorization,
-    handoff_authorization: PublicationLatencyHandoffServingAuthorization,
-    bf16_handoff_authorization: PublicationBF16HandoffServingAuthorization,
+    handoff_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_handoff_authorization: PublicationHandoffRemoteClosureAuthorization,
+    source_closure_authorization: PublicationLatencySourceClosureAuthorization,
 ) -> GPUQualificationSelection:
     validate_publication_latency_execution_plan_record(execution_plan_record)
     sources = _mapping(execution_plan_record, "sources")
@@ -5457,15 +8664,17 @@ def _require_latency_launch_authorization(
         qualification_authorization.ledger_id != campaign_ledger_id
         or handoff_authorization.ledger_id != campaign_ledger_id
         or bf16_handoff_authorization.ledger_id != campaign_ledger_id
+        or source_closure_authorization.ledger_id != campaign_ledger_id
     ):
         raise ValueError(
-            "GPU qualification, Q8 handoff, and BF16 handoff authority must "
+            "GPU qualification, Q8, BF16, and source-closure authority must "
             "share the execution plan campaign ledger"
         )
     if {
         qualification_authorization.ledger_path_sha256,
         handoff_authorization.ledger_path_sha256,
         bf16_handoff_authorization.ledger_path_sha256,
+        source_closure_authorization.ledger_path_sha256,
     } != {campaign_ledger_path_sha256}:
         raise ValueError("publication launch authority ledger path binding drift")
     qualification = _mapping(sources, "qualification")
@@ -5495,8 +8704,12 @@ def _require_latency_launch_authorization(
     artifact_pins = _mapping(qualification, "artifact_pins")
     qualification_evidence = _mapping(qualification, "evidence")
     handoff_binding = _mapping(sources, "handoff_generation")
-    authenticated_handoff = require_publication_latency_handoff_serving_authorization(
+    authenticated_handoff = require_q8_handoff_remote_closure_authorization(
         handoff_authorization,
+        expected_output_root_uri=_required_string(
+            handoff_binding,
+            "output_root_uri",
+        ),
         expected_execution_file_sha256=final_artifacts.file("handoff_execution").sha256,
         expected_input_bundle_sha256=_required_sha256(
             artifact_pins, "input_bundle_sha256"
@@ -5520,35 +8733,48 @@ def _require_latency_launch_authorization(
         != handoff_authorization_binding.get("predecessor_prefix")
         or handoff_authorization.producer_batch_prefix.to_record()
         != handoff_authorization_binding.get("producer_batch_prefix")
-        or authenticated_handoff.record.get("closed_record_sha256")
+        or _remote_handoff_authorization_binding(authenticated_handoff)
+        != handoff_authorization_binding.get("remote_closure")
+        or authenticated_handoff.execution_record.get("closed_record_sha256")
         != handoff_execution_binding.get("closed_record_sha256")
-        or _file_sha256(authenticated_handoff.execution_record_path)
+        or authenticated_handoff.execution_file_sha256
         != handoff_execution_binding.get("sha256")
-        or authenticated_handoff.execution_record_path.absolute()
-        != _cluster_path(_required_string(handoff_execution_binding, "uri")).absolute()
-        or authenticated_handoff.root.absolute()
-        != _cluster_path(
-            _required_string(handoff_binding, "output_root_uri")
-        ).absolute()
+        or authenticated_handoff.execution_uri
+        != _required_string(handoff_execution_binding, "uri")
+        or authenticated_handoff.output_root_uri
+        != _required_string(handoff_binding, "output_root_uri")
     ):
         raise ValueError("Q8 handoff serving authorization binding drift")
 
     bf16_binding = _mapping(sources, "bf16_handoff")
     bf16_manifest_binding = _mapping(bf16_binding, "manifest")
-    authenticated_bf16 = require_publication_bf16_handoff_serving_authorization(
+    authenticated_bf16 = require_bf16_handoff_remote_closure_authorization(
         bf16_handoff_authorization,
-        expected_manifest_file_sha256=_required_sha256(bf16_manifest_binding, "sha256"),
-        expected_manifest_closed_record_sha256=_required_sha256(
-            bf16_manifest_binding, "closed_record_sha256"
+        expected_output_root_uri=_required_string(
+            bf16_binding,
+            "output_root_uri",
+        ),
+        expected_execution_file_sha256=_required_sha256(
+            _mapping(bf16_binding, "execution"),
+            "sha256",
         ),
         expected_input_bundle_sha256=_required_sha256(
             artifact_pins, "input_bundle_sha256"
         ),
+        expected_qualification_closed_record_sha256=_required_sha256(
+            qualification_evidence,
+            "closed_record_sha256",
+        ),
     )
     bf16_authorization_binding = _mapping(bf16_binding, "authorization")
     bf16_execution_binding = _mapping(bf16_binding, "execution")
+    authenticated_bf16_manifests = _mapping_sequence(
+        authenticated_bf16.result_record,
+        "manifests",
+    )
     if (
-        bf16_handoff_authorization.causal_closure_sha256
+        len(authenticated_bf16_manifests) != 1
+        or bf16_handoff_authorization.causal_closure_sha256
         != bf16_authorization_binding.get("causal_closure_sha256")
         or bf16_handoff_authorization.ledger_id
         != bf16_authorization_binding.get("ledger_id")
@@ -5560,20 +8786,50 @@ def _require_latency_launch_authorization(
         != bf16_authorization_binding.get("predecessor_prefix")
         or bf16_handoff_authorization.producer_batch_prefix.to_record()
         != bf16_authorization_binding.get("producer_batch_prefix")
-        or authenticated_bf16.record.get("closed_record_sha256")
+        or _remote_handoff_authorization_binding(authenticated_bf16)
+        != bf16_authorization_binding.get("remote_closure")
+        or authenticated_bf16.execution_record.get("closed_record_sha256")
         != bf16_execution_binding.get("closed_record_sha256")
-        or _file_sha256(authenticated_bf16.execution_record_path)
+        or authenticated_bf16.execution_file_sha256
         != bf16_execution_binding.get("sha256")
-        or authenticated_bf16.execution_record_path.absolute()
-        != _cluster_path(_required_string(bf16_execution_binding, "uri")).absolute()
-        or authenticated_bf16.manifest_path.absolute()
-        != _cluster_path(_required_string(bf16_manifest_binding, "uri")).absolute()
-        or authenticated_bf16.root.absolute()
-        != _cluster_path(_required_string(bf16_binding, "output_root_uri")).absolute()
-        or authenticated_bf16.source_root.absolute()
-        != _cluster_path(_required_string(bf16_binding, "source_root_uri")).absolute()
+        or authenticated_bf16.execution_uri
+        != _required_string(bf16_execution_binding, "uri")
+        or authenticated_bf16_manifests[0].get("file_sha256")
+        != bf16_manifest_binding.get("sha256")
+        or authenticated_bf16_manifests[0].get("closed_record_sha256")
+        != bf16_manifest_binding.get("closed_record_sha256")
+        or authenticated_bf16_manifests[0].get("portable_bundle_sha256")
+        != bf16_manifest_binding.get("portable_bundle_sha256")
+        or authenticated_bf16_manifests[0].get("uri")
+        != bf16_manifest_binding.get("uri")
+        or authenticated_bf16_manifests[0].get("source_root_uri")
+        != _required_string(bf16_binding, "source_root_uri")
     ):
         raise ValueError("BF16 handoff serving authorization binding drift")
+    typed_artifact_pins = GPUQualificationArtifactPins(**dict(artifact_pins))
+    authenticated_source = require_publication_latency_source_closure_authorization(
+        source_closure_authorization,
+        expected_final_artifacts=final_artifacts,
+        expected_qualification_artifact_pins=typed_artifact_pins,
+        expected_semantic=_source_closure_semantic_from_plan_sources(sources),
+        expected_predecessor_prefix=bf16_handoff_authorization.ledger_prefix,
+        expected_q8_handoff_authorization=handoff_authorization,
+        expected_bf16_handoff_authorization=bf16_handoff_authorization,
+    )
+    if _source_closure_authorization_binding(authenticated_source) != dict(
+        _mapping(sources, "source_closure")
+    ):
+        raise ValueError("source-closure launch authorization binding drift")
+    _require_remote_handoff_phase_order(
+        qualification_prefix=qualification_authorization.ledger_prefix,
+        q8_predecessor_prefix=handoff_authorization.predecessor_prefix,
+        q8_terminal_prefix=handoff_authorization.ledger_prefix,
+        bf16_predecessor_prefix=bf16_handoff_authorization.predecessor_prefix,
+    )
+    if source_closure_authorization.predecessor_prefix != (
+        bf16_handoff_authorization.ledger_prefix
+    ):
+        raise ValueError("source closure does not extend BF16")
     return selection
 
 
@@ -5680,6 +8936,71 @@ def _validate_latency_control_plane_run(
     }
 
 
+def _validate_source_closure_control_plane_run(
+    run: Mapping[str, Any],
+    *,
+    submit_payload: Mapping[str, Any],
+    receipt_run_id: str,
+) -> dict[str, Any]:
+    """Require one successful, unrepaired, exact attempt-zero c5d task."""
+
+    parent_run_id = _databricks_id(run.get("run_id"), "runs/get run_id")
+    if parent_run_id != receipt_run_id:
+        raise ValueError("runs/get run ID differs from source-closure submit receipt")
+    original_attempt_run_id = _databricks_id(
+        run.get("original_attempt_run_id"),
+        "source-closure original_attempt_run_id",
+    )
+    if original_attempt_run_id != parent_run_id:
+        raise ValueError(
+            "source-closure coordinator original attempt does not equal its parent run"
+        )
+    if run.get("repair_history") not in (None, []):
+        raise ValueError("source-closure coordinator has repair history")
+    tasks = run.get("tasks")
+    if (
+        not isinstance(tasks, list)
+        or len(tasks) != 1
+        or not isinstance(tasks[0], Mapping)
+    ):
+        raise ValueError("source-closure coordinator must contain exactly one task")
+    task = tasks[0]
+    attempt_number = task.get("attempt_number")
+    if type(attempt_number) is not int or attempt_number != 0:
+        raise ValueError("source-closure coordinator must finish on task attempt zero")
+    task_run_id = _databricks_id(task.get("run_id"), "source-closure task run_id")
+    if task_run_id == parent_run_id:
+        raise ValueError(
+            "source-closure coordinator task run ID must differ from its parent run"
+        )
+
+    # The generic latency validator models Databricks' attempt-zero marker as zero.
+    # Prove the stronger source-coordinator parent identity above before adapting it.
+    normalized = json.loads(_canonical_json(run))
+    normalized["original_attempt_run_id"] = 0
+    identity = _validate_latency_control_plane_run(
+        normalized,
+        job_record={"task_key": "publication_latency_source_closure"},
+        submit_payload=submit_payload,
+        receipt_run_id=receipt_run_id,
+    )
+    submitted_cluster = _mapping(
+        _mapping_value(
+            _mapping_sequence(submit_payload, "tasks")[0], "source submitted task"
+        ),
+        "new_cluster",
+    )
+    if (
+        submitted_cluster.get("node_type_id")
+        != PUBLICATION_LATENCY_SOURCE_CLOSURE_NODE_TYPE_ID
+        or submitted_cluster.get("driver_node_type_id")
+        != PUBLICATION_LATENCY_SOURCE_CLOSURE_NODE_TYPE_ID
+        or submitted_cluster.get("num_workers") != 0
+    ):
+        raise ValueError("source-closure coordinator is not one c5d.4xlarge task")
+    return identity
+
+
 def _terminal_actual_record(actual: Any) -> dict[str, Any]:
     return {
         "actual_cluster_duration_seconds": actual.actual_cluster_duration_seconds,
@@ -5699,14 +9020,19 @@ def _submit_payload_sha256(payload: Mapping[str, Any]) -> str:
 
 
 def _control_plane_status_sha256(run: Mapping[str, Any]) -> str:
-    return sha256(
-        json.dumps(
-            run,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
+    return sha256(_control_plane_status_bytes(run)).hexdigest()
+
+
+def _control_plane_status_bytes(run: Mapping[str, Any]) -> bytes:
+    raw = json.dumps(
+        run,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(raw) > PUBLICATION_LATENCY_CONTROL_PLANE_MAX_BYTES:
+        raise ValueError("latency control-plane status exceeds the compact byte cap")
+    return raw
 
 
 def _validate_job_bound_source_files(job_record: Mapping[str, Any]) -> None:
@@ -5882,7 +9208,132 @@ def _cleanup_publication_latency_worker_state(
             raise RuntimeError(f"worker cleanup did not remove {root}")
 
 
+def _databricks_volume_uri(value: Any, field_name: str) -> str:
+    uri = _durable_uri(value, field_name)
+    normalized = uri if uri.startswith("dbfs:") else "dbfs:" + uri
+    raw_path = normalized.removeprefix("dbfs:")
+    path = PurePosixPath(raw_path)
+    if (
+        not raw_path.startswith("/Volumes/")
+        or path.as_posix() != raw_path
+        or len(path.parts) < 5
+    ):
+        raise ValueError(f"{field_name} must be a canonical Unity Catalog volume URI")
+    return normalized
+
+
+def _canonical_remote_json_record(
+    raw: bytes,
+    *,
+    field_name: str,
+) -> dict[str, Any]:
+    if not isinstance(raw, bytes) or not raw:
+        raise ValueError(f"{field_name} must be non-empty bytes")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field_name} is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a JSON object")
+    if raw != (_canonical_json(value) + "\n").encode("utf-8"):
+        raise ValueError(f"{field_name} is not canonical newline JSON")
+    return value
+
+
+def _canonical_pretty_remote_json_record(
+    raw: bytes,
+    *,
+    field_name: str,
+) -> dict[str, Any]:
+    if not isinstance(raw, bytes) or not raw:
+        raise ValueError(f"{field_name} must be non-empty bytes")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field_name} is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict) or raw != _pretty_json_bytes(value):
+        raise ValueError(f"{field_name} is not canonical pretty JSON")
+    return value
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return (_canonical_json(value) + "\n").encode("utf-8")
+
+
+def _pretty_json_bytes(value: Any) -> bytes:
+    return (
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _write_or_require_exact_bytes(path: Path, raw: bytes) -> None:
+    _reject_existing_symlink_ancestors(path, "exclusive controller artifact")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_existing_symlink_ancestors(path, "exclusive controller artifact")
+    if path.exists() or path.is_symlink():
+        if not path.is_file() or path.is_symlink() or path.read_bytes() != raw:
+            raise FileExistsError(f"existing artifact differs: {path}")
+        return
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o440)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _fsync_directory(path.parent)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _store_publication_latency_controller_cas_bytes(
+    controller_cas_root: str | Path,
+    raw: bytes,
+) -> Path:
+    if not isinstance(raw, bytes) or not raw:
+        raise ValueError("latency controller CAS objects must be non-empty bytes")
+    root = Path(controller_cas_root).expanduser().absolute()
+    _reject_existing_symlink_ancestors(root, "latency controller CAS root")
+    root.mkdir(parents=True, exist_ok=True)
+    _reject_existing_symlink_ancestors(root, "latency controller CAS root")
+    digest = sha256(raw).hexdigest()
+    bucket = root / "sha256" / digest[:2]
+    _reject_existing_symlink_ancestors(bucket, "latency controller CAS bucket")
+    bucket.mkdir(parents=True, exist_ok=True)
+    _reject_existing_symlink_ancestors(bucket, "latency controller CAS bucket")
+    destination = bucket / digest
+    if destination.exists() or destination.is_symlink():
+        _verify_regular_file_sha256(
+            destination,
+            digest,
+            "latency controller CAS object",
+        )
+        if destination.stat().st_size != len(raw):
+            raise ValueError("latency controller CAS object byte count drift")
+        return destination
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o440)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _fsync_directory(bucket)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    return destination
+
+
 def _cluster_path(uri: str) -> Path:
+    if uri.startswith("dbfs:/Volumes/"):
+        return Path("/Volumes") / uri.removeprefix("dbfs:/Volumes/")
     if uri.startswith("dbfs:/"):
         return Path("/dbfs") / uri.removeprefix("dbfs:/").lstrip("/")
     if uri.startswith("file:"):
@@ -5943,15 +9394,6 @@ def _read_latency_controller_record(path: Path, field_name: str) -> dict[str, An
     if not isinstance(observed, str) or observed != _closed_record_sha256(value):
         raise ValueError(f"{field_name} closed digest mismatch")
     return value
-
-
-def _read_bound_json_uri(
-    binding: Mapping[str, Any],
-    field_name: str,
-) -> dict[str, Any]:
-    path = _cluster_path(_required_string(binding, "uri"))
-    _verify_regular_file_sha256(path, _required_sha256(binding, "sha256"), field_name)
-    return _read_json_file(path, field_name)
 
 
 def _read_jsonl_file(path: Path, *, required: bool) -> list[dict[str, Any]]:
@@ -6168,6 +9610,29 @@ def _join_durable_uri(root: str, *parts: str) -> str:
     return prefix.rstrip("/") + "/" + "/".join(safe_parts)
 
 
+def _normalized_volume_path(value: Any, field_name: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{field_name} must be a canonical volume path")
+    raw = value.removeprefix("dbfs:")
+    if raw.startswith("/dbfs/Volumes/"):
+        raw = raw.removeprefix("/dbfs")
+    path = PurePosixPath(raw)
+    if (
+        not raw.startswith("/Volumes/")
+        or path.as_posix() != raw
+        or len(path.parts) < 5
+        or any(part in {"", ".", ".."} for part in path.parts[1:])
+    ):
+        raise ValueError(f"{field_name} must remain inside one Unity Catalog volume")
+    return path
+
+
+def _same_durable_file_location(first: str, second: str) -> bool:
+    return _normalized_volume_path(first, "first durable file") == (
+        _normalized_volume_path(second, "second durable file")
+    )
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(
         value,
@@ -6176,6 +9641,26 @@ def _canonical_json(value: Any) -> str:
         ensure_ascii=False,
         allow_nan=False,
     )
+
+
+def _canonical_json_file_sha256_matches(
+    record: Mapping[str, Any],
+    expected_sha256: str,
+) -> bool:
+    expected = _require_sha256_value(expected_sha256, "JSON file sha256")
+    compact = _canonical_json(record).encode("utf-8")
+    pretty = (
+        json.dumps(
+            record,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    candidates = (compact, compact + b"\n", pretty)
+    return any(sha256(raw).hexdigest() == expected for raw in candidates)
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -6269,10 +9754,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_job.add_argument("--task-run-id", required=True)
     write_runner = subparsers.add_parser("write-runner")
     write_runner.add_argument("--output", required=True)
+    write_source_runner = subparsers.add_parser("write-source-closure-runner")
+    write_source_runner.add_argument("--output", required=True)
+    run_source_closure = subparsers.add_parser("run-source-closure")
+    run_source_closure.add_argument("--request-path", required=True)
+    run_source_closure.add_argument("--expected-request-file-sha256", required=True)
+    run_source_closure.add_argument(
+        "--expected-request-closed-record-sha256", required=True
+    )
+    run_source_closure.add_argument("--coordinator-run-id", required=True)
     args = parser.parse_args(argv)
     if args.command == "write-runner":
         path = write_publication_latency_runner_script(args.output)
         print(path)
+        return 0
+    if args.command == "write-source-closure-runner":
+        path = write_publication_latency_source_closure_runner_script(args.output)
+        print(path)
+        return 0
+    if args.command == "run-source-closure":
+        result = run_publication_latency_source_closure_coordinator(
+            args.request_path,
+            expected_request_file_sha256=args.expected_request_file_sha256,
+            expected_request_closed_record_sha256=(
+                args.expected_request_closed_record_sha256
+            ),
+            coordinator_run_id=args.coordinator_run_id,
+        )
+        print(_required_sha256(result, "closed_record_sha256"))
         return 0
     try:
         value = json.loads(args.job_record_json)
@@ -6306,35 +9815,60 @@ __all__ = [
     "PUBLICATION_LATENCY_RUNNER_SCRIPT",
     "PUBLICATION_LATENCY_RUNNER_SHA256",
     "PUBLICATION_LATENCY_RUN_TIMEOUT_SECONDS",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_MAX_BYTES",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_NODE_TYPE_ID",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_AUTHORIZATION_RECORD_TYPE",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_RECORD_TYPE",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_RESULT_RECORD_TYPE",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SHA256",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_SPARK_VERSION",
+    "PUBLICATION_LATENCY_SOURCE_CLOSURE_TIMEOUT_SECONDS",
     "PUBLICATION_LATENCY_SUBMISSION_RECORD_TYPE",
     "PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE",
     "PublicationLatencyArtifactFile",
     "PublicationLatencyCollectionAuthorization",
     "PublicationLatencyFinalArtifactPins",
+    "PublicationLatencySourceClosureAuthorization",
+    "PublicationLatencySourceClosureCoordinatorConfig",
+    "PublicationLatencySourceClosureRequestAuthorization",
+    "PublicationLatencySourceClosureSubmissionAuthorization",
     "PublicationLatencyWaveAuthorization",
     "PublicationLatencyWaveSubmissionAuthorization",
     "aggregate_publication_latency_campaign",
     "build_databricks_publication_latency_run_submit_payload",
     "build_publication_latency_execution_plan",
+    "build_publication_latency_source_closure_request",
     "collect_publication_latency_campaign",
     "collect_publication_latency_launch_wave",
+    "collect_publication_latency_source_closure",
     "execute_publication_latency_job_record",
     "main",
     "publication_latency_reservation_attempt_id",
+    "publication_latency_source_closure_control_roots",
     "publication_latency_submit_payloads",
     "publication_latency_vllm_config",
     "render_publication_latency_job_record",
+    "render_publication_latency_source_closure_submit_payload",
+    "require_publication_latency_source_closure_authorization",
+    "resume_publication_latency_source_closure",
+    "run_publication_latency_source_closure_coordinator",
     "require_publication_latency_collection_authorization",
     "seal_publication_latency_job_result",
     "submit_publication_latency_launch_wave",
+    "submit_publication_latency_source_closure",
     "resume_publication_latency_launch_wave",
     "validate_publication_latency_collection_record",
     "validate_publication_latency_execution_plan_record",
     "validate_publication_latency_execution_sources",
+    "validate_publication_latency_source_closure_request",
+    "validate_publication_latency_source_closure_result",
     "validate_publication_latency_job_record",
     "validate_publication_latency_job_result_record",
     "validate_publication_latency_summary_record",
     "write_publication_latency_runner_script",
+    "write_publication_latency_source_closure_runner_script",
 ]
 
 

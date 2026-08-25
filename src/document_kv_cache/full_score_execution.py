@@ -317,6 +317,8 @@ import sys
 
 
 def _cluster_path(uri: str) -> str:
+    if uri.startswith("dbfs:/Volumes/"):
+        return "/Volumes/" + uri.removeprefix("dbfs:/Volumes/")
     if uri.startswith("dbfs:/"):
         return "/dbfs/" + uri.removeprefix("dbfs:/").lstrip("/")
     return uri
@@ -456,6 +458,18 @@ class FullScoreCommandRunner(Protocol):
         env: Mapping[str, str],
         cwd: Path | None = None,
     ) -> None: ...
+
+
+class FullScoreCompactArtifactResolver(Protocol):
+    """Resolve one compact DBFS/Volume URI to a bounded local CAS blob."""
+
+    def __call__(self, uri: str) -> Path: ...
+
+
+class FullScoreCompactArtifactPublisher(Protocol):
+    """Publish one compact record and return its verified local CAS blob."""
+
+    def __call__(self, uri: str, content: bytes) -> Path: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -931,6 +945,7 @@ class FullScorePhaseAuthorization:
     ledger_path_sha256: str
     predecessor_prefix: DatabricksLedgerPrefix
     ledger_prefix: DatabricksLedgerPrefix
+    phase_lease_root: Path
     terminal_record_sha256: str
     causal_closure_sha256: str
 
@@ -943,6 +958,7 @@ class FullScorePhaseAuthorization:
         ledger_path_sha256: str,
         predecessor_prefix: DatabricksLedgerPrefix,
         ledger_prefix: DatabricksLedgerPrefix,
+        phase_lease_root: str | Path,
         terminal_record_sha256: str,
         causal_closure_sha256: str,
         _issuer: object,
@@ -987,6 +1003,18 @@ class FullScorePhaseAuthorization:
             raise ValueError("full-score phase prefix transition is invalid")
         object.__setattr__(self, "predecessor_prefix", predecessor_prefix)
         object.__setattr__(self, "ledger_prefix", ledger_prefix)
+        normalized_lease_root = Path(phase_lease_root).expanduser().absolute()
+        _require_no_symlink_ancestors(
+            normalized_lease_root,
+            label="full-score phase lease root",
+            include_leaf=True,
+        )
+        if normalized_lease_root.exists() and (
+            normalized_lease_root.is_symlink()
+            or not normalized_lease_root.is_dir()
+        ):
+            raise ValueError("full-score phase lease root must be a real directory")
+        object.__setattr__(self, "phase_lease_root", normalized_lease_root)
         object.__setattr__(
             self,
             "terminal_record_sha256",
@@ -1544,6 +1572,9 @@ def _build_databricks_full_score_run_submit_payload(
     prior_wave_completion: Mapping[str, Any] | None = None,
     producer_phase_completion: Mapping[str, Any] | None = None,
     producer_phase_completion_uri: str | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorization: object | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     budget_admission: Mapping[str, Any] | None = None,
     qualification_launch_authorization: object | None = None,
     idempotency_attempt_id: str | None = None,
@@ -1624,6 +1655,8 @@ def _build_databricks_full_score_run_submit_payload(
             replay_raw_evidence=False,
             expected_wave_index=wave_index - 1,
             expected_execution_plan_sha256=execution_plan_sha256,
+            remote_consumer_authorization=remote_consumer_authorization,
+            compact_artifact_resolver=compact_artifact_resolver,
         )
         expected_reservation = full_score_wave_worst_case_gpu_hours(
             payloads,
@@ -1639,6 +1672,7 @@ def _build_databricks_full_score_run_submit_payload(
             expected_next_phase=phase,
             expected_next_wave_reserved_gpu_hours=expected_reservation,
             require_publication=publication_authorizing,
+            compact_artifact_resolver=compact_artifact_resolver,
         )
         if publication_authorizing:
             _validate_prior_wave_completion(
@@ -1649,11 +1683,14 @@ def _build_databricks_full_score_run_submit_payload(
                 replay_raw_evidence=True,
                 expected_wave_index=wave_index - 1,
                 expected_execution_plan_sha256=execution_plan_sha256,
+                remote_consumer_authorization=remote_consumer_authorization,
+                compact_artifact_resolver=compact_artifact_resolver,
             )
     if phase == "producer":
         if (
             producer_phase_completion is not None
             or producer_phase_completion_uri is not None
+            or remote_ready_authorization is not None
         ):
             raise ValueError("producer phase cannot consume its own completion record")
     else:
@@ -1665,27 +1702,54 @@ def _build_databricks_full_score_run_submit_payload(
             producer_phase_completion_uri,
             "producer_phase_completion_uri",
         )
-        completion_file = _governed_existing_file(
-            completion_uri,
-            "producer_phase_completion_uri",
-        )
         _validate_producer_phase_completion(
             producer_phase_completion,
             execution_plan=execution_plan,
             expected_wave_index=wave_index,
         )
-        if _json_object(
-            completion_file.read_bytes(),
-            "producer-phase completion file",
-        ) != producer_phase_completion:
-            raise ValueError("producer-phase completion URI/content binding drift")
-        if publication_authorizing:
-            _validate_governed_producer_ready_phase(
-                producer_phase_completion,
-                payloads=payloads,
-                inventory=inventory,
-                shard_plan=shard_plan,
-                execution_plan=execution_plan,
+        if remote_ready_authorization is None:
+            completion_file = _governed_compact_file(
+                completion_uri,
+                "producer_phase_completion_uri",
+                compact_artifact_resolver,
+            )
+            if _json_object(
+                completion_file.read_bytes(),
+                "producer-phase completion file",
+            ) != producer_phase_completion:
+                raise ValueError("producer-phase completion URI/content binding drift")
+            if publication_authorizing:
+                _validate_governed_producer_ready_phase(
+                    producer_phase_completion,
+                    payloads=payloads,
+                    inventory=inventory,
+                    shard_plan=shard_plan,
+                    execution_plan=execution_plan,
+                )
+        else:
+            if not publication_authorizing:
+                raise ValueError(
+                    "local fixture rendering cannot consume remote tree authority"
+                )
+            from document_kv_cache.full_score_remote_control import (
+                require_full_score_remote_ready_authorization,
+            )
+
+            durable_roots = {
+                _required_string(payload, "durable_output_root")
+                for payload in payloads
+            }
+            if len(durable_roots) != 1:
+                raise ValueError("consumer payloads do not share one durable root")
+            require_full_score_remote_ready_authorization(
+                remote_ready_authorization,
+                execution_plan_sha256=execution_plan_sha256,
+                wave_index=wave_index,
+                durable_output_root=next(iter(durable_roots)),
+                completion_uri=completion_uri,
+                completion_record=cast(
+                    Mapping[str, Any], producer_phase_completion
+                ),
             )
     tasks = []
     ordered_payloads = sorted(
@@ -1715,7 +1779,8 @@ def _build_databricks_full_score_run_submit_payload(
             "patched_vllm_wheel_uri": config.patched_vllm_wheel_uri,
             "python_executable": f"{config.runtime_venv_dir}/bin/python",
             "vllm_wheel_install_spec": (
-                f"vllm @ file://{_cluster_path(config.patched_vllm_wheel_uri)}"
+                "vllm @ file://"
+                f"{_databricks_worker_mount_path(config.patched_vllm_wheel_uri)}"
                 f"#sha256={config.patched_vllm_wheel_sha256}"
             ),
         }
@@ -1846,6 +1911,9 @@ def build_databricks_full_score_run_submit_payload(
     prior_wave_completion: Mapping[str, Any] | None = None,
     producer_phase_completion: Mapping[str, Any] | None = None,
     producer_phase_completion_uri: str | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     budget_admission_path: str | Path | None = None,
     ledger_path: str | Path | None = None,
     predecessor_authorization: object | None = None,
@@ -1860,11 +1928,24 @@ def build_databricks_full_score_run_submit_payload(
     if len(wave_indices) != 1:
         raise ValueError("one runs/submit payload may contain exactly one wave")
     wave_index = next(iter(wave_indices))
+    remote_by_wave = _remote_consumer_authorizations_by_wave(
+        ()
+        if remote_consumer_authorizations is None
+        else remote_consumer_authorizations,
+        execution_plan=execution_plan,
+    )
+    immediate_remote_consumer_authorization = remote_by_wave.get(wave_index - 1)
     admission: Mapping[str, Any] | None = None
     if wave_index == 0:
         if budget_admission_path is not None:
             raise ValueError("wave zero must not consume a live P90 admission")
+        if remote_by_wave:
+            raise ValueError("wave zero cannot consume remote consumer authority")
     else:
+        if remote_by_wave and set(remote_by_wave) != set(range(wave_index)):
+            raise ValueError(
+                "nonzero rendering requires every completed-wave remote authority"
+            )
         if ledger_path is None:
             raise ValueError(
                 "nonzero publication rendering requires the canonical live ledger"
@@ -1882,9 +1963,10 @@ def build_databricks_full_score_run_submit_payload(
                 "nonzero publication rendering requires a governed live P90 "
                 "admission path"
             )
-        admission_file = _governed_existing_file(
+        admission_file = _governed_compact_file(
             budget_admission_path,
             "live P90 admission",
+            compact_artifact_resolver,
         )
         admission = _json_object(
             admission_file.read_bytes(),
@@ -1900,6 +1982,9 @@ def build_databricks_full_score_run_submit_payload(
         prior_wave_completion=prior_wave_completion,
         producer_phase_completion=producer_phase_completion,
         producer_phase_completion_uri=producer_phase_completion_uri,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorization=immediate_remote_consumer_authorization,
+        compact_artifact_resolver=compact_artifact_resolver,
         budget_admission=admission,
         idempotency_attempt_id=attempt_id,
         publication_authorizing=True,
@@ -1914,6 +1999,9 @@ def build_databricks_full_score_run_submit_payload(
             ledger_path=cast(str | Path, ledger_path),
             predecessor_authorization=predecessor_authorization,
             latency_execution_plan_record=latency_execution_plan_record,
+            remote_ready_authorization=remote_ready_authorization,
+            remote_consumer_authorizations=remote_consumer_authorizations,
+            compact_artifact_resolver=compact_artifact_resolver,
         )
         if replayed != admission:
             raise ValueError("live P90 admission file changed during rendering")
@@ -2338,6 +2426,7 @@ def build_governed_full_score_phase_terminal_record(
     control_plane_run_path: str | Path,
     ledger_path: str | Path,
     submission_authorization: FullScorePhaseSubmissionAuthorization | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     _replay_ledger_lineage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Derive phase billing from immutable submit, runs/get, and ledger snapshots.
@@ -2348,15 +2437,18 @@ def build_governed_full_score_phase_terminal_record(
     """
 
     _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
-    submit_file = _governed_existing_file(
+    submit_file = _governed_compact_file(
         submit_payload_path,
         "full-score submit payload",
+        compact_artifact_resolver,
     )
-    run_file = _governed_existing_file(
+    run_file = _governed_compact_file(
         control_plane_run_path,
         "Databricks control-plane run",
+        compact_artifact_resolver,
     )
-    ledger_file = _governed_existing_file(ledger_path, "cluster-hour ledger")
+    ledger_file = Path(ledger_path).expanduser().absolute()
+    _require_regular_file_no_follow(ledger_file, "cluster-hour ledger")
     submit_payload = _json_object(
         submit_file.read_bytes(),
         "full-score submit payload",
@@ -2372,6 +2464,7 @@ def build_governed_full_score_phase_terminal_record(
         shard_plan=shard_plan,
         wave_index=wave_index,
         phase=phase,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     expected_node_type_id = (
         FULL_SCORE_PRODUCER_NODE_TYPE_ID
@@ -2742,20 +2835,32 @@ def write_governed_full_score_phase_terminal_record(
 ) -> dict[str, Any]:
     """Write and reread a phase terminal record without replacement."""
 
-    output = _cluster_path(
-        _require_shared_dbfs_path(path, "phase terminal output path")
+    compact_artifact_publisher = kwargs.pop(
+        "compact_artifact_publisher",
+        None,
     )
+    compact_artifact_resolver = kwargs.get("compact_artifact_resolver")
+    if (compact_artifact_publisher is None) != (
+        compact_artifact_resolver is None
+    ):
+        raise TypeError("phase terminal compact publication requires publisher and CAS")
     record = build_governed_full_score_phase_terminal_record(
         execution_plan,
         **kwargs,
     )
-    _exclusive_write_bytes(output, _canonical_pretty_json_bytes(record))
+    _publish_governed_compact_file(
+        path,
+        "phase terminal output path",
+        _canonical_pretty_json_bytes(record),
+        compact_artifact_publisher,
+    )
     return load_governed_full_score_phase_terminal_record(
-        output,
+        path,
         execution_plan=execution_plan,
         inventory=kwargs["inventory"],
         shard_plan=kwargs["shard_plan"],
         ledger_path=kwargs["ledger_path"],
+        compact_artifact_resolver=compact_artifact_resolver,
     )
 
 
@@ -2766,10 +2871,15 @@ def load_governed_full_score_phase_terminal_record(
     inventory: FullScoreInventory,
     shard_plan: Mapping[str, Any],
     ledger_path: str | Path,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> dict[str, Any]:
     """Reread and fully replay one publication phase-terminal record."""
 
-    terminal_file = _governed_existing_file(path, "phase terminal record")
+    terminal_file = _governed_compact_file(
+        path,
+        "phase terminal record",
+        compact_artifact_resolver,
+    )
     record = _json_object(terminal_file.read_bytes(), "phase terminal record")
     if record.get("record_type") != FULL_SCORE_PHASE_TERMINAL_RECORD_TYPE:
         raise ValueError("phase terminal record_type drift")
@@ -2795,6 +2905,7 @@ def load_governed_full_score_phase_terminal_record(
             "path",
         ),
         ledger_path=ledger_path,
+        compact_artifact_resolver=compact_artifact_resolver,
         _replay_ledger_lineage=_required_mapping(record, "ledger"),
     )
     if rebuilt != record:
@@ -2809,6 +2920,7 @@ def replay_governed_full_score_phase_authorization(
     inventory: FullScoreInventory,
     shard_plan: Mapping[str, Any],
     ledger_path: str | Path,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> FullScorePhaseAuthorization:
     """Reissue a terminal phase authority from its exact historical slices.
 
@@ -2823,6 +2935,7 @@ def replay_governed_full_score_phase_authorization(
         inventory=inventory,
         shard_plan=shard_plan,
         ledger_path=ledger_path,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     live_path = Path(ledger_path).expanduser().absolute()
     ledger_binding = _required_mapping(record, "ledger")
@@ -2862,10 +2975,20 @@ def replay_governed_full_score_phase_authorization(
     ):
         raise ValueError("phase authorization replay terminal prefix is active")
     terminal_record_sha256 = _required_string(record, "closed_record_sha256")
+    phase_lease_root = _full_score_phase_lease_path(
+        live_path,
+        execution_plan_sha256=_required_string(
+            record,
+            "execution_plan_sha256",
+        ),
+        wave_index=_required_int(record, "wave_index"),
+        phase=_required_string(record, "phase"),
+    ).parent
     causal_closure_sha256 = _canonical_sha256(
         {
             "batch_prefix": batch_prefix.to_record(),
             "ledger_path_sha256": path_sha256,
+            "phase_lease_root": str(phase_lease_root),
             "terminal_prefix": terminal_prefix.to_record(),
             "terminal_record_sha256": terminal_record_sha256,
         }
@@ -2880,6 +3003,7 @@ def replay_governed_full_score_phase_authorization(
         ledger_path_sha256=path_sha256,
         predecessor_prefix=predecessor_prefix,
         ledger_prefix=terminal_prefix,
+        phase_lease_root=phase_lease_root,
         terminal_record_sha256=terminal_record_sha256,
         causal_closure_sha256=causal_closure_sha256,
         _issuer=_FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
@@ -2897,6 +3021,8 @@ def collect_governed_full_score_phase_attempt(
     submit_payload_path: str | Path,
     control_plane_run_path: str | Path,
     terminal_record_path: str | Path | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    compact_artifact_publisher: FullScoreCompactArtifactPublisher | None = None,
     opener: DatabricksURLOpener | None = None,
 ) -> tuple[dict[str, Any], FullScorePhaseAuthorization]:
     """Collect one phase directly from runs/get and issue its successor token."""
@@ -2909,6 +3035,10 @@ def collect_governed_full_score_phase_attempt(
         )
     if terminal_record_path is None:
         raise ValueError("phase collection requires a durable terminal record path")
+    if (compact_artifact_publisher is None) != (
+        compact_artifact_resolver is None
+    ):
+        raise TypeError("phase collection compact I/O requires publisher and CAS")
     _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
     plan_sha256 = _require_sha256(
         execution_plan.get("closed_record_sha256"),
@@ -2967,16 +3097,11 @@ def collect_governed_full_score_phase_attempt(
         receipt.run_id,
         opener=resolved_opener,
     )
-    run_output = _cluster_path(
-        _require_shared_dbfs_path(
-            control_plane_run_path,
-            "phase control-plane evidence path",
-        )
-    )
-    _write_or_require_exact_bytes(
-        run_output,
+    _publish_governed_compact_file(
+        control_plane_run_path,
+        "phase control-plane evidence path",
         _canonical_pretty_json_bytes(run_record),
-        field_name="phase control-plane evidence",
+        compact_artifact_publisher,
     )
     if before_prefix.terminal_actual_count == batch_prefix.terminal_actual_count:
         try:
@@ -3007,6 +3132,7 @@ def collect_governed_full_score_phase_attempt(
         control_plane_run_path=control_plane_run_path,
         ledger_path=live_path,
         submission_authorization=submission_authorization,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     final_ledger = read_databricks_cluster_hour_ledger_json(live_path)
     if databricks_ledger_path_sha256(live_path) != path_sha256:
@@ -3037,32 +3163,29 @@ def collect_governed_full_score_phase_attempt(
         or final_ledger.active_reserved_task_count != 0
     ):
         raise RuntimeError("phase final ledger reconciliation drift")
-    terminal_output = _cluster_path(
-        _require_shared_dbfs_path(
-            terminal_record_path,
-            "phase terminal evidence path",
-        )
-    )
-    _write_or_require_exact_bytes(
-        terminal_output,
+    _publish_governed_compact_file(
+        terminal_record_path,
+        "phase terminal evidence path",
         _canonical_pretty_json_bytes(record),
-        field_name="phase terminal evidence",
+        compact_artifact_publisher,
     )
     reread = load_governed_full_score_phase_terminal_record(
-        terminal_output,
+        terminal_record_path,
         execution_plan=execution_plan,
         inventory=inventory,
         shard_plan=shard_plan,
         ledger_path=live_path,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     if reread != record:
         raise RuntimeError("phase terminal evidence changed during reread")
     authorization = replay_governed_full_score_phase_authorization(
-        terminal_output,
+        terminal_record_path,
         execution_plan=execution_plan,
         inventory=inventory,
         shard_plan=shard_plan,
         ledger_path=live_path,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     return record, authorization
 
@@ -3229,17 +3352,61 @@ def build_governed_full_score_matched_billing_block(
     producer_terminal_path: str | Path,
     consumer_terminal_path: str | Path,
     ledger_path: str | Path,
+    remote_consumer_authorization: object | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> dict[str, Any]:
     """Build matched billing only from replayed evidence and terminal files."""
 
     _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
-    evidence, deletion = load_governed_full_score_shard_evidence(
+    evidence_directory_uri = _require_shared_dbfs_path(
         evidence_dir,
-        inventory=inventory,
-        shard_plan=shard_plan,
-        execution_plan=execution_plan,
-        require_deletion=True,
+        "governed evidence directory",
     )
+    remote_binding: Mapping[str, Any] | None = None
+    if remote_consumer_authorization is None:
+        if compact_artifact_resolver is not None:
+            raise TypeError(
+                "matched billing compact CAS requires remote consumer authority"
+            )
+        evidence, deletion = load_governed_full_score_shard_evidence(
+            evidence_dir,
+            inventory=inventory,
+            shard_plan=shard_plan,
+            execution_plan=execution_plan,
+            require_deletion=True,
+        )
+    else:
+        from document_kv_cache.full_score_remote_control import (
+            require_full_score_remote_consumer_evidence_authorization,
+        )
+
+        remote_authorization = (
+            require_full_score_remote_consumer_evidence_authorization(
+                remote_consumer_authorization,
+                execution_plan=execution_plan,
+            )
+        )
+        remote_records = _remote_consumer_evidence_records(
+            remote_authorization,
+            completion_record=remote_authorization.result_record,
+            inventory=inventory,
+            shard_plan=shard_plan,
+            execution_plan=execution_plan,
+            expected_wave_index=remote_authorization.wave_index,
+            compact_artifact_resolver=compact_artifact_resolver,
+        )
+        matching_bindings = [
+            binding
+            for binding in remote_authorization.evidence_bindings
+            if _required_string(binding, "evidence_uri").rsplit("/", 1)[0]
+            == evidence_directory_uri.rstrip("/")
+        ]
+        if len(matching_bindings) != 1:
+            raise ValueError("matched billing remote evidence directory drift")
+        remote_binding = matching_bindings[0]
+        evidence, deletion = remote_records[
+            _required_string(remote_binding, "shard_id")
+        ]
     if deletion is None:
         raise ValueError("governed matched billing requires deletion evidence")
     producer = load_governed_full_score_phase_terminal_record(
@@ -3248,6 +3415,7 @@ def build_governed_full_score_matched_billing_block(
         inventory=inventory,
         shard_plan=shard_plan,
         ledger_path=ledger_path,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     consumer = load_governed_full_score_phase_terminal_record(
         consumer_terminal_path,
@@ -3255,11 +3423,12 @@ def build_governed_full_score_matched_billing_block(
         inventory=inventory,
         shard_plan=shard_plan,
         ledger_path=ledger_path,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     wave_index = _required_int(evidence, "wave_index")
     shard_id = _required_string(evidence, "shard_id")
     billed: dict[str, float] = {}
-    durable_roots: set[Path] = set()
+    durable_roots: set[str] = set()
     for role, terminal in (("producer", producer), ("consumer_task", consumer)):
         expected_phase = "producer" if role == "producer" else "consumer"
         if (
@@ -3282,22 +3451,17 @@ def build_governed_full_score_matched_billing_block(
             f"{role} billed GPU seconds",
         )
         durable_roots.add(
-            _cluster_path(
-                _require_shared_dbfs_path(
-                    _required_string(matching[0], "durable_output_root"),
-                    f"{role} durable_output_root",
-                )
-            )
+            _require_shared_dbfs_path(
+                _required_string(matching[0], "durable_output_root"),
+                f"{role} durable_output_root",
+            ).rstrip("/")
         )
-    evidence_directory = _cluster_path(
-        _require_shared_dbfs_path(evidence_dir, "governed evidence directory")
-    )
     expected_evidence_directories = {
-        root / "evidence" / f"wave-{wave_index:03d}" / shard_id
+        f"{root}/evidence/wave-{wave_index:03d}/{shard_id}"
         for root in durable_roots
     }
     if len(durable_roots) != 1 or expected_evidence_directories != {
-        evidence_directory
+        evidence_directory_uri.rstrip("/")
     }:
         raise ValueError("matched billing evidence path differs from worker manifests")
     record = build_full_score_matched_billing_block(
@@ -3313,15 +3477,35 @@ def build_governed_full_score_matched_billing_block(
             "producer": _required_string(producer, "closed_record_sha256"),
         },
     )
-    evidence_path = evidence_directory / "evidence.json"
-    deletion_path = evidence_directory / "deletion-attestation.json"
-    producer_file = _governed_existing_file(
+    if remote_binding is None:
+        evidence_path = _governed_existing_file(
+            f"{evidence_directory_uri.rstrip('/')}/evidence.json",
+            "matched billing evidence file",
+        )
+        deletion_path = _governed_existing_file(
+            f"{evidence_directory_uri.rstrip('/')}/deletion-attestation.json",
+            "matched billing deletion file",
+        )
+        evidence_file_sha256 = sha256(evidence_path.read_bytes()).hexdigest()
+        deletion_file_sha256 = sha256(deletion_path.read_bytes()).hexdigest()
+    else:
+        evidence_file_sha256 = _required_string(
+            remote_binding,
+            "evidence_file_sha256",
+        )
+        deletion_file_sha256 = _required_string(
+            remote_binding,
+            "deletion_file_sha256",
+        )
+    producer_file = _governed_compact_file(
         producer_terminal_path,
         "producer terminal record",
+        compact_artifact_resolver,
     )
-    consumer_file = _governed_existing_file(
+    consumer_file = _governed_compact_file(
         consumer_terminal_path,
         "consumer terminal record",
+        compact_artifact_resolver,
     )
     record["authorization_scope"] = FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
     producer_lineage = _required_mapping(producer, "ledger")
@@ -3344,10 +3528,10 @@ def build_governed_full_score_matched_billing_block(
             "record_sha256": consumer["closed_record_sha256"],
         },
         "evidence": {
-            "deletion_file_sha256": sha256(deletion_path.read_bytes()).hexdigest(),
+            "deletion_file_sha256": deletion_file_sha256,
             "deletion_record_sha256": deletion["closed_record_sha256"],
             "directory": str(evidence_dir),
-            "evidence_file_sha256": sha256(evidence_path.read_bytes()).hexdigest(),
+            "evidence_file_sha256": evidence_file_sha256,
             "evidence_record_sha256": evidence["closed_record_sha256"],
         },
         "producer_terminal": {
@@ -3367,18 +3551,35 @@ def write_governed_full_score_matched_billing_block(
 ) -> dict[str, Any]:
     """Write and reread one publication-authorizing matched billing block."""
 
-    output = _cluster_path(_require_shared_dbfs_path(path, "matched block output path"))
+    compact_artifact_publisher = kwargs.pop(
+        "compact_artifact_publisher",
+        None,
+    )
+    compact_artifact_resolver = kwargs.get("compact_artifact_resolver")
+    if (compact_artifact_publisher is None) != (
+        compact_artifact_resolver is None
+    ):
+        raise TypeError("matched billing compact publication requires publisher and CAS")
     record = build_governed_full_score_matched_billing_block(
         execution_plan,
         **kwargs,
     )
-    _exclusive_write_bytes(output, _canonical_pretty_json_bytes(record))
+    _publish_governed_compact_file(
+        path,
+        "matched block output path",
+        _canonical_pretty_json_bytes(record),
+        compact_artifact_publisher,
+    )
     return load_governed_full_score_matched_billing_block(
-        output,
+        path,
         execution_plan=execution_plan,
         inventory=kwargs["inventory"],
         shard_plan=kwargs["shard_plan"],
         ledger_path=kwargs["ledger_path"],
+        remote_consumer_authorization=kwargs.get(
+            "remote_consumer_authorization"
+        ),
+        compact_artifact_resolver=kwargs.get("compact_artifact_resolver"),
     )
 
 
@@ -3389,10 +3590,16 @@ def load_governed_full_score_matched_billing_block(
     inventory: FullScoreInventory,
     shard_plan: Mapping[str, Any],
     ledger_path: str | Path,
+    remote_consumer_authorization: object | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> dict[str, Any]:
     """Reread and fully replay one publication matched billing block."""
 
-    block_file = _governed_existing_file(path, "matched billing block")
+    block_file = _governed_compact_file(
+        path,
+        "matched billing block",
+        compact_artifact_resolver,
+    )
     block = _json_object(block_file.read_bytes(), "matched billing block")
     if block.get("authorization_scope") != FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE:
         raise ValueError("matched billing block is not publication-authorizing")
@@ -3414,6 +3621,8 @@ def load_governed_full_score_matched_billing_block(
             "path",
         ),
         ledger_path=ledger_path,
+        remote_consumer_authorization=remote_consumer_authorization,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     if rebuilt != block:
         raise ValueError("matched billing block does not replay from governed sources")
@@ -3651,6 +3860,9 @@ def build_governed_full_score_live_p90_budget_admission(
     ledger_path: str | Path,
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     _require_latest_predecessor: bool = True,
 ) -> dict[str, Any]:
     """Build a one-attempt gate against the exact canonical predecessor."""
@@ -3665,6 +3877,8 @@ def build_governed_full_score_live_p90_budget_admission(
         wave_index=next_wave_index,
         phase=next_phase,
         require_governed_consumer_ready_phase=True,
+        remote_ready_authorization=remote_ready_authorization,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     live_path = Path(ledger_path).expanduser().absolute()
     predecessor_prefix, predecessor_lineage = (
@@ -3688,14 +3902,42 @@ def build_governed_full_score_live_p90_budget_admission(
         raise ValueError("live P90 admission attempt_id is already consumed")
     blocks: list[dict[str, Any]] = []
     block_bindings: list[dict[str, Any]] = []
+    remote_by_wave = _remote_consumer_authorizations_by_wave(
+        ()
+        if remote_consumer_authorizations is None
+        else remote_consumer_authorizations,
+        execution_plan=execution_plan,
+    )
+    if compact_artifact_resolver is not None and not remote_by_wave:
+        raise TypeError("live P90 compact CAS requires remote consumer authority")
+    if compact_artifact_resolver is None and remote_by_wave:
+        raise TypeError("live P90 remote consumer authority requires compact CAS")
+    if remote_by_wave and set(remote_by_wave) != set(range(next_wave_index)):
+        raise ValueError(
+            "live P90 requires every completed-wave remote authority exactly once"
+        )
     for raw_path in completed_block_paths:
-        block_file = _governed_existing_file(raw_path, "matched billing block")
+        block_file = _governed_compact_file(
+            raw_path,
+            "matched billing block",
+            compact_artifact_resolver,
+        )
+        candidate_block = _json_object(
+            block_file.read_bytes(),
+            "matched billing block",
+        )
+        block_wave_index = _required_int(candidate_block, "wave_index")
+        block_remote_authorization = remote_by_wave.get(block_wave_index)
+        if remote_by_wave and block_remote_authorization is None:
+            raise ValueError("live P90 omits a completed-wave remote authority")
         block = load_governed_full_score_matched_billing_block(
             raw_path,
             execution_plan=execution_plan,
             inventory=inventory,
             shard_plan=shard_plan,
             ledger_path=live_path,
+            remote_consumer_authorization=block_remote_authorization,
+            compact_artifact_resolver=compact_artifact_resolver,
         )
         block_lineage = _required_mapping(block, "ledger_lineage")
         producer_lineage = _required_mapping(block_lineage, "producer")
@@ -3759,6 +4001,17 @@ def build_governed_full_score_live_p90_budget_admission(
         block_bindings,
         key=lambda item: (item["shard_id"], item["path"]),
     )
+    if remote_by_wave:
+        gate["remote_consumer_authorizations"] = [
+            {
+                "authorization_record_sha256": (
+                    authorization.controller_authorization_record_sha256
+                ),
+                "result_record_sha256": authorization.result_record_sha256,
+                "wave_index": wave_index,
+            }
+            for wave_index, authorization in sorted(remote_by_wave.items())
+        ]
     gate["next_phase"] = next_phase
     gate["next_submit_payload_sha256"] = sha256(canonical_submit).hexdigest()
     gate["closed_record_sha256"] = _closed_record_sha256(gate)
@@ -3772,16 +4025,27 @@ def write_governed_full_score_live_p90_budget_admission(
 ) -> dict[str, Any]:
     """Write and reread a one-attempt publication P90 admission."""
 
-    output = _cluster_path(
-        _require_shared_dbfs_path(path, "live P90 admission output path")
+    compact_artifact_publisher = kwargs.pop(
+        "compact_artifact_publisher",
+        None,
     )
+    compact_artifact_resolver = kwargs.get("compact_artifact_resolver")
+    if (compact_artifact_publisher is None) != (
+        compact_artifact_resolver is None
+    ):
+        raise TypeError("live P90 compact publication requires publisher and CAS")
     record = build_governed_full_score_live_p90_budget_admission(
         execution_plan,
         **kwargs,
     )
-    _exclusive_write_bytes(output, _canonical_pretty_json_bytes(record))
+    _publish_governed_compact_file(
+        path,
+        "live P90 admission output path",
+        _canonical_pretty_json_bytes(record),
+        compact_artifact_publisher,
+    )
     return load_governed_full_score_live_p90_budget_admission(
-        output,
+        path,
         execution_plan=execution_plan,
         inventory=kwargs["inventory"],
         shard_plan=kwargs["shard_plan"],
@@ -3791,6 +4055,11 @@ def write_governed_full_score_live_p90_budget_admission(
         latency_execution_plan_record=kwargs.get(
             "latency_execution_plan_record"
         ),
+        remote_ready_authorization=kwargs.get("remote_ready_authorization"),
+        remote_consumer_authorizations=kwargs.get(
+            "remote_consumer_authorizations"
+        ),
+        compact_artifact_resolver=kwargs.get("compact_artifact_resolver"),
     )
 
 
@@ -3804,11 +4073,18 @@ def load_governed_full_score_live_p90_budget_admission(
     ledger_path: str | Path,
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     _require_latest_predecessor: bool = True,
 ) -> dict[str, Any]:
     """Reread and replay a publication P90 gate from immutable source files."""
 
-    admission_file = _governed_existing_file(path, "live P90 admission")
+    admission_file = _governed_compact_file(
+        path,
+        "live P90 admission",
+        compact_artifact_resolver,
+    )
     record = _json_object(admission_file.read_bytes(), "live P90 admission")
     if record.get("authorization_scope") != FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE:
         raise ValueError("live P90 admission is not publication-authorizing")
@@ -3835,6 +4111,9 @@ def load_governed_full_score_live_p90_budget_admission(
         ledger_path=ledger_path,
         predecessor_authorization=predecessor_authorization,
         latency_execution_plan_record=latency_execution_plan_record,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
         _require_latest_predecessor=_require_latest_predecessor,
     )
     if rebuilt != record:
@@ -3988,6 +4267,9 @@ def _governed_full_score_phase_reservation_validator(
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
     budget_admission_path: str | Path | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> tuple[
     Path,
     DatabricksLedgerPrefix,
@@ -4016,6 +4298,8 @@ def _governed_full_score_phase_reservation_validator(
         wave_index=wave_index,
         phase=phase,
         require_governed_consumer_ready_phase=True,
+        remote_ready_authorization=remote_ready_authorization,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     _require_full_score_phase_launch_authorization(
         task_bindings,
@@ -4068,6 +4352,9 @@ def _governed_full_score_phase_reservation_validator(
             ledger_path=live_path,
             predecessor_authorization=predecessor_authorization,
             latency_execution_plan_record=latency_execution_plan_record,
+            remote_ready_authorization=remote_ready_authorization,
+            remote_consumer_authorizations=remote_consumer_authorizations,
+            compact_artifact_resolver=compact_artifact_resolver,
         )
         if (
             admission.get("admitted") is not True
@@ -4104,6 +4391,8 @@ def _governed_full_score_phase_reservation_validator(
             wave_index=wave_index,
             phase=phase,
             require_governed_consumer_ready_phase=True,
+            remote_ready_authorization=remote_ready_authorization,
+            compact_artifact_resolver=compact_artifact_resolver,
         )
         _require_full_score_phase_launch_authorization(
             snapshot_bindings,
@@ -4243,14 +4532,16 @@ def _full_score_phase_intent_record(
     submit_payload_sha256: str,
     budget_admission_path: str | Path | None,
     budget_admission: Mapping[str, Any] | None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> dict[str, Any]:
     if (budget_admission_path is None) != (budget_admission is None):
         raise ValueError("full-score phase intent P90 binding is incomplete")
     admission_binding: dict[str, Any] | None = None
     if budget_admission_path is not None:
-        admission_file = _governed_existing_file(
+        admission_file = _governed_compact_file(
             budget_admission_path,
             "live P90 admission",
+            compact_artifact_resolver,
         )
         admission_bytes = admission_file.read_bytes()
         if _json_object(admission_bytes, "live P90 admission") != budget_admission:
@@ -4476,6 +4767,9 @@ def reserve_governed_full_score_phase_attempt(
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
     budget_admission_path: str | Path | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> tuple[DatabricksClusterHourLedger, FullScorePhaseSubmissionAuthorization]:
     """Durably reserve an exact phase without performing a cloud submission.
 
@@ -4502,6 +4796,9 @@ def reserve_governed_full_score_phase_attempt(
             predecessor_authorization=predecessor_authorization,
             latency_execution_plan_record=latency_execution_plan_record,
             budget_admission_path=budget_admission_path,
+            remote_ready_authorization=remote_ready_authorization,
+            remote_consumer_authorizations=remote_consumer_authorizations,
+            compact_artifact_resolver=compact_artifact_resolver,
         )
     )
     request = DatabricksRunAttemptReservationRequest(
@@ -4529,6 +4826,7 @@ def reserve_governed_full_score_phase_attempt(
         submit_payload_sha256=submit_payload_sha256,
         budget_admission_path=budget_admission_path,
         budget_admission=admission,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     _write_or_require_full_score_phase_intent(live_path, intent)
     updated, batch_authorization = (
@@ -4624,6 +4922,9 @@ def _replay_governed_full_score_phase_submission_authorization(
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
     budget_admission_path: str | Path | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     _finalize_missing_lease: bool,
 ) -> FullScorePhaseSubmissionAuthorization:
     """Reissue one historical atomic phase authority after controller restart."""
@@ -4641,6 +4942,8 @@ def _replay_governed_full_score_phase_submission_authorization(
         wave_index=wave_index,
         phase=phase,
         require_governed_consumer_ready_phase=True,
+        remote_ready_authorization=remote_ready_authorization,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     _require_full_score_phase_launch_authorization(
         bindings,
@@ -4675,6 +4978,9 @@ def _replay_governed_full_score_phase_submission_authorization(
             ledger_path=live_path,
             predecessor_authorization=predecessor_authorization,
             latency_execution_plan_record=latency_execution_plan_record,
+            remote_ready_authorization=remote_ready_authorization,
+            remote_consumer_authorizations=remote_consumer_authorizations,
+            compact_artifact_resolver=compact_artifact_resolver,
             _require_latest_predecessor=False,
         )
         if (
@@ -4716,6 +5022,7 @@ def _replay_governed_full_score_phase_submission_authorization(
         submit_payload_sha256=submit_payload_sha256,
         budget_admission_path=budget_admission_path,
         budget_admission=admission,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     _require_full_score_phase_intent(live_path, intent)
     batch_authorization = (
@@ -4797,6 +5104,9 @@ def replay_governed_full_score_phase_submission_authorization(
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
     budget_admission_path: str | Path | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> FullScorePhaseSubmissionAuthorization:
     """Strictly reissue an authority only when both durable markers exist."""
 
@@ -4813,6 +5123,9 @@ def replay_governed_full_score_phase_submission_authorization(
         predecessor_authorization=predecessor_authorization,
         latency_execution_plan_record=latency_execution_plan_record,
         budget_admission_path=budget_admission_path,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
         _finalize_missing_lease=False,
     )
 
@@ -4831,6 +5144,9 @@ def recover_governed_full_score_phase_reservation(
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
     budget_admission_path: str | Path | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> FullScorePhaseSubmissionAuthorization:
     """Close a post-reservation crash only from its preexisting exact intent."""
 
@@ -4847,6 +5163,9 @@ def recover_governed_full_score_phase_reservation(
         predecessor_authorization=predecessor_authorization,
         latency_execution_plan_record=latency_execution_plan_record,
         budget_admission_path=budget_admission_path,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
         _finalize_missing_lease=True,
     )
 
@@ -4866,6 +5185,9 @@ def resume_governed_full_score_phase_attempt(
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
     budget_admission_path: str | Path | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     opener: DatabricksURLOpener | None = None,
 ) -> tuple[dict[str, Any], FullScorePhaseSubmissionAuthorization]:
     """Resume a reserved phase without risking a second physical run."""
@@ -4883,6 +5205,9 @@ def resume_governed_full_score_phase_attempt(
         predecessor_authorization=predecessor_authorization,
         latency_execution_plan_record=latency_execution_plan_record,
         budget_admission_path=budget_admission_path,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     receipt = next(
@@ -4977,6 +5302,9 @@ def reserve_and_submit_governed_full_score_phase_attempt(
     predecessor_authorization: object,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
     budget_admission_path: str | Path | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     opener: DatabricksURLOpener | None = None,
 ) -> tuple[dict[str, Any], FullScorePhaseSubmissionAuthorization]:
     """Reserve, submit exact bytes, and persist the run receipt in one action."""
@@ -4997,6 +5325,9 @@ def reserve_and_submit_governed_full_score_phase_attempt(
             predecessor_authorization=predecessor_authorization,
             latency_execution_plan_record=latency_execution_plan_record,
             budget_admission_path=budget_admission_path,
+            remote_ready_authorization=remote_ready_authorization,
+            remote_consumer_authorizations=remote_consumer_authorizations,
+            compact_artifact_resolver=compact_artifact_resolver,
         )
     )
     response = submit_governed_full_score_phase_attempt(
@@ -5050,6 +5381,7 @@ def validate_full_score_live_p90_budget_admission(
             "matched_block_files",
             "next_submit_payload_sha256",
             "predecessor_lineage",
+            "remote_consumer_authorizations",
         ):
             replay_record.pop(field_name, None)
         replay_record["authorization_scope"] = (
@@ -5369,6 +5701,8 @@ def aggregate_full_score_shard_evidence(
     execution_plan: Mapping[str, Any] | None = None,
     final_consumer_authorization: FullScorePhaseAuthorization | None = None,
     ledger_path: str | Path | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> dict[str, Any]:
     """Aggregate every example once; shard-level means are never consumed."""
 
@@ -5381,6 +5715,7 @@ def aggregate_full_score_shard_evidence(
     normalized_evidence: list[Mapping[str, Any]] = []
     publication_lineage: dict[str, Any] | None = None
     governed_evidence_bindings: list[dict[str, Any]] = []
+    remote_authorization_bindings: list[dict[str, Any]] = []
     if authorization_scope == FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE:
         if execution_plan is None:
             raise ValueError("publication aggregation requires the execution plan")
@@ -5404,82 +5739,116 @@ def aggregate_full_score_shard_evidence(
                 ledger_path=ledger_path,
             )
         )
-        for raw_path in evidence_records:
-            if isinstance(raw_path, Mapping):
-                raise ValueError(
-                    "publication aggregation requires governed evidence directories"
-                )
-            evidence, deletion = load_governed_full_score_shard_evidence(
-                raw_path,
-                inventory=inventory,
-                shard_plan=shard_plan,
+        if evidence_records:
+            raise ValueError(
+                "publication aggregation consumes remote CAS authority, not directories"
+            )
+        if compact_artifact_resolver is None:
+            raise TypeError("publication aggregation requires a compact CAS resolver")
+        from document_kv_cache.full_score_remote_control import (
+            require_full_score_remote_consumer_evidence_authorizations,
+        )
+
+        consumer_authorizations = (
+            require_full_score_remote_consumer_evidence_authorizations(
+                ()
+                if remote_consumer_authorizations is None
+                else remote_consumer_authorizations,
                 execution_plan=execution_plan,
-                require_deletion=True,
             )
-            if deletion is None:
-                raise ValueError(
-                    "publication aggregation requires deletion evidence"
+        )
+        if (
+            not consumer_authorizations
+            or consumer_authorizations[-1].wave_index
+            != final_consumer_authorization.wave_index
+            or consumer_authorizations[-1].phase_terminal_record_sha256
+            != final_consumer_authorization.terminal_record_sha256
+        ):
+            raise ValueError(
+                "publication aggregation final ledger/tree authority drift"
+            )
+        for authorization in consumer_authorizations:
+            remote_authorization_bindings.append(
+                {
+                    "authorization_record_sha256": (
+                        authorization.controller_authorization_record_sha256
+                    ),
+                    "coordinator_run_id": authorization.coordinator_run_id,
+                    "runs_get_receipt_record_sha256": (
+                        authorization.runs_get_receipt_record_sha256
+                    ),
+                    "wave_index": authorization.wave_index,
+                }
+            )
+            for binding in authorization.evidence_bindings:
+                evidence_file = _governed_compact_file(
+                    cast(str, binding["evidence_uri"]),
+                    "aggregate shard evidence",
+                    compact_artifact_resolver,
                 )
-            if evidence.get("authorization_scope") != (
-                FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
-            ):
-                raise ValueError(
-                    "publication aggregation requires publication shard evidence"
+                deletion_file = _governed_compact_file(
+                    cast(str, binding["deletion_uri"]),
+                    "aggregate deletion attestation",
+                    compact_artifact_resolver,
                 )
-            directory = _cluster_path(
-                _require_shared_dbfs_path(
-                    raw_path,
-                    "governed aggregate evidence directory",
-                )
-            )
-            evidence_file = _governed_existing_file(
-                directory / "evidence.json",
-                "aggregate shard evidence",
-            )
-            deletion_file = _governed_existing_file(
-                directory / "deletion-attestation.json",
-                "aggregate deletion attestation",
-            )
-            evidence_bytes = evidence_file.read_bytes()
-            deletion_bytes = deletion_file.read_bytes()
-            if (
-                _json_object(evidence_bytes, "aggregate shard evidence")
-                != evidence
-                or _json_object(
+                evidence_bytes = evidence_file.read_bytes()
+                deletion_bytes = deletion_file.read_bytes()
+                evidence = _json_object(evidence_bytes, "aggregate shard evidence")
+                deletion = _json_object(
                     deletion_bytes,
                     "aggregate deletion attestation",
                 )
-                != deletion
-            ):
-                raise ValueError(
-                    "publication aggregate evidence changed after governed replay"
+                if (
+                    evidence_bytes != _canonical_pretty_json_bytes(evidence)
+                    or deletion_bytes != _canonical_pretty_json_bytes(deletion)
+                    or sha256(evidence_bytes).hexdigest()
+                    != binding["evidence_file_sha256"]
+                    or evidence.get("closed_record_sha256")
+                    != binding["evidence_record_sha256"]
+                    or sha256(deletion_bytes).hexdigest()
+                    != binding["deletion_file_sha256"]
+                    or deletion.get("closed_record_sha256")
+                    != binding["deletion_record_sha256"]
+                ):
+                    raise ValueError("publication aggregate CAS evidence binding drift")
+                _validate_shard_evidence_record(
+                    evidence,
+                    inventory_sha256=inventory.inventory_sha256,
+                    shard_plan_sha256=_required_string(
+                        shard_plan,
+                        "closed_record_sha256",
+                    ),
                 )
-            governed_evidence_bindings.append(
-                {
-                    "deletion_file_sha256": sha256(deletion_bytes).hexdigest(),
-                    "deletion_record_sha256": _required_string(
-                        deletion,
+                shard_id = _required_string(evidence, "shard_id")
+                if shard_id != binding["shard_id"]:
+                    raise ValueError("publication aggregate evidence shard binding drift")
+                _validate_full_score_deletion_attestation(
+                    deletion,
+                    evidence_record=evidence,
+                    execution_plan_sha256=_required_string(
+                        execution_plan,
                         "closed_record_sha256",
                     ),
-                    "directory_path_sha256": _canonical_sha256(
-                        {
-                            "domain": (
-                                "cachet.full_score_aggregate_evidence_path.v1"
-                            ),
-                            "path": str(raw_path),
-                        }
-                    ),
-                    "evidence_file_sha256": sha256(evidence_bytes).hexdigest(),
-                    "evidence_record_sha256": _required_string(
-                        evidence,
-                        "closed_record_sha256",
-                    ),
-                    "shard_id": _required_string(evidence, "shard_id"),
-                }
-            )
-            normalized_evidence.append(evidence)
+                    shard_id=shard_id,
+                    wave_index=authorization.wave_index,
+                )
+                governed_evidence_bindings.append(
+                    {
+                        **dict(binding),
+                        "authorization_record_sha256": (
+                            authorization.controller_authorization_record_sha256
+                        ),
+                        "wave_index": authorization.wave_index,
+                    }
+                )
+                normalized_evidence.append(evidence)
     else:
-        if final_consumer_authorization is not None or ledger_path is not None:
+        if (
+            final_consumer_authorization is not None
+            or ledger_path is not None
+            or remote_consumer_authorizations is not None
+            or compact_artifact_resolver is not None
+        ):
             raise ValueError(
                 "local-fixture aggregation cannot consume publication authority"
             )
@@ -5788,6 +6157,10 @@ def aggregate_full_score_shard_evidence(
         publication_lineage["evidence"] = sorted(
             governed_evidence_bindings,
             key=lambda item: cast(str, item["shard_id"]),
+        )
+        publication_lineage["remote_consumer_authorizations"] = sorted(
+            remote_authorization_bindings,
+            key=lambda item: cast(int, item["wave_index"]),
         )
         aggregate_record["execution_plan_sha256"] = _required_string(
             execution_plan,
@@ -8238,6 +8611,111 @@ def _validate_matched_billing_block(
             raise ValueError("live P90 matched block output-token evidence is invalid")
 
 
+def _remote_consumer_evidence_records(
+    authorization: object,
+    *,
+    completion_record: Mapping[str, Any] | None,
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    execution_plan: Mapping[str, Any],
+    expected_wave_index: int,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    if compact_artifact_resolver is None:
+        raise TypeError("remote consumer authority requires a compact CAS resolver")
+    from document_kv_cache.full_score_remote_control import (
+        require_full_score_remote_consumer_evidence_authorization,
+    )
+
+    remote_authorization = (
+        require_full_score_remote_consumer_evidence_authorization(
+            authorization,
+            execution_plan=execution_plan,
+            expected_wave_index=expected_wave_index,
+            completion_record=completion_record,
+        )
+    )
+    records: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for raw_binding in remote_authorization.evidence_bindings:
+        binding = _json_mapping(raw_binding, "remote consumer evidence binding")
+        shard_id = _required_string(binding, "shard_id")
+        evidence_uri = _required_string(binding, "evidence_uri")
+        deletion_uri = _required_string(binding, "deletion_uri")
+        evidence_file = _governed_compact_file(
+            evidence_uri,
+            "remote consumer shard evidence",
+            compact_artifact_resolver,
+        )
+        deletion_file = _governed_compact_file(
+            deletion_uri,
+            "remote consumer deletion attestation",
+            compact_artifact_resolver,
+        )
+        evidence_bytes = evidence_file.read_bytes()
+        deletion_bytes = deletion_file.read_bytes()
+        evidence = _json_object(evidence_bytes, "remote consumer shard evidence")
+        deletion = _json_object(
+            deletion_bytes,
+            "remote consumer deletion attestation",
+        )
+        if (
+            evidence_bytes != _canonical_pretty_json_bytes(evidence)
+            or deletion_bytes != _canonical_pretty_json_bytes(deletion)
+            or sha256(evidence_bytes).hexdigest()
+            != binding.get("evidence_file_sha256")
+            or evidence.get("closed_record_sha256")
+            != binding.get("evidence_record_sha256")
+            or sha256(deletion_bytes).hexdigest()
+            != binding.get("deletion_file_sha256")
+            or deletion.get("closed_record_sha256")
+            != binding.get("deletion_record_sha256")
+        ):
+            raise ValueError("remote consumer CAS evidence binding drift")
+        _validate_shard_evidence_record(
+            evidence,
+            inventory_sha256=inventory.inventory_sha256,
+            shard_plan_sha256=_required_string(
+                shard_plan,
+                "closed_record_sha256",
+            ),
+        )
+        _validate_full_score_deletion_attestation(
+            deletion,
+            evidence_record=evidence,
+            execution_plan_sha256=_required_string(
+                execution_plan,
+                "closed_record_sha256",
+            ),
+            shard_id=shard_id,
+            wave_index=expected_wave_index,
+        )
+        if shard_id in records:
+            raise ValueError("remote consumer CAS duplicates shard evidence")
+        records[shard_id] = (evidence, deletion)
+    return records
+
+
+def _remote_consumer_authorizations_by_wave(
+    authorizations: Sequence[object],
+    *,
+    execution_plan: Mapping[str, Any],
+) -> dict[int, Any]:
+    from document_kv_cache.full_score_remote_control import (
+        require_full_score_remote_consumer_evidence_authorization,
+    )
+
+    result: dict[int, Any] = {}
+    for authorization in authorizations:
+        validated = require_full_score_remote_consumer_evidence_authorization(
+            authorization,
+            execution_plan=execution_plan,
+        )
+        if validated.wave_index in result:
+            raise ValueError("remote consumer authority duplicates a wave")
+        result[validated.wave_index] = validated
+    return result
+
+
 def _validate_prior_wave_completion(
     record: Mapping[str, Any] | None,
     *,
@@ -8247,6 +8725,8 @@ def _validate_prior_wave_completion(
     replay_raw_evidence: bool,
     expected_wave_index: int,
     expected_execution_plan_sha256: str,
+    remote_consumer_authorization: object | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> None:
     if not isinstance(record, Mapping):
         raise ValueError("the prior wave must be reconciled before rendering this wave")
@@ -8268,31 +8748,74 @@ def _validate_prior_wave_completion(
     shard_ids = record.get("shard_ids")
     if not isinstance(bindings, list) or not isinstance(shard_ids, list):
         raise ValueError("prior-wave completion lacks governed evidence bindings")
+    remote_records: dict[str, tuple[dict[str, Any], dict[str, Any]]] | None = None
+    remote_bindings: dict[str, Mapping[str, Any]] = {}
+    if remote_consumer_authorization is not None:
+        remote_records = _remote_consumer_evidence_records(
+            remote_consumer_authorization,
+            completion_record=record,
+            inventory=inventory,
+            shard_plan=shard_plan,
+            execution_plan=execution_plan,
+            expected_wave_index=expected_wave_index,
+            compact_artifact_resolver=compact_artifact_resolver,
+        )
+        remote_bindings = {
+            _required_string(binding, "shard_id"): binding
+            for binding in cast(
+                Any,
+                remote_consumer_authorization,
+            ).evidence_bindings
+        }
+    elif compact_artifact_resolver is not None:
+        raise TypeError("prior-wave compact CAS requires remote consumer authority")
     observed_ids: list[str] = []
     for raw_binding in bindings:
         binding = _json_mapping(raw_binding, "prior-wave governed evidence")
         shard_id = _required_string(binding, "shard_id")
         observed_ids.append(shard_id)
-        evidence_file = _governed_existing_file(
-            _required_string(binding, "evidence_path"),
-            "prior-wave evidence path",
-        )
-        deletion_file = _governed_existing_file(
-            _required_string(binding, "deletion_path"),
-            "prior-wave deletion path",
-        )
-        if evidence_file.parent != deletion_file.parent:
-            raise ValueError("prior-wave evidence/deletion directory binding drift")
-        if sha256(evidence_file.read_bytes()).hexdigest() != binding.get(
-            "evidence_file_sha256"
-        ):
-            raise ValueError("prior-wave evidence file checksum drift")
-        if sha256(deletion_file.read_bytes()).hexdigest() != binding.get(
-            "deletion_file_sha256"
-        ):
-            raise ValueError("prior-wave deletion file checksum drift")
-        evidence = _json_object(evidence_file.read_bytes(), "prior-wave evidence")
-        deletion = _json_object(deletion_file.read_bytes(), "prior-wave deletion")
+        if remote_records is None:
+            evidence_file = _governed_existing_file(
+                _required_string(binding, "evidence_path"),
+                "prior-wave evidence path",
+            )
+            deletion_file = _governed_existing_file(
+                _required_string(binding, "deletion_path"),
+                "prior-wave deletion path",
+            )
+            if evidence_file.parent != deletion_file.parent:
+                raise ValueError(
+                    "prior-wave evidence/deletion directory binding drift"
+                )
+            evidence_bytes = evidence_file.read_bytes()
+            deletion_bytes = deletion_file.read_bytes()
+            if sha256(evidence_bytes).hexdigest() != binding.get(
+                "evidence_file_sha256"
+            ):
+                raise ValueError("prior-wave evidence file checksum drift")
+            if sha256(deletion_bytes).hexdigest() != binding.get(
+                "deletion_file_sha256"
+            ):
+                raise ValueError("prior-wave deletion file checksum drift")
+            evidence = _json_object(evidence_bytes, "prior-wave evidence")
+            deletion = _json_object(deletion_bytes, "prior-wave deletion")
+        else:
+            try:
+                evidence, deletion = remote_records[shard_id]
+            except KeyError as exc:
+                raise ValueError(
+                    "prior-wave remote evidence coverage drift"
+                ) from exc
+            remote_binding = remote_bindings[shard_id]
+            if (
+                binding.get("evidence_path") != remote_binding["evidence_uri"]
+                or binding.get("deletion_path") != remote_binding["deletion_uri"]
+                or binding.get("evidence_file_sha256")
+                != remote_binding["evidence_file_sha256"]
+                or binding.get("deletion_file_sha256")
+                != remote_binding["deletion_file_sha256"]
+            ):
+                raise ValueError("prior-wave remote evidence binding drift")
         if (
             evidence.get("authorization_scope")
             != FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
@@ -8310,17 +8833,29 @@ def _validate_prior_wave_completion(
         ):
             raise ValueError("prior-wave governed evidence binding drift")
         if replay_raw_evidence:
-            replayed_evidence, replayed_deletion = (
-                load_governed_full_score_shard_evidence(
-                    evidence_file.parent,
-                    inventory=inventory,
-                    shard_plan=shard_plan,
-                    execution_plan=execution_plan,
-                    require_deletion=True,
+            if remote_records is None:
+                replayed_evidence, replayed_deletion = (
+                    load_governed_full_score_shard_evidence(
+                        evidence_file.parent,
+                        inventory=inventory,
+                        shard_plan=shard_plan,
+                        execution_plan=execution_plan,
+                        require_deletion=True,
+                    )
                 )
-            )
-            if replayed_evidence != evidence or replayed_deletion != deletion:
-                raise ValueError("prior-wave raw/deletion evidence does not replay")
+                if replayed_evidence != evidence or replayed_deletion != deletion:
+                    raise ValueError(
+                        "prior-wave raw/deletion evidence does not replay"
+                    )
+            else:
+                _validate_shard_evidence_record(
+                    evidence,
+                    inventory_sha256=inventory.inventory_sha256,
+                    shard_plan_sha256=_required_string(
+                        shard_plan,
+                        "closed_record_sha256",
+                    ),
+                )
     if observed_ids != sorted(cast(list[str], shard_ids)):
         raise ValueError("prior-wave governed evidence coverage drift")
 
@@ -8496,6 +9031,7 @@ def _validate_live_p90_budget_admission(
     expected_next_phase: str,
     expected_next_wave_reserved_gpu_hours: float,
     require_publication: bool,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> None:
     if not isinstance(record, Mapping):
         raise ValueError("nonzero waves require a closed live P90 budget admission")
@@ -8579,9 +9115,10 @@ def _validate_live_p90_budget_admission(
         if shard_id in observed_ids or shard_id not in expected_blocks:
             raise ValueError("live P90 matched-block file coverage drift")
         observed_ids.add(shard_id)
-        block_file = _governed_existing_file(
+        block_file = _governed_compact_file(
             _required_string(binding, "path"),
             "matched billing block",
+            compact_artifact_resolver,
         )
         if sha256(block_file.read_bytes()).hexdigest() != binding.get("file_sha256"):
             raise ValueError("live P90 matched-block file checksum drift")
@@ -9809,6 +10346,17 @@ def _require_shared_dbfs_path(value: Any, field_name: str) -> str:
     return raw
 
 
+def _databricks_worker_mount_path(value: Any) -> str:
+    """Render a worker mount string without dereferencing it on the controller."""
+
+    raw = _require_shared_dbfs_path(value, "Databricks worker artifact URI")
+    if raw.startswith("dbfs:/Volumes/"):
+        return "/Volumes/" + raw.removeprefix("dbfs:/Volumes/")
+    if raw.startswith("dbfs:/"):
+        return "/dbfs/" + raw.removeprefix("dbfs:/").lstrip("/")
+    return raw
+
+
 def _require_local_disk_path(value: Any, field_name: str) -> str:
     """Require an ephemeral, traversal-free Databricks local-disk path."""
 
@@ -9998,10 +10546,60 @@ def _rename_file_no_follow(
         os.close(parent_descriptor)
 
 
-def _governed_existing_file(value: str | Path, field_name: str) -> Path:
+def _governed_existing_file(
+    value: str | Path,
+    field_name: str,
+    *,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+) -> Path:
     raw = _require_shared_dbfs_path(value, field_name)
-    path = _cluster_path(raw)
-    _require_regular_file_no_follow(path, f"{field_name} DBFS path")
+    path = (
+        _cluster_path(raw)
+        if compact_artifact_resolver is None
+        else Path(compact_artifact_resolver(raw)).expanduser().absolute()
+    )
+    _require_regular_file_no_follow(path, f"{field_name} governed path")
+    return path
+
+
+def _governed_compact_file(
+    value: str | Path,
+    field_name: str,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+) -> Path:
+    """Preserve the legacy two-argument seam when no Mac CAS is supplied."""
+
+    if compact_artifact_resolver is None:
+        return _governed_existing_file(value, field_name)
+    raw = _require_shared_dbfs_path(value, field_name)
+    path = Path(compact_artifact_resolver(raw)).expanduser().absolute()
+    _require_regular_file_no_follow(
+        path,
+        f"{field_name} compact CAS path",
+    )
+    return path
+
+
+def _publish_governed_compact_file(
+    value: str | Path,
+    field_name: str,
+    content: bytes,
+    compact_artifact_publisher: FullScoreCompactArtifactPublisher | None,
+) -> Path:
+    """Publish one immutable compact file locally or through remote CAS I/O."""
+
+    raw = _require_shared_dbfs_path(value, field_name)
+    if compact_artifact_publisher is None:
+        path = _cluster_path(raw)
+        _write_or_require_exact_bytes(path, content, field_name=field_name)
+    else:
+        path = Path(compact_artifact_publisher(raw, content)).expanduser().absolute()
+        _require_regular_file_no_follow(
+            path,
+            f"{field_name} compact CAS path",
+        )
+        if path.read_bytes() != content:
+            raise ValueError(f"{field_name} compact publisher byte drift")
     return path
 
 
@@ -10101,6 +10699,8 @@ def _validated_full_score_phase_submit_payload(
     wave_index: int,
     phase: str,
     require_governed_consumer_ready_phase: bool = False,
+    remote_ready_authorization: object | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> list[dict[str, Any]]:
     _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
     if phase not in {"producer", "consumer"}:
@@ -10240,9 +10840,10 @@ def _validated_full_score_phase_submit_payload(
             parameter_bindings["worker_payload_uri"],
             "full-score worker payload URI",
         )
-        worker_payload_file = _governed_existing_file(
+        worker_payload_file = _governed_compact_file(
             worker_payload_uri,
             "full-score worker payload",
+            compact_artifact_resolver,
         )
         worker_payload_raw = worker_payload_file.read_bytes()
         worker_payload_file_sha256 = sha256(worker_payload_raw).hexdigest()
@@ -10340,9 +10941,10 @@ def _validated_full_score_phase_submit_payload(
             "expected_producer_phase_completion_sha256"
         )
         if phase == "consumer":
-            completion_file = _governed_existing_file(
+            completion_file = _governed_compact_file(
                 cast(str, completion_uri),
                 "producer-phase completion task input",
+                compact_artifact_resolver,
             )
             completion_record = _json_object(
                 completion_file.read_bytes(),
@@ -10411,13 +11013,43 @@ def _validated_full_score_phase_submit_payload(
                 execution_plan=execution_plan,
                 expected_wave_index=wave_index,
             )
-            _validate_governed_producer_ready_phase(
-                completion,
-                payloads=worker_payload_records,
-                inventory=inventory,
-                shard_plan=shard_plan,
-                execution_plan=execution_plan,
-            )
+            if remote_ready_authorization is None:
+                _validate_governed_producer_ready_phase(
+                    completion,
+                    payloads=worker_payload_records,
+                    inventory=inventory,
+                    shard_plan=shard_plan,
+                    execution_plan=execution_plan,
+                )
+            else:
+                from document_kv_cache.full_score_remote_control import (
+                    require_full_score_remote_ready_authorization,
+                )
+
+                durable_roots = {
+                    _required_string(payload, "durable_output_root")
+                    for payload in worker_payload_records
+                }
+                if len(durable_roots) != 1:
+                    raise ValueError(
+                        "consumer worker payloads do not share one durable root"
+                    )
+                require_full_score_remote_ready_authorization(
+                    remote_ready_authorization,
+                    execution_plan_sha256=_required_string(
+                        execution_plan,
+                        "closed_record_sha256",
+                    ),
+                    wave_index=wave_index,
+                    durable_output_root=next(iter(durable_roots)),
+                    completion_uri=_required_string(
+                        consumer_completion_bindings[0],
+                        "path",
+                    ),
+                    completion_record=completion,
+                )
+    elif remote_ready_authorization is not None:
+        raise ValueError("producer phase cannot consume remote ready authority")
     bindings.sort(key=lambda item: cast(int, item["worker_index"]))
     return bindings
 
@@ -10539,6 +11171,8 @@ def _canonical_pretty_json_bytes(record: Mapping[str, Any]) -> bytes:
 
 def _cluster_path(value: str | Path) -> Path:
     raw = str(value)
+    if raw.startswith("dbfs:/Volumes/"):
+        return Path("/Volumes") / raw.removeprefix("dbfs:/Volumes/")
     if raw.startswith("dbfs:/"):
         return Path("/dbfs") / raw.removeprefix("dbfs:/").lstrip("/")
     return Path(raw)
