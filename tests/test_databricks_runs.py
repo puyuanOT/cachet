@@ -43,6 +43,7 @@ from document_kv_cache.databricks_runs import (
     download_databricks_volume_file_bytes,
     get_databricks_volume_file_metadata,
     get_databricks_run,
+    get_databricks_run_output,
     list_active_databricks_runs,
     list_databricks_node_types,
     list_databricks_volume_directory,
@@ -838,6 +839,29 @@ def test_get_databricks_run_fetches_run_by_id():
     assert request.full_url == "https://dbc.example/api/2.1/jobs/runs/get?run_id=123"
     assert request.get_method() == "GET"
     assert request.data is None
+
+
+def test_get_databricks_run_output_fetches_child_run_by_id():
+    opener = _BinaryOpener(
+        json.dumps(
+            {
+            "error": "NameError: name '__file__' is not defined",
+            "metadata": {"run_id": 456},
+            }
+        ).encode()
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+
+    response = get_databricks_run_output(config, "456", opener=opener)
+
+    assert response["metadata"]["run_id"] == 456
+    request = opener.requests[0]
+    assert request.full_url == (
+        "https://dbc.example/api/2.1/jobs/runs/get-output?run_id=456"
+    )
+    assert request.get_method() == "GET"
+    assert request.data is None
+    assert opener.response.read_limits == [DATABRICKS_API_PAGE_MAX_BYTES + 1]
 
 
 def test_download_databricks_volume_file_bytes_uses_authenticated_files_api():

@@ -27,7 +27,7 @@ PUBLICATION_CAMPAIGN_RECORD_TYPE = "cachet.vllm_0271_publication_campaign.v1"
 PUBLICATION_CAMPAIGN_SCHEMA_VERSION = 1
 PUBLICATION_CAMPAIGN_ID = "vllm-0271-publication-v1"
 PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256 = (
-    "d1cd32a25f5c4129f43576827da7ed519aca5b724225a2f859b8ae07a643ecc9"
+    "f4dd1a80a523f6d0ce3e96a1c663f2f4d95c7034430c1c95147659e0b90bad34"
 )
 PUBLICATION_CAMPAIGN_ENGINE_VERSION = "0.27.1"
 PUBLICATION_CAMPAIGN_METHODS = ("baseline_prefill", "vanilla_prefill")
@@ -172,7 +172,7 @@ PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_UPPER_BOUND_GPU_HOURS = sum(
     timeout_hours * job_count
     for timeout_hours, job_count in PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_JOB_COUNTS
 )
-PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 56.5932913888889
+PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 57.867101944444464
 PUBLICATION_CAMPAIGN_LEDGER_ID = "representative-canary-823bd9d82a5c1730"
 PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256 = (
     "fd00fcc39375aa8c96dabba9e3e4c576ae2674dd911324622ef99293b9cfe865"
@@ -199,7 +199,7 @@ PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX = DatabricksLedgerPr
         "a12b5e754da84e4c7b3e0f273c14d2b79ce9cb1483b02dcc77ca522185e89dea"
     ),
 )
-PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
+PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
     cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     reservation_count=152,
@@ -207,6 +207,16 @@ PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
     terminal_actual_count=152,
     prefix_sha256=(
         "4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"
+    ),
+)
+PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
+    ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+    cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+    reservation_count=166,
+    submission_receipt_count=28,
+    terminal_actual_count=166,
+    prefix_sha256=(
+        "273aeb12c61060ca8d7850f5583f8912fa2a44ede44ddcba030da63926bff368"
     ),
 )
 PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE = (
@@ -609,6 +619,40 @@ def publication_campaign_plan_to_record(
                         "FAILED": 7,
                     },
                     "verification_source": "direct_runs_get",
+                },
+                "prefix_before_bootstrap_failure_gpu_qualification": (
+                    PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX.to_record()
+                ),
+                "bootstrap_failure_gpu_qualification": {
+                    "actual_cluster_duration_seconds": 4_585.718,
+                    "actual_gpu_hours": 1.2738105555555554,
+                    "data_security_mode": "SINGLE_USER",
+                    "failed_before_run_creation": False,
+                    "failure_class": "spark_python_task_missing_dunder_file",
+                    "failure_reason": (
+                        "all fourteen tasks failed before package installation "
+                        "because the reviewed bootstrap referenced undefined "
+                        "__file__ under Databricks spark_python_task execution"
+                    ),
+                    "plan_sha256": (
+                        "2cf4ef1092a435c1e713f2a94115021ea7069ab6295d18ce5fcb5d4a479ce997"
+                    ),
+                    "reconciliation_manifest_closed_record_sha256": (
+                        "8c7623aa2618066ea0ccedcba1d35a340308da04aaa040f89364bc4ea3d1b71c"
+                    ),
+                    "reconciliation_manifest_file_sha256": (
+                        "1d0246ece1d6f844420d22a26b729d3f0d971ca0b30c0bf1ef0b5a84dcf6f360"
+                    ),
+                    "reservation_count_delta": 14,
+                    "reviewed_runner_sha256": (
+                        "f5ee833621428d630df1a59952a485d4ac55cabf987186d98a40274a2cf8a958"
+                    ),
+                    "run_creation_count": 14,
+                    "submission_receipt_count_delta": 14,
+                    "terminal_actual_count_delta": 14,
+                    "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+                    "terminal_result_state_counts": {"FAILED": 14},
+                    "verification_source": "direct_runs_get_and_runs_get_output",
                 },
                 "retained_opening_prefix": (
                     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
@@ -1267,6 +1311,7 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE",
     "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX",
+    "PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_RECORD_TYPE",

@@ -204,6 +204,7 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'databricks_workspace_config_from_profile',
     'databricks_workspace_config_from_sdk_profile',
     'get_databricks_run',
+    'get_databricks_run_output',
     'plan_databricks_stage_and_submit',
     'put_databricks_dbfs_file',
     'read_databricks_run_submit_payload',

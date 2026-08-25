@@ -77,6 +77,7 @@ __all__ = [
     "resume_pre_reserved_databricks_run",
     "reserve_and_submit_databricks_run_json",
     "get_databricks_run",
+    "get_databricks_run_output",
     "download_databricks_volume_file_bytes",
     "stream_databricks_volume_file_sha256",
     "get_databricks_volume_file_metadata",
@@ -1111,6 +1112,40 @@ def get_databricks_run(
         "GET",
         f"/api/2.1/jobs/runs/get?{urllib.parse.urlencode({'run_id': run_id_text})}",
         opener=opener,
+    )
+
+
+def get_databricks_run_output(
+    config: DatabricksWorkspaceConfig,
+    run_id: int | str,
+    *,
+    opener: DatabricksBinaryURLOpener | None = None,
+) -> dict[str, Any]:
+    """Return one bounded direct Jobs ``runs/get-output`` response."""
+
+    run_id_text = str(run_id)
+    if not run_id_text:
+        raise ValueError("run_id must be non-empty")
+    request = _databricks_request(
+        config,
+        "GET",
+        (
+            "/api/2.1/jobs/runs/get-output?"
+            f"{urllib.parse.urlencode({'run_id': run_id_text})}"
+        ),
+        payload=None,
+    )
+    resolved_opener = (
+        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    return _bounded_databricks_json_object(
+        config,
+        request,
+        max_bytes=DATABRICKS_API_PAGE_MAX_BYTES,
+        opener=resolved_opener,
+        label="Databricks run output",
     )
 
 

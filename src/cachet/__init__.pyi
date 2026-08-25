@@ -199,6 +199,7 @@ from document_kv_cache.databricks_runs import (
     databricks_workspace_config_from_profile as databricks_workspace_config_from_profile,
     databricks_workspace_config_from_sdk_profile as databricks_workspace_config_from_sdk_profile,
     get_databricks_run as get_databricks_run,
+    get_databricks_run_output as get_databricks_run_output,
     plan_databricks_stage_and_submit as plan_databricks_stage_and_submit,
     put_databricks_dbfs_file as put_databricks_dbfs_file,
     read_databricks_run_submit_payload as read_databricks_run_submit_payload,

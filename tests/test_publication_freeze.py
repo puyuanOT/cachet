@@ -353,6 +353,15 @@ def test_source_closure_builder_propagates_the_repaired_bootstrap_pin(
         freeze.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT.encode("utf-8")
     )
     bootstrap["sha256"] = freeze.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
+    campaign = next(
+        item
+        for item in expected["references"]
+        if item["role"] == "campaign_plan"
+    )
+    campaign["byte_count"] = inputs.campaign_plan.stat().st_size
+    campaign["sha256"] = hashlib.sha256(
+        inputs.campaign_plan.read_bytes()
+    ).hexdigest()
     expected["closed_record_sha256"] = freeze._closed_record_sha256(expected)
     assert record == expected
     output = inputs.artifact_output_root / "cachet-source-closure.json"

@@ -1226,10 +1226,11 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "phases use hard cap/headroom admission"
     ) in compact_ledger_doc
     assert (
-        "retained opening is now the exact 152-reservation, 14-receipt, "
-        "152-terminal prefix"
+        "retained opening is now the exact 166-reservation, 28-receipt, "
+        "166-terminal prefix"
     ) in compact_ledger_doc
     assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
+    assert "intermediate 138/0/138 and 152/14/152 prefixes" in compact_ledger_doc
     assert "analysis.opening_ledger_provenance" in compact_ledger_doc
     assert (
         "18,292-byte observed parameters JSON versus the 10,000-byte server "
@@ -1240,7 +1241,14 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "Seven runs failed and the other seven were canceled after those failures"
     ) in compact_ledger_doc
     assert (
-        "reconciled opening balance is therefore 56.593291 GPU-hours"
+        "All 14 runs were created and all 14 tasks failed with `INTERNAL_ERROR` "
+        "before package installation"
+    ) in compact_ledger_doc
+    assert (
+        "Its 4,585.718 terminal cluster-seconds add 1.273810555556 GPU-hours"
+    ) in compact_ledger_doc
+    assert (
+        "reconciled opening balance is therefore 57.867102 GPU-hours"
     ) in compact_ledger_doc
 
     subindex_expectations = {

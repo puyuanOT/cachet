@@ -21,6 +21,7 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
@@ -59,9 +60,9 @@ def test_publication_campaign_is_the_frozen_115_job_design():
     assert record["campaign_ledger_id"] == CAMPAIGN_LEDGER_ID
     assert record["campaign_ledger_path_sha256"] == CAMPAIGN_LEDGER_PATH_SHA256
     assert record["campaign_ledger_prefix"] == CAMPAIGN_LEDGER_PREFIX.to_record()
-    assert record["campaign_ledger_prefix"]["reservation_count"] == 152
-    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 14
-    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 152
+    assert record["campaign_ledger_prefix"]["reservation_count"] == 166
+    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 28
+    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 166
     assert record["closed_record_sha256"] == PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
     assert record["campaign_opening_terminal_gpu_hours"] == (
         PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -167,7 +168,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE
             ),
             "non_generation_gpu_hours_available_after_opening_balance_and_headroom": (
-                pytest.approx(265.06139115079354)
+                pytest.approx(263.78758059523807)
             ),
             "scope": [
                 "latency_q8_handoffs",
@@ -213,7 +214,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             },
                 "launch_policy": "terminal_actual_and_hard_headroom_gated",
         },
-        "opening_terminal_gpu_hours": pytest.approx(56.5932913888889),
+        "opening_terminal_gpu_hours": pytest.approx(57.867101944444464),
         "total_latency_jobs": 115,
         "unreserved_headroom_hours": 124.0,
     }
@@ -301,6 +302,40 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "terminal_actual_count_delta": 14,
             "terminal_result_state_counts": {"CANCELED": 7, "FAILED": 7},
             "verification_source": "direct_runs_get",
+        },
+        "prefix_before_bootstrap_failure_gpu_qualification": (
+            PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX.to_record()
+        ),
+        "bootstrap_failure_gpu_qualification": {
+            "actual_cluster_duration_seconds": 4_585.718,
+            "actual_gpu_hours": 1.2738105555555554,
+            "data_security_mode": "SINGLE_USER",
+            "failed_before_run_creation": False,
+            "failure_class": "spark_python_task_missing_dunder_file",
+            "failure_reason": (
+                "all fourteen tasks failed before package installation because "
+                "the reviewed bootstrap referenced undefined __file__ under "
+                "Databricks spark_python_task execution"
+            ),
+            "plan_sha256": (
+                "2cf4ef1092a435c1e713f2a94115021ea7069ab6295d18ce5fcb5d4a479ce997"
+            ),
+            "reconciliation_manifest_closed_record_sha256": (
+                "8c7623aa2618066ea0ccedcba1d35a340308da04aaa040f89364bc4ea3d1b71c"
+            ),
+            "reconciliation_manifest_file_sha256": (
+                "1d0246ece1d6f844420d22a26b729d3f0d971ca0b30c0bf1ef0b5a84dcf6f360"
+            ),
+            "reservation_count_delta": 14,
+            "reviewed_runner_sha256": (
+                "f5ee833621428d630df1a59952a485d4ac55cabf987186d98a40274a2cf8a958"
+            ),
+            "run_creation_count": 14,
+            "submission_receipt_count_delta": 14,
+            "terminal_actual_count_delta": 14,
+            "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+            "terminal_result_state_counts": {"FAILED": 14},
+            "verification_source": "direct_runs_get_and_runs_get_output",
         },
         "retained_opening_prefix": CAMPAIGN_LEDGER_PREFIX.to_record(),
     }

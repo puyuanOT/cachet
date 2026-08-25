@@ -196,12 +196,13 @@ divergent branches. Every later phase must extend the immediately prior
 authorized prefix and acquire one atomic whole-wave lease before its first
 submission.
 
-The retained opening is now the exact 152-reservation, 14-receipt,
-152-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
-pre-run rejection, and the intermediate 138/0/138 prefix. The rejected plan
-SHA-256, rejection-evidence file SHA-256, HTTP 400 status, 18,292-byte observed
-parameters JSON versus the 10,000-byte server limit, and zero observed active
-runs remain bound in `analysis.opening_ledger_provenance`.
+The retained opening is now the exact 166-reservation, 28-receipt,
+166-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
+pre-run rejection, and the intermediate 138/0/138 and 152/14/152 prefixes. The
+rejected plan SHA-256, rejection-evidence file SHA-256, HTTP 400 status,
+18,292-byte observed parameters JSON versus the 10,000-byte server limit, and
+zero observed active runs remain bound in
+`analysis.opening_ledger_provenance`.
 
 The first live 14-job qualification batch is a second explicit provenance hop.
 All 14 submissions received run identities, but `NONE` data-security mode could
@@ -209,9 +210,23 @@ not resolve the Unity Catalog Volume bootstrap. Seven runs failed and the other
 seven were canceled after those failures. The exact intermediate prefix, batch
 plan SHA-256, direct `runs/get` reconciliation-manifest closure, 14/14/14
 transition, terminal-state counts, and 1.599130277778 actual GPU-hours are bound
-in the campaign record. The reconciled opening balance is therefore 56.593291
-GPU-hours, with zero active reservations and 967.406709 hours remaining under
-the 1,024-hour aggregate cap.
+in the campaign record.
+
+The subsequent 14-job `SINGLE_USER` batch is retained as a third explicit
+provenance hop. Plan
+`2cf4ef1092a435c1e713f2a94115021ea7069ab6295d18ce5fcb5d4a479ce997`
+used reviewed runner
+`f5ee833621428d630df1a59952a485d4ac55cabf987186d98a40274a2cf8a958`,
+whose bootstrap referenced undefined `__file__` under Databricks
+`spark_python_task` execution. All 14 runs were created and all 14 tasks failed
+with `INTERNAL_ERROR` before package installation. Direct `runs/get` and
+`runs/get-output` evidence closes as
+`8c7623aa2618066ea0ccedcba1d35a340308da04aaa040f89364bc4ea3d1b71c`
+in the exact manifest file
+`1d0246ece1d6f844420d22a26b729d3f0d971ca0b30c0bf1ef0b5a84dcf6f360`.
+Its 4,585.718 terminal cluster-seconds add 1.273810555556 GPU-hours. The
+reconciled opening balance is therefore 57.867102 GPU-hours, with zero active
+reservations and 966.132898 hours remaining under the 1,024-hour aggregate cap.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
@@ -300,8 +315,8 @@ every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
 hard cap/headroom admission. The three generation workloads contain 72,871,510
 cache-prefix tokens; at the required 35 effective
 tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
-retained ledger opens the reset with 56.593291 terminal GPU-hours, leaving only
-265.061391 hours inside the protected 900-hour envelope for qualification,
+retained ledger opens the reset with 57.867102 terminal GPU-hours, leaving only
+263.787581 hours inside the protected 900-hour envelope for qualification,
 timed latency, and full-score consumers at that generation threshold.
 
 The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);

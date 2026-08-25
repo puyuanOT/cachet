@@ -70,6 +70,7 @@ from document_kv_cache.databricks_runs import (
     bind_databricks_run_idempotency_token,
     download_databricks_volume_file_bytes,
     get_databricks_run,
+    get_databricks_run_output,
     require_databricks_run_idempotency_token,
     resume_pre_reserved_databricks_run,
     submit_pre_reserved_databricks_run,
@@ -95,6 +96,7 @@ from document_kv_cache.gpu_qualification import (
     validate_local_preflight_evidence_record,
 )
 from document_kv_cache.publication_campaign import (
+    PUBLICATION_CAMPAIGN_GPU_QUALIFICATION_JOBS,
     PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS,
     PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS,
 )
@@ -119,6 +121,30 @@ GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256: Final = (
 GPU_QUALIFICATION_LEGACY_UC_FAILURE_TERMINAL_PREFIX_SHA256: Final = (
     "4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"
 )
+GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_PLAN_SHA256: Final = (
+    "2cf4ef1092a435c1e713f2a94115021ea7069ab6295d18ce5fcb5d4a479ce997"
+)
+GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_RUNNER_SHA256: Final = (
+    "f5ee833621428d630df1a59952a485d4ac55cabf987186d98a40274a2cf8a958"
+)
+GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_SHA256: Final = (
+    "8c7623aa2618066ea0ccedcba1d35a340308da04aaa040f89364bc4ea3d1b71c"
+)
+GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_FILE_SHA256: Final = (
+    "1d0246ece1d6f844420d22a26b729d3f0d971ca0b30c0bf1ef0b5a84dcf6f360"
+)
+GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_TERMINAL_PREFIX_SHA256: Final = (
+    "273aeb12c61060ca8d7850f5583f8912fa2a44ede44ddcba030da63926bff368"
+)
+GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_REASON: Final = (
+    "all fourteen SINGLE_USER qualification tasks failed before package installation "
+    "because reviewed bootstrap "
+    "f5ee833621428d630df1a59952a485d4ac55cabf987186d98a40274a2cf8a958 "
+    "referenced undefined __file__ under Databricks spark_python_task execution"
+)
+GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_ERROR: Final = (
+    "NameError: name '__file__' is not defined"
+)
 GPU_QUALIFICATION_ARTIFACT_KEYS: Final = (
     "cachet_source_tree_sha256",
     "input_bundle_sha256",
@@ -137,6 +163,10 @@ GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE: Final = (
 GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_RECORD_TYPE: Final = (
     "cachet.gpu_qualification_failed_attempt_reconciliation.v1"
 )
+GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_RECORD_TYPE: Final = (
+    "cachet.gpu_qualification_failed_attempt_reconciliation.v2"
+)
+GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_SCHEMA_VERSION: Final = 2
 GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_REASON: Final = (
     "qualification payload used NONE access mode and could not resolve Unity Catalog "
     "Volume bootstrap; remaining pending jobs canceled after first failures"
@@ -337,7 +367,12 @@ def _bootstrap(argv: list[str]) -> list[str]:
     for key, digest in pins.items():
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise ValueError(f"invalid SHA-256 for {key}")
-    runner_path = os.path.realpath(__file__)
+    # Databricks executes ``spark_python_task`` files through a wrapper that
+    # compiles the downloaded file without defining ``__file__``.  The code
+    # object's filename is still the exact downloaded path (the wrapper opens
+    # that same path before compiling it), so use it as the fail-closed
+    # self-identity rather than depending on interpreter globals.
+    runner_path = os.path.realpath(sys._getframe().f_code.co_filename)
     if _sha256(runner_path) != pins["runner_sha256"]:
         raise ValueError("GPU qualification bootstrap runner SHA-256 mismatch")
     package_path = _cluster_path(package_uri)
@@ -772,7 +807,10 @@ def _replay_qualification_batch_marker(
     ledger_path: str | Path,
     submit_receipt_root: str | Path,
     local_preflight_binding: Mapping[str, str],
+    require_existing_marker: bool = False,
 ) -> tuple[DatabricksBatchReservationAuthorization, dict[str, Any]]:
+    if type(require_existing_marker) is not bool:
+        raise TypeError("require_existing_marker must be a bool")
     root = _validated_existing_controller_evidence_root(
         submit_receipt_root, "submit_receipt_root"
     )
@@ -843,10 +881,57 @@ def _replay_qualification_batch_marker(
         )
         if marker != expected_marker:
             raise ValueError("qualification batch marker differs from the ledger batch")
+    elif require_existing_marker:
+        raise ValueError("qualification batch marker must already exist")
     else:
         _write_canonical_exclusive(expected_marker, marker_path)
         marker = expected_marker
     return authorization, marker
+
+
+def _require_existing_qualification_batch_marker(
+    submit_receipt_root: str | Path,
+) -> None:
+    root = _validated_existing_controller_evidence_root(
+        submit_receipt_root,
+        "submit_receipt_root",
+    )
+    marker = root / _QUALIFICATION_BATCH_MARKER_FILENAME
+    if not marker.is_file() or marker.is_symlink():
+        raise ValueError("qualification batch marker must already exist")
+
+
+def _require_failed_batch_is_current_ledger_suffix(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    contracts: Sequence[Mapping[str, Any]],
+) -> None:
+    """Require an exact latest batch and an ordered terminal-resume prefix."""
+
+    require_databricks_ledger_prefix(ledger, batch_authorization.batch_prefix)
+    predecessor = batch_authorization.predecessor_prefix
+    receipt_stop = predecessor.submission_receipt_count + len(contracts)
+    terminal_stop = predecessor.terminal_actual_count + len(contracts)
+    if (
+        len(ledger.reservations)
+        != batch_authorization.batch_prefix.reservation_count
+        or len(ledger.submission_receipts) != receipt_stop
+        or len(ledger.terminal_actuals) > terminal_stop
+    ):
+        raise ValueError("failed qualification batch is not the current ledger suffix")
+    ordered_attempts = tuple(
+        str(contract["reservation_attempt_id"])
+        for contract in sorted(contracts, key=lambda item: str(item["job_id"]))
+    )
+    observed = tuple(
+        item.attempt_id
+        for item in ledger.terminal_actuals[
+            predecessor.terminal_actual_count : terminal_stop
+        ]
+    )
+    if observed != ordered_attempts[: len(observed)]:
+        raise ValueError("failed qualification terminal resume prefix is not canonical")
 
 
 def _require_qualification_phase_ledger_closure(
@@ -1438,6 +1523,360 @@ def _validated_qualification_payloads(
             }
         )
     return tuple(contracts)
+
+
+def capture_gpu_qualification_failed_attempt_evidence_v2(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    evidence_root: str | Path,
+    failure_reason: str,
+    expected_error: str,
+) -> dict[str, Any]:
+    """Capture one failed qualification batch through direct read-only APIs.
+
+    The transport is intentionally package-owned and non-injectable.  Tests may
+    monkeypatch the two package-owned read functions, but production callers
+    cannot supply fabricated responses.  The only local mutation is an atomic,
+    write-once evidence-directory publication after the complete closure has
+    validated; the campaign ledger and Databricks workspace are never mutated.
+    """
+
+    reason = _non_empty_string(failure_reason, "failure_reason")
+    error = _non_empty_string(expected_error, "expected_error")
+    output_root = _validated_fresh_controller_evidence_root(evidence_root)
+    plan, _pins = _validated_historical_qualification_plan_and_pins(plan_record)
+    contracts = _validated_qualification_payloads(plan, submit_payloads)
+    local_preflight_binding = _non_authorizing_local_preflight_binding(
+        local_preflight_evidence_path,
+        plan=plan,
+    )
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    if databricks_ledger_path_sha256(ledger_path) != plan.get(
+        "campaign_ledger_path_sha256"
+    ):
+        raise ValueError("capture ledger path differs from the qualification plan")
+    _require_existing_qualification_batch_marker(submit_receipt_root)
+    batch_authorization, batch_marker = _replay_qualification_batch_marker(
+        plan=plan,
+        contracts=contracts,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_binding=local_preflight_binding,
+        require_existing_marker=True,
+    )
+    submit_receipts = _load_submit_receipts(
+        submit_receipt_root,
+        contracts=contracts,
+        plan=plan,
+        ledger=ledger,
+        phase_batch_record_sha256=str(batch_marker["closed_record_sha256"]),
+    )
+    _require_failed_batch_is_current_ledger_suffix(
+        ledger,
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+    )
+
+    parent_runs: list[dict[str, Any]] = []
+    run_outputs: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
+    for contract, submit_receipt in zip(contracts, submit_receipts, strict=True):
+        run = get_databricks_run(config, str(submit_receipt["cloud_run_id"]))
+        run_file_sha256 = _canonical_record_file_sha256(run)
+        base_entry = _failed_attempt_reconciliation_entry(
+            run,
+            contract=contract,
+            submit_receipt=submit_receipt,
+            evidence_file_sha256=run_file_sha256,
+        )
+        task_run_id = str(base_entry["task_run_id"])
+        run_output = get_databricks_run_output(config, task_run_id)
+        entry = _failed_attempt_reconciliation_v2_entry(
+            run_output,
+            run=run,
+            base_entry=base_entry,
+            contract=contract,
+            expected_error=error,
+            evidence_file_sha256=_canonical_record_file_sha256(run_output),
+        )
+        parent_runs.append(run)
+        run_outputs.append(run_output)
+        entries.append(entry)
+
+    predicted, terminal_prefix = _predicted_failed_batch_terminal_ledger(
+        ledger,
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+        runs=parent_runs,
+        entries=entries,
+    )
+    del predicted
+    manifest: dict[str, Any] = {
+        "closed_record_sha256": "",
+        "entries": sorted(entries, key=lambda item: str(item["job_id"])),
+        "ledger_lineage": {
+            "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
+            "producer_batch_prefix": batch_authorization.batch_prefix.to_record(),
+            "terminal_prefix": terminal_prefix.to_record(),
+        },
+        "plan_sha256": plan["closed_record_sha256"],
+        "reason": reason,
+        "record_type": (
+            GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_RECORD_TYPE
+        ),
+        "schema_version": (
+            GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_SCHEMA_VERSION
+        ),
+    }
+    _seal_record(manifest)
+    _validate_failed_attempt_reconciliation_v2_manifest(
+        manifest,
+        plan=plan,
+        batch_authorization=batch_authorization,
+        expected_entries=entries,
+        expected_reason=reason,
+        expected_terminal_prefix=terminal_prefix,
+    )
+    _publish_failed_attempt_evidence_atomic(
+        output_root,
+        contracts=contracts,
+        parent_runs=parent_runs,
+        run_outputs=run_outputs,
+        manifest=manifest,
+    )
+    return manifest
+
+
+def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    runs_get_evidence_root: str | Path,
+    expected_plan_sha256: str,
+    expected_manifest_closed_record_sha256: str,
+    expected_manifest_file_sha256: str,
+    expected_terminal_prefix_sha256: str,
+    expected_failure_reason: str,
+    expected_error: str,
+) -> DatabricksClusterHourLedger:
+    """Reconcile one source-reviewed v2 failure closure without authority.
+
+    This generic core is private on purpose.  A public incident-specific wrapper
+    must source-pin every ``expected_*`` value in reviewed code; accepting those
+    values from an operational CLI would let an unreviewed manifest approve
+    itself.  Every evidence and prefix check runs before the first ledger write.
+    """
+
+    reviewed_plan_sha256 = _required_sha256(
+        expected_plan_sha256, "expected_plan_sha256"
+    )
+    reviewed_manifest_sha256 = _required_sha256(
+        expected_manifest_closed_record_sha256,
+        "expected_manifest_closed_record_sha256",
+    )
+    reviewed_manifest_file_sha256 = _required_sha256(
+        expected_manifest_file_sha256,
+        "expected_manifest_file_sha256",
+    )
+    reviewed_terminal_prefix_sha256 = _required_sha256(
+        expected_terminal_prefix_sha256,
+        "expected_terminal_prefix_sha256",
+    )
+    reason = _non_empty_string(expected_failure_reason, "expected_failure_reason")
+    error = _non_empty_string(expected_error, "expected_error")
+    plan, _pins = _validated_historical_qualification_plan_and_pins(plan_record)
+    if plan.get("closed_record_sha256") != reviewed_plan_sha256:
+        raise ValueError("failed-attempt reconciliation plan is not reviewed")
+    contracts = _validated_qualification_payloads(plan, submit_payloads)
+    local_preflight_binding = _non_authorizing_local_preflight_binding(
+        local_preflight_evidence_path,
+        plan=plan,
+    )
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    if databricks_ledger_path_sha256(ledger_path) != plan.get(
+        "campaign_ledger_path_sha256"
+    ):
+        raise ValueError("reconciliation ledger path differs from the reviewed plan")
+    _require_existing_qualification_batch_marker(submit_receipt_root)
+    batch_authorization, batch_marker = _replay_qualification_batch_marker(
+        plan=plan,
+        contracts=contracts,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_binding=local_preflight_binding,
+        require_existing_marker=True,
+    )
+    submit_receipts = _load_submit_receipts(
+        submit_receipt_root,
+        contracts=contracts,
+        plan=plan,
+        ledger=ledger,
+        phase_batch_record_sha256=str(batch_marker["closed_record_sha256"]),
+    )
+    _require_failed_batch_is_current_ledger_suffix(
+        ledger,
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+    )
+    evidence_root = _validated_existing_controller_evidence_root(
+        runs_get_evidence_root,
+        "runs_get_evidence_root",
+    )
+    expected_names = {
+        "reconciliation-manifest.json",
+        *(f"{contract['job_id']}.runs-get.json" for contract in contracts),
+        *(f"{contract['job_id']}.runs-get-output.json" for contract in contracts),
+    }
+    if {path.name for path in evidence_root.iterdir()} != expected_names:
+        raise ValueError("v2 failure evidence root is not the exact batch closure")
+
+    runs: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
+    for contract, receipt in zip(contracts, submit_receipts, strict=True):
+        run_path = evidence_root / f"{contract['job_id']}.runs-get.json"
+        run = _read_canonical_json_object_file(
+            run_path,
+            f"failed runs/get {contract['job_id']}",
+        )
+        base_entry = _failed_attempt_reconciliation_entry(
+            run,
+            contract=contract,
+            submit_receipt=receipt,
+            evidence_file_sha256=_file_sha256(run_path),
+        )
+        output_path = evidence_root / f"{contract['job_id']}.runs-get-output.json"
+        run_output = _read_canonical_json_object_file(
+            output_path,
+            f"failed runs/get-output {contract['job_id']}",
+        )
+        entry = _failed_attempt_reconciliation_v2_entry(
+            run_output,
+            run=run,
+            base_entry=base_entry,
+            contract=contract,
+            expected_error=error,
+            evidence_file_sha256=_file_sha256(output_path),
+        )
+        runs.append(run)
+        entries.append(entry)
+
+    predicted, terminal_prefix = _predicted_failed_batch_terminal_ledger(
+        ledger,
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+        runs=runs,
+        entries=entries,
+    )
+    if terminal_prefix.prefix_sha256 != reviewed_terminal_prefix_sha256:
+        raise ValueError("failed-attempt terminal prefix is not reviewed")
+    manifest_path = _validated_existing_regular_file(
+        evidence_root / "reconciliation-manifest.json",
+        "failed-attempt reconciliation v2 manifest",
+    )
+    if _file_sha256(manifest_path) != reviewed_manifest_file_sha256:
+        raise ValueError("failed-attempt reconciliation v2 manifest file is not reviewed")
+    manifest = _canonical_json_object_from_record_bytes(
+        manifest_path.read_bytes(),
+        label="failed-attempt reconciliation v2 manifest",
+    )
+    _validate_failed_attempt_reconciliation_v2_manifest(
+        manifest,
+        plan=plan,
+        batch_authorization=batch_authorization,
+        expected_entries=entries,
+        expected_reason=reason,
+        expected_terminal_prefix=terminal_prefix,
+    )
+    if manifest.get("closed_record_sha256") != reviewed_manifest_sha256:
+        raise ValueError("failed-attempt reconciliation v2 manifest is not reviewed")
+
+    ordered = sorted(
+        zip(contracts, runs, entries, strict=True),
+        key=lambda item: str(item[0]["job_id"]),
+    )
+    already_closed = len(ledger.terminal_actuals) - (
+        batch_authorization.predecessor_prefix.terminal_actual_count
+    )
+    updated = ledger
+    for index, (contract, run, entry) in enumerate(ordered):
+        if index < already_closed:
+            continue
+        updated = record_databricks_verified_run_terminal_actual_json(
+            ledger_path,
+            attempt_id=str(contract["reservation_attempt_id"]),
+            run_record=run,
+        )
+        actual = next(
+            item
+            for item in updated.terminal_actuals
+            if item.attempt_id == contract["reservation_attempt_id"]
+        )
+        expected_actual = _failed_attempt_terminal_actual(
+            run,
+            contract=contract,
+            entry=entry,
+        )
+        if actual != expected_actual:
+            raise RuntimeError("ledger actual differs from reviewed failure evidence")
+    final_prefix = _require_qualification_phase_ledger_closure(
+        updated,
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+    )
+    if final_prefix != terminal_prefix or updated != predicted:
+        raise RuntimeError("failed-attempt reconciliation final ledger drift")
+    return updated
+
+
+def reconcile_gpu_qualification_bootstrap_file_global_failure_evidence(
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    runs_get_evidence_root: str | Path,
+) -> DatabricksClusterHourLedger:
+    """Account the reviewed 2cf4 bootstrap ``__file__`` failure closure.
+
+    This incident-specific wrapper is the only public v2 mutation boundary.  It
+    pins the plan, exact retained manifest, failure cause, and resulting ledger
+    prefix in source; it cannot be redirected to caller-authored review values
+    and never issues qualification launch authority.
+    """
+
+    return _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
+        plan_record=plan_record,
+        submit_payloads=submit_payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        runs_get_evidence_root=runs_get_evidence_root,
+        expected_plan_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_PLAN_SHA256
+        ),
+        expected_manifest_closed_record_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_SHA256
+        ),
+        expected_manifest_file_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_FILE_SHA256
+        ),
+        expected_terminal_prefix_sha256=(
+            GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_TERMINAL_PREFIX_SHA256
+        ),
+        expected_failure_reason=(
+            GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_REASON
+        ),
+        expected_error=GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_ERROR,
+    )
 
 
 def reconcile_gpu_qualification_failed_attempt_evidence(
@@ -2319,6 +2758,225 @@ def _failed_attempt_reconciliation_entry(
     }
 
 
+def _failed_attempt_reconciliation_v2_entry(
+    run_output: Mapping[str, Any],
+    *,
+    run: Mapping[str, Any],
+    base_entry: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    expected_error: str,
+    evidence_file_sha256: str,
+) -> dict[str, Any]:
+    """Bind one child ``runs/get-output`` failure to its parent run entry."""
+
+    if set(run_output) != {"error", "error_trace", "metadata"}:
+        raise ValueError("failed runs/get-output response has an open schema")
+    error = _non_empty_string(run_output.get("error"), "runs/get-output error")
+    if error != expected_error:
+        raise ValueError("failed runs/get-output error differs from the reviewed cause")
+    error_trace = run_output.get("error_trace")
+    if not isinstance(error_trace, str) or not error_trace:
+        raise ValueError("runs/get-output error_trace must be a non-empty string")
+    normalized_trace = re.sub(r"\x1b\[[0-9;]*m", "", error_trace)
+    if error not in normalized_trace:
+        raise ValueError("runs/get-output trace does not contain the reviewed error")
+    metadata = _required_mapping(run_output.get("metadata"), "run-output metadata")
+    parent_run_id = _databricks_run_id(
+        base_entry.get("run_id"), "failed parent run_id"
+    )
+    task_run_id = _databricks_run_id(
+        base_entry.get("task_run_id"), "failed child run_id"
+    )
+    for field_name in ("job_run_id", "parent_run_id"):
+        if _databricks_run_id(
+            metadata.get(field_name), f"run-output metadata.{field_name}"
+        ) != parent_run_id:
+            raise ValueError(f"run-output metadata.{field_name} differs from parent")
+    if _databricks_run_id(
+        metadata.get("run_id"), "run-output metadata.run_id"
+    ) != task_run_id:
+        raise ValueError("run-output metadata.run_id differs from the child task")
+    if metadata.get("task_key") != contract.get("task_key"):
+        raise ValueError("run-output metadata.task_key differs")
+    if (
+        metadata.get("start_time") != base_entry.get("task_start_time")
+        or metadata.get("end_time") != base_entry.get("task_end_time")
+    ):
+        raise ValueError("run-output metadata interval differs from the child task")
+    metadata_tasks = metadata.get("tasks")
+    if (
+        not isinstance(metadata_tasks, list)
+        or len(metadata_tasks) != 1
+        or not isinstance(metadata_tasks[0], Mapping)
+    ):
+        raise ValueError("run-output metadata must contain exactly one task")
+    metadata_task = metadata_tasks[0]
+    if (
+        _databricks_run_id(
+            metadata_task.get("run_id"),
+            "run-output metadata task.run_id",
+        )
+        != task_run_id
+        or metadata_task.get("task_key") != contract.get("task_key")
+    ):
+        raise ValueError("run-output metadata task identity differs")
+
+    raw_tasks = run.get("tasks")
+    if (
+        not isinstance(raw_tasks, list)
+        or len(raw_tasks) != 1
+        or not isinstance(raw_tasks[0], Mapping)
+    ):
+        raise ValueError("failed runs/get must contain exactly one task")
+    observed_task = raw_tasks[0]
+    for terminal_record, label in (
+        (run, "failed parent run"),
+        (observed_task, "failed parent task"),
+        (metadata, "failed run-output metadata"),
+        (metadata_task, "failed run-output metadata task"),
+    ):
+        status = _required_mapping(terminal_record.get("status"), f"{label} status")
+        if status.get("state") != "TERMINATED":
+            raise ValueError(f"{label} status is not terminal")
+    submitted_payload = _required_mapping(contract.get("payload"), "submit payload")
+    submitted_tasks = submitted_payload.get("tasks")
+    if (
+        not isinstance(submitted_tasks, list)
+        or len(submitted_tasks) != 1
+        or not isinstance(submitted_tasks[0], Mapping)
+    ):
+        raise ValueError("submitted qualification payload task closure differs")
+    submitted_task = submitted_tasks[0]
+    if observed_task.get("spark_python_task") != submitted_task.get(
+        "spark_python_task"
+    ):
+        raise ValueError("failed runs/get spark_python_task differs from submission")
+    observed_cluster = _control_plane_launch_cluster(observed_task)
+    submitted_cluster = _required_mapping(
+        submitted_task.get("new_cluster"), "submitted cluster"
+    )
+    if any(
+        observed_cluster.get(field_name) != submitted_value
+        for field_name, submitted_value in submitted_cluster.items()
+    ):
+        raise ValueError("failed runs/get launch cluster differs from submission")
+    task_state = _required_mapping(observed_task.get("state"), "failed task state")
+    entry = dict(base_entry)
+    entry.update(
+        {
+            "run_output_error": error,
+            "run_output_error_sha256": sha256(error.encode("utf-8")).hexdigest(),
+            "run_output_error_trace_sha256": sha256(
+                error_trace.encode("utf-8")
+            ).hexdigest(),
+            "run_output_file_sha256": _required_sha256(
+                evidence_file_sha256,
+                "run_output_file_sha256",
+            ),
+            "run_output_metadata_sha256": _canonical_json_sha256(metadata),
+            "run_output_record_sha256": _canonical_json_sha256(run_output),
+            "task_life_cycle_state": task_state.get("life_cycle_state"),
+            "task_result_state": task_state.get("result_state"),
+            "task_run_id": task_run_id,
+        }
+    )
+    return entry
+
+
+def _failed_attempt_terminal_actual(
+    run: Mapping[str, Any],
+    *,
+    contract: Mapping[str, Any],
+    entry: Mapping[str, Any],
+) -> DatabricksClusterHourTerminalActual:
+    state = _required_mapping(run.get("state"), "failed runs/get state")
+    life_cycle_state = state.get("life_cycle_state")
+    result_state = state.get("result_state")
+    terminal_state: str
+    if life_cycle_state == "SKIPPED":
+        terminal_state = "skipped"
+    elif life_cycle_state in {"INTERNAL_ERROR", "BLOCKED"}:
+        terminal_state = "internal_error"
+    else:
+        terminal_states = {
+            "CANCELED": "canceled",
+            "EXCLUDED": "skipped",
+            "FAILED": "failed",
+            "TIMEDOUT": "timed_out",
+            "UPSTREAM_FAILED": "failed",
+        }
+        resolved_terminal_state = (
+            terminal_states.get(result_state)
+            if isinstance(result_state, str)
+            else None
+        )
+        if life_cycle_state != "TERMINATED" or resolved_terminal_state is None:
+            raise ValueError("failed runs/get terminal state is unsupported")
+        terminal_state = resolved_terminal_state
+    return DatabricksClusterHourTerminalActual(
+        attempt_id=str(contract["reservation_attempt_id"]),
+        terminal_state=terminal_state,
+        actual_cluster_duration_seconds=float(
+            entry["actual_cluster_duration_seconds"]
+        ),
+        verification_source="direct_databricks_runs_get",
+        run_id=_databricks_run_id(entry.get("run_id"), "failed run_id"),
+        submit_payload_sha256=_required_sha256(
+            contract.get("submit_payload_sha256"),
+            "submit_payload_sha256",
+        ),
+        control_plane_status_sha256=_required_sha256(
+            entry.get("control_plane_status_sha256"),
+            "control_plane_status_sha256",
+        ),
+    )
+
+
+def _predicted_failed_batch_terminal_ledger(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    contracts: Sequence[Mapping[str, Any]],
+    runs: Sequence[Mapping[str, Any]],
+    entries: Sequence[Mapping[str, Any]],
+) -> tuple[DatabricksClusterHourLedger, DatabricksLedgerPrefix]:
+    if len(contracts) != len(runs) or len(contracts) != len(entries):
+        raise ValueError("failed batch prediction requires complete parallel inputs")
+    _require_failed_batch_is_current_ledger_suffix(
+        ledger,
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+    )
+    ordered = sorted(
+        zip(contracts, runs, entries, strict=True),
+        key=lambda item: str(item[0]["job_id"]),
+    )
+    predecessor_terminal_count = (
+        batch_authorization.predecessor_prefix.terminal_actual_count
+    )
+    already_closed = len(ledger.terminal_actuals) - predecessor_terminal_count
+    if already_closed < 0 or already_closed > len(ordered):
+        raise ValueError("failed batch terminal count is outside its exact closure")
+    predicted = ledger
+    for index, (contract, run, entry) in enumerate(ordered):
+        actual = _failed_attempt_terminal_actual(
+            run,
+            contract=contract,
+            entry=entry,
+        )
+        if index < already_closed:
+            if ledger.terminal_actuals[predecessor_terminal_count + index] != actual:
+                raise ValueError("existing failed terminal prefix differs from evidence")
+            continue
+        predicted = predicted.record_terminal_actual(actual)
+    terminal_prefix = _require_qualification_phase_ledger_closure(
+        predicted,
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+    )
+    return predicted, terminal_prefix
+
+
 def _validate_failed_attempt_reconciliation_manifest(
     manifest: Mapping[str, Any],
     *,
@@ -2357,6 +3015,55 @@ def _validate_failed_attempt_reconciliation_manifest(
     ordered_expected = sorted(expected_entries, key=lambda item: str(item["job_id"]))
     if not isinstance(entries, list) or entries != ordered_expected:
         raise ValueError("failed-attempt reconciliation manifest entries differ")
+
+
+def _validate_failed_attempt_reconciliation_v2_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    expected_entries: Sequence[Mapping[str, Any]],
+    expected_reason: str,
+    expected_terminal_prefix: DatabricksLedgerPrefix,
+) -> None:
+    if set(manifest) != {
+        "closed_record_sha256",
+        "entries",
+        "ledger_lineage",
+        "plan_sha256",
+        "reason",
+        "record_type",
+        "schema_version",
+    }:
+        raise ValueError("failed-attempt reconciliation v2 manifest has an open schema")
+    _require_closed_record_digest(manifest, "failed-attempt reconciliation v2 manifest")
+    if (
+        manifest.get("record_type")
+        != GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_RECORD_TYPE
+        or manifest.get("schema_version")
+        != GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_SCHEMA_VERSION
+        or manifest.get("plan_sha256") != plan.get("closed_record_sha256")
+        or manifest.get("reason") != expected_reason
+    ):
+        raise ValueError("failed-attempt reconciliation v2 identity differs")
+    entries = manifest.get("entries")
+    ordered_expected = sorted(expected_entries, key=lambda item: str(item["job_id"]))
+    if not isinstance(entries, list) or entries != ordered_expected:
+        raise ValueError("failed-attempt reconciliation v2 entries differ")
+    lineage = _required_mapping(manifest.get("ledger_lineage"), "ledger_lineage")
+    if set(lineage) != {
+        "predecessor_prefix",
+        "producer_batch_prefix",
+        "terminal_prefix",
+    }:
+        raise ValueError("failed-attempt reconciliation v2 lineage has an open schema")
+    expected_lineage = {
+        "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
+        "producer_batch_prefix": batch_authorization.batch_prefix.to_record(),
+        "terminal_prefix": expected_terminal_prefix.to_record(),
+    }
+    if dict(lineage) != expected_lineage:
+        raise ValueError("failed-attempt reconciliation v2 ledger lineage differs")
 
 
 def _validate_result_submission_binding(
@@ -2810,6 +3517,32 @@ def _validated_plan_and_pins(
         expected_campaign_id=campaign_id,
         expected_artifact_pins=pins,
     )
+    return plan, pins
+
+
+def _validated_historical_qualification_plan_and_pins(
+    plan_record: Mapping[str, Any],
+) -> tuple[dict[str, Any], GPUQualificationArtifactPins]:
+    """Validate a closed historical plan using the pins sealed inside it.
+
+    Historical incident evidence remains replayable after the campaign opening
+    advances.  The incident mutation boundary separately source-pins the whole
+    plan digest; rebuilding through current campaign constants would reject
+    that already-reviewed history.
+    """
+
+    if not isinstance(plan_record, Mapping):
+        raise TypeError("plan_record must be a mapping")
+    plan = _json_object(plan_record, "historical plan_record")
+    if plan.get("record_type") != GPU_QUALIFICATION_PLAN_RECORD_TYPE:
+        raise ValueError("unexpected historical GPU qualification record_type")
+    if plan.get("schema_version") != GPU_QUALIFICATION_SCHEMA_VERSION:
+        raise ValueError("unexpected historical GPU qualification schema_version")
+    _non_empty_string(plan.get("campaign_id"), "campaign_id")
+    _require_closed_record_digest(plan, "historical GPU qualification plan")
+    pins = pins_from_plan_record(plan)
+    if len(_planned_jobs(plan)) != PUBLICATION_CAMPAIGN_GPU_QUALIFICATION_JOBS:
+        raise ValueError("historical qualification plan job closure differs")
     return plan, pins
 
 
@@ -3505,6 +4238,11 @@ def _canonical_json_sha256(value: Any) -> str:
     return sha256(_canonical_stdlib_json_bytes(value, pretty=False)).hexdigest()
 
 
+def _canonical_record_file_sha256(value: Mapping[str, Any]) -> str:
+    content = (canonical_gpu_qualification_json(value) + "\n").encode("utf-8")
+    return sha256(content).hexdigest()
+
+
 def _seal_record(record: dict[str, Any]) -> None:
     if "closed_record_sha256" not in record:
         raise ValueError("sealed record is missing closed_record_sha256")
@@ -3646,6 +4384,55 @@ def _publish_terminal_receipts_atomic(
         for receipt in receipts:
             job_id = _safe_id(receipt.get("job_id"), "terminal receipt job_id")
             _write_canonical_exclusive(receipt, staging_root / f"{job_id}.json")
+        _fsync_directory(staging_root)
+        os.rename(staging_root, root)
+        _fsync_directory(root.parent)
+    except BaseException:
+        if staging_root.exists() and not staging_root.is_symlink():
+            shutil.rmtree(staging_root)
+            _fsync_directory(staging_root.parent)
+        raise
+
+
+def _publish_failed_attempt_evidence_atomic(
+    root: Path,
+    *,
+    contracts: Sequence[Mapping[str, Any]],
+    parent_runs: Sequence[Mapping[str, Any]],
+    run_outputs: Sequence[Mapping[str, Any]],
+    manifest: Mapping[str, Any],
+) -> None:
+    """Publish a complete 2-file-per-job failure closure atomically."""
+
+    if len(contracts) != len(parent_runs) or len(contracts) != len(run_outputs):
+        raise ValueError("failed-attempt evidence publication is incomplete")
+    _validated_fresh_controller_evidence_root(root)
+    closure_digest = _required_sha256(
+        manifest.get("closed_record_sha256"),
+        "failed-attempt manifest closed_record_sha256",
+    )
+    staging = root.with_name(f".{root.name}.staging-{closure_digest[:16]}")
+    staging_root = _create_fresh_controller_evidence_root(staging)
+    try:
+        for contract, run, run_output in zip(
+            contracts,
+            parent_runs,
+            run_outputs,
+            strict=True,
+        ):
+            job_id = _safe_id(contract.get("job_id"), "failed-attempt job_id")
+            _write_canonical_exclusive(
+                run,
+                staging_root / f"{job_id}.runs-get.json",
+            )
+            _write_canonical_exclusive(
+                run_output,
+                staging_root / f"{job_id}.runs-get-output.json",
+            )
+        _write_canonical_exclusive(
+            manifest,
+            staging_root / "reconciliation-manifest.json",
+        )
         _fsync_directory(staging_root)
         os.rename(staging_root, root)
         _fsync_directory(root.parent)
@@ -4131,6 +4918,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "GPU_QUALIFICATION_ARTIFACT_KEYS",
+    "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_ERROR",
+    "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_SHA256",
+    "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_FILE_SHA256",
+    "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_PLAN_SHA256",
+    "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_REASON",
+    "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_RUNNER_SHA256",
+    "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_TERMINAL_PREFIX_SHA256",
     "GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT",
     "GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256",
     "GPU_QUALIFICATION_DATABRICKS_PURPOSE",
@@ -4138,17 +4932,20 @@ __all__ = [
     "GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES",
     "GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS",
     "GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_RECORD_TYPE",
+    "GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_RECORD_TYPE",
     "GPU_QUALIFICATION_LOCAL_WORK_ROOT",
     "GPU_QUALIFICATION_OUTPUT_FILENAME",
     "GPU_QUALIFICATION_SUBMIT_RECEIPT_RECORD_TYPE",
     "GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE",
     "GPUQualificationLaunchAuthorization",
     "GPUQualificationSentinelRunner",
+    "capture_gpu_qualification_failed_attempt_evidence_v2",
     "collect_gpu_qualification_evidence",
     "execute_gpu_qualification_job",
     "gpu_qualification_reservation_attempt_id",
     "main",
     "pins_from_plan_record",
+    "reconcile_gpu_qualification_bootstrap_file_global_failure_evidence",
     "reconcile_gpu_qualification_failed_attempt_evidence",
     "replay_gpu_qualification_launch_authorization",
     "render_gpu_qualification_submit_payloads",
