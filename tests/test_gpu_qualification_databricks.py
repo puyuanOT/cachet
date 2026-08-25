@@ -1,8 +1,10 @@
+import base64
 import hashlib
 import inspect
 import json
 import shutil
 import subprocess
+import zlib
 from datetime import UTC, datetime
 from dataclasses import replace
 from pathlib import Path
@@ -40,7 +42,9 @@ from document_kv_cache.gpu_qualification_databricks import (
     GPU_QUALIFICATION_ARTIFACT_KEYS,
     GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT,
     GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
+    GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES,
     GPU_QUALIFICATION_LOCAL_WORK_ROOT,
+    GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE,
     GPUQualificationLaunchAuthorization,
     collect_gpu_qualification_evidence,
     execute_gpu_qualification_job,
@@ -49,6 +53,7 @@ from document_kv_cache.gpu_qualification_databricks import (
     resume_gpu_qualification_job_submissions,
     require_gpu_qualification_launch_authorization,
     submit_gpu_qualification_jobs,
+    validate_gpu_qualification_submission_rejection_record,
     write_gpu_qualification_bootstrap_runner,
 )
 from document_kv_cache.publication_campaign import (
@@ -219,6 +224,40 @@ def _artifact_uris(root: str = "dbfs:/cachet/qualification") -> dict[str, str]:
     }
 
 
+def _publication_artifact_uris() -> dict[str, str]:
+    pins = _pins().to_record()
+    root = (
+        "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/"
+        "kv_cache_storage_benchmark/vllm_0271_publication_v1/inputs"
+    )
+    return {
+        "cachet_source_tree_sha256": (
+            f"{root}/cachet-source/{pins['cachet_source_tree_sha256']}/"
+            "cachet-source-closure.json"
+        ),
+        "input_bundle_sha256": (
+            f"{root}/main-latency/{pins['input_bundle_sha256']}"
+        ),
+        "package_wheel_sha256": (
+            f"{root}/cachet-wheel/{pins['package_wheel_sha256']}/"
+            "cachet_kv-0.2.0-py3-none-any.whl"
+        ),
+        "patched_vllm_wheel_sha256": (
+            f"{root}/vllm-wheel/{pins['patched_vllm_wheel_sha256']}/"
+            "vllm-0.27.1+cu129-1cachete5m265120c48a9352b9e-"
+            "cp38-abi3-manylinux_2_28_x86_64.whl"
+        ),
+        "runner_sha256": (
+            f"{root}/runner/{pins['runner_sha256']}/"
+            "gpu-qualification-bootstrap.py"
+        ),
+        "runtime_lock_sha256": (
+            f"{root}/runtime-lock/{pins['runtime_lock_sha256']}/"
+            "vllm-0.27.1-cu129-py311-manylinux_2_35.lock"
+        ),
+    }
+
+
 def _render(plan: dict[str, Any], uris: dict[str, str]):
     return render_gpu_qualification_submit_payloads(
         plan,
@@ -228,6 +267,85 @@ def _render(plan: dict[str, Any], uris: dict[str, str]):
         artifact_uris=uris,
         output_root="dbfs:/cachet/qualification-results",
     )
+
+
+def _submission_rejection_record(plan: dict[str, Any]) -> dict[str, Any]:
+    plan_sha256 = plan["closed_record_sha256"]
+    record: dict[str, Any] = {
+        "attempt_ids": [
+            gpu_qualification_reservation_attempt_id(plan_sha256, job["job_id"])
+            for job in plan["cloud_qualification"]["jobs"]
+        ],
+        "batch_marker_file_sha256": _digest("batch-marker"),
+        "closed_record_sha256": "",
+        "failed_before_run_creation": True,
+        "first_post_intent_file_sha256": _digest("first-post-intent"),
+        "http_status": 400,
+        "observed_parameters_json_bytes": 18_292,
+        "plan_sha256": plan_sha256,
+        "reconciled_actual_gpu_seconds_per_attempt": 0,
+        "record_type": GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE,
+        "rejected_at_utc": "2026-08-25T03:50:53.503774Z",
+        "remote_active_runs_observed": 0,
+        "schema_version": 1,
+        "server_parameters_json_limit_bytes": 10_000,
+        "server_reason": "provided parameters exceeded limit",
+        "submit_payloads_file_sha256": _digest("submit-payloads"),
+    }
+    unsigned = dict(record)
+    unsigned.pop("closed_record_sha256")
+    record["closed_record_sha256"] = _digest(
+        canonical_gpu_qualification_json(unsigned)
+    )
+    return record
+
+
+def test_submission_rejection_record_uses_the_governed_closure_convention():
+    plan = _plan()
+    record = _submission_rejection_record(plan)
+    validate_gpu_qualification_submission_rejection_record(record, plan_record=plan)
+
+    blank_field_seal = dict(record)
+    blank_field_seal["closed_record_sha256"] = ""
+    blank_field_seal["closed_record_sha256"] = _digest(
+        canonical_gpu_qualification_json(blank_field_seal)
+    )
+    with pytest.raises(ValueError, match="closed_record_sha256 mismatch"):
+        validate_gpu_qualification_submission_rejection_record(
+            blank_field_seal,
+            plan_record=plan,
+        )
+
+    for field_name in (
+        "schema_version",
+        "remote_active_runs_observed",
+        "reconciled_actual_gpu_seconds_per_attempt",
+    ):
+        mutated = dict(record)
+        mutated[field_name] = False
+        unsigned = dict(mutated)
+        unsigned.pop("closed_record_sha256")
+        mutated["closed_record_sha256"] = _digest(
+            canonical_gpu_qualification_json(unsigned)
+        )
+        with pytest.raises(ValueError):
+            validate_gpu_qualification_submission_rejection_record(
+                mutated,
+                plan_record=plan,
+            )
+
+    shortened = dict(record)
+    shortened["attempt_ids"] = shortened["attempt_ids"][:-1]
+    unsigned = dict(shortened)
+    unsigned.pop("closed_record_sha256")
+    shortened["closed_record_sha256"] = _digest(
+        canonical_gpu_qualification_json(unsigned)
+    )
+    with pytest.raises(ValueError, match="attempt IDs differ"):
+        validate_gpu_qualification_submission_rejection_record(
+            shortened,
+            plan_record=plan,
+        )
 
 
 def _write_local_preflight(
@@ -333,6 +451,17 @@ def test_renderer_emits_fourteen_unique_single_task_no_retry_payloads():
         assert _option_values(parameters, "--expected-plan-sha256") == [
             plan["closed_record_sha256"]
         ]
+        encoded_plans = _option_values(parameters, "--plan-record-zlib-base64")
+        assert len(encoded_plans) == 1
+        assert "--plan-record-json" not in parameters
+        assert qualification_job._decode_qualification_plan_parameter(
+            encoded_plans[0],
+            expected_plan_sha256=plan["closed_record_sha256"],
+        ) == plan
+        assert (
+            qualification_job._qualification_parameters_json_bytes(parameters)
+            <= GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES
+        )
         assert set(_option_values(parameters, "--artifact-uri")) == {
             f"{key}={value}" for key, value in uris.items()
         }
@@ -356,6 +485,176 @@ def test_renderer_emits_fourteen_unique_single_task_no_retry_payloads():
     assert observed_job_ids == [
         job["job_id"] for job in plan["cloud_qualification"]["jobs"]
     ]
+
+
+def test_current_plan_production_parameters_stay_below_databricks_safety_cap():
+    plan = _plan()
+    uris = _publication_artifact_uris()
+    payloads = render_gpu_qualification_submit_payloads(
+        plan,
+        runner_uri=uris["runner_sha256"],
+        package_wheel_uri=uris["package_wheel_sha256"],
+        patched_vllm_wheel_uri=uris["patched_vllm_wheel_sha256"],
+        artifact_uris=uris,
+        output_root=(
+            "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/"
+            "kv_cache_storage_benchmark/vllm_0271_publication_v1/"
+            "qualification-results"
+        ),
+    )
+
+    sizes = [
+        qualification_job._qualification_parameters_json_bytes(
+            payload["tasks"][0]["spark_python_task"]["parameters"]
+        )
+        for payload in payloads
+    ]
+    assert len(payloads) == 14
+    assert max(sizes) <= GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES == 9_500
+    assert min(sizes) > 0
+
+
+def test_parameters_cap_counts_unicode_as_databricks_json_escapes():
+    plan = _plan()
+    uris = _publication_artifact_uris()
+    uris["cachet_source_tree_sha256"] += "/" + ("😀" * 200)
+
+    with pytest.raises(ValueError, match="9500-byte safety cap"):
+        render_gpu_qualification_submit_payloads(
+            plan,
+            runner_uri=uris["runner_sha256"],
+            package_wheel_uri=uris["package_wheel_sha256"],
+            patched_vllm_wheel_uri=uris["patched_vllm_wheel_sha256"],
+            artifact_uris=uris,
+            output_root="dbfs:/cachet/qualification-results",
+        )
+
+
+@pytest.mark.parametrize(
+    ("encoded", "error"),
+    [
+        ("not+strict_base64!", "strict base64url"),
+        (
+            base64.urlsafe_b64encode(b"not a zlib stream").decode("ascii"),
+            "valid zlib stream",
+        ),
+        (
+            base64.urlsafe_b64encode(
+                zlib.compress(b'{"not": "canonical"}', level=9)
+            ).decode("ascii"),
+            "not canonical JSON",
+        ),
+        (
+            base64.urlsafe_b64encode(
+                zlib.compress(
+                    b"x"
+                    * (qualification_job._QUALIFICATION_PLAN_MAX_CANONICAL_BYTES + 1),
+                    level=9,
+                )
+            ).decode("ascii"),
+            "exceeds the canonical size cap",
+        ),
+        (
+            base64.urlsafe_b64encode(zlib.compress(b"{}", level=9)[:-1]).decode(
+                "ascii"
+            ),
+            "invalid zlib closure",
+        ),
+        (
+            base64.urlsafe_b64encode(
+                zlib.compress(b"{}", level=9) + b"trailing-bytes"
+            ).decode("ascii"),
+            "invalid zlib closure",
+        ),
+        (
+            base64.urlsafe_b64encode(
+                zlib.compress(b"{}", level=9) + zlib.compress(b"{}", level=9)
+            ).decode("ascii"),
+            "invalid zlib closure",
+        ),
+    ],
+)
+def test_worker_rejects_corrupt_or_oversize_encoded_plan(
+    encoded: str,
+    error: str,
+):
+    with pytest.raises(ValueError, match=error):
+        qualification_job._decode_qualification_plan_parameter(
+            encoded,
+            expected_plan_sha256="0" * 64,
+        )
+
+
+def test_worker_decodes_only_the_exact_canonical_plan_and_sha():
+    plan = _plan()
+    canonical = canonical_gpu_qualification_json(plan)
+    encoded = qualification_job._encode_qualification_plan_parameter(canonical)
+
+    assert qualification_job._decode_qualification_plan_parameter(
+        encoded,
+        expected_plan_sha256=plan["closed_record_sha256"],
+    ) == plan
+    alternate_encoding = base64.urlsafe_b64encode(
+        zlib.compress(canonical.encode("utf-8"), level=1)
+    ).decode("ascii")
+    assert alternate_encoding != encoded
+    assert qualification_job._decode_qualification_plan_parameter(
+        alternate_encoding,
+        expected_plan_sha256=plan["closed_record_sha256"],
+    ) == plan
+    with pytest.raises(ValueError, match="SHA-256 differs"):
+        qualification_job._decode_qualification_plan_parameter(
+            encoded,
+            expected_plan_sha256="0" * 64,
+        )
+    with pytest.raises(ValueError, match="transport size cap"):
+        qualification_job._decode_qualification_plan_parameter(
+            "A" * (GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES + 1),
+            expected_plan_sha256=plan["closed_record_sha256"],
+        )
+    tampered = json.loads(canonical)
+    tampered["unsupported_methods"][0]["reason"] = "tampered"
+    tampered_encoded = qualification_job._encode_qualification_plan_parameter(
+        canonical_gpu_qualification_json(tampered)
+    )
+    with pytest.raises(ValueError, match="closed_record_sha256"):
+        qualification_job._decode_qualification_plan_parameter(
+            tampered_encoded,
+            expected_plan_sha256=plan["closed_record_sha256"],
+        )
+
+
+def test_worker_cli_decodes_compact_plan_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    plan = _plan()
+    parameters = _render(plan, _artifact_uris())[0]["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    observed: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        qualification_job,
+        "execute_gpu_qualification_job",
+        lambda **kwargs: observed.update(kwargs),
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "_cloud_cluster_id",
+        lambda: "cluster-compact-plan",
+    )
+
+    assert qualification_job.main(parameters) == 0
+    assert observed["plan_record"] == plan
+    assert observed["expected_plan_sha256"] == plan["closed_record_sha256"]
+
+    corrupt_parameters = list(parameters)
+    encoded_index = corrupt_parameters.index("--plan-record-zlib-base64") + 1
+    corrupt_parameters[encoded_index] = "not+strict_base64!"
+    observed.clear()
+    with pytest.raises(ValueError, match="strict base64url"):
+        qualification_job.main(corrupt_parameters)
+    assert observed == {}
 
 
 def test_renderer_maps_only_qualification_generation_job_to_g6e_l40s():
@@ -441,9 +740,9 @@ def test_submitter_receipt_binds_the_exact_fourteen_reserved_payloads(
         *(f"{job['job_id']}.json" for job in plan["cloud_qualification"]["jobs"]),
     }
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(ledger.reservations) == 138
+    assert len(ledger.reservations) == 152
     assert len(ledger.submission_receipts) == 14
-    assert len(ledger.terminal_actuals) == 124
+    assert len(ledger.terminal_actuals) == 138
     assert all(
         receipt["authorization_scope"]
         == "submission_identity_only_requires_direct_terminal_collection"
@@ -510,6 +809,81 @@ def test_submitter_rejects_incomplete_or_mutated_job_closure_before_post(
 @pytest.mark.parametrize(
     ("case", "error"),
     [
+        ("raw-plan", "parameters differ from the renderer"),
+        ("raw-plan-oversize", "9500-byte safety cap"),
+        ("oversize", "9500-byte safety cap"),
+        ("corrupt-encoded-plan", "parameters differ from the renderer"),
+        ("alternate-valid-encoding", "parameters differ from the renderer"),
+    ],
+)
+def test_invalid_plan_transport_rejects_before_ledger_or_post(
+    case: str,
+    error: str,
+    tmp_path: Path,
+):
+    plan = _plan()
+    payloads = list(_render(plan, _artifact_uris()))
+    mutated = json.loads(json.dumps(payloads))
+    parameters = mutated[0]["tasks"][0]["spark_python_task"]["parameters"]
+    plan_option_index = parameters.index("--plan-record-zlib-base64")
+    if case == "raw-plan":
+        parameters[plan_option_index] = "--plan-record-json"
+        parameters[plan_option_index + 1] = "{}"
+    elif case == "raw-plan-oversize":
+        parameters[plan_option_index] = "--plan-record-json"
+        parameters[plan_option_index + 1] = canonical_gpu_qualification_json(plan)
+    elif case == "oversize":
+        parameters.extend(("--unexpected", "x" * 10_000))
+    else:
+        encoded = parameters[plan_option_index + 1]
+        if case == "alternate-valid-encoding":
+            parameters[plan_option_index + 1] = base64.urlsafe_b64encode(
+                zlib.compress(
+                    canonical_gpu_qualification_json(plan).encode("utf-8"),
+                    level=1,
+                )
+            ).decode("ascii")
+        else:
+            parameters[plan_option_index + 1] = (
+                ("A" if encoded[0] != "A" else "B") + encoded[1:]
+            )
+    if case in {
+        "raw-plan",
+        "corrupt-encoded-plan",
+        "alternate-valid-encoding",
+    }:
+        mutated_payload = dict(mutated[0])
+        mutated_payload.pop("idempotency_token")
+        mutated[0] = qualification_job.bind_databricks_run_idempotency_token(
+            mutated_payload,
+            attempt_id=gpu_qualification_reservation_attempt_id(
+                plan["closed_record_sha256"],
+                plan["cloud_qualification"]["jobs"][0]["job_id"],
+            ),
+        )
+    ledger_path = tmp_path / "must-not-be-created-ledger.json"
+    receipt_root = tmp_path / "must-not-be-created-receipts"
+    opener = _SequentialOpener([{"run_id": 1}])
+
+    with pytest.raises(ValueError, match=error):
+        submit_gpu_qualification_jobs(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=mutated,
+            ledger_path=ledger_path,
+            submit_receipt_root=receipt_root,
+            local_preflight_evidence_path=tmp_path / "unused-preflight.json",
+            opener=opener,
+        )
+
+    assert not ledger_path.exists()
+    assert not receipt_root.exists()
+    assert opener.requests == []
+
+
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
         ("missing", "must be one regular file"),
         ("tampered", "closed_record_sha256 is invalid"),
         ("wrong-plan", "plan_sha256 mismatch"),
@@ -550,7 +924,7 @@ def test_submitter_rejects_invalid_local_preflight_without_ledger_or_post_side_e
         )
 
     assert ledger_path.read_bytes() == ledger_before
-    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 124
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 138
     assert opener.requests == []
     assert not receipt_root.exists()
 
@@ -584,7 +958,7 @@ def test_submitter_preexisting_phase_lease_leaves_zero_reservations_and_posts(
         )
     assert opener.requests == []
     assert (
-        len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 124
+        len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 138
     )
 
 
@@ -621,7 +995,7 @@ def test_resume_recovers_post_reservation_pre_marker_controller_crash(
             opener=lambda *_args, **_kwargs: pytest.fail("crash occurs before POST"),
         )
     crashed = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(crashed.reservations) == 138
+    assert len(crashed.reservations) == 152
     assert len(crashed.submission_receipts) == 0
     assert {item.name for item in receipt_root.iterdir()} == {"phase-lease.json"}
 
@@ -719,7 +1093,7 @@ def test_resumer_rejects_invalid_local_preflight_without_reservation_or_post_sid
         )
 
     assert ledger_path.read_bytes() == ledger_before_resume
-    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 138
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 152
     assert opener.requests == []
     assert {path.name for path in receipt_root.iterdir()} == {"phase-lease.json"}
 
@@ -1262,7 +1636,7 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
     assert evidence_path.is_file()
     assert len(list(terminal_root.glob("*.json"))) == 14
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(ledger.terminal_actuals) == 138
+    assert len(ledger.terminal_actuals) == 152
     assert ledger.active_reserved_cluster_hours == 0.0
     qualification_attempt_ids = {
         contract["reservation_attempt_id"]
@@ -1352,7 +1726,7 @@ def test_collector_reconciles_a_never_started_failure_before_rejecting_campaign(
         )
 
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(ledger.terminal_actuals) == 125
+    assert len(ledger.terminal_actuals) == 139
     failed_actual = next(
         item
         for item in ledger.terminal_actuals
@@ -1390,6 +1764,10 @@ def test_bootstrap_writer_publishes_exact_content_addressed_stdlib_script(
 ):
     destination = tmp_path / "gpu-qualification-bootstrap.py"
 
+    assert GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256 == (
+        "acec0bf48ffcd67ee005e2c017b86540e3601ab3d9739f71f243069cae9007db"
+    )
+    assert _pins().runner_sha256 == GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
     observed = write_gpu_qualification_bootstrap_runner(destination)
 
     assert observed == GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256

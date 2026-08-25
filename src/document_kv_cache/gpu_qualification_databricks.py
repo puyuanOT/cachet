@@ -15,6 +15,8 @@ publishing a canonical job-result record.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
@@ -22,6 +24,7 @@ import shutil
 import stat
 import subprocess
 import urllib.request
+import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -100,6 +103,7 @@ GPU_QUALIFICATION_DATABRICKS_PURPOSE: Final = "cachet-vllm-0271-gpu-qualificatio
 GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS: Final = (
     DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
 )
+GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES: Final = 9_500
 GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE: Final = "NONE"
 GPU_QUALIFICATION_ARTIFACT_KEYS: Final = (
     "cachet_source_tree_sha256",
@@ -112,6 +116,9 @@ GPU_QUALIFICATION_ARTIFACT_KEYS: Final = (
 GPU_QUALIFICATION_OUTPUT_FILENAME: Final = "gpu-job-result.json"
 GPU_QUALIFICATION_SUBMIT_RECEIPT_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_submit_receipt.v1"
+)
+GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_qualification_submission_rejection.v1"
 )
 GPU_QUALIFICATION_LOCAL_WORK_ROOT: Final = "/local_disk0/cachet-vllm-0271-qualification"
 _QUALIFICATION_PHASE_LEASE_FILENAME: Final = "phase-lease.json"
@@ -131,6 +138,32 @@ _QUALIFICATION_PREFLIGHT_BINDING_KEYS: Final = frozenset(
         "file_sha256",
         "path_sha256",
         "record_sha256",
+    }
+)
+_QUALIFICATION_PLAN_PARAMETER_OPTION: Final = "--plan-record-zlib-base64"
+_QUALIFICATION_PLAN_ZLIB_LEVEL: Final = 9
+_QUALIFICATION_PLAN_MAX_CANONICAL_BYTES: Final = 64 * 1024
+_QUALIFICATION_PLAN_MAX_ENCODED_CHARS: Final = (
+    GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES
+)
+_QUALIFICATION_SUBMISSION_REJECTION_KEYS: Final = frozenset(
+    {
+        "attempt_ids",
+        "batch_marker_file_sha256",
+        "closed_record_sha256",
+        "failed_before_run_creation",
+        "first_post_intent_file_sha256",
+        "http_status",
+        "observed_parameters_json_bytes",
+        "plan_sha256",
+        "reconciled_actual_gpu_seconds_per_attempt",
+        "record_type",
+        "rejected_at_utc",
+        "remote_active_runs_observed",
+        "schema_version",
+        "server_parameters_json_limit_bytes",
+        "server_reason",
+        "submit_payloads_file_sha256",
     }
 )
 
@@ -444,7 +477,9 @@ def render_gpu_qualification_submit_payloads(
     if not jobs or len(jobs) > GPU_QUALIFICATION_MAX_CLOUD_JOBS:
         raise ValueError("GPU qualification plan has an invalid cloud job count")
 
-    canonical_plan = canonical_gpu_qualification_json(plan)
+    encoded_plan = _encode_qualification_plan_parameter(
+        canonical_gpu_qualification_json(plan)
+    )
     payloads: list[dict[str, Any]] = []
     output_paths: set[str] = set()
     for planned_job in jobs:
@@ -463,7 +498,7 @@ def render_gpu_qualification_submit_payloads(
         output_paths.add(output_json)
 
         parameters = _runner_parameters(
-            canonical_plan=canonical_plan,
+            encoded_plan=encoded_plan,
             plan_digest=plan_digest,
             job_id=job_id,
             output_json=output_json,
@@ -1144,7 +1179,9 @@ def _validated_qualification_payloads(
     plan_digest = _required_sha256(
         plan.get("closed_record_sha256"), "plan.closed_record_sha256"
     )
-    canonical_plan = canonical_gpu_qualification_json(plan)
+    encoded_plan = _encode_qualification_plan_parameter(
+        canonical_gpu_qualification_json(plan)
+    )
     contracts: list[dict[str, Any]] = []
     for planned_job, raw_payload in zip(jobs, submit_payloads, strict=True):
         payload = _json_object(raw_payload, "qualification submit payload")
@@ -1203,6 +1240,7 @@ def _validated_qualification_payloads(
             not isinstance(item, str) for item in parameters
         ):
             raise ValueError("qualification parameters must be strings")
+        _require_qualification_parameters_size(parameters)
         runner_uri = _one_parameter(parameters, "--runner-uri")
         package_wheel_uri = _one_parameter(parameters, "--package-wheel-uri")
         patched_wheel_uri = _one_parameter(parameters, "--patched-vllm-wheel-uri")
@@ -1225,7 +1263,7 @@ def _validated_qualification_payloads(
         attempt_id = gpu_qualification_reservation_attempt_id(plan_digest, job_id)
         require_databricks_run_idempotency_token(payload, attempt_id=attempt_id)
         expected_parameters = _runner_parameters(
-            canonical_plan=canonical_plan,
+            encoded_plan=encoded_plan,
             plan_digest=plan_digest,
             job_id=job_id,
             output_json=output_json,
@@ -2304,9 +2342,200 @@ def _validated_artifact_sha256(value: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+def validate_gpu_qualification_submission_rejection_record(
+    record: Mapping[str, Any],
+    *,
+    plan_record: Mapping[str, Any],
+) -> None:
+    """Validate one immutable, pre-run Databricks submission rejection record."""
+
+    normalized = _json_object(record, "GPU qualification submission rejection")
+    if frozenset(normalized) != _QUALIFICATION_SUBMISSION_REJECTION_KEYS:
+        raise ValueError(
+            "GPU qualification submission rejection does not use the closed schema"
+        )
+    if normalized["record_type"] != GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE:
+        raise ValueError("GPU qualification submission rejection identity differs")
+    if type(normalized["schema_version"]) is not int or normalized["schema_version"] != 1:
+        raise ValueError("GPU qualification submission rejection schema differs")
+    _require_closed_record_digest(
+        normalized,
+        "GPU qualification submission rejection",
+    )
+    validated_plan = _json_object(plan_record, "historical GPU qualification plan")
+    if (
+        validated_plan.get("record_type") != GPU_QUALIFICATION_PLAN_RECORD_TYPE
+        or type(validated_plan.get("schema_version")) is not int
+        or validated_plan.get("schema_version") != GPU_QUALIFICATION_SCHEMA_VERSION
+    ):
+        raise ValueError("historical GPU qualification plan identity differs")
+    _require_closed_record_digest(
+        validated_plan,
+        "historical GPU qualification plan",
+    )
+    plan_sha256 = _required_sha256(
+        validated_plan.get("closed_record_sha256"),
+        "plan_record.closed_record_sha256",
+    )
+    if normalized["plan_sha256"] != plan_sha256:
+        raise ValueError("submission rejection plan SHA-256 differs")
+    attempts = normalized["attempt_ids"]
+    expected_attempts = [
+        gpu_qualification_reservation_attempt_id(
+            plan_sha256,
+            _safe_id(job.get("job_id"), "cloud job ID"),
+        )
+        for job in _planned_jobs(validated_plan)
+    ]
+    if attempts != expected_attempts:
+        raise ValueError("submission rejection attempt IDs differ from the plan")
+    for field_name in (
+        "batch_marker_file_sha256",
+        "first_post_intent_file_sha256",
+        "submit_payloads_file_sha256",
+    ):
+        _required_sha256(normalized[field_name], field_name)
+    if normalized["failed_before_run_creation"] is not True:
+        raise ValueError("submission rejection must precede run creation")
+    http_status = _positive_int(normalized["http_status"], "http_status")
+    if not 400 <= http_status < 500:
+        raise ValueError("submission rejection must carry a client-error HTTP status")
+    observed_bytes = _positive_int(
+        normalized["observed_parameters_json_bytes"],
+        "observed_parameters_json_bytes",
+    )
+    server_limit = _positive_int(
+        normalized["server_parameters_json_limit_bytes"],
+        "server_parameters_json_limit_bytes",
+    )
+    if observed_bytes <= server_limit:
+        raise ValueError("submission rejection must exceed the server parameter limit")
+    if (
+        _nonnegative_int(
+            normalized["remote_active_runs_observed"],
+            "remote_active_runs_observed",
+        )
+        != 0
+    ):
+        raise ValueError("submission rejection must observe zero remote active runs")
+    if (
+        _nonnegative_int(
+            normalized["reconciled_actual_gpu_seconds_per_attempt"],
+            "reconciled_actual_gpu_seconds_per_attempt",
+        )
+        != 0
+    ):
+        raise ValueError("submission rejection must reconcile zero GPU seconds")
+    _non_empty_string(normalized["server_reason"], "server_reason")
+    _parse_utc_timestamp(normalized["rejected_at_utc"], "rejected_at_utc")
+
+
+def _encode_qualification_plan_parameter(canonical_plan: str) -> str:
+    if not isinstance(canonical_plan, str):
+        raise TypeError("canonical_plan must be a string")
+    canonical_bytes = canonical_plan.encode("utf-8")
+    if len(canonical_bytes) > _QUALIFICATION_PLAN_MAX_CANONICAL_BYTES:
+        raise ValueError("canonical qualification plan exceeds the decoded size cap")
+    encoded = base64.urlsafe_b64encode(
+        zlib.compress(canonical_bytes, level=_QUALIFICATION_PLAN_ZLIB_LEVEL)
+    ).decode("ascii")
+    if len(encoded) > _QUALIFICATION_PLAN_MAX_ENCODED_CHARS:
+        raise ValueError("encoded qualification plan exceeds the transport size cap")
+    return encoded
+
+
+def _decode_qualification_plan_parameter(
+    encoded_plan: str,
+    *,
+    expected_plan_sha256: str,
+) -> dict[str, Any]:
+    expected_digest = _required_sha256(
+        expected_plan_sha256,
+        "expected_plan_sha256",
+    )
+    if not isinstance(encoded_plan, str) or not encoded_plan:
+        raise ValueError("encoded qualification plan must be a non-empty string")
+    if len(encoded_plan) > _QUALIFICATION_PLAN_MAX_ENCODED_CHARS:
+        raise ValueError("encoded qualification plan exceeds the transport size cap")
+    try:
+        encoded_bytes = encoded_plan.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("encoded qualification plan must be ASCII") from exc
+    try:
+        compressed = base64.b64decode(
+            encoded_bytes,
+            altchars=b"-_",
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("encoded qualification plan is not strict base64url") from exc
+    if base64.urlsafe_b64encode(compressed) != encoded_bytes:
+        raise ValueError("encoded qualification plan is not canonical base64url")
+    decompressor = zlib.decompressobj()
+    try:
+        canonical_bytes = decompressor.decompress(
+            compressed,
+            _QUALIFICATION_PLAN_MAX_CANONICAL_BYTES + 1,
+        )
+        if (
+            len(canonical_bytes) > _QUALIFICATION_PLAN_MAX_CANONICAL_BYTES
+            or decompressor.unconsumed_tail
+        ):
+            raise ValueError(
+                "decoded qualification plan exceeds the canonical size cap"
+            )
+        canonical_bytes += decompressor.flush()
+    except zlib.error as exc:
+        raise ValueError("encoded qualification plan is not a valid zlib stream") from exc
+    if (
+        len(canonical_bytes) > _QUALIFICATION_PLAN_MAX_CANONICAL_BYTES
+        or not decompressor.eof
+        or decompressor.unused_data
+        or decompressor.unconsumed_tail
+    ):
+        raise ValueError("encoded qualification plan has an invalid zlib closure")
+    try:
+        canonical_plan = canonical_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("decoded qualification plan is not UTF-8") from exc
+    try:
+        decoded = json.loads(canonical_plan)
+    except json.JSONDecodeError as exc:
+        raise ValueError("decoded qualification plan is not JSON") from exc
+    if not isinstance(decoded, Mapping):
+        raise ValueError("decoded qualification plan must contain an object")
+    plan = dict(decoded)
+    if canonical_gpu_qualification_json(plan) != canonical_plan:
+        raise ValueError("decoded qualification plan is not canonical JSON")
+    if plan.get("closed_record_sha256") != expected_digest:
+        raise ValueError("decoded qualification plan SHA-256 differs from expectation")
+    validated_plan, _pins = _validated_plan_and_pins(plan)
+    return validated_plan
+
+
+def _qualification_parameters_json_bytes(parameters: Sequence[str]) -> int:
+    return len(
+        json.dumps(
+            list(parameters),
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def _require_qualification_parameters_size(parameters: Sequence[str]) -> None:
+    observed_bytes = _qualification_parameters_json_bytes(parameters)
+    if observed_bytes > GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES:
+        raise ValueError(
+            "qualification parameters JSON exceeds the 9500-byte safety cap: "
+            f"{observed_bytes} bytes"
+        )
+
+
 def _runner_parameters(
     *,
-    canonical_plan: str,
+    encoded_plan: str,
     plan_digest: str,
     job_id: str,
     output_json: str,
@@ -2319,8 +2548,8 @@ def _runner_parameters(
     reservation_attempt_id: str,
 ) -> list[str]:
     parameters = [
-        "--plan-record-json",
-        canonical_plan,
+        _QUALIFICATION_PLAN_PARAMETER_OPTION,
+        encoded_plan,
         "--expected-plan-sha256",
         plan_digest,
         "--job-id",
@@ -2348,6 +2577,7 @@ def _runner_parameters(
     for key in GPU_QUALIFICATION_ARTIFACT_KEYS:
         parameters.extend(("--artifact-uri", f"{key}={artifact_uris[key]}"))
         parameters.extend(("--artifact-sha256", f"{key}={pin_mapping[key]}"))
+    _require_qualification_parameters_size(parameters)
     return parameters
 
 
@@ -3276,7 +3506,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             "write its canonical first-attempt result."
         )
     )
-    parser.add_argument("--plan-record-json", required=True)
+    parser.add_argument(_QUALIFICATION_PLAN_PARAMETER_OPTION, required=True)
     parser.add_argument("--expected-plan-sha256", required=True)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--reservation-attempt-id", required=True)
@@ -3297,9 +3527,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.attempt_number != 0 or args.retry_count != 0:
         raise ValueError("GPU qualification jobs must execute on attempt zero")
-    plan = json.loads(args.plan_record_json)
-    if not isinstance(plan, Mapping):
-        raise ValueError("--plan-record-json must contain an object")
+    plan = _decode_qualification_plan_parameter(
+        args.plan_record_zlib_base64,
+        expected_plan_sha256=args.expected_plan_sha256,
+    )
     artifact_uris = _parse_key_value_args(
         args.artifact_uri, option_name="--artifact-uri"
     )
@@ -3331,10 +3562,12 @@ __all__ = [
     "GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256",
     "GPU_QUALIFICATION_DATABRICKS_PURPOSE",
     "GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE",
+    "GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES",
     "GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS",
     "GPU_QUALIFICATION_LOCAL_WORK_ROOT",
     "GPU_QUALIFICATION_OUTPUT_FILENAME",
     "GPU_QUALIFICATION_SUBMIT_RECEIPT_RECORD_TYPE",
+    "GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE",
     "GPUQualificationLaunchAuthorization",
     "GPUQualificationSentinelRunner",
     "collect_gpu_qualification_evidence",
@@ -3347,6 +3580,7 @@ __all__ = [
     "resume_gpu_qualification_job_submissions",
     "require_gpu_qualification_launch_authorization",
     "submit_gpu_qualification_jobs",
+    "validate_gpu_qualification_submission_rejection_record",
     "write_gpu_qualification_bootstrap_runner",
 ]
 

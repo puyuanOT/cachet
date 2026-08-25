@@ -1225,6 +1225,21 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "every nonzero-indexed full-score wave (waves 1–9); both wave-zero "
         "phases use hard cap/headroom admission"
     ) in compact_ledger_doc
+    assert (
+        "retained opening is now the exact 138-reservation, zero-receipt, "
+        "138-terminal prefix"
+    ) in compact_ledger_doc
+    assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
+    assert "analysis.opening_ledger_provenance" in compact_ledger_doc
+    assert (
+        "18,292-byte observed parameters JSON versus the 10,000-byte server "
+        "limit"
+    ) in compact_ledger_doc
+    assert "zero observed active runs" in compact_ledger_doc
+    assert (
+        "rejected launch consumed zero actual GPU-hours, the opening balance "
+        "remains 54.994161 GPU-hours"
+    ) in compact_ledger_doc
 
     subindex_expectations = {
         "databricks": "No Databricks benchmark result is currently published",

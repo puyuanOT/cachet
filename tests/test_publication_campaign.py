@@ -21,6 +21,7 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
     PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS,
     PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE,
@@ -57,6 +58,9 @@ def test_publication_campaign_is_the_frozen_115_job_design():
     assert record["campaign_ledger_id"] == CAMPAIGN_LEDGER_ID
     assert record["campaign_ledger_path_sha256"] == CAMPAIGN_LEDGER_PATH_SHA256
     assert record["campaign_ledger_prefix"] == CAMPAIGN_LEDGER_PREFIX.to_record()
+    assert record["campaign_ledger_prefix"]["reservation_count"] == 138
+    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 0
+    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 138
     assert record["closed_record_sha256"] == PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
     assert record["campaign_opening_terminal_gpu_hours"] == (
         PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -217,6 +221,34 @@ def test_publication_campaign_is_the_frozen_115_job_design():
         "core_method": "matched_fresh_cluster_baseline_vanilla_pair",
         "precision_hardware": "matched_16k_c4_core_pair_plus_bf16_and_a10g_wave",
         "storage": "matched_fresh_cluster_disk_ram_uc_trio",
+    }
+    assert record["analysis"]["opening_ledger_provenance"] == {
+        "prefix_before_rejected_gpu_qualification": (
+            PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX.to_record()
+        ),
+        "rejected_gpu_qualification": {
+            "actual_gpu_hours": 0.0,
+            "evidence_closed_record_sha256": (
+                "6102fe08f1ea3385ce862201c3b6b3351396315aba35bda56309bc240554f083"
+            ),
+            "evidence_file_sha256": (
+                "1f6a76369658f6dd39021dc72807345194cd43e2ecd746e831846391dc4e5a2b"
+            ),
+            "failed_before_run_creation": True,
+            "http_status": 400,
+            "observed_parameters_json_bytes": 18_292,
+            "plan_sha256": (
+                "b0bf7fdc182a099fae8f7d2fef1441974f69e49e840601f20397032709baf9f4"
+            ),
+            "reservation_count_delta": 14,
+            "remote_active_runs_observed": 0,
+            "server_parameters_json_limit_bytes": 10_000,
+            "submission_receipt_count_delta": 0,
+            "terminal_actual_count_delta": 14,
+            "terminal_state": "failed",
+            "verification_source": "legacy_manual",
+        },
+        "retained_opening_prefix": CAMPAIGN_LEDGER_PREFIX.to_record(),
     }
     assert record["full_score_program"] == {
         "cache_prefix_generation_tokens": 63_455_746,

@@ -27,7 +27,7 @@ PUBLICATION_CAMPAIGN_RECORD_TYPE = "cachet.vllm_0271_publication_campaign.v1"
 PUBLICATION_CAMPAIGN_SCHEMA_VERSION = 1
 PUBLICATION_CAMPAIGN_ID = "vllm-0271-publication-v1"
 PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256 = (
-    "b0dbf4619db6823f0f8ce66d4ebb1788fd1a676699c39222afe876b247f6b487"
+    "2729dedfb51389f06d55920e35dcf904ae6c4d3cddeee5a947e763590006eaf3"
 )
 PUBLICATION_CAMPAIGN_ENGINE_VERSION = "0.27.1"
 PUBLICATION_CAMPAIGN_METHODS = ("baseline_prefill", "vanilla_prefill")
@@ -152,14 +152,26 @@ PUBLICATION_CAMPAIGN_LEDGER_ID = "representative-canary-823bd9d82a5c1730"
 PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256 = (
     "fd00fcc39375aa8c96dabba9e3e4c576ae2674dd911324622ef99293b9cfe865"
 )
+PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX = (
+    DatabricksLedgerPrefix(
+        ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+        reservation_count=124,
+        submission_receipt_count=0,
+        terminal_actual_count=124,
+        prefix_sha256=(
+            "1c4bfb602657393b3fb2a20570d8658e8b5ed4b00e9d3ec3461be83454c366ad"
+        ),
+    )
+)
 PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
     cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
-    reservation_count=124,
+    reservation_count=138,
     submission_receipt_count=0,
-    terminal_actual_count=124,
+    terminal_actual_count=138,
     prefix_sha256=(
-        "1c4bfb602657393b3fb2a20570d8658e8b5ed4b00e9d3ec3461be83454c366ad"
+        "a12b5e754da84e4c7b3e0f273c14d2b79ce9cb1483b02dcc77ca522185e89dea"
     ),
 )
 PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE = (
@@ -508,6 +520,36 @@ def publication_campaign_plan_to_record(
             "bootstrap_draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
             "post_hoc_cell_significance_allowed": False,
             "quality_preservation_gate": False,
+            "opening_ledger_provenance": {
+                "prefix_before_rejected_gpu_qualification": (
+                    PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX.to_record()
+                ),
+                "rejected_gpu_qualification": {
+                    "actual_gpu_hours": 0.0,
+                    "evidence_closed_record_sha256": (
+                        "6102fe08f1ea3385ce862201c3b6b3351396315aba35bda56309bc240554f083"
+                    ),
+                    "evidence_file_sha256": (
+                        "1f6a76369658f6dd39021dc72807345194cd43e2ecd746e831846391dc4e5a2b"
+                    ),
+                    "failed_before_run_creation": True,
+                    "http_status": 400,
+                    "observed_parameters_json_bytes": 18_292,
+                    "plan_sha256": (
+                        "b0bf7fdc182a099fae8f7d2fef1441974f69e49e840601f20397032709baf9f4"
+                    ),
+                    "reservation_count_delta": 14,
+                    "remote_active_runs_observed": 0,
+                    "server_parameters_json_limit_bytes": 10_000,
+                    "submission_receipt_count_delta": 0,
+                    "terminal_actual_count_delta": 14,
+                    "terminal_state": "failed",
+                    "verification_source": "legacy_manual",
+                },
+                "retained_opening_prefix": (
+                    PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
+                ),
+            },
         },
         "budget": {
             "aggregate_gpu_hour_cap": MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
@@ -1117,6 +1159,7 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE",
     "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX",
+    "PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_RECORD_TYPE",
     "PUBLICATION_CAMPAIGN_REPEATS_PER_EXAMPLE",
     "PUBLICATION_CAMPAIGN_REQUEST_PARALLELISM",

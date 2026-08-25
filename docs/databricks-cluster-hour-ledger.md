@@ -196,6 +196,18 @@ divergent branches. Every later phase must extend the immediately prior
 authorized prefix and acquire one atomic whole-wave lease before its first
 submission.
 
+The retained opening is now the exact 138-reservation, zero-receipt,
+138-terminal prefix. It preserves the earlier 124/0/124 history plus all 14
+reservations from the rejected GPU-qualification launch; those attempts are
+closed as `failed` with `legacy_manual` verification and zero actual seconds.
+The rejected plan SHA-256, rejection-evidence file SHA-256, HTTP 400 status,
+18,292-byte observed parameters JSON versus the 10,000-byte server limit, and
+zero observed active runs are all bound in
+`analysis.opening_ledger_provenance`, together with the prior prefix and the
+14/0/14 transition. Because the rejected launch consumed zero actual GPU-hours,
+the opening balance remains 54.994161 GPU-hours and the publication budget
+identity is unchanged.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local
