@@ -19,6 +19,7 @@ from document_kv_cache.databricks_runs import (
     DATABRICKS_PROFILE_AUTH_MODES,
     DATABRICKS_AUTH_CHECK_RECORD_TYPE,
     DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
+    DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
     DatabricksWorkspaceConfig,
@@ -29,6 +30,7 @@ from document_kv_cache.databricks_runs import (
     databricks_workspace_config_from_env,
     databricks_workspace_config_from_profile,
     databricks_workspace_config_from_sdk_profile,
+    download_databricks_volume_file_bytes,
     get_databricks_run,
     plan_databricks_stage_and_submit,
     put_databricks_dbfs_file,
@@ -736,6 +738,118 @@ def test_get_databricks_run_fetches_run_by_id():
     assert request.full_url == "https://dbc.example/api/2.1/jobs/runs/get?run_id=123"
     assert request.get_method() == "GET"
     assert request.data is None
+
+
+def test_download_databricks_volume_file_bytes_uses_authenticated_files_api():
+    expected = b'{"ok":true}\n'
+    opener = _BinaryOpener(expected)
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=9
+    )
+
+    content = download_databricks_volume_file_bytes(
+        config,
+        "dbfs:/Volumes/catalog/schema/volume/results/result file.json",
+        max_bytes=len(expected),
+        opener=opener,
+    )
+
+    assert content == expected
+    request = opener.requests[0]
+    assert request.full_url == (
+        "https://dbc.example/api/2.0/fs/files/Volumes/catalog/schema/volume/"
+        "results/result%20file.json"
+    )
+    assert request.get_method() == "GET"
+    assert request.data is None
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert request.headers["Accept"] == "application/octet-stream"
+    assert opener.timeouts == [9]
+    assert opener.response.read_limits == [len(expected) + 1]
+
+
+@pytest.mark.parametrize(
+    "uri",
+    (
+        "",
+        "/Volumes/catalog/schema/volume/result.json",
+        "dbfs:/FileStore/result.json",
+        "dbfs:/Volumes/catalog/schema/volume",
+        "dbfs:/Volumes/catalog/schema/volume//result.json",
+        "dbfs:/Volumes/catalog/schema/volume/../result.json",
+        "dbfs:/Volumes/catalog/schema/volume/%2e%2e/result.json",
+        "dbfs:/Volumes/catalog/schema/volume/result.json?download=true",
+        "dbfs:/Volumes/catalog/schema/volume/result.json#fragment",
+    ),
+)
+def test_download_databricks_volume_file_bytes_rejects_unsafe_uri(uri):
+    opener = _BinaryOpener(b"unused")
+
+    with pytest.raises(ValueError, match="dbfs_uri|dbfs:/Volumes|canonical"):
+        download_databricks_volume_file_bytes(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            uri,
+            opener=opener,
+        )
+
+    assert opener.requests == []
+
+
+@pytest.mark.parametrize(
+    "max_bytes",
+    (False, 0, -1, DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES + 1),
+)
+def test_download_databricks_volume_file_bytes_rejects_invalid_size_cap(max_bytes):
+    opener = _BinaryOpener(b"unused")
+
+    with pytest.raises(ValueError, match="max_bytes"):
+        download_databricks_volume_file_bytes(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/catalog/schema/volume/result.json",
+            max_bytes=max_bytes,
+            opener=opener,
+        )
+
+    assert opener.requests == []
+
+
+def test_download_databricks_volume_file_bytes_rejects_oversize_response():
+    opener = _BinaryOpener(b"12345")
+
+    with pytest.raises(RuntimeError, match="exceeds the controller byte cap"):
+        download_databricks_volume_file_bytes(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/catalog/schema/volume/result.json",
+            max_bytes=4,
+            opener=opener,
+        )
+
+    assert opener.response.read_limits == [5]
+
+
+def test_download_databricks_volume_file_bytes_sanitizes_http_errors():
+    error_body = _BytesFile(
+        b'{"message":"Authorization: Bearer secret-token; token=secret-token"}'
+    )
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/result.json",
+        403,
+        "Forbidden",
+        {},
+        error_body,
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 403") as excinfo:
+        download_databricks_volume_file_bytes(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/result.json",
+            opener=_HTTPErrorOpener(error),
+        )
+
+    assert "secret-token" not in str(excinfo.value)
+    assert error_body.read_limits == [
+        public_databricks_runs._DATABRICKS_ERROR_BODY_MAX_BYTES + 1
+    ]
 
 
 def test_put_databricks_dbfs_file_posts_base64_payload_with_bearer_token(tmp_path):
@@ -1855,6 +1969,36 @@ class _SequentialOpener:
         return _FakeResponse(self._payloads.pop(0))
 
 
+class _BinaryResponse:
+    status = 200
+
+    def __init__(self, payload):
+        self._payload = payload
+        self.read_limits = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, amt=-1):
+        self.read_limits.append(amt)
+        return self._payload
+
+
+class _BinaryOpener:
+    def __init__(self, payload):
+        self.response = _BinaryResponse(payload)
+        self.requests = []
+        self.timeouts = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        self.timeouts.append(timeout)
+        return self.response
+
+
 class _HTTPErrorOpener:
     def __init__(self, error):
         self._error = error
@@ -1878,8 +2022,10 @@ class _RecordingHTTPErrorOpener:
 class _BytesFile:
     def __init__(self, payload):
         self._payload = payload
+        self.read_limits = []
 
-    def read(self):
+    def read(self, amt=-1):
+        self.read_limits.append(amt)
         return self._payload
 
     def close(self):

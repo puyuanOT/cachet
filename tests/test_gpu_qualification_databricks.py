@@ -300,6 +300,87 @@ def _submission_rejection_record(plan: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def _closed_result_bytes(**values: Any) -> bytes:
+    record = {"closed_record_sha256": "", **values}
+    qualification_job._seal_record(record)
+    return (canonical_gpu_qualification_json(record) + "\n").encode("utf-8")
+
+
+def test_controller_reads_volume_result_through_authenticated_package_transport(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    output_json = (
+        "dbfs:/Volumes/catalog/schema/volume/qualification-results/plan/job/"
+        "gpu-job-result.json"
+    )
+    observed: dict[str, Any] = {}
+
+    def download(config, uri, *, max_bytes):
+        observed.update(config=config, uri=uri, max_bytes=max_bytes)
+        return _closed_result_bytes(value="remote")
+
+    monkeypatch.setattr(
+        qualification_job, "download_databricks_volume_file_bytes", download
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "_cluster_file_path",
+        lambda _value: pytest.fail("dbfs:/Volumes result must not require local /dbfs"),
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+
+    result = qualification_job._read_gpu_qualification_result(
+        config, output_json, label="GPU result"
+    )
+
+    assert result["value"] == "remote"
+    assert observed == {
+        "config": config,
+        "uri": output_json,
+        "max_bytes": qualification_job.DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
+    }
+
+
+def test_controller_result_reader_retains_safe_local_path_support(tmp_path: Path):
+    result_path = tmp_path / "gpu-job-result.json"
+    result_path.write_bytes(_closed_result_bytes(value="local"))
+
+    result = qualification_job._read_gpu_qualification_result(
+        DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+        str(result_path),
+        label="GPU result",
+    )
+
+    assert result["value"] == "local"
+
+
+@pytest.mark.parametrize("case", ("noncanonical", "tampered"))
+def test_controller_rejects_noncanonical_or_tampered_remote_result(
+    case: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    if case == "noncanonical":
+        content = b'{"closed_record_sha256":"' + b"0" * 64 + b'", "value":1}\n'
+        error = "canonically encoded"
+    else:
+        record = json.loads(_closed_result_bytes(value="original"))
+        record["value"] = "tampered"
+        content = (canonical_gpu_qualification_json(record) + "\n").encode("utf-8")
+        error = "closed_record_sha256 mismatch"
+    monkeypatch.setattr(
+        qualification_job,
+        "download_databricks_volume_file_bytes",
+        lambda *args, **kwargs: content,
+    )
+
+    with pytest.raises(ValueError, match=error):
+        qualification_job._read_gpu_qualification_result(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/catalog/schema/volume/result.json",
+            label="GPU result",
+        )
+
+
 def test_submission_rejection_record_uses_the_governed_closure_convention():
     plan = _plan()
     record = _submission_rejection_record(plan)

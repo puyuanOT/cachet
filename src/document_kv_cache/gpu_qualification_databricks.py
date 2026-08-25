@@ -64,9 +64,11 @@ from document_kv_cache.databricks_resource_ledger import (
     reserve_databricks_run_attempt_batch_authorized_json,
 )
 from document_kv_cache.databricks_runs import (
+    DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
     DatabricksURLOpener,
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
+    download_databricks_volume_file_bytes,
     get_databricks_run,
     require_databricks_run_idempotency_token,
     resume_pre_reserved_databricks_run,
@@ -1392,9 +1394,10 @@ def collect_gpu_qualification_evidence(
             raise RuntimeError(
                 f"GPU qualification job {contract['job_id']!r} did not succeed"
             )
-        result_path = _cluster_file_path(str(contract["output_json"]))
-        result = _read_canonical_json_object_file(
-            result_path, f"GPU result {contract['job_id']}"
+        result = _read_gpu_qualification_result(
+            config,
+            str(contract["output_json"]),
+            label=f"GPU result {contract['job_id']}",
         )
         validate_gpu_job_result_record(
             result,
@@ -2986,7 +2989,35 @@ def _read_canonical_json_object_file(path: str | Path, label: str) -> dict[str, 
     candidate = Path(path)
     if not candidate.is_file() or candidate.is_symlink():
         raise ValueError(f"{label} must be one regular file")
-    content = candidate.read_bytes()
+    return _canonical_json_object_from_record_bytes(candidate.read_bytes(), label=label)
+
+
+def _read_gpu_qualification_result(
+    config: DatabricksWorkspaceConfig,
+    output_json: str,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    if output_json.startswith("dbfs:/Volumes/"):
+        content = download_databricks_volume_file_bytes(
+            config,
+            output_json,
+            max_bytes=DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
+        )
+        record = _canonical_json_object_from_record_bytes(content, label=label)
+    else:
+        record = _read_canonical_json_object_file(
+            _cluster_file_path(output_json), label
+        )
+    _require_closed_record_digest(record, label)
+    return record
+
+
+def _canonical_json_object_from_record_bytes(
+    content: bytes,
+    *,
+    label: str,
+) -> dict[str, Any]:
     if not content.endswith(b"\n") or content.endswith(b"\n\n"):
         raise ValueError(f"{label} must contain one newline-terminated JSON object")
     record = _canonical_json_object_from_bytes(

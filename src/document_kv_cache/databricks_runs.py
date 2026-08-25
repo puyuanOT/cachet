@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import fcntl
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Protocol, cast
 import urllib.error
@@ -48,6 +48,7 @@ __all__ = [
     "DATABRICKS_PROFILE_AUTH_MODES",
     "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
     "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
+    "DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
     "DatabricksPreReservedPostClaimExistsError",
@@ -65,6 +66,7 @@ __all__ = [
     "resume_pre_reserved_databricks_run",
     "reserve_and_submit_databricks_run_json",
     "get_databricks_run",
+    "download_databricks_volume_file_bytes",
     "put_databricks_dbfs_file",
     "plan_databricks_stage_and_submit",
     "stage_and_submit_databricks_run",
@@ -83,6 +85,8 @@ DEFAULT_DATABRICKS_CONFIG_FILE = "~/.databrickscfg"
 DEFAULT_DATABRICKS_TIMEOUT_SECONDS = 60.0
 DATABRICKS_PROFILE_AUTH_MODES = ("auto", "static", "sdk")
 DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES = 1_000_000
+DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+_DATABRICKS_ERROR_BODY_MAX_BYTES = 64 * 1024
 DATABRICKS_AUTH_CHECK_RECORD_TYPE = "document_kv.databricks_auth_check.v1"
 DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
 DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE = (
@@ -226,6 +230,22 @@ class DatabricksHTTPResponse(Protocol):
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool: ...
 
     def read(self) -> bytes: ...
+
+
+class DatabricksBinaryHTTPResponse(Protocol):
+    status: int
+
+    def __enter__(self) -> "DatabricksBinaryHTTPResponse": ...
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool: ...
+
+    def read(self, amt: int = -1) -> bytes: ...
+
+
+class DatabricksBinaryURLOpener(Protocol):
+    def __call__(
+        self, request: urllib.request.Request, *, timeout: float
+    ) -> DatabricksBinaryHTTPResponse: ...
 
 
 class DatabricksPreReservedPostClaimExistsError(RuntimeError):
@@ -1011,6 +1031,76 @@ def get_databricks_run(
         f"/api/2.1/jobs/runs/get?{urllib.parse.urlencode({'run_id': run_id_text})}",
         opener=opener,
     )
+
+
+def download_databricks_volume_file_bytes(
+    config: DatabricksWorkspaceConfig,
+    dbfs_uri: str,
+    *,
+    max_bytes: int = DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
+    opener: DatabricksBinaryURLOpener | None = None,
+) -> bytes:
+    """Download one canonical ``dbfs:/Volumes`` file through the Files API.
+
+    The hard response cap keeps an authenticated but unexpected remote object
+    from consuming unbounded controller memory.  Qualification collection calls
+    this package-owned transport without exposing its opener at the authority
+    boundary; the argument exists here only for ordinary transport testing.
+    """
+
+    volume_path = _canonical_databricks_volume_file_path(dbfs_uri)
+    if (
+        type(max_bytes) is not int
+        or max_bytes <= 0
+        or max_bytes > DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES
+    ):
+        raise ValueError(
+            "max_bytes must be a positive integer no greater than "
+            f"{DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES}"
+        )
+    encoded_path = urllib.parse.quote(volume_path, safe="/-._~")
+    request = urllib.request.Request(
+        f"{config.normalized_host}/api/2.0/fs/files{encoded_path}",
+        method="GET",
+        headers={
+            "Accept": "application/octet-stream",
+            "Authorization": f"Bearer {config.token}",
+        },
+    )
+    resolved_opener = (
+        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    try:
+        with resolved_opener(request, timeout=config.timeout_seconds) as response:
+            status = getattr(response, "status", None)
+            if status != 200:
+                raise RuntimeError(
+                    f"Databricks Files API returned unexpected HTTP status {status!r}"
+                )
+            content = response.read(max_bytes + 1)
+    except urllib.error.HTTPError as exc:
+        error_content = exc.read(_DATABRICKS_ERROR_BODY_MAX_BYTES + 1)
+        if len(error_content) > _DATABRICKS_ERROR_BODY_MAX_BYTES:
+            error_content = (
+                error_content[:_DATABRICKS_ERROR_BODY_MAX_BYTES] + b"...[truncated]"
+            )
+        body = error_content.decode("utf-8", errors="replace")
+        raise RuntimeError(
+            _format_databricks_http_error(exc.code, body, token=config.token)
+        ) from exc
+    except urllib.error.URLError as exc:
+        reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
+        raise RuntimeError(f"Databricks request failed: {reason}") from exc
+    if not isinstance(content, bytes):
+        raise RuntimeError("Databricks Files API response body must be bytes")
+    if len(content) > max_bytes:
+        raise RuntimeError(
+            "Databricks Files API response exceeds the controller byte cap: "
+            f"more than {max_bytes} bytes"
+        )
+    return content
 
 
 def put_databricks_dbfs_file(
@@ -2585,6 +2675,34 @@ def _databricks_request(
             "Content-Type": "application/json",
         },
     )
+
+
+def _canonical_databricks_volume_file_path(dbfs_uri: str) -> str:
+    if not isinstance(dbfs_uri, str) or not dbfs_uri:
+        raise ValueError("dbfs_uri must be a non-empty string")
+    prefix = "dbfs:"
+    if not dbfs_uri.startswith(prefix):
+        raise ValueError("Databricks Files API download requires a dbfs:/Volumes URI")
+    raw_path = dbfs_uri.removeprefix(prefix)
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw_path):
+        raise ValueError("dbfs:/Volumes URI cannot contain control characters")
+    if any(character in raw_path for character in ("?", "#", "%", "\\")):
+        raise ValueError(
+            "dbfs:/Volumes URI must be a canonical path without URL syntax"
+        )
+    path = PurePosixPath(raw_path)
+    if (
+        not raw_path.startswith("/Volumes/")
+        or path.as_posix() != raw_path
+        or len(path.parts) < 6
+        or path.parts[:2] != ("/", "Volumes")
+        or any(part in {"", ".", ".."} for part in path.parts[1:])
+    ):
+        raise ValueError(
+            "Databricks Files API download requires one canonical "
+            "dbfs:/Volumes/<catalog>/<schema>/<volume>/<file> URI"
+        )
+    return path.as_posix()
 
 
 def _format_databricks_http_error(
