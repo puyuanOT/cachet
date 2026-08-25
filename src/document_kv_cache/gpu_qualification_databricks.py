@@ -116,6 +116,9 @@ GPU_QUALIFICATION_LEGACY_UC_FAILURE_PLAN_SHA256: Final = (
 GPU_QUALIFICATION_LEGACY_UC_BROKEN_RUNNER_SHA256: Final = (
     "acec0bf48ffcd67ee005e2c017b86540e3601ab3d9739f71f243069cae9007db"
 )
+GPU_QUALIFICATION_LEGACY_UC_RUNTIME_LOCK_SHA256: Final = (
+    "5788ee492a9a9ff48c8e1eae68cd0576fcec625263858129cc9dd918bcb856a6"
+)
 GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256: Final = (
     "644048afcd8f478aa6ba2776be97f4e6fce4396ddf853001c3d200cfbbd259eb"
 )
@@ -167,6 +170,102 @@ GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_REASON: Final = (
 GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_ERROR: Final = (
     "RuntimeError: Databricks cluster identity is unavailable; expected "
     "DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256: Final = (
+    "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_RUNNER_SHA256: Final = (
+    "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_SHA256: Final = (
+    "2ee650e0e05ea059bd9f552d6975149c05cbda6dc8d3a715a73594913f078b29"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_FILE_SHA256: Final = (
+    "e0f56f1250c4ce213d1a8ba0384ccdad1a1b38fb964c1b6bfcf5729006150455"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256: Final = (
+    "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_REASON: Final = (
+    "pip requirements-file index precedence omitted the PyTorch CU129 index "
+    "and prevented hash-locked torch resolution"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR_SHA256: Final = (
+    "7544cab6366fc1813af8d04da00a8a1f76f1098e3b06c738d8ff8ddd392ae235"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_LOG_MARKER: Final = (
+    "No matching distribution found for torch==2.13.0+cu129"
+)
+GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB: Final = (
+    (
+        "aws-g5-a10g-16k-c4-capacity",
+        "03c34df076b0eb16e1af6effca533ff2eb009f513a9000f45477a6a88ffd02bc",
+    ),
+    (
+        "aws-g5-a10g-auto-backend-diagnostic",
+        "0ca4734369079b0262cfb574fc087130503585381646fe015074a4226bdfb65d",
+    ),
+    (
+        "aws-g5-a10g-forced-triton-runtime-handoff",
+        "d3fa07c4e20514c6b3efd97bafde8d3db4525848244a711f10adf2e4a179efeb",
+    ),
+    (
+        "aws-g5-a10g-matched-token-logit",
+        "d56238b226901bcbebb00a9e1d6b2cba06627334ae0e10a827060d99f2ca0a5d",
+    ),
+    (
+        "aws-g5-a10g-packed-page-roundtrip",
+        "5c502d96b254c0bd229e5d81e75f9a99d9c2ca7f6fe36137ea8b971742a81a36",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-70",
+        "5d5b3e21a9fb8bff509dd30f65120b278f061cfef4587ea15eea1a87946644b5",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-75",
+        "a2eec14578235f86478cd0a3df527ff24efb8e3c5c5548882ba20b3540a9b813",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-80",
+        "0ef523fe6dc72f093ab1fdfd0601e090e7338a48d8cb4404a107de139ef33650",
+    ),
+    (
+        "aws-g6-l4-auto-backend-diagnostic",
+        "34346041c0f03a7fa991f2223ad2ad5656dd6cac36b9bc228453055af4a2aa3e",
+    ),
+    (
+        "aws-g6-l4-forced-triton-runtime-handoff",
+        "f280d4f9d4744311465641e2ebe08bda2fa7f0dc5f269f1869546443a542adfa",
+    ),
+    (
+        "aws-g6-l4-generation-throughput",
+        "216f5bbba90d7efcb2494128be781e2ddb6d883335c4dcd1dbc1cccc3aaf2afd",
+    ),
+    (
+        "aws-g6-l4-matched-token-logit",
+        "d0de6d6286427688266b122c4039ae1bfabf635077bfb5561e46428b881f6705",
+    ),
+    (
+        "aws-g6-l4-packed-page-roundtrip",
+        "9b1ecf2d68c83012751827ecb094f2d3bd29a386377acdfadbf263ec15cf78a5",
+    ),
+    (
+        "aws-g6e-l40s-generation-throughput",
+        "62f7d0aac6c1a2e9d4cb84ae074e815fb718ad179574f6d2a8b54ff2118d9437",
+    ),
+)
+_RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR: Final = (
+    "CalledProcessError: Command '['{runtime_python}', '-m', 'pip', 'install', "
+    "'--extra-index-url', 'https://download.pytorch.org/whl/cu129', "
+    "'--extra-index-url', 'https://flashinfer.ai/whl/', '--extra-index-url', "
+    "'https://flashinfer.ai/whl/cu129', '--require-hashes', '--only-binary', "
+    "':all:', '--requirement', '{runtime_lock}']' returned non-zero exit status 1."
+)
+_RUNTIME_LOCK_INDEX_FAILURE_LOCK_PATH_RE: Final = re.compile(
+    r"/local_disk0/\.ephemeral_nfs/envs/pythonEnv-"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+    r"/lib/python3\.11/site-packages/document_kv_cache/runtime_locks/"
+    r"vllm-0\.27\.1-cu129-py311-manylinux_2_35\.lock"
 )
 GPU_QUALIFICATION_ARTIFACT_KEYS: Final = (
     "cachet_source_tree_sha256",
@@ -1754,6 +1853,122 @@ def capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
     return manifest
 
 
+def _validated_reviewed_error_sha256_by_job(
+    expected_error_sha256_by_job: Mapping[str, str],
+    *,
+    contracts: Sequence[Mapping[str, Any]],
+) -> dict[str, str]:
+    if not isinstance(expected_error_sha256_by_job, Mapping):
+        raise TypeError("expected_error_sha256_by_job must be a mapping")
+    observed: dict[str, str] = {}
+    for raw_job_id, raw_digest in expected_error_sha256_by_job.items():
+        job_id = _safe_id(raw_job_id, "expected_error_sha256_by_job job ID")
+        observed[job_id] = _required_sha256(
+            raw_digest,
+            f"expected_error_sha256_by_job[{job_id!r}]",
+        )
+    planned_job_ids = tuple(str(contract["job_id"]) for contract in contracts)
+    if len(observed) != len(planned_job_ids) or set(observed) != set(
+        planned_job_ids
+    ):
+        raise ValueError(
+            "expected_error_sha256_by_job must cover the exact planned job IDs"
+        )
+    return {job_id: observed[job_id] for job_id in planned_job_ids}
+
+
+def _normalize_runtime_lock_index_failure_error(
+    error: str,
+    *,
+    plan_sha256: str,
+    job_id: str,
+) -> str:
+    reviewed_error = _non_empty_string(error, "runtime lock index failure error")
+    reviewed_plan_sha256 = _required_sha256(plan_sha256, "plan_sha256")
+    if (
+        reviewed_plan_sha256
+        != GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256
+    ):
+        raise ValueError("runtime lock index failure plan is not reviewed")
+    reviewed_job_id = _safe_id(job_id, "job_id")
+    runtime_python = (
+        f"{GPU_QUALIFICATION_LOCAL_WORK_ROOT}/{reviewed_plan_sha256}/"
+        f"{reviewed_job_id}/runtime/bin/python"
+    )
+    if reviewed_error.count(runtime_python) != 1:
+        raise ValueError(
+            "runtime lock index failure error must contain the exact planned "
+            "runtime Python path once"
+        )
+    lock_paths = tuple(
+        match.group(0)
+        for match in _RUNTIME_LOCK_INDEX_FAILURE_LOCK_PATH_RE.finditer(
+            reviewed_error
+        )
+    )
+    if len(lock_paths) != 1:
+        raise ValueError(
+            "runtime lock index failure error must contain one canonical "
+            "ephemeral UUIDv4 lock path"
+        )
+    normalized = reviewed_error.replace(
+        runtime_python,
+        "{runtime_python}",
+    ).replace(
+        lock_paths[0],
+        "{runtime_lock}",
+    )
+    if normalized != _RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR:
+        raise ValueError("runtime lock index failure argv grammar differs")
+    if (
+        sha256(normalized.encode("utf-8")).hexdigest()
+        != GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR_SHA256
+    ):
+        raise RuntimeError("runtime lock index normalized error source pin drift")
+    return normalized
+
+
+def _validated_runtime_lock_index_failure_error(
+    run_output: Mapping[str, Any],
+    *,
+    plan_sha256: str,
+    job_id: str,
+    expected_error_sha256: str,
+) -> str:
+    _validate_failed_run_output_schema(run_output)
+    if set(run_output) != _FAILED_RUN_OUTPUT_LOGGED_KEYS:
+        raise ValueError(
+            "runtime lock index failure requires the exact logged output schema"
+        )
+    error = _non_empty_string(
+        run_output.get("error"),
+        "runtime lock index failure error",
+    )
+    reviewed_error_sha256 = _required_sha256(
+        expected_error_sha256,
+        "expected_error_sha256",
+    )
+    if sha256(error.encode("utf-8")).hexdigest() != reviewed_error_sha256:
+        raise ValueError("runtime lock index failure raw error is not reviewed")
+    _normalize_runtime_lock_index_failure_error(
+        error,
+        plan_sha256=plan_sha256,
+        job_id=job_id,
+    )
+    if run_output.get("logs_truncated") is not False:
+        raise ValueError("runtime lock index failure logs must be complete")
+    logs = run_output.get("logs")
+    if (
+        type(logs) is not str
+        or logs.count(GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_LOG_MARKER) != 1
+    ):
+        raise ValueError(
+            "runtime lock index failure logs must contain the exact torch "
+            "resolution marker once"
+        )
+    return error
+
+
 def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     *,
     plan_record: Mapping[str, Any],
@@ -1768,8 +1983,10 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     expected_manifest_file_sha256: str,
     expected_terminal_prefix_sha256: str,
     expected_failure_reason: str,
-    expected_error: str,
+    expected_error: str | None,
     expected_run_output_keys: frozenset[str],
+    expected_runtime_lock_index_error_sha256_by_job: Mapping[str, str]
+    | None = None,
 ) -> DatabricksClusterHourLedger:
     """Reconcile one source-reviewed v2 failure closure without authority.
 
@@ -1798,7 +2015,17 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         "expected_terminal_prefix_sha256",
     )
     reason = _non_empty_string(expected_failure_reason, "expected_failure_reason")
-    error = _non_empty_string(expected_error, "expected_error")
+    if (expected_error is None) == (
+        expected_runtime_lock_index_error_sha256_by_job is None
+    ):
+        raise ValueError(
+            "reviewed reconciliation requires exactly one expected-error mode"
+        )
+    error = (
+        None
+        if expected_error is None
+        else _non_empty_string(expected_error, "expected_error")
+    )
     if expected_run_output_keys not in (
         _FAILED_RUN_OUTPUT_LEGACY_KEYS,
         _FAILED_RUN_OUTPUT_LOGGED_KEYS,
@@ -1811,6 +2038,14 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     ):
         raise ValueError("failed-attempt reconciliation plan is not reviewed")
     contracts = _validated_qualification_payloads(plan, submit_payloads)
+    reviewed_error_sha256_by_job = (
+        None
+        if expected_runtime_lock_index_error_sha256_by_job is None
+        else _validated_reviewed_error_sha256_by_job(
+            expected_runtime_lock_index_error_sha256_by_job,
+            contracts=contracts,
+        )
+    )
     local_preflight_binding = _non_authorizing_local_preflight_binding(
         local_preflight_evidence_path,
         plan=plan,
@@ -1877,12 +2112,23 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
                 "failed runs/get-output response differs from the reviewed "
                 "incident schema"
             )
+        job_id = str(contract["job_id"])
+        reviewed_job_error = error
+        if reviewed_job_error is None:
+            if reviewed_error_sha256_by_job is None:
+                raise RuntimeError("reviewed per-job error closure is unavailable")
+            reviewed_job_error = _validated_runtime_lock_index_failure_error(
+                run_output,
+                plan_sha256=reviewed_plan_sha256,
+                job_id=job_id,
+                expected_error_sha256=reviewed_error_sha256_by_job[job_id],
+            )
         entry = _failed_attempt_reconciliation_v2_entry(
             run_output,
             run=run,
             base_entry=base_entry,
             contract=contract,
-            expected_error=error,
+            expected_error=reviewed_job_error,
             evidence_file_sha256=_file_sha256(output_path),
         )
         runs.append(run)
@@ -2047,6 +2293,56 @@ def reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence(
         ),
         expected_error=GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_ERROR,
         expected_run_output_keys=_FAILED_RUN_OUTPUT_LOGGED_KEYS,
+    )
+
+
+def reconcile_gpu_qualification_runtime_lock_index_failure_evidence(
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    runs_get_evidence_root: str | Path,
+) -> DatabricksClusterHourLedger:
+    """Account the reviewed f991 pip runtime-lock index failure closure.
+
+    The source-pinned boundary requires each job's exact raw error, the one
+    canonical path-normalized argv grammar, complete logs with the reviewed
+    torch-resolution marker, and the sealed 29-file evidence closure before
+    the first deterministic terminal-actual append.
+    """
+
+    return _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
+        plan_record=plan_record,
+        submit_payloads=submit_payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        runs_get_evidence_root=runs_get_evidence_root,
+        expected_plan_sha256=(
+            GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256
+        ),
+        expected_runner_sha256=(
+            GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_RUNNER_SHA256
+        ),
+        expected_manifest_closed_record_sha256=(
+            GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_SHA256
+        ),
+        expected_manifest_file_sha256=(
+            GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_FILE_SHA256
+        ),
+        expected_terminal_prefix_sha256=(
+            GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256
+        ),
+        expected_failure_reason=(
+            GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_REASON
+        ),
+        expected_error=None,
+        expected_run_output_keys=_FAILED_RUN_OUTPUT_LOGGED_KEYS,
+        expected_runtime_lock_index_error_sha256_by_job=dict(
+            GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB
+        ),
     )
 
 
@@ -3768,7 +4064,8 @@ def _validated_legacy_uc_failure_plan_and_pins(
         != GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256
         or pins.patched_vllm_wheel_sha256
         != GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
-        or pins.runtime_lock_sha256 != VLLM_RUNTIME_LOCK_SHA256
+        or pins.runtime_lock_sha256
+        != GPU_QUALIFICATION_LEGACY_UC_RUNTIME_LOCK_SHA256
         or len(_planned_jobs(plan)) != 14
     ):
         raise ValueError("legacy qualification plan immutable closure differs")
@@ -5213,6 +5510,15 @@ __all__ = [
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_REASON",
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_RUNNER_SHA256",
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_TERMINAL_PREFIX_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_LOG_MARKER",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_FILE_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_REASON",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_RUNNER_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256",
     "GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT",
     "GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256",
     "GPU_QUALIFICATION_DATABRICKS_PURPOSE",
@@ -5237,6 +5543,7 @@ __all__ = [
     "reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence",
     "reconcile_gpu_qualification_bootstrap_file_global_failure_evidence",
     "reconcile_gpu_qualification_failed_attempt_evidence",
+    "reconcile_gpu_qualification_runtime_lock_index_failure_evidence",
     "replay_gpu_qualification_launch_authorization",
     "render_gpu_qualification_submit_payloads",
     "resume_gpu_qualification_job_submissions",

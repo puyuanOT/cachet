@@ -1970,6 +1970,9 @@ def test_retained_uc_failure_evidence_refuses_false_zero_reconciliation(
         "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
     ).resolve()
     plan = json.loads((root / "gpu-qualification-plan.json").read_text())
+    assert plan["runtime_contract"]["artifact_sha256"][
+        "runtime_lock_sha256"
+    ] == qualification_job.GPU_QUALIFICATION_LEGACY_UC_RUNTIME_LOCK_SHA256
     payloads = json.loads((root / "submit-payloads.json").read_text())
     contracts = qualification_job._validated_qualification_payloads(
         plan,
@@ -3038,6 +3041,465 @@ def test_cluster_identity_reconciliation_rejects_inexact_closure_before_write(
 
     with pytest.raises(ValueError, match=message):
         _reconcile_cluster_identity_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+    assert ledger_path.read_bytes() == ledger_before
+
+
+def _runtime_lock_index_failure_replay_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    plan_root = (
+        Path(__file__).parents[1]
+        / "databricks-runs/vllm-0271-publication-prep/"
+        "gpu-qualification-plan-sha256-"
+        "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
+    ).resolve()
+    evidence_root = plan_root / "failed-attempt-runtime-lock-index-v2"
+    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
+    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+    manifest = json.loads(
+        (evidence_root / "reconciliation-manifest.json").read_text()
+    )
+    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
+    active_incident = replace(
+        retained,
+        reservations=retained.reservations[:194],
+        submission_receipts=retained.submission_receipts[:56],
+        terminal_actuals=retained.terminal_actuals[:180],
+    )
+    ledger_path = tmp_path / "cluster-hours.json"
+    ledger_path.write_text(
+        json.dumps(
+            databricks_cluster_hour_ledger_to_record(active_incident),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "databricks_ledger_path_sha256",
+        lambda _path: plan["campaign_ledger_path_sha256"],
+    )
+    monkeypatch.setattr(
+        resource_ledger,
+        "databricks_ledger_path_sha256",
+        lambda _path: plan["campaign_ledger_path_sha256"],
+    )
+    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
+
+
+def _reconcile_runtime_lock_index_failure(
+    *,
+    plan_root: Path,
+    evidence_root: Path,
+    plan: dict[str, Any],
+    payloads: list[dict[str, Any]],
+    ledger_path: Path,
+) -> DatabricksClusterHourLedger:
+    return qualification_job.reconcile_gpu_qualification_runtime_lock_index_failure_evidence(
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=plan_root / "submit-receipts",
+        local_preflight_evidence_path=(
+            plan_root / "local-preflight-valid/local-preflight-evidence.json"
+        ),
+        runs_get_evidence_root=evidence_root,
+    )
+
+
+def test_runtime_lock_index_failure_source_pins_normalize_exact_retained_outputs():
+    plan_root = (
+        Path(__file__).parents[1]
+        / "databricks-runs/vllm-0271-publication-prep/"
+        "gpu-qualification-plan-sha256-"
+        "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
+    ).resolve()
+    evidence_root = plan_root / "failed-attempt-runtime-lock-index-v2"
+    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
+    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_error_sha256 = dict(
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB
+    )
+
+    assert len(expected_error_sha256) == 14
+    assert set(expected_error_sha256) == {
+        str(contract["job_id"]) for contract in contracts
+    }
+    normalized_errors = set()
+    for contract in contracts:
+        job_id = str(contract["job_id"])
+        run_output = json.loads(
+            (evidence_root / f"{job_id}.runs-get-output.json").read_text()
+        )
+        error = run_output["error"]
+        assert hashlib.sha256(error.encode("utf-8")).hexdigest() == (
+            expected_error_sha256[job_id]
+        )
+        assert (
+            qualification_job._validated_runtime_lock_index_failure_error(
+                run_output,
+                plan_sha256=plan["closed_record_sha256"],
+                job_id=job_id,
+                expected_error_sha256=expected_error_sha256[job_id],
+            )
+            == error
+        )
+        normalized_errors.add(
+            qualification_job._normalize_runtime_lock_index_failure_error(
+                error,
+                plan_sha256=plan["closed_record_sha256"],
+                job_id=job_id,
+            )
+        )
+
+    assert normalized_errors == {
+        qualification_job._RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR
+    }
+    normalized = next(iter(normalized_errors))
+    assert hashlib.sha256(normalized.encode("utf-8")).hexdigest() == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR_SHA256
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("raw-sha", "raw error is not reviewed"),
+        ("runtime-path", "runtime Python path once"),
+        ("uuid", "UUIDv4 lock path"),
+        ("argv", "argv grammar differs"),
+        ("marker-missing", "resolution marker once"),
+        ("marker-duplicate", "resolution marker once"),
+        ("truncated", "logs must be complete"),
+        ("extra-schema", "open schema"),
+    ],
+)
+def test_runtime_lock_index_failure_validator_rejects_adversarial_variants(
+    mutation: str,
+    message: str,
+):
+    plan_sha256 = (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256
+    )
+    evidence_root = (
+        Path(__file__).parents[1]
+        / "databricks-runs/vllm-0271-publication-prep/"
+        f"gpu-qualification-plan-sha256-{plan_sha256}/"
+        "failed-attempt-runtime-lock-index-v2"
+    ).resolve()
+    output_path = sorted(evidence_root.glob("*.runs-get-output.json"))[0]
+    job_id = output_path.name.removesuffix(".runs-get-output.json")
+    run_output = json.loads(output_path.read_text())
+    marker = (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_LOG_MARKER
+    )
+    expected_error_sha256 = hashlib.sha256(
+        run_output["error"].encode("utf-8")
+    ).hexdigest()
+    if mutation == "raw-sha":
+        expected_error_sha256 = "0" * 64
+    elif mutation == "runtime-path":
+        run_output["error"] = run_output["error"].replace(
+            f"/{job_id}/runtime/bin/python",
+            "/foreign-job/runtime/bin/python",
+        )
+        expected_error_sha256 = hashlib.sha256(
+            run_output["error"].encode("utf-8")
+        ).hexdigest()
+    elif mutation == "uuid":
+        run_output["error"] = run_output["error"].replace(
+            "pythonEnv-359ea7ae-1c5f-473c-89df-3f693b82d1cd",
+            "pythonEnv-359ea7ae-1c5f-573c-89df-3f693b82d1cd",
+        )
+        expected_error_sha256 = hashlib.sha256(
+            run_output["error"].encode("utf-8")
+        ).hexdigest()
+    elif mutation == "argv":
+        run_output["error"] = run_output["error"].replace(
+            "'--require-hashes'",
+            "'--no-deps'",
+        )
+        expected_error_sha256 = hashlib.sha256(
+            run_output["error"].encode("utf-8")
+        ).hexdigest()
+    elif mutation == "marker-missing":
+        run_output["logs"] = run_output["logs"].replace(marker, "unreviewed")
+    elif mutation == "marker-duplicate":
+        run_output["logs"] += marker
+    elif mutation == "truncated":
+        run_output["logs_truncated"] = True
+    else:
+        run_output["unreviewed"] = "field"
+
+    with pytest.raises(ValueError, match=message):
+        qualification_job._validated_runtime_lock_index_failure_error(
+            run_output,
+            plan_sha256=plan_sha256,
+            job_id=job_id,
+            expected_error_sha256=expected_error_sha256,
+        )
+
+
+def test_runtime_lock_index_wrapper_is_deterministic_idempotent_and_source_pinned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan_root,
+        evidence_root,
+        plan,
+        payloads,
+        manifest,
+        ledger_path,
+    ) = _runtime_lock_index_failure_replay_fixture(tmp_path, monkeypatch)
+    second_ledger_path = tmp_path / "cluster-hours-second.json"
+    second_ledger_path.write_bytes(ledger_path.read_bytes())
+    live_ledger_before = _RETAINED_LEDGER_PATH.read_bytes()
+    evidence_before = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in evidence_root.iterdir()
+    }
+
+    reconciled = _reconcile_runtime_lock_index_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=ledger_path,
+    )
+    second = _reconcile_runtime_lock_index_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=second_ledger_path,
+    )
+
+    assert reconciled == second
+    assert ledger_path.read_bytes() == second_ledger_path.read_bytes()
+    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
+        "1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916"
+    )
+    assert plan["closed_record_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256
+    )
+    assert plan["runtime_contract"]["artifact_sha256"]["runner_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_RUNNER_SHA256
+    )
+    assert manifest["closed_record_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_SHA256
+    )
+    assert manifest["reason"] == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_REASON
+    )
+    assert qualification_job._file_sha256(
+        evidence_root / "reconciliation-manifest.json"
+    ) == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_FILE_SHA256
+    )
+    assert (
+        len(reconciled.reservations),
+        len(reconciled.submission_receipts),
+        len(reconciled.terminal_actuals),
+    ) == (194, 56, 194)
+    assert reconciled.active_reserved_task_count == 0
+    assert reconciled.active_reserved_cluster_hours == 0.0
+    assert reconciled.terminal_actual_cluster_hours == pytest.approx(
+        61.28905027777782
+    )
+    assert sum(
+        item.actual_cluster_duration_seconds
+        for item in reconciled.terminal_actuals[-14:]
+    ) == pytest.approx(7754.755)
+    assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256
+    )
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_attempt_order = [
+        contract["reservation_attempt_id"]
+        for contract in sorted(contracts, key=lambda item: item["job_id"])
+    ]
+    assert [item.attempt_id for item in reconciled.terminal_actuals[-14:]] == (
+        expected_attempt_order
+    )
+    assert (
+        "reconcile_gpu_qualification_runtime_lock_index_failure_evidence"
+        in qualification_job.__all__
+    )
+    assert not any(
+        name.startswith("expected_")
+        for name in inspect.signature(
+            qualification_job.reconcile_gpu_qualification_runtime_lock_index_failure_evidence
+        ).parameters
+    )
+
+    closed_bytes = ledger_path.read_bytes()
+    assert (
+        _reconcile_runtime_lock_index_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+        == reconciled
+    )
+    assert ledger_path.read_bytes() == closed_bytes
+    assert _RETAINED_LEDGER_PATH.read_bytes() == live_ledger_before
+    assert {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in evidence_root.iterdir()
+    } == evidence_before
+
+
+def test_runtime_lock_index_reconciliation_resumes_canonical_partial_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan_root,
+        evidence_root,
+        plan,
+        payloads,
+        _manifest,
+        ledger_path,
+    ) = _runtime_lock_index_failure_replay_fixture(tmp_path, monkeypatch)
+    clean_ledger_path = tmp_path / "cluster-hours-clean.json"
+    clean_ledger_path.write_bytes(ledger_path.read_bytes())
+    real_record = qualification_job.record_databricks_verified_run_terminal_actual_json
+    completed = 0
+
+    def interrupt_after_five(ledger_path_arg, *, attempt_id, run_record):
+        nonlocal completed
+        if completed == 5:
+            raise RuntimeError("simulated runtime-index reconciliation interruption")
+        updated = real_record(
+            ledger_path_arg,
+            attempt_id=attempt_id,
+            run_record=run_record,
+        )
+        completed += 1
+        return updated
+
+    monkeypatch.setattr(
+        qualification_job,
+        "record_databricks_verified_run_terminal_actual_json",
+        interrupt_after_five,
+    )
+    with pytest.raises(RuntimeError, match="simulated runtime-index"):
+        _reconcile_runtime_lock_index_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+    partial = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert len(partial.terminal_actuals) == 185
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_attempt_order = [
+        contract["reservation_attempt_id"]
+        for contract in sorted(contracts, key=lambda item: item["job_id"])
+    ]
+    assert [item.attempt_id for item in partial.terminal_actuals[-5:]] == (
+        expected_attempt_order[:5]
+    )
+
+    monkeypatch.setattr(
+        qualification_job,
+        "record_databricks_verified_run_terminal_actual_json",
+        real_record,
+    )
+    resumed = _reconcile_runtime_lock_index_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=ledger_path,
+    )
+    clean = _reconcile_runtime_lock_index_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=clean_ledger_path,
+    )
+    assert resumed == clean
+    assert ledger_path.read_bytes() == clean_ledger_path.read_bytes()
+    assert databricks_ledger_prefix(resumed).prefix_sha256 == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("extra-file", "exact batch closure"),
+        ("raw-error", "raw error is not reviewed"),
+        ("marker", "resolution marker once"),
+        ("truncated", "logs must be complete"),
+        ("extra-schema", "reviewed incident schema"),
+        ("manifest", "manifest file is not reviewed"),
+    ],
+)
+def test_runtime_lock_index_reconciliation_rejects_tamper_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+):
+    (
+        plan_root,
+        source_evidence_root,
+        plan,
+        payloads,
+        _manifest,
+        ledger_path,
+    ) = _runtime_lock_index_failure_replay_fixture(tmp_path, monkeypatch)
+    evidence_root = tmp_path / "runtime-index-evidence-copy"
+    shutil.copytree(source_evidence_root, evidence_root)
+    if mutation == "extra-file":
+        (evidence_root / "unreviewed.json").write_text("{}\n", encoding="utf-8")
+    elif mutation == "manifest":
+        manifest_path = evidence_root / "reconciliation-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["reason"] = "unreviewed"
+        manifest_path.write_text(
+            canonical_gpu_qualification_json(manifest) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        output_path = sorted(evidence_root.glob("*.runs-get-output.json"))[0]
+        output = json.loads(output_path.read_text())
+        if mutation == "raw-error":
+            output["error"] += " tampered"
+        elif mutation == "marker":
+            output["logs"] = output["logs"].replace(
+                qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_LOG_MARKER,
+                "unreviewed",
+            )
+        elif mutation == "truncated":
+            output["logs_truncated"] = True
+        else:
+            output["unreviewed"] = "field"
+        output_path.write_text(
+            canonical_gpu_qualification_json(output) + "\n",
+            encoding="utf-8",
+        )
+    ledger_before = ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match=message):
+        _reconcile_runtime_lock_index_failure(
             plan_root=plan_root,
             evidence_root=evidence_root,
             plan=plan,
