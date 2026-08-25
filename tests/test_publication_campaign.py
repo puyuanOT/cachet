@@ -28,6 +28,8 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_FILE_SHA256,
     PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_FILE_SHA256,
+    PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
     PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS,
     PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE,
@@ -64,9 +66,9 @@ def test_publication_campaign_is_the_frozen_115_job_design():
     assert record["campaign_ledger_id"] == CAMPAIGN_LEDGER_ID
     assert record["campaign_ledger_path_sha256"] == CAMPAIGN_LEDGER_PATH_SHA256
     assert record["campaign_ledger_prefix"] == CAMPAIGN_LEDGER_PREFIX.to_record()
-    assert record["campaign_ledger_prefix"]["reservation_count"] == 194
-    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 56
-    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 194
+    assert record["campaign_ledger_prefix"]["reservation_count"] == 208
+    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 70
+    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 208
     assert record["closed_record_sha256"] == PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
     assert record["campaign_opening_terminal_gpu_hours"] == (
         PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -172,7 +174,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE
             ),
             "non_generation_gpu_hours_available_after_opening_balance_and_headroom": (
-                pytest.approx(260.3656322619047)
+                pytest.approx(257.1716461507936)
             ),
             "scope": [
                 "latency_q8_handoffs",
@@ -218,7 +220,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             },
             "launch_policy": "terminal_actual_and_hard_headroom_gated",
         },
-        "opening_terminal_gpu_hours": pytest.approx(61.28905027777782),
+        "opening_terminal_gpu_hours": pytest.approx(64.48303638888892),
         "total_latency_jobs": 115,
         "unreserved_headroom_hours": 124.0,
     }
@@ -421,7 +423,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
             ),
             "reconciled_ledger_file_sha256": (
-                PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_FILE_SHA256
             ),
             "reconciliation_manifest_closed_record_sha256": (
                 "2ee650e0e05ea059bd9f552d6975149c05cbda6dc8d3a715a73594913f078b29"
@@ -454,6 +456,72 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "torch_resolution_log_marker": (
                 "No matching distribution found for torch==2.13.0+cu129"
             ),
+            "verification_source": "direct_runs_get_and_runs_get_output",
+        },
+        "prefix_before_site_packages_path_failure_gpu_qualification": (
+            PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_PREFIX.to_record()
+        ),
+        "site_packages_path_failure_gpu_qualification": {
+            "actual_cluster_duration_seconds": 11_498.35,
+            "actual_gpu_hours": 3.193986111111111,
+            "data_security_mode": "SINGLE_USER",
+            "evidence_tree_byte_count": 1_945_499,
+            "evidence_tree_file_count": 29,
+            "evidence_tree_sha256": (
+                "2c555ea534fc3d41d3bc998fcaff8f07aedf42e1872200e39f9ed46796081607"
+            ),
+            "failed_before_run_creation": False,
+            "failed_before_sentinel_worker_launch": True,
+            "failure_class": "nonexistent_debian_site_packages_scheme_path",
+            "failure_reason": (
+                "all fourteen hash-locked qualification runtimes installed and "
+                "verified, then failed before sentinel worker launch because the "
+                "site-packages read-only freezer rejected a nonexistent Debian "
+                "local dist-packages scheme path reported by site.getsitepackages()"
+            ),
+            "normalized_error_sha256": (
+                "8937fb907ae789c647754b2bbe9dbc4d9e167b67b8e437613260373b658c0da3"
+            ),
+            "plan_file_sha256": (
+                "c63521b29233addc1c5ab4435dfa0d639135765bce7a54298c0b0b1200741651"
+            ),
+            "plan_sha256": (
+                "be4cb0e80e17c99d9c4bd8abb89b24efb6e1202072fb734c739d322812218c9c"
+            ),
+            "predicted_terminal_prefix_sha256": (
+                "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
+            ),
+            "reconciled_ledger_file_sha256": (
+                PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+            ),
+            "reconciliation_manifest_closed_record_sha256": (
+                "a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7"
+            ),
+            "reconciliation_manifest_file_sha256": (
+                "2996e67b6c6305544c11231266500dcb9c53aa2bbc701fa6d6e626299c2ab06e"
+            ),
+            "reservation_count_delta": 14,
+            "reviewed_runner_sha256": (
+                "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+            ),
+            "run_creation_count": 14,
+            "runs_get_output_keys": [
+                "error",
+                "error_trace",
+                "logs",
+                "logs_truncated",
+                "metadata",
+            ],
+            "single_user_name": "pliu@opentable.com",
+            "submission_receipt_count_delta": 14,
+            "task_life_cycle_state_counts": {"TERMINATED": 14},
+            "task_result_state_counts": {"FAILED": 14},
+            "terminal_actual_count_delta": 14,
+            "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+            "terminal_prefix_sha256": (
+                "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
+            ),
+            "terminal_result_state_counts": {"FAILED": 14},
             "verification_source": "direct_runs_get_and_runs_get_output",
         },
         "retained_opening_prefix": CAMPAIGN_LEDGER_PREFIX.to_record(),

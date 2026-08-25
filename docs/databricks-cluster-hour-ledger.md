@@ -196,13 +196,13 @@ divergent branches. Every later phase must extend the immediately prior
 authorized prefix and acquire one atomic whole-wave lease before its first
 submission.
 
-The retained opening is now the exact 194-reservation, 56-receipt,
-194-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
+The retained opening is now the exact 208-reservation, 70-receipt,
+208-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
 pre-run rejection, and the intermediate 138/0/138, 152/14/152, 166/28/166,
-and 180/42/180 prefixes. The rejected plan SHA-256, rejection-evidence file
-SHA-256, HTTP 400 status, 18,292-byte observed parameters JSON versus the
-10,000-byte server limit, and zero observed active runs remain bound in
-`analysis.opening_ledger_provenance`.
+180/42/180, and 194/56/194 prefixes. The rejected plan SHA-256,
+rejection-evidence file SHA-256, HTTP 400 status, 18,292-byte observed
+parameters JSON versus the 10,000-byte server limit, and zero observed active
+runs remain bound in `analysis.opening_ledger_provenance`.
 
 The first live 14-job qualification batch is a second explicit provenance hop.
 All 14 submissions received run identities, but `NONE` data-security mode could
@@ -269,10 +269,36 @@ Its 7,754.755 terminal cluster-seconds add 2.154098611111 GPU-hours. The
 predicted terminal prefix and final offline-reconciled prefix are both the
 exact 194/56/194 prefix
 `381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26`.
-The canonical ledger file SHA-256 is
+The predecessor ledger file SHA-256 is
 `1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916`.
-The reconciled opening balance is therefore 61.289050 GPU-hours, with zero
-active reservations and 962.710950 hours remaining under the 1,024-hour
+
+The sixth 14-job `SINGLE_USER` batch is retained as the site-packages-path
+failure provenance hop. Plan
+`be4cb0e80e17c99d9c4bd8abb89b24efb6e1202072fb734c739d322812218c9c`
+is stored in the exact file
+`c63521b29233addc1c5ab4435dfa0d639135765bce7a54298c0b0b1200741651`
+and used reviewed runner
+`ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc`.
+All fourteen hash-locked qualification runtimes installed and verified, then
+failed before sentinel worker launch because the site-packages read-only
+freezer rejected a nonexistent Debian local dist-packages scheme path reported
+by `site.getsitepackages()`. The path-normalized error SHA-256 is
+`8937fb907ae789c647754b2bbe9dbc4d9e167b67b8e437613260373b658c0da3`.
+The sealed evidence tree contains exactly 29 regular files and 1,945,499 bytes
+and has SHA-256
+`2c555ea534fc3d41d3bc998fcaff8f07aedf42e1872200e39f9ed46796081607`.
+It closes in manifest
+`a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7`
+whose exact file SHA-256 is
+`2996e67b6c6305544c11231266500dcb9c53aa2bbc701fa6d6e626299c2ab06e`.
+Its 11,498.35 terminal cluster-seconds add 3.193986111111 GPU-hours. The
+predicted terminal prefix and final offline-reconciled prefix are both the
+exact 208/70/208 prefix
+`a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9`.
+The canonical ledger file SHA-256 is
+`fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87`.
+The reconciled opening balance is therefore 64.483036 GPU-hours, with zero
+active reservations and 959.516964 hours remaining under the 1,024-hour
 aggregate cap.
 
 Every publication `runs/submit` payload also carries a package-derived,
@@ -362,8 +388,8 @@ every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
 hard cap/headroom admission. The three generation workloads contain 72,871,510
 cache-prefix tokens; at the required 35 effective
 tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
-retained ledger opens the reset with 61.289050 terminal GPU-hours, leaving only
-260.365632 hours inside the protected 900-hour envelope for qualification,
+retained ledger opens the reset with 64.483036 terminal GPU-hours, leaving only
+257.171646 hours inside the protected 900-hour envelope for qualification,
 timed latency, and full-score consumers at that generation threshold.
 
 The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);

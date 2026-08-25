@@ -41,7 +41,7 @@ production job is submitted.
 | Analysis | Paired hierarchical bootstrap over deployment blocks and examples; no post-hoc cell significance |
 | Full-score scope | One complete paired pass over every selected dataset row; no padding, truncation, sampling replacement, or answer-quality preservation gate |
 | Budget | 1,024 aggregate GPU-hours, 900 active reserved hours, 124 hours unreserved headroom, at most 16 parallel jobs |
-| Retained ledger opening | 61.289050 reconciled GPU-hours; exact 194/56/194 post-migration append-only prefix is campaign-bound |
+| Retained ledger opening | 64.483036 reconciled GPU-hours; exact 208/70/208 post-migration append-only prefix is campaign-bound |
 | Frozen generation workload | 72,871,510 cache-prefix tokens across Q8 latency, BF16 latency, and complete full-score handoffs; 578.345317 GPU-hours at the 35 token/GPU-s gate |
 
 `Baseline` sends the complete logical prompt to vLLM and computes all KV at

@@ -1321,8 +1321,8 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     assert "N/A (runner not implemented)" in score_table
     for method in ("KV&nbsp;Packet", "CacheBlend", "InfoFlow&nbsp;KV"):
         assert method in root_readme
-    assert "61.289050 reconciled GPU-hours" in root_readme
-    assert "exact 194/56/194 post-migration append-only prefix" in root_readme
+    assert "64.483036 reconciled GPU-hours" in root_readme
+    assert "exact 208/70/208 post-migration append-only prefix" in root_readme
     assert (
         "No benchmark result evidence is currently published here." in appendix_readme
     )
@@ -1355,13 +1355,13 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "phases use hard cap/headroom admission"
     ) in compact_ledger_doc
     assert (
-        "retained opening is now the exact 194-reservation, 56-receipt, "
-        "194-terminal prefix"
+        "retained opening is now the exact 208-reservation, 70-receipt, "
+        "208-terminal prefix"
     ) in compact_ledger_doc
     assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
     assert (
-        "intermediate 138/0/138, 152/14/152, 166/28/166, and 180/42/180 prefixes"
-        in compact_ledger_doc
+        "intermediate 138/0/138, 152/14/152, 166/28/166, 180/42/180, and "
+        "194/56/194 prefixes" in compact_ledger_doc
     )
     assert "analysis.opening_ledger_provenance" in compact_ledger_doc
     assert (
@@ -1456,7 +1456,58 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         in compact_ledger_doc
     )
     assert (
-        "reconciled opening balance is therefore 61.289050 GPU-hours"
+        "be4cb0e80e17c99d9c4bd8abb89b24efb6e1202072fb734c739d322812218c9c"
+        in compact_ledger_doc
+    )
+    assert (
+        "c63521b29233addc1c5ab4435dfa0d639135765bce7a54298c0b0b1200741651"
+        in compact_ledger_doc
+    )
+    assert (
+        "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+        in compact_ledger_doc
+    )
+    assert (
+        "All fourteen hash-locked qualification runtimes installed and "
+        "verified, then failed before sentinel worker launch because the "
+        "site-packages read-only freezer rejected a nonexistent Debian local "
+        "dist-packages scheme path reported by `site.getsitepackages()`"
+    ) in compact_ledger_doc
+    assert (
+        "8937fb907ae789c647754b2bbe9dbc4d9e167b67b8e437613260373b658c0da3"
+        in compact_ledger_doc
+    )
+    assert (
+        "2c555ea534fc3d41d3bc998fcaff8f07aedf42e1872200e39f9ed46796081607"
+        in compact_ledger_doc
+    )
+    assert "exactly 29 regular files and 1,945,499 bytes" in compact_ledger_doc
+    assert (
+        "a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7"
+        in compact_ledger_doc
+    )
+    assert (
+        "2996e67b6c6305544c11231266500dcb9c53aa2bbc701fa6d6e626299c2ab06e"
+        in compact_ledger_doc
+    )
+    assert (
+        "Its 11,498.35 terminal cluster-seconds add 3.193986111111 GPU-hours"
+        in compact_ledger_doc
+    )
+    assert (
+        "predicted terminal prefix and final offline-reconciled prefix are "
+        "both the exact 208/70/208 prefix"
+    ) in compact_ledger_doc
+    assert (
+        "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
+        in compact_ledger_doc
+    )
+    assert (
+        "fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87"
+        in compact_ledger_doc
+    )
+    assert (
+        "reconciled opening balance is therefore 64.483036 GPU-hours"
     ) in compact_ledger_doc
 
     subindex_expectations = {

@@ -27,7 +27,7 @@ PUBLICATION_CAMPAIGN_RECORD_TYPE = "cachet.vllm_0271_publication_campaign.v1"
 PUBLICATION_CAMPAIGN_SCHEMA_VERSION = 1
 PUBLICATION_CAMPAIGN_ID = "vllm-0271-publication-v1"
 PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256 = (
-    "9765b7b275c4a0b4db6a34af50c8563c171a779c3cc707b57c916a9593ea75ba"
+    "1f1682a99e69ad691dfab68a85cc9555eff4daea437d5095d93410af2430c490"
 )
 PUBLICATION_CAMPAIGN_ENGINE_VERSION = "0.27.1"
 PUBLICATION_CAMPAIGN_METHODS = ("baseline_prefill", "vanilla_prefill")
@@ -168,12 +168,15 @@ PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_UPPER_BOUND_GPU_HOURS = sum(
     timeout_hours * job_count
     for timeout_hours, job_count in PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_JOB_COUNTS
 )
-PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 61.28905027777782
+PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 64.48303638888892
 PUBLICATION_CAMPAIGN_LEDGER_ID = "representative-canary-823bd9d82a5c1730"
 PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256 = (
     "fd00fcc39375aa8c96dabba9e3e4c576ae2674dd911324622ef99293b9cfe865"
 )
 PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256 = (
+    "fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87"
+)
+PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_FILE_SHA256 = (
     "1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916"
 )
 PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_FILE_SHA256 = (
@@ -227,13 +230,25 @@ PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_PREFIX = (
         ),
     )
 )
+PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_PREFIX = (
+    DatabricksLedgerPrefix(
+        ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+        reservation_count=194,
+        submission_receipt_count=56,
+        terminal_actual_count=194,
+        prefix_sha256=(
+            "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
+        ),
+    )
+)
 PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
     cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
-    reservation_count=194,
-    submission_receipt_count=56,
-    terminal_actual_count=194,
-    prefix_sha256=("381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"),
+    reservation_count=208,
+    submission_receipt_count=70,
+    terminal_actual_count=208,
+    prefix_sha256=("a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"),
 )
 PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE = (
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
@@ -748,7 +763,7 @@ def publication_campaign_plan_to_record(
                         "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
                     ),
                     "reconciled_ledger_file_sha256": (
-                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                        PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_FILE_SHA256
                     ),
                     "reconciliation_manifest_closed_record_sha256": (
                         "2ee650e0e05ea059bd9f552d6975149c05cbda6dc8d3a715a73594913f078b29"
@@ -781,6 +796,73 @@ def publication_campaign_plan_to_record(
                     "torch_resolution_log_marker": (
                         "No matching distribution found for torch==2.13.0+cu129"
                     ),
+                    "verification_source": "direct_runs_get_and_runs_get_output",
+                },
+                "prefix_before_site_packages_path_failure_gpu_qualification": (
+                    PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_PREFIX.to_record()
+                ),
+                "site_packages_path_failure_gpu_qualification": {
+                    "actual_cluster_duration_seconds": 11_498.35,
+                    "actual_gpu_hours": 3.193986111111111,
+                    "data_security_mode": "SINGLE_USER",
+                    "evidence_tree_byte_count": 1_945_499,
+                    "evidence_tree_file_count": 29,
+                    "evidence_tree_sha256": (
+                        "2c555ea534fc3d41d3bc998fcaff8f07aedf42e1872200e39f9ed46796081607"
+                    ),
+                    "failed_before_run_creation": False,
+                    "failed_before_sentinel_worker_launch": True,
+                    "failure_class": "nonexistent_debian_site_packages_scheme_path",
+                    "failure_reason": (
+                        "all fourteen hash-locked qualification runtimes installed "
+                        "and verified, then failed before sentinel worker launch "
+                        "because the site-packages read-only freezer rejected a "
+                        "nonexistent Debian local dist-packages scheme path reported "
+                        "by site.getsitepackages()"
+                    ),
+                    "normalized_error_sha256": (
+                        "8937fb907ae789c647754b2bbe9dbc4d9e167b67b8e437613260373b658c0da3"
+                    ),
+                    "plan_file_sha256": (
+                        "c63521b29233addc1c5ab4435dfa0d639135765bce7a54298c0b0b1200741651"
+                    ),
+                    "plan_sha256": (
+                        "be4cb0e80e17c99d9c4bd8abb89b24efb6e1202072fb734c739d322812218c9c"
+                    ),
+                    "predicted_terminal_prefix_sha256": (
+                        "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
+                    ),
+                    "reconciled_ledger_file_sha256": (
+                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                    ),
+                    "reconciliation_manifest_closed_record_sha256": (
+                        "a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7"
+                    ),
+                    "reconciliation_manifest_file_sha256": (
+                        "2996e67b6c6305544c11231266500dcb9c53aa2bbc701fa6d6e626299c2ab06e"
+                    ),
+                    "reservation_count_delta": 14,
+                    "reviewed_runner_sha256": (
+                        "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+                    ),
+                    "run_creation_count": 14,
+                    "runs_get_output_keys": [
+                        "error",
+                        "error_trace",
+                        "logs",
+                        "logs_truncated",
+                        "metadata",
+                    ],
+                    "single_user_name": "pliu@opentable.com",
+                    "submission_receipt_count_delta": 14,
+                    "task_life_cycle_state_counts": {"TERMINATED": 14},
+                    "task_result_state_counts": {"FAILED": 14},
+                    "terminal_actual_count_delta": 14,
+                    "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+                    "terminal_prefix_sha256": (
+                        "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
+                    ),
+                    "terminal_result_state_counts": {"FAILED": 14},
                     "verification_source": "direct_runs_get_and_runs_get_output",
                 },
                 "retained_opening_prefix": (
@@ -1439,6 +1521,8 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX",
+    "PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_FILE_SHA256",
+    "PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_FILE_SHA256",
     "PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX",
