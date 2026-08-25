@@ -27,6 +27,11 @@ from document_kv_cache.benchmark_statistics import (
     paired_benchmark_statistics_to_record,
 )
 from document_kv_cache.benchmarks import (
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+    FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+    FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
+    NIAH_CELL_IDS,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
     DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
@@ -367,6 +372,127 @@ def test_quality_only_publication_uses_approved_scorer_and_complete_split() -> N
     )
 
     assert gate.ok, gate.issues
+
+
+def test_complete_niah_publication_requires_all_nine_grid_cells() -> None:
+    baseline_arm = baseline_prefill_arm()
+    examples = tuple(
+        BenchmarkExample(
+            example_id=f"niah-{index}",
+            dataset="niah",
+            documents=(
+                SourceDocument.from_text(
+                    document_id=f"niah-document-{index}",
+                    text="The requested exact value is Paris.",
+                ),
+            ),
+            query="What is the requested exact value?",
+            expected_answer="Paris",
+            metadata={"niah_cell_id": cell_id},
+        )
+        for index, cell_id in enumerate(NIAH_CELL_IDS[:-1])
+    )
+    result = run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="incomplete-niah-grid",
+            examples=examples,
+            datasets=("niah",),
+        ),
+        {baseline_arm.arm_id: _ScopedEngine()},
+        arms=(baseline_arm,),
+        scorer_registry=default_dataset_scorer_registry(),
+        manifest_context=BenchmarkManifestContext(
+            model_revision="model-revision",
+            canonical_model_id="test-model",
+            tokenizer_id="test-tokenizer",
+            tokenizer_revision="tokenizer-revision",
+            lora_id="base",
+            engine_id="test-engine",
+            engine_version="1",
+            serving_platform="test-serving-platform",
+            model_dtype="float16",
+            model_quantization="none",
+            runtime_kv_dtype="bfloat16",
+            layout_version="test-layout",
+            payload_axis_order="token_major",
+            block_size=16,
+            key_position_encoding="stored_post_rope",
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            hardware_fingerprint="test-hardware",
+            runtime_id="test-runtime",
+            runtime_version="1",
+            storage_identity="test-storage",
+            cache_state="cold",
+            max_output_tokens=64,
+            temperature=0.0,
+            stream=True,
+            complete_dataset_split=True,
+            measurement_scopes=("quality",),
+        ),
+        evidence_policy="publication",
+    )
+
+    gate = evaluate_benchmark_evidence_gate(result, policy="publication")
+
+    assert not gate.ok
+    assert any(
+        "complete NIAH score arm is missing required cells" in issue
+        and NIAH_CELL_IDS[-1] in issue
+        for issue in gate.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("metadata_key", "replacement", "issue_fragment"),
+    [
+        (
+            FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+            None,
+            "missing or mixed final-answer parser identity",
+        ),
+        (
+            FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
+            "different-version",
+            "missing or mixed final-answer parser identity",
+        ),
+        (
+            FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+            "tampered-answer",
+            "extraction cannot be reproduced",
+        ),
+    ],
+)
+def test_quality_publication_rejects_missing_mixed_or_tampered_answer_parser_metadata(
+    metadata_key,
+    replacement,
+    issue_fragment,
+) -> None:
+    identity = artifact_identity()
+    original = scoped_benchmark_result(
+        identity,
+        scopes=("quality",),
+        with_answers=True,
+    )
+    first = original.measurements[0]
+    metadata = dict(first.metadata)
+    if replacement is None:
+        metadata.pop(metadata_key)
+    else:
+        metadata[metadata_key] = replacement
+    result = replace(
+        original,
+        measurements=(replace(first, metadata=metadata), *original.measurements[1:]),
+    )
+
+    gate = evaluate_benchmark_evidence_gate(
+        result,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not gate.ok
+    assert any(issue_fragment in issue for issue in gate.issues)
     assert gate.measurement_scopes == ("quality",)
 
 
@@ -575,7 +701,7 @@ def test_publication_gates_official_metrics_and_collapses_quality_repeats() -> N
         def generate(self, request):
             output = "candidate" if request.arm.uses_cache else "baseline"
             return BenchmarkGeneration(
-                output_text=output,
+                output_text=f"<final_answer>{output}</final_answer>",
                 prompt_tokens=32,
                 completion_tokens=1,
                 ttft_seconds=0.5 if request.arm.uses_cache else 1.0,
@@ -674,7 +800,7 @@ def test_publication_gates_official_metrics_and_collapses_quality_repeats() -> N
     assert paired.quality_score_deltas["official_f1"].paired_samples == 4
 
 
-def test_multi_document_vanilla_quality_regression_cannot_pass_publication() -> None:
+def test_multi_document_vanilla_quality_regression_is_reported_not_gated() -> None:
     identity = artifact_identity()
     baseline_arm = baseline_prefill_arm()
     cache_arm = method_benchmark_arm(
@@ -710,7 +836,11 @@ def test_multi_document_vanilla_quality_regression_cannot_pass_publication() -> 
     class _QualityEngine:
         def generate(self, request):
             return BenchmarkGeneration(
-                output_text="Lyon" if request.arm.uses_cache else "Paris",
+                output_text=(
+                    "<final_answer>Lyon</final_answer>"
+                    if request.arm.uses_cache
+                    else "<final_answer>Paris</final_answer>"
+                ),
                 prompt_tokens=64,
                 completion_tokens=1,
                 ttft_seconds=0.5 if request.arm.uses_cache else 1.0,
@@ -783,9 +913,9 @@ def test_multi_document_vanilla_quality_regression_cannot_pass_publication() -> 
         artifact_identities={identity.artifact_id: identity},
     )
 
-    assert not gate.ok
-    assert any("exact_match" in issue for issue in gate.issues)
-    assert any("f1" in issue for issue in gate.issues)
+    assert gate.ok, gate.issues
+    comparison = result.comparisons[0]
+    assert comparison.quality_score_deltas["exact_match"] == -1.0
 
     strict = evaluate_benchmark_publication_gate(
         replace(
@@ -1083,7 +1213,11 @@ def test_paired_statistics_accepts_python_module_result_identity() -> None:
 
 class _ScopedEngine:
     def generate(self, request) -> BenchmarkGeneration:
-        output = "Paris" if request.example.expected_answer is not None else ""
+        output = (
+            "<final_answer>Paris</final_answer>"
+            if request.example.expected_answer is not None
+            else ""
+        )
         return BenchmarkGeneration(
             output_text=output,
             prompt_tokens=32,
@@ -1206,7 +1340,7 @@ def artifact_identity() -> ArtifactIdentity:
         tokenizer_id="qwen3:4b-instruct",
         tokenizer_revision="tokenizer-revision",
         lora_id="none",
-        prompt_template_version="v1-benchmark",
+        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
         layout_version="v1",
         kv_dtype="float16",
         block_size=16,

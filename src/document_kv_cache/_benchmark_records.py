@@ -13,6 +13,8 @@ from document_kv_cache._benchmark_manifest import (
     VARIES_BY_ARM,
     _json_materialize,
     _runtime_environment_to_record,
+    _resource_execution_id_digest,
+    _resource_runtime_identity_digest,
     _sha256_json,
     _validate_arm_runtime_environments,
     _validate_comparison_design,
@@ -24,6 +26,7 @@ from document_kv_cache._benchmark_models import (
     BenchmarkArmManifest,
     BenchmarkExecutionWindow,
     BenchmarkExperimentManifest,
+    BenchmarkResourceEvidence,
     BenchmarkRunResult,
     BenchmarkScorerManifest,
     _deep_freeze_json_mapping,
@@ -49,6 +52,9 @@ from document_kv_cache.workflow import SourceDocument
 
 
 BENCHMARK_RUN_RECORD_TYPE = "document_kv.benchmark_run.v1"
+BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE = (
+    "document_kv.benchmark_resource_evidence.v1"
+)
 
 _SANITIZED_DIGEST_METADATA_KEYS = frozenset(
     {"logical_prompt_sha256", "runtime_prompt_sha256", "prefix_cache_salt_sha256"}
@@ -102,6 +108,7 @@ def benchmark_run_result_payload_to_record(
 
     if not isinstance(result, BenchmarkRunResult):
         raise TypeError("result must be a BenchmarkRunResult")
+    _validate_resource_evidence_bindings(result)
     if sanitize_evidence:
         result = _sanitized_gate_result(result)
     from document_kv_cache.benchmark_statistics import (
@@ -147,6 +154,8 @@ def benchmark_run_result_payload_to_record(
             {
                 "arm_id": window.arm_id,
                 "wall_seconds": window.wall_seconds,
+                "started_at_seconds": window.started_at_seconds,
+                "ended_at_seconds": window.ended_at_seconds,
                 "completion_tokens": window.completion_tokens,
                 "successful_requests": window.successful_requests,
                 "aggregate_output_tokens_per_second": (
@@ -154,6 +163,10 @@ def benchmark_run_result_payload_to_record(
                 ),
             }
             for window in result.execution_windows
+        ],
+        "resource_evidence": [
+            benchmark_resource_evidence_to_record(evidence)
+            for evidence in result.resource_evidence
         ],
         "report_rows": [_report_row_to_record(row) for row in result.report_rows],
         "comparisons": [
@@ -217,6 +230,213 @@ def benchmark_record_payload_digest(record: Mapping[str, Any]) -> str:
         raise TypeError("record must be a mapping")
     payload = {key: value for key, value in record.items() if key != "evidence_gate"}
     return _sha256_json(payload)
+
+
+def benchmark_resource_evidence_to_record(
+    evidence: BenchmarkResourceEvidence,
+) -> dict[str, Any]:
+    """Serialize one immutable arm-level resource evidence record."""
+
+    if not isinstance(evidence, BenchmarkResourceEvidence):
+        raise TypeError("evidence must be BenchmarkResourceEvidence")
+    record: dict[str, Any] = {
+        "record_type": BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE,
+        "experiment_id": evidence.experiment_id,
+        "arm_id": evidence.arm_id,
+        "execution_id_digest": evidence.execution_id_digest,
+        "measurement_window": {
+            "started_at_seconds": evidence.measurement_started_at_seconds,
+            "ended_at_seconds": evidence.measurement_ended_at_seconds,
+        },
+        "sampling": {
+            "interval_seconds": evidence.sampling_interval_seconds,
+            "first_sample_at_seconds": evidence.first_sample_at_seconds,
+            "last_sample_at_seconds": evidence.last_sample_at_seconds,
+            "max_sample_gap_seconds": evidence.max_sample_gap_seconds,
+            "expected_sample_count": evidence.expected_sample_count,
+            "sample_count": evidence.sample_count,
+            "error_count": evidence.error_count,
+            "complete": evidence.complete,
+        },
+        "telemetry_sha256": evidence.telemetry_sha256,
+        "metrics": {
+            "peak_gpu_process_memory_bytes": (
+                evidence.peak_gpu_process_memory_bytes
+            ),
+            "mean_gpu_utilization_percent": (
+                evidence.mean_gpu_utilization_percent
+            ),
+            "peak_gpu_utilization_percent": (
+                evidence.peak_gpu_utilization_percent
+            ),
+            "peak_process_tree_rss_bytes": evidence.peak_process_tree_rss_bytes,
+            "peak_host_memory_used_bytes": (
+                evidence.peak_host_memory_used_bytes
+            ),
+        },
+        "software_identity": {
+            "source_revision": evidence.source_revision,
+            "source_tree_sha256": evidence.source_tree_sha256,
+            "wheel_sha256": evidence.wheel_sha256,
+            "runner_sha256": evidence.runner_sha256,
+            "runtime_identity_sha256": evidence.runtime_identity_sha256,
+        },
+    }
+    record["record_sha256"] = _sha256_json(record)
+    return record
+
+
+def benchmark_resource_evidence_from_record(
+    record: Mapping[str, Any],
+) -> BenchmarkResourceEvidence:
+    """Parse and authenticate one arm-level resource evidence record."""
+
+    if not isinstance(record, Mapping):
+        raise TypeError("resource evidence record must be a mapping")
+    _require_record_keys(
+        record,
+        {
+            "record_type",
+            "experiment_id",
+            "arm_id",
+            "execution_id_digest",
+            "measurement_window",
+            "sampling",
+            "telemetry_sha256",
+            "metrics",
+            "software_identity",
+            "record_sha256",
+        },
+        "resource_evidence",
+    )
+    if record.get("record_type") != BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE:
+        raise ValueError("unsupported resource evidence record_type")
+    recorded_digest = _record_string(record, "record_sha256")
+    payload = dict(record)
+    payload.pop("record_sha256")
+    if recorded_digest != _sha256_json(payload):
+        raise ValueError("resource evidence record_sha256 does not match its payload")
+    window = _record_mapping(record, "measurement_window")
+    sampling = _record_mapping(record, "sampling")
+    metrics = _record_mapping(record, "metrics")
+    identity = _record_mapping(record, "software_identity")
+    return BenchmarkResourceEvidence(
+        experiment_id=_record_string(record, "experiment_id"),
+        arm_id=_record_string(record, "arm_id"),
+        execution_id_digest=_record_string(record, "execution_id_digest"),
+        measurement_started_at_seconds=_record_number(
+            window,
+            "started_at_seconds",
+        ),
+        measurement_ended_at_seconds=_record_number(window, "ended_at_seconds"),
+        sampling_interval_seconds=_record_number(sampling, "interval_seconds"),
+        first_sample_at_seconds=_record_number(
+            sampling,
+            "first_sample_at_seconds",
+        ),
+        last_sample_at_seconds=_record_number(
+            sampling,
+            "last_sample_at_seconds",
+        ),
+        max_sample_gap_seconds=_record_number(
+            sampling,
+            "max_sample_gap_seconds",
+        ),
+        expected_sample_count=_record_int(sampling, "expected_sample_count"),
+        sample_count=_record_int(sampling, "sample_count"),
+        error_count=_record_int(sampling, "error_count"),
+        complete=_record_bool(sampling, "complete"),
+        telemetry_sha256=_record_string(record, "telemetry_sha256"),
+        peak_gpu_process_memory_bytes=_record_int(
+            metrics,
+            "peak_gpu_process_memory_bytes",
+        ),
+        mean_gpu_utilization_percent=_record_number(
+            metrics,
+            "mean_gpu_utilization_percent",
+        ),
+        peak_gpu_utilization_percent=_record_number(
+            metrics,
+            "peak_gpu_utilization_percent",
+        ),
+        peak_process_tree_rss_bytes=_record_int(
+            metrics,
+            "peak_process_tree_rss_bytes",
+        ),
+        peak_host_memory_used_bytes=_record_int(
+            metrics,
+            "peak_host_memory_used_bytes",
+        ),
+        source_revision=_record_string(identity, "source_revision"),
+        source_tree_sha256=_record_string(identity, "source_tree_sha256"),
+        wheel_sha256=_record_string(identity, "wheel_sha256"),
+        runner_sha256=_record_string(identity, "runner_sha256"),
+        runtime_identity_sha256=_record_string(
+            identity,
+            "runtime_identity_sha256",
+        ),
+    )
+
+
+def _validate_resource_evidence_bindings(result: BenchmarkRunResult) -> None:
+    evidence_by_arm = {item.arm_id: item for item in result.resource_evidence}
+    manifest = result.experiment_manifest
+    if manifest is None:
+        if evidence_by_arm:
+            raise ValueError("resource evidence requires an experiment manifest")
+        return
+    evidence_ids = {
+        arm_id: digest for arm_id, digest in manifest.resource_evidence_ids
+    }
+    actual_ids = {
+        arm_id: benchmark_resource_evidence_to_record(evidence)["record_sha256"]
+        for arm_id, evidence in evidence_by_arm.items()
+    }
+    if actual_ids != evidence_ids:
+        raise ValueError(
+            "experiment manifest resource_evidence_ids do not match resource evidence"
+        )
+    windows_by_arm = {
+        window.arm_id: window
+        for window in result.execution_windows
+        if window.arm_id != "all_arms"
+    }
+    for arm_id, evidence in evidence_by_arm.items():
+        if evidence.experiment_id != manifest.experiment_id:
+            raise ValueError(
+                f"resource evidence for arm {arm_id!r} changes experiment identity"
+            )
+        expected_execution_id = _resource_execution_id_digest(manifest, arm_id)
+        if evidence.execution_id_digest != expected_execution_id:
+            raise ValueError(
+                f"resource evidence for arm {arm_id!r} changes execution identity"
+            )
+        expected_runtime_identity = _resource_runtime_identity_digest(
+            manifest,
+            arm_id,
+            execution_id_digest=evidence.execution_id_digest,
+        )
+        if evidence.runtime_identity_sha256 != expected_runtime_identity:
+            raise ValueError(
+                f"resource evidence for arm {arm_id!r} changes runtime identity"
+            )
+        window = windows_by_arm.get(arm_id)
+        if window is None:
+            raise ValueError(
+                f"resource evidence for arm {arm_id!r} has no execution window"
+            )
+        if window.started_at_seconds is None or window.ended_at_seconds is None:
+            raise ValueError(
+                f"resource evidence for arm {arm_id!r} requires a timestamped "
+                "execution window"
+            )
+        if (
+            evidence.measurement_started_at_seconds != window.started_at_seconds
+            or evidence.measurement_ended_at_seconds != window.ended_at_seconds
+        ):
+            raise ValueError(
+                f"resource evidence for arm {arm_id!r} changes the measurement window"
+            )
 
 
 def benchmark_run_result_to_record(
@@ -288,6 +508,58 @@ def benchmark_run_result_to_evidence_record(
         method_registry=method_registry,
         sanitize_evidence=True,
     )
+
+
+def benchmark_gate_inputs_from_record(
+    record: Mapping[str, Any],
+) -> tuple[dict[str, Any], tuple[Any, ...]]:
+    """Reconstruct the external inputs needed to re-gate a benchmark record."""
+
+    if not isinstance(record, Mapping):
+        raise TypeError("record must be a mapping")
+    raw_inputs = record.get("gate_inputs")
+    if raw_inputs is None:
+        return {}, ()
+    if not isinstance(raw_inputs, Mapping):
+        raise ValueError("gate_inputs must be an object")
+    raw_identities = raw_inputs.get("artifact_identities", ())
+    raw_attestations = raw_inputs.get("cache_state_attestations", ())
+    for value, field_name in (
+        (raw_identities, "artifact_identities"),
+        (raw_attestations, "cache_state_attestations"),
+    ):
+        if not isinstance(value, Sequence) or isinstance(
+            value,
+            (str, bytes, bytearray),
+        ):
+            raise ValueError(f"gate_inputs.{field_name} must be an array")
+    from document_kv_cache.artifact_identity import ArtifactIdentity
+    from document_kv_cache.benchmark_gates import (
+        CACHE_STATE_ATTESTATION_RECORD_TYPE,
+        CacheStateAttestation,
+    )
+
+    identities: dict[str, Any] = {}
+    for raw_identity in raw_identities:
+        if not isinstance(raw_identity, Mapping):
+            raise ValueError("artifact identity descriptor must be an object")
+        identity = ArtifactIdentity.from_record(raw_identity)
+        if identity.artifact_id in identities:
+            raise ValueError("gate_inputs contains a duplicate artifact identity")
+        identities[identity.artifact_id] = identity
+    attestations: list[Any] = []
+    for raw_attestation in raw_attestations:
+        if not isinstance(raw_attestation, Mapping):
+            raise ValueError("cache-state attestation must be an object")
+        if raw_attestation.get("record_type") != CACHE_STATE_ATTESTATION_RECORD_TYPE:
+            raise ValueError("cache-state attestation has an unsupported record_type")
+        values = {
+            key: value
+            for key, value in raw_attestation.items()
+            if key not in {"record_type", "cold_read_attested"}
+        }
+        attestations.append(CacheStateAttestation(**values))
+    return identities, tuple(attestations)
 
 
 def _arm_runtime_environment_from_record(
@@ -643,6 +915,23 @@ def benchmark_experiment_manifest_from_record(
                 else ()
             )
         ),
+        resource_evidence_ids=tuple(
+            (
+                _record_string(
+                    _record_mapping_value(item, "resource_evidence_ids entry"),
+                    "arm_id",
+                ),
+                _record_string(
+                    _record_mapping_value(item, "resource_evidence_ids entry"),
+                    "resource_evidence_sha256",
+                ),
+            )
+            for item in (
+                _record_sequence(execution, "resource_evidence_ids")
+                if "resource_evidence_ids" in execution
+                else ()
+            )
+        ),
     )
     _validate_arm_runtime_environments(
         manifest.arms,
@@ -777,6 +1066,12 @@ def benchmark_run_result_from_record(
         )
         for index, raw in enumerate(record.get("execution_windows", ()))
     )
+    resource_evidence = tuple(
+        benchmark_resource_evidence_from_record(
+            _record_mapping_value(raw, f"resource_evidence[{index}]")
+        )
+        for index, raw in enumerate(record.get("resource_evidence", ()))
+    )
     _validate_execution_windows_against_measurements(
         execution_windows,
         measurements,
@@ -817,7 +1112,7 @@ def benchmark_run_result_from_record(
             Literal["smoke", "canary", "publication"],
             policy_value,
         )
-    return BenchmarkRunResult(
+    result = BenchmarkRunResult(
         suite=suite,
         measurements=measurements,
         report_rows=report_rows,
@@ -841,7 +1136,10 @@ def benchmark_run_result_from_record(
         evidence_policy=resolved_policy,
         execution_windows=execution_windows,
         execution_isolation_mode=manifest.execution_isolation_mode,
+        resource_evidence=resource_evidence,
     )
+    _validate_resource_evidence_bindings(result)
+    return result
 
 
 def benchmark_record_aggregate_issues(
@@ -1012,6 +1310,7 @@ def merge_isolated_benchmark_run_records(
     merged_suite_arms: list[Any] = []
     merged_measurements: list[Any] = []
     merged_windows: list[Any] = []
+    merged_resource_evidence: list[Any] = []
     for record, manifest, suite, typed_manifest in zip(
         payloads,
         manifests,
@@ -1032,6 +1331,7 @@ def merge_isolated_benchmark_run_records(
         merged_suite_arms.extend(_record_sequence(suite, "arms"))
         merged_measurements.extend(_record_sequence(record, "measurements"))
         merged_windows.extend(record.get("execution_windows", ()))
+        merged_resource_evidence.extend(record.get("resource_evidence", ()))
     arm_ids = [
         _record_string(_record_mapping_value(arm, "manifest arm"), "arm_id")
         for arm in merged_arms
@@ -1067,6 +1367,19 @@ def merge_isolated_benchmark_run_records(
             "execution_id_digest": sha256(runtime_id.encode("utf-8")).hexdigest(),
         }
         for arm_id, runtime_id in zip(arm_ids, source_runtime_ids, strict=True)
+    ]
+    resource_evidence_ids = [
+        {
+            "arm_id": _record_string(
+                _record_mapping_value(item, "resource evidence"),
+                "arm_id",
+            ),
+            "resource_evidence_sha256": _record_string(
+                _record_mapping_value(item, "resource evidence"),
+                "record_sha256",
+            ),
+        }
+        for item in merged_resource_evidence
     ]
     merged_manifest = json.loads(json.dumps(first_manifest))
     merged_manifest["arms"] = merged_arms
@@ -1138,6 +1451,7 @@ def merge_isolated_benchmark_run_records(
         "order_mode": "physically_isolated_jobs",
         "isolation_mode": "separate_process_or_job",
         "source_execution_ids": source_execution_ids,
+        "resource_evidence_ids": resource_evidence_ids,
     }
     merged_suite = json.loads(json.dumps(first_suite))
     merged_suite["arms"] = merged_suite_arms
@@ -1155,6 +1469,7 @@ def merge_isolated_benchmark_run_records(
         "experiment_manifest": merged_manifest,
         "measurements": merged_measurements,
         "execution_windows": merged_windows,
+        "resource_evidence": merged_resource_evidence,
         "report_rows": [],
         "comparisons": [],
         "paired_statistics": {},
@@ -1264,6 +1579,8 @@ def _execution_window_from_record(
         wall_seconds=_record_number(record, "wall_seconds"),
         completion_tokens=_record_int(record, "completion_tokens"),
         successful_requests=_record_int(record, "successful_requests"),
+        started_at_seconds=_record_optional_number(record, "started_at_seconds"),
+        ended_at_seconds=_record_optional_number(record, "ended_at_seconds"),
     )
     recorded_tps = _record_number(record, "aggregate_output_tokens_per_second")
     if not math.isclose(
@@ -1784,6 +2101,8 @@ for _public_function in (
     benchmark_record_payload_digest,
     benchmark_run_result_to_record,
     benchmark_run_result_to_evidence_record,
+    benchmark_resource_evidence_to_record,
+    benchmark_resource_evidence_from_record,
     benchmark_experiment_manifest_to_record,
     benchmark_experiment_manifest_from_record,
     benchmark_run_result_from_record,

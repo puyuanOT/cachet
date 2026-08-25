@@ -12,6 +12,8 @@ from document_kv_cache.benchmark_dataset_sources import (
     stage_wikibio_zip,
 )
 from document_kv_cache.benchmark_runner import load_benchmark_jsonl
+from document_kv_cache.benchmarks import format_document_context
+from document_kv_cache.dataset_prep import opaque_biography_example_id
 
 
 def test_stage_hotpotqa_parquet_writes_canonical_records(tmp_path):
@@ -57,6 +59,7 @@ def test_stage_musique_jsonl_filters_unanswerable_records(tmp_path):
                         "id": "mq-1",
                         "question": "Where is Paris?",
                         "answer": "France",
+                        "answer_aliases": ["French Republic"],
                         "answerable": True,
                         "paragraphs": [
                             {
@@ -89,6 +92,7 @@ def test_stage_musique_jsonl_filters_unanswerable_records(tmp_path):
     assert record["records"] == 1
     assert loaded[0].example_id == "mq-1"
     assert loaded[0].expected_answer == "France"
+    assert loaded[0].references == ("France", "French Republic")
     assert loaded[0].documents[0].metadata["is_supporting"] == "true"
 
 
@@ -99,16 +103,34 @@ def test_stage_wikibio_zip_uses_title_as_expected_answer(tmp_path):
         archive.writestr("wikipedia-biography-dataset/valid/valid.id", "bio-1\n")
         archive.writestr("wikipedia-biography-dataset/valid/valid.nb", "2\n")
         archive.writestr("wikipedia-biography-dataset/valid/valid.title", "Ada_Lovelace\n")
-        archive.writestr("wikipedia-biography-dataset/valid/valid.sent", "Ada wrote notes.\nShe studied engines.\n")
+        archive.writestr(
+            "wikipedia-biography-dataset/valid/valid.sent",
+            "Ada Lovelace wrote notes.\nShe studied engines.\n",
+        )
         archive.writestr("wikipedia-biography-dataset/valid/valid.box", "name_1:Ada\n")
 
     record = stage_wikibio_zip(input_path, output_path)
     loaded = load_benchmark_jsonl(output_path, dataset="biography", require_dataset=True)
 
     assert record["records"] == 1
-    assert loaded[0].example_id == "bio-1"
+    opaque_id = opaque_biography_example_id("bio-1", split="valid")
+    assert loaded[0].example_id == opaque_id
     assert loaded[0].expected_answer == "Ada Lovelace"
-    assert "Ada wrote notes. She studied engines." == loaded[0].documents[0].chunks[0].text
+    assert loaded[0].documents[0].document_id == f"{opaque_id}-doc-0"
+    assert "title" not in loaded[0].documents[0].metadata
+    assert "article_title" not in loaded[0].metadata
+    assert loaded[0].metadata["answer_bearing_document_metadata"] == "removed"
+    assert loaded[0].metadata["answer_surface_in_document_context"] == "redacted"
+    assert "the subject wrote notes. She studied engines." == loaded[0].documents[0].chunks[0].text
+    assert "Ada Lovelace" not in loaded[0].documents[0].chunks[0].text
+    rendered = format_document_context(loaded[0].documents)
+    rendered_header = next(
+        line for line in rendered.splitlines() if line.startswith("[document ")
+    )
+    assert "Ada Lovelace" not in rendered_header
+    assert "Ada_Lovelace" not in rendered_header
+    assert f'id="{opaque_id}-doc-0"' in rendered_header
+    assert f'title="{opaque_id}-doc-0"' in rendered_header
 
 
 def test_stage_niah_jsonl_records_synthetic_grid_metadata(tmp_path):
@@ -117,17 +139,16 @@ def test_stage_niah_jsonl_records_synthetic_grid_metadata(tmp_path):
     record = stage_niah_jsonl(
         output_path,
         sample_count=3,
-        context_token_targets=(1024, 2048),
-        needle_positions=(0.25, 0.75),
         seed=7,
     )
     loaded = load_benchmark_jsonl(output_path, dataset="niah", require_dataset=True)
 
     assert record["records"] == 3
-    assert record["context_token_targets"] == [1024, 2048]
+    assert record["context_token_targets"] == [8192, 16384, 32768]
     assert loaded[0].expected_answer == "cachet-needle-7-00000"
-    assert loaded[0].metadata["context_token_target"] == "1024"
-    assert loaded[2].metadata["needle_position"] == "0.750"
+    assert loaded[0].metadata["context_token_target"] == "8192"
+    assert loaded[0].metadata["niah_cell_id"] == "niah-8k-depth-10"
+    assert loaded[2].metadata["niah_cell_id"] == "niah-32k-depth-10"
 
 
 def test_stage_full_benchmark_datasets_writes_metadata_with_counts(tmp_path):
@@ -182,6 +203,7 @@ def test_stage_full_benchmark_datasets_writes_metadata_with_counts(tmp_path):
     metadata = json.loads((tmp_path / "prepared" / "dataset-source-metadata.json").read_text(encoding="utf-8"))
 
     assert record == metadata
+    assert record["record_type"] == "document_kv.full_benchmark_dataset_sources.v2"
     assert record["datasets"]["biography"]["records"] == 1
     assert record["datasets"]["hotpotqa"]["records"] == 1
     assert record["datasets"]["musique"]["records"] == 1

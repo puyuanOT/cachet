@@ -39,6 +39,10 @@ from document_kv_cache.materializer import KVMaterializer
 from document_kv_cache.methods import MethodRegistry, MethodSpec, method_spec
 from document_kv_cache.models import CacheGenerationMethod, DocumentKVRequest, KVCacheKey
 from document_kv_cache.rope import apply_rope_to_keys
+from document_kv_cache.serving_env import VLLM_PACKAGE_VERSION
+from document_kv_cache.vllm_runtime_contract_data import (
+    VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
+)
 from document_kv_cache.storage import DiskRangeReader
 from document_kv_cache.workflow import (
     CacheBuildConfig,
@@ -189,8 +193,9 @@ def extended_ready_request() -> EngineReadyRequest:
 def matching_installed_contract() -> dict:
     return installed_vllm_kv_connector_v1_contract_to_record(
         VLLMInstalledKVConnectorContract(
-            package_version="0.23.0",
+            package_version=VLLM_PACKAGE_VERSION,
             importable=True,
+            base_source_sha256=VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
             installed_methods=tuple(
                 sorted(
                     (
@@ -199,7 +204,11 @@ def matching_installed_contract() -> dict:
                     )
                 )
             ),
-            installed_properties=("prefer_cross_layer_blocks", "role"),
+            installed_properties=(
+                "prefer_cross_layer_blocks",
+                "requires_kv_delivery",
+                "role",
+            ),
         )
     )
 
@@ -457,6 +466,19 @@ def scheduler_output(block_ids: list[int], *, request_id: str = "req-1"):
     )
 
 
+def logical_kv_slot(layer, block_id: int, block_offset: int):
+    """Expose one packed vLLM 0.27.1 slot as logical [K/V, H, D]."""
+
+    head_dim = layer.shape[-1] // 2
+    return torch.stack(
+        (
+            layer[block_id, :, block_offset, :head_dim],
+            layer[block_id, :, block_offset, head_dim:],
+        ),
+        dim=0,
+    )
+
+
 def hydrate_two_token_load(
     provider: DocumentKVNativeProvider,
 ) -> tuple[DocumentKVConnector, object, object]:
@@ -465,8 +487,8 @@ def hydrate_two_token_load(
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([4, 6]), 2)
     meta = connector.build_connector_meta(scheduler_output([4, 6]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
     connector.register_kv_caches(
         {
             "model.layers.0.self_attn.attn": layer_0,
@@ -732,19 +754,19 @@ def test_native_provider_copies_materialized_payload_into_registered_paged_kv_la
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
 
     connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
 
-    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_0[5, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
-    assert torch.equal(layer_0[7, :, 0], torch.zeros((2, 1, 2), dtype=torch.int8))
-    assert torch.equal(layer_1[5, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
-    assert torch.equal(layer_1[5, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
-    assert torch.equal(layer_1[7, :, 0], torch.zeros((2, 1, 2), dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 5, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 5, 1), torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 7, 0), torch.zeros((2, 1, 2), dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 5, 0), torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 5, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 7, 0), torch.zeros((2, 1, 2), dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
     assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
 
@@ -785,19 +807,19 @@ def test_native_provider_decodes_packed_payload_before_tensor_view_and_copy():
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
     connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
 
     assert len(calls) == 1
     assert torch.equal(
-        layer_0[5, :, 0],
+        logical_kv_slot(layer_0, 5, 0),
         torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8),
     )
     assert torch.equal(
-        layer_1[5, :, 1],
+        logical_kv_slot(layer_1, 5, 1),
         torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8),
     )
 
@@ -880,25 +902,25 @@ def test_vanilla_two_segment_handoff_applies_global_positions_and_preserves_valu
     metadata = connector.build_connector_meta(
         scheduler_output([5, 7], request_id="req-vanilla")
     )
-    destination = torch.zeros((8, 2, 2, 1, 4), dtype=torch.float32)
+    destination = torch.zeros((8, 1, 2, 8), dtype=torch.float32)
     connector.register_kv_caches({"layer.0": destination})
     connector.bind_connector_metadata(metadata)
     connector.start_load_kv(SimpleNamespace())
 
     loaded_keys = torch.stack(
         (
-            destination[5, 0, 0],
-            destination[5, 0, 1],
-            destination[7, 0, 0],
-            destination[7, 0, 1],
+            logical_kv_slot(destination, 5, 0)[0],
+            logical_kv_slot(destination, 5, 1)[0],
+            logical_kv_slot(destination, 7, 0)[0],
+            logical_kv_slot(destination, 7, 1)[0],
         )
     )
     loaded_values = torch.stack(
         (
-            destination[5, 1, 0],
-            destination[5, 1, 1],
-            destination[7, 1, 0],
-            destination[7, 1, 1],
+            logical_kv_slot(destination, 5, 0)[1],
+            logical_kv_slot(destination, 5, 1)[1],
+            logical_kv_slot(destination, 7, 0)[1],
+            logical_kv_slot(destination, 7, 1)[1],
         )
     )
     expected_keys = apply_rope_to_keys(
@@ -1078,19 +1100,19 @@ def test_strict_packed_artifact_pipeline_decodes_stored_bytes_before_cpu_copy(
         2,
     )
     metadata = connector.build_connector_meta(scheduler_output([5, 7]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
     connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
     connector.bind_connector_metadata(metadata)
     connector.start_load_kv(SimpleNamespace())
 
     assert len(decode_calls) == 1
     assert torch.equal(
-        layer_0[5, :, 0],
+        logical_kv_slot(layer_0, 5, 0),
         torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8),
     )
     assert torch.equal(
-        layer_1[5, :, 1],
+        logical_kv_slot(layer_1, 5, 1),
         torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8),
     )
 
@@ -1259,17 +1281,17 @@ def test_native_provider_loads_uri_payload_via_mmap_matches_inline(
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
 
     connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
 
-    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_0[5, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
-    assert torch.equal(layer_1[5, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
-    assert torch.equal(layer_1[5, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 5, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 5, 1), torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 5, 0), torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 5, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
     assert observed_memoryview == [True]
 
@@ -1306,8 +1328,8 @@ def test_native_provider_evicts_page_cache_before_mmap_when_enabled(tmp_path, mo
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
     connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
@@ -1315,7 +1337,7 @@ def test_native_provider_evicts_page_cache_before_mmap_when_enabled(tmp_path, mo
     assert len(calls) == 1
     assert calls[0][3] == 4  # POSIX_FADV_DONTNEED
     assert sync_calls == [1]  # one-time flush before eviction so reads are fully cold
-    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 5, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
     cache_state = json.loads(telemetry_path.read_text(encoding="utf-8"))[
         "cache_state_attestation"
@@ -1410,8 +1432,8 @@ def test_native_provider_does_not_evict_page_cache_by_default(tmp_path, monkeypa
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
     connector.bind_connector_metadata(meta)
@@ -1446,8 +1468,8 @@ def test_native_provider_prefetches_payloads_when_workers_enabled(tmp_path, monk
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
     connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
 
     connector.bind_connector_metadata(meta)
@@ -1461,8 +1483,8 @@ def test_native_provider_prefetches_payloads_when_workers_enabled(tmp_path, monk
     # Exactly one eviction (from the background prefetch), consumed future, correct KV.
     assert len(fadvise_calls) == 1
     assert provider._prefetch_futures == {}
-    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_1[5, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 5, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 5, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
 
 
@@ -1519,8 +1541,8 @@ def test_native_provider_reports_phase_timing_metrics(monkeypatch):
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
     connector.bind_connector_metadata(meta)
@@ -1565,8 +1587,8 @@ def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
     connector.bind_connector_metadata(meta)
@@ -1618,8 +1640,8 @@ def test_native_provider_telemetry_always_records_wall_clock(tmp_path):
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
     connector.bind_connector_metadata(meta)
@@ -1650,8 +1672,8 @@ def test_native_provider_telemetry_splits_h2d_and_scatter_when_profiling(tmp_pat
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
     connector.bind_connector_metadata(meta)
@@ -1720,8 +1742,8 @@ def test_native_provider_reuses_payload_uri_cache_for_hot_documents(tmp_path, mo
     connector = DocumentKVConnector(provider=provider)
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
 
@@ -1757,7 +1779,7 @@ def test_native_provider_payload_uri_cache_skips_oversized_payloads(tmp_path, mo
     load = DocumentKVHandoffLoad(actions=handoff_load_with_content_hashes().actions, payload_uri=payload_uri)
     provider = DocumentKVNativeProvider(source=StaticHandoffSource(load), payload_cache_max_bytes=1)
     connector = DocumentKVConnector(provider=provider)
-    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8)})
 
     for request_id, block_ids in (("req-1", [4, 6]), ("req-2", [5, 7])):
         request = SimpleNamespace(request_id=request_id, num_tokens=5, kv_transfer_params={})
@@ -1788,7 +1810,7 @@ def test_native_provider_payload_uri_cache_rejects_unhashed_copy_actions(tmp_pat
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([4, 6]), 2)
     connector.bind_connector_metadata(connector.build_connector_meta(scheduler_output([4, 6])))
-    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8)})
     with pytest.raises(ValueError, match="content_hash"):
         connector.start_load_kv(SimpleNamespace())
 
@@ -1818,7 +1840,7 @@ def test_native_provider_payload_uri_cache_misses_when_content_identity_changes(
         payload_cache_max_bytes=len(payload()) * 2,
     )
     connector = DocumentKVConnector(provider=provider)
-    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8)})
 
     for request_id, block_ids in (("req-1", [4, 6]), ("req-2", [5, 7])):
         request = SimpleNamespace(request_id=request_id, num_tokens=5, kv_transfer_params={})
@@ -1854,7 +1876,7 @@ def test_native_provider_reset_cache_clears_payload_uri_cache(tmp_path, monkeypa
         payload_cache_max_bytes=len(payload()) * 2,
     )
     connector = DocumentKVConnector(provider=provider)
-    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8)})
 
     for request_id, block_ids in (("req-1", [4, 6]), ("req-2", [5, 7])):
         request = SimpleNamespace(request_id=request_id, num_tokens=5, kv_transfer_params={})
@@ -1891,8 +1913,8 @@ def test_native_provider_reuses_one_payload_tensor_view_per_load(monkeypatch):
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
     connector.bind_connector_metadata(meta)
@@ -1947,8 +1969,8 @@ def test_native_provider_reuses_slot_mapping_for_layers_on_same_device(monkeypat
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
     connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
@@ -1968,8 +1990,8 @@ def test_native_provider_consumes_bound_load_metadata_after_successful_load():
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
     connector.bind_connector_metadata(meta)
@@ -1993,8 +2015,8 @@ def test_native_provider_skips_rebound_duplicate_load_metadata_after_successful_
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
 
@@ -2025,8 +2047,8 @@ def test_native_provider_skips_duplicate_load_without_dropping_new_load_in_same_
     meta_2 = connector.build_connector_meta(scheduler_output([6, 8], request_id="req-2"))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((9, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((9, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((9, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((9, 1, 2, 4), dtype=torch.int8),
         }
     )
 
@@ -2055,8 +2077,8 @@ def test_native_provider_releases_loaded_identity_for_finished_request_ids():
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
     connector.register_kv_caches(
         {
-            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
         }
     )
 
@@ -2085,7 +2107,7 @@ def test_native_provider_records_load_error_blocks_for_payload_view_failures(mon
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
-    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 1, 2, 4), dtype=torch.int8)})
     connector.bind_connector_metadata(meta)
 
     with pytest.raises(ValueError, match="payload view failed"):
@@ -2104,8 +2126,8 @@ def test_native_provider_maps_vllm_layer_names_independently_of_registration_ord
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
     meta = connector.build_connector_meta(scheduler_output([5, 7]))
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
 
     connector.register_kv_caches(
         {
@@ -2116,8 +2138,8 @@ def test_native_provider_maps_vllm_layer_names_independently_of_registration_ord
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
 
-    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_1[5, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 5, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 5, 0), torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
 
 
 def test_native_provider_rejects_unparseable_registered_vllm_layer_names():
@@ -2126,8 +2148,8 @@ def test_native_provider_rejects_unparseable_registered_vllm_layer_names():
     with pytest.raises(ValueError, match="Cannot determine vLLM layer index"):
         provider.register_kv_caches(
             {
-                "attention_a": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-                "attention_b": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+                "attention_a": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+                "attention_b": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
             }
         )
 
@@ -2138,8 +2160,8 @@ def test_native_provider_rejects_duplicate_registered_vllm_layer_indices():
     with pytest.raises(ValueError, match="Duplicate vLLM layer index"):
         provider.register_kv_caches(
             {
-                "model.layers.0.self_attn.attn": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
-                "decoder.layers.0.self_attn.attn": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+                "model.layers.0.self_attn.attn": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
+                "decoder.layers.0.self_attn.attn": torch.zeros((8, 1, 2, 4), dtype=torch.int8),
             }
         )
 
@@ -2254,8 +2276,8 @@ def test_native_provider_handshake_metadata_includes_runtime_preflight(monkeypat
     )
     provider = DocumentKVNativeProvider(source=StaticHandoffSource(None))
     connector = DocumentKVConnector(provider=provider)
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
 
     connector.register_kv_caches(
         {
@@ -2404,8 +2426,8 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
         prompt_token_ids=(1, 2, 3),
         kv_transfer_params=entry.kv_transfer_params(),
     )
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
 
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([4]), 2)
@@ -2423,10 +2445,10 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
 
-    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_0[4, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 1), torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 0), torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
 
 
@@ -2444,8 +2466,8 @@ def test_segmented_handoff_bundle_feeds_lazy_vllm_native_provider_load_path(tmp_
         num_tokens=5,
         kv_transfer_params={DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path)},
     )
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
 
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([4, 6]), 2)
@@ -2462,10 +2484,10 @@ def test_segmented_handoff_bundle_feeds_lazy_vllm_native_provider_load_path(tmp_
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
 
-    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_0[4, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 1), torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 0), torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
 
 
@@ -2521,8 +2543,8 @@ def test_canonical_segmented_uri_uses_direct_global_snapshot_and_hashes_once(
 
     assert checksum_calls == [len(payload())]
     assert tensor_view_payload_types == [bytes]
-    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     row = json.loads(telemetry_path.read_text(encoding="utf-8"))
     assert row["payload_loading"] == {
         "configured_segmented_strategy": strategy,
@@ -2606,8 +2628,8 @@ def test_segmented_uri_legacy_switch_preserves_two_copy_path(tmp_path, monkeypat
     _connector, layer_0, layer_1 = hydrate_two_token_load(provider)
 
     assert checksum_calls == [len(payload()), len(payload())]
-    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     row = json.loads(telemetry_path.read_text(encoding="utf-8"))
     assert row["payload_loading"] == {
         "configured_segmented_strategy": "legacy",
@@ -2649,8 +2671,8 @@ def test_noncanonical_segmented_uri_auto_uses_strict_legacy_fallback(
 
     _connector, layer_0, layer_1 = hydrate_two_token_load(provider)
 
-    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     row = json.loads(telemetry_path.read_text(encoding="utf-8"))
     assert row["payload_loading"]["configured_segmented_strategy"] == "auto"
     assert row["payload_loading"]["selected_strategy"] == "legacy_segment_remerge"
@@ -2704,11 +2726,11 @@ def test_direct_global_snapshot_is_stable_after_checksum_when_file_mutates(
     assert checksum_calls == 1
     assert payload_path.read_bytes() == mutated_payload
     assert torch.equal(
-        layer_0[4, :, 0],
+        logical_kv_slot(layer_0, 4, 0),
         torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8),
     )
     assert torch.equal(
-        layer_1[4, :, 1],
+        logical_kv_slot(layer_1, 4, 1),
         torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8),
     )
     row = json.loads(telemetry_path.read_text(encoding="utf-8"))
@@ -2811,8 +2833,8 @@ def test_lazy_segmented_payload_uri_respects_copy_payload_index(tmp_path):
     )
     connector = DocumentKVConnector(provider=provider)
     vllm_request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
-    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
-    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
 
     assert connector.get_num_new_matched_tokens(vllm_request, 0) == (2, False)
     connector.update_state_after_alloc(vllm_request, AllocatedBlocks([4, 6]), 2)
@@ -2826,10 +2848,10 @@ def test_lazy_segmented_payload_uri_respects_copy_payload_index(tmp_path):
     connector.bind_connector_metadata(meta)
     connector.start_load_kv(SimpleNamespace())
 
-    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(layer_0[4, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
-    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_0, 4, 1), torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 0), torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(logical_kv_slot(layer_1, 4, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
 
 
 def test_native_provider_factory_is_release_safe_provider_wiring():

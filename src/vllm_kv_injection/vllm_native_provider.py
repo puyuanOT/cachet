@@ -50,7 +50,12 @@ from document_kv_cache.reuse_contract import (
 )
 from document_kv_cache.engine_probe import read_engine_adapter_payload
 from vllm_kv_injection.block_mapping import BlockSpan, plan_token_blocks
-from vllm_kv_injection.paged_kv_copy import inject_kv_cache_layer, slot_mapping_from_blocks
+from vllm_kv_injection.paged_kv_copy import (
+    TRITON_PACKED_KV_LAYOUT,
+    inject_kv_cache_layer,
+    slot_mapping_from_blocks,
+    validate_triton_packed_kv_cache_layer,
+)
 from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
@@ -707,6 +712,11 @@ class DocumentKVNativeProvider:
     def register_kv_caches(self, kv_caches: Mapping[str, object]) -> None:
         inspection = inspect_document_kv_vllm_layer_mapping(kv_caches)
         layer_indices = _vllm_layer_indices_from_inspection(inspection)
+        for layer_name, kv_cache in kv_caches.items():
+            try:
+                validate_triton_packed_kv_cache_layer(kv_cache)
+            except (TypeError, ValueError) as exc:
+                raise type(exc)(f"registered KV cache {layer_name!r}: {exc}") from exc
         self._kv_caches = dict(kv_caches)
         self._layer_indices = layer_indices
         self._layer_mapping_inspection = inspection
@@ -965,6 +975,7 @@ class DocumentKVNativeProvider:
                         rope_cos_sin_by_device[device] = _rope_cos_sin_for_load(
                             load,
                             dst_layer,
+                            head_dim=getattr(layout, "head_size", None),
                             rope_theta=rope_theta,
                             rotary_dim=rope_rotary_dim,
                             key_position_encoding=key_position_encoding,
@@ -993,6 +1004,7 @@ class DocumentKVNativeProvider:
                             src_layer,
                             slot_mappings[device],
                             block_size=block_size,
+                            layout=TRITON_PACKED_KV_LAYOUT,
                         )
                         _maybe_cuda_sync(device)
                         scatter_ns += time.perf_counter_ns() - scatter_started_ns
@@ -1002,6 +1014,7 @@ class DocumentKVNativeProvider:
                             src_layer,
                             slot_mappings[device],
                             block_size=block_size,
+                            layout=TRITON_PACKED_KV_LAYOUT,
                         )
                 finally:
                     elapsed_ns = time.perf_counter_ns() - started_ns
@@ -2760,6 +2773,7 @@ def _rope_cos_sin_for_load(
     load: object,
     dst_kv_cache_layer: object,
     *,
+    head_dim: object,
     rope_theta: object,
     rotary_dim: object,
     key_position_encoding: KVKeyPositionEncoding = (
@@ -2771,8 +2785,15 @@ def _rope_cos_sin_for_load(
     torch = _torch()
     from document_kv_cache.rope import rope_cos_sin
 
-    head_dim = int(dst_kv_cache_layer.shape[-1])
-    rot = int(rotary_dim) if rotary_dim else head_dim
+    declared_head_dim = _positive_int(head_dim, field_name="layout.head_size")
+    validate_triton_packed_kv_cache_layer(dst_kv_cache_layer)
+    packed_head_dim = int(dst_kv_cache_layer.shape[-1]) // 2
+    if packed_head_dim != declared_head_dim:
+        raise ValueError(
+            "declared layout.head_size does not match the vLLM Triton packed "
+            "KV cache content dimension"
+        )
+    rot = int(rotary_dim) if rotary_dim else declared_head_dim
     device = getattr(dst_kv_cache_layer, "device", None)
     if key_position_encoding != KVKeyPositionEncoding.PRE_ROPE:
         raise ValueError(
@@ -2783,7 +2804,12 @@ def _rope_cos_sin_for_load(
         load.source_token_start + load.token_count,
         device=device,
     )
-    return rope_cos_sin(positions, head_dim=head_dim, rope_theta=rope_theta, rotary_dim=rot)
+    return rope_cos_sin(
+        positions,
+        head_dim=declared_head_dim,
+        rope_theta=rope_theta,
+        rotary_dim=rot,
+    )
 
 
 def _fp8_view_dtype(payload_dtype: object) -> object | None:
@@ -2859,46 +2885,73 @@ def _layer_values_from_token_slice(
 
 def _reshape_layer_values(layer_values: object, dst_kv_cache_layer: object, layout: object) -> object:
     token_count = int(layer_values.shape[0])
-    if dst_kv_cache_layer.ndim >= 4 and dst_kv_cache_layer.shape[1] == 2:
-        expected_shape = (token_count, 2, *tuple(dst_kv_cache_layer.shape[3:]))
-        expected_scalars = math.prod(expected_shape[1:])
-        if layer_values.shape[1] == expected_scalars:
-            return layer_values.reshape(expected_shape)
-        trimmed = _trim_standard_layer_values(layer_values, expected_scalars, layout, dst_kv_cache_layer)
-        return trimmed.reshape(expected_shape).to(device=dst_kv_cache_layer.device, dtype=dst_kv_cache_layer.dtype)
-    if dst_kv_cache_layer.ndim >= 3:
-        expected_shape = (token_count, *tuple(dst_kv_cache_layer.shape[2:]))
-        expected_scalars = math.prod(expected_shape[1:])
-        if layer_values.shape[1] < expected_scalars:
-            raise ValueError("payload layer is smaller than the vLLM flat KV cache layer shape")
-        return layer_values[:, :expected_scalars].reshape(expected_shape).to(
-            device=dst_kv_cache_layer.device,
-            dtype=dst_kv_cache_layer.dtype,
+    validate_triton_packed_kv_cache_layer(dst_kv_cache_layer)
+    num_kv_heads = _positive_int(
+        getattr(layout, "num_kv_heads", None),
+        field_name="layout.num_kv_heads",
+    )
+    head_size = _positive_int(
+        getattr(layout, "head_size", None),
+        field_name="layout.head_size",
+    )
+    block_size = _positive_int(
+        getattr(layout, "block_size", None),
+        field_name="layout.block_size",
+    )
+    expected_destination_shape = (
+        num_kv_heads,
+        block_size,
+        2 * head_size,
+    )
+    if tuple(dst_kv_cache_layer.shape[1:]) != expected_destination_shape:
+        raise ValueError(
+            "registered vLLM KV cache layer does not match declared "
+            "[num_kv_heads, block_size, 2 * head_size] geometry"
         )
-    raise ValueError("registered vLLM KV cache layer has unsupported rank")
+    expected_shape = (token_count, 2, num_kv_heads, head_size)
+    expected_scalars = math.prod(expected_shape[1:])
+    if layer_values.shape[1] == expected_scalars:
+        logical = layer_values.reshape(expected_shape)
+    else:
+        logical = _trim_logical_layer_values(
+            layer_values,
+            expected_scalars,
+            layout,
+        ).reshape(expected_shape)
+    expected_dtype = _torch_dtype(getattr(layout, "dtype"))
+    if expected_dtype != dst_kv_cache_layer.dtype:
+        raise ValueError(
+            "registered vLLM KV cache dtype does not match the declared document KV dtype"
+        )
+    return logical.to(
+        device=dst_kv_cache_layer.device,
+        dtype=dst_kv_cache_layer.dtype,
+    )
 
 
-def _trim_standard_layer_values(
+def _trim_logical_layer_values(
     layer_values: object,
     expected_scalars: int,
     layout: object,
-    dst_kv_cache_layer: object,
 ) -> object:
     num_kv_heads = getattr(layout, "num_kv_heads", None)
     kv_stride_bytes = getattr(layout, "kv_stride_bytes", None)
     if num_kv_heads is None or kv_stride_bytes is None:
-        raise ValueError("padded standard KV payloads require num_kv_heads and kv_stride_bytes")
+        raise ValueError("padded logical KV payloads require num_kv_heads and kv_stride_bytes")
     dtype_width = _dtype_width(getattr(layout, "dtype"))
     stride_scalars = kv_stride_bytes // dtype_width
     token_count = int(layer_values.shape[0])
     if layer_values.shape[1] != 2 * num_kv_heads * stride_scalars:
-        raise ValueError("payload layer shape does not match vLLM standard KV layout geometry")
-    if dst_kv_cache_layer.ndim != 5 or dst_kv_cache_layer.shape[3] != num_kv_heads:
-        raise ValueError("cannot trim padded payload for this vLLM standard KV cache shape")
-    head_scalars = dst_kv_cache_layer.shape[4]
+        raise ValueError("payload layer shape does not match declared logical KV geometry")
+    head_scalars = _positive_int(
+        getattr(layout, "head_size", None),
+        field_name="layout.head_size",
+    )
+    if head_scalars > stride_scalars:
+        raise ValueError("layout.head_size cannot exceed the persisted KV stride")
     trimmed = layer_values.reshape(token_count, 2, num_kv_heads, stride_scalars)[:, :, :, :head_scalars]
     if math.prod(trimmed.shape[1:]) != expected_scalars:
-        raise ValueError("trimmed payload layer does not match the vLLM KV cache shape")
+        raise ValueError("trimmed payload layer does not match declared logical KV geometry")
     return trimmed
 
 
@@ -3016,22 +3069,21 @@ def _probe_kv_caches(layout: object, *, block_count: int) -> dict[str, object]:
 
 
 def _probe_kv_cache_shape(layout: object, *, block_count: int) -> tuple[int, ...]:
-    dtype_width = _dtype_width(getattr(layout, "dtype"))
-    bytes_per_token = _positive_int(getattr(layout, "bytes_per_token", None), field_name="bytes_per_token")
-    num_layers = _positive_int(getattr(layout, "num_layers", None), field_name="num_layers")
-    block_size = _positive_int(getattr(layout, "block_size", None), field_name="block_size")
-    scalars_per_token = bytes_per_token // dtype_width
-    if bytes_per_token % dtype_width != 0:
-        raise ValueError("layout bytes_per_token is not aligned to dtype")
-    if scalars_per_token % num_layers != 0:
-        raise ValueError("layout bytes_per_token is not divisible by num_layers")
-    scalars_per_layer = scalars_per_token // num_layers
     if getattr(layout, "shares_kv_storage", False):
-        return (block_count, block_size, scalars_per_layer)
-    num_kv_heads = getattr(layout, "num_kv_heads", None) or 1
-    if scalars_per_layer % (2 * num_kv_heads) != 0:
-        raise ValueError("layout layer bytes cannot be represented as a standard K/V probe tensor")
-    return (block_count, 2, block_size, num_kv_heads, scalars_per_layer // (2 * num_kv_heads))
+        raise ValueError("vLLM 0.27.1 Triton document KV injection does not support shared KV storage")
+    block_size = _positive_int(
+        getattr(layout, "block_size", None),
+        field_name="block_size",
+    )
+    num_kv_heads = _positive_int(
+        getattr(layout, "num_kv_heads", None),
+        field_name="num_kv_heads",
+    )
+    head_size = _positive_int(
+        getattr(layout, "head_size", None),
+        field_name="head_size",
+    )
+    return (block_count, num_kv_heads, block_size, 2 * head_size)
 
 
 def _required_string(value: object, *, field_name: str) -> str:

@@ -10,6 +10,12 @@ from document_kv_cache.benchmarks import (
     DEFAULT_V1_LORA_ID,
     DEFAULT_V1_MODEL_ID,
     DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    FINAL_ANSWER_CUE,
+    FINAL_ANSWER_PARSER_DIGEST,
+    FINAL_ANSWER_PARSER_STATUSES,
+    HOTPOTQA_SCORER_VERSION,
+    MUSIQUE_SCORER_VERSION,
+    NIAH_CELL_IDS,
     SUPPORTED_V1_HARDWARE_TARGETS,
     SUPPORTED_V1_DATASETS,
     BenchmarkComparison,
@@ -19,6 +25,7 @@ from document_kv_cache.benchmarks import (
     DatasetScoreContext,
     DatasetScorer,
     DatasetScorerRegistry,
+    FinalAnswerExtraction,
     InferenceMeasurement,
     answer_found,
     baseline_prefill_arm,
@@ -37,8 +44,13 @@ from document_kv_cache.benchmarks import (
     document_kv_cache_arm,
     evaluate_v1_benchmark_evidence,
     exact_match,
+    extract_single_final_answer,
     format_document_context,
     hotpotqa_official_answer_scores,
+    biography_entity_identification_scores,
+    musique_official_answer_scores,
+    niah_cell_identity,
+    niah_exact_value_scores,
     normalize_answer,
     summarize_measurements,
     validate_v1_hardware_target,
@@ -127,9 +139,180 @@ def test_default_hotpotqa_scorer_is_pinned_and_publication_approved() -> None:
     scorer = default_dataset_scorer_registry().get("hotpotqa")
 
     assert scorer.scorer_id == "hotpotqa.official_answer"
-    assert scorer.version == "hotpot_evaluate_v1@3635853403a8"
+    assert scorer.version == HOTPOTQA_SCORER_VERSION
     assert scorer.publication_approved is True
     assert scorer.metric_names == ("exact_match", "f1")
+    assert scorer.answer_parser_digest == FINAL_ANSWER_PARSER_DIGEST
+
+
+def test_default_v1_scorers_are_distinct_closed_publication_contracts() -> None:
+    registry = default_dataset_scorer_registry()
+
+    assert registry.get("biography").scorer_id == (
+        "cachet.biography_entity_identification"
+    )
+    assert registry.get("musique").version == MUSIQUE_SCORER_VERSION
+    assert registry.get("niah").metric_names == ("accuracy",)
+    for dataset in SUPPORTED_V1_DATASETS:
+        scorer = registry.get(dataset)
+        assert scorer.publication_approved is True
+        assert scorer.plugin_path
+        assert scorer.prompt_plugin_path
+        assert scorer.prompt_template_version == DEFAULT_V1_PROMPT_TEMPLATE_VERSION
+        assert scorer.answer_parser_digest == FINAL_ANSWER_PARSER_DIGEST
+
+
+@pytest.mark.parametrize(
+    ("prediction", "reference", "expected"),
+    [
+        (" The   The. ", "the the", 1.0),
+        ("The The", "The", 0.0),
+        ("D'ANGELO.", "D'Angelo", 1.0),
+        ("DAngelo", "D'Angelo", 0.0),
+        ("JEAN-LUC", "Jean-Luc", 1.0),
+        ("Jean Luc", "Jean-Luc", 0.0),
+        ("Ａｄａ　Ｌｏｖｅｌａｃｅ", "Ada Lovelace", 1.0),
+    ],
+)
+def test_biography_title_em_preserves_name_significant_articles_and_punctuation(
+    prediction,
+    reference,
+    expected,
+) -> None:
+    score = biography_entity_identification_scores(
+        DatasetScoreContext(
+            dataset="biography",
+            example_id="person",
+            output_text=prediction,
+            references=(reference,),
+        )
+    )
+
+    assert score == {"exact_match": expected}
+
+
+def test_biography_title_em_preserves_punctuation_only_entity_names() -> None:
+    score = biography_entity_identification_scores(
+        DatasetScoreContext(
+            dataset="biography",
+            example_id="punctuation-entity",
+            output_text="!!!",
+            references=("!!!",),
+        )
+    )
+
+    assert score == {"exact_match": 1.0}
+
+
+@pytest.mark.parametrize(
+    ("raw_output", "valid", "answer", "status"),
+    [
+        ("<final_answer>Paris</final_answer>", True, "Paris", "ok"),
+        ("  <final_answer> Paris </final_answer>\n", True, "Paris", "ok"),
+        ("Paris", False, "", "missing_block"),
+        ("prefix <final_answer>Paris</final_answer>", False, "", "extraneous_text"),
+        (
+            "<final_answer><final_answer format=short>Paris</final_answer>",
+            False,
+            "",
+            "nested_block",
+        ),
+        ("<final_answer></final_answer>", False, "", "empty_answer"),
+        (
+            "<final_answer>Paris</final_answer><final_answer>Lyon</final_answer>",
+            False,
+            "",
+            "multiple_or_malformed_blocks",
+        ),
+    ],
+)
+def test_single_final_answer_parser_is_strict_and_versioned(
+    raw_output, valid, answer, status
+) -> None:
+    extraction = extract_single_final_answer(raw_output)
+
+    assert extraction.valid is valid
+    assert extraction.extracted_answer == answer
+    assert extraction.status == status
+    assert extraction.parser_digest == FINAL_ANSWER_PARSER_DIGEST
+
+
+def test_final_answer_parser_statuses_are_closed_and_validity_bound() -> None:
+    assert FINAL_ANSWER_PARSER_STATUSES == (
+        "ok",
+        "missing_block",
+        "multiple_or_malformed_blocks",
+        "extraneous_text",
+        "nested_block",
+        "empty_answer",
+    )
+
+    with pytest.raises(ValueError, match="outside the frozen"):
+        FinalAnswerExtraction("answer", "", False, "unreviewed_status")
+    with pytest.raises(ValueError, match="validity must be true exactly"):
+        FinalAnswerExtraction("answer", "", False, "ok")
+    with pytest.raises(ValueError, match="validity must be true exactly"):
+        FinalAnswerExtraction("answer", "answer", True, "missing_block")
+
+
+def test_musique_answer_port_matches_official_alias_and_token_fixtures() -> None:
+    alias_exact = musique_official_answer_scores(
+        DatasetScoreContext(
+            dataset="musique",
+            example_id="alias",
+            output_text="NYC",
+            references=("New York City", "NYC"),
+        )
+    )
+    partial = musique_official_answer_scores(
+        DatasetScoreContext(
+            dataset="musique",
+            example_id="partial",
+            output_text="Charles Babbage mathematician",
+            references=("Charles Babbage",),
+        )
+    )
+    normalized_empty = musique_official_answer_scores(
+        DatasetScoreContext(
+            dataset="musique",
+            example_id="empty",
+            output_text="the",
+            references=("a",),
+        )
+    )
+
+    assert alias_exact == {"answer_em": 1.0, "answer_f1": 1.0}
+    assert partial == {"answer_em": 0.0, "answer_f1": pytest.approx(0.8)}
+    assert normalized_empty == {"answer_em": 1.0, "answer_f1": 1.0}
+
+
+def test_niah_exact_value_is_case_sensitive_and_grid_is_closed() -> None:
+    cell_id = niah_cell_identity(16384, 0.5)
+    exact = niah_exact_value_scores(
+        DatasetScoreContext(
+            dataset="niah",
+            example_id="needle",
+            output_text="cachet-needle-7",
+            references=("cachet-needle-7",),
+            metadata={"niah_cell_id": cell_id},
+        )
+    )
+    wrong_case = niah_exact_value_scores(
+        DatasetScoreContext(
+            dataset="niah",
+            example_id="needle",
+            output_text="CACHET-NEEDLE-7",
+            references=("cachet-needle-7",),
+            metadata={"niah_cell_id": cell_id},
+        )
+    )
+
+    assert exact == {"accuracy": 1.0}
+    assert wrong_case == {"accuracy": 0.0}
+    assert len(NIAH_CELL_IDS) == 9
+    assert cell_id == "niah-16k-depth-50"
+    with pytest.raises(ValueError, match="8192"):
+        niah_cell_identity(4096, 0.5)
 
 
 def test_benchmark_suite_defaults_to_v1_contract():
@@ -339,6 +522,31 @@ def test_v1_dataset_specs_cover_all_supported_datasets():
     assert dataset_spec("niah").answer_instruction.startswith("Return the exact needle")
 
 
+@pytest.mark.parametrize("dataset", SUPPORTED_V1_DATASETS)
+def test_every_v1_prompt_requires_exactly_one_final_answer_block(dataset) -> None:
+    example = BenchmarkExample(
+        example_id=f"{dataset}-answer-contract",
+        dataset=dataset,
+        documents=(document(),),
+        query="What is the answer?",
+        expected_answer="Ada Lovelace",
+        metadata=(
+            {"niah_cell_id": "niah-8k-depth-10"}
+            if dataset == "niah"
+            else {}
+        ),
+    )
+
+    parts = build_prompt_parts(
+        example,
+        scorer=default_dataset_scorer_registry().get(dataset),
+    )
+
+    assert "exactly one non-empty block" in parts.system_prompt
+    assert FINAL_ANSWER_CUE in parts.system_prompt
+    assert parts.user_prompt.endswith(FINAL_ANSWER_CUE)
+
+
 def test_prompt_parts_split_prefill_context_from_cache_suffix():
     example = BenchmarkExample(
         example_id="bio-1",
@@ -354,7 +562,7 @@ def test_prompt_parts_split_prefill_context_from_cache_suffix():
     assert parts.system_prompt.startswith("Benchmark: Biography")
     assert "Ada Lovelace biography" in parts.document_context
     assert "Question: Who wrote notes on the Analytical Engine?" in parts.user_prompt
-    assert parts.user_prompt.endswith("Answer:")
+    assert parts.user_prompt.endswith(FINAL_ANSWER_CUE)
 
     assert build_prefill_prompt(example) == parts.prefill_prompt
     assert build_cache_prefix_text(example) == parts.cache_prefix_text
@@ -365,8 +573,8 @@ def test_prompt_parts_split_prefill_context_from_cache_suffix():
     assert "Ada Lovelace biography" in parts.prefill_prompt
     assert "Ada Lovelace biography" in parts.cache_prefix_text
     assert "Ada Lovelace biography" not in parts.cache_suffix_text
-    assert parts.prefill_prompt.endswith("Answer:")
-    assert parts.cache_suffix_text.endswith("Answer:")
+    assert parts.prefill_prompt.endswith(FINAL_ANSWER_CUE)
+    assert parts.cache_suffix_text.endswith(FINAL_ANSWER_CUE)
 
 
 def test_prompt_parts_system_prompt_position_end_moves_guidance_out_of_cache(monkeypatch):
@@ -398,7 +606,7 @@ def test_prompt_parts_system_prompt_position_end_moves_guidance_out_of_cache(mon
     assert parts.prefill_prompt.index("Ada Lovelace biography") < parts.prefill_prompt.index(
         parts.system_prompt
     )
-    assert parts.prefill_prompt.endswith("Answer:")
+    assert parts.prefill_prompt.endswith(FINAL_ANSWER_CUE)
 
 
 def test_benchmark_cache_source_document_contains_exact_cache_prefix():

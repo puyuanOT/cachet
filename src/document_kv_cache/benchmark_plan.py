@@ -12,7 +12,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID, SUPPORTED_V1_DATASETS
+from document_kv_cache.benchmarks import (
+    DEFAULT_HARDWARE_TARGET,
+    DEFAULT_V1_MODEL_ID,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    SUPPORTED_V1_DATASETS,
+)
 from document_kv_cache.benchmarks import validate_v1_dataset, validate_v1_hardware_target
 from document_kv_cache._native_probe_metadata import (
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
@@ -455,7 +460,7 @@ class BenchmarkPlanConfig:
     engine_id: str = "unresolved"
     engine_version: str = "unresolved"
     package_revisions: tuple[str, ...] = ()
-    prompt_template_version: str = "v1-benchmark"
+    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION
     input_tokens_target: int | None = None
     hardware_fingerprint: str = "unresolved"
     runtime_id: str = "unresolved"
@@ -2348,7 +2353,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tensor-parallel-size", type=int)
     parser.add_argument("--pipeline-parallel-size", type=int)
     parser.add_argument("--package-revision", action="append")
-    parser.add_argument("--prompt-template-version", default="v1-benchmark")
+    parser.add_argument(
+        "--prompt-template-version",
+        default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    )
     parser.add_argument("--input-tokens-target", type=int)
     parser.add_argument("--hardware-fingerprint", default="unresolved")
     parser.add_argument("--runtime-id", default="unresolved")

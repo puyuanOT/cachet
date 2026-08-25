@@ -98,7 +98,7 @@ def test_build_databricks_run_submit_payload_uses_single_node_g5_cluster():
     assert "libraries" not in task
 
 
-@pytest.mark.parametrize("timeout_seconds", (0, 14_401, True, 1.5))
+@pytest.mark.parametrize("timeout_seconds", (0, 43_201, True, 1.5))
 def test_databricks_benchmark_job_rejects_unbounded_timeout(
     timeout_seconds: object,
 ) -> None:

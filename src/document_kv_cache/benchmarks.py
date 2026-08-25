@@ -5,6 +5,7 @@ import os
 import re
 import statistics
 import string
+import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -34,7 +35,7 @@ from document_kv_cache.workflow import SourceDocument
 SUPPORTED_V1_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
 DEFAULT_V1_LORA_ID = "base"
-DEFAULT_V1_PROMPT_TEMPLATE_VERSION = "v1-benchmark"
+DEFAULT_V1_PROMPT_TEMPLATE_VERSION = "v2-final-answer"
 BENCHMARK_CACHE_PREFIX_CHUNK_ID = "cache_prefix"
 BENCHMARK_CACHE_ARTIFACT_PREFIX = "cachet"
 BASELINE_PREFILL_ARM = "baseline_prefill"
@@ -49,7 +50,66 @@ DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM = "document_kv.runtime_prefix_text"
 DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
 DOCUMENT_KV_CACHE_METHOD_PARAM = "document_kv.cache_method"
 DOCUMENT_KV_ARTIFACT_ID_PARAM = "document_kv.artifact_id"
-FINAL_ANSWER_CUE = "Answer:"
+FINAL_ANSWER_CUE = "<final_answer>answer</final_answer>"
+FINAL_ANSWER_PARSER_ID = "cachet.single_final_answer"
+FINAL_ANSWER_PARSER_VERSION = "1"
+FINAL_ANSWER_PARSER_PLUGIN_PATH = (
+    "document_kv_cache.benchmarks:extract_single_final_answer"
+)
+FINAL_ANSWER_PARSER_STATUSES = (
+    "ok",
+    "missing_block",
+    "multiple_or_malformed_blocks",
+    "extraneous_text",
+    "nested_block",
+    "empty_answer",
+)
+FINAL_ANSWER_PARSER_CONTRACT = (
+    "utf8-trim;case-sensitive-lowercase-tags;whole-output-match;"
+    "exactly-one-nonempty-final_answer-block;no-nested-answer-tags;"
+    "statuses="
+    + ",".join(FINAL_ANSWER_PARSER_STATUSES)
+)
+FINAL_ANSWER_PARSER_DIGEST = sha256(
+    FINAL_ANSWER_PARSER_CONTRACT.encode("utf-8")
+).hexdigest()
+FINAL_ANSWER_METADATA_PREFIX = "cachet.score.final_answer_parser"
+FINAL_ANSWER_EXTRACTED_METADATA_KEY = "cachet.score.extracted_answer"
+FINAL_ANSWER_NO_EXTRACTION_VALUE = "<no-valid-answer>"
+FINAL_ANSWER_PARSER_ID_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.id"
+FINAL_ANSWER_PARSER_VERSION_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.version"
+FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.plugin_path"
+FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.digest"
+FINAL_ANSWER_PARSER_VALID_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.valid"
+FINAL_ANSWER_PARSER_STATUS_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.status"
+DEFAULT_V1_PROMPT_PLUGIN_PATH = "document_kv_cache.benchmarks:_default_prompt_parts"
+BIOGRAPHY_TITLE_NORMALIZER_ID = "nfkc_casefold_ws_terminal_punctuation_v2"
+BIOGRAPHY_SCORER_VERSION = (
+    f"biography_entity_identification_v2+{BIOGRAPHY_TITLE_NORMALIZER_ID}+"
+    f"final_answer_v1@"
+    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+)
+HOTPOTQA_SCORER_VERSION = (
+    f"hotpot_evaluate_v1@3635853403a8+final_answer_v1@"
+    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+)
+MUSIQUE_OFFICIAL_COMMIT = "922ac98f19a201998dbdae6d7f2887a5258dbdeb"
+MUSIQUE_ANSWER_SCORER_SHA256 = (
+    "10368f619b4d5ef5d83748c05a96c0afd332a14ab5c010740c98d58dfaefe974"
+)
+MUSIQUE_SCORER_VERSION = (
+    f"evaluate_v1.0@{MUSIQUE_OFFICIAL_COMMIT}+answer.py@"
+    f"{MUSIQUE_ANSWER_SCORER_SHA256[:12]}+final_answer_v1@"
+    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+)
+NIAH_SCORER_VERSION = (
+    f"cachet_niah_grid_v1+final_answer_v1@{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+)
+NIAH_CELL_IDS = tuple(
+    f"niah-{context_tokens // 1024}k-depth-{round(position * 100):02d}"
+    for context_tokens in (8192, 16384, 32768)
+    for position in (0.1, 0.5, 0.9)
+)
 # Controls whether the system/task guidance prompt is placed at the start of the
 # cached document prefix (baked into the cached KV) or after the documents so it is
 # recomputed online. "end" moves the guidance out of the cached KV, so it is prefilled
@@ -106,6 +166,28 @@ __all__ = [
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
     "FINAL_ANSWER_CUE",
+    "FINAL_ANSWER_PARSER_ID",
+    "FINAL_ANSWER_PARSER_VERSION",
+    "FINAL_ANSWER_PARSER_PLUGIN_PATH",
+    "FINAL_ANSWER_PARSER_STATUSES",
+    "FINAL_ANSWER_PARSER_CONTRACT",
+    "FINAL_ANSWER_PARSER_DIGEST",
+    "FINAL_ANSWER_EXTRACTED_METADATA_KEY",
+    "FINAL_ANSWER_NO_EXTRACTION_VALUE",
+    "FINAL_ANSWER_PARSER_ID_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_VERSION_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_VALID_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_STATUS_METADATA_KEY",
+    "BIOGRAPHY_SCORER_VERSION",
+    "BIOGRAPHY_TITLE_NORMALIZER_ID",
+    "HOTPOTQA_SCORER_VERSION",
+    "MUSIQUE_OFFICIAL_COMMIT",
+    "MUSIQUE_ANSWER_SCORER_SHA256",
+    "MUSIQUE_SCORER_VERSION",
+    "NIAH_SCORER_VERSION",
+    "NIAH_CELL_IDS",
     "BenchmarkExample",
     "BenchmarkSuite",
     "BenchmarkArm",
@@ -113,6 +195,7 @@ __all__ = [
     "DatasetScorer",
     "DatasetMetricSpec",
     "DatasetScoreContext",
+    "FinalAnswerExtraction",
     "DatasetScorerRegistry",
     "InferenceMeasurement",
     "LatencySummary",
@@ -126,7 +209,14 @@ __all__ = [
     "require_runnable_cachet_benchmark_arm",
     "default_dataset_scorer_registry",
     "diagnostic_answer_scores",
+    "extract_single_final_answer",
+    "final_answer_measurement_metadata",
+    "biography_entity_identification_scores",
+    "normalize_biography_title",
     "hotpotqa_official_answer_scores",
+    "musique_official_answer_scores",
+    "niah_exact_value_scores",
+    "niah_cell_identity",
     "v1_dataset_specs",
     "dataset_spec",
     "build_prompt_parts",
@@ -175,6 +265,100 @@ class DatasetScoreContext:
 
 ScoreFunction = Callable[[DatasetScoreContext], Mapping[str, float]]
 PromptFunction = Callable[["BenchmarkExample"], "BenchmarkPromptParts"]
+AnswerParserFunction = Callable[[str], "FinalAnswerExtraction"]
+
+
+@dataclass(frozen=True, slots=True)
+class FinalAnswerExtraction:
+    """Auditable result of the publication answer-output parser."""
+
+    raw_output: str
+    extracted_answer: str
+    valid: bool
+    status: str
+    parser_id: str = FINAL_ANSWER_PARSER_ID
+    parser_version: str = FINAL_ANSWER_PARSER_VERSION
+    parser_plugin_path: str = FINAL_ANSWER_PARSER_PLUGIN_PATH
+    parser_digest: str = FINAL_ANSWER_PARSER_DIGEST
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.raw_output, str):
+            raise TypeError("raw_output must be a string")
+        if not isinstance(self.extracted_answer, str):
+            raise TypeError("extracted_answer must be a string")
+        if type(self.valid) is not bool:
+            raise TypeError("valid must be a boolean")
+        for field_name in (
+            "status",
+            "parser_id",
+            "parser_version",
+            "parser_plugin_path",
+            "parser_digest",
+        ):
+            _validate_non_empty_str(getattr(self, field_name), field_name)
+        if self.status not in FINAL_ANSWER_PARSER_STATUSES:
+            raise ValueError("status is outside the frozen final-answer parser states")
+        if self.valid != (self.status == "ok"):
+            raise ValueError("parser validity must be true exactly for status='ok'")
+        if self.valid and (self.status != "ok" or not self.extracted_answer):
+            raise ValueError("valid extraction requires status='ok' and a non-empty answer")
+        if not self.valid and self.extracted_answer:
+            raise ValueError("invalid extraction must not expose an extracted answer")
+        if len(self.parser_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.parser_digest
+        ):
+            raise ValueError("parser_digest must be a lowercase SHA-256 digest")
+
+
+def extract_single_final_answer(output_text: str) -> FinalAnswerExtraction:
+    """Parse exactly one whole-output ``<final_answer>`` block.
+
+    The tag spelling is intentionally case-sensitive. Any prose outside the block,
+    empty content, nested answer tags, duplicate blocks, or malformed tags is an
+    invalid answer and therefore receives zero for every registered metric.
+    """
+
+    if not isinstance(output_text, str):
+        raise TypeError("output_text must be a string")
+    open_tag = "<final_answer>"
+    close_tag = "</final_answer>"
+    open_count = output_text.count(open_tag)
+    close_count = output_text.count(close_tag)
+    if open_count == 0 and close_count == 0:
+        return FinalAnswerExtraction(output_text, "", False, "missing_block")
+    if open_count != 1 or close_count != 1:
+        return FinalAnswerExtraction(output_text, "", False, "multiple_or_malformed_blocks")
+    stripped = output_text.strip()
+    if not stripped.startswith(open_tag) or not stripped.endswith(close_tag):
+        return FinalAnswerExtraction(output_text, "", False, "extraneous_text")
+    answer = stripped[len(open_tag) : -len(close_tag)].strip()
+    if "<final_answer" in answer or "</final_answer" in answer:
+        return FinalAnswerExtraction(output_text, "", False, "nested_block")
+    if not answer:
+        return FinalAnswerExtraction(output_text, "", False, "empty_answer")
+    return FinalAnswerExtraction(output_text, answer, True, "ok")
+
+
+def final_answer_measurement_metadata(
+    extraction: FinalAnswerExtraction,
+) -> Mapping[str, str]:
+    if not isinstance(extraction, FinalAnswerExtraction):
+        raise TypeError("extraction must be a FinalAnswerExtraction")
+    return MappingProxyType(
+        {
+            FINAL_ANSWER_EXTRACTED_METADATA_KEY: (
+                extraction.extracted_answer
+                if extraction.valid
+                else FINAL_ANSWER_NO_EXTRACTION_VALUE
+            ),
+            FINAL_ANSWER_PARSER_ID_METADATA_KEY: extraction.parser_id,
+            FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: extraction.parser_version,
+            FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: extraction.parser_plugin_path,
+            FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: extraction.parser_digest,
+            FINAL_ANSWER_PARSER_VALID_METADATA_KEY: str(extraction.valid).lower(),
+            FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: extraction.status,
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +402,15 @@ class DatasetScorer:
     )
     prompt_plugin_path: str = ""
     prompt_template_version: str = ""
+    answer_parser_function: AnswerParserFunction | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    answer_parser_id: str = ""
+    answer_parser_version: str = ""
+    answer_parser_plugin_path: str = ""
+    answer_parser_digest: str = ""
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.scorer_id, "scorer_id")
@@ -248,6 +441,62 @@ class DatasetScorer:
             if not isinstance(getattr(self, field_name), str):
                 raise TypeError(f"{field_name} must be a string")
         if self.prompt_function is not None:
+            _validate_non_empty_str(self.prompt_plugin_path, "prompt_plugin_path")
+            _validate_non_empty_str(
+                self.prompt_template_version,
+                "prompt_template_version",
+            )
+        parser_function = self.answer_parser_function
+        if self.publication_approved and parser_function is None:
+            parser_function = extract_single_final_answer
+            object.__setattr__(self, "answer_parser_function", parser_function)
+        if parser_function is not None:
+            if not callable(parser_function):
+                raise TypeError("answer_parser_function must be callable when provided")
+            parser_defaults = {
+                "answer_parser_id": FINAL_ANSWER_PARSER_ID,
+                "answer_parser_version": FINAL_ANSWER_PARSER_VERSION,
+                "answer_parser_plugin_path": FINAL_ANSWER_PARSER_PLUGIN_PATH,
+                "answer_parser_digest": FINAL_ANSWER_PARSER_DIGEST,
+            }
+            for field_name, default in parser_defaults.items():
+                if not getattr(self, field_name):
+                    object.__setattr__(self, field_name, default)
+                _validate_non_empty_str(getattr(self, field_name), field_name)
+            if len(self.answer_parser_digest) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in self.answer_parser_digest
+            ):
+                raise ValueError(
+                    "answer_parser_digest must be a lowercase SHA-256 digest"
+                )
+        elif any(
+            getattr(self, field_name)
+            for field_name in (
+                "answer_parser_id",
+                "answer_parser_version",
+                "answer_parser_plugin_path",
+                "answer_parser_digest",
+            )
+        ):
+            raise ValueError(
+                "answer parser identity requires answer_parser_function"
+            )
+        if self.publication_approved:
+            _validate_non_empty_str(self.plugin_path, "plugin_path")
+            if self.prompt_function is None:
+                if not self.prompt_plugin_path:
+                    object.__setattr__(
+                        self,
+                        "prompt_plugin_path",
+                        DEFAULT_V1_PROMPT_PLUGIN_PATH,
+                    )
+                if not self.prompt_template_version:
+                    object.__setattr__(
+                        self,
+                        "prompt_template_version",
+                        DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+                    )
             _validate_non_empty_str(self.prompt_plugin_path, "prompt_plugin_path")
             _validate_non_empty_str(
                 self.prompt_template_version,
@@ -294,6 +543,35 @@ class DatasetScorer:
         if not isinstance(prompt_parts, BenchmarkPromptParts):
             raise TypeError("prompt_function must return BenchmarkPromptParts")
         return prompt_parts
+
+    def parse_answer(self, raw_output: str) -> FinalAnswerExtraction | None:
+        if self.answer_parser_function is None:
+            return None
+        extraction = self.answer_parser_function(raw_output)
+        if not isinstance(extraction, FinalAnswerExtraction):
+            raise TypeError(
+                "answer_parser_function must return FinalAnswerExtraction"
+            )
+        expected_identity = (
+            self.answer_parser_id,
+            self.answer_parser_version,
+            self.answer_parser_plugin_path,
+            self.answer_parser_digest,
+        )
+        observed_identity = (
+            extraction.parser_id,
+            extraction.parser_version,
+            extraction.parser_plugin_path,
+            extraction.parser_digest,
+        )
+        if observed_identity != expected_identity:
+            raise ValueError(
+                "answer parser result identity does not match the scorer contract"
+            )
+        return extraction
+
+    def zero_scores(self) -> Mapping[str, float]:
+        return MappingProxyType({metric_name: 0.0 for metric_name in self.metric_names})
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,34 +632,117 @@ def diagnostic_answer_scores(context: DatasetScoreContext) -> Mapping[str, float
 
 
 def default_dataset_scorer_registry() -> DatasetScorerRegistry:
-    diagnostic = DatasetScorer(
-        scorer_id="cachet.answer_diagnostics",
-        version="1",
-        metric_names=("exact_match", "answer_found"),
-        score_function=diagnostic_answer_scores,
-        publication_approved=False,
-        plugin_path="document_kv_cache.benchmarks:diagnostic_answer_scores",
+    shared: dict[str, Any] = {
+        "publication_approved": True,
+        "prompt_function": _default_prompt_parts,
+        "prompt_plugin_path": DEFAULT_V1_PROMPT_PLUGIN_PATH,
+        "prompt_template_version": DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        "answer_parser_function": extract_single_final_answer,
+        "answer_parser_id": FINAL_ANSWER_PARSER_ID,
+        "answer_parser_version": FINAL_ANSWER_PARSER_VERSION,
+        "answer_parser_plugin_path": FINAL_ANSWER_PARSER_PLUGIN_PATH,
+        "answer_parser_digest": FINAL_ANSWER_PARSER_DIGEST,
+    }
+    biography = DatasetScorer(
+        scorer_id="cachet.biography_entity_identification",
+        version=BIOGRAPHY_SCORER_VERSION,
+        metric_names=("exact_match",),
+        metric_specs=(DatasetMetricSpec("exact_match", max_regression=1.0),),
+        score_function=biography_entity_identification_scores,
+        plugin_path=(
+            "document_kv_cache.benchmarks:biography_entity_identification_scores"
+        ),
+        **shared,
     )
     hotpotqa = DatasetScorer(
         scorer_id="hotpotqa.official_answer",
-        version="hotpot_evaluate_v1@3635853403a8",
+        version=HOTPOTQA_SCORER_VERSION,
         metric_names=("exact_match", "f1"),
         metric_specs=(
-            DatasetMetricSpec("exact_match", max_regression=0.02),
-            DatasetMetricSpec("f1", max_regression=0.02),
+            DatasetMetricSpec("exact_match", max_regression=1.0),
+            DatasetMetricSpec("f1", max_regression=1.0),
         ),
         score_function=hotpotqa_official_answer_scores,
-        publication_approved=True,
         plugin_path=(
             "document_kv_cache.benchmarks:hotpotqa_official_answer_scores"
         ),
+        **shared,
+    )
+    musique = DatasetScorer(
+        scorer_id="musique.official_answer",
+        version=MUSIQUE_SCORER_VERSION,
+        metric_names=("answer_em", "answer_f1"),
+        metric_specs=(
+            DatasetMetricSpec("answer_em", max_regression=1.0),
+            DatasetMetricSpec("answer_f1", max_regression=1.0),
+        ),
+        score_function=musique_official_answer_scores,
+        plugin_path="document_kv_cache.benchmarks:musique_official_answer_scores",
+        **shared,
+    )
+    niah = DatasetScorer(
+        scorer_id="cachet.niah_exact_value",
+        version=NIAH_SCORER_VERSION,
+        metric_names=("accuracy",),
+        metric_specs=(DatasetMetricSpec("accuracy", max_regression=1.0),),
+        score_function=niah_exact_value_scores,
+        plugin_path="document_kv_cache.benchmarks:niah_exact_value_scores",
+        **shared,
     )
     return DatasetScorerRegistry(
-        tuple(
-            (dataset, hotpotqa if dataset == "hotpotqa" else diagnostic)
-            for dataset in SUPPORTED_V1_DATASETS
+        (
+            ("biography", biography),
+            ("hotpotqa", hotpotqa),
+            ("musique", musique),
+            ("niah", niah),
         )
     )
+
+
+def biography_entity_identification_scores(
+    context: DatasetScoreContext,
+) -> Mapping[str, float]:
+    """Normalized-title exact match for Cachet's versioned biography task."""
+
+    if not isinstance(context, DatasetScoreContext):
+        raise TypeError("context must be a DatasetScoreContext")
+    if not context.references:
+        return MappingProxyType({"exact_match": 0.0})
+    prediction = normalize_biography_title(context.output_text)
+    exact = any(
+        prediction == normalize_biography_title(reference)
+        for reference in context.references
+    )
+    return MappingProxyType({"exact_match": float(exact)})
+
+
+def normalize_biography_title(value: str) -> str:
+    """Normalize an entity title without erasing name-significant punctuation.
+
+    Unlike SQuAD-style QA normalization, this contract preserves articles,
+    apostrophes, and internal hyphens. It applies Unicode NFKC, case-folding,
+    whitespace collapse, and removes only surrounding terminal punctuation.
+    """
+
+    if not isinstance(value, str):
+        raise TypeError("value must be a string")
+    normalized = " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+    start = 0
+    end = len(normalized)
+    while start < end and (
+        normalized[start].isspace()
+        or unicodedata.category(normalized[start]).startswith("P")
+    ):
+        start += 1
+    while end > start and (
+        normalized[end - 1].isspace()
+        or unicodedata.category(normalized[end - 1]).startswith("P")
+    ):
+        end -= 1
+    trimmed = normalized[start:end].strip()
+    # WikiBio includes punctuation-only entity names such as ``!!!``. Erasing
+    # those would make the task impossible and conflate unrelated predictions.
+    return trimmed or normalized
 
 
 def hotpotqa_official_answer_scores(
@@ -418,6 +779,108 @@ def hotpotqa_official_answer_scores(
         recall = shared / len(ground_truth_tokens)
         f1 = 2 * precision * recall / (precision + recall)
     return MappingProxyType({"exact_match": exact, "f1": f1})
+
+
+def musique_official_answer_scores(
+    context: DatasetScoreContext,
+) -> Mapping[str, float]:
+    """Port MuSiQue v1.0 answer EM/F1, maximizing over answer aliases.
+
+    This is the answer-only part of ``metrics.answer.AnswerMetric`` at
+    ``MUSIQUE_OFFICIAL_COMMIT``. Cachet does not collect predicted support
+    indices or answerability groups, so it does not claim those official metrics.
+    """
+
+    if not isinstance(context, DatasetScoreContext):
+        raise TypeError("context must be a DatasetScoreContext")
+    if not context.references:
+        return MappingProxyType({"answer_em": 0.0, "answer_f1": 0.0})
+    exact_scores = tuple(
+        _musique_compute_exact(reference, context.output_text)
+        for reference in context.references
+    )
+    f1_scores = tuple(
+        _musique_compute_f1(reference, context.output_text)
+        for reference in context.references
+    )
+    return MappingProxyType(
+        {
+            "answer_em": float(max(exact_scores)),
+            "answer_f1": float(max(f1_scores)),
+        }
+    )
+
+
+def _musique_normalize_answer(value: str) -> str:
+    lowered = value.lower()
+    without_punctuation = "".join(
+        character for character in lowered if character not in set(string.punctuation)
+    )
+    without_articles = re.sub(r"\b(a|an|the)\b", " ", without_punctuation)
+    return " ".join(without_articles.split())
+
+
+def _musique_compute_exact(gold: str, prediction: str) -> int:
+    return int(_musique_normalize_answer(gold) == _musique_normalize_answer(prediction))
+
+
+def _musique_compute_f1(gold: str, prediction: str) -> float:
+    gold_tokens = _musique_normalize_answer(gold).split() if gold else []
+    prediction_tokens = (
+        _musique_normalize_answer(prediction).split() if prediction else []
+    )
+    common = Counter(gold_tokens) & Counter(prediction_tokens)
+    shared = sum(common.values())
+    if not gold_tokens or not prediction_tokens:
+        return float(gold_tokens == prediction_tokens)
+    if shared == 0:
+        return 0.0
+    precision = shared / len(prediction_tokens)
+    recall = shared / len(gold_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def niah_cell_identity(context_token_target: int, needle_position: float) -> str:
+    if type(context_token_target) is not int or context_token_target not in {
+        8192,
+        16384,
+        32768,
+    }:
+        raise ValueError("context_token_target must be one of 8192, 16384, or 32768")
+    if isinstance(needle_position, bool) or not isinstance(
+        needle_position, (int, float)
+    ):
+        raise TypeError("needle_position must be numeric")
+    matched = next(
+        (
+            candidate
+            for candidate in (0.1, 0.5, 0.9)
+            if math.isclose(float(needle_position), candidate, abs_tol=1e-12)
+        ),
+        None,
+    )
+    if matched is None:
+        raise ValueError("needle_position must be one of 0.1, 0.5, or 0.9")
+    return f"niah-{context_token_target // 1024}k-depth-{round(matched * 100):02d}"
+
+
+def niah_exact_value_scores(
+    context: DatasetScoreContext,
+) -> Mapping[str, float]:
+    """Case-sensitive exact requested-value accuracy for the frozen NIAH grid."""
+
+    if not isinstance(context, DatasetScoreContext):
+        raise TypeError("context must be a DatasetScoreContext")
+    cell_id = context.metadata.get("niah_cell_id")
+    if cell_id is not None and cell_id not in NIAH_CELL_IDS:
+        raise ValueError(
+            "niah_cell_id metadata must identify a recognized publication grid cell"
+        )
+    if not context.references:
+        return MappingProxyType({"accuracy": 0.0})
+    prediction = context.output_text.strip()
+    expected = context.references[0].strip()
+    return MappingProxyType({"accuracy": float(prediction == expected)})
 
 
 def _hotpotqa_normalize_answer(value: str) -> str:
@@ -1757,9 +2220,12 @@ def _validate_non_negative_finite_number(value: float, field_name: str) -> None:
 _V1_DATASET_SPECS: Mapping[str, BenchmarkDatasetSpec] = {
     "biography": BenchmarkDatasetSpec(
         dataset="biography",
-        display_name="Biography",
-        task_instruction="Answer biography questions using only the supplied document context.",
-        answer_instruction="Return the shortest answer that fully resolves the question.",
+        display_name="Biography Entity Identification",
+        task_instruction=(
+            "Identify the entity described by the supplied biography context. "
+            "Document identifiers and titles are intentionally opaque."
+        ),
+        answer_instruction="Return only the normalized entity title as the answer value.",
     ),
     "hotpotqa": BenchmarkDatasetSpec(
         dataset="hotpotqa",
@@ -1787,6 +2253,10 @@ def _system_prompt(spec: BenchmarkDatasetSpec) -> str:
         f"Benchmark: {spec.display_name}",
         spec.task_instruction,
         "Use only the supplied document context. If the answer is absent, say you do not know.",
+        (
+            "Your entire response must contain exactly one non-empty block of the "
+            "form <final_answer>answer</final_answer>, with no text outside it."
+        ),
     )
 
 
@@ -1794,7 +2264,7 @@ def _user_prompt(example: BenchmarkExample, spec: BenchmarkDatasetSpec) -> str:
     return _join_sections(
         f"Question: {example.query}",
         spec.answer_instruction,
-        FINAL_ANSWER_CUE,
+        f"Required response form: {FINAL_ANSWER_CUE}",
     )
 
 

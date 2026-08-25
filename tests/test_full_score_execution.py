@@ -1,0 +1,3830 @@
+import copy
+import json
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from hashlib import sha256
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import cachet.full_score_execution as cachet_full_score
+import document_kv_cache.full_score_execution as full_score
+from document_kv_cache.benchmark_handoffs import (
+    BenchmarkHandoffEntry,
+    BenchmarkHandoffManifest,
+    write_benchmark_handoff_manifest_json,
+)
+from document_kv_cache.benchmarks import (
+    NIAH_CELL_IDS,
+    SUPPORTED_V1_DATASETS,
+    default_dataset_scorer_registry,
+)
+from document_kv_cache.databricks_resource_ledger import (
+    DatabricksClusterHourLedger,
+    DatabricksClusterHourReservation,
+    DatabricksClusterHourTerminalActual,
+    DatabricksRunSubmissionReceipt,
+    create_databricks_cluster_hour_ledger_json,
+    databricks_cluster_hour_ledger_to_record,
+    databricks_ledger_path_sha256,
+    databricks_ledger_prefix,
+    databricks_submit_payload_reservation,
+    read_databricks_cluster_hour_ledger_json,
+    record_databricks_run_submission_receipt_json,
+    record_databricks_run_terminal_actual_json,
+    record_databricks_verified_run_terminal_actual_json,
+    reserve_databricks_run_attempt_json,
+)
+from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
+from document_kv_cache.gpu_qualification import (
+    GPUQualificationArtifactPins,
+    GPUQualificationSelection,
+    canonical_gpu_qualification_json,
+)
+from document_kv_cache.publication_inputs import (
+    build_full_score_shard_plan,
+    load_full_score_inventory,
+)
+from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+
+
+_VALIDATE_PUBLICATION_FULL_SCORE_INPUTS = (
+    full_score._validate_publication_full_score_inputs
+)
+_REQUIRE_SHARED_DBFS_PATH = full_score._require_shared_dbfs_path
+
+
+class _CharacterTokenizer:
+    def encode(self, text, *, add_special_tokens):
+        assert add_special_tokens is False
+        return [ord(character) for character in text]
+
+
+class _FakeDatabricksResponse:
+    status = 200
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return json.dumps(self._payload).encode("utf-8")
+
+
+class _FakeDatabricksOpener:
+    def __init__(self, payload):
+        self._payload = payload
+        self.requests = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        return _FakeDatabricksResponse(self._payload)
+
+
+class _RoutingDatabricksOpener:
+    def __init__(self, *, submit_payload, run_payload):
+        self._submit_payload = submit_payload
+        self._run_payload = run_payload
+        self.requests = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        payload = (
+            self._submit_payload
+            if request.get_method() == "POST"
+            else self._run_payload
+        )
+        return _FakeDatabricksResponse(payload)
+
+
+class _AcceptedButResponseLostOpener:
+    def __init__(self):
+        self.requests = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        raise TimeoutError("accepted remotely; local response was lost")
+
+
+def _digest(label):
+    return sha256(label.encode("utf-8")).hexdigest()
+
+
+def _terminal_run_record(submit_payload, *, run_id):
+    tasks = []
+    for index, task in enumerate(submit_payload["tasks"]):
+        tasks.append(
+            {
+                "cluster_instance": {"cluster_id": f"cluster-{run_id}-{index}"},
+                "new_cluster": task["new_cluster"],
+                "end_time": 2_500 + index,
+                "run_id": run_id * 100 + index + 1,
+                "start_time": 1_000 + index,
+                "state": {
+                    "life_cycle_state": "TERMINATED",
+                    "result_state": "SUCCESS",
+                    "state_message": "",
+                },
+                "task_key": task["task_key"],
+            }
+        )
+    return {
+        "cluster_instance": {"cluster_id": f"parent-cluster-{run_id}"},
+        "end_time": 3_000,
+        "run_id": run_id,
+        "run_name": submit_payload["run_name"],
+        "run_page_url": f"https://example.invalid/run/{run_id}",
+        "start_time": 900,
+        "state": {
+            "life_cycle_state": "TERMINATED",
+            "result_state": "SUCCESS",
+            "state_message": "",
+        },
+        "tasks": tasks,
+    }
+
+
+def _close(record):
+    record["closed_record_sha256"] = full_score._closed_record_sha256(record)
+    return record
+
+
+def _score_record(dataset, index):
+    answer = f"answer-{dataset}-{index}"
+    return {
+        "dataset": dataset,
+        "documents": [
+            {
+                "document_id": f"doc-{dataset}-{index}",
+                "text": f"source text {dataset} {index}",
+                "title": f"title-{index}",
+            }
+        ],
+        "example_id": f"{dataset}-{index}",
+        "expected_answer": answer,
+        "query": f"question {dataset} {index}?",
+        "references": [answer],
+    }
+
+
+def _write_sources(root, counts):
+    root.mkdir(parents=True)
+    paths = {}
+    for dataset in SUPPORTED_V1_DATASETS:
+        path = root / f"{dataset}.jsonl"
+        path.write_text(
+            "".join(
+                json.dumps(_score_record(dataset, index), sort_keys=True) + "\n"
+                for index in range(counts[dataset])
+            ),
+            encoding="utf-8",
+        )
+        paths[dataset] = path
+    return paths
+
+
+@pytest.fixture
+def campaign(tmp_path, monkeypatch):
+    paths = _write_sources(
+        tmp_path / "sources",
+        {dataset: 5 for dataset in SUPPORTED_V1_DATASETS},
+    )
+    inventory = load_full_score_inventory(paths, tokenizer=_CharacterTokenizer())
+    shard_plan = build_full_score_shard_plan(
+        inventory,
+        plan_id="full-score-test",
+        max_workers=16,
+        target_cache_prefix_tokens_per_shard=1,
+    )
+    execution_plan = full_score.build_full_score_execution_plan(
+        inventory,
+        shard_plan,
+    )
+    assert [len(wave["shards"]) for wave in execution_plan["waves"]] == [16, 4]
+
+    package_sha = _digest("cachet-wheel")
+    patched_sha = _digest("patched-vllm-wheel")
+    selection = GPUQualificationSelection(
+        attention_backend="TRITON_ATTN",
+        gpu_memory_utilization=0.80,
+        generation_hardware_id="aws-g6e-l40s",
+        generation_databricks_node_type_id="g6e.4xlarge",
+        generation_artifacts_sha256=_digest("matched-generation-artifacts"),
+        generation_prefix_tokens_per_second=51.25,
+        plan_sha256=_digest("qualification-plan"),
+    )
+    monkeypatch.setattr(
+        full_score,
+        "validate_gpu_qualification_evidence_record",
+        lambda *args, **kwargs: selection,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_verify_bound_gpu_qualification",
+        lambda *args, **kwargs: selection,
+    )
+    qualification_launch_authorization = SimpleNamespace(
+        ledger_id="publication-full-score"
+    )
+    latency_collection_authorization = SimpleNamespace(
+        collection_sha256=_digest("latency-collection")
+    )
+
+    def require_test_latency_collection(value, **kwargs):
+        if value is not latency_collection_authorization:
+            raise TypeError(
+                "publication launch requires PublicationLatencyCollectionAuthorization"
+            )
+        return getattr(
+            latency_collection_authorization,
+            "ledger_prefix",
+            databricks_ledger_prefix(
+                read_databricks_cluster_hour_ledger_json(kwargs["ledger_path"])
+            ),
+        )
+
+    monkeypatch.setattr(
+        full_score,
+        "require_publication_latency_collection_authorization",
+        require_test_latency_collection,
+    )
+
+    def require_test_launch_authorization(value, **kwargs):
+        if value is not qualification_launch_authorization:
+            raise TypeError(
+                "publication launch requires GPUQualificationLaunchAuthorization"
+            )
+        assert kwargs == {
+            "expected_evidence_file_sha256": qualification_file_sha,
+            "expected_plan_sha256": selection.plan_sha256,
+        }
+        return selection
+
+    monkeypatch.setattr(
+        full_score,
+        "require_gpu_qualification_launch_authorization",
+        require_test_launch_authorization,
+    )
+    pins = GPUQualificationArtifactPins(
+        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+        patched_vllm_wheel_sha256=patched_sha,
+        package_wheel_sha256=package_sha,
+        cachet_source_tree_sha256=_digest("source-tree"),
+        runner_sha256=full_score.FULL_SCORE_RUNNER_SHA256,
+        input_bundle_sha256=_digest("qualification-inputs"),
+    )
+    qualification_plan = {"closed_record_sha256": selection.plan_sha256}
+    qualification_evidence = {"closed_record_sha256": _digest("qualification-evidence")}
+    qualification_file_sha = sha256(
+        (canonical_gpu_qualification_json(qualification_evidence) + "\n").encode()
+    ).hexdigest()
+    qualification = full_score.FullScoreGPUQualificationConfig(
+        campaign_id="publication-2026",
+        plan_uri="dbfs:/qualification/plan.json",
+        evidence_uri="dbfs:/qualification/evidence.json",
+        evidence_file_sha256=qualification_file_sha,
+        plan_record=qualification_plan,
+        evidence_record=qualification_evidence,
+        artifact_pins=pins,
+    )
+    runtime = full_score.FullScoreRuntimeConfig(
+        python_executable="/local_disk0/cachet-full-score-runtime/bin/python",
+        runtime_contract_uri="dbfs:/runtime/contract.json",
+        runtime_contract_sha256=_digest("runtime-contract"),
+        runtime_lock_uri="dbfs:/runtime/runtime.lock",
+        patched_vllm_wheel_uri="dbfs:/runtime/patched-vllm.whl",
+        patched_vllm_wheel_sha256=patched_sha,
+        vllm_wheel_install_spec=(
+            "vllm @ file:///dbfs/runtime/patched-vllm.whl#sha256=" + patched_sha
+        ),
+        kv_transfer_config={
+            "kv_connector": "DocumentKVConnector",
+            "kv_role": "kv_consumer",
+            "kv_connector_extra_config": {
+                "document_kv.payload_cache_max_bytes": 0,
+                "document_kv.require_runtime_handshake": True,
+            },
+        },
+    )
+    bundle = full_score.FullScoreWorkerBundleConfig(
+        inventory_uri="dbfs:/inputs/inventory.json",
+        shard_plan_uri="dbfs:/inputs/shards.json",
+        execution_plan_uri="dbfs:/inputs/execution.json",
+        source_jsonl_uris={
+            dataset: f"dbfs:/inputs/{dataset}.jsonl" for dataset in paths
+        },
+        durable_output_root="dbfs:/full-score/durable",
+        ephemeral_root="/local_disk0/full-score",
+        runtime=runtime,
+        runner_python_file="dbfs:/runner/full-score.py",
+        runner_sha256=full_score.FULL_SCORE_RUNNER_SHA256,
+        package_wheel_uri="dbfs:/runtime/cachet.whl",
+        package_wheel_sha256=package_sha,
+        gpu_qualification=qualification,
+    )
+    payloads = full_score.build_full_score_worker_payloads(
+        inventory,
+        shard_plan,
+        execution_plan,
+        config=bundle,
+    )
+    job = full_score.DatabricksFullScoreJobConfig(
+        runner_python_file=bundle.runner_python_file,
+        runner_sha256=bundle.runner_sha256,
+        worker_payload_uri_template="dbfs:/workers/{worker_index}.json",
+        package_wheel_uri=bundle.package_wheel_uri,
+        package_wheel_sha256=bundle.package_wheel_sha256,
+        runtime_lock_uri=runtime.runtime_lock_uri,
+        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+        patched_vllm_wheel_uri=runtime.patched_vllm_wheel_uri,
+        patched_vllm_wheel_sha256=runtime.patched_vllm_wheel_sha256,
+        gpu_qualification=qualification,
+        single_user_name="researcher@example.com",
+    )
+    worker_file_root = tmp_path / "worker-payloads"
+    worker_file_root.mkdir()
+    worker_files = {}
+    for payload in payloads:
+        worker_label = (
+            f"wave-{payload['wave_index']:03d}-{payload['role']}-"
+            f"{payload['worker_index']:02d}"
+        )
+        uri = job.worker_payload_uri_template.format(worker_index=worker_label)
+        path = worker_file_root / f"{worker_label}.json"
+        path.write_bytes(full_score._canonical_pretty_json_bytes(payload))
+        worker_files[uri] = path
+    monkeypatch.setattr(
+        full_score,
+        "_validate_publication_full_score_inputs",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_require_shared_dbfs_path",
+        lambda value, _field_name: str(value),
+    )
+
+    def governed_test_file(value, field_name):
+        raw = str(value)
+        path = worker_files.get(raw, Path(raw))
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"{field_name} must be an existing regular test file")
+        return path
+
+    monkeypatch.setattr(full_score, "_governed_existing_file", governed_test_file)
+    return {
+        "bundle": bundle,
+        "execution_plan": execution_plan,
+        "inventory": inventory,
+        "job": job,
+        "latency_collection_authorization": latency_collection_authorization,
+        "latency_execution_plan_record": {"test": "latency-plan"},
+        "payloads": payloads,
+        "qualification_launch_authorization": (
+            qualification_launch_authorization
+        ),
+        "shard_plan": shard_plan,
+        "tmp_path": tmp_path,
+        "worker_files": worker_files,
+    }
+
+
+def _phase_payloads(campaign, wave_index, role):
+    return [
+        payload
+        for payload in campaign["payloads"]
+        if payload["wave_index"] == wave_index and payload["role"] == role
+    ]
+
+
+def _ready_records(campaign, wave_index):
+    wave = campaign["execution_plan"]["waves"][wave_index]
+    contract = campaign["payloads"][0]["generator_artifact_contract"]
+    records = []
+    for worker_index, shard in enumerate(wave["shards"]):
+        records.append(
+            _close(
+                {
+                    "closed_record_sha256": "",
+                    "execution_plan_sha256": campaign["execution_plan"][
+                        "closed_record_sha256"
+                    ],
+                    "generator_artifact_contract": contract,
+                    "lifecycle": ["generate_q8_kv", "commit_ready_shard"],
+                    "producer_hardware": {
+                        "compute_capability": "8.9",
+                        "gpu_count": 1,
+                        "gpu_name": "NVIDIA L40S",
+                        "hardware_target": "aws-g6e-l40s",
+                        "node_type_id": "g6e.4xlarge",
+                        "total_memory_bytes": 48 * 1024**3,
+                    },
+                    "ready_bytes": 1,
+                    "ready_bytes_upper_bound": shard["ready_bytes_upper_bound"],
+                    "record_type": full_score.FULL_SCORE_READY_SHARD_RECORD_TYPE,
+                    "schema_version": full_score.FULL_SCORE_READY_SHARD_SCHEMA_VERSION,
+                    "shard_id": shard["shard_id"],
+                    "shard_items_sha256": shard["items_sha256"],
+                    "wave_index": wave_index,
+                    "worker_index": worker_index,
+                }
+            )
+        )
+    return records
+
+
+def _wave_completion(campaign, wave_index):
+    attestations = []
+    wave = campaign["execution_plan"]["waves"][wave_index]
+    for worker_index, shard in enumerate(wave["shards"]):
+        attestations.append(
+            _close(
+                {
+                    "closed_record_sha256": "",
+                    "evidence_closed_record_sha256": _digest(
+                        f"evidence-{shard['shard_id']}"
+                    ),
+                    "execution_plan_sha256": campaign["execution_plan"][
+                        "closed_record_sha256"
+                    ],
+                    "lifecycle": [
+                        "verify_ready_shard",
+                        "baseline_inference",
+                        "vanilla_inference",
+                        "validate_paired_outputs",
+                        "commit_durable_evidence",
+                        "delete_ephemeral_q8_kv",
+                    ],
+                    "ready_shard_sha256": _digest(f"ready-{shard['shard_id']}"),
+                    "record_type": (
+                        full_score.FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE
+                    ),
+                    "schema_version": (
+                        full_score.FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION
+                    ),
+                    "shard_id": shard["shard_id"],
+                    "wave_index": wave_index,
+                    "worker_index": worker_index,
+                }
+            )
+        )
+    record = full_score.build_full_score_wave_completion_record(
+        campaign["execution_plan"],
+        wave_index=wave_index,
+        deletion_attestations=attestations,
+    )
+    record["authorization_scope"] = (
+        full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+    )
+    bindings = []
+    for shard_id in record["shard_ids"]:
+        directory = campaign["tmp_path"] / "governed-evidence" / shard_id
+        directory.mkdir(parents=True)
+        evidence = _close(
+            {
+                "authorization_scope": (
+                    full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+                ),
+                "closed_record_sha256": "",
+                "execution_plan_sha256": campaign["execution_plan"][
+                    "closed_record_sha256"
+                ],
+                "shard_id": shard_id,
+                "wave_index": wave_index,
+            }
+        )
+        deletion = _close(
+            {
+                "authorization_scope": (
+                    full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+                ),
+                "closed_record_sha256": "",
+                "evidence_closed_record_sha256": evidence["closed_record_sha256"],
+                "shard_id": shard_id,
+            }
+        )
+        evidence_path = directory / "evidence.json"
+        deletion_path = directory / "deletion-attestation.json"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        deletion_path.write_text(json.dumps(deletion), encoding="utf-8")
+        bindings.append(
+            {
+                "deletion_file_sha256": sha256(deletion_path.read_bytes()).hexdigest(),
+                "deletion_path": str(deletion_path),
+                "evidence_file_sha256": sha256(evidence_path.read_bytes()).hexdigest(),
+                "evidence_path": str(evidence_path),
+                "shard_id": shard_id,
+            }
+        )
+    record["governed_evidence_files"] = bindings
+    return _close(record)
+
+
+def _producer_completion(campaign, wave_index):
+    ready_records = _ready_records(campaign, wave_index)
+    record = full_score.build_full_score_producer_phase_completion_record(
+        campaign["execution_plan"],
+        wave_index=wave_index,
+        ready_shard_records=ready_records,
+    )
+    record["authorization_scope"] = (
+        full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+    )
+    ready_by_id = {item["shard_id"]: item for item in ready_records}
+    bindings = []
+    for item in record["ready_shards"]:
+        ready_path = (
+            campaign["tmp_path"]
+            / "ready"
+            / item["shard_id"]
+            / "ready-record.json"
+        )
+        ready_path.parent.mkdir(parents=True)
+        ready_path.write_text(
+            json.dumps(ready_by_id[item["shard_id"]]),
+            encoding="utf-8",
+        )
+        bindings.append(
+            {
+                "file_sha256": sha256(ready_path.read_bytes()).hexdigest(),
+                "path": str(ready_path),
+                "ready_record_sha256": item["ready_record_sha256"],
+                "shard_id": item["shard_id"],
+            }
+        )
+    record["ready_record_files"] = bindings
+    return _close(record)
+
+
+def _matched_blocks(campaign, through_wave):
+    blocks = []
+    for wave in campaign["execution_plan"]["waves"][: through_wave + 1]:
+        for shard in wave["shards"]:
+            block = {
+                "authorization_scope": (
+                    full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE
+                ),
+                "billed_gpu_seconds": {
+                    "consumer_task": 30.0,
+                    "producer": 12.0,
+                },
+                "billing_source_sha256": {
+                    role: _digest(f"billing-{shard['shard_id']}-{role}")
+                    for role in ("producer", "consumer_task")
+                },
+                "cache_prefix_tokens": shard["cache_prefix_tokens"],
+                "closed_record_sha256": "",
+                "consumer_task_diagnostics": {
+                    "attribution": "indivisible_no_per_arm_billed_seconds",
+                    "method_wall_clock": "time.monotonic_ns",
+                    "method_wall_seconds": {
+                        "baseline_prefill": 10.0,
+                        "vanilla_prefill": 14.0,
+                    },
+                    "shared_or_unattributed_seconds": 6.0,
+                },
+                "deletion_attestation_sha256": _digest(
+                    f"deletion-{shard['shard_id']}"
+                ),
+                "evidence_sha256": _digest(f"evidence-{shard['shard_id']}"),
+                "execution_plan_sha256": campaign["execution_plan"][
+                    "closed_record_sha256"
+                ],
+                "matched_status": "success_error_free",
+                "natural_prompt_tokens": shard["natural_prompt_tokens"],
+                "observed_completion_tokens": {
+                    "baseline_prefill": shard["item_count"] * 3,
+                    "vanilla_prefill": shard["item_count"] * 5,
+                },
+                "protocol_sha256": full_score._canonical_sha256(
+                    full_score._full_score_protocol_record()
+                ),
+                "record_type": full_score.FULL_SCORE_MATCHED_BLOCK_RECORD_TYPE,
+                "schema_version": full_score.FULL_SCORE_MATCHED_BLOCK_SCHEMA_VERSION,
+                "shard_id": shard["shard_id"],
+                "shard_items_sha256": shard["items_sha256"],
+                "wave_index": wave["wave_index"],
+            }
+            blocks.append(_close(block))
+    return blocks
+
+
+def _reserve_wave_zero_producer(campaign, *, label):
+    attempt_id = f"wave-000-producer-{label}"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    ledger_path = campaign["tmp_path"] / f"{label}-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    campaign["latency_collection_authorization"].ledger_prefix = (
+        databricks_ledger_prefix(
+            read_databricks_cluster_hour_ledger_json(ledger_path)
+        )
+    )
+    submit_path = campaign["tmp_path"] / f"{label}-submit.json"
+    submit_path.write_bytes(full_score._canonical_pretty_json_bytes(submit_payload))
+    run_id = 81_001
+    opener = _RoutingDatabricksOpener(
+        submit_payload={"run_id": run_id},
+        run_payload=_terminal_run_record(submit_payload, run_id=run_id),
+    )
+    response, submission_authorization = (
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig(
+                "https://dbc.example/", "secret-token"
+            ),
+            submit_payload,
+            ledger_path=ledger_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+            opener=opener,
+        )
+    )
+    assert response == {"run_id": run_id}
+    return {
+        "ledger_path": ledger_path,
+        "opener": opener,
+        "run_path": campaign["tmp_path"] / f"{label}-runs-get.json",
+        "submission_authorization": submission_authorization,
+        "submit_path": submit_path,
+        "submit_payload": submit_payload,
+        "terminal_path": campaign["tmp_path"] / f"{label}-terminal.json",
+    }
+
+
+def _collect_wave_zero_producer(campaign, *, label):
+    reserved = _reserve_wave_zero_producer(campaign, label=label)
+    terminal, phase_authorization = (
+        full_score.collect_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig(
+                "https://dbc.example/", "secret-token"
+            ),
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=reserved["ledger_path"],
+            submission_authorization=reserved["submission_authorization"],
+            submit_payload_path=reserved["submit_path"],
+            control_plane_run_path=reserved["run_path"],
+            terminal_record_path=reserved["terminal_path"],
+            opener=reserved["opener"],
+        )
+    )
+    return {
+        **reserved,
+        "phase_authorization": phase_authorization,
+        "terminal": terminal,
+    }
+
+
+def test_facade_aliases_the_production_module():
+    assert cachet_full_score.__all__ == full_score.__all__
+    assert (
+        cachet_full_score.build_full_score_execution_plan
+        is full_score.build_full_score_execution_plan
+    )
+
+
+def test_production_path_rejects_a_valid_but_nonpublication_inventory(campaign):
+    with pytest.raises(ValueError, match="publication full-score inventory closure"):
+        _VALIDATE_PUBLICATION_FULL_SCORE_INPUTS(
+            campaign["inventory"],
+            campaign["shard_plan"],
+            campaign["execution_plan"],
+        )
+
+
+def test_publication_path_rejects_a_reclosed_but_reordered_execution_plan(
+    campaign,
+    monkeypatch,
+):
+    inventory = campaign["inventory"]
+    shard_plan = campaign["shard_plan"]
+    execution_plan = campaign["execution_plan"]
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PUBLICATION_INVENTORY_SHA256",
+        inventory.inventory_sha256,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PUBLICATION_SHARD_PLAN_SHA256",
+        shard_plan["closed_record_sha256"],
+    )
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PUBLICATION_EXECUTION_PLAN_SHA256",
+        execution_plan["closed_record_sha256"],
+    )
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PUBLICATION_ITEM_COUNT",
+        len(inventory.items),
+    )
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PUBLICATION_SHARD_COUNT",
+        len(shard_plan["shards"]),
+    )
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS",
+        sum(item.cache_prefix_tokens for item in inventory.items),
+    )
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS",
+        sum(item.natural_prompt_tokens for item in inventory.items),
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_FULL_SCORE_PUBLICATION_SOURCE_RECORDS",
+        tuple(
+            (
+                source.dataset,
+                source.byte_count,
+                source.record_count,
+                source.source_jsonl_sha256,
+                source.source_records_sha256,
+                source.identities_sha256,
+            )
+            for source in inventory.sources
+        ),
+    )
+    _VALIDATE_PUBLICATION_FULL_SCORE_INPUTS(
+        inventory,
+        shard_plan,
+        execution_plan,
+    )
+    reordered = copy.deepcopy(execution_plan)
+    reordered["waves"][0]["shards"].reverse()
+    reordered["waves"][0]["shard_ids"].reverse()
+    _close(reordered)
+    with pytest.raises(ValueError, match="execution-plan closure drift"):
+        _VALIDATE_PUBLICATION_FULL_SCORE_INPUTS(
+            inventory,
+            shard_plan,
+            reordered,
+        )
+
+
+def test_worker_payloads_are_token_balanced_closed_and_persistent(campaign):
+    payloads = campaign["payloads"]
+    assert len(_phase_payloads(campaign, 0, "producer")) == 16
+    assert len(_phase_payloads(campaign, 0, "consumer")) == 16
+    assert len(_phase_payloads(campaign, 1, "producer")) == 4
+    for payload in payloads:
+        full_score.validate_full_score_worker_payload(
+            payload,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+        )
+    producer_plan = full_score.render_full_score_worker_command_plan(
+        _phase_payloads(campaign, 0, "producer")[0]
+    )
+    assert producer_plan["server"] is None
+    assert {shard["operation"] for shard in producer_plan["shards"]} == {
+        "persistent_generator_api_generate_and_close_ready_shard"
+    }
+    consumer_plan = full_score.render_full_score_worker_command_plan(
+        _phase_payloads(campaign, 0, "consumer")[0]
+    )
+    assert consumer_plan["server"].count("--model") == 1
+    assert "--trust-remote-code" not in consumer_plan["server"]
+    for method in ("baseline", "vanilla"):
+        command = consumer_plan["shards"][0][method]
+        assert command[command.index("--request-parallelism") + 1] == "4"
+        assert command[command.index("--max-tokens") + 1] == "64"
+        assert command[command.index("--temperature") + 1] == "0"
+        assert command[command.index("--repeats") + 1] == "1"
+        assert not any("trunc" in argument or "padding" in argument for argument in command)
+    environment = full_score._worker_environment(campaign["bundle"].runtime)
+    assert environment["CACHET_TRANSFORMERS_DEVICE_MAP"] == "auto"
+    assert json.loads(environment["CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON"]) == (
+        full_score.FULL_SCORE_GENERATOR_QUANTIZATION_CONFIG
+    )
+
+
+def test_publication_paths_are_confined_and_local_fixtures_are_nonauthorizing(
+    campaign,
+):
+    with pytest.raises(ValueError, match="shared DBFS"):
+        _REQUIRE_SHARED_DBFS_PATH("/tmp/not-durable", "durable_output_root")
+    local_bundle = replace(
+        campaign["bundle"],
+        authorization_scope=full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE,
+        durable_output_root=str(campaign["tmp_path"] / "local-durable"),
+        ephemeral_root=str(campaign["tmp_path"] / "local-ephemeral"),
+        source_jsonl_uris={
+            dataset: str(campaign["tmp_path"] / f"{dataset}.jsonl")
+            for dataset in SUPPORTED_V1_DATASETS
+        },
+    )
+    local_payloads = full_score.build_full_score_worker_payloads(
+        campaign["inventory"],
+        campaign["shard_plan"],
+        campaign["execution_plan"],
+        config=local_bundle,
+    )
+    with pytest.raises(ValueError, match="rejects local-fixture payloads"):
+        full_score.build_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            [
+                payload
+                for payload in local_payloads
+                if payload["wave_index"] == 0 and payload["role"] == "producer"
+            ],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            attempt_id="local-fixture-rejected",
+        )
+
+
+def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
+    campaign,
+):
+    shard = campaign["execution_plan"]["waves"][0]["shards"][0]
+    pairs = []
+    telemetry = []
+    for item in shard["items"]:
+        suffix = f"{item['dataset']}-{item['example_id']}"
+        artifact_id = f"artifact-{suffix}"
+        vanilla_request_id = f"vanilla-{suffix}"
+        pairs.append(
+            {
+                "dataset": item["dataset"],
+                "example_id": item["example_id"],
+                "methods": {
+                    "baseline_prefill": {
+                        "artifact_id": None,
+                        "request_id": "",
+                    },
+                    "vanilla_prefill": {
+                        "artifact_id": artifact_id,
+                        "request_id": vanilla_request_id,
+                    },
+                },
+            }
+        )
+        tokens = item["cache_prefix_tokens"]
+        runtime_bytes = (
+            tokens * full_score.FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN
+        )
+        telemetry.append(
+            {
+                "benchmark_request_id": vanilla_request_id,
+                "cache_state_attestation": {
+                    "artifact_id": artifact_id,
+                    "cache_method": "vanilla_prefill",
+                    "decoded_runtime_bytes": runtime_bytes,
+                    "expected_runtime_bytes": runtime_bytes,
+                    "expected_tokens": tokens,
+                    "loaded_tokens": tokens,
+                    "payload_cache_hit": False,
+                    "successful_loads": 1,
+                },
+                "counts": {
+                    "decoded_runtime_payload_bytes": runtime_bytes,
+                    "expected_runtime_payload_bytes": runtime_bytes,
+                    "handoff_total_tokens": tokens,
+                    "layers_loaded": full_score.FULL_SCORE_MODEL_NUM_LAYERS,
+                    "token_count": tokens,
+                },
+                "event": "load_request",
+                "layout": {
+                    "bytes_per_token": (
+                        full_score.FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN
+                    ),
+                    "dtype": full_score.FULL_SCORE_KV_DTYPE,
+                    "model_id": full_score.FULL_SCORE_MODEL_ID,
+                    "num_layers": full_score.FULL_SCORE_MODEL_NUM_LAYERS,
+                },
+                "record_type": "document_kv.vllm_native_provider_load.v1",
+                "provider_factory": (
+                    "vllm_kv_injection.vllm_native_provider:"
+                    "build_document_kv_provider"
+                ),
+                "success": True,
+            }
+        )
+    telemetry_path = campaign["tmp_path"] / "connector-telemetry.jsonl"
+    telemetry_path.write_text(
+        "".join(json.dumps(record) + "\n" for record in telemetry),
+        encoding="utf-8",
+    )
+    proof = full_score.build_full_score_connector_proof(
+        telemetry_path,
+        paired_examples=pairs,
+        shard=shard,
+    )
+    assert proof["load_count"] == len(shard["items"])
+    telemetry[0]["counts"]["layers_loaded"] -= 1
+    telemetry_path.write_text(
+        "".join(json.dumps(record) + "\n" for record in telemetry),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="count/layout coverage drift"):
+        full_score.build_full_score_connector_proof(
+            telemetry_path,
+            paired_examples=pairs,
+            shard=shard,
+        )
+
+
+def test_niah_measurement_cell_must_replay_from_bound_source():
+    key = ("niah", "niah-example")
+    measurement = SimpleNamespace(
+        arm_id=full_score.BASELINE_PREFILL_ARM,
+        cache_method=None,
+        dataset=key[0],
+        error=None,
+        example_id=key[1],
+        expected_answer="needle",
+        metadata={
+            "logical_prompt_sha256": _digest("natural-prompt"),
+            "niah_cell_id": NIAH_CELL_IDS[1],
+        },
+        references=("needle",),
+        repeat_index=1,
+        request_id="",
+    )
+    example = SimpleNamespace(
+        expected_answer="needle",
+        metadata={"niah_cell_id": NIAH_CELL_IDS[0]},
+        references=("needle",),
+    )
+    with pytest.raises(ValueError, match="differs from bound source"):
+        full_score._validated_method_measurements(
+            [measurement],
+            method="baseline_prefill",
+            expected_items={
+                key: {"natural_prompt_sha256": _digest("natural-prompt")}
+            },
+            examples={key: example},
+        )
+
+
+def test_governed_niah_source_row_replays_from_inventory_hash(tmp_path):
+    source = _score_record("niah", 97)
+    source["metadata"] = {"niah_cell_id": NIAH_CELL_IDS[0]}
+    path = tmp_path / "niah.jsonl"
+    path.write_text(json.dumps(source, sort_keys=True) + "\n", encoding="utf-8")
+    shard = {
+        "item_count": 1,
+        "items": [
+            {
+                "dataset": "niah",
+                "example_id": source["example_id"],
+                "source_record_sha256": full_score._canonical_sha256(source),
+            }
+        ],
+    }
+    records, examples = full_score._load_governed_ready_source_records(
+        {"niah": path},
+        shard=shard,
+    )
+    assert records[("niah", source["example_id"])] == source
+    assert (
+        examples[("niah", source["example_id"])].metadata["niah_cell_id"]
+        == NIAH_CELL_IDS[0]
+    )
+
+    source["metadata"]["niah_cell_id"] = NIAH_CELL_IDS[1]
+    path.write_text(json.dumps(source, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="source-record hash drift"):
+        full_score._load_governed_ready_source_records(
+            {"niah": path},
+            shard=shard,
+        )
+
+
+def test_governed_ready_and_handoff_replay_bind_source_artifact_and_files(
+    campaign,
+):
+    wave = campaign["execution_plan"]["waves"][0]
+    shard = wave["shards"][0]
+    item = shard["items"][0]
+    dataset = item["dataset"]
+    example_id = item["example_id"]
+    source_index = int(example_id.rsplit("-", 1)[1])
+    source = _score_record(dataset, source_index)
+    input_path = campaign["tmp_path"] / "preserved-input.jsonl"
+    input_path.write_text(
+        json.dumps(source, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert full_score._canonical_sha256(source) == item["source_record_sha256"]
+
+    artifact_id = _digest(f"artifact-{dataset}-{example_id}")
+    entry = BenchmarkHandoffEntry(
+        dataset=dataset,
+        example_id=example_id,
+        request_id=f"handoff-{dataset}-{example_id}",
+        handoff_json="/dbfs/full-score/ready/handoff.json",
+        cache_method="vanilla_prefill",
+        artifact_id=artifact_id,
+    )
+    manifest_path = campaign["tmp_path"] / "preserved-manifest.json"
+    write_benchmark_handoff_manifest_json(
+        BenchmarkHandoffManifest(entries=(entry,)),
+        manifest_path,
+    )
+    enriched = dict(source)
+    enriched["arm_kv_transfer_params"] = {
+        full_score.FULL_SCORE_VANILLA_ARM_ID: entry.kv_transfer_params()
+    }
+    enriched_path = campaign["tmp_path"] / "preserved-enriched.jsonl"
+    enriched_path.write_text(
+        json.dumps(enriched, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    q8_raw = b"bound-q8-payload"
+    ready_file_sources = {
+        f"inputs/{dataset}.jsonl": input_path.read_bytes(),
+        f"enriched/{dataset}.jsonl": enriched_path.read_bytes(),
+        f"manifests/{dataset}.json": manifest_path.read_bytes(),
+        f"q8-kv/{dataset}/cachet-benchmark.kvpack": q8_raw,
+    }
+    ready_files = [
+        {
+            "byte_count": len(raw),
+            "relative_path": relative_path,
+            "sha256": sha256(raw).hexdigest(),
+        }
+        for relative_path, raw in sorted(ready_file_sources.items())
+    ]
+    ready = _close(
+        {
+            "closed_record_sha256": "",
+            "execution_plan_sha256": campaign["execution_plan"][
+                "closed_record_sha256"
+            ],
+            "files": ready_files,
+            "files_sha256": full_score._canonical_sha256(ready_files),
+            "generator_artifact_contract": campaign["payloads"][0][
+                "generator_artifact_contract"
+            ],
+            "inventory_sha256": campaign["inventory"].inventory_sha256,
+            "lifecycle": ["generate_q8_kv", "commit_ready_shard"],
+            "producer_hardware": {
+                "compute_capability": "8.9",
+                "gpu_count": 1,
+                "gpu_name": full_score.FULL_SCORE_PRODUCER_GPU_NAME,
+                "hardware_target": full_score.FULL_SCORE_PRODUCER_HARDWARE_TARGET,
+                "node_type_id": full_score.FULL_SCORE_PRODUCER_NODE_TYPE_ID,
+                "total_memory_bytes": 48 * 1024**3,
+            },
+            "ready_bytes": sum(record["byte_count"] for record in ready_files),
+            "ready_bytes_upper_bound": shard["ready_bytes_upper_bound"],
+            "record_type": full_score.FULL_SCORE_READY_SHARD_RECORD_TYPE,
+            "schema_version": full_score.FULL_SCORE_READY_SHARD_SCHEMA_VERSION,
+            "shard_id": shard["shard_id"],
+            "shard_items_sha256": shard["items_sha256"],
+            "shard_plan_sha256": campaign["shard_plan"]["closed_record_sha256"],
+            "wave_index": 0,
+            "worker_index": next(
+                assignment["worker_index"]
+                for assignment in wave["producer_assignments"]
+                if shard["shard_id"] in assignment["shard_ids"]
+            ),
+        }
+    )
+    preserved = {}
+    resolved = {}
+    for evidence_name, path, ready_relative in (
+        (f"input_{dataset}", input_path, f"inputs/{dataset}.jsonl"),
+        (f"enriched_{dataset}", enriched_path, f"enriched/{dataset}.jsonl"),
+        (
+            f"handoff_manifest_{dataset}",
+            manifest_path,
+            f"manifests/{dataset}.json",
+        ),
+    ):
+        ready_file = next(
+            record
+            for record in ready_files
+            if record["relative_path"] == ready_relative
+        )
+        preserved[evidence_name] = {
+            **ready_file,
+            "relative_path": path.name,
+        }
+        resolved[evidence_name] = path
+    evidence = {
+        "preserved_files": preserved,
+        "ready_shard_sha256": ready["closed_record_sha256"],
+        "wave_index": 0,
+    }
+    full_score._validate_governed_ready_manifest_replay(
+        ready,
+        evidence=evidence,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        shard=shard,
+        resolved_files=resolved,
+        datasets=[dataset],
+    )
+    source_records, _examples = full_score._load_governed_ready_source_records(
+        {dataset: input_path},
+        shard=shard,
+    )
+    pairs = [
+        {
+            "dataset": dataset,
+            "example_id": example_id,
+            "methods": {"vanilla_prefill": {"artifact_id": artifact_id}},
+        }
+    ]
+    full_score._validate_governed_handoff_replay(
+        source_records=source_records,
+        enriched_paths={dataset: enriched_path},
+        manifest_paths={dataset: manifest_path},
+        paired_examples=pairs,
+    )
+
+    tampered_evidence = copy.deepcopy(evidence)
+    tampered_evidence["preserved_files"][f"input_{dataset}"]["sha256"] = _digest(
+        "tampered-input"
+    )
+    with pytest.raises(ValueError, match="differs from ready-shard closure"):
+        full_score._validate_governed_ready_manifest_replay(
+            ready,
+            evidence=tampered_evidence,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            shard=shard,
+            resolved_files=resolved,
+            datasets=[dataset],
+        )
+    pairs[0]["methods"]["vanilla_prefill"]["artifact_id"] = _digest(
+        "different-artifact"
+    )
+    with pytest.raises(ValueError, match="differs from handoff manifest"):
+        full_score._validate_governed_handoff_replay(
+            source_records=source_records,
+            enriched_paths={dataset: enriched_path},
+            manifest_paths={dataset: manifest_path},
+            paired_examples=pairs,
+        )
+
+
+def test_databricks_renders_two_independent_bounded_phases(campaign, monkeypatch):
+    producers = _phase_payloads(campaign, 0, "producer")
+    with pytest.raises(
+        TypeError,
+        match="publication launch requires GPUQualificationLaunchAuthorization",
+    ):
+        full_score.build_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            producers,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization={},
+            attempt_id="invalid-qualification-render",
+        )
+    producer_run = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        producers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id="wave-000-producer",
+    )
+    assert set(producer_run) == {
+        "idempotency_token",
+        "run_name",
+        "tasks",
+        "timeout_seconds",
+    }
+    assert len(producer_run["idempotency_token"]) == 64
+    assert producer_run["timeout_seconds"] == 21_600
+    assert len(producer_run["tasks"]) == 16
+    assert all(task["timeout_seconds"] == 21_600 for task in producer_run["tasks"])
+    assert all(task["max_retries"] == 0 for task in producer_run["tasks"])
+    assert {task["new_cluster"]["node_type_id"] for task in producer_run["tasks"]} == {
+        "g6e.4xlarge"
+    }
+    assert all("depends_on" not in task for task in producer_run["tasks"])
+    assert all(
+        set(task)
+        == {
+            "max_retries",
+            "new_cluster",
+            "spark_python_task",
+            "task_key",
+            "timeout_seconds",
+        }
+        for task in producer_run["tasks"]
+    )
+    producer_reservation = databricks_submit_payload_reservation(
+        producer_run,
+        attempt_id="wave-000-producer",
+        workload_id="full-score",
+    )
+    assert producer_reservation.reserved_cluster_hours == 96.0
+
+    consumers = _phase_payloads(campaign, 0, "consumer")
+    with pytest.raises(ValueError, match="producer-phase completion"):
+        full_score.build_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            consumers,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization={},
+            attempt_id="wave-000-consumer-missing-completion",
+        )
+    producer_completion = _producer_completion(campaign, 0)
+    producer_completion_path = (
+        campaign["tmp_path"] / "wave-000-producer-completion.json"
+    )
+    producer_completion_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(producer_completion)
+    )
+
+    monkeypatch.setattr(
+        full_score,
+        "_validate_governed_producer_ready_phase",
+        lambda *_args, **_kwargs: None,
+    )
+    consumer_run = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        consumers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id="wave-000-consumer",
+        producer_phase_completion=producer_completion,
+        producer_phase_completion_uri=str(producer_completion_path),
+    )
+    assert consumer_run["timeout_seconds"] == 21_600
+    assert len(consumer_run["tasks"]) == 16
+    assert {task["new_cluster"]["node_type_id"] for task in consumer_run["tasks"]} == {
+        "g6.8xlarge"
+    }
+    assert all("depends_on" not in task for task in consumer_run["tasks"])
+    assert all(
+        "--producer-phase-completion-json"
+        in task["spark_python_task"]["parameters"]
+        for task in consumer_run["tasks"]
+    )
+    consumer_reservation = databricks_submit_payload_reservation(
+        consumer_run,
+        attempt_id="wave-000-consumer",
+        workload_id="full-score",
+    )
+    assert consumer_reservation.reserved_cluster_hours == 96.0
+    with pytest.raises(ValueError, match="exactly one phase"):
+        full_score.build_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            [*producers, *consumers],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            attempt_id="mixed-phase-rejected",
+        )
+
+
+def test_full_score_freezes_six_hour_task_and_run_timeout(campaign):
+    assert full_score.FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS == 21_600
+    assert campaign["job"].run_timeout_seconds == 21_600
+    assert campaign["bundle"].runtime.generator_timeout_seconds == 21_600.0
+    assert full_score._command_timeout(
+        ["python", "-m", "document_kv_cache.benchmark_runner"]
+    ) == 21_600.0
+    assert full_score.full_score_wave_worst_case_gpu_hours(
+        _phase_payloads(campaign, 0, "producer")
+    ) == 96.0
+    with pytest.raises(ValueError, match="six hours"):
+        replace(campaign["job"], run_timeout_seconds=14_400)
+    with pytest.raises(ValueError, match="six hours"):
+        replace(
+            campaign["bundle"].runtime,
+            generator_timeout_seconds=14_400.0,
+        )
+    with pytest.raises(ValueError, match="six hours"):
+        full_score.full_score_wave_worst_case_gpu_hours(
+            _phase_payloads(campaign, 0, "producer"),
+            task_timeout_seconds=14_400,
+        )
+    with pytest.raises(ValueError, match="max_model_len is frozen"):
+        replace(
+            campaign["bundle"].runtime,
+            max_model_len=campaign["bundle"].runtime.max_model_len + 1,
+        )
+    with pytest.raises(ValueError, match="max_num_seqs is frozen"):
+        replace(
+            campaign["bundle"].runtime,
+            max_num_seqs=full_score.FULL_SCORE_REQUEST_PARALLELISM + 1,
+        )
+    transfer_with_fallback = copy.deepcopy(
+        campaign["bundle"].runtime.kv_transfer_config
+    )
+    transfer_with_fallback["kv_connector_extra_config"][
+        "document_kv.allow_silent_fallback"
+    ] = True
+    with pytest.raises(ValueError, match="extra config schema drift"):
+        replace(
+            campaign["bundle"].runtime,
+            kv_transfer_config=transfer_with_fallback,
+        )
+
+
+def test_consumer_reservation_replays_completion_instead_of_trusting_closure(
+    campaign,
+    monkeypatch,
+):
+    completion = _producer_completion(campaign, 0)
+    completion_path = campaign["tmp_path"] / "producer-completion-forged.json"
+    completion_path.write_bytes(full_score._canonical_pretty_json_bytes(completion))
+    monkeypatch.setattr(
+        full_score,
+        "_validate_governed_producer_ready_phase",
+        lambda *_args, **_kwargs: None,
+    )
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "consumer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id="forged-consumer-attempt",
+        producer_phase_completion=completion,
+        producer_phase_completion_uri=str(completion_path),
+    )
+    forged = _close({"closed_record_sha256": "", "evil": "self-closed mapping"})
+    completion_path.write_bytes(full_score._canonical_pretty_json_bytes(forged))
+    for task in submit_payload["tasks"]:
+        parameters = task["spark_python_task"]["parameters"]
+        digest_index = parameters.index(
+            "--expected-producer-phase-completion-sha256"
+        ) + 1
+        parameters[digest_index] = forged["closed_record_sha256"]
+    ledger_path = campaign["tmp_path"] / "forged-consumer-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    before = ledger_path.read_bytes()
+    with pytest.raises(ValueError, match="idempotency token drift"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            submit_payload,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="consumer",
+            attempt_id="forged-consumer-attempt",
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization={},
+        )
+    assert ledger_path.read_bytes() == before
+
+
+def test_consumer_reservation_requires_exact_live_ready_trees(campaign, monkeypatch):
+    completion = _producer_completion(campaign, 0)
+    completion_path = campaign["tmp_path"] / "producer-completion-no-trees.json"
+    completion_path.write_bytes(full_score._canonical_pretty_json_bytes(completion))
+    with monkeypatch.context() as render_patch:
+        render_patch.setattr(
+            full_score,
+            "_validate_governed_producer_ready_phase",
+            lambda *_args, **_kwargs: None,
+        )
+        submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            _phase_payloads(campaign, 0, "consumer"),
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            attempt_id="consumer-without-exact-ready-trees",
+            producer_phase_completion=completion,
+            producer_phase_completion_uri=str(completion_path),
+        )
+    ledger_path = campaign["tmp_path"] / "consumer-no-ready-trees-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    before = ledger_path.read_bytes()
+    with pytest.raises(ValueError, match="ready-shard directory"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            submit_payload,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="consumer",
+            attempt_id="consumer-without-exact-ready-trees",
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization={},
+        )
+    assert ledger_path.read_bytes() == before
+
+
+def test_governed_terminal_billing_and_wave_zero_reservation_are_file_bound(
+    campaign,
+):
+    attempt_id = "wave-000-producer-attempt-001"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    submit_path = campaign["tmp_path"] / "wave-000-producer-submit.json"
+    submit_path.write_bytes(full_score._canonical_pretty_json_bytes(submit_payload))
+    tampered_submit = copy.deepcopy(submit_payload)
+    tampered_submit["tasks"][0]["spark_python_task"]["parameters"].append(
+        "--unreviewed-argument"
+    )
+    with pytest.raises(ValueError, match="unexpected trailing parameters"):
+        full_score._validated_full_score_phase_submit_payload(
+            campaign["execution_plan"],
+            tampered_submit,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+        )
+    ledger_path = campaign["tmp_path"] / "cluster-hour-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    reserved = full_score.reserve_governed_full_score_phase_attempt(
+        ledger_path,
+        submit_payload,
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=0,
+        phase="producer",
+        attempt_id=attempt_id,
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        predecessor_authorization=campaign[
+            "latency_collection_authorization"
+        ],
+        latency_execution_plan_record=campaign[
+            "latency_execution_plan_record"
+        ],
+    )
+    assert reserved[0].active_reserved_cluster_hours == 96.0
+    with pytest.raises(ValueError, match="already reserved|intent binding drift"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            submit_payload,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+        )
+
+
+    run_id = 42001
+    record_databricks_run_submission_receipt_json(
+        ledger_path,
+        attempt_id=attempt_id,
+        submit_response={"run_id": run_id},
+    )
+    run_tasks = []
+    for index, task in enumerate(submit_payload["tasks"]):
+        run_tasks.append(
+            {
+                "cluster_instance": {"cluster_id": f"cluster-{index}"},
+                "new_cluster": task["new_cluster"],
+                "end_time": 2_500 + index,
+                "run_id": 50_000 + index,
+                "start_time": 1_000 + index,
+                "state": {
+                    "life_cycle_state": "TERMINATED",
+                    "result_state": "SUCCESS",
+                    "state_message": "",
+                },
+                "task_key": task["task_key"],
+            }
+        )
+    run_record = {
+        "cluster_instance": {"cluster_id": "full-score-run-cluster"},
+        "end_time": 3_000,
+        "run_id": run_id,
+        "run_name": submit_payload["run_name"],
+        "run_page_url": "https://example.invalid/run/42001",
+        "start_time": 900,
+        "state": {
+            "life_cycle_state": "TERMINATED",
+            "result_state": "SUCCESS",
+            "state_message": "",
+        },
+        "tasks": run_tasks,
+    }
+    record_databricks_verified_run_terminal_actual_json(
+        ledger_path,
+        attempt_id=attempt_id,
+        run_record=run_record,
+    )
+    run_path = campaign["tmp_path"] / "wave-000-producer-runs-get.json"
+    run_path.write_text(json.dumps(run_record), encoding="utf-8")
+    duplicate_cluster_run = copy.deepcopy(run_record)
+    duplicate_cluster_run["tasks"][1]["cluster_instance"]["cluster_id"] = (
+        duplicate_cluster_run["tasks"][0]["cluster_instance"]["cluster_id"]
+    )
+    run_path.write_text(json.dumps(duplicate_cluster_run), encoding="utf-8")
+    with pytest.raises(ValueError, match="distinct billed clusters"):
+        full_score.build_governed_full_score_phase_terminal_record(
+            campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            submit_payload_path=submit_path,
+            control_plane_run_path=run_path,
+            ledger_path=ledger_path,
+            submission_authorization=reserved[1],
+        )
+    run_path.write_text(json.dumps(run_record), encoding="utf-8")
+    terminal_path = campaign["tmp_path"] / "wave-000-producer-terminal.json"
+    terminal = full_score.write_governed_full_score_phase_terminal_record(
+        terminal_path,
+        campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=0,
+        phase="producer",
+        attempt_id=attempt_id,
+        submit_payload_path=submit_path,
+        control_plane_run_path=run_path,
+        ledger_path=ledger_path,
+        submission_authorization=reserved[1],
+    )
+    assert terminal["billed_gpu_seconds"] == 24.0
+    assert len(terminal["task_billing"]) == 16
+    assert len({item["cluster_id"] for item in terminal["task_billing"]}) == 16
+    assert len({item["task_run_id"] for item in terminal["task_billing"]}) == 16
+    assert {item["shard_id"] for item in terminal["task_billing"]} == set(
+        campaign["execution_plan"]["waves"][0]["shard_ids"]
+    )
+    tampered_run = copy.deepcopy(run_record)
+    tampered_run["state"]["state_message"] = "changed after reconciliation"
+    run_path.write_text(json.dumps(tampered_run), encoding="utf-8")
+    with pytest.raises(ValueError, match="reconciliation drift"):
+        full_score.load_governed_full_score_phase_terminal_record(
+            terminal_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+        )
+    run_path.write_text(json.dumps(run_record), encoding="utf-8")
+    worker_uri = terminal["task_billing"][0]["worker_payload_uri"]
+    worker_path = campaign["worker_files"][worker_uri]
+    worker_path.write_bytes(worker_path.read_bytes() + b"\n")
+    with pytest.raises(ValueError, match="worker payload file SHA-256 drift"):
+        full_score.load_governed_full_score_phase_terminal_record(
+            terminal_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+        )
+
+
+def test_wave_zero_reservation_requires_campaign_ledger_and_headroom(campaign):
+    attempt_id = "wave-zero-admission-test"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    wrong_ledger_path = campaign["tmp_path"] / "wrong-campaign-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        wrong_ledger_path,
+        ledger_id="different-publication-campaign",
+    )
+    with pytest.raises(ValueError, match="qualification ledger"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            wrong_ledger_path,
+            submit_payload,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+        )
+
+    reservations = tuple(
+        DatabricksClusterHourReservation(
+            attempt_id=f"historical-{index:03d}",
+            workload_id="historical-publication-work",
+            submit_payload_sha256=f"{index + 1:064x}",
+            run_timeout_seconds=43_200,
+            task_timeout_seconds=(43_200,),
+        )
+        for index in range(68)
+    )
+    terminal_actuals = tuple(
+        DatabricksClusterHourTerminalActual(
+            attempt_id=reservation.attempt_id,
+            terminal_state="succeeded",
+            actual_cluster_duration_seconds=43_200,
+        )
+        for reservation in reservations
+    )
+    headroom_ledger = DatabricksClusterHourLedger(
+        ledger_id="publication-full-score",
+        reservations=reservations,
+        terminal_actuals=terminal_actuals,
+    )
+    headroom_path = campaign["tmp_path"] / "exhausted-headroom-ledger.json"
+    headroom_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(
+            databricks_cluster_hour_ledger_to_record(headroom_ledger)
+        )
+    )
+    with pytest.raises(ValueError, match="124.*headroom"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            headroom_path,
+            submit_payload,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+        )
+    before_generic = headroom_path.read_bytes()
+    with pytest.raises(ValueError, match="124.*headroom"):
+        reserve_databricks_run_attempt_json(
+            headroom_path,
+            submit_payload,
+            attempt_id=attempt_id,
+            workload_id=full_score._full_score_phase_workload_id(
+                campaign["execution_plan"],
+                wave_index=0,
+                phase="producer",
+            ),
+        )
+    assert headroom_path.read_bytes() == before_generic
+
+
+def test_phase_reservations_require_active_zero_and_exact_one_shot_success(campaign):
+    first_attempt = "wave-000-producer-failed-001"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=first_attempt,
+    )
+    ledger_path = campaign["tmp_path"] / "one-shot-phase-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    campaign["latency_collection_authorization"].ledger_prefix = (
+        databricks_ledger_prefix(
+            read_databricks_cluster_hour_ledger_json(ledger_path)
+        )
+    )
+    common = {
+        "execution_plan": campaign["execution_plan"],
+        "inventory": campaign["inventory"],
+        "shard_plan": campaign["shard_plan"],
+        "wave_index": 0,
+        "phase": "producer",
+        "qualification_launch_authorization": campaign[
+            "qualification_launch_authorization"
+        ],
+        "predecessor_authorization": campaign[
+            "latency_collection_authorization"
+        ],
+        "latency_execution_plan_record": campaign[
+            "latency_execution_plan_record"
+        ],
+    }
+    full_score.reserve_governed_full_score_phase_attempt(
+        ledger_path,
+        submit_payload,
+        attempt_id=first_attempt,
+        **common,
+    )
+    active_bytes = ledger_path.read_bytes()
+    with pytest.raises(ValueError, match="idempotency token drift"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            submit_payload,
+            attempt_id="wave-000-producer-overlap",
+            **common,
+        )
+    assert ledger_path.read_bytes() == active_bytes
+    record_databricks_run_terminal_actual_json(
+        ledger_path,
+        attempt_id=first_attempt,
+        terminal_state="failed",
+        actual_cluster_duration_seconds=60.0,
+    )
+    successful_attempt = "wave-000-producer-success-002"
+    retry_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=successful_attempt,
+    )
+    closed_bytes = ledger_path.read_bytes()
+    with pytest.raises(ValueError, match="complete current ledger prefix"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            retry_payload,
+            attempt_id=successful_attempt,
+            **common,
+        )
+    assert ledger_path.read_bytes() == closed_bytes
+
+
+def test_governed_submit_couples_reservation_exact_wire_and_receipt(campaign):
+    attempt_id = "wave-000-producer-coupled-001"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    ledger_path = campaign["tmp_path"] / "coupled-submit-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    opener = _FakeDatabricksOpener({"run_id": 74001})
+    with pytest.raises(
+        TypeError,
+        match="PublicationLatencyCollectionAuthorization",
+    ):
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+            submit_payload,
+            ledger_path=ledger_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization={},
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+            opener=opener,
+        )
+    with pytest.raises(
+        TypeError,
+        match="publication launch requires GPUQualificationLaunchAuthorization",
+    ):
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+            submit_payload,
+            ledger_path=ledger_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization={},
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+            opener=opener,
+        )
+    assert not read_databricks_cluster_hour_ledger_json(ledger_path).reservations
+    assert not opener.requests
+    response = full_score.reserve_and_submit_governed_full_score_phase_attempt(
+        DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+        submit_payload,
+        ledger_path=ledger_path,
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=0,
+        phase="producer",
+        attempt_id=attempt_id,
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        predecessor_authorization=campaign[
+            "latency_collection_authorization"
+        ],
+        latency_execution_plan_record=campaign[
+            "latency_execution_plan_record"
+        ],
+        opener=opener,
+    )
+    assert response[0] == {"run_id": 74001}
+    assert len(opener.requests) == 1
+    assert json.loads(opener.requests[0].data.decode("utf-8")) == submit_payload
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert [item.attempt_id for item in ledger.reservations] == [attempt_id]
+    assert [item.attempt_id for item in ledger.submission_receipts] == [attempt_id]
+    assert ledger.submission_receipts[0].run_id == "74001"
+    assert (
+        ledger.submission_receipts[0].submit_payload_sha256
+        == ledger.reservations[0].submit_payload_sha256
+    )
+    with pytest.raises(ValueError, match="already reserved|intent binding drift"):
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+            submit_payload,
+            ledger_path=ledger_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+            opener=opener,
+        )
+    assert len(opener.requests) == 1
+
+
+def test_direct_collection_issues_ordered_path_bound_phase_authority(campaign):
+    collected = _collect_wave_zero_producer(campaign, label="phase-chain")
+    authorization = collected["phase_authorization"]
+    ledger_path = collected["ledger_path"]
+    terminal = collected["terminal"]
+    assert "path" not in terminal["ledger"]
+    assert terminal["ledger"]["ledger_path_sha256"] == (
+        databricks_ledger_path_sha256(ledger_path)
+    )
+    prefix, _lineage = (
+        full_score._require_full_score_phase_predecessor_authorization(
+            authorization,
+            execution_plan=campaign["execution_plan"],
+            ledger_path=ledger_path,
+            wave_index=0,
+            phase="consumer",
+        )
+    )
+    assert prefix == authorization.ledger_prefix
+    with pytest.raises(TypeError, match="FullScorePhaseAuthorization"):
+        full_score._require_full_score_phase_predecessor_authorization(
+            dict(terminal),
+            execution_plan=campaign["execution_plan"],
+            ledger_path=ledger_path,
+            wave_index=0,
+            phase="consumer",
+        )
+    with pytest.raises(ValueError, match="ordering/path binding drift"):
+        full_score._require_full_score_phase_predecessor_authorization(
+            authorization,
+            execution_plan=campaign["execution_plan"],
+            ledger_path=ledger_path,
+            wave_index=1,
+            phase="consumer",
+        )
+    copied_path = campaign["tmp_path"] / "copied-phase-ledger.json"
+    copied_path.write_bytes(ledger_path.read_bytes())
+    with pytest.raises(ValueError, match="ordering/path binding drift"):
+        full_score._require_full_score_phase_predecessor_authorization(
+            authorization,
+            execution_plan=campaign["execution_plan"],
+            ledger_path=copied_path,
+            wave_index=0,
+            phase="consumer",
+        )
+    fresh_same_id = DatabricksClusterHourLedger(
+        ledger_id="publication-full-score"
+    )
+    ledger_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(
+            databricks_cluster_hour_ledger_to_record(fresh_same_id)
+        )
+    )
+    with pytest.raises(ValueError, match="shorter than its authorized prefix"):
+        full_score._require_full_score_phase_predecessor_authorization(
+            authorization,
+            execution_plan=campaign["execution_plan"],
+            ledger_path=ledger_path,
+            wave_index=0,
+            phase="consumer",
+        )
+    with pytest.raises(ValueError, match="ledger path must be an existing"):
+        full_score._require_full_score_phase_predecessor_authorization(
+            authorization,
+            execution_plan=campaign["execution_plan"],
+            ledger_path="dbfs:/mutable/live-ledger.json",
+            wave_index=0,
+            phase="consumer",
+        )
+
+
+def test_terminal_replay_rejects_unrelated_batch_and_extended_prefix(campaign):
+    collected = _collect_wave_zero_producer(campaign, label="forged-terminal")
+    ledger_path = collected["ledger_path"]
+    terminal_record = collected["terminal"]
+    original = read_databricks_cluster_hour_ledger_json(ledger_path)
+    unrelated_payload_sha256 = _digest("unrelated-submit-payload")
+    unrelated_reservation = DatabricksClusterHourReservation(
+        attempt_id="unrelated-attempt",
+        workload_id="unrelated-workload",
+        submit_payload_sha256=unrelated_payload_sha256,
+        run_timeout_seconds=3_600,
+        task_timeout_seconds=(3_600,),
+    )
+    unrelated_receipt = DatabricksRunSubmissionReceipt(
+        attempt_id="unrelated-attempt",
+        run_id="99001",
+        submit_payload_sha256=unrelated_payload_sha256,
+        submit_response_sha256=_digest("unrelated-submit-response"),
+    )
+    unrelated_terminal = DatabricksClusterHourTerminalActual(
+        attempt_id="unrelated-attempt",
+        terminal_state="succeeded",
+        actual_cluster_duration_seconds=1.0,
+        verification_source="direct_databricks_runs_get",
+        run_id="99001",
+        submit_payload_sha256=unrelated_payload_sha256,
+        control_plane_status_sha256=_digest("unrelated-control-plane"),
+    )
+
+    extended = DatabricksClusterHourLedger(
+        ledger_id=original.ledger_id,
+        cap_cluster_hours=original.cap_cluster_hours,
+        reservations=original.reservations + (unrelated_reservation,),
+        submission_receipts=original.submission_receipts
+        + (unrelated_receipt,),
+        terminal_actuals=original.terminal_actuals + (unrelated_terminal,),
+    )
+    ledger_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(
+            databricks_cluster_hour_ledger_to_record(extended)
+        )
+    )
+    # A genuine terminal record remains replayable from its historical slice.
+    assert full_score.load_governed_full_score_phase_terminal_record(
+        collected["terminal_path"],
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        ledger_path=ledger_path,
+    ) == terminal_record
+    extended_prefix_forgery = copy.deepcopy(terminal_record)
+    extended_prefix_forgery["ledger"]["terminal_prefix"] = (
+        databricks_ledger_prefix(extended).to_record()
+    )
+    _close(extended_prefix_forgery)
+    extended_path = campaign["tmp_path"] / "extended-terminal-forgery.json"
+    extended_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(extended_prefix_forgery)
+    )
+    with pytest.raises(ValueError, match="terminal-prefix transition"):
+        full_score.load_governed_full_score_phase_terminal_record(
+            extended_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+        )
+
+    empty = DatabricksClusterHourLedger(
+        ledger_id=original.ledger_id,
+        cap_cluster_hours=original.cap_cluster_hours,
+    )
+    unrelated_batch = DatabricksClusterHourLedger(
+        ledger_id=original.ledger_id,
+        cap_cluster_hours=original.cap_cluster_hours,
+        reservations=(unrelated_reservation,),
+    )
+    target_after_unrelated = DatabricksClusterHourLedger(
+        ledger_id=original.ledger_id,
+        cap_cluster_hours=original.cap_cluster_hours,
+        reservations=(unrelated_reservation,) + original.reservations,
+        submission_receipts=(unrelated_receipt,) + original.submission_receipts,
+        terminal_actuals=(unrelated_terminal,) + original.terminal_actuals,
+    )
+    ledger_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(
+            databricks_cluster_hour_ledger_to_record(target_after_unrelated)
+        )
+    )
+    unrelated_batch_forgery = copy.deepcopy(terminal_record)
+    unrelated_batch_forgery["ledger"].update(
+        {
+            "predecessor_prefix": databricks_ledger_prefix(empty).to_record(),
+            "batch_prefix": databricks_ledger_prefix(
+                unrelated_batch
+            ).to_record(),
+            "terminal_prefix": databricks_ledger_prefix(
+                target_after_unrelated
+            ).to_record(),
+        }
+    )
+    _close(unrelated_batch_forgery)
+    unrelated_path = campaign["tmp_path"] / "unrelated-batch-forgery.json"
+    unrelated_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(unrelated_batch_forgery)
+    )
+    with pytest.raises(ValueError, match="terminal-prefix transition"):
+        full_score.load_governed_full_score_phase_terminal_record(
+            unrelated_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+        )
+
+
+def test_terminal_phase_authority_reissues_after_controller_restart(campaign):
+    collected = _collect_wave_zero_producer(campaign, label="terminal-restart")
+    replayed = full_score.replay_governed_full_score_phase_authorization(
+        collected["terminal_path"],
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        ledger_path=collected["ledger_path"],
+    )
+    assert replayed == collected["phase_authorization"]
+    prefix, lineage = (
+        full_score._require_full_score_phase_predecessor_authorization(
+            replayed,
+            execution_plan=campaign["execution_plan"],
+            ledger_path=collected["ledger_path"],
+            wave_index=0,
+            phase="consumer",
+        )
+    )
+    assert prefix == replayed.ledger_prefix
+    assert lineage["authorization_sha256"] == replayed.causal_closure_sha256
+    intent_path = full_score._full_score_phase_intent_path(
+        collected["ledger_path"],
+        execution_plan_sha256=campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        wave_index=0,
+        phase="producer",
+    )
+    intent_path.unlink()
+    with pytest.raises(ValueError, match="durable intent"):
+        full_score.replay_governed_full_score_phase_authorization(
+            collected["terminal_path"],
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=collected["ledger_path"],
+        )
+
+
+def test_publication_aggregate_requires_current_final_consumer_authority(campaign):
+    collected = _collect_wave_zero_producer(
+        campaign,
+        label="aggregate-final-consumer",
+    )
+    producer_authorization = collected["phase_authorization"]
+    ledger_path = collected["ledger_path"]
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    batch_prefix = full_score.databricks_ledger_prefix_at_counts(
+        ledger,
+        reservation_count=(
+            producer_authorization.predecessor_prefix.reservation_count + 1
+        ),
+        submission_receipt_count=(
+            producer_authorization.predecessor_prefix.submission_receipt_count
+        ),
+        terminal_actual_count=(
+            producer_authorization.predecessor_prefix.terminal_actual_count
+        ),
+    )
+    causal_closure = full_score._canonical_sha256(
+        {
+            "batch_prefix": batch_prefix.to_record(),
+            "ledger_path_sha256": databricks_ledger_path_sha256(ledger_path),
+            "terminal_prefix": producer_authorization.ledger_prefix.to_record(),
+            "terminal_record_sha256": (
+                producer_authorization.terminal_record_sha256
+            ),
+        }
+    )
+    final_authorization = full_score.FullScorePhaseAuthorization(
+        execution_plan_sha256=campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        wave_index=len(campaign["execution_plan"]["waves"]) - 1,
+        phase="consumer",
+        ledger_path_sha256=databricks_ledger_path_sha256(ledger_path),
+        predecessor_prefix=producer_authorization.predecessor_prefix,
+        ledger_prefix=producer_authorization.ledger_prefix,
+        terminal_record_sha256=(
+            producer_authorization.terminal_record_sha256
+        ),
+        causal_closure_sha256=causal_closure,
+        _issuer=full_score._FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
+    )
+    lineage = (
+        full_score._require_full_score_final_consumer_aggregation_authorization(
+            campaign["execution_plan"],
+            final_authorization,
+            ledger_path=ledger_path,
+        )
+    )
+    assert lineage["predecessor_prefix"] == (
+        final_authorization.predecessor_prefix.to_record()
+    )
+    assert lineage["batch_prefix"] == batch_prefix.to_record()
+    assert lineage["terminal_prefix"] == (
+        final_authorization.ledger_prefix.to_record()
+    )
+    with pytest.raises(TypeError, match="FullScorePhaseAuthorization"):
+        full_score._require_full_score_final_consumer_aggregation_authorization(
+            campaign["execution_plan"],
+            dict(collected["terminal"]),
+            ledger_path=ledger_path,
+        )
+    with pytest.raises(ValueError, match="final-wave consumer"):
+        full_score._require_full_score_final_consumer_aggregation_authorization(
+            campaign["execution_plan"],
+            producer_authorization,
+            ledger_path=ledger_path,
+        )
+    copied = campaign["tmp_path"] / "copied-aggregate-ledger.json"
+    copied.write_bytes(ledger_path.read_bytes())
+    with pytest.raises(ValueError, match="ledger path binding drift"):
+        full_score._require_full_score_final_consumer_aggregation_authorization(
+            campaign["execution_plan"],
+            final_authorization,
+            ledger_path=copied,
+        )
+    reserve_databricks_run_attempt_json(
+        ledger_path,
+        {
+            "run_name": "post-final-extra-event",
+            "tasks": [
+                {
+                    "max_retries": 0,
+                    "new_cluster": {},
+                    "task_key": "post_final_extra_event",
+                    "timeout_seconds": 3_600,
+                }
+            ],
+            "timeout_seconds": 3_600,
+        },
+        attempt_id="post-final-extra-event",
+        workload_id="post-final-extra-event",
+    )
+    with pytest.raises(ValueError, match="complete current ledger prefix"):
+        full_score._require_full_score_final_consumer_aggregation_authorization(
+            campaign["execution_plan"],
+            final_authorization,
+            ledger_path=ledger_path,
+        )
+
+
+def test_terminal_collection_resumes_exact_crash_boundaries_and_races(campaign):
+    workspace = DatabricksWorkspaceConfig(
+        "https://dbc.example/",
+        "secret-token",
+    )
+
+    def collect(reserved):
+        return full_score.collect_governed_full_score_phase_attempt(
+            workspace,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=reserved["ledger_path"],
+            submission_authorization=reserved["submission_authorization"],
+            submit_payload_path=reserved["submit_path"],
+            control_plane_run_path=reserved["run_path"],
+            terminal_record_path=reserved["terminal_path"],
+            opener=reserved["opener"],
+        )
+
+    after_run_file = _reserve_wave_zero_producer(
+        campaign,
+        label="collector-after-run-file",
+    )
+    run_record = _terminal_run_record(
+        after_run_file["submit_payload"],
+        run_id=81_001,
+    )
+    after_run_file["run_path"].write_bytes(
+        full_score._canonical_pretty_json_bytes(run_record)
+    )
+    first_record, first_authorization = collect(after_run_file)
+    replayed_record, replayed_authorization = collect(after_run_file)
+    assert replayed_record == first_record
+    assert replayed_authorization == first_authorization
+
+    after_terminal = _reserve_wave_zero_producer(
+        campaign,
+        label="collector-after-terminal",
+    )
+    run_record = _terminal_run_record(
+        after_terminal["submit_payload"],
+        run_id=81_001,
+    )
+    after_terminal["run_path"].write_bytes(
+        full_score._canonical_pretty_json_bytes(run_record)
+    )
+    record_databricks_verified_run_terminal_actual_json(
+        after_terminal["ledger_path"],
+        attempt_id=after_terminal["submission_authorization"].attempt_id,
+        run_record=run_record,
+    )
+    terminal_record, terminal_authorization = collect(after_terminal)
+    assert terminal_record["ledger"]["terminal_prefix"] == (
+        terminal_authorization.ledger_prefix.to_record()
+    )
+
+    concurrent = _reserve_wave_zero_producer(
+        campaign,
+        label="collector-concurrent",
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(collect, concurrent) for _index in range(2)]
+    results = [future.result() for future in futures]
+    assert results[0] == results[1]
+    ledger = read_databricks_cluster_hour_ledger_json(concurrent["ledger_path"])
+    assert len(ledger.terminal_actuals) == 1
+
+
+def test_concurrent_duplicate_phase_launch_opens_exactly_once(campaign):
+    attempt_id = "wave-000-producer-concurrent"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    ledger_path = campaign["tmp_path"] / "concurrent-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    campaign["latency_collection_authorization"].ledger_prefix = (
+        databricks_ledger_prefix(
+            read_databricks_cluster_hour_ledger_json(ledger_path)
+        )
+    )
+    opener = _FakeDatabricksOpener({"run_id": 91_001})
+
+    def launch():
+        return full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig(
+                "https://dbc.example/", "secret-token"
+            ),
+            submit_payload,
+            ledger_path=ledger_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+            opener=opener,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(launch) for _index in range(2)]
+    successes = [future.result() for future in futures if future.exception() is None]
+    failures = [future.exception() for future in futures if future.exception()]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert len(opener.requests) == 1
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert len(ledger.reservations) == 1
+    assert len(ledger.submission_receipts) == 1
+
+
+def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(campaign):
+    attempt_id = "wave-000-producer-recovery"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    ledger_path = campaign["tmp_path"] / "recovery-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    campaign["latency_collection_authorization"].ledger_prefix = (
+        databricks_ledger_prefix(
+            read_databricks_cluster_hour_ledger_json(ledger_path)
+        )
+    )
+    _ledger, submission_authorization = (
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            submit_payload,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+        )
+    )
+    lost = _AcceptedButResponseLostOpener()
+    with pytest.raises(TimeoutError, match="response was lost"):
+        full_score.submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig(
+                "https://dbc.example/", "secret-token"
+            ),
+            submit_payload,
+            ledger_path=ledger_path,
+            submission_authorization=submission_authorization,
+            opener=lost,
+        )
+    assert len(lost.requests) == 1
+    recovery = _FakeDatabricksOpener({"run_id": 92_001})
+    assert full_score.recover_governed_full_score_phase_attempt(
+        DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+        submit_payload,
+        ledger_path=ledger_path,
+        submission_authorization=submission_authorization,
+        opener=recovery,
+    ) == {"run_id": "92001"}
+    assert len(recovery.requests) == 1
+    no_second_post = _AcceptedButResponseLostOpener()
+    assert full_score.recover_governed_full_score_phase_attempt(
+        DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+        submit_payload,
+        ledger_path=ledger_path,
+        submission_authorization=submission_authorization,
+        opener=no_second_post,
+    ) == {"run_id": "92001"}
+    assert not no_second_post.requests
+    missing_token = dict(submit_payload)
+    missing_token.pop("idempotency_token")
+    with pytest.raises(ValueError, match="payload binding drift"):
+        full_score.recover_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig(
+                "https://dbc.example/", "secret-token"
+            ),
+            missing_token,
+            ledger_path=ledger_path,
+            submission_authorization=submission_authorization,
+        )
+    changed_payload = copy.deepcopy(submit_payload)
+    changed_payload["tasks"][0]["timeout_seconds"] -= 1
+    with pytest.raises(ValueError, match="payload binding drift"):
+        full_score.recover_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig(
+                "https://dbc.example/", "secret-token"
+            ),
+            changed_payload,
+            ledger_path=ledger_path,
+            submission_authorization=submission_authorization,
+        )
+    intent_path = full_score._full_score_phase_intent_path(
+        ledger_path,
+        execution_plan_sha256=campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        wave_index=0,
+        phase="producer",
+    )
+    intent_path.unlink()
+    with pytest.raises(ValueError, match="durable intent"):
+        full_score.recover_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig(
+                "https://dbc.example/",
+                "secret-token",
+            ),
+            submit_payload,
+            ledger_path=ledger_path,
+            submission_authorization=submission_authorization,
+        )
+
+
+def test_reserved_phase_resumes_after_controller_restart(
+    campaign,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        full_score,
+        "PublicationLatencyCollectionAuthorization",
+        SimpleNamespace,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "validate_publication_latency_collection_record",
+        lambda *_args, **_kwargs: None,
+    )
+    campaign["latency_collection_authorization"].collection = {}
+    workspace = DatabricksWorkspaceConfig(
+        "https://dbc.example/",
+        "secret-token",
+    )
+
+    for suffix, lose_first_response in (
+        ("unclaimed", False),
+        ("claimed", True),
+    ):
+        attempt_id = f"wave-000-producer-restart-{suffix}"
+        submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            _phase_payloads(campaign, 0, "producer"),
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            attempt_id=attempt_id,
+        )
+        ledger_path = campaign["tmp_path"] / f"restart-{suffix}-ledger.json"
+        create_databricks_cluster_hour_ledger_json(
+            ledger_path,
+            ledger_id="publication-full-score",
+        )
+        campaign["latency_collection_authorization"].ledger_prefix = (
+            databricks_ledger_prefix(
+                read_databricks_cluster_hour_ledger_json(ledger_path)
+            )
+        )
+        campaign["latency_collection_authorization"].ledger_path_sha256 = (
+            databricks_ledger_path_sha256(ledger_path)
+        )
+        _ledger, original_authorization = (
+            full_score.reserve_governed_full_score_phase_attempt(
+                ledger_path,
+                submit_payload,
+                execution_plan=campaign["execution_plan"],
+                inventory=campaign["inventory"],
+                shard_plan=campaign["shard_plan"],
+                wave_index=0,
+                phase="producer",
+                attempt_id=attempt_id,
+                qualification_launch_authorization=campaign[
+                    "qualification_launch_authorization"
+                ],
+                predecessor_authorization=campaign[
+                    "latency_collection_authorization"
+                ],
+                latency_execution_plan_record=campaign[
+                    "latency_execution_plan_record"
+                ],
+            )
+        )
+        if lose_first_response:
+            lost = _AcceptedButResponseLostOpener()
+            with pytest.raises(TimeoutError, match="response was lost"):
+                full_score.submit_governed_full_score_phase_attempt(
+                    workspace,
+                    submit_payload,
+                    ledger_path=ledger_path,
+                    submission_authorization=original_authorization,
+                    opener=lost,
+                )
+            assert len(lost.requests) == 1
+        if not lose_first_response:
+            lease_path = full_score._full_score_phase_lease_path(
+                ledger_path,
+                execution_plan_sha256=campaign["execution_plan"][
+                    "closed_record_sha256"
+                ],
+                wave_index=0,
+                phase="producer",
+            )
+            lease_path.unlink()
+            with pytest.raises(ValueError, match="post-batch lease"):
+                full_score.replay_governed_full_score_phase_submission_authorization(
+                    ledger_path,
+                    submit_payload,
+                    execution_plan=campaign["execution_plan"],
+                    inventory=campaign["inventory"],
+                    shard_plan=campaign["shard_plan"],
+                    wave_index=0,
+                    phase="producer",
+                    attempt_id=attempt_id,
+                    qualification_launch_authorization=campaign[
+                        "qualification_launch_authorization"
+                    ],
+                    predecessor_authorization=campaign[
+                        "latency_collection_authorization"
+                    ],
+                    latency_execution_plan_record=campaign[
+                        "latency_execution_plan_record"
+                    ],
+                )
+            replayed = full_score.recover_governed_full_score_phase_reservation(
+                ledger_path,
+                submit_payload,
+                execution_plan=campaign["execution_plan"],
+                inventory=campaign["inventory"],
+                shard_plan=campaign["shard_plan"],
+                wave_index=0,
+                phase="producer",
+                attempt_id=attempt_id,
+                qualification_launch_authorization=campaign[
+                    "qualification_launch_authorization"
+                ],
+                predecessor_authorization=campaign[
+                    "latency_collection_authorization"
+                ],
+                latency_execution_plan_record=campaign[
+                    "latency_execution_plan_record"
+                ],
+            )
+        else:
+            replayed = (
+                full_score.replay_governed_full_score_phase_submission_authorization(
+                    ledger_path,
+                    submit_payload,
+                    execution_plan=campaign["execution_plan"],
+                    inventory=campaign["inventory"],
+                    shard_plan=campaign["shard_plan"],
+                    wave_index=0,
+                    phase="producer",
+                    attempt_id=attempt_id,
+                    qualification_launch_authorization=campaign[
+                        "qualification_launch_authorization"
+                    ],
+                    predecessor_authorization=campaign[
+                        "latency_collection_authorization"
+                    ],
+                    latency_execution_plan_record=campaign[
+                        "latency_execution_plan_record"
+                    ],
+                )
+            )
+        assert replayed == original_authorization
+        recovery = _FakeDatabricksOpener(
+            {"run_id": 93_001 if not lose_first_response else 93_002}
+        )
+        response, resumed_authorization = (
+            full_score.resume_governed_full_score_phase_attempt(
+                workspace,
+                submit_payload,
+                ledger_path=ledger_path,
+                execution_plan=campaign["execution_plan"],
+                inventory=campaign["inventory"],
+                shard_plan=campaign["shard_plan"],
+                wave_index=0,
+                phase="producer",
+                attempt_id=attempt_id,
+                qualification_launch_authorization=campaign[
+                    "qualification_launch_authorization"
+                ],
+                predecessor_authorization=campaign[
+                    "latency_collection_authorization"
+                ],
+                latency_execution_plan_record=campaign[
+                    "latency_execution_plan_record"
+                ],
+                opener=recovery,
+            )
+        )
+        assert response == {
+            "run_id": "93001" if not lose_first_response else "93002"
+        }
+        assert resumed_authorization == original_authorization
+        assert len(recovery.requests) == 1
+        no_second_post = _AcceptedButResponseLostOpener()
+        repeated, repeated_authorization = (
+            full_score.resume_governed_full_score_phase_attempt(
+                workspace,
+                submit_payload,
+                ledger_path=ledger_path,
+                execution_plan=campaign["execution_plan"],
+                inventory=campaign["inventory"],
+                shard_plan=campaign["shard_plan"],
+                wave_index=0,
+                phase="producer",
+                attempt_id=attempt_id,
+                qualification_launch_authorization=campaign[
+                    "qualification_launch_authorization"
+                ],
+                predecessor_authorization=campaign[
+                    "latency_collection_authorization"
+                ],
+                latency_execution_plan_record=campaign[
+                    "latency_execution_plan_record"
+                ],
+                opener=no_second_post,
+            )
+        )
+        assert repeated == response
+        assert repeated_authorization == original_authorization
+        assert not no_second_post.requests
+
+
+def test_governed_reservation_rejects_projected_max16_before_write(campaign):
+    attempt_id = "active-cap-rejected-full-score"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    ledger_path = campaign["tmp_path"] / "active-cap-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    seed_payload = {
+        "run_name": "active-task-seed",
+        "tasks": [
+            {
+                "max_retries": 0,
+                "new_cluster": {},
+                "task_key": "seed_task_00",
+                "timeout_seconds": 3_600,
+            }
+        ],
+        "timeout_seconds": 3_600,
+    }
+    reserve_databricks_run_attempt_json(
+        ledger_path,
+        seed_payload,
+        attempt_id="active-task-seed",
+        workload_id="active-task-seed",
+    )
+    before = ledger_path.read_bytes()
+    assert (
+        read_databricks_cluster_hour_ledger_json(
+            ledger_path
+        ).active_reserved_task_count
+        == 1
+    )
+    with pytest.raises(ValueError, match="active task concurrency guard"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            submit_payload,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+        )
+    assert ledger_path.read_bytes() == before
+
+
+def test_live_p90_gate_replays_matched_blocks_and_authorizes_next_phase(campaign):
+    wave_one_producers = _phase_payloads(campaign, 1, "producer")
+    reservation = full_score.full_score_wave_worst_case_gpu_hours(
+        wave_one_producers
+    )
+    assert reservation == 24.0
+    blocks = _matched_blocks(campaign, 0)
+    gate = full_score.build_full_score_live_p90_budget_admission(
+        campaign["execution_plan"],
+        blocks,
+        next_wave_index=1,
+        ledger_terminal_actual_gpu_hours=1.0,
+        ledger_active_reserved_gpu_hours=0.0,
+        next_wave_reserved_gpu_hours=reservation,
+    )
+    assert gate["admitted"] is True
+    assert set(gate["formula"]) == {
+        "admission",
+        "consumer_task_scale",
+        "matched_resampling",
+        "producer_scale",
+    }
+    assert all(
+        set(block["billed_gpu_seconds"]) == {"consumer_task", "producer"}
+        for block in gate["completed_blocks"]
+    )
+    assert gate["bootstrap"]["draws"] == 10_000
+    assert len(gate["bootstrap"]["resample_indices"]) == 10_000
+    assert gate == full_score.build_full_score_live_p90_budget_admission(
+        campaign["execution_plan"],
+        blocks,
+        next_wave_index=1,
+        ledger_terminal_actual_gpu_hours=1.0,
+        ledger_active_reserved_gpu_hours=0.0,
+        next_wave_reserved_gpu_hours=reservation,
+    )
+    full_score.validate_full_score_live_p90_budget_admission(
+        campaign["execution_plan"], gate
+    )
+    prior = _wave_completion(campaign, 0)
+    local_gate_path = campaign["tmp_path"] / "local-p90-diagnostic.json"
+    local_gate_path.write_bytes(full_score._canonical_pretty_json_bytes(gate))
+    with pytest.raises(ValueError, match="prior wave must be reconciled"):
+        full_score._build_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            wave_one_producers,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            budget_admission=gate,
+            idempotency_attempt_id="wave-001-producer-local-gate-a",
+            publication_authorizing=True,
+        )
+    with pytest.raises(ValueError, match="rejects local-fixture"):
+        full_score._build_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            wave_one_producers,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            prior_wave_completion=prior,
+            budget_admission=gate,
+            idempotency_attempt_id="wave-001-producer-local-gate-b",
+            publication_authorizing=True,
+        )
+    run = full_score.preview_local_fixture_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        wave_one_producers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        prior_wave_completion=prior,
+        budget_admission=gate,
+    )
+    assert len(run["tasks"]) == 4
+
+    tampered = copy.deepcopy(gate)
+    tampered["bootstrap"]["projected_remaining_gpu_hours_samples"][0] += 1
+    _close(tampered)
+    with pytest.raises(ValueError, match="does not replay"):
+        full_score.validate_full_score_live_p90_budget_admission(
+            campaign["execution_plan"], tampered
+        )
+    with pytest.raises(ValueError, match="every prior-wave matched block"):
+        full_score.build_full_score_live_p90_budget_admission(
+            campaign["execution_plan"],
+            blocks[:-1],
+            next_wave_index=1,
+            ledger_terminal_actual_gpu_hours=1.0,
+            ledger_active_reserved_gpu_hours=0.0,
+            next_wave_reserved_gpu_hours=reservation,
+        )
+    allocated = copy.deepcopy(blocks)
+    allocated[0]["billed_gpu_seconds"] = {
+        "baseline_prefill": 10.0,
+        "producer": 12.0,
+        "vanilla_prefill": 20.0,
+    }
+    allocated[0]["billing_source_sha256"] = {
+        role: _digest(f"allocated-{role}")
+        for role in ("producer", *full_score.FULL_SCORE_METHODS)
+    }
+    _close(allocated[0])
+    with pytest.raises(ValueError, match="incomplete role billing"):
+        full_score.build_full_score_live_p90_budget_admission(
+            campaign["execution_plan"],
+            allocated,
+            next_wave_index=1,
+            ledger_terminal_actual_gpu_hours=1.0,
+            ledger_active_reserved_gpu_hours=0.0,
+            next_wave_reserved_gpu_hours=reservation,
+        )
+
+
+def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
+    campaign,
+    monkeypatch,
+):
+    blocks = []
+    block_paths = []
+    block_root = campaign["tmp_path"] / "matched-blocks"
+    block_root.mkdir()
+    for local_block in _matched_blocks(campaign, 0):
+        block = copy.deepcopy(local_block)
+        block["authorization_scope"] = (
+            full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+        )
+        block["governed_sources"] = {"fixture": "sealed-by-focused-test"}
+        _close(block)
+        path = block_root / f"{block['shard_id']}.json"
+        path.write_bytes(full_score._canonical_pretty_json_bytes(block))
+        blocks.append(block)
+        block_paths.append(path)
+
+    def load_test_block(path, **_kwargs):
+        record = json.loads(Path(path).read_text(encoding="utf-8"))
+        if (
+            record.get("authorization_scope")
+            != full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+            or record.get("closed_record_sha256")
+            != full_score._closed_record_sha256(record)
+        ):
+            raise ValueError("test governed matched block closure drift")
+        return record
+
+    monkeypatch.setattr(
+        full_score,
+        "load_governed_full_score_matched_billing_block",
+        load_test_block,
+    )
+
+    def load_test_evidence(directory, **_kwargs):
+        root = Path(directory)
+        return (
+            json.loads((root / "evidence.json").read_text(encoding="utf-8")),
+            json.loads(
+                (root / "deletion-attestation.json").read_text(encoding="utf-8")
+            ),
+        )
+
+    monkeypatch.setattr(
+        full_score,
+        "load_governed_full_score_shard_evidence",
+        load_test_evidence,
+    )
+    live_ledger_path = campaign["tmp_path"] / "live-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        live_ledger_path,
+        ledger_id="publication-full-score",
+    )
+    historical_payload = {
+        "run_name": "historical-full-score",
+        "tasks": [
+            {
+                "max_retries": 0,
+                "new_cluster": {},
+                "task_key": "historical_task",
+                "timeout_seconds": 3_600,
+            }
+        ],
+        "timeout_seconds": 3_600,
+    }
+    reserve_databricks_run_attempt_json(
+        live_ledger_path,
+        historical_payload,
+        attempt_id="historical-attempt",
+        workload_id="full-score-history",
+    )
+    historical_ledger = record_databricks_run_terminal_actual_json(
+        live_ledger_path,
+        attempt_id="historical-attempt",
+        terminal_state="succeeded",
+        actual_cluster_duration_seconds=1_000.0,
+    )
+    assert historical_ledger.active_reserved_cluster_hours == 0
+    predecessor_prefix = databricks_ledger_prefix(historical_ledger)
+    predecessor_authorization = object()
+    ledger_path_sha256 = databricks_ledger_path_sha256(live_ledger_path)
+
+    def require_test_predecessor(value, **_kwargs):
+        if value is not predecessor_authorization:
+            raise TypeError("test predecessor capability drift")
+        return predecessor_prefix, {
+            "authorization_sha256": _digest("prior-consumer-authorization"),
+            "kind": "full_score_phase_terminal",
+            "ledger_path_sha256": ledger_path_sha256,
+            "ledger_prefix": predecessor_prefix.to_record(),
+            "phase": "consumer",
+            "terminal_record_sha256": _digest("prior-consumer-terminal"),
+            "wave_index": 0,
+        }
+
+    monkeypatch.setattr(
+        full_score,
+        "_require_full_score_phase_predecessor_authorization",
+        require_test_predecessor,
+    )
+    for block, path in zip(blocks, block_paths, strict=True):
+        block["ledger_lineage"] = {
+            "producer": {
+                "ledger_path_sha256": ledger_path_sha256,
+                "terminal_prefix": predecessor_prefix.to_record(),
+            },
+            "consumer": {
+                "ledger_path_sha256": ledger_path_sha256,
+                "predecessor_prefix": predecessor_prefix.to_record(),
+                "terminal_prefix": predecessor_prefix.to_record(),
+            },
+        }
+        _close(block)
+        path.write_bytes(full_score._canonical_pretty_json_bytes(block))
+
+    wave_one_producers = _phase_payloads(campaign, 1, "producer")
+    reservation = full_score.full_score_wave_worst_case_gpu_hours(
+        wave_one_producers
+    )
+    diagnostic = full_score.build_full_score_live_p90_budget_admission(
+        campaign["execution_plan"],
+        _matched_blocks(campaign, 0),
+        next_wave_index=1,
+        ledger_terminal_actual_gpu_hours=(
+            historical_ledger.terminal_actual_cluster_hours
+        ),
+        ledger_active_reserved_gpu_hours=0.0,
+        next_wave_reserved_gpu_hours=reservation,
+    )
+    prior = _wave_completion(campaign, 0)
+    attempt_id = "wave-001-producer-attempt-001"
+    candidate = (
+        full_score.preview_local_fixture_databricks_full_score_run_submit_payload(
+            campaign["job"],
+            wave_one_producers,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            prior_wave_completion=prior,
+            budget_admission=diagnostic,
+        )
+    )
+    candidate = full_score.bind_databricks_run_idempotency_token(
+        candidate,
+        attempt_id=attempt_id,
+    )
+    admission_path = campaign["tmp_path"] / "wave-001-producer-admission.json"
+    admission = full_score.write_governed_full_score_live_p90_budget_admission(
+        admission_path,
+        campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        completed_block_paths=block_paths,
+        next_wave_index=1,
+        next_phase="producer",
+        attempt_id=attempt_id,
+        next_submit_payload=candidate,
+        ledger_path=live_ledger_path,
+        predecessor_authorization=predecessor_authorization,
+    )
+    assert admission["admitted"] is True
+    tampered = copy.deepcopy(blocks[0])
+    tampered["billed_gpu_seconds"]["producer"] += 1
+    block_paths[0].write_bytes(full_score._canonical_pretty_json_bytes(tampered))
+    with pytest.raises(ValueError, match="closure drift"):
+        full_score.load_governed_full_score_live_p90_budget_admission(
+            admission_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            next_submit_payload=candidate,
+            ledger_path=live_ledger_path,
+            predecessor_authorization=predecessor_authorization,
+        )
+    block_paths[0].write_bytes(
+        full_score._canonical_pretty_json_bytes(blocks[0])
+    )
+    rendered = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        wave_one_producers,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+        prior_wave_completion=prior,
+        budget_admission_path=admission_path,
+        ledger_path=live_ledger_path,
+        predecessor_authorization=predecessor_authorization,
+    )
+    assert rendered == candidate
+    reserve_databricks_run_attempt_json(
+        live_ledger_path,
+        rendered,
+        attempt_id=attempt_id,
+        workload_id=full_score._full_score_phase_workload_id(
+            campaign["execution_plan"],
+            wave_index=1,
+            phase="producer",
+        ),
+    )
+    with pytest.raises(ValueError, match="nonzero replay requires"):
+        full_score.replay_governed_full_score_phase_submission_authorization(
+            live_ledger_path,
+            rendered,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=1,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=predecessor_authorization,
+        )
+    with pytest.raises(ValueError, match="pre-reservation intent"):
+        full_score.replay_governed_full_score_phase_submission_authorization(
+            live_ledger_path,
+            rendered,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=1,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=predecessor_authorization,
+            budget_admission_path=admission_path,
+        )
+    live_ledger_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(
+            databricks_cluster_hour_ledger_to_record(historical_ledger)
+        )
+    )
+    reserved = full_score.reserve_governed_full_score_phase_attempt(
+        live_ledger_path,
+        rendered,
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=1,
+        phase="producer",
+        attempt_id=attempt_id,
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        predecessor_authorization=predecessor_authorization,
+        budget_admission_path=admission_path,
+    )
+    assert reserved[0].active_reserved_cluster_hours == 24.0
+    with pytest.raises(ValueError, match="zero-active live ledger"):
+        full_score.reserve_governed_full_score_phase_attempt(
+            live_ledger_path,
+            rendered,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=1,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=predecessor_authorization,
+            budget_admission_path=admission_path,
+        )
+
+
+def test_matched_billing_keeps_the_consumer_task_indivisible(campaign):
+    shard = campaign["execution_plan"]["waves"][0]["shards"][0]
+    evidence = {
+        "closed_record_sha256": "",
+        "durable_evidence_committed": True,
+        "execution_plan_sha256": campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        "method_wall_clock": "time.monotonic_ns",
+        "method_wall_seconds": {
+            "baseline_prefill": 11.0,
+            "vanilla_prefill": 13.0,
+        },
+        "paired_examples": [
+            {
+                "dataset": item["dataset"],
+                "example_id": item["example_id"],
+                "methods": {
+                    method: {"completion_tokens": 2}
+                    for method in full_score.FULL_SCORE_METHODS
+                },
+            }
+            for item in shard["items"]
+        ],
+        "record_type": full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE,
+        "schema_version": full_score.FULL_SCORE_SHARD_EVIDENCE_SCHEMA_VERSION,
+        "scorers": full_score._scorer_contract_record(),
+        "shard_id": shard["shard_id"],
+        "shard_items_sha256": shard["items_sha256"],
+        "wave_index": 0,
+    }
+    _close(evidence)
+    deletion = {
+        "closed_record_sha256": "",
+        "evidence_closed_record_sha256": evidence["closed_record_sha256"],
+        "execution_plan_sha256": campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        "lifecycle": ["commit_durable_evidence", "delete_ephemeral_q8_kv"],
+        "record_type": full_score.FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE,
+        "schema_version": full_score.FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION,
+        "shard_id": shard["shard_id"],
+        "wave_index": 0,
+    }
+    _close(deletion)
+    block = full_score.build_full_score_matched_billing_block(
+        campaign["execution_plan"],
+        wave_index=0,
+        shard_id=shard["shard_id"],
+        evidence_record=evidence,
+        deletion_attestation=deletion,
+        producer_billed_gpu_seconds=20.0,
+        consumer_task_billed_gpu_seconds=31.0,
+        billing_source_sha256={
+            "consumer_task": _digest("consumer-task-billing"),
+            "producer": _digest("producer-task-billing"),
+        },
+    )
+    assert block["billed_gpu_seconds"] == {
+        "consumer_task": 31.0,
+        "producer": 20.0,
+    }
+    assert block["consumer_task_diagnostics"] == {
+        "attribution": "indivisible_no_per_arm_billed_seconds",
+        "method_wall_clock": "time.monotonic_ns",
+        "method_wall_seconds": {
+            "baseline_prefill": 11.0,
+            "vanilla_prefill": 13.0,
+        },
+        "shared_or_unattributed_seconds": 7.0,
+    }
+
+
+def test_state_machine_and_exclusive_writes_fail_closed(tmp_path):
+    lifecycle = full_score.FullScoreShardLifecycle("consumer")
+    with pytest.raises(RuntimeError, match="invalid full-score lifecycle"):
+        lifecycle.advance("delete_ephemeral_q8_kv")
+    for event in (
+        "verify_ready_shard",
+        "baseline_inference",
+        "vanilla_inference",
+        "validate_paired_outputs",
+        "commit_durable_evidence",
+        "delete_ephemeral_q8_kv",
+    ):
+        lifecycle.advance(event)
+    assert lifecycle.state == "ephemeral_deleted"
+
+    evidence = tmp_path / "evidence.json"
+    full_score._exclusive_write_bytes(evidence, b"first\n")
+    with pytest.raises(FileExistsError):
+        full_score._exclusive_write_bytes(evidence, b"replacement\n")
+    assert evidence.read_bytes() == b"first\n"
+
+    source = tmp_path / "new-evidence.bin"
+    source.write_bytes(b"new evidence")
+    durable = tmp_path / "durable-evidence.bin"
+    durable.write_bytes(b"reviewed evidence")
+    with pytest.raises(FileExistsError):
+        full_score._durable_copy(source, durable)
+    assert durable.read_bytes() == b"reviewed evidence"
+
+    durable_dir = tmp_path / "committed-shard"
+    durable_dir.mkdir()
+    execution_plan = _close({"closed_record_sha256": "", "plan": "test"})
+    committed_evidence = _close(
+        {
+            "closed_record_sha256": "",
+            "ready_shard_sha256": _digest("ready"),
+            "shard_id": "shard-00000",
+            "wave_index": 0,
+            "worker_index": 0,
+        }
+    )
+    payload = {
+        "authorization_scope": full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+    }
+    lifecycle_events = [
+        "verify_ready_shard",
+        "baseline_inference",
+        "vanilla_inference",
+        "validate_paired_outputs",
+        "commit_durable_evidence",
+        "delete_ephemeral_q8_kv",
+    ]
+    deletion = full_score._write_or_validate_deletion_attestation(
+        durable_dir,
+        payload=payload,
+        evidence=committed_evidence,
+        execution_plan=execution_plan,
+        lifecycle=lifecycle_events,
+    )
+    assert deletion == full_score._write_or_validate_deletion_attestation(
+        durable_dir,
+        payload=payload,
+        evidence=committed_evidence,
+        execution_plan=execution_plan,
+        lifecycle=lifecycle_events,
+    )
+    deletion_path = durable_dir / "deletion-attestation.json"
+    tampered_deletion = copy.deepcopy(deletion)
+    tampered_deletion["worker_index"] = 1
+    deletion_path.write_text(json.dumps(tampered_deletion), encoding="utf-8")
+    with pytest.raises(ValueError, match="differs from recovery state"):
+        full_score._write_or_validate_deletion_attestation(
+            durable_dir,
+            payload=payload,
+            evidence=committed_evidence,
+            execution_plan=execution_plan,
+            lifecycle=lifecycle_events,
+        )
+
+
+def test_consumer_recovery_finishes_a_partially_deleted_ready_tree(
+    campaign,
+    monkeypatch,
+):
+    payload = copy.deepcopy(_phase_payloads(campaign, 0, "consumer")[0])
+    payload["durable_output_root"] = str(campaign["tmp_path"] / "recovery-root")
+    shard = payload["shards"][0]
+    shard_id = shard["shard_id"]
+    ready_dir = full_score._ready_shard_dir(payload, shard_id)
+    ready_dir.mkdir(parents=True)
+    (ready_dir / "partially-remaining-q8.bin").write_bytes(b"partial")
+    durable_dir = (
+        Path(payload["durable_output_root"])
+        / "evidence"
+        / "wave-000"
+        / shard_id
+    )
+    durable_dir.mkdir(parents=True)
+    (durable_dir / "evidence.json").write_text("{}\n", encoding="utf-8")
+    evidence = {
+        "closed_record_sha256": _digest("committed-recovery-evidence"),
+        "ready_shard_sha256": _digest("committed-recovery-ready"),
+        "shard_id": shard_id,
+        "wave_index": 0,
+        "worker_index": payload["worker_index"],
+    }
+
+    def load_recovery_evidence(path, **kwargs):
+        assert Path(path) == durable_dir
+        if kwargs["require_deletion"]:
+            assert not ready_dir.exists()
+            deletion = json.loads(
+                (durable_dir / "deletion-attestation.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            return evidence, deletion
+        return evidence, None
+
+    monkeypatch.setattr(
+        full_score,
+        "load_governed_full_score_shard_evidence",
+        load_recovery_evidence,
+    )
+    recovered = full_score._recover_committed_consumer_shard(
+        payload,
+        shard,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+    )
+    assert recovered == evidence
+    assert not ready_dir.exists()
+    deletion = json.loads(
+        (durable_dir / "deletion-attestation.json").read_text(encoding="utf-8")
+    )
+    assert deletion["lifecycle"][-2:] == [
+        "commit_durable_evidence",
+        "delete_ephemeral_q8_kv",
+    ]
+
+
+def test_bootstrap_builds_and_reexecs_only_the_locked_runtime():
+    script = full_score.FULL_SCORE_RUNNER_SCRIPT
+    assert "--runner-sha256" in script
+    assert '"--require-hashes"' in script
+    assert '"--only-binary"' in script
+    assert script.count('"--no-deps"') == 2
+    assert script.index('"--no-deps", patched_wheel') < script.index(
+        '"--require-hashes"'
+    )
+    assert "Cachet direct URL SHA-256 does not match" in script
+    assert "pip, \"check\"" in script
+    assert "os.execve(" in script
+
+
+def test_governed_paths_and_recursive_delete_reject_ancestor_symlinks(
+    tmp_path,
+    monkeypatch,
+):
+    dbfs_root = tmp_path / "dbfs"
+    outside = tmp_path / "outside"
+    dbfs_root.mkdir()
+    (outside / "shard").mkdir(parents=True)
+    governed_file = outside / "bound.json"
+    governed_file.write_text("{}", encoding="utf-8")
+    outside_payload = outside / "shard" / "payload.bin"
+    outside_payload.write_bytes(b"must survive")
+    (dbfs_root / "alias").symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(
+        full_score,
+        "_cluster_path",
+        lambda value: dbfs_root / str(value).removeprefix("dbfs:/"),
+    )
+    with pytest.raises(ValueError, match="cannot traverse a symlink"):
+        full_score._governed_existing_file(
+            "dbfs:/alias/bound.json",
+            "adversarial governed input",
+        )
+    with pytest.raises(ValueError, match="cannot traverse a symlink"):
+        full_score._delete_directory_tree_no_follow(
+            dbfs_root / "alias" / "shard",
+            label="adversarial recursive delete",
+        )
+    with pytest.raises(ValueError, match="cannot traverse a symlink"):
+        full_score._atomic_write_bytes(
+            dbfs_root / "alias" / "unreviewed-output.json",
+            b"{}\n",
+        )
+    assert outside_payload.read_bytes() == b"must survive"
+    assert not (outside / "unreviewed-output.json").exists()
+
+
+def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
+    tmp_path, monkeypatch
+):
+    counts = {"biography": 1, "hotpotqa": 1, "musique": 1, "niah": 1000}
+    paths = _write_sources(tmp_path / "full-scores", counts)
+    inventory = load_full_score_inventory(paths, tokenizer=_CharacterTokenizer())
+    plan = build_full_score_shard_plan(
+        inventory,
+        plan_id="aggregate-test",
+        max_workers=1,
+        target_cache_prefix_tokens_per_shard=(
+            sum(item.cache_prefix_tokens for item in inventory.items) + 1
+        ),
+    )
+    monkeypatch.setattr(full_score, "PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS", 25)
+    deltas = {"biography": -0.1, "hotpotqa": -0.2, "musique": -0.3, "niah": -0.4}
+    registry = default_dataset_scorer_registry()
+    niah_index = 0
+    pairs = []
+    for item in inventory.items:
+        scorer = registry.get(item.dataset)
+        baseline = {metric: 0.75 for metric in scorer.metric_names}
+        vanilla = {
+            metric: value + deltas[item.dataset] for metric, value in baseline.items()
+        }
+        cell_id = None
+        if item.dataset == "niah":
+            cell_id = NIAH_CELL_IDS[niah_index % len(NIAH_CELL_IDS)]
+            niah_index += 1
+        pairs.append(
+            {
+                "dataset": item.dataset,
+                "example_id": item.example_id,
+                "identity_sha256": item.identity_sha256,
+                "methods": {
+                    "baseline_prefill": {
+                        "artifact_id": None,
+                        "completion_tokens": 3,
+                        "output_sha256": _digest(
+                            f"baseline-output-{item.dataset}-{item.example_id}"
+                        ),
+                        "parser_status": "ok",
+                        "parser_valid": True,
+                        "quality_scores": baseline,
+                        "request_id": "",
+                        "scorer_id": scorer.scorer_id,
+                        "scorer_version": scorer.version,
+                    },
+                    "vanilla_prefill": {
+                        "artifact_id": f"artifact-{item.dataset}-{item.example_id}",
+                        "completion_tokens": 3,
+                        "output_sha256": _digest(
+                            f"vanilla-output-{item.dataset}-{item.example_id}"
+                        ),
+                        "parser_status": "ok",
+                        "parser_valid": True,
+                        "quality_scores": vanilla,
+                        "request_id": f"vanilla-{item.dataset}-{item.example_id}",
+                        "scorer_id": scorer.scorer_id,
+                        "scorer_version": scorer.version,
+                    },
+                },
+                "natural_prompt_sha256": item.natural_prompt_sha256,
+                "niah_cell_id": cell_id,
+            }
+        )
+    shard = plan["shards"][0]
+    evidence = _close(
+        {
+            "authorization_scope": (
+                full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE
+            ),
+            "closed_record_sha256": "",
+            "durable_evidence_committed": True,
+            "inventory_sha256": inventory.inventory_sha256,
+            "paired_examples": pairs,
+            "record_type": full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE,
+            "schema_version": full_score.FULL_SCORE_SHARD_EVIDENCE_SCHEMA_VERSION,
+            "scorers": full_score._scorer_contract_record(),
+            "shard_id": shard["shard_id"],
+            "shard_items_sha256": shard["items_sha256"],
+            "shard_plan_sha256": plan["closed_record_sha256"],
+        }
+    )
+    execution_plan = full_score.build_full_score_execution_plan(inventory, plan)
+    monkeypatch.setattr(
+        full_score,
+        "_validate_publication_full_score_inputs",
+        lambda *_args, **_kwargs: None,
+    )
+    with pytest.raises(TypeError, match="final-consumer"):
+        full_score.aggregate_full_score_shard_evidence(
+            inventory,
+            plan,
+            [evidence],
+            authorization_scope=(
+                full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+            ),
+            execution_plan=execution_plan,
+        )
+    publication_evidence = copy.deepcopy(evidence)
+    publication_evidence["authorization_scope"] = (
+        full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+    )
+    _close(publication_evidence)
+    deletion = _close(
+        {
+            "authorization_scope": (
+                full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+            ),
+            "closed_record_sha256": "",
+            "evidence_closed_record_sha256": publication_evidence[
+                "closed_record_sha256"
+            ],
+            "shard_id": shard["shard_id"],
+        }
+    )
+    evidence_directory = tmp_path / "publication-evidence" / shard["shard_id"]
+    evidence_directory.mkdir(parents=True)
+    evidence_path = evidence_directory / "evidence.json"
+    deletion_path = evidence_directory / "deletion-attestation.json"
+    evidence_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(publication_evidence)
+    )
+    deletion_path.write_bytes(full_score._canonical_pretty_json_bytes(deletion))
+    monkeypatch.setattr(
+        full_score,
+        "load_governed_full_score_shard_evidence",
+        lambda *_args, **_kwargs: (publication_evidence, deletion),
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_validate_shard_evidence_record",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_require_shared_dbfs_path",
+        lambda value, _field_name: str(value),
+    )
+    aggregate_submit_sha256 = _digest("aggregate-final-submit")
+    aggregate_reservation = DatabricksClusterHourReservation(
+        attempt_id="aggregate-final-consumer",
+        workload_id="aggregate-final-consumer",
+        submit_payload_sha256=aggregate_submit_sha256,
+        run_timeout_seconds=3_600,
+        task_timeout_seconds=(3_600,),
+    )
+    aggregate_receipt = DatabricksRunSubmissionReceipt(
+        attempt_id="aggregate-final-consumer",
+        run_id="97001",
+        submit_payload_sha256=aggregate_submit_sha256,
+        submit_response_sha256=_digest("aggregate-final-response"),
+    )
+    aggregate_terminal = DatabricksClusterHourTerminalActual(
+        attempt_id="aggregate-final-consumer",
+        terminal_state="succeeded",
+        actual_cluster_duration_seconds=1.0,
+        verification_source="direct_databricks_runs_get",
+        run_id="97001",
+        submit_payload_sha256=aggregate_submit_sha256,
+        control_plane_status_sha256=_digest("aggregate-final-control-plane"),
+    )
+    aggregate_ledger = DatabricksClusterHourLedger(
+        ledger_id="publication-full-score",
+        reservations=(aggregate_reservation,),
+        submission_receipts=(aggregate_receipt,),
+        terminal_actuals=(aggregate_terminal,),
+    )
+    aggregate_ledger_path = tmp_path / "aggregate-final-ledger.json"
+    aggregate_ledger_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(
+            databricks_cluster_hour_ledger_to_record(aggregate_ledger)
+        )
+    )
+    aggregate_predecessor = databricks_ledger_prefix(
+        DatabricksClusterHourLedger(ledger_id="publication-full-score")
+    )
+    aggregate_batch = full_score.databricks_ledger_prefix_at_counts(
+        aggregate_ledger,
+        reservation_count=1,
+        submission_receipt_count=0,
+        terminal_actual_count=0,
+    )
+    aggregate_terminal_prefix = databricks_ledger_prefix(aggregate_ledger)
+    aggregate_terminal_record_sha256 = _digest("aggregate-final-terminal-record")
+    aggregate_causal_closure = full_score._canonical_sha256(
+        {
+            "batch_prefix": aggregate_batch.to_record(),
+            "ledger_path_sha256": databricks_ledger_path_sha256(
+                aggregate_ledger_path
+            ),
+            "terminal_prefix": aggregate_terminal_prefix.to_record(),
+            "terminal_record_sha256": aggregate_terminal_record_sha256,
+        }
+    )
+    final_consumer_authorization = full_score.FullScorePhaseAuthorization(
+        execution_plan_sha256=execution_plan["closed_record_sha256"],
+        wave_index=0,
+        phase="consumer",
+        ledger_path_sha256=databricks_ledger_path_sha256(
+            aggregate_ledger_path
+        ),
+        predecessor_prefix=aggregate_predecessor,
+        ledger_prefix=aggregate_terminal_prefix,
+        terminal_record_sha256=aggregate_terminal_record_sha256,
+        causal_closure_sha256=aggregate_causal_closure,
+        _issuer=full_score._FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
+    )
+    publication_aggregate = full_score.aggregate_full_score_shard_evidence(
+        inventory,
+        plan,
+        [evidence_directory],
+        authorization_scope=(
+            full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+        ),
+        execution_plan=execution_plan,
+        final_consumer_authorization=final_consumer_authorization,
+        ledger_path=aggregate_ledger_path,
+    )
+    aggregate_lineage = publication_aggregate["publication_lineage"]
+    assert aggregate_lineage["ledger_path_sha256"] == (
+        databricks_ledger_path_sha256(aggregate_ledger_path)
+    )
+    assert aggregate_lineage["predecessor_prefix"] == (
+        aggregate_predecessor.to_record()
+    )
+    assert aggregate_lineage["batch_prefix"] == aggregate_batch.to_record()
+    assert aggregate_lineage["terminal_prefix"] == (
+        aggregate_terminal_prefix.to_record()
+    )
+    assert aggregate_lineage["terminal_record_sha256"] == (
+        aggregate_terminal_record_sha256
+    )
+    assert aggregate_lineage["evidence"] == [
+        {
+            "deletion_file_sha256": sha256(deletion_path.read_bytes()).hexdigest(),
+            "deletion_record_sha256": deletion["closed_record_sha256"],
+            "directory_path_sha256": full_score._canonical_sha256(
+                {
+                    "domain": "cachet.full_score_aggregate_evidence_path.v1",
+                    "path": str(evidence_directory),
+                }
+            ),
+            "evidence_file_sha256": sha256(evidence_path.read_bytes()).hexdigest(),
+            "evidence_record_sha256": publication_evidence[
+                "closed_record_sha256"
+            ],
+            "shard_id": shard["shard_id"],
+        }
+    ]
+    aggregate = full_score.aggregate_full_score_shard_evidence(
+        inventory,
+        plan,
+        [evidence],
+        authorization_scope=full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE,
+    )
+    assert aggregate["identity_count"] == 1003
+    assert aggregate["datasets"]["niah"]["example_count"] == 1000
+    assert set(aggregate["niah_grid"]) == set(NIAH_CELL_IDS)
+    expected_statuses = {
+        "ok",
+        "missing_block",
+        "multiple_or_malformed_blocks",
+        "extraneous_text",
+        "nested_block",
+        "empty_answer",
+    }
+    for dataset, dataset_record in aggregate["datasets"].items():
+        for method_record in dataset_record["methods"].values():
+            counts_by_status = method_record["parser_status_counts"]
+            assert set(counts_by_status) == expected_statuses
+            assert counts_by_status["ok"] == counts[dataset]
+            assert sum(counts_by_status.values()) == counts[dataset]
+    for dataset, delta in deltas.items():
+        summaries = aggregate["datasets"][dataset][
+            "paired_vanilla_minus_baseline"
+        ]
+        assert {round(value["mean"], 7) for value in summaries.values()} == {
+            round(delta, 7)
+        }
+        assert all(value["bootstrap_ci95"]["draws"] == 25 for value in summaries.values())
+
+    scorer_drift = copy.deepcopy(evidence)
+    scorer_drift["paired_examples"][0]["methods"]["baseline_prefill"][
+        "scorer_id"
+    ] = "unreviewed-scorer"
+    _close(scorer_drift)
+    with pytest.raises(ValueError, match="scorer identity drift"):
+        full_score.aggregate_full_score_shard_evidence(
+            inventory,
+            plan,
+            [scorer_drift],
+            authorization_scope=(
+                full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE
+            ),
+        )
+
+    invalid_status = copy.deepcopy(evidence)
+    invalid_status["paired_examples"][0]["methods"]["baseline_prefill"][
+        "parser_status"
+    ] = "unreviewed_status"
+    _close(invalid_status)
+    with pytest.raises(ValueError, match="outside the frozen states"):
+        full_score.aggregate_full_score_shard_evidence(
+            inventory,
+            plan,
+            [invalid_status],
+            authorization_scope=(
+                full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE
+            ),
+        )
+
+    inconsistent_status = copy.deepcopy(evidence)
+    inconsistent_status["paired_examples"][0]["methods"]["baseline_prefill"][
+        "parser_status"
+    ] = "empty_answer"
+    _close(inconsistent_status)
+    with pytest.raises(ValueError, match="validity/status are inconsistent"):
+        full_score.aggregate_full_score_shard_evidence(
+            inventory,
+            plan,
+            [inconsistent_status],
+            authorization_scope=(
+                full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE
+            ),
+        )

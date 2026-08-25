@@ -6,9 +6,9 @@ launch-config sidecars; vLLM and SGLang still own scheduling, allocation,
 decode, routing, and cleanup.
 
 Use this guide when wiring the current provider-backed vLLM or SGLang paths into
-a deployment. For benchmark evidence, start with the research-style tables in
-`benchmarks/`; historical A10G warm-prefix evidence (predating the current g6/L4
-protocol) lives under `benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`.
+a deployment. For benchmark status, start with the research-style tables in
+`benchmarks/`; the public numeric cells remain empty until the vLLM 0.27.1
+campaign passes its publication gate.
 
 ## Launch Configs
 
@@ -118,9 +118,8 @@ dataset payloads, or local `databricks-runs/` output.
 
 ## Evidence
 
-The current benchmark tables live in `benchmarks/README.md`; historical A10G
-warm-prefix provenance is tracked in
-`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`. Refresh the benchmark
-tables, the strict release bundle, and
+The current campaign-pending tables live in `benchmarks/README.md`. Publish a
+new sanitized appendix only after the vLLM 0.27.1 campaign passes its evidence
+and publication gates. Refresh the benchmark tables, strict release bundle, and
 `docs/v1-requirements-matrix.md` whenever benchmark code, runtime pins,
 connector contracts, launch-config fields, or package wheel identity change.

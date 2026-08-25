@@ -60,6 +60,10 @@ except Exception as exc:  # pragma: no cover - local lightweight or broken-runti
         def role(self) -> object | None:
             return self._role
 
+        @property
+        def requires_kv_delivery(self) -> bool:
+            return False
+
         def bind_connector_metadata(self, connector_metadata: object) -> None:
             self._connector_metadata = connector_metadata
 
@@ -263,6 +267,12 @@ class DocumentKVConnector(_KVConnectorBaseV1, _SupportsHMA):
     @property
     def prefer_cross_layer_blocks(self) -> bool:
         return bool(getattr(self.provider, "prefer_cross_layer_blocks", False))
+
+    @property
+    def requires_kv_delivery(self) -> bool:
+        """Cachet consumes persisted document KV and never delivers saved KV."""
+
+        return False
 
     def get_num_new_matched_tokens(
         self,

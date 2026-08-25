@@ -1,7 +1,22 @@
 # Databricks Cluster-Hour Guard
 
-Representative canaries use a persistent, credential-free ledger with a hard
-aggregate cap of 120 cluster-hours. The fixed ten-job sequence reserves at most
+The generic credential-free ledger supports an explicit hard aggregate cap of
+up to 1,024 cluster-hours. Publication campaigns must set their approved cap in
+the immutable ledger before the first reservation; an over-cap reservation
+performs no submission. Active worst-case reservations are additionally capped
+at 900 hours, preserving at least 124 hours of unreserved campaign headroom.
+When an approved campaign raises a prior cap, use the fail-closed `raise-cap`
+operation on the existing quiescent ledger. It preserves every reservation and
+terminal actual; starting a new zero-balance ledger would incorrectly discard
+already consumed GPU-hours.
+
+Publication reservations must use the same ledger ID carried by the live GPU
+qualification capability. While holding that ledger's lock, each workload also
+keeps the total task count across all nonterminal reservations at or below the
+campaign-wide 16-job concurrency cap.
+
+Representative canaries retain a narrower, persistent hard aggregate cap of
+120 cluster-hours. The fixed ten-job sequence reserves at most
 40 hours on its first pass because every task is bounded to four hours. Manual
 retry attempts are new reservations: a second complete pass reaches 80 hours,
 and a third reaches 120 hours.
@@ -9,7 +24,8 @@ and a third reaches 120 hours.
 Generate the Databricks `runs/submit` payload first. Representative vLLM and
 SGLang jobs require exactly 14,400 seconds at both the run and task levels and
 task `max_retries: 0`. Generic engine-probe and storage jobs remain configurable
-from 1 through 14,400 seconds, also with zero task retries.
+from 1 through 43,200 seconds, also with zero task retries; their individual
+campaign contracts may impose narrower limits.
 
 Build and stage Cachet before generating a representative payload. The wheel is
 content-addressed: compute the SHA-256 of the exact bytes, put that lowercase
@@ -157,3 +173,110 @@ that would exceed the cap fail closed.
 The ledger uses closed JSON schemas, immutable event objects, an exclusive file
 lock for read-modify-write operations, and atomic replacement. Keep the ledger
 file with the canary evidence so repeated manual attempts share the same budget.
+
+## vLLM 0.27.1 publication campaign
+
+The publication campaign has a separate closed design record. Generate it
+before producing any submit payloads:
+
+```bash
+python -m document_kv_cache.publication_campaign \
+  --campaign-id vllm-0271-publication-v1 \
+  --campaign-ledger-id representative-canary-823bd9d82a5c1730 \
+  --campaign-ledger-json databricks-runs/vllm-0271-publication-prep/cluster-hours.json \
+  --output-json .cachet/vllm-0271-publication-campaign.json
+```
+
+The command reads the migrated, quiescent ledger and closes its exact ordered
+append-only prefix into the campaign record. Matching only the ledger ID is not
+sufficient: a fresh ledger with the same ID would erase the retained opening
+balance and is rejected. The record also binds a privacy-safe SHA-256 of the
+canonical symlink-free ledger path, preventing two copied ledgers from funding
+divergent branches. Every later phase must extend the immediately prior
+authorized prefix and acquire one atomic whole-wave lease before its first
+submission.
+
+Every publication `runs/submit` payload also carries a package-derived,
+64-character Databricks idempotency token bound to its attempt identity and
+canonical payload bytes. A durable pre-POST claim prevents concurrent local
+submission, while an accepted request whose response was lost may be recovered
+only by replaying those exact bytes and token; Databricks then returns the same
+run identity. Payload or token drift remains fail-closed.
+
+The record freezes five deployment blocks, matched Baseline/Vanilla jobs at
+8k/16k/32k and closed-loop concurrency 1/2/4, 32 examples per dataset, two
+repeats, and 256 requests per cell. The core factorial contains 90 isolated
+jobs. Twenty precision, RAM/UC, and A10G treatment jobs are joined by five fresh
+Disk controls, for 115 latency jobs total. Each block's Disk/RAM/UC trio uses a
+separate capacity-safe storage schedule with two examples per dataset and 32
+repeats (256 requests); the main factorial remains 32 examples per dataset and
+two repeats. Each storage trio launches in one matched wave; each 16k/c4 core
+Baseline/Vanilla pair launches in the same wave as its BF16 and A10G treatments.
+No job retries. Core timeout hours by c1/c2/c4 are 6/4/4 at 8k, 8/6/4 at 16k,
+and 12/8/4 at 32k; every c4 auxiliary job has a four-hour timeout. These
+condition-specific reservations replace the old universal four-hour assumption,
+while the generic Jobs API validator permits at most 43,200 seconds. The same
+record requires one complete paired score pass
+per method over the four implemented datasets, without padding, truncation, or
+an answer-quality preservation gate. It also binds the 1,024-hour aggregate
+cap, 900-hour active-reservation guard, 124-hour headroom, 16-job parallel
+limit, and the 35-token/s effective generation gate required before the
+complete score campaign may launch.
+
+The budget also charges the latency handoff build that precedes timed serving:
+128 identities are generated once at each of 8k, 16k, and 32k. The exact frozen
+cache-prefix workload is 7,323,967 generated tokens (7,340,032 conservative
+input-token slots), so the 35-token/GPU-s gate permits at most 58.1268 actual
+GPU-hours. Sixteen separately submitted, no-retry L40S producer jobs reserve at
+most 80 GPU-hours (five hours each). The exact 16-member wave is reserved
+atomically before any POST, then each attempt is reconciled from its own
+terminal control-plane record. Charged time is the sum of their one-GPU terminal lifecycles,
+including bootstrap, generation, hashing, and durable writes. A CPU coordinator
+then verifies every file and closes the shared-root bundles using metadata
+renames, with zero payload copies and zero coordinator GPU charge. L40S is
+eligible only after the sealed L4/L40S artifact-equivalence and >=35-token/s
+qualification passes. Timed L4/A10G serving jobs stage the closed 8k/16k/32k
+bundle they need to node-local NVMe and never regenerate it.
+
+The auxiliary precision arm has a separate prerequisite with the same launch
+discipline: 128 exact 16k rows are sharded across 16 independent no-retry L40S
+jobs, each bounded to five hours (80 reserved GPU-hours for the wave). Its BF16
+pre-RoPE Qwen3 layout uses 147,456 logical payload bytes per cached prefix
+token. The plan-bound resource estimator reports the actual token-derived
+storage and GPU-hour estimates; the absolute 16k input-slot envelope is 288 GiB
+of payload data before small JSON metadata (actual cache prefixes are smaller),
+and the measured ledger charge and durable byte count replace those estimates
+after closure. Publication use requires all 16 direct `runs/get` terminal
+attestations, unique parent/task/cluster IDs, attempt zero with no repair, and a
+content-addressed manifest that stages to node-local NVMe without regeneration.
+
+The closed budget inventory is intentionally more explicit than a single
+timeout sum:
+
+| Phase | Frozen workload | Timeout reservation upper bound |
+| --- | ---: | ---: |
+| GPU qualification | 14 independent jobs | 56 GPU-hours |
+| Latency Q8 handoff generation | 7,323,967 cache-prefix tokens; 16 producers | 80 GPU-hours |
+| Latency BF16 handoff generation | 2,091,797 cache-prefix tokens; 16 producers | 80 GPU-hours |
+| Timed latency/resource campaign | 65 jobs at 4h, 20 at 6h, 20 at 8h, 10 at 12h | 660 GPU-hours |
+| Full-score Q8 producer phases | 160 shards in ten 16-task phases | 960 GPU-hours |
+| Full-score paired consumer phases | 160 shards in ten 16-task phases | 960 GPU-hours |
+
+The timeout upper bounds are safety envelopes, not a claim that all phases can
+consume them. Qualification, handoff generation, and timed latency are admitted
+wave by wave from reconciled terminal actuals and hard cap/headroom checks. The
+governed live-P90 projection applies to each producer and consumer phase of
+every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
+hard cap/headroom admission. The three generation workloads contain 72,871,510
+cache-prefix tokens; at the required 35 effective
+tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
+retained ledger opens the reset with 54.994161 terminal GPU-hours, leaving only
+266.660521 hours inside the protected 900-hour envelope for qualification,
+timed latency, and full-score consumers at that generation threshold.
+
+The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);
+its conservative absolute 16k slot envelope is 288 GiB. The full-score program
+is frozen to 83,653 examples, 160 shards, 63,455,746 cache-prefix tokens, and
+66,448,937 natural-prompt tokens. Its content-addressed inventory, shard plan,
+and execution plan are part of the campaign record, so a sampled or reordered
+subcampaign cannot spend against the publication budget.

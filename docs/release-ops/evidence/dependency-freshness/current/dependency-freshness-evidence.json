@@ -45,9 +45,180 @@
       "allow_reason": "",
       "allowed": true,
       "current": true,
-      "latest_version": "0.23.0",
+      "latest_version": "0.27.1+cu129",
       "package": "vllm",
-      "pinned_version": "0.23.0",
+      "pinned_version": "0.27.1+cu129",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "2.13.0+cu129",
+      "package": "torch",
+      "pinned_version": "2.13.0+cu129",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "2.11.0+cu129",
+      "package": "torchaudio",
+      "pinned_version": "2.11.0+cu129",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.28.0+cu129",
+      "package": "torchvision",
+      "pinned_version": "0.28.0+cu129",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "3.7.1",
+      "package": "triton",
+      "pinned_version": "3.7.1",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.65.0",
+      "package": "numba",
+      "pinned_version": "0.65.0",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.16.0+cu129",
+      "package": "torchcodec",
+      "pinned_version": "0.16.0+cu129",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "2.0.4",
+      "package": "pynvvideocodec",
+      "pinned_version": "2.0.4",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.6.16.post3",
+      "package": "flashinfer-python",
+      "pinned_version": "0.6.16.post3",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.6.16.post3",
+      "package": "flashinfer-cubin",
+      "pinned_version": "0.6.16.post3",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.6.16.post3+cu129",
+      "package": "flashinfer-jit-cache",
+      "pinned_version": "0.6.16.post3+cu129",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.1.11",
+      "package": "apache-tvm-ffi",
+      "pinned_version": "0.1.11",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.1.12",
+      "package": "tilelang",
+      "pinned_version": "0.1.12",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "1.27.0",
+      "package": "nvidia-cudnn-frontend",
+      "pinned_version": "1.27.0",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.2.15",
+      "package": "nvtx",
+      "pinned_version": "0.2.15",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.3.3",
+      "package": "fastsafetensors",
+      "pinned_version": "0.3.3",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "4.6.0",
+      "package": "nvidia-cutlass-dsl",
+      "pinned_version": "4.6.0",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.6.1",
+      "package": "quack-kernels",
+      "pinned_version": "0.6.1",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.1.8",
+      "package": "tokenspeed-mla",
+      "pinned_version": "0.1.8",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.1.10",
+      "package": "humming-kernels",
+      "pinned_version": "0.1.10",
       "source": "serving_env.vllm"
     },
     {
@@ -69,7 +240,7 @@
       "source": "serving_env.vllm"
     },
     {
-      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.",
+      "allow_reason": "Pinned by the reviewed vLLM 0.27.1 CUDA 12.9 hash lock; upgrade only after fresh L4 and A10G Databricks validation.",
       "allowed": true,
       "current": false,
       "latest_version": "0.23.1",
@@ -78,7 +249,7 @@
       "source": "serving_env.vllm"
     },
     {
-      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.",
+      "allow_reason": "Pinned by the reviewed vLLM 0.27.1 CUDA 12.9 hash lock; upgrade only after fresh L4 and A10G Databricks validation.",
       "allowed": true,
       "current": false,
       "latest_version": "2.5.0",
@@ -87,7 +258,7 @@
       "source": "serving_env.vllm"
     },
     {
-      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.",
+      "allow_reason": "Pinned by the reviewed vLLM 0.27.1 CUDA 12.9 hash lock; upgrade only after fresh L4 and A10G Databricks validation.",
       "allowed": true,
       "current": false,
       "latest_version": "0.138.0",
@@ -96,7 +267,7 @@
       "source": "serving_env.vllm"
     },
     {
-      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.",
+      "allow_reason": "Pinned by the reviewed vLLM 0.27.1 CUDA 12.9 hash lock; upgrade only after fresh L4 and A10G Databricks validation.",
       "allowed": true,
       "current": false,
       "latest_version": "8.0.2",
@@ -120,6 +291,15 @@
       "latest_version": "1.14.0",
       "package": "accelerate",
       "pinned_version": "1.14.0",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "4.13.0.92",
+      "package": "opencv-python-headless",
+      "pinned_version": "4.13.0.92",
       "source": "serving_env.vllm"
     },
     {

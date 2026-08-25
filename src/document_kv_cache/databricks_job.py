@@ -34,7 +34,7 @@ DEFAULT_DATABRICKS_TASK_KEY = "document_kv_v1_benchmark"
 DEFAULT_DATABRICKS_PURPOSE = "document-kv-v1-benchmark"
 DEFAULT_DATABRICKS_DATA_SECURITY_MODE = "SINGLE_USER"
 DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS = 14_400
-MAX_DATABRICKS_RUN_TIMEOUT_SECONDS = 14_400
+MAX_DATABRICKS_RUN_TIMEOUT_SECONDS = 43_200
 DEFAULT_DATABRICKS_TASK_MAX_RETRIES = 0
 DEDICATED_DATABRICKS_DATA_SECURITY_MODE = "DATA_SECURITY_MODE_DEDICATED"
 SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
@@ -211,6 +211,10 @@ class DatabricksBenchmarkJobConfig:
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
         _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        if self.run_timeout_seconds > DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "run_timeout_seconds exceeds the four-hour generic benchmark bound"
+            )
         _validated_databricks_task_max_retries(self.task_max_retries)
         _DEFAULT_CLUSTER_CONFIG_FROM_BENCHMARK_JOB(self)
         if self.wheel_uri is not None and not self.wheel_uri:

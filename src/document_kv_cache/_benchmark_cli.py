@@ -17,6 +17,7 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     BenchmarkArm,
     BenchmarkOfflineCosts,
     require_runnable_cachet_benchmark_arm,
@@ -77,6 +78,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=1,
         help=(
             "Maximum number of benchmark requests issued concurrently by the client."
+        ),
+    )
+    parser.add_argument(
+        "--publication-latency-schedule-json",
+        help=(
+            "Closed publication latency schedule JSON. Enables exact scheduled "
+            "membership and identity-sticky lane execution."
+        ),
+    )
+    parser.add_argument(
+        "--publication-latency-expected-input-bundle-sha256",
+        help=(
+            "Expected verified main-latency input bundle SHA-256. Required with "
+            "--publication-latency-schedule-json."
         ),
     )
     parser.add_argument(
@@ -229,7 +244,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         metavar="PACKAGE=REVISION",
     )
-    parser.add_argument("--prompt-template-version", default="v1-benchmark")
+    parser.add_argument(
+        "--prompt-template-version",
+        default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    )
     parser.add_argument("--input-tokens-target", type=int)
     parser.add_argument("--hardware-fingerprint", default="unresolved")
     parser.add_argument("--runtime-id", default="unresolved")
@@ -341,6 +359,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             comparison_mode=args.comparison_mode,
             varied_setting=args.varied_setting,
             reference_arm_id=args.reference_arm_id,
+            publication_latency_schedule_path=(
+                args.publication_latency_schedule_json
+            ),
+            publication_latency_expected_input_bundle_sha256=(
+                args.publication_latency_expected_input_bundle_sha256
+            ),
         )
         result = run_openai_compatible_v1_benchmark(config)
         artifact_identities = _artifact_identities_from_files(

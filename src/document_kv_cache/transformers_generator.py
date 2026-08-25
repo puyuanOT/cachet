@@ -1085,7 +1085,9 @@ def _bitsandbytes_config(
 
 
 def _transformers_quantization_value(torch: object, key: str, value: Any) -> Any:
-    if isinstance(value, str) and key.endswith("_dtype"):
+    if isinstance(value, str) and (
+        key.endswith("_dtype") or key.endswith("_quant_storage")
+    ):
         return _torch_dtype_from_name(torch, value)
     return value
 
@@ -1099,6 +1101,7 @@ def _torch_dtype_from_name(torch: object, dtype: str) -> object:
         "float16": torch.float16,
         "fp32": torch.float32,
         "float32": torch.float32,
+        "uint8": torch.uint8,
     }
     if normalized in {"fp8", "fp8_e4m3", "fp8_e4m3fn", "float8"}:
         try:

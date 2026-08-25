@@ -16,7 +16,6 @@ from document_kv_cache.legacy_compatibility import (
     evaluate_legacy_compatibility_migration_record,
     legacy_compatibility_migration_to_record,
 )
-from document_kv_cache.release_bundle import STRICT_V1_RELEASE_REQUIRED_ARTIFACTS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -371,7 +370,10 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
         if path.stem != "__init__" and not path.stem.startswith("_")
     }
     public_modules = sorted(document_kv_cache._PUBLIC_SUBMODULES)
-    compatibility_only_modules = sorted(package_modules - set(public_modules))
+    internal_modules = sorted(document_kv_cache._INTERNAL_SUBMODULES)
+    compatibility_only_modules = sorted(
+        package_modules - set(public_modules) - set(internal_modules)
+    )
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     document_scripts = sorted(
         name for name in pyproject["project"]["scripts"] if name.startswith("document-kv-")
@@ -382,13 +384,19 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
 
     assert public_modules
     assert set(public_modules) <= package_modules
+    assert internal_modules == ["gpu_qualification_sentinels"]
+    assert set(internal_modules) <= package_modules
+    assert set(public_modules).isdisjoint(internal_modules)
     assert compatibility_only_modules == ["scheduler"]
     assert document_scripts
     assert cachet_scripts
     for module_name in public_modules:
         assert f"`{module_name}.py`" in text
+    for module_name in internal_modules:
+        assert f"`{module_name}.py`" in text
     for module_name in compatibility_only_modules:
         assert f"`{module_name}.py`" in text
+    assert "Internal Modules" in text
     assert "Compatibility-Only Modules" in text
     for script_name in document_scripts:
         assert f"`{script_name}`" in text
@@ -522,9 +530,7 @@ def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
         assert (REPO_ROOT / release_evidence["evidence_uri"]).is_file()
     assert "This is not the benchmark report directory" in readme
     assert "`benchmarks/README.md`" in readme
-    assert "current benchmark appendix records Databricks provenance" in " ".join(
-        readme.split()
-    )
+    assert "appendix is intentionally empty" in " ".join(readme.split())
     assert "document_kv.legacy_compatibility_migration.v1" in readme
     assert "generated from `legacy-migration-scan-config.json`" in readme
 
@@ -960,7 +966,7 @@ def test_maintainer_reference_remaining_work_keeps_serving_boundary_explicit():
     remaining_work = _markdown_section(text, "Remaining V1 Work")
 
     assert "connector action descriptors" in remaining_work
-    assert "native engine block managers" in remaining_work
+    assert "native engine block managers" in " ".join(remaining_work.lower().split())
     assert "do not add a proprietary scheduler or custom solver" in remaining_work
     assert "Add vLLM and SGLang adapters" not in remaining_work
 
@@ -970,103 +976,55 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
     ).read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
-    compact_matrix = " ".join(matrix_text.split())
-    remaining_release_gates = _markdown_section(matrix_text, "Remaining V1 Release Gates")
-    compact_remaining_release_gates = " ".join(remaining_release_gates.split())
-    stale_release_blockers = (
-        "no-governance",
-        "21 artifacts",
-        "34 artifacts",
-        "allow_auto_merge=false",
-        "repository as private",
-        "repository visibility as private",
-        "still requires the GitHub governance sidecar",
-        "still needs target AWS g6/L4 or Unity Catalog evidence in the release bundle",
-        "previous complete g5-enriched strict bundle",
-        "next complete strict bundle refresh",
-        "PR #427 PR-evidence sidecar",
-        "426398182137665",
-        "315109189523858",
-        "cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main",
-        "cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main",
+    matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(
+        encoding="utf-8"
     )
+    remaining_release_gates = _markdown_section(
+        matrix_text, "Remaining V1 Release Gates"
+    )
+    compact_remaining_release_gates = " ".join(remaining_release_gates.split())
 
     assert "docs/v1-requirements-matrix.md" in maintainer_reference
-    assert "`v1-requirements-matrix.md`" in docs_readme
-    assert "`release-ops/evidence/dependency-freshness/current/README.md`" in docs_readme
-    assert "Status values" in matrix_text
-    assert "**Implemented:**" in matrix_text
-    assert "**Bundle-refresh pending:**" in matrix_text
-    assert "**Release-gated:**" in matrix_text
-    assert "**Remaining:**" in matrix_text
+    assert "v1-requirements-matrix.md" in docs_readme
+    assert "release-ops/evidence/dependency-freshness/current/README.md" in docs_readme
+    for status in (
+        "Implemented",
+        "Bundle-refresh pending",
+        "Release-gated",
+        "Remaining",
+    ):
+        assert f"**{status}:**" in matrix_text
 
     for required in (
         "vLLM/SGLang handoff boundary",
         "Memory, Disk, UC Volume, and routed readers",
         "AWS g6/L4",
-        "g5/A10G compatibility evidence",
-        "g5/A10G compatibility benchmark evidence",
-        "`aws-g5-a10g`",
-        "`g5.8xlarge`",
-        "`qwen3:4b-instruct`",
+        "qwen3:4b-instruct",
         "Biography",
         "HotpotQA",
         "MusiQue",
         "NIAH",
-        "`baseline_prefill` arm",
+        "baseline_prefill",
         "MQA/GQA",
         "KV Packet",
         "Qwen3.5",
         "MiniMax",
-        "Cachet",
         "GPT-5.5 review",
         "Refactor skill",
-        "one PR open",
-        "complete strict release bundle",
-        "strict V1 publication target",
-        "compatibility_benchmark",
-        "compatibility_databricks_run_status",
-        "37 artifacts",
-        "872615985402004",
-        "566743786103032",
-        "cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main",
-        "cachet_vllm_hot_payload_g5_longcmp_388ea0a_20260623_162302_repeat3_cache8g_cachet_kv_current_main",
-        "real vLLM and SGLang native block managers",
-        "docs/native-engine-integration.md",
-        "legacy restaurant facade",
-        "core runtime model layer no longer retains restaurant request",
-        "dependency_freshness.py",
-        "docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json",
-        "resolver-held `protobuf==6.33.6` drift",
-        "Databricks-validation upgrade reasons",
+        "vLLM 0.27.1-campaign-pending skeleton",
+        "five independent deployment blocks",
+        "corrected full-dataset score evaluation",
     ):
         assert required in matrix_text
 
-    assert "Release-gated | `databricks_job.py`" in compact_matrix
-    assert "Run connector action descriptor validation" in matrix_text
-    assert "Historical release-evidence validation over the then-current target benchmark" in compact_matrix
-    assert "vLLM/SGLang native probe/action artifacts was `ok=true` with no issues" in compact_matrix
-    assert "does not replace the strict V1 publication target" in compact_matrix
-    assert "`compatibility_benchmark` artifact role" in matrix_text
-    assert "superseded strict-bundle snapshot was built after PR #513" in compact_matrix
-    assert "validated 37 artifacts" in compact_matrix
-    assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_matrix
-    assert "`dependency_freshness` evidence" in compact_matrix
-    assert "A refreshed complete strict release bundle built from the final wheel" in (
-        compact_matrix
-    )
-    assert "canonical publication-qualified rerun remain pending" in compact_matrix
-    assert "Traceability-only PR evidence added after that snapshot" in compact_matrix
-    assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_matrix
-    assert "`compatibility_databricks_run_status` sidecar" in compact_matrix
-    assert "GitHub governance is release-ready" in compact_matrix
-    assert "auto-merge is enabled" in compact_matrix
-    assert "Add native engine integration examples after connector probes land" not in matrix_text
-    for stale_blocker in stale_release_blockers:
-        assert stale_blocker not in matrix_text
-    for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
-        assert label in compact_remaining_release_gates
+    for required_gate in (
+        "Freeze the exact vLLM 0.27.1 source",
+        "16 independent L40S workers",
+        "concurrency 1, 2, and 4",
+        "Unsupported methods remain explicit",
+        "Publish no numeric result until",
+    ):
+        assert required_gate in compact_remaining_release_gates
 
 
 def test_native_engine_integration_doc_examples_are_validated():
@@ -1097,7 +1055,7 @@ def test_native_engine_integration_doc_examples_are_validated():
         "aws-g5-a10g",
         "g5.8xlarge",
         "payload-summary",
-        "benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/",
+        "public numeric cells remain empty until the vLLM 0.27.1",
         "compatibility evidence only",
         "commit tokens",
     ):
@@ -1184,367 +1142,107 @@ def test_release_ops_doc_classifies_installed_cli_surface():
     assert "Prefer `cachet-*` in new documentation" in release_ops
 
 
-def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
+def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     benchmark_root = REPO_ROOT / "benchmarks"
-    current_result_root = benchmark_root / "appendix" / "current-q4-q8-vllm-qwen3-4b-g5-a10g"
-    databricks_root = benchmark_root / "databricks"
-    archive_root = REPO_ROOT / "docs" / "release-ops" / "benchmark-archive"
-    sglang_archive_root = archive_root / "sglang-smoke"
-
     root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
-    appendix_readme = (benchmark_root / "appendix" / "README.md").read_text(encoding="utf-8")
-    current_readme = (current_result_root / "README.md").read_text(encoding="utf-8")
-    current_summary = json.loads((current_result_root / "summary.json").read_text(encoding="utf-8"))
-    vllm_readme = (benchmark_root / "vllm" / "README.md").read_text(encoding="utf-8")
-    sglang_readme = (benchmark_root / "sglang" / "README.md").read_text(encoding="utf-8")
-    storage_readme = (benchmark_root / "storage" / "README.md").read_text(encoding="utf-8")
-    native_engine_readme = (benchmark_root / "native-engine" / "README.md").read_text(encoding="utf-8")
-    databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
-    benchmark_template_readme = (benchmark_root / "_template" / "README.md").read_text(encoding="utf-8")
-    archive_readme = (archive_root / "README.md").read_text(encoding="utf-8")
-    sglang_archive_readme = (sglang_archive_root / "README.md").read_text(encoding="utf-8")
-    project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    maintainer_reference = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
-    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
+    appendix_readme = (benchmark_root / "appendix" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    main_table = _markdown_section(root_readme, "Main Latency And Resource Table")
+    estimand_table = _markdown_section(root_readme, "Paired Latency Estimands")
+    score_table = _markdown_section(root_readme, "Benchmark Dataset Score Table")
 
-    compact_root_readme = " ".join(root_readme.split())
-    compact_appendix_readme = " ".join(appendix_readme.split())
-    compact_current_readme = " ".join(current_readme.split())
-    compact_databricks_readme = " ".join(databricks_readme.split())
-    compact_archive_readme = " ".join(archive_readme.split())
-    compact_sglang_archive_readme = " ".join(sglang_archive_readme.split())
-    compact_maintainer_reference = " ".join(maintainer_reference.split())
-    compact_matrix_text = " ".join(matrix_text.split())
-
-    assert "public benchmark appendix for Cachet" in compact_root_readme
-    assert "current benchmark protocol only" in compact_root_readme
-    assert "Historical benchmark folders were removed" in compact_root_readme
-    assert "Qwen3-4B-Instruct" in root_readme
-    assert "4-bit model weights" in root_readme
-    assert "Q8 document KV" in root_readme
-    assert "shared GPU prefix references" in root_readme
-    assert "private KV for the user question plus generated tokens" in compact_root_readme
-    assert "Main Table Configuration" in root_readme
-    assert "Main Latency And Resource Table" in root_readme
-    assert "Benchmark Dataset Score Table" in root_readme
-    assert "Document KV Precision Ablation" in root_readme
-    assert "Storage Tier Ablation" in root_readme
-    assert "Hardware Ablation" in root_readme
-    assert "Serving Platform Ablation" in root_readme
-    assert "Directory Layout" in root_readme
-    assert "[KV&nbsp;Packet](https://arxiv.org/abs/2604.13226)" in root_readme
-    assert "not implemented yet" in compact_root_readme
-    assert "Q4 packed document KV" in root_readme
-    assert "Not implemented" in root_readme
-    assert "Forced 256-token decode" in root_readme
-    assert "4 requests in flight" in root_readme
-    assert "answer-found rate" in compact_root_readme
-    assert "real full-document dataset samples" in compact_root_readme
-    assert "LongBench v2" in root_readme
-    assert "RULER" in root_readme
-    assert "LongBench v2" in benchmark_template_readme
-    assert "RULER" in benchmark_template_readme
-    assert "`N/A (reason)`" in benchmark_template_readme
-    assert "`N/A (full dataset not run)`" in benchmark_template_readme
-    assert "LongBench v2" in matrix_text
-    assert "RULER" in matrix_text
-    assert "P50 tok/s" in root_readme
-    assert "Max Serving Concurrency" in root_readme
-    assert "Peak GPU memory" in root_readme
-    assert "`request_parallelism=4`" in root_readme
-    assert "32 repeats per prepared input" in compact_root_readme
-    assert "256 successful request-level measurements" in compact_root_readme
-    assert "Accounted GPU memory" not in root_readme
-    assert "P50 TTFT (s)" not in root_readme
-    assert "P95 TTFT (s)" not in root_readme
-    stale_canary_heading = "Latest Optimized Cachet " + "Canary"
-    stale_existing_results_path = "appendix/" + "existing-results/"
-    stale_primary_prefix = "primary-table" + "-v"
-    stale_runtime_prompt = "runtime-prompt" + "-vllm"
-    removed_cache_column = "Cache " + "location"
-    removed_status_column = "Status / " + "evidence"
-    assert stale_canary_heading not in root_readme
-    assert stale_existing_results_path not in root_readme
-    assert stale_primary_prefix not in root_readme
-    assert stale_runtime_prompt not in root_readme
-    assert removed_cache_column not in root_readme
-    assert removed_cache_column not in benchmark_template_readme
-    assert removed_status_column not in root_readme
-    assert removed_status_column not in benchmark_template_readme
-
-    for heading in (
-        "Table Configuration",
-        "Latency And Resource Table",
-        "Benchmark Dataset Score Table",
-        "Resource Utilization",
-        "Limitations",
-        "Provenance",
+    assert "Status: vLLM 0.27.1 campaign pending" in root_readme
+    assert "No latency, resource, ablation, or" in root_readme
+    assert "Deployment blocks | 5 matched fresh-cluster blocks" in root_readme
+    assert "Closed-loop request concurrency | 1, 2, and 4" in root_readme
+    assert main_table.count("| Baseline |") == 9
+    assert main_table.count("| Vanilla&nbsp;KV |") == 9
+    assert main_table.count("N/A (0.27.1 campaign pending)") == 162
+    assert "P50 decode tok/s" in main_table
+    assert "Peak GPU process memory" in main_table
+    assert estimand_table.count("| Vanilla KV vs Baseline |") == 9
+    assert estimand_table.count("N/A (0.27.1 campaign pending)") == 52
+    for auxiliary in (
+        "BF16 payload/runtime KV vs Q8",
+        "RAM vs Disk",
+        "Unity Catalog vs Disk",
+        "A10G vs L4",
     ):
-        assert heading in benchmark_template_readme
-    assert "Document KV precision" in benchmark_template_readme
-    assert "packed Q4" in benchmark_template_readme
-    assert "Do not infer or estimate missing values" in benchmark_template_readme
+        assert auxiliary in estimand_table
+    for context in ("8k", "16k", "32k"):
+        for concurrency in (1, 2, 4):
+            assert f"| Baseline | {context} | {concurrency} |" in main_table
+            assert f"| Vanilla&nbsp;KV | {context} | {concurrency} |" in main_table
 
-    assert "historical benchmark evidence" in compact_appendix_readme
-    assert "Vanilla pre-RoPE canaries" in appendix_readme
-    assert "A10G warm-prefix folder is historical evidence" in compact_appendix_readme
-    assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in appendix_readme
-    assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in vllm_readme
-    assert "Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV" in vllm_readme
-    assert "SGLang appears only in the serving-platform ablation" in " ".join(
-        sglang_readme.split()
-    )
-    assert "Historical SGLang smoke attempts remain outside `benchmarks/`" in sglang_readme
-    assert "Historical storage-reader-only results were removed" in " ".join(
-        storage_readme.split()
-    )
-    assert "integration checks, not serving-latency benchmark rows" in " ".join(
-        native_engine_readme.split()
-    )
-    assert "no longer mirrors historical Databricks result JSON" in compact_databricks_readme
-    assert "summary records the Databricks run ids" in compact_databricks_readme
-    assert "should not dominate the public benchmark experience" in compact_archive_readme
-    assert "not as the current public benchmark result surface" in compact_sglang_archive_readme
-
-    assert "[`benchmarks/README.md`](benchmarks/)" in project_readme
-    assert "[`benchmarks/README.md`](../../benchmarks/)" in maintainer_reference
-    assert "`../benchmarks/README.md`" in docs_readme
-    assert "current Qwen3-4B 4-bit-weight + Q8-document-KV protocol" in compact_matrix_text
-    assert "Current Q4-weight/Q8-KV main latency and ablation tables are populated" in (
-        compact_maintainer_reference
-    )
-    assert "both 8k gates fail" in compact_maintainer_reference
-    assert (
-        "isolated Baseline raw record structurally fails the generic canary gate"
-        in compact_maintainer_reference
-    )
-    assert (
-        "Earlier post-RoPE V1 benchmark records are superseded"
-        in compact_maintainer_reference
-    )
-    assert "compact sanitized descriptive evidence" in compact_matrix_text
-    assert "two examples per dataset, 32 repeats per example" in compact_matrix_text
-    assert "Full-dataset score cells are explicit `N/A`" in compact_matrix_text
-    assert (
-        "Historical QA benchmark run `872615985402004`"
-        in compact_matrix_text
-    )
-    assert (
-        "A refreshed complete strict release bundle built from the final "
-        "wheel and a canonical publication-qualified rerun remain pending"
-        in compact_matrix_text
-    )
-    assert (
-        "Historical, superseded post-RoPE g6/L4 benchmark evidence"
-        in compact_matrix_text
-    )
-    assert (
-        "Historical, superseded post-RoPE g5/A10G compatibility benchmark evidence"
-        in compact_matrix_text
-    )
-    assert (
-        "historical AWS g5/A10G compatibility benchmark evidence"
-        in compact_maintainer_reference
-    )
-    assert (
-        "The last validated strict-bundle snapshot is historical"
-        in compact_maintainer_reference
-    )
-    assert (
-        "does not bind the current source, wheel, or Vanilla main protocol"
-        in compact_maintainer_reference
-    )
-    assert "main cold-hydrate tables are defined but numerically blank" not in matrix_text
-    assert "Current QA benchmark run `872615985402004`" not in matrix_text
-    assert "strict-bundle snapshot, built after PR #513 with the current wheel" not in maintainer_reference
-    assert "strict-bundle snapshot was built after PR #513 with the current wheel" not in matrix_text
-    assert "5.27x-6.97x" not in maintainer_reference
-    assert "5.27x-6.97x" not in matrix_text
-    assert "4.66x-6.04x" not in maintainer_reference
-    assert "4.66x-6.04x" not in matrix_text
-    assert "`docs/release-ops/pr-evidence/`" in compact_maintainer_reference
-
-    assert current_summary["configuration"]["model_quantization"] == "bitsandbytes"
-    assert current_summary["configuration"]["default_cachet_document_kv_dtype"] == "fp8_e5m2"
-    assert current_summary["configuration"]["vllm_kv_cache_dtype"] == "fp8_e5m2"
-    assert current_summary["configuration"]["quality_metric"] == "prepared-suite answer_found_rate"
-    assert current_summary["configuration"]["strict_quality_metric"] == "prepared-suite exact_match_rate"
-    assert "not official benchmark accuracy" in current_summary["configuration"]["quality_metric_scope"]
-    assert current_summary["configuration"]["decode_throughput_metric"].startswith("completion_tokens /")
-    assert current_summary["configuration"]["request_parallelism"] == 8
-    assert current_summary["configuration"]["output_tokens"] == 256
-    assert current_summary["server_capacity"]["available_kv_cache_memory_gib"] == 16.32
-    assert current_summary["server_capacity"]["model_weight_memory_gib_reported"] == 2.71
-    assert current_summary["server_capacity"]["graph_capture_memory_gib_reported"] == 0.26
-    assert current_summary["server_capacity"]["accounted_gpu_memory_gib"] == 19.29
-    assert current_summary["server_capacity"]["configured_gpu_memory_budget_gib_approx"] == 20.0
-    assert current_summary["server_capacity"]["gpu_memory_utilization_fraction"] == 0.9
-    assert current_summary["server_capacity"]["vllm_max_concurrency_by_nominal_context"] == {
-        "8k": 29.02,
-        "16k": 14.51,
-        "32k": 7.25,
-    }
-
-    completed_rows = {
-        (row["method"], row["context"], row["document_kv_dtype"]): row
-        for row in current_summary["results"]
-    }
-    assert set(completed_rows) == {
-        ("Baseline, no precomputed KV", "8k", None),
-        ("Baseline, no precomputed KV", "16k", None),
-        ("Baseline, no precomputed KV", "32k", None),
-        ("Cachet + vanilla KV", "8k", "fp8_e5m2"),
-        ("Cachet + vanilla KV", "16k", "fp8_e5m2"),
-        ("Cachet + vanilla KV", "32k", "fp8_e5m2"),
-    }
-    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["p50_ttft_seconds"] == pytest.approx(2.1659776625)
-    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["p50_decode_tokens_per_second"] == pytest.approx(20.7423584569)
-    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["vllm_kv_capacity_estimate_for_context"] == pytest.approx(29.02)
-    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["accounted_gpu_memory_gib"] == pytest.approx(19.29)
-    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["max_observed_gpu_kv_cache_usage_percent"] == pytest.approx(4.3)
-    assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["p50_ttft_seconds"] == pytest.approx(6.047064134)
-    assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["vllm_kv_capacity_estimate_for_context"] == pytest.approx(14.51)
-    assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["max_observed_waiting_requests"] == 7
-    assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["p50_ttft_seconds"] == pytest.approx(16.6217639235)
-    assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["p50_decode_tokens_per_second"] == pytest.approx(13.6594446137)
-    assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["vllm_kv_capacity_estimate_for_context"] == pytest.approx(7.25)
-    assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["max_observed_gpu_kv_cache_usage_gib"] == pytest.approx(2.2848)
-    assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["measurements"] == 32
-    assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.3888765125)
-    assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["p50_decode_tokens_per_second"] == pytest.approx(20.7322679282)
-    assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.431847068)
-    assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["cache_footprint_bytes"] == 4915814400
-    assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["accounted_gpu_memory_gib"] == pytest.approx(19.29)
-    assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["max_observed_waiting_requests"] == 0
-    assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.67697023)
-    assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["p50_decode_tokens_per_second"] == pytest.approx(13.4866862195)
-    assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["max_observed_gpu_kv_cache_usage_percent"] == pytest.approx(13.9)
-    assert all(row["answer_found_rate"] == 1.0 for row in current_summary["results"])
-    assert all(row["exact_match_rate"] == 0.0 for row in current_summary["results"])
-    assert all(row["prepared_examples_per_dataset"] == 1 for row in current_summary["results"])
-    assert all(row["repeats_per_example"] == 8 for row in current_summary["results"])
-    assert all(
-        row["answer_found_rate_by_dataset"] == {
-            "biography": 1.0,
-            "hotpotqa": 1.0,
-            "musique": 1.0,
-            "niah": 1.0,
-        }
-        for row in current_summary["results"]
-    )
-    assert all(
-        row["exact_match_rate_by_dataset"] == {
-            "biography": 0.0,
-            "hotpotqa": 0.0,
-            "musique": 0.0,
-            "niah": 0.0,
-        }
-        for row in current_summary["results"]
-    )
-    assert all(
-        row["measured_connector_load_requests"] == 0
-        for row in current_summary["results"]
-        if row["method"] == "Cachet + vanilla KV"
-    )
-    assert "connector telemetry recorded four `load_request` events" in compact_current_readme
-    assert "bf16 document-KV ablation is a quality failure" in compact_current_readme
-
-    precision_ablations = {
-        row["document_kv_dtype"]: row
-        for row in current_summary["document_kv_precision_ablations"]
-    }
-    assert set(precision_ablations) == {"bfloat16", "fp8_e5m2"}
-    assert precision_ablations["bfloat16"]["quality_failure"] is True
-    assert precision_ablations["bfloat16"]["answer_found_rate"] == 0.0
-    assert precision_ablations["bfloat16"]["cache_footprint_bytes"] == 9831628800
-    assert precision_ablations["bfloat16"]["p50_decode_tokens_per_second"] == pytest.approx(17.4245319164)
-    assert precision_ablations["bfloat16"]["max_observed_gpu_kv_cache_usage_percent"] == pytest.approx(7.9)
-    assert precision_ablations["fp8_e5m2"]["quality_failure"] is False
-    assert precision_ablations["fp8_e5m2"]["answer_found_rate"] == 1.0
-    assert precision_ablations["fp8_e5m2"]["p50_decode_tokens_per_second"] == pytest.approx(17.4073605727)
-    completed_run_ids = {
-        row["databricks_parent_run_id"]
-        for row in current_summary["results"]
-    } | {
-        row["databricks_parent_run_id"]
-        for row in current_summary["document_kv_precision_ablations"]
-    }
-    assert {
-        "397306394664215",
-        "353401098635093",
-        "777052874361660",
-        "1108385130287829",
-        "221269968259600",
-        "126174968860307",
-        "745434681832900",
-    } <= completed_run_ids
-    assert current_summary["unmeasured"] == [
-        {
-            "document_kv_dtype": "packed_q4",
-            "reason": "Packed-Q4 document KV layout and dequant/native runtime support are not implemented yet.",
-        }
-    ]
+    assert score_table.count("N/A (0.27.1 full evaluation pending)") == 81
+    assert "Baseline parser-status counts" in score_table
+    assert "Vanilla parser-status counts" in score_table
+    for parser_status in (
+        "ok",
+        "missing_block",
+        "multiple_or_malformed_blocks",
+        "extraneous_text",
+        "nested_block",
+        "empty_answer",
+    ):
+        assert f"`{parser_status}`" in score_table
+    assert "including explicit zeros for unobserved" in score_table
+    assert "Vanilla − Baseline" in score_table
+    assert score_table.count("| 8k |") == 3
+    assert score_table.count("| 16k |") == 3
+    assert score_table.count("| 32k |") == 3
+    assert "| Context | Needle position | n |" in score_table
+    assert "N/A (runner not implemented)" in score_table
+    for method in ("KV&nbsp;Packet", "CacheBlend", "InfoFlow&nbsp;KV"):
+        assert method in root_readme
+    assert "No benchmark result evidence is currently published here." in appendix_readme
+    assert "Superseded result folders were removed" in appendix_readme
 
     expected_files = {
+        "README.md",
         "_template/README.md",
         "appendix/README.md",
-        "appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/README.md",
-        "appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/summary.json",
-        "appendix/main-vanilla-descriptive-evidence/README.md",
-        "appendix/main-vanilla-descriptive-evidence/evidence.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/README.md",
-        "appendix/representative-bf16-qwen3-4b-canaries/g5-vllm-8k-64-three-arm-canary-v2.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/g6-sglang-4k-32-paired-smoke-evidence-v2.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/g6-vllm-16k-256-three-arm-canary-v2.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/g6-vllm-8k-64-three-arm-canary-v2.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/vanilla-cold-optimization.json",
-        "appendix/vanilla-score-canary/README.md",
         "databricks/README.md",
         "native-engine/README.md",
-        "README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
     }
     actual_files = {
-        path.relative_to(benchmark_root).as_posix()
+        str(path.relative_to(benchmark_root))
         for path in benchmark_root.rglob("*")
         if path.is_file()
     }
     assert actual_files == expected_files
 
-    assert not (benchmark_root / "current").exists()
-    assert not (benchmark_root / "appendix" / "existing-results").exists()
-    assert not (benchmark_root / "sglang" / "archive").exists()
-    archived_sglang_folders = {
-        "invalid-served-model-name": "failed_run.json",
-        "runtime-suffix-missing-prefix-binding": "failed_run.json",
-        "zero-cache-hit": "failed_run.json",
-        "partial-page-binding": "failed_run.json",
-        "chained-hash-binding": "failed_run.json",
-        "batch-prior-metadata": "failed_run.json",
-        "attach-hash-tracking": "failed_run.json",
-        "quality-failure-cache-hit": "failed_run.json",
-        "token-stable-cache-hit-quality-failure": "failed_run.json",
-        "qwen-chat-cache-hit-quality-failure": "failed_run.json",
-        "qwen-sampling-cache-hit-quality-failure": "failed_run.json",
-        "chat-completions-cache-hit-quality-failure": "failed_run.json",
-        "no-thinking-cache-hit-quality-failure": "failed_run.json",
-        "deterministic-cache-hit-quality-failure": "failed_run.json",
-        "triton-deterministic-cache-hit-quality-failure": "failed_run.json",
-        "minimal-no-thinking-cache-hit-quality-failure": "failed_run.json",
-        "canary-after-cache-hit-quality-failure": "failed_run.json",
-        "canary-flush-cache-hit-quality-failure": "failed_run.json",
-        "prepared-v1-config-swap-failure": "failed_run.json",
-        "prepared-v1-padded-token-validation-failure": "failed_run.json",
-        "baseline-isolated-success": "success_run.json",
+    ledger_doc = (
+        REPO_ROOT / "docs" / "databricks-cluster-hour-ledger.md"
+    ).read_text(encoding="utf-8")
+    compact_ledger_doc = " ".join(ledger_doc.split())
+    assert (
+        "live-P90 projection applies to each producer and consumer phase of "
+        "every nonzero-indexed full-score wave (waves 1–9); both wave-zero "
+        "phases use hard cap/headroom admission"
+    ) in compact_ledger_doc
+
+    subindex_expectations = {
+        "databricks": "No Databricks benchmark result is currently published",
+        "sglang": "not implemented",
+        "storage": "vLLM 0.27.1 campaign will refresh",
+        "vllm": "vLLM 0.27.1",
     }
-    for folder, record_name in archived_sglang_folders.items():
-        assert (sglang_archive_root / folder / "README.md").is_file()
-        assert (sglang_archive_root / folder / record_name).is_file()
+    for folder, expected in subindex_expectations.items():
+        text = (benchmark_root / folder / "README.md").read_text(encoding="utf-8")
+        assert expected in text
+
+    archive_root = REPO_ROOT / "docs" / "release-ops" / "benchmark-archive"
+    assert (archive_root / "README.md").is_file()
+    for archive_directory in (
+        path for path in archive_root.rglob("*") if path.is_dir()
+    ):
+        assert (archive_directory / "README.md").is_file()
+
 
 def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
     text = (
@@ -1587,31 +1285,21 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "squash or rebase merging enabled" in compact_text
     assert "enable GitHub auto-merge" in compact_text
     assert "delete head branches after merge" in compact_text
-    assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
-    assert "--compatibility-benchmark-json" in compact_remaining_v1_work
-    assert "The last validated strict-bundle snapshot is historical" in compact_remaining_v1_work
-    assert "its then-current wheel and validated 37 artifacts" in compact_remaining_v1_work
-    assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_remaining_v1_work
-    assert "`dependency_freshness` evidence" in compact_remaining_v1_work
-    assert "Traceability-only PR evidence added after it must be included" in compact_remaining_v1_work
-    assert (
-        "does not bind the current source, wheel, or Vanilla main protocol"
-        in compact_remaining_v1_work
+    assert "Freeze the vLLM 0.27.1 source snapshot" in compact_remaining_v1_work
+    assert "complete five-block Baseline/Vanilla latency factorial" in compact_remaining_v1_work
+    assert "concurrency 1/2/4" in compact_remaining_v1_work
+    assert "paired full-dataset score pass" in compact_remaining_v1_work
+    assert "Do not publish partial or pre-reset numbers" in compact_remaining_v1_work
+    assert "new strict release bundle exclusively from the reset campaign" in (
+        compact_remaining_v1_work
     )
-    assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_remaining_v1_work
-    assert "compatibility_databricks_run_status" in compact_remaining_v1_work
-    assert "GitHub governance sidecar" in compact_remaining_v1_work
+    assert "Native engine block managers remain owned by vLLM" in (
+        compact_remaining_v1_work
+    )
     assert "Current governance evidence is green" in compact_remaining_v1_work
-    assert "566743786103032" in compact_remaining_v1_work
-    assert "release evidence `ok=true`" in compact_remaining_v1_work
-    assert (
-        "does not change the strict V1 publication target from AWS g6/L4"
-        in compact_remaining_v1_work
-    )
+    assert "`legacy_migration_evidence` release-bundle role" in compact_remaining_v1_work
     for stale_blocker in stale_release_blockers:
         assert stale_blocker not in text
-    for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
-        assert label in compact_remaining_v1_work
 
 
 def test_maintainer_reference_native_probe_diagnostics_include_serving_environment_profile():

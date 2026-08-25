@@ -76,12 +76,16 @@ from document_kv_cache.benchmark_statistics import (
 )
 
 from document_kv_cache.benchmark_runner import (
+    BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE as BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE,
     BENCHMARK_RUN_RECORD_TYPE as BENCHMARK_RUN_RECORD_TYPE,
     BenchmarkEngine as BenchmarkEngine,
     BenchmarkEngineRequest as BenchmarkEngineRequest,
     BenchmarkGeneration as BenchmarkGeneration,
+    BenchmarkResourceEvidence as BenchmarkResourceEvidence,
     BenchmarkRunResult as BenchmarkRunResult,
     OpenAICompatibleBenchmarkConfig as OpenAICompatibleBenchmarkConfig,
+    benchmark_resource_evidence_from_record as benchmark_resource_evidence_from_record,
+    benchmark_resource_evidence_to_record as benchmark_resource_evidence_to_record,
     benchmark_run_result_to_record as benchmark_run_result_to_record,
     default_benchmark_arms as default_benchmark_arms,
     load_benchmark_jsonl as load_benchmark_jsonl,

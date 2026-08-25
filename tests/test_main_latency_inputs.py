@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,9 @@ from document_kv_cache.main_latency_inputs import (
     prepare_main_latency_inputs,
     verify_main_latency_inputs,
 )
+
+
+TEST_EXAMPLES_PER_DATASET = 2
 
 
 class _CharacterTokenizer:
@@ -93,14 +97,44 @@ def _write_sources(root: Path):
     for dataset in SUPPORTED_V1_DATASETS:
         path = root / "sources" / f"{dataset}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
-        rows = [_source_record(dataset, "b"), _source_record(dataset, "a")]
+        rows = [
+            _source_record(dataset, f"{index:02d}")
+            for index in reversed(range(TEST_EXAMPLES_PER_DATASET + 2))
+        ]
         path.write_text(
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
             encoding="utf-8",
         )
         paths[dataset] = path
-        records[dataset] = (rows[1], rows[0])
+        records[dataset] = tuple(
+            sorted(rows, key=_selection_priority_sha256)
+        )[:TEST_EXAMPLES_PER_DATASET]
     return paths, records
+
+
+def _selection_priority_sha256(record):
+    def canonical(value):
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+
+    identity_sha256 = sha256(
+        canonical({"dataset": record["dataset"], "example_id": record["example_id"]})
+    ).hexdigest()
+    source_record_sha256 = sha256(canonical(record)).hexdigest()
+    return sha256(
+        canonical(
+            {
+                "dataset": record["dataset"],
+                "domain": "cachet.main_latency.content_hash_selection.v1",
+                "example_identity_sha256": identity_sha256,
+                "source_record_sha256": source_record_sha256,
+            }
+        )
+    ).hexdigest()
 
 
 def _read_rows(path: Path):
@@ -117,6 +151,7 @@ def _relative_bytes(root: Path):
 
 
 def test_prepare_main_latency_inputs_is_exact_lossless_and_deterministic(tmp_path):
+    assert MAIN_LATENCY_EXAMPLES_PER_DATASET == 32
     sources, selected_records = _write_sources(tmp_path)
     first_tokenizer = _CharacterTokenizer()
     second_tokenizer = _CharacterTokenizer()
@@ -125,11 +160,13 @@ def test_prepare_main_latency_inputs_is_exact_lossless_and_deterministic(tmp_pat
         sources,
         tmp_path / "first",
         tokenizer=first_tokenizer,
+        examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
     )
     second = prepare_main_latency_inputs(
         sources,
         tmp_path / "second",
         tokenizer=second_tokenizer,
+        examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
     )
 
     assert _relative_bytes(first.output_dir) == _relative_bytes(second.output_dir)
@@ -143,7 +180,7 @@ def test_prepare_main_latency_inputs_is_exact_lossless_and_deterministic(tmp_pat
 
     for artifact in first.files:
         records = _read_rows(artifact.jsonl_path)
-        assert len(records) == MAIN_LATENCY_EXAMPLES_PER_DATASET
+        assert len(records) == TEST_EXAMPLES_PER_DATASET
         for record_index, (record, source_record) in enumerate(
             zip(records, selected_records[artifact.dataset], strict=True),
             start=1,
@@ -205,25 +242,25 @@ def test_prepare_main_latency_inputs_is_exact_lossless_and_deterministic(tmp_pat
     assert provenance["bundle_sha256"] == first.bundle_sha256
     assert len(provenance["outputs"]) == 12
     assert all(
-        output["record_count"] == MAIN_LATENCY_EXAMPLES_PER_DATASET
-        and len(output["records"]) == MAIN_LATENCY_EXAMPLES_PER_DATASET
+        output["record_count"] == TEST_EXAMPLES_PER_DATASET
+        and len(output["records"]) == TEST_EXAMPLES_PER_DATASET
         for output in provenance["outputs"]
     )
     assert provenance["protocol"]["selection"][
         "selected_examples_per_dataset"
-    ] == MAIN_LATENCY_EXAMPLES_PER_DATASET
+    ] == TEST_EXAMPLES_PER_DATASET
     assert [row["dataset"] for row in provenance["sources"]] == list(
         SUPPORTED_V1_DATASETS
     )
     assert all(
-        len(source["selected_records"]) == MAIN_LATENCY_EXAMPLES_PER_DATASET
+        len(source["selected_records"]) == TEST_EXAMPLES_PER_DATASET
         for source in provenance["sources"]
     )
     for secret in (
         "Secret answer",
         "Secret question",
         "First source fact",
-        "biography-a",
+        "biography-00",
         str(tmp_path),
     ):
         assert secret not in provenance_text
@@ -236,16 +273,19 @@ def test_prepare_accepts_identical_recheck_and_verify_can_omit_sources(tmp_path)
         sources,
         tmp_path / "prepared",
         tokenizer=tokenizer,
+        examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
     )
 
     repeated = prepare_main_latency_inputs(
         sources,
         tmp_path / "prepared",
         tokenizer=_CharacterTokenizer(),
+        examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
     )
     verified = verify_main_latency_inputs(
         tmp_path / "prepared",
         tokenizer=_CharacterTokenizer(),
+        examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
     )
 
     assert repeated.bundle_sha256 == first.bundle_sha256
@@ -259,6 +299,7 @@ def test_verify_rejects_output_source_and_provenance_tampering(tmp_path):
         sources,
         tmp_path / "prepared",
         tokenizer=_CharacterTokenizer(),
+        examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
     )
     output_path = result.files[0].jsonl_path
     original_output = output_path.read_bytes()
@@ -267,6 +308,7 @@ def test_verify_rejects_output_source_and_provenance_tampering(tmp_path):
         verify_main_latency_inputs(
             result.output_dir,
             tokenizer=_CharacterTokenizer(),
+            examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
         )
     output_path.write_bytes(original_output)
 
@@ -277,6 +319,7 @@ def test_verify_rejects_output_source_and_provenance_tampering(tmp_path):
             result.output_dir,
             source_paths=sources,
             tokenizer=_CharacterTokenizer(),
+            examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
         )
 
     provenance_path = result.provenance_json_path
@@ -290,6 +333,7 @@ def test_verify_rejects_output_source_and_provenance_tampering(tmp_path):
         verify_main_latency_inputs(
             result.output_dir,
             tokenizer=_CharacterTokenizer(),
+            examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
         )
 
 
@@ -351,6 +395,7 @@ def test_prepare_fails_closed_on_noncompositional_token_boundaries(tmp_path):
             sources,
             destination,
             tokenizer=_BoundaryMergingTokenizer(),
+            examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
         )
 
     assert not destination.exists()
@@ -370,11 +415,15 @@ def test_prepare_rejects_noncanonical_or_incomplete_source_sets(tmp_path):
         json.dumps(_source_record("biography", "only")) + "\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="only 1 of 2 required examples"):
+    with pytest.raises(
+        ValueError,
+        match=f"only 1 of {TEST_EXAMPLES_PER_DATASET} required examples",
+    ):
         prepare_main_latency_inputs(
             sources,
             tmp_path / "insufficient",
             tokenizer=_CharacterTokenizer(),
+            examples_per_dataset=TEST_EXAMPLES_PER_DATASET,
         )
 
     record = _source_record("biography", "a")
@@ -452,13 +501,20 @@ def test_main_latency_inputs_cli_prepares_and_verifies(tmp_path, monkeypatch, ca
     output_dir = tmp_path / "prepared"
 
     exit_code = main_latency_inputs_main(
-        ["prepare", *source_args, "--output-dir", str(output_dir)]
+        [
+            "prepare",
+            *source_args,
+            "--output-dir",
+            str(output_dir),
+            "--examples-per-dataset",
+            str(TEST_EXAMPLES_PER_DATASET),
+        ]
     )
     prepared_output = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert prepared_output["ok"] is True
     assert prepared_output["examples_per_dataset"] == (
-        MAIN_LATENCY_EXAMPLES_PER_DATASET
+        TEST_EXAMPLES_PER_DATASET
     )
     assert len(prepared_output["files"]) == 12
     assert prepared_output["tokenizer_id"] == MAIN_LATENCY_TOKENIZER_ID
@@ -467,18 +523,25 @@ def test_main_latency_inputs_cli_prepares_and_verifies(tmp_path, monkeypatch, ca
     )
     assert all(
         len(_read_rows(Path(row["jsonl_path"])))
-        == MAIN_LATENCY_EXAMPLES_PER_DATASET
+        == TEST_EXAMPLES_PER_DATASET
         for row in prepared_output["files"]
     )
 
     exit_code = main_latency_inputs_main(
-        ["verify", "--output-dir", str(output_dir), *source_args]
+        [
+            "verify",
+            "--output-dir",
+            str(output_dir),
+            *source_args,
+            "--examples-per-dataset",
+            str(TEST_EXAMPLES_PER_DATASET),
+        ]
     )
     verified_output = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert verified_output["ok"] is True
     assert verified_output["examples_per_dataset"] == (
-        MAIN_LATENCY_EXAMPLES_PER_DATASET
+        TEST_EXAMPLES_PER_DATASET
     )
     assert verified_output["bundle_sha256"] == prepared_output["bundle_sha256"]
     assert {row["input_tokens_target"] for row in verified_output["files"]} == set(

@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from hashlib import sha256
+from types import MappingProxyType
 from typing import Any
 
 from document_kv_cache._benchmark_models import (
@@ -31,6 +32,14 @@ BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE = (
     "document_kv.benchmark_experiment_manifest.v1"
 )
 VARIES_BY_ARM = "varies_by_arm"
+RESOURCE_SOFTWARE_IDENTITY_PACKAGE_KEYS = MappingProxyType(
+    {
+        "source_revision": ("cachet-source", "git:"),
+        "source_tree_sha256": ("cachet-source-tree", "sha256:"),
+        "wheel_sha256": ("cachet-kv", "wheel-sha256:"),
+        "runner_sha256": ("cachet-runner", "sha256:"),
+    }
+)
 
 
 def _build_experiment_manifest(
@@ -345,6 +354,99 @@ def _runtime_environment_to_record(
     }
 
 
+def _resource_execution_id_digest(
+    manifest: BenchmarkExperimentManifest,
+    arm_id: str,
+) -> str:
+    """Return the physical execution identity declared for one arm."""
+
+    if not isinstance(manifest, BenchmarkExperimentManifest):
+        raise TypeError("manifest must be BenchmarkExperimentManifest")
+    _validate_non_empty_string(arm_id, "arm_id")
+    known_arm_ids = {arm.arm_id for arm in manifest.arms}
+    if arm_id not in known_arm_ids:
+        raise ValueError(f"resource evidence references unknown arm {arm_id!r}")
+    source_ids = dict(manifest.source_execution_ids)
+    if source_ids:
+        try:
+            return source_ids[arm_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"manifest has no source execution identity for arm {arm_id!r}"
+            ) from exc
+    return sha256(manifest.runtime_id.encode("utf-8")).hexdigest()
+
+
+def _resource_runtime_identity_digest(
+    manifest: BenchmarkExperimentManifest,
+    arm_id: str,
+    *,
+    execution_id_digest: str | None = None,
+) -> str:
+    """Hash the runtime closure used to interpret one arm's telemetry."""
+
+    expected_execution_id = _resource_execution_id_digest(manifest, arm_id)
+    if execution_id_digest is not None and execution_id_digest != expected_execution_id:
+        raise ValueError("resource execution identity does not match the manifest")
+    arm = next(candidate for candidate in manifest.arms if candidate.arm_id == arm_id)
+    return _sha256_json(
+        {
+            "execution_id_digest": expected_execution_id,
+            "package_revisions": dict(manifest.package_revisions),
+            "runtime_environment": _runtime_environment_to_record(
+                arm.runtime_environment
+            ),
+        }
+    )
+
+
+def _resource_software_identity(
+    manifest: BenchmarkExperimentManifest,
+) -> dict[str, str]:
+    """Resolve the source/wheel/runner closure declared by the manifest."""
+
+    if not isinstance(manifest, BenchmarkExperimentManifest):
+        raise TypeError("manifest must be BenchmarkExperimentManifest")
+    return _resource_software_identity_from_package_revisions(
+        dict(manifest.package_revisions)
+    )
+
+
+def _resource_software_identity_from_package_revisions(
+    package_revisions: Mapping[str, Any],
+) -> dict[str, str]:
+    """Resolve a resource closure directly from provenance package revisions."""
+
+    if not isinstance(package_revisions, Mapping):
+        raise TypeError("package_revisions must be a mapping")
+    resolved: dict[str, str] = {}
+    for field_name, (package_name, prefix) in (
+        RESOURCE_SOFTWARE_IDENTITY_PACKAGE_KEYS.items()
+    ):
+        raw_value = package_revisions.get(package_name)
+        if not isinstance(raw_value, str) or not raw_value.startswith(prefix):
+            raise ValueError(
+                f"manifest package_revisions.{package_name} must use {prefix!r}"
+            )
+        value = raw_value.removeprefix(prefix)
+        if not value:
+            raise ValueError(
+                f"manifest package_revisions.{package_name} has no identity value"
+            )
+        if field_name != "source_revision" and (
+            len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError(
+                f"manifest package_revisions.{package_name} must contain a "
+                "lowercase SHA-256 digest"
+            )
+        if field_name == "source_revision" and value in {"unresolved", "unknown"}:
+            raise ValueError("manifest Cachet source revision is unresolved")
+        resolved[field_name] = value
+    return resolved
+
+
 def _legacy_environment_summary(
     arms: Sequence[BenchmarkArmManifest],
     field_name: str,
@@ -648,6 +750,10 @@ def benchmark_experiment_manifest_to_record(
             "source_execution_ids": [
                 {"arm_id": arm_id, "execution_id_digest": execution_id_digest}
                 for arm_id, execution_id_digest in manifest.source_execution_ids
+            ],
+            "resource_evidence_ids": [
+                {"arm_id": arm_id, "resource_evidence_sha256": evidence_digest}
+                for arm_id, evidence_digest in manifest.resource_evidence_ids
             ],
         },
         "arms": [

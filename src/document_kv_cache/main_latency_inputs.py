@@ -36,11 +36,11 @@ from document_kv_cache.storage import local_path
 
 
 MAIN_LATENCY_INPUT_RECORD_TYPE = "cachet.main_latency_inputs"
-MAIN_LATENCY_INPUT_SCHEMA_VERSION = 2
+MAIN_LATENCY_INPUT_SCHEMA_VERSION = 3
 MAIN_LATENCY_TOKENIZER_ID = "Qwen/Qwen3-4B-Instruct-2507"
 MAIN_LATENCY_TOKENIZER_REVISION = "cdbee75f17c01a7cc42f958dc650907174af0554"
 MAIN_LATENCY_ADD_SPECIAL_TOKENS = False
-MAIN_LATENCY_EXAMPLES_PER_DATASET = 2
+MAIN_LATENCY_EXAMPLES_PER_DATASET = 32
 MAIN_LATENCY_TARGET_SEGMENT_COUNTS: Mapping[int, int] = {
     8192: 4,
     16384: 8,
@@ -64,6 +64,7 @@ _PADDING_UNITS = (" padding", " x", "x", "0", ".")
 _SOURCE_CHUNK_ID = "source-context"
 _PADDING_CHUNK_ID = "length-padding"
 _TRANSFORMATION_ID = "cachet.main_latency.lossless_context_tiling.v1"
+_SELECTION_DOMAIN = "cachet.main_latency.content_hash_selection.v1"
 _PROVENANCE_FIELDS = frozenset(
     {
         "bundle_sha256",
@@ -94,6 +95,7 @@ _SOURCE_SELECTION_PROVENANCE_FIELDS = frozenset(
         "query_sha256",
         "references_sha256",
         "selected_record_sha256",
+        "selection_priority_sha256",
         "selection_record_index",
         "source_document_context_sha256",
     }
@@ -330,6 +332,7 @@ def verify_main_latency_inputs(
         provenance,
         examples_per_dataset=selected_count,
     )
+    _verify_identity_reuse_across_targets(source_records, output_records)
 
     verified_files: list[MainLatencyInputFile] = []
     rebuilt_output_records: list[Mapping[str, Any]] = []
@@ -434,6 +437,7 @@ def verify_main_latency_inputs(
             source_records=source_records,
             output_records=output_records,
             examples_per_dataset=selected_count,
+            tokenizer=resolved_tokenizer,
         )
 
     return PreparedMainLatencyInputs(
@@ -701,7 +705,7 @@ def _select_and_prepare_dataset(
 ) -> tuple[tuple[_SourceRow, ...], tuple[_PreparedOutput, ...]]:
     ordered = sorted(
         source.rows,
-        key=lambda row: (row.example.example_id, row.record_sha256),
+        key=lambda row: (_selection_priority_sha256(row), row.record_sha256),
     )
     failures: list[str] = []
     selected_rows: list[_SourceRow] = []
@@ -1096,6 +1100,7 @@ def _describe_source_selection(selected: _SourceRow) -> Mapping[str, Any]:
         "query_sha256": _text_sha256(example.query),
         "references_sha256": _canonical_sha256(list(example.references)),
         "selected_record_sha256": selected.record_sha256,
+        "selection_priority_sha256": _selection_priority_sha256(selected),
         "selection_record_index": selected.source_record_index,
         "source_document_context_sha256": _text_sha256(parts.document_context),
     }
@@ -1289,8 +1294,9 @@ def _protocol_record(*, examples_per_dataset: int) -> Mapping[str, Any]:
             "system_prompt_position": DEFAULT_SYSTEM_PROMPT_POSITION,
         },
         "selection": {
+            "domain": _SELECTION_DOMAIN,
             "identity_reused_across_targets": True,
-            "ordering": "example_id_then_canonical_source_record_sha256",
+            "ordering": "sha256_domain_dataset_identity_and_source_record",
             "selected_examples_per_dataset": examples_per_dataset,
         },
         "targets": [
@@ -1386,6 +1392,7 @@ def _source_records_from_provenance(
             selection_digests.add(
                 _required_sha256(selection, "selected_record_sha256")
             )
+            _required_sha256(selection, "selection_priority_sha256")
             if _required_int(selection, "selection_record_index") == 0:
                 raise ValueError(
                     "provenance selection_record_index must be positive"
@@ -1475,6 +1482,7 @@ def _verify_sources_against_provenance(
     source_records: Sequence[Mapping[str, Any]],
     output_records: Sequence[Mapping[str, Any]],
     examples_per_dataset: int,
+    tokenizer: MainLatencyTokenizer,
 ) -> None:
     source_by_dataset = {
         _required_str(record, "dataset"): record for record in source_records
@@ -1498,20 +1506,23 @@ def _verify_sources_against_provenance(
             expected.get("selected_records"),
             label=f"sources[{dataset}].selected_records",
         )
-        selected_rows: list[_SourceRow] = []
-        for selection in expected_selections:
-            selected_digest = _required_sha256(
-                selection,
-                "selected_record_sha256",
+        selected_rows, _outputs = _select_and_prepare_dataset(
+            source,
+            tokenizer=tokenizer,
+            examples_per_dataset=examples_per_dataset,
+        )
+        expected_selection_digests = tuple(
+            _required_sha256(selection, "selected_record_sha256")
+            for selection in expected_selections
+        )
+        recomputed_selection_digests = tuple(
+            row.record_sha256 for row in selected_rows
+        )
+        if recomputed_selection_digests != expected_selection_digests:
+            raise ValueError(
+                f"selected source records do not match content-hash selection for "
+                f"{dataset}"
             )
-            matches = [
-                row for row in source.rows if row.record_sha256 == selected_digest
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    f"selected source record is missing or ambiguous for {dataset}"
-                )
-            selected_rows.append(matches[0])
         rebuilt = _describe_source_file(source, selected_rows)
         if rebuilt != expected:
             raise ValueError(f"selected source provenance mismatch for {dataset}")
@@ -1558,6 +1569,36 @@ def _verify_sources_against_provenance(
                     )
     if _canonical_sha256(rebuilt_sources) != _canonical_sha256(source_records):
         raise ValueError("source provenance changed during verification")
+
+
+def _verify_identity_reuse_across_targets(
+    source_records: Sequence[Mapping[str, Any]],
+    output_records: Sequence[Mapping[str, Any]],
+) -> None:
+    source_identities = {
+        _required_str(source, "dataset"): tuple(
+            _required_sha256(selected, "example_identity_sha256")
+            for selected in _mapping_sequence(
+                source.get("selected_records"),
+                label="source selected_records",
+            )
+        )
+        for source in source_records
+    }
+    for output in output_records:
+        dataset = _required_str(output, "dataset")
+        output_identities = tuple(
+            _required_sha256(prepared, "example_identity_sha256")
+            for prepared in _mapping_sequence(
+                output.get("records"),
+                label="output records",
+            )
+        )
+        if output_identities != source_identities[dataset]:
+            raise ValueError(
+                f"prepared output identities are not reused across targets for "
+                f"{dataset}"
+            )
 
 
 def _bundle_sha256(output_records: Sequence[Mapping[str, Any]]) -> str:
@@ -1624,6 +1665,19 @@ def _token_ids_sha256(token_ids: Sequence[int]) -> str:
 def _example_identity_sha256(example: BenchmarkExample) -> str:
     return _canonical_sha256(
         {"dataset": example.dataset, "example_id": example.example_id}
+    )
+
+
+def _selection_priority_sha256(row: _SourceRow) -> str:
+    """Return the source-order-independent publication selection priority."""
+
+    return _canonical_sha256(
+        {
+            "dataset": row.example.dataset,
+            "domain": _SELECTION_DOMAIN,
+            "example_identity_sha256": _example_identity_sha256(row.example),
+            "source_record_sha256": row.record_sha256,
+        }
     )
 
 

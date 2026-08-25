@@ -4,31 +4,43 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata as package_metadata
+from hashlib import sha256
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from document_kv_cache.vllm_runtime_contract_data import (
-    VLLM_KV_CONNECTOR_V1_CONTRACT,
+    VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
+    VLLM_KV_CONNECTOR_V1_CONTRACT as VLLM_KV_CONNECTOR_V1_CONTRACT,
     VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE,
     VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION,
     VLLM_KV_CONNECTOR_V1_DOC_URL,
     VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
     VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
     VLLM_KV_CONNECTOR_V1_RUNTIME,
-    vllm_kv_connector_v1_contract_to_record,
+    VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME,
+    VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION,
+    vllm_kv_connector_v1_contract_to_record as vllm_kv_connector_v1_contract_to_record,
 )
 VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_RECORD_TYPE = (
-    "vllm_kv_injection.installed_kv_connector_v1_contract.v1"
+    "vllm_kv_injection.installed_kv_connector_v1_contract.v3"
 )
-VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION = 1
+VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION = 3
 VLLM_KV_CONNECTOR_V1_BASE_MODULE = "vllm.distributed.kv_transfer.kv_connector.v1.base"
-_VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES = ("prefer_cross_layer_blocks", "role")
+_VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES = (
+    "prefer_cross_layer_blocks",
+    "requires_kv_delivery",
+    "role",
+)
 _VLLM_KV_CONNECTOR_V1_CONTRACT_KEYS = frozenset(
     {
         "record_type",
         "schema_version",
         "runtime",
+        "target_package_name",
+        "target_package_version",
+        "base_source_sha256",
         "doc_url",
         "required_methods",
         "optional_methods",
@@ -41,8 +53,13 @@ _VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_KEYS = frozenset(
         "schema_version",
         "runtime",
         "base_module",
+        "base_source_sha256",
+        "expected_base_source_sha256",
+        "base_source_matches",
         "package_name",
         "package_version",
+        "expected_package_version",
+        "version_matches",
         "importable",
         "import_error_type",
         "import_error",
@@ -68,6 +85,7 @@ class VLLMInstalledKVConnectorContract:
     importable: bool
     installed_methods: tuple[str, ...]
     installed_properties: tuple[str, ...]
+    base_source_sha256: str | None = None
     import_error_type: str | None = None
     import_error: str | None = None
 
@@ -89,9 +107,19 @@ class VLLMInstalledKVConnectorContract:
         return _extra(self.installed_properties, _VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES)
 
     @property
+    def version_matches(self) -> bool:
+        return self.package_version == VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION
+
+    @property
+    def base_source_matches(self) -> bool:
+        return self.base_source_sha256 == VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256
+
+    @property
     def ok(self) -> bool:
         return (
             self.importable
+            and self.version_matches
+            and self.base_source_matches
             and not self.missing_required_methods
             and not self.extra_installed_methods
             and not self.extra_installed_properties
@@ -130,7 +158,7 @@ def validate_vllm_kv_connector_v1_contract_record(record: Mapping[str, Any]) -> 
 def inspect_installed_vllm_kv_connector_v1_contract() -> VLLMInstalledKVConnectorContract:
     """Inspect the installed vLLM runtime's V1 KV connector public API."""
 
-    package_version = _package_version("vllm")
+    package_version = _package_version(VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME)
     try:
         base_module = importlib.import_module(VLLM_KV_CONNECTOR_V1_BASE_MODULE)
         base_class = getattr(base_module, "KVConnectorBase_V1")
@@ -150,6 +178,7 @@ def inspect_installed_vllm_kv_connector_v1_contract() -> VLLMInstalledKVConnecto
         importable=True,
         installed_methods=methods,
         installed_properties=properties,
+        base_source_sha256=_module_source_sha256(base_module),
     )
 
 
@@ -164,8 +193,13 @@ def installed_vllm_kv_connector_v1_contract_to_record(
         "schema_version": VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION,
         "runtime": VLLM_KV_CONNECTOR_V1_RUNTIME,
         "base_module": VLLM_KV_CONNECTOR_V1_BASE_MODULE,
-        "package_name": "vllm",
+        "base_source_sha256": observed.base_source_sha256,
+        "expected_base_source_sha256": VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
+        "base_source_matches": observed.base_source_matches,
+        "package_name": VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME,
         "package_version": observed.package_version,
+        "expected_package_version": VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION,
+        "version_matches": observed.version_matches,
         "importable": observed.importable,
         "import_error_type": observed.import_error_type,
         "import_error": observed.import_error,
@@ -211,11 +245,58 @@ def installed_vllm_kv_connector_v1_contract_record_issues(record: Mapping[str, A
         issues.append(f"installed vLLM KV connector contract runtime must be {VLLM_KV_CONNECTOR_V1_RUNTIME!r}")
     if record.get("base_module") != VLLM_KV_CONNECTOR_V1_BASE_MODULE:
         issues.append("installed vLLM KV connector contract base_module must point at KVConnectorBase_V1")
-    if record.get("package_name") != "vllm":
-        issues.append("installed vLLM KV connector contract package_name must be 'vllm'")
+    base_source_sha256 = record.get("base_source_sha256")
+    if base_source_sha256 is not None and (
+        not isinstance(base_source_sha256, str)
+        or len(base_source_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in base_source_sha256
+        )
+    ):
+        issues.append(
+            "installed vLLM KV connector contract base_source_sha256 must be a lowercase SHA-256 or null"
+        )
+    if (
+        record.get("expected_base_source_sha256")
+        != VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256
+    ):
+        issues.append(
+            "installed vLLM KV connector contract expected_base_source_sha256 must match the package contract"
+        )
+    base_source_matches = record.get("base_source_matches")
+    if type(base_source_matches) is not bool:
+        issues.append(
+            "installed vLLM KV connector contract base_source_matches must be boolean"
+        )
+    elif base_source_matches != (
+        base_source_sha256 == VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256
+    ):
+        issues.append(
+            "installed vLLM KV connector contract base_source_matches must match base_source_sha256"
+        )
+    if record.get("package_name") != VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME:
+        issues.append(
+            "installed vLLM KV connector contract package_name must be "
+            f"{VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME!r}"
+        )
     package_version = record.get("package_version")
     if package_version is not None and (not isinstance(package_version, str) or not package_version):
         issues.append("installed vLLM KV connector contract package_version must be a non-empty string or null")
+    if record.get("expected_package_version") != VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION:
+        issues.append(
+            "installed vLLM KV connector contract expected_package_version must be "
+            f"{VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION!r}"
+        )
+    version_matches = record.get("version_matches")
+    if type(version_matches) is not bool:
+        issues.append("installed vLLM KV connector contract version_matches must be boolean")
+    elif version_matches != (
+        package_version == VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION
+    ):
+        issues.append(
+            "installed vLLM KV connector contract version_matches must match package_version"
+        )
     importable = record.get("importable")
     if type(importable) is not bool:
         issues.append("installed vLLM KV connector contract importable must be boolean")
@@ -295,6 +376,8 @@ def installed_vllm_kv_connector_v1_contract_record_issues(record: Mapping[str, A
     ):
         expected_ok = (
             importable
+            and version_matches is True
+            and base_source_matches is True
             and not expected_missing_required
             and not expected_extra_methods
             and not expected_extra_properties
@@ -321,6 +404,20 @@ def vllm_kv_connector_v1_contract_record_issues(record: Mapping[str, Any]) -> tu
         )
     if record.get("runtime") != VLLM_KV_CONNECTOR_V1_RUNTIME:
         issues.append(f"vLLM V1 KV connector contract runtime must be {VLLM_KV_CONNECTOR_V1_RUNTIME!r}")
+    if record.get("target_package_name") != VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME:
+        issues.append(
+            "vLLM V1 KV connector contract target_package_name must be "
+            f"{VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME!r}"
+        )
+    if record.get("target_package_version") != VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION:
+        issues.append(
+            "vLLM V1 KV connector contract target_package_version must be "
+            f"{VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION!r}"
+        )
+    if record.get("base_source_sha256") != VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256:
+        issues.append(
+            "vLLM V1 KV connector contract base_source_sha256 must match the approved 0.27.1 source"
+        )
     if record.get("doc_url") != VLLM_KV_CONNECTOR_V1_DOC_URL:
         issues.append("vLLM V1 KV connector contract doc_url must point at the vLLM V1 KV connector docs")
     if _string_list(record.get("required_methods")) != list(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS):
@@ -362,6 +459,21 @@ def _class_public_surface(value: type) -> tuple[tuple[str, ...], tuple[str, ...]
         elif isinstance(attribute, (classmethod, staticmethod)) or callable(attribute):
             methods.append(name)
     return tuple(sorted(methods)), tuple(sorted(properties))
+
+
+def _module_source_sha256(module: object) -> str | None:
+    source_path = getattr(module, "__file__", None)
+    if not isinstance(source_path, str) or not source_path:
+        return None
+    path = Path(source_path)
+    if path.suffix in {".pyc", ".pyo"}:
+        source_candidate = path.with_suffix(".py")
+        if source_candidate.is_file():
+            path = source_candidate
+    try:
+        return sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def _missing(expected: Sequence[str], observed: Sequence[str]) -> tuple[str, ...]:

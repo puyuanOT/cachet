@@ -227,6 +227,10 @@ class DatabricksSGLangSmokeJobConfig:
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
         _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        if self.run_timeout_seconds > DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "run_timeout_seconds exceeds the four-hour SGLang smoke bound"
+            )
         _validated_databricks_task_max_retries(self.task_max_retries)
         object.__setattr__(
             self,

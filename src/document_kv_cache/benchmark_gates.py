@@ -9,11 +9,30 @@ from typing import Any, Literal
 from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache._benchmark_manifest import (
     VARIES_BY_ARM,
+    _resource_execution_id_digest,
+    _resource_runtime_identity_digest,
+    _resource_software_identity,
     _validate_arm_runtime_environments,
 )
 from document_kv_cache.benchmark_runner import BenchmarkRunResult
 from document_kv_cache.benchmark_statistics import paired_benchmark_statistics
-from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
+from document_kv_cache.benchmarks import (
+    FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+    FINAL_ANSWER_PARSER_DIGEST,
+    FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+    FINAL_ANSWER_PARSER_ID,
+    FINAL_ANSWER_PARSER_ID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
+    FINAL_ANSWER_PARSER_PLUGIN_PATH,
+    FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
+    FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_VERSION,
+    FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
+    NIAH_CELL_IDS,
+    SUPPORTED_V1_DATASETS,
+    extract_single_final_answer,
+    final_answer_measurement_metadata,
+)
 from document_kv_cache.methods import MethodRegistry, default_method_registry
 
 
@@ -401,6 +420,12 @@ def evaluate_benchmark_publication_gate(
                         f"dataset {scorer.dataset!r} scorer "
                         f"{scorer.scorer_id}@{scorer.version} has no plugin path"
                     )
+                if not scorer.prompt_plugin_path or not scorer.prompt_template_version:
+                    issues.append(
+                        f"dataset {scorer.dataset!r} scorer "
+                        f"{scorer.scorer_id}@{scorer.version} has no closed prompt identity"
+                    )
+            issues.extend(_publication_score_contract_issues(result))
         if resolved.policy == "publication":
             scorers_by_dataset = {
                 scorer.dataset: scorer for scorer in manifest.scorer_identities
@@ -412,12 +437,17 @@ def evaluate_benchmark_publication_gate(
                         f"dataset {dataset!r} has no versioned scorer/prompt identity"
                     )
                     continue
-                if dataset not in SUPPORTED_V1_DATASETS and (
+                if (
                     not candidate_scorer.prompt_plugin_path
                     or not candidate_scorer.prompt_template_version
                 ):
+                    dataset_label = (
+                        "custom dataset"
+                        if dataset not in SUPPORTED_V1_DATASETS
+                        else "dataset"
+                    )
                     issues.append(
-                        f"custom dataset {dataset!r} requires a versioned prompt "
+                        f"{dataset_label} {dataset!r} requires a versioned prompt "
                         "plugin path and template version"
                     )
             if (
@@ -1014,6 +1044,94 @@ def _is_sha256_digest(value: Any) -> bool:
     )
 
 
+def _publication_score_contract_issues(
+    result: BenchmarkRunResult,
+) -> tuple[str, ...]:
+    """Fail closed when scored measurements cannot reproduce answer extraction."""
+
+    manifest = result.experiment_manifest
+    if manifest is None:
+        return ("publication score contract requires an experiment manifest",)
+    scorer_by_dataset = {
+        scorer.dataset: scorer for scorer in manifest.scorer_identities
+    }
+    expected_parser_identity = {
+        FINAL_ANSWER_PARSER_ID_METADATA_KEY: FINAL_ANSWER_PARSER_ID,
+        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: FINAL_ANSWER_PARSER_VERSION,
+        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: FINAL_ANSWER_PARSER_PLUGIN_PATH,
+        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: FINAL_ANSWER_PARSER_DIGEST,
+    }
+    issue_counts: dict[str, int] = {}
+    niah_cells_by_arm: dict[str, set[str]] = {}
+
+    def note(message: str) -> None:
+        issue_counts[message] = issue_counts.get(message, 0) + 1
+
+    for measurement in result.measurements:
+        if not measurement.ok:
+            continue
+        scorer = scorer_by_dataset.get(measurement.dataset)
+        if scorer is None:
+            note("score measurement has no manifest scorer identity")
+            continue
+        if (
+            measurement.scorer_id != scorer.scorer_id
+            or measurement.scorer_version != scorer.version
+        ):
+            note("score measurement scorer identity does not match the manifest")
+        expected_metrics = {
+            metric.metric_name for metric in scorer.metric_specs
+        }
+        if set(measurement.quality_scores) != expected_metrics:
+            note("score measurement metric set does not match the manifest scorer")
+        metadata = measurement.metadata
+        for key, expected_value in expected_parser_identity.items():
+            if metadata.get(key) != expected_value:
+                note("score measurement has missing or mixed final-answer parser identity")
+                break
+        extraction = extract_single_final_answer(measurement.output_text)
+        expected_metadata = final_answer_measurement_metadata(extraction)
+        if any(metadata.get(key) != value for key, value in expected_metadata.items()):
+            note("score measurement final-answer extraction cannot be reproduced")
+        valid_value = metadata.get(FINAL_ANSWER_PARSER_VALID_METADATA_KEY)
+        status_value = metadata.get(FINAL_ANSWER_PARSER_STATUS_METADATA_KEY)
+        extracted_value = metadata.get(FINAL_ANSWER_EXTRACTED_METADATA_KEY)
+        if valid_value not in {"true", "false"} or not isinstance(status_value, str):
+            note("score measurement has an invalid final-answer parser status")
+        if not isinstance(extracted_value, str):
+            note("score measurement does not persist the extracted answer")
+        if not extraction.valid and any(
+            float(value) != 0.0 for value in measurement.quality_scores.values()
+        ):
+            note("invalid final-answer extraction must score zero for every metric")
+        if measurement.dataset == "niah":
+            cell_id = metadata.get("niah_cell_id")
+            if cell_id not in NIAH_CELL_IDS:
+                note(
+                    "NIAH score measurement has no recognized 8k/16k/32k "
+                    "by 10/50/90 cell identity"
+                )
+            else:
+                niah_cells_by_arm.setdefault(measurement.arm_id, set()).add(
+                    cell_id
+                )
+
+    if manifest.complete_dataset_split and "niah" in manifest.datasets:
+        for arm in manifest.arms:
+            observed_cells = niah_cells_by_arm.get(arm.arm_id, set())
+            missing_cells = set(NIAH_CELL_IDS).difference(observed_cells)
+            if missing_cells:
+                note(
+                    "complete NIAH score arm is missing required cells: "
+                    + ", ".join(sorted(missing_cells))
+                )
+
+    return tuple(
+        f"{message} ({count} measurement{'s' if count != 1 else ''})"
+        for message, count in sorted(issue_counts.items())
+    )
+
+
 def _quality_specs_by_dataset(
     result: BenchmarkRunResult,
     *,
@@ -1111,30 +1229,117 @@ def _resource_scope_issues(result: BenchmarkRunResult) -> tuple[str, ...]:
     manifest = result.experiment_manifest
     if manifest is None:
         return ("resource evidence requires an experiment manifest",)
-    resource_metadata_keys = {
-        "gpu_memory_bytes",
-        "cpu_memory_bytes",
-        "storage_read_bytes",
-        "gpu_utilization",
-        "cpu_utilization",
-        "energy_joules",
-    }
+    from document_kv_cache.benchmark_runner import (
+        benchmark_resource_evidence_to_record,
+    )
+
     issues: list[str] = []
-    for arm in manifest.arms:
-        offline_values = (
-            arm.offline_training_seconds,
-            arm.offline_artifact_generation_seconds,
-            arm.offline_checkpoint_load_seconds,
-            arm.artifact_bytes,
-            arm.offline_peak_memory_bytes,
+    expected_arm_ids = {arm.arm_id for arm in manifest.arms}
+    evidence_by_arm = {item.arm_id: item for item in result.resource_evidence}
+    observed_arm_ids = set(evidence_by_arm)
+    for arm_id in sorted(expected_arm_ids.difference(observed_arm_ids)):
+        issues.append(
+            f"resource arm {arm_id!r} has no governed runtime resource evidence"
         )
-        has_request_resource = any(
-            resource_metadata_keys.intersection(measurement.metadata)
-            for measurement in result.measurements
-            if measurement.arm_id == arm.arm_id
+    for arm_id in sorted(observed_arm_ids.difference(expected_arm_ids)):
+        issues.append(f"resource evidence references unknown arm {arm_id!r}")
+    declared_ids = dict(manifest.resource_evidence_ids)
+    actual_ids = {
+        arm_id: str(benchmark_resource_evidence_to_record(item)["record_sha256"])
+        for arm_id, item in evidence_by_arm.items()
+    }
+    if declared_ids != actual_ids:
+        issues.append(
+            "experiment manifest resource_evidence_ids do not match resource records"
         )
-        if not any(value is not None for value in offline_values) and not has_request_resource:
-            issues.append(f"resource arm {arm.arm_id!r} has no resource measurements")
+    windows_by_arm = {
+        window.arm_id: window
+        for window in result.execution_windows
+        if window.arm_id != "all_arms"
+    }
+    software_closures: set[tuple[str, str, str, str]] = set()
+    telemetry_digests: list[str] = []
+    try:
+        declared_software_identity = _resource_software_identity(manifest)
+    except ValueError as exc:
+        declared_software_identity = {}
+        issues.append(f"resource manifest software identity is invalid: {exc}")
+    for arm_id, evidence in sorted(evidence_by_arm.items()):
+        label = f"resource arm {arm_id!r}"
+        if evidence.experiment_id != manifest.experiment_id:
+            issues.append(f"{label} changes experiment identity")
+        try:
+            expected_execution_id = _resource_execution_id_digest(
+                manifest,
+                arm_id,
+            )
+            expected_runtime_identity = _resource_runtime_identity_digest(
+                manifest,
+                arm_id,
+                execution_id_digest=evidence.execution_id_digest,
+            )
+        except ValueError as exc:
+            issues.append(f"{label} has invalid identity binding: {exc}")
+        else:
+            if evidence.execution_id_digest != expected_execution_id:
+                issues.append(f"{label} changes execution identity")
+            if evidence.runtime_identity_sha256 != expected_runtime_identity:
+                issues.append(f"{label} changes runtime identity")
+        window = windows_by_arm.get(arm_id)
+        if window is None:
+            issues.append(f"{label} has no arm execution window")
+        elif window.started_at_seconds is None or window.ended_at_seconds is None:
+            issues.append(f"{label} execution window is not timestamped")
+        elif (
+            evidence.measurement_started_at_seconds != window.started_at_seconds
+            or evidence.measurement_ended_at_seconds != window.ended_at_seconds
+        ):
+            issues.append(f"{label} measurement window does not match execution")
+        if not evidence.complete:
+            issues.append(f"{label} telemetry coverage is incomplete")
+        if evidence.error_count:
+            issues.append(f"{label} telemetry contains sampling errors")
+        if evidence.sample_count < evidence.expected_sample_count:
+            issues.append(f"{label} has fewer samples than required")
+        if evidence.source_revision.strip().lower() in {"", "unresolved", "unknown"}:
+            issues.append(f"{label} has unresolved source revision")
+        observed_software_identity = {
+            "source_revision": evidence.source_revision,
+            "source_tree_sha256": evidence.source_tree_sha256,
+            "wheel_sha256": evidence.wheel_sha256,
+            "runner_sha256": evidence.runner_sha256,
+        }
+        if observed_software_identity != declared_software_identity:
+            issues.append(
+                f"{label} source/wheel/runner identity does not match the manifest"
+            )
+        for field_name in (
+            "peak_gpu_process_memory_bytes",
+            "peak_process_tree_rss_bytes",
+            "peak_host_memory_used_bytes",
+        ):
+            if getattr(evidence, field_name) <= 0:
+                issues.append(f"{label} has no positive {field_name}")
+        software_closures.add(
+            (
+                evidence.source_revision,
+                evidence.source_tree_sha256,
+                evidence.wheel_sha256,
+                evidence.runner_sha256,
+            )
+        )
+        telemetry_digests.append(evidence.telemetry_sha256)
+    if manifest.comparison_mode == "methods_same_setting" and len(software_closures) > 1:
+        issues.append(
+            "method comparison resource arms use different source/wheel/runner identities"
+        )
+    if (
+        manifest.execution_isolation_mode == "separate_process_or_job"
+        and len(telemetry_digests) != len(set(telemetry_digests))
+    ):
+        issues.append(
+            "separate resource arms must use distinct telemetry sidecars"
+        )
     return tuple(issues)
 
 

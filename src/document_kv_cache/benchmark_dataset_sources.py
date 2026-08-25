@@ -8,7 +8,17 @@ from pathlib import Path
 import zipfile
 from typing import Any
 
-from document_kv_cache.dataset_prep import build_niah_record, write_v1_jsonl
+from document_kv_cache.benchmarks import (
+    MUSIQUE_ANSWER_SCORER_SHA256,
+    MUSIQUE_OFFICIAL_COMMIT,
+    niah_cell_identity,
+)
+from document_kv_cache.dataset_prep import (
+    build_niah_record,
+    opaque_biography_example_id,
+    redact_biography_document_text,
+    write_v1_jsonl,
+)
 
 
 HOTPOTQA_REPO_ID = "hotpotqa/hotpot_qa"
@@ -79,12 +89,14 @@ class DatasetSourceStagingConfig:
             raise ValueError(f"wikibio_split must be one of {sorted(WIKIBIO_SPLIT_NAMES)}")
         if self.niah_sample_count <= 0:
             raise ValueError("niah_sample_count must be positive")
-        if not self.niah_context_token_targets or any(target <= 0 for target in self.niah_context_token_targets):
-            raise ValueError("niah_context_token_targets must contain positive integers")
-        if not self.niah_needle_positions or any(
-            position <= 0.0 or position >= 1.0 for position in self.niah_needle_positions
-        ):
-            raise ValueError("niah_needle_positions must be between 0 and 1")
+        if tuple(self.niah_context_token_targets) != DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS:
+            raise ValueError(
+                "publication NIAH context targets must be exactly 8192, 16384, and 32768"
+            )
+        if tuple(self.niah_needle_positions) != DEFAULT_NIAH_NEEDLE_POSITIONS:
+            raise ValueError(
+                "publication NIAH needle positions must be exactly 0.1, 0.5, and 0.9"
+            )
         if self.limit_per_dataset is not None and self.limit_per_dataset <= 0:
             raise ValueError("limit_per_dataset must be positive when provided")
 
@@ -134,7 +146,7 @@ def stage_full_benchmark_datasets(config: DatasetSourceStagingConfig) -> dict[st
         ),
     }
     record = {
-        "record_type": "document_kv.full_benchmark_dataset_sources.v1",
+        "record_type": "document_kv.full_benchmark_dataset_sources.v2",
         "datasets": datasets,
         "dataset_specs": [f"{dataset}={output_dir / filename}" for dataset, filename in DATASET_FILENAMES.items()],
         "source_files": {
@@ -148,6 +160,9 @@ def stage_full_benchmark_datasets(config: DatasetSourceStagingConfig) -> dict[st
                 "repo_id": WIKIBIO_REPO_ID,
                 "file": WIKIBIO_ARCHIVE_FILE,
                 "split": config.wikibio_split,
+                "task": "biography_entity_identification",
+                "task_version": "2",
+                "identity_policy": "opaque_sha256_ids_and_no_answer_bearing_titles",
             },
             "hotpotqa": {
                 "repo_id": HOTPOTQA_REPO_ID,
@@ -158,6 +173,9 @@ def stage_full_benchmark_datasets(config: DatasetSourceStagingConfig) -> dict[st
                 "repo_id": MUSIQUE_REPO_ID,
                 "file": MUSIQUE_ANSWERABLE_DEV_FILE,
                 "split": "answerable_dev",
+                "official_evaluator_commit": MUSIQUE_OFFICIAL_COMMIT,
+                "official_answer_scorer_sha256": MUSIQUE_ANSWER_SCORER_SHA256,
+                "answer_aliases_preserved": True,
             },
             "niah": {
                 "kind": "synthetic_needle_grid",
@@ -165,6 +183,11 @@ def stage_full_benchmark_datasets(config: DatasetSourceStagingConfig) -> dict[st
                 "context_token_targets": list(config.niah_context_token_targets),
                 "needle_positions": list(config.niah_needle_positions),
                 "seed": config.seed,
+                "cell_ids": [
+                    niah_cell_identity(context_tokens, position)
+                    for context_tokens in config.niah_context_token_targets
+                    for position in config.niah_needle_positions
+                ],
             },
         },
         "limit_per_dataset": config.limit_per_dataset,
@@ -183,7 +206,7 @@ def stage_hotpotqa_parquet(
     limit: int | None = None,
 ) -> dict[str, Any]:
     try:
-        import pyarrow.parquet as pq
+        import pyarrow.parquet as pq  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - depends on caller environment.
         raise RuntimeError("stage_hotpotqa_parquet requires pyarrow") from exc
 
@@ -229,12 +252,20 @@ def stage_musique_jsonl(
     for row in _limit(_iter_jsonl(jsonl_path), limit):
         if row.get("answerable") is False:
             continue
+        answer = str(row["answer"])
+        raw_aliases = row.get("answer_aliases", ())
+        if isinstance(raw_aliases, str) or not isinstance(raw_aliases, Sequence):
+            raise ValueError("MuSiQue answer_aliases must be an array")
+        if any(not isinstance(alias, str) or not alias.strip() for alias in raw_aliases):
+            raise ValueError("MuSiQue answer_aliases must contain non-empty strings")
+        aliases = tuple(raw_aliases)
         records.append(
             {
                 "dataset": "musique",
                 "example_id": row["id"],
                 "query": row["question"],
-                "expected_answer": row["answer"],
+                "expected_answer": answer,
+                "references": [answer, *aliases],
                 "documents": [
                     {
                         "document_id": str(paragraph.get("idx", paragraph_index)),
@@ -248,6 +279,8 @@ def stage_musique_jsonl(
                     "source": "voidful/MuSiQue",
                     "split": "answerable_dev",
                     "answerable": str(bool(row.get("answerable", True))).lower(),
+                    "answer_alias_count": str(len(aliases)),
+                    "scorer_source_commit": MUSIQUE_OFFICIAL_COMMIT,
                 },
             }
         )
@@ -281,10 +314,14 @@ def stage_niah_jsonl(
 ) -> dict[str, Any]:
     if sample_count <= 0:
         raise ValueError("sample_count must be positive")
-    if not context_token_targets or any(target <= 0 for target in context_token_targets):
-        raise ValueError("context_token_targets must contain positive integers")
-    if not needle_positions or any(position <= 0.0 or position >= 1.0 for position in needle_positions):
-        raise ValueError("needle_positions must be between 0 and 1")
+    if tuple(context_token_targets) != DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS:
+        raise ValueError(
+            "publication NIAH context targets must be exactly 8192, 16384, and 32768"
+        )
+    if tuple(needle_positions) != DEFAULT_NIAH_NEEDLE_POSITIONS:
+        raise ValueError(
+            "publication NIAH needle positions must be exactly 0.1, 0.5, and 0.9"
+        )
     records = (
         _niah_record(
             index=index,
@@ -320,7 +357,7 @@ def _wikibio_records_from_archive(
         for raw_id, raw_nb, raw_title in zip(id_file, nb_file, title_file):
             if limit is not None and emitted >= limit:
                 break
-            example_id = raw_id.decode("utf-8", errors="replace").strip()
+            source_id = raw_id.decode("utf-8", errors="replace").strip()
             sentence_count = int(raw_nb.decode("utf-8", errors="replace").strip())
             title = _decode_wikibio_title(raw_title)
             sentences = [
@@ -328,25 +365,35 @@ def _wikibio_records_from_archive(
                 for _ in range(sentence_count)
             ]
             document_text = " ".join(sentence for sentence in sentences if sentence)
-            if not example_id or not title or not document_text:
+            if not source_id or not title or not document_text:
                 continue
+            document_text = redact_biography_document_text(
+                document_text,
+                expected_answer=title,
+            )
+            example_id = opaque_biography_example_id(
+                source_id,
+                split=split_name,
+            )
             emitted += 1
             yield {
                 "dataset": "biography",
                 "example_id": example_id,
-                "query": "Which person is described in the biography?",
+                "query": "Which entity is described in the biography?",
                 "expected_answer": title,
                 "documents": [
                     {
-                        "document_id": example_id,
-                        "title": title,
+                        "document_id": f"{example_id}-doc-0",
                         "text": document_text,
                     }
                 ],
                 "metadata": {
                     "source": "michaelauli/wiki_bio",
                     "split": split_name,
-                    "article_title": title,
+                    "benchmark_task": "biography_entity_identification",
+                    "benchmark_task_version": "2",
+                    "answer_bearing_document_metadata": "removed",
+                    "answer_surface_in_document_context": "redacted",
                 },
             }
 
@@ -374,6 +421,12 @@ def _niah_record(
             "source": "synthetic_niah_grid",
             "context_token_target": str(context_token_target),
             "needle_position": f"{needle_position:.3f}",
+            "niah_cell_id": niah_cell_identity(
+                context_token_target,
+                needle_position,
+            ),
+            "benchmark_task": "niah_exact_value",
+            "benchmark_task_version": "1",
             "seed": str(seed),
         },
     )
@@ -410,7 +463,7 @@ def _effective_niah_sample_count(config: DatasetSourceStagingConfig) -> int:
 
 def _hf_download(repo_id: str, filename: str, *, cache_dir: Path | None) -> Path:
     try:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import hf_hub_download  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - depends on caller environment.
         raise RuntimeError("Dataset staging requires huggingface_hub when source paths are not provided") from exc
     return Path(hf_hub_download(repo_id=repo_id, filename=filename, repo_type="dataset", cache_dir=cache_dir))

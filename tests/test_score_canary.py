@@ -19,6 +19,7 @@ from document_kv_cache.score_canary import (
     prepare_score_canary,
     validate_score_canary_manifest,
 )
+from document_kv_cache.serving_env import VLLM_VERSION
 
 
 class _WordTokenizer:
@@ -172,17 +173,18 @@ def test_prepare_is_exact_content_addressed_and_runner_compatible(tmp_path):
         "stop": "natural_eos",
         "stream": True,
         "temperature": 0.0,
-        "top_p": "omitted; pinned vLLM 0.23.0 default",
+        "top_p": f"omitted; pinned vLLM {VLLM_VERSION} default",
     }
     assert {
         dataset: manifest["protocol"]["primary_metrics"][dataset]["metric"]
         for dataset in SUPPORTED_V1_DATASETS
     } == {
-        "biography": "answer_found",
+        "biography": "exact_match",
         "hotpotqa": "f1",
-        "musique": "answer_found",
-        "niah": "exact_match",
+        "musique": "answer_f1",
+        "niah": "accuracy",
     }
+    assert manifest["protocol"]["hardware"]["engine_version"] == VLLM_VERSION
     vanilla_arm = manifest["protocol"]["arms"]["vanilla"]["arm_spec"]
     arms, _urls, _endpoints, _bodies = parse_benchmark_arm_specs((vanilla_arm,))
     assert arms[0].cache_method == "vanilla_prefill"

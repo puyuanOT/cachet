@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -147,6 +144,7 @@ def test_document_kv_connector_exposes_vllm_v1_lifecycle():
         assert callable(getattr(connector, method_name))
 
     assert connector.prefer_cross_layer_blocks is True
+    assert connector.requires_kv_delivery is False
     assert connector.get_num_new_matched_tokens("request", 5) == (7, True)
     connector.update_state_after_alloc("request", "blocks", 7)
     assert connector.build_connector_meta("scheduler") == {"ready": True}
@@ -225,6 +223,7 @@ def test_document_kv_connector_defaults_to_no_external_tokens_without_provider()
 
     assert isinstance(connector.provider, NoOpDocumentKVProvider)
     assert connector.prefer_cross_layer_blocks is False
+    assert connector.requires_kv_delivery is False
     assert connector.get_num_new_matched_tokens("request", 0) == (0, False)
     assert connector.build_connector_meta("scheduler") == {}
     assert connector.register_cross_layers_kv_cache("cross-layer-cache", "backend") is None

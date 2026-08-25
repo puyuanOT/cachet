@@ -35,9 +35,6 @@ release-operation material.
   exact 8k/16k/32k HotpotQA inputs for representative canaries and cold-loader
   ablations.
 - `../benchmarks/README.md` is the human-facing research-style benchmark page;
-  `../benchmarks/appendix/representative-bf16-qwen3-4b-canaries/` contains the
-  sanitized, non-publication BF16 vLLM method canaries and SGLang native-handoff
-  smoke, while
-  `../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/` keeps historical
-  A10G warm-prefix evidence and Databricks provenance (predates the current
-  g6/L4 protocol).
+  it now contains the explicit vLLM 0.27.1 campaign-pending tables. Superseded
+  benchmark result folders were removed, and `../benchmarks/appendix/` remains
+  empty of results until sanitized evidence passes the publication gate.

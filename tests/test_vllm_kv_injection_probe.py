@@ -66,6 +66,10 @@ def handle() -> KVCacheHandle:
             num_layers=1,
             block_size=2,
             bytes_per_token=4,
+            num_query_heads=1,
+            num_kv_heads=1,
+            head_size=2,
+            kv_stride_bytes=2,
         ),
         segments=(
             KVSegment("doc-a", "document_static", "static", 0, 2, 0, 8),

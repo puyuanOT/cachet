@@ -27,7 +27,7 @@ from document_kv_cache.databricks_vllm_smoke_job import (
     write_databricks_vllm_smoke_run_submit_json,
     write_databricks_vllm_smoke_runner_script,
 )
-from document_kv_cache.serving_env import VLLM_VERSION
+from document_kv_cache.serving_env import VLLM_PACKAGE_VERSION, VLLM_VERSION
 from document_kv_cache.vllm_smoke import (
     DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
     build_benchmark_runner_args,
@@ -397,7 +397,7 @@ def test_databricks_representative_provenance_builds_benchmark_runner_args(monke
         for index, value in enumerate(runner_args)
         if value == "--package-revision"
     ]
-    assert f"vllm={VLLM_VERSION}" in package_revisions
+    assert f"vllm={VLLM_PACKAGE_VERSION}" in package_revisions
     assert (
         f"cachet-kv=wheel-sha256:{REPRESENTATIVE_WHEEL_SHA256}"
         in package_revisions

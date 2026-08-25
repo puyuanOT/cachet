@@ -113,6 +113,16 @@ return as a production dependency.
 - `github_governance.py` emits GitHub repository visibility, branch
   protection, merge-settings, auto-merge, and merged-branch cleanup status
   records for release-readiness evidence.
+- `full_score_execution.py` renders and validates the token-balanced,
+  wave-gated producer/Baseline/Vanilla jobs for the complete paired score
+  campaign, including immutable shard evidence and live GPU-hour admission.
+- `gpu_qualification.py` defines the closed L4/A10G/L40S vLLM 0.27.1
+  qualification plan and validates local inputs, cloud execution records,
+  safe 32k GPU-memory-utilization selection, and byte-identical segmented
+  generation artifacts across SM89 GPUs.
+- `gpu_qualification_databricks.py` renders the fourteen single-task,
+  no-retry qualification jobs and provides the hash-locked bootstrap and
+  fail-closed GPU result executor.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
 - `legacy_compatibility.py` validates downstream migration evidence proving the
   legacy `restaurant_kv_serving` compatibility facade was removed safely.
@@ -148,6 +158,36 @@ return as a production dependency.
   identity, traceability, Refactor-skill, and GPT-5.5 review evidence for the
   project workflow; recursive directory validation skips only clean
   validation-summary sidecars.
+- `publication_campaign.py` closes the five-block vLLM 0.27.1 latency,
+  concurrency, auxiliary-resource, score, GPU-hour budget, and no-retry
+  condition-timeout design (8k: 6/4/4h, 16k: 8/6/4h, 32k: 12/8/4h at
+  c1/c2/c4; c4 auxiliaries: 4h).
+- `publication_bf16_handoff_generation.py` produces the exact 16k auxiliary
+  BF16 pre-RoPE handoff bundle with 16 capability-authorized, no-retry L40S
+  jobs, direct control-plane/ledger reconciliation, durable content closure,
+  and verified node-local staging without counting local helpers as evidence.
+  `authorize_publication_bf16_handoff_serving(...)` is the only serving-authority
+  issuer; `resolve_publication_bf16_handoff_bundle(...)`,
+  `require_publication_bf16_handoff_serving_authorization(...)`, and staging
+  reject raw manifests and raw generation-result records.
+- `publication_handoff_artifacts.py` closes portable generated-KV bundles and
+  stages their verified contents onto node-local storage without regenerating
+  artifacts inside timed serving jobs.
+- `publication_latency_handoff_generation.py` token-balances all 384 latency
+  generation identities across 16 independent one-GPU persistent producers,
+  hash-verifies their shared-durable outputs, closes content-addressed Q8
+  pre-RoPE bundles without copying payload bytes, and records end-to-end
+  durable-write throughput and GPU-hour gates for node-local serving reuse;
+  serving requires a non-record authorization issued only after replaying the
+  ledger, all 16 attestations, and fresh direct `runs/get` responses.
+- `publication_latency_execution.py` renders the 115 isolated vLLM serving
+  jobs, enforces replay-backed GPU qualification plus Q8/BF16 serving
+  capabilities at every production boundary, condition-specific no-retry
+  timeouts, same-zone/same-wave matched blocks, receipt/ledger/control-plane
+  result closure, and produces descriptive tables plus estimation-only paired
+  dataset-stratified bootstrap intervals.
+- `publication_inputs.py` builds the 32-example latency schedules and complete,
+  natural-length, token-balanced full-score inventory and shard plan.
 - `release_bundle.py` copies validated release evidence, optional benchmark
   plan execution records, Databricks run-status records, package wheels, and
   PR-evidence, release preflight, GitHub-governance, repository-hygiene, and
@@ -168,8 +208,9 @@ return as a production dependency.
 - `runtime_kv_offload_probe.py` writes an empirical evidence record for
   platform-native runtime KV offload launch config and Cachet hierarchical
   document-KV persistence behavior.
-- `runtime_telemetry.py` samples vLLM smoke-job process RSS, host memory, and
-  `nvidia-smi` GPU memory/utilization into a run-level telemetry artifact.
+- `runtime_telemetry.py` samples server process-tree RSS/GPU memory, host memory,
+  and GPU utilization, then binds timestamp-filtered arm evidence to its exact
+  experiment, execution window, telemetry bytes, and software/runtime closure.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.
@@ -189,6 +230,9 @@ return as a production dependency.
   `KVChunkGenerator` implementation for model-produced prefill KV payloads.
 - `vllm_smoke.py` owns the self-contained Qwen3/vLLM Databricks smoke and
   prepared-mode handoff generation/coverage validation before vLLM startup.
+- `vllm_wheel_repack.py` deterministically applies the reviewed E5M2 patches to
+  the official vLLM 0.27.1 CUDA 12.9 wheel and emits a content-addressed,
+  RECORD-verified wheel and build manifest.
 - `vllm_runtime_contract_data.py` single-sources the vLLM V1 KV connector
   lifecycle contract shared by native-probe diagnostics and the vendored vLLM
   adapter package.
@@ -200,6 +244,16 @@ return as a production dependency.
 
 `_reexport.py` is a private helper used by compatibility facades and is not
 part of the public API.
+
+## Internal Modules
+
+- `gpu_qualification_sentinels.py` implements the fixed, package-owned GPU
+  sentinel measurements accepted by the qualification executor; arbitrary
+  caller-supplied measurement records are rejected. It is governed by
+  `document_kv_cache._INTERNAL_SUBMODULES` and is intentionally excluded from
+  the package-root and `cachet` public submodule facades.
+- `_gpu_qualification_sentinel_worker.py` is the private isolated-process
+  worker used only by that internal sentinel runner.
 
 ## Compatibility-Only Modules
 

@@ -3,6 +3,7 @@ import math
 import threading
 import time
 from dataclasses import replace
+from hashlib import sha256
 
 import pytest
 
@@ -17,6 +18,15 @@ from document_kv_cache.benchmark_runner import (
     BenchmarkGeneration,
     BenchmarkManifestContext,
     OpenAICompatibleBenchmarkConfig,
+    PUBLICATION_LATENCY_DEPLOYMENT_BLOCK_METADATA_KEY,
+    PUBLICATION_LATENCY_INPUT_BUNDLE_SHA256_METADATA_KEY,
+    PUBLICATION_LATENCY_LANE_METADATA_KEY,
+    PUBLICATION_LATENCY_LANE_POSITION_METADATA_KEY,
+    PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY,
+    PUBLICATION_LATENCY_REQUEST_INDEX_METADATA_KEY,
+    PUBLICATION_LATENCY_REQUESTS_SHA256_METADATA_KEY,
+    PUBLICATION_LATENCY_SCHEDULE_SHA256_METADATA_KEY,
+    PUBLICATION_LATENCY_SEED_SHA256_METADATA_KEY,
     benchmark_run_result_to_record,
     benchmark_run_result_to_evidence_record,
     benchmark_run_result_from_record,
@@ -40,6 +50,13 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
+    FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+    FINAL_ANSWER_NO_EXTRACTION_VALUE,
+    FINAL_ANSWER_PARSER_DIGEST,
+    FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+    FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
+    FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
+    SUPPORTED_V1_DATASETS,
     BenchmarkArm,
     BenchmarkExample,
     BenchmarkSuite,
@@ -56,6 +73,14 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.methods import default_method_registry
+from document_kv_cache.publication_campaign import (
+    PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET,
+)
+from document_kv_cache.publication_inputs import (
+    PublicationLatencyExample,
+    build_publication_latency_block_schedule,
+    project_publication_latency_request_order,
+)
 from document_kv_cache.workflow import SourceDocument
 
 
@@ -97,6 +122,64 @@ class SlowRecordingEngine(RecordingEngine):
         finally:
             with self._lock:
                 self._active -= 1
+
+
+class TimingSkewPublicationEngine:
+    def __init__(
+        self,
+        request_indices,
+        *,
+        slow_request_index,
+        slow_delay_seconds=0.12,
+    ):
+        self.request_indices = request_indices
+        self.slow_request_index = slow_request_index
+        self.slow_delay_seconds = slow_delay_seconds
+        self._lock = threading.Lock()
+        self._active_identities = set()
+        self._slow_active = False
+        self.identity_overlap_detected = False
+        self.later_request_started_during_slow = False
+        self.max_active = 0
+        self.requests = []
+
+    def generate(self, request):
+        key = (
+            request.example.dataset,
+            request.example.example_id,
+            request.repeat_index,
+        )
+        identity = key[:2]
+        request_index = self.request_indices[key]
+        with self._lock:
+            if identity in self._active_identities:
+                self.identity_overlap_detected = True
+            self._active_identities.add(identity)
+            self.requests.append(request)
+            if request_index == self.slow_request_index:
+                self._slow_active = True
+            elif self._slow_active and request_index >= len(self.request_indices) // 2:
+                self.later_request_started_during_slow = True
+            self.max_active = max(self.max_active, len(self._active_identities))
+        try:
+            time.sleep(
+                self.slow_delay_seconds
+                if request_index == self.slow_request_index
+                else 0.0002
+            )
+            return BenchmarkGeneration(
+                output_text="<final_answer>Ada Lovelace</final_answer>",
+                prompt_tokens=len(request.prompt_text.split()),
+                completion_tokens=2,
+                ttft_seconds=0.001,
+                time_to_completion_seconds=0.002,
+                metadata={"arm": request.arm.arm_id},
+            )
+        finally:
+            with self._lock:
+                self._active_identities.remove(identity)
+                if request_index == self.slow_request_index:
+                    self._slow_active = False
 
 
 class EmptyMessageFailureEngine:
@@ -335,6 +418,39 @@ def test_run_benchmark_suite_records_baseline_and_cache_measurements():
     assert cache.requests[0].cache_prefix_text + cache.requests[0].cache_suffix_text == baseline.requests[0].logical_prompt_text
     assert cache.requests[0].model_id == "qwen3:4b-instruct"
     assert cache.requests[0].hardware_target == "aws-g6-l4"
+
+
+def test_runner_persists_raw_and_extracted_answers_and_zeroes_invalid_structure():
+    suite = BenchmarkSuite(
+        suite_id="answer-parser",
+        examples=(example(),),
+        datasets=("biography",),
+    )
+    valid = run_benchmark_suite(
+        suite,
+        {BASELINE_PREFILL_ARM: RecordingEngine(output="<final_answer>Ada Lovelace</final_answer>")},
+        arms=(BenchmarkArm(BASELINE_PREFILL_ARM, False, "baseline"),),
+    ).measurements[0]
+    invalid = run_benchmark_suite(
+        suite,
+        {BASELINE_PREFILL_ARM: RecordingEngine(output="Ada Lovelace")},
+        arms=(BenchmarkArm(BASELINE_PREFILL_ARM, False, "baseline"),),
+    ).measurements[0]
+
+    assert valid.output_text == "<final_answer>Ada Lovelace</final_answer>"
+    assert valid.metadata[FINAL_ANSWER_EXTRACTED_METADATA_KEY] == "Ada Lovelace"
+    assert valid.metadata[FINAL_ANSWER_PARSER_VALID_METADATA_KEY] == "true"
+    assert valid.metadata[FINAL_ANSWER_PARSER_STATUS_METADATA_KEY] == "ok"
+    assert valid.metadata[FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY] == (
+        FINAL_ANSWER_PARSER_DIGEST
+    )
+    assert valid.quality_scores == {"exact_match": 1.0}
+    assert invalid.output_text == "Ada Lovelace"
+    assert invalid.metadata[FINAL_ANSWER_EXTRACTED_METADATA_KEY] == (
+        FINAL_ANSWER_NO_EXTRACTION_VALUE
+    )
+    assert invalid.metadata[FINAL_ANSWER_PARSER_VALID_METADATA_KEY] == "false"
+    assert invalid.quality_scores == {"exact_match": 0.0}
 
 
 def test_run_benchmark_suite_attaches_kv_transfer_params_to_cache_arm_only():
@@ -1020,7 +1136,7 @@ def test_serving_platform_dimension_allows_engine_identity_dependencies() -> Non
         runtime_environment_overrides={
             "serving_platform": "vllm",
             "engine_id": "vllm",
-            "engine_version": "0.23.0",
+            "engine_version": "0.27.1",
             "runtime_version": "vllm-runtime",
         },
         requires_cachet_handoff=False,
@@ -1052,7 +1168,7 @@ def test_serving_platform_dimension_allows_engine_identity_dependencies() -> Non
             reference_arm_id="vllm",
             serving_platform="vllm",
             engine_id="vllm",
-            engine_version="0.23.0",
+            engine_version="0.27.1",
             runtime_version="vllm-runtime",
         ),
         reference_arm_id="vllm",
@@ -2177,6 +2293,246 @@ def test_run_benchmark_suite_issues_requests_concurrently():
     assert len(result.measurements) == 4
     assert baseline.max_active > 1
     assert benchmark_run_result_to_record(result)["suite"]["request_parallelism"] == 4
+
+
+def _publication_latency_suite():
+    examples = tuple(
+        BenchmarkExample(
+            example_id=f"{dataset}-{index:02d}",
+            dataset=dataset,
+            documents=(
+                SourceDocument.from_texts(
+                    document_id=f"document-{dataset}-{index:02d}",
+                    static_text="Ada Lovelace biography",
+                    chunks={
+                        "p1": "Lovelace wrote notes on the Analytical Engine."
+                    },
+                ),
+            ),
+            query="Who wrote notes on the Analytical Engine?",
+            expected_answer="Ada Lovelace",
+        )
+        for dataset in SUPPORTED_V1_DATASETS
+        for index in range(PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET)
+    )
+    return BenchmarkSuite(suite_id="publication-latency", examples=examples)
+
+
+def test_publication_schedule_uses_identity_sticky_lanes_under_timing_skew():
+    suite = _publication_latency_suite()
+    bundle_sha256 = sha256(b"verified-publication-input-bundle").hexdigest()
+    schedule_examples = tuple(
+        PublicationLatencyExample(example.dataset, example.example_id)
+        for example in suite.examples
+    )
+    schedule = build_publication_latency_block_schedule(
+        campaign_id="publication-2026",
+        deployment_block=3,
+        input_bundle_sha256=bundle_sha256,
+        examples=schedule_examples,
+    )
+    projection = project_publication_latency_request_order(
+        schedule,
+        examples=schedule_examples,
+        expected_input_bundle_sha256=bundle_sha256,
+    )
+    request_indices = {key: index for index, key in enumerate(projection)}
+    lanes = schedule["lanes"]["4"]
+    baseline = TimingSkewPublicationEngine(
+        request_indices,
+        slow_request_index=lanes[0][0],
+    )
+    cache = TimingSkewPublicationEngine(
+        request_indices,
+        slow_request_index=lanes[-1][0],
+    )
+
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: baseline,
+            CACHE_REUSE_ARM: cache,
+        },
+        repeats=2,
+        request_parallelism=4,
+        publication_latency_schedule_record=schedule,
+        publication_latency_expected_input_bundle_sha256=bundle_sha256,
+    )
+
+    for engine in (baseline, cache):
+        assert engine.max_active > 1
+        assert engine.later_request_started_during_slow is True
+        assert engine.identity_overlap_detected is False
+
+    measurements_by_arm = {
+        arm_id: [
+            measurement
+            for measurement in result.measurements
+            if measurement.arm_id == arm_id
+        ]
+        for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+    }
+    for measurements in measurements_by_arm.values():
+        assert [
+            (
+                measurement.dataset,
+                measurement.example_id,
+                measurement.repeat_index,
+            )
+            for measurement in measurements
+        ] == list(projection)
+        for request_index, measurement in enumerate(measurements):
+            metadata = measurement.metadata
+            assert metadata[PUBLICATION_LATENCY_SCHEDULE_SHA256_METADATA_KEY] == (
+                schedule["closed_record_sha256"]
+            )
+            assert metadata[PUBLICATION_LATENCY_REQUESTS_SHA256_METADATA_KEY] == (
+                schedule["requests_sha256"]
+            )
+            assert metadata[
+                PUBLICATION_LATENCY_INPUT_BUNDLE_SHA256_METADATA_KEY
+            ] == bundle_sha256
+            assert metadata[PUBLICATION_LATENCY_SEED_SHA256_METADATA_KEY] == (
+                schedule["seed_sha256"]
+            )
+            assert metadata[PUBLICATION_LATENCY_DEPLOYMENT_BLOCK_METADATA_KEY] == "3"
+            assert metadata[PUBLICATION_LATENCY_REQUEST_INDEX_METADATA_KEY] == str(
+                request_index
+            )
+            assert metadata[PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY] == (
+                schedule["requests"][request_index]["request_id"]
+            )
+
+    lane_by_request_index = {
+        request_index: lane_index
+        for lane_index, lane in enumerate(lanes)
+        for request_index in lane
+    }
+    for engine in (baseline, cache):
+        actual_by_lane = {lane_index: [] for lane_index in range(4)}
+        for request in engine.requests:
+            key = (
+                request.example.dataset,
+                request.example.example_id,
+                request.repeat_index,
+            )
+            actual_by_lane[lane_by_request_index[request_indices[key]]].append(key)
+        assert actual_by_lane == {
+            lane_index: [projection[request_index] for request_index in lane]
+            for lane_index, lane in enumerate(lanes)
+        }
+
+    baseline_metadata = measurements_by_arm[BASELINE_PREFILL_ARM]
+    for request_index, measurement in enumerate(baseline_metadata):
+        lane_index = lane_by_request_index[request_index]
+        assert measurement.metadata[PUBLICATION_LATENCY_LANE_METADATA_KEY] == str(
+            lane_index
+        )
+        assert measurement.metadata[
+            PUBLICATION_LATENCY_LANE_POSITION_METADATA_KEY
+        ] == str(lanes[lane_index].index(request_index))
+
+
+def test_publication_schedule_fails_before_execution_on_membership_mismatch():
+    suite = _publication_latency_suite()
+    bundle_sha256 = sha256(b"verified-publication-input-bundle").hexdigest()
+    schedule_examples = tuple(
+        PublicationLatencyExample(example.dataset, example.example_id)
+        for example in suite.examples
+    )
+    schedule = build_publication_latency_block_schedule(
+        campaign_id="publication-2026",
+        deployment_block=1,
+        input_bundle_sha256=bundle_sha256,
+        examples=schedule_examples,
+    )
+    replacement = replace(suite.examples[0], example_id="replacement-example")
+    mismatched_suite = replace(
+        suite,
+        examples=(replacement, *suite.examples[1:]),
+    )
+    engine = RecordingEngine(output="<final_answer>Ada Lovelace</final_answer>")
+
+    with pytest.raises(ValueError, match="verified input bundle"):
+        run_benchmark_suite(
+            mismatched_suite,
+            {BASELINE_PREFILL_ARM: engine},
+            arms=(default_benchmark_arms()[0],),
+            repeats=2,
+            request_parallelism=4,
+            publication_latency_schedule_record=schedule,
+            publication_latency_expected_input_bundle_sha256=bundle_sha256,
+        )
+
+    assert engine.requests == []
+
+
+@pytest.mark.parametrize("request_parallelism", (1, 2, 4))
+def test_publication_schedule_executes_each_closed_concurrency_cell(
+    request_parallelism,
+):
+    suite = _publication_latency_suite()
+    bundle_sha256 = sha256(b"verified-publication-input-bundle").hexdigest()
+    schedule_examples = tuple(
+        PublicationLatencyExample(example.dataset, example.example_id)
+        for example in suite.examples
+    )
+    schedule = build_publication_latency_block_schedule(
+        campaign_id="publication-2026",
+        deployment_block=2,
+        input_bundle_sha256=bundle_sha256,
+        examples=schedule_examples,
+    )
+    engine = RecordingEngine(output="<final_answer>Ada Lovelace</final_answer>")
+
+    result = run_benchmark_suite(
+        suite,
+        {BASELINE_PREFILL_ARM: engine},
+        arms=(default_benchmark_arms()[0],),
+        repeats=2,
+        request_parallelism=request_parallelism,
+        publication_latency_schedule_record=schedule,
+        publication_latency_expected_input_bundle_sha256=bundle_sha256,
+    )
+
+    assert len(result.measurements) == 256
+    assert {
+        int(measurement.metadata[PUBLICATION_LATENCY_LANE_METADATA_KEY])
+        for measurement in result.measurements
+    } == set(range(request_parallelism))
+
+
+def test_publication_schedule_config_requires_one_record_or_path_and_bundle_sha(
+    tmp_path,
+):
+    bundle_sha256 = sha256(b"verified-publication-input-bundle").hexdigest()
+    common = {
+        "suite_id": "publication-latency",
+        "dataset_paths": {"biography": "biography.jsonl"},
+        "base_url": "http://server",
+        "repeats": 2,
+        "request_parallelism": 4,
+    }
+
+    with pytest.raises(ValueError, match="must be provided together"):
+        OpenAICompatibleBenchmarkConfig(
+            **common,
+            publication_latency_schedule_path=tmp_path / "schedule.json",
+        )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        OpenAICompatibleBenchmarkConfig(
+            **common,
+            publication_latency_schedule_record={"record_type": "test"},
+            publication_latency_schedule_path=tmp_path / "schedule.json",
+            publication_latency_expected_input_bundle_sha256=bundle_sha256,
+        )
+
+    config = OpenAICompatibleBenchmarkConfig(
+        **common,
+        publication_latency_schedule_path=tmp_path / "schedule.json",
+        publication_latency_expected_input_bundle_sha256=bundle_sha256,
+    )
+    assert config.publication_latency_schedule_path == tmp_path / "schedule.json"
 
 
 def test_run_benchmark_suite_isolates_arms_by_default():

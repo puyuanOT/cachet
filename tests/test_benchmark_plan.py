@@ -363,7 +363,7 @@ def test_plan_threads_complete_runtime_provenance_to_record_and_runner(tmp_path)
         "tensor_parallel_size": 1,
         "pipeline_parallel_size": 1,
         "package_revisions": [],
-        "prompt_template_version": "v1-benchmark",
+        "prompt_template_version": "v2-final-answer",
         "input_tokens_target": None,
         "max_output_tokens": 128,
         "hardware_fingerprint": "unresolved",

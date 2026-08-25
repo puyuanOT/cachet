@@ -1,13 +1,12 @@
 # Databricks Benchmark Provenance
 
-The user-facing benchmark tables live in the [benchmark root](../). This
-folder no longer mirrors historical Databricks result JSON because those
-records used older protocols and confused the public benchmark surface.
+No Databricks benchmark result is currently published in this directory.
 
-Historical A10G warm-prefix canary provenance (predating the current g6/L4
-protocol) is in
-[`../appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](../appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/).
-Its summary records the Databricks run ids and DBFS output locations.
+The vLLM 0.27.1 campaign must reserve each workload before submission and bind
+the exact payload digest, returned run identities, terminal control-plane
+status, timestamps, duration, hardware, and result closure. Only sanitized
+records that pass the campaign publication gate may be added to
+[`../appendix/`](../appendix/).
 
-Do not put raw Jobs API responses, credentials, wheels, driver logs, generated
-datasets, or local `databricks-runs/` output here.
+Never commit credentials, raw Jobs API responses, wheels, driver logs,
+generated datasets, prompt payloads, or local `databricks-runs/` output.

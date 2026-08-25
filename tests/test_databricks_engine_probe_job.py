@@ -1,8 +1,13 @@
 import json
+from hashlib import sha256
+import io
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
+import urllib.request
+import zipfile
 
 import pytest
 
@@ -41,8 +46,18 @@ from document_kv_cache.native_probe_factories import (
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.serving_env import (
+    PIP_BOOTSTRAP_CONSTRAINTS,
     SGLANG_DEPENDENCY_CONSTRAINTS,
-    VLLM_DEPENDENCY_CONSTRAINTS,
+    VLLM_PACKAGE_INDEX_URLS,
+    VLLM_PATCHED_WHEEL_SHA256_ENV,
+    VLLM_PATCHED_WHEEL_URI_ENV,
+    VLLM_RUNTIME_LOCK_FILENAME,
+    VLLM_RUNTIME_LOCK_SHA256,
+    VLLM_INSTALL_REQUIREMENTS,
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+    VIRTUALENV_BOOTSTRAP_VERSION,
+    vllm_runtime_lock_path,
 )
 
 
@@ -53,11 +68,18 @@ CUSTOM_VLLM_EXTENSION_WHEEL_URI = (
 CUSTOM_SGLANG_EXTENSION_WHEEL_URI = (
     "/Volumes/catalog/schema/volume/wheels/custom_sglang_probe_extension-0.1.0-py3-none-any.whl"
 )
-VLLM_RUNTIME_PACKAGE = DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE
+VLLM_PATCHED_WHEEL_SHA256 = "c" * 64
+VLLM_PATCHED_WHEEL_URI = (
+    "https://artifacts.example/vllm-0.27.1+cu129-"
+    "1cachete5m2cccccccccccccccc-cp38-abi3-manylinux_2_28_x86_64.whl"
+)
+VLLM_RUNTIME_PACKAGE = (
+    f"vllm @ {VLLM_PATCHED_WHEEL_URI}#sha256={VLLM_PATCHED_WHEEL_SHA256}"
+)
 SGLANG_RUNTIME_PACKAGE = DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE
-VLLM_RUNTIME_PACKAGES = VLLM_DEPENDENCY_CONSTRAINTS
+VLLM_RUNTIME_PACKAGES = (VLLM_RUNTIME_PACKAGE, *VLLM_INSTALL_REQUIREMENTS[1:])
 SGLANG_RUNTIME_PACKAGES = SGLANG_DEPENDENCY_CONSTRAINTS
-VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE = "opencv-python-headless==4.12.0.88"
+VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE = "opencv-python-headless==4.13.0.92"
 VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/vllm-runtime-preflight.json"
 VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON = "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json"
 SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/sglang-runtime-preflight.json"
@@ -68,6 +90,12 @@ SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON = (
 )
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _patched_vllm_wheel_environment(monkeypatch):
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, VLLM_PATCHED_WHEEL_URI)
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_SHA256_ENV, VLLM_PATCHED_WHEEL_SHA256)
 
 
 def _target(backend: str, **overrides):
@@ -493,7 +521,7 @@ def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
         VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
     }
     assert _parameter_values(parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
-    assert _parameter_values(parameters, "--pip-override-package") == [VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE]
+    assert _parameter_values(parameters, "--pip-override-package") == []
     package_wheel_uris = _parameter_values(parameters, "--package-wheel-uri")
     assert package_wheel_uris == [WHEEL_URI]
     assert not any("vllm_kv_injection" in wheel_uri for wheel_uri in package_wheel_uris)
@@ -1018,7 +1046,7 @@ def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_pref
         VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
     ]
     assert _parameter_values(vllm_parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
-    assert _parameter_values(vllm_parameters, "--pip-override-package") == [VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE]
+    assert _parameter_values(vllm_parameters, "--pip-override-package") == []
 
 
 def test_build_databricks_engine_probe_matrix_payload_rejects_conflicting_provider_backed_profile():
@@ -2019,14 +2047,27 @@ def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_p
     assert "--pip-package" in script
     assert "_install_runtime_packages" in script
     assert "venv\", \"--clear\"" in script
-    assert "virtualenv==20.39.1" in script
+    assert VIRTUALENV_BOOTSTRAP_URL in script
+    assert VIRTUALENV_BOOTSTRAP_SHA256 in script
     assert "--pip-override-package" in script
     assert "--skip-runtime-package-install" in script
     assert "PYTHONPATH" in script
     assert "PYTHONNOUSERSITE" in script
-    assert "pip\", \"install\", *args.pip_package" in script
+    assert "--require-hashes" in script
+    assert "--only-binary" in script
+    assert "VLLM_RUNTIME_LOCK_SHA256" in script
     assert "\"--force-reinstall\"" in script
     assert "\"--no-deps\"" in script
+
+
+def test_generated_runner_recognizes_percent_encoded_patched_wheel(tmp_path):
+    path = tmp_path / "run_engine_probe.py"
+    write_databricks_engine_probe_runner_script(path)
+    namespace = {"__name__": "engine_probe_test", "__file__": str(path)}
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), namespace)
+
+    encoded_spec = VLLM_RUNTIME_PACKAGE.replace("+", "%2B")
+    assert namespace["_is_patched_vllm_spec"](encoded_spec) is True
 
 
 def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tmp_path, monkeypatch):
@@ -2064,7 +2105,7 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             "--serving-venv-dir",
             str(venv_dir),
             "--pip-package",
-            VLLM_RUNTIME_PACKAGE,
+            DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
             "--pip-package",
             "transformers==5.12.1",
             "--pip-override-package",
@@ -2083,8 +2124,27 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
 
     assert install_calls == [
         (sys.executable, "-m", "venv", "--clear", str(venv_dir)),
-        (str(venv_python), "-m", "pip", "install", "--upgrade", "pip"),
-        (str(venv_python), "-m", "pip", "install", VLLM_RUNTIME_PACKAGE, "transformers==5.12.1"),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            *PIP_BOOTSTRAP_CONSTRAINTS,
+        ),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            *(
+                argument
+                for index_url in VLLM_PACKAGE_INDEX_URLS
+                for argument in ("--extra-index-url", index_url)
+            ),
+            DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
+            "transformers==5.12.1",
+        ),
         (
             str(venv_python),
             "-m",
@@ -2094,7 +2154,14 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             "--no-deps",
             VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE,
         ),
-        (str(venv_python), "-m", "pip", "install", "/dbfs/wheels/cachet_kv-0.2.0-py3-none-any.whl"),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "/dbfs/wheels/cachet_kv-0.2.0-py3-none-any.whl",
+        ),
     ]
     assert install_envs[0] is None
     assert all(env is not None and "PYTHONPATH" not in env for env in install_envs[1:])
@@ -2112,6 +2179,102 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
     assert "PYTHONPATH" not in reexec_envs[0]
     assert reexec_envs[0]["PYTHONNOUSERSITE"] == "1"
     assert probe_calls == []
+
+
+def test_generated_runner_installs_locked_vllm_closure_and_patched_wheel(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "run_engine_probe.py"
+    write_databricks_engine_probe_runner_script(path)
+    venv_dir = tmp_path / "serving-venv"
+    venv_dir.mkdir()
+    venv_python = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
+    cachet_wheel = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
+    lock_member = f"document_kv_cache/runtime_locks/{VLLM_RUNTIME_LOCK_FILENAME}"
+    lock_bytes = vllm_runtime_lock_path().read_bytes()
+    with zipfile.ZipFile(cachet_wheel, "w") as wheel:
+        wheel.writestr(lock_member, lock_bytes)
+
+    install_calls = []
+    monkeypatch.setattr(
+        subprocess,
+        "check_call",
+        lambda argv, **kwargs: install_calls.append(tuple(argv)),
+    )
+    monkeypatch.setattr(subprocess, "call", lambda argv, **kwargs: 0)
+    monkeypatch.setattr(sys, "version_info", (3, 11, 11, "final", 0))
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(platform, "libc_ver", lambda: ("glibc", "2.35"))
+    package_args = [
+        argument
+        for package in VLLM_RUNTIME_PACKAGES
+        for argument in ("--pip-package", package)
+    ]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(path),
+            "--serving-venv-dir",
+            str(venv_dir),
+            *package_args,
+            "--package-wheel-uri",
+            str(cachet_wheel),
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        ],
+    )
+
+    exec(
+        compile(path.read_text(encoding="utf-8"), str(path), "exec"),
+        {"__name__": "__main__", "__file__": str(path)},
+    )
+
+    materialized_lock = venv_dir / VLLM_RUNTIME_LOCK_FILENAME
+    assert materialized_lock.read_bytes() == lock_bytes
+    assert install_calls[:4] == [
+        (sys.executable, "-m", "venv", "--clear", str(venv_dir)),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            *(
+                argument
+                for index_url in VLLM_PACKAGE_INDEX_URLS
+                for argument in ("--extra-index-url", index_url)
+            ),
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            "--requirement",
+            str(materialized_lock),
+        ),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            VLLM_RUNTIME_PACKAGE,
+        ),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            str(cachet_wheel),
+        ),
+    ]
+    assert install_calls[4] == (str(venv_python), "-m", "pip", "check")
+    assert install_calls[5][:2] == (str(venv_python), "-c")
+    assert len(install_calls[5]) == 4
+    assert "verify_installed_vllm_runtime_lock" in install_calls[5][2]
+    assert install_calls[5][3] == VLLM_RUNTIME_PACKAGE
+    assert VLLM_RUNTIME_LOCK_SHA256 == sha256(lock_bytes).hexdigest()
 
 
 def test_generated_runner_propagates_nonzero_venv_reexec_exit(tmp_path, monkeypatch):
@@ -2154,6 +2317,15 @@ def test_generated_runner_propagates_nonzero_venv_reexec_exit(tmp_path, monkeypa
 def test_generated_runner_falls_back_to_virtualenv_when_stdlib_venv_lacks_ensurepip(tmp_path, monkeypatch):
     path = tmp_path / "run_engine_probe.py"
     write_databricks_engine_probe_runner_script(path)
+    bootstrap_payload = b"reviewed virtualenv bootstrap fixture"
+    bootstrap_digest = sha256(bootstrap_payload).hexdigest()
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            VIRTUALENV_BOOTSTRAP_SHA256,
+            bootstrap_digest,
+        ),
+        encoding="utf-8",
+    )
     venv_dir = tmp_path / "serving-venv"
     venv_python = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
     install_calls = []
@@ -2166,6 +2338,11 @@ def test_generated_runner_falls_back_to_virtualenv_when_stdlib_venv_lacks_ensure
 
     monkeypatch.setattr(subprocess, "check_call", fake_check_call)
     monkeypatch.setattr(subprocess, "call", lambda argv, **kwargs: 0)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(bootstrap_payload),
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -2184,12 +2361,34 @@ def test_generated_runner_falls_back_to_virtualenv_when_stdlib_venv_lacks_ensure
         compile(path.read_text(encoding="utf-8"), str(path), "exec"),
         {"__name__": "__main__", "__file__": str(path)},
     )
-    assert install_calls[:5] == [
+    bootstrap_path = tmp_path / (
+        f"virtualenv-{VIRTUALENV_BOOTSTRAP_VERSION}-{bootstrap_digest[:16]}.pyz"
+    )
+    assert bootstrap_path.read_bytes() == bootstrap_payload
+    assert install_calls == [
         (sys.executable, "-m", "venv", "--clear", str(venv_dir)),
-        (sys.executable, "-m", "pip", "install", "virtualenv==20.39.1"),
-        (sys.executable, "-m", "virtualenv", "--clear", str(venv_dir)),
-        (str(venv_python), "-m", "pip", "install", "--upgrade", "pip"),
-        (str(venv_python), "-m", "pip", "install", "/dbfs/wheels/cachet_kv-0.2.0-py3-none-any.whl"),
+        (
+            sys.executable,
+            str(bootstrap_path),
+            "--clear",
+            str(venv_dir),
+        ),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            *PIP_BOOTSTRAP_CONSTRAINTS,
+        ),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "/dbfs/wheels/cachet_kv-0.2.0-py3-none-any.whl",
+        ),
     ]
 
 
@@ -2835,10 +3034,31 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
     assert Path(pip_calls[0][0]).resolve() == Path(sys.executable).resolve()
     assert pip_calls[0][1:] == ["-m", "venv", "--clear", str(venv_dir)]
     assert pip_calls[1:] == [
-        [str(venv_python), "-m", "pip", "install", "--upgrade", "pip"],
-        [str(venv_python), "-m", "pip", "install", "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl"],
-        [str(venv_python), "-m", "pip", "install", "/dbfs/tmp/cachet/custom_vllm_probe_extension-0.1.0-py3-none-any.whl"],
-    ]
+            [
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                *PIP_BOOTSTRAP_CONSTRAINTS,
+            ],
+            [
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+            ],
+            [
+                str(venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "/dbfs/tmp/cachet/custom_vllm_probe_extension-0.1.0-py3-none-any.whl",
+            ],
+        ]
     assert pip_records[0]["has_env"] is False
     assert all(record["has_env"] is True for record in pip_records[1:])
     assert pip_calls[2][0] == str(venv_python)
@@ -3071,7 +3291,7 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
         VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     ]
     assert _parameter_values(parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
-    assert _parameter_values(parameters, "--pip-override-package") == [VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE]
+    assert _parameter_values(parameters, "--pip-override-package") == []
     assert _parameter_values(parameters, "--package-wheel-uri") == [WHEEL_URI]
     assert "--allow-non-native-probe" not in parameters
     assert "--engine-version" not in parameters

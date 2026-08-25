@@ -27,12 +27,14 @@ lengths.
 | Field | Value |
 | --- | --- |
 | Model | `Qwen/Qwen3-4B-Instruct-2507`, served as `qwen3:4b-instruct` unless this report explicitly varies the model |
-| Model weights | 4-bit bitsandbytes unless this report explicitly varies weight precision |
-| Serving engine | vLLM, SGLang, storage reader, native probe, etc. |
+| Model weights | bitsandbytes 4-bit runtime weights; the model identifier is not a prequantized 4-bit checkpoint |
+| Serving engine | vLLM 0.27.1 for the frozen campaign, or an explicitly declared ablation target |
 | Hardware | e.g. AWS g6/L4, `g6.8xlarge` |
-| Request parallelism | e.g. 4 requests in flight, or `N/A` |
+| Closed-loop request concurrency | 1, 2, or 4 with zero think time, or `N/A` |
 | Output length for TTC | e.g. forced 256-token decode, or `N/A` |
-| Repeats | e.g. 32 repeats per prepared input, or `N/A` |
+| Distinct latency examples | 32 per dataset, or `N/A` |
+| Repeats | 2 per example within each deployment block, or `N/A` |
+| Deployment blocks | 5 matched fresh-cluster blocks, or `N/A` |
 | Input context length | e.g. 8k, 16k, 32k, or measured prompt-token range |
 | Method | Baseline, Vanilla KV, KV Packet, etc. |
 | Method ID / version | Stable `MethodSpec.method_id` and artifact-semantics version |
@@ -43,7 +45,7 @@ lengths.
 | TTFT measurement boundary | Cold disk-to-GPU hydrate, warm prewarmed prefix cache, RAM-resident hydrate, or `N/A` |
 | Prefix-cache policy | Per-request `cache_salt`, static `cache_salt`, prefix caching disabled, or `N/A` |
 | Dataset / task scope | Dataset names and example count |
-| Quality metric | Full-dataset task score, answer-found containment, strict exact match, or `N/A` |
+| Quality metric | Versioned governed full-dataset metric and answer-parser identity, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
 | Publication gate | Passing `document_kv.benchmark_publication_gate.v1` record |
 
@@ -63,19 +65,18 @@ The preferred decode-only metric is
 Place the detailed caption below the table. The caption should define each
 method label, state the request concurrency used during measurement, give the
 successful request count behind percentiles, and explain whether P95 is
-publication-grade. P95 rows intended for publication should use enough repeats
-per prepared input for stable percentiles at the stated concurrency (the
-current main table uses 32 over eight inputs), and the caption should state the
-resulting successful request-level measurement count. The caption must
-also say whether TTFT includes loading external document KV from storage into
-GPU memory, or whether the measured requests used already-warm/prewarmed
+publication-grade. The frozen campaign uses 32 distinct examples per dataset,
+two repeats per example, and 256 successful requests per
+method/context/concurrency cell in each of five matched deployment blocks. The
+caption must also say whether TTFT includes loading external document KV from
+storage into GPU memory, or whether the measured requests used already-warm
 prefix-cache blocks.
 
 Latency values are seconds.
 
-| Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Max Serving Concurrency | Peak GPU memory |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Example&nbsp;method | 16k |  |  |  |  |  |  |  |
+| Method | Input context | Concurrency | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 decode tok/s | Configured closed-loop concurrency | Peak GPU process memory | Peak host memory | Peak process-tree RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Example&nbsp;method | 16k | 4 |  |  |  |  |  |  |  |  |  |
 
 Use the same columns even when a result only covers a subset. If the result is
 not a serving-latency benchmark, mark latency cells `N/A` and explain the scope
@@ -85,6 +86,19 @@ Do not use accounted GPU memory as a synonym for full sampled peak GPU process
 memory. If an ablation varies document KV precision, add that as an
 ablation-specific column in the ablation table rather than the main latency
 table.
+
+## Paired Latency Estimands
+
+Report every preregistered comparison as `reference latency / treatment
+latency`, so a speedup above 1 means the treatment is faster. Include separate
+TTFT and TTC geometric speedups and pointwise 95% paired hierarchical-bootstrap
+intervals. The 0.27.1 campaign has 13 rows: nine Baseline/Vanilla
+context-by-concurrency comparisons plus BF16/Q8, RAM/Disk, Unity Catalog/Disk,
+and A10G/L4.
+
+| Treatment vs reference | Setting | TTFT geometric speedup | TTFT 95% CI | TTC geometric speedup | TTC 95% CI |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Example treatment vs control | 16k, concurrency 4 |  |  |  |  |
 
 ## Benchmark Dataset Score Table
 
@@ -96,9 +110,18 @@ separate appendix table, state the number of unique examples per dataset and
 repeats per example, and do not label answer-found containment as official
 dataset accuracy.
 
-| Method | Biography score | HotpotQA score | MusiQue score | NIAH score | LongBench v2 score | RULER score |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Example&nbsp;method |  |  |  |  |  |  |
+| Dataset | Governed metric | Baseline | Baseline parser-status counts | Vanilla KV | Vanilla parser-status counts | Vanilla − Baseline | Paired 95% CI |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Biography | Normalized-title exact match |  |  |  |  |  |  |
+| HotpotQA | Answer exact match |  |  |  |  |  |  |
+| HotpotQA | Answer F1 |  |  |  |  |  |  |
+| MusiQue | Official answer exact match, alias-max |  |  |  |  |  |  |
+| MusiQue | Official answer F1, alias-max |  |  |  |  |  |  |
+| NIAH | Exact-value overall accuracy |  |  |  |  |  |  |
+
+Publish the NIAH 8k/16k/32k by 10%/50%/90% needle-position grid separately;
+an overall score does not replace any of its nine governed cells. Each grid row
+must report `n`, both arm accuracies, the paired delta, and its paired 95% CI.
 
 ## Resource Utilization
 
@@ -115,7 +138,7 @@ GPU memory rather than peak GPU process memory.
 
 | Limitation | Current state |
 | --- | --- |
-| Primary-table comparability | State whether this result matches the current Q4-weight + Q8-document-KV protocol |
+| Primary-table comparability | State whether this result matches the frozen vLLM 0.27.1, bitsandbytes 4-bit-runtime-weight, Q8-document-KV protocol |
 | Model coverage | List covered models or say `not yet measured` |
 | Method coverage | List covered methods and mark genuinely unimplemented methods explicitly |
 | Context coverage | List covered context lengths or prompt-token ranges |

@@ -4504,8 +4504,8 @@ def _dependency_freshness_record(*, ok: bool):
         "runtime_pins": [
             {
                 "package": "vllm",
-                "pinned_version": "0.23.0",
-                "latest_version": "0.23.0",
+                "pinned_version": "0.27.1",
+                "latest_version": "0.27.1",
                 "source": "serving_env.vllm",
                 "current": True,
                 "allowed": True,

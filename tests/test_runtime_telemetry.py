@@ -12,6 +12,13 @@ from document_kv_cache.runtime_telemetry import (
 def test_collect_runtime_telemetry_sample_parses_gpu_and_process_tree():
     def command_runner(argv, **kwargs):
         if argv[0] == "nvidia-smi":
+            if any("--query-compute-apps" in argument for argument in argv):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    "101, 321, GPU-test\n999, 99, GPU-test\n",
+                    "",
+                )
             return subprocess.CompletedProcess(
                 argv,
                 0,
@@ -48,6 +55,10 @@ def test_collect_runtime_telemetry_sample_parses_gpu_and_process_tree():
     assert sample["gpu"]["devices"][0]["memory_used_bytes"] == 1234 * 1024 * 1024
     assert sample["gpu"]["devices"][0]["memory_total_bytes"] == 23000 * 1024 * 1024
     assert sample["gpu"]["devices"][0]["utilization_percent"] == 87.0
+    assert sample["gpu"]["processes"]["ok"] is True
+    assert sample["gpu"]["processes"]["process_tree_used_bytes"] == (
+        321 * 1024 * 1024
+    )
     assert "ok" in sample["host_memory"]
 
 
@@ -55,12 +66,18 @@ def test_runtime_telemetry_summary_reports_peaks():
     samples = [
         {
             "process_tree": {"rss_bytes": 10},
-            "gpu": {"devices": [{"memory_used_bytes": 100, "utilization_percent": 50.0}]},
+            "gpu": {
+                "devices": [{"memory_used_bytes": 100, "utilization_percent": 50.0}],
+                "processes": {"process_tree_used_bytes": 70},
+            },
             "host_memory": {"used_bytes": 1000},
         },
         {
             "process_tree": {"rss_bytes": 20},
-            "gpu": {"devices": [{"memory_used_bytes": 90, "utilization_percent": 75.0}]},
+            "gpu": {
+                "devices": [{"memory_used_bytes": 90, "utilization_percent": 75.0}],
+                "processes": {"process_tree_used_bytes": 80},
+            },
             "host_memory": {"used_bytes": 900},
         },
     ]
@@ -78,6 +95,8 @@ def test_runtime_telemetry_summary_reports_peaks():
     assert record["interval_seconds"] == 2.0
     assert record["peak_process_tree_rss_bytes"] == 20
     assert record["peak_gpu_memory_used_bytes"] == 100
+    assert record["peak_gpu_process_memory_bytes"] == 80
+    assert record["mean_gpu_utilization_percent"] == 62.5
     assert record["peak_gpu_utilization_percent"] == 75.0
     assert record["peak_host_memory_used_bytes"] == 1000
     assert record["errors"] == [{"error": "transient"}]

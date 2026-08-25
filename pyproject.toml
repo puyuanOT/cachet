@@ -127,6 +127,8 @@ include = [
   { path = "src/sglang_kv_injection/py.typed", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.yml", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.md", format = ["sdist", "wheel"] },
+  { path = "src/document_kv_cache/runtime_locks/*.in", format = ["sdist", "wheel"] },
+  { path = "src/document_kv_cache/runtime_locks/*.lock", format = ["sdist", "wheel"] },
 ]
 
 [tool.poetry.group.dev.dependencies]

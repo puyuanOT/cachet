@@ -30,6 +30,7 @@ from document_kv_cache.benchmarks import (
     BenchmarkExample,
     benchmark_cache_prefix_segments,
     build_prompt_parts,
+    default_dataset_scorer_registry,
     method_benchmark_arm,
     resolve_system_prompt_position,
 )
@@ -39,19 +40,20 @@ from document_kv_cache.dataset_prep import (
     load_representative_hotpotqa_tokenizer,
 )
 from document_kv_cache.storage import local_path
+from document_kv_cache.serving_env import VLLM_VERSION
 from document_kv_cache.workflow import SourceChunk, SourceDocument
 
 
 SCORE_CANARY_RECORD_TYPE = "cachet.vanilla_score_canary"
-SCORE_CANARY_SCHEMA_VERSION = 1
-SCORE_CANARY_PROTOCOL_ID = "vanilla-score-canary-8k-n5-v1"
+SCORE_CANARY_SCHEMA_VERSION = 2
+SCORE_CANARY_PROTOCOL_ID = "vanilla-score-canary-8k-n5-v2"
 SCORE_CANARY_INPUT_TOKENS = 8192
 SCORE_CANARY_EXAMPLES_PER_DATASET = 5
 SCORE_CANARY_MAX_TOKENS = 64
 SCORE_CANARY_REQUEST_PARALLELISM = 4
 SCORE_CANARY_REPEATS = 1
 SCORE_CANARY_ADD_SPECIAL_TOKENS = False
-SCORE_CANARY_SELECTION_SEED = "cachet:vanilla-score-canary:selection:v1"
+SCORE_CANARY_SELECTION_SEED = "cachet:vanilla-score-canary:selection:v2"
 SCORE_CANARY_KV_BYTES_PER_TOKEN = 73_728
 
 _PADDING_DOCUMENT_ID = "cachet-score-canary-length-padding"
@@ -61,18 +63,17 @@ _PADDING_UNITS = (" padding", " x", "x", "0", ".", "\n")
 _TRANSFER_FIELDS = frozenset({"kv_transfer_params", "arm_kv_transfer_params"})
 _PRIMARY_METRICS = MappingProxyType(
     {
-        "biography": "answer_found",
+        "biography": "exact_match",
         "hotpotqa": "f1",
-        "musique": "answer_found",
-        "niah": "exact_match",
+        "musique": "answer_f1",
+        "niah": "accuracy",
     }
 )
+_DEFAULT_SCORERS = default_dataset_scorer_registry()
 _SCORER_IDENTITIES = MappingProxyType(
     {
-        "biography": "cachet.answer_diagnostics@1",
-        "hotpotqa": "hotpotqa.official_answer@hotpot_evaluate_v1@3635853403a8",
-        "musique": "cachet.answer_diagnostics@1",
-        "niah": "cachet.answer_diagnostics@1",
+        dataset: _DEFAULT_SCORERS.get(dataset).identity
+        for dataset in SUPPORTED_V1_DATASETS
     }
 )
 
@@ -839,7 +840,7 @@ def _protocol_record(protocol: ScoreCanaryProtocol) -> Mapping[str, Any]:
             "stop": "natural_eos",
             "stream": True,
             "temperature": 0.0,
-            "top_p": "omitted; pinned vLLM 0.23.0 default",
+            "top_p": f"omitted; pinned vLLM {VLLM_VERSION} default",
         },
         "evidence": {
             "claim_scope": "descriptive_non_publication_canary",
@@ -854,7 +855,7 @@ def _protocol_record(protocol: ScoreCanaryProtocol) -> Mapping[str, Any]:
         "examples_per_dataset": protocol.examples_per_dataset,
         "hardware": {
             "engine": "vllm",
-            "engine_version": "0.23.0",
+            "engine_version": VLLM_VERSION,
             "hardware_target": "aws-g6-l4",
             "node_type": "g6.8xlarge",
         },
@@ -877,8 +878,12 @@ def _protocol_record(protocol: ScoreCanaryProtocol) -> Mapping[str, Any]:
         "primary_metrics": {
             dataset: {
                 "metric": protocol.primary_metrics[dataset],
-                "publication_approved_scorer": dataset == "hotpotqa",
-                "role": "official" if dataset == "hotpotqa" else "diagnostic",
+                "publication_approved_scorer": True,
+                "role": (
+                    "official_answer_metric"
+                    if dataset in {"hotpotqa", "musique"}
+                    else "versioned_cachet_metric"
+                ),
                 "scorer_identity": _SCORER_IDENTITIES[dataset],
             }
             for dataset in SUPPORTED_V1_DATASETS

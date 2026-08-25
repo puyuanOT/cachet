@@ -170,9 +170,10 @@ Maintainer-only CLIs are documented under
 ## Current Status
 
 Cachet is alpha software. The current human-readable benchmark summary lives in
-[`benchmarks/README.md`](benchmarks/). Its currently populated comparisons are
-explicitly provisional until sanitized matched evidence passes the publication
-gate. You do not need cloud infrastructure to try the local quickstart.
+[`benchmarks/README.md`](benchmarks/). The public tables have been reset for the
+vLLM 0.27.1 publication campaign; all numeric cells are explicitly pending or
+unsupported until sanitized matched evidence passes the publication gate. You
+do not need cloud infrastructure to try the local quickstart.
 
 ## Contributing
 

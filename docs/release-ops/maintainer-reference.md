@@ -17,25 +17,13 @@ native GPU KV blocks.
 | What is the current target? | Qwen3 4B Instruct on AWS g6/L4 Databricks, `g6.8xlarge` |
 | Where are the latest results? | [`benchmarks/README.md`](../../benchmarks/) |
 
-Current Q4-weight/Q8-KV main latency and ablation tables are populated from
-[compact sanitized evidence](../../benchmarks/appendix/main-vanilla-descriptive-evidence/).
-They use two examples per dataset, 32 repeats per example, 256 requests per
-isolated job, and request parallelism 4. The results are descriptive and
-nonpublication-qualified: the isolated Baseline raw record structurally fails
-the generic canary gate because it has no cache arm and run-level resource
-telemetry is outside the per-arm resource schema. Full-dataset scores remain
-explicitly `N/A`; a separate five-example-per-dataset matched score diagnostic
-is reported without a full-dataset or superiority claim.
-
-The [BF16 engineering appendix](../../benchmarks/appendix/representative-bf16-qwen3-4b-canaries/)
-remains separate: its 16k canary quality gate passes, both 8k gates fail, and a
-matched eight-job cold-load ablation records 60.22%, 61.70%, and 61.81% lower
-P50 TTFT for the direct loader at 8k, 16k, and 32k. The 32k pair uses
-`gpu_memory_utilization=0.70`, while 8k and 16k use `0.85`; it is matched within
-size but not an identical-engine-memory cross-size scaling point. Earlier
-post-RoPE V1 benchmark records are superseded for current performance and
-quality claims. Provider-backed probes and SGLang handoff records remain
-separate integration evidence; Q8 pre-RoPE SGLang serving is not implemented.
+The public benchmark surface is reset for the vLLM 0.27.1 publication campaign.
+No pre-reset latency, resource, ablation, or score number is carried forward.
+The tables in [`benchmarks/README.md`](../../benchmarks/) are explicit
+campaign-pending/N/A skeletons until exact source, wheel, runtime, input,
+hardware, Databricks, result, and publication-gate records are committed.
+Unsupported methods and the Q8 pre-RoPE SGLang serving path remain explicit
+`N/A` rather than being inferred from integration probes.
 
 Most readers should use these entry points first:
 
@@ -130,9 +118,10 @@ and release evidence in one repository. The human entry points are:
 - [`docs/evidence-policy.md`](../evidence-policy.md) explains what belongs in
   `benchmarks/`, `docs/release-ops/evidence/`, `docs/release-ops/pr-evidence/`, release bundles, and ignored
   `databricks-runs/` scratch output.
-- [`benchmarks/README.md`](../../benchmarks/) is the research-style
-  benchmark answer; [`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](../../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/)
-  preserves historical A10G warm-prefix evidence (predates the current g6/L4 protocol).
+- [`benchmarks/README.md`](../../benchmarks/) is the research-style benchmark
+  answer and the authoritative vLLM 0.27.1 campaign-pending table surface.
+  `benchmarks/appendix/` contains no result evidence until the reset passes its
+  publication gate.
 - [`src/cachet/README.md`](../../src/cachet/) describes the Cachet-branded public
   facade; [`src/document_kv_cache/README.md`](../../src/document_kv_cache/) describes
   the implementation package and migration boundary.
@@ -158,10 +147,10 @@ Databricks probe metadata and launch-config compatibility.
 
 The current implementation and release gaps are tracked in
 `docs/v1-requirements-matrix.md`. Treat that matrix as the audit map for the V1
-open-source package goal: it distinguishes repository-implemented requirements,
-current standalone engineering evidence, and historical bundled snapshots. A
-refreshed final-wheel strict bundle with the main Vanilla protocol remains
-pending.
+open-source package goal: it distinguishes repository-implemented requirements
+from the frozen vLLM 0.27.1 campaign gates. Superseded benchmark snapshots are
+not accepted as evidence; a final-wheel strict bundle for the reset campaign
+remains pending.
 
 ## Logical Model
 
@@ -635,15 +624,6 @@ the same AWS g6/L4 policy:
       "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
       "metadata": [
         "vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector"
-      ],
-      "pip_packages": [
-        "vllm==0.23.0",
-        "transformers==5.12.1",
-        "huggingface-hub==1.20.1",
-        "tokenizers==0.22.2",
-        "numpy==2.3.5",
-        "fastapi[standard]==0.136.0",
-        "prometheus-fastapi-instrumentator==8.0.0"
       ]
     },
     {
@@ -665,6 +645,11 @@ the same AWS g6/L4 policy:
   ]
 }
 ```
+
+The vLLM target deliberately omits an inline `pip_packages` list. The
+release-safe preset derives the prepatched vLLM `0.27.1+cu129` wheel and full
+hash-locked runtime closure from `document_kv_cache.serving_env`; a caller must
+not replace that closure with an unpinned package spec.
 
 When the target uses Cachet's built-in reserved factory path, add
 `native_probe_delegate_factory` to that backend's target record. The Databricks
@@ -941,28 +926,15 @@ runs. It defines a common schema for comparing the no-cache prefill baseline
 with document KV-cache reuse:
 
 Curated, human-readable benchmark reports are tracked in
-[`benchmarks/README.md`](../../benchmarks/README.md). Start there for the
-primary comparison table and ablations, then open
-[`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](../../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/)
-for historical A10G warm-prefix evidence and Databricks run provenance. Historical benchmark
-records are intentionally not kept in `benchmarks/`; use git history or release
-bundles for audit-only retrieval. Every durable Databricks benchmark under the
-current protocol should update the stable current appendix folder with a
-`README.md` and compact sanitized evidence; `docs/release-ops/pr-evidence/`
-stays reserved for machine-readable PR validation and release-audit sidecars.
+[`benchmarks/README.md`](../../benchmarks/README.md). It currently contains the
+vLLM 0.27.1 campaign design and explicit pending/N/A tables, not numeric
+results. Add a stable appendix folder only after sanitized evidence passes the
+publication gate; `docs/release-ops/pr-evidence/` remains reserved for
+machine-readable PR validation and release-audit sidecars.
 
-The current public SGLang result is the BF16 native-handoff smoke in the
-representative engineering appendix: one synthetic NIAH example, repeated
-twice per arm, actually used 205 prompt tokens and 7 completion tokens. It
-validates Vanilla native cache-path execution but is not a 4k-to-32 latency
-row or a speedup claim. Provider-backed native HiCache probe and
-connector-action records remain integration evidence. Earlier synthetic and
-prepared four-dataset SGLang V1 live records belong to the historical bundle
-snapshot; their post-RoPE cache-hit/quality result does not support the current
-Vanilla main protocol. The release-bundle schema accepts raw
-`cachet.sglang_live_benchmark.v1` sidecars through the dedicated
-`sglang_live_v1_benchmark` role, while the public appendix retains only a
-sanitized compact projection.
+Provider-backed SGLang probes remain integration checks. They do not populate a
+latency or score table, and the Q8 pre-RoPE SGLang serving path is explicitly
+unsupported in the reset campaign.
 
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.
@@ -2080,7 +2052,8 @@ This package uses Poetry metadata with exact direct dependency pins: Python
 extras because their current dependency graphs conflict in one resolver; use
 the vendored adapter code from the Cachet wheel and install exactly one serving
 runtime in an isolated environment. The Databricks vLLM smoke helper creates
-one such isolated local-NVMe environment and pins `vllm==0.23.0`.
+one such isolated local-NVMe environment from the prepatched vLLM
+`0.27.1+cu129` wheel and its reviewed hash-locked runtime closure.
 `document_kv_cache.serving_env` records the exact helper profiles for vLLM and
 SGLang so future smoke/probe jobs share the same install boundary.
 The committed `poetry.lock` records the resolver output for the base package,
@@ -2115,46 +2088,16 @@ users keep inline type annotations after installation.
 
 ## Remaining V1 Work
 
-- Build a refreshed final-wheel strict release bundle from the target AWS
-  g6/L4/UC evidence set after reviewing the current descriptive Vanilla run and
-  completing a canonical publication-qualified rerun. The
-  native engine block managers remain owned by vLLM and SGLang rather than
-  Cachet. The last validated strict-bundle snapshot is historical: it was built
-  after PR #513 with its then-current wheel and validated 37 artifacts,
-  including the SGLang live V1 sidecar from run `48413356233422`, the
-  superseded g6 benchmark/status evidence, the historical `aws-g5-a10g`
-  compatibility benchmark and matching Databricks run-status sidecar, PR
-  #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence,
-  `legacy_migration_evidence` for the removed restaurant facade, and
-  `dependency_freshness` evidence for the current package/runtime dependency
-  policy.
-  That snapshot remains useful for audit but does not bind the current source,
-  wheel, or Vanilla main protocol. Traceability-only PR evidence added after
-  it must be included in the refreshed final-wheel publication bundle. The
-  required artifact set remains:
-  release evidence
-  sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
-  vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
-  sidecars, SGLang live V1 benchmark sidecar, benchmark plan execution sidecar,
-  Databricks run-status
-  sidecars for benchmark, storage, and vLLM/SGLang engine-probe runs, tested
-  package wheel, PR evidence sidecar, dependency freshness sidecar, legacy
-  migration evidence sidecar, V1 requirements matrix, GitHub governance
-  sidecar, repository hygiene sidecar, native probe factory diagnostics
-  sidecar entries from both runtime
-  environments, and the historical `aws-g5-a10g` benchmark/status evidence carried
-  through the `compatibility_benchmark` and
-  `compatibility_databricks_run_status` roles.
-- Keep the historical AWS g5/A10G compatibility benchmark evidence (a
-  post-RoPE artifact) with release handoffs only while the legacy bundle schema
-  requires it: QA
-  Databricks run `566743786103032` on `g5.8xlarge` completed Biography,
-  HotpotQA, MusiQue, and NIAH with no benchmark errors. Carry it with
-  `--compatibility-benchmark-json` for release-ops provenance, but do not use it
-  for a current Vanilla performance or quality claim. Its historical release
-  evidence `ok=true` result remains provenance only. This compatibility record
-  does not change the strict V1 publication target from AWS g6/L4 and does not
-  populate the current main tables.
+- Freeze the vLLM 0.27.1 source snapshot, rebuild the final Cachet and patched
+  vLLM wheels, and close their exact runtime, input, and qualification records
+  before submitting production jobs.
+- Run the complete five-block Baseline/Vanilla latency factorial at 8k/16k/32k
+  and concurrency 1/2/4, refresh every implemented ablation, and complete the
+  paired full-dataset score pass. Do not publish partial or pre-reset numbers.
+- Build a new strict release bundle exclusively from the reset campaign's
+  source-bound artifacts, Databricks attestations, results, and passing
+  publication gate. Native engine block managers remain owned by vLLM and
+  SGLang rather than Cachet.
 - Keep GitHub governance release-ready before each public release. Current
   governance evidence is green: the repository is public, `allow_auto_merge`
   reports enabled, merged head branches are deleted automatically, `main`

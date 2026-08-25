@@ -4,6 +4,7 @@ import os
 import sys
 import types
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -21,6 +22,7 @@ from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
     DatabricksWorkspaceConfig,
+    bind_databricks_run_idempotency_token,
     check_databricks_auth,
     databricks_run_status_record,
     databricks_run_status_sidecar_issues,
@@ -31,18 +33,23 @@ from document_kv_cache.databricks_runs import (
     plan_databricks_stage_and_submit,
     put_databricks_dbfs_file,
     read_databricks_run_submit_payload,
+    recover_pre_reserved_databricks_run,
     reserve_and_submit_databricks_run,
     reserve_and_submit_databricks_run_json,
     stage_and_submit_databricks_run,
     submit_databricks_run,
+    submit_pre_reserved_databricks_run,
     summarize_databricks_run,
     summarize_databricks_run_submit_payload,
     validate_databricks_run_status_sidecar,
     write_databricks_run_response_json,
 )
 from document_kv_cache.databricks_resource_ledger import (
+    DatabricksRunAttemptReservationRequest,
     create_databricks_cluster_hour_ledger_json,
+    databricks_ledger_prefix,
     read_databricks_cluster_hour_ledger_json,
+    reserve_databricks_run_attempt_batch_authorized_json,
 )
 
 
@@ -521,6 +528,12 @@ def test_reserved_submit_posts_exact_digest_and_resists_payload_file_mutation(
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     reservation = ledger.reservations[0]
     assert reservation.submit_payload_sha256 == hashlib.sha256(request.data).hexdigest()
+    assert len(ledger.submission_receipts) == 1
+    assert ledger.submission_receipts[0].attempt_id == "attempt-001"
+    assert ledger.submission_receipts[0].run_id == "123"
+    assert ledger.submission_receipts[0].submit_payload_sha256 == (
+        reservation.submit_payload_sha256
+    )
     assert json.loads(payload_path.read_text(encoding="utf-8"))["run_name"] == (
         "mutated-run"
     )
@@ -589,6 +602,7 @@ def test_failed_reserved_submit_conservatively_keeps_reservation(tmp_path):
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert [item.attempt_id for item in ledger.reservations] == ["attempt-failed"]
     assert ledger.active_reserved_cluster_hours == 4.0
+    assert ledger.submission_receipts == ()
     assert ledger.terminal_actuals == ()
 
 
@@ -1870,6 +1884,186 @@ class _BytesFile:
 
     def close(self):
         pass
+
+
+def _pre_reserved_idempotency_case(tmp_path, *, attempt_id="idempotent-attempt"):
+    ledger_path = tmp_path / "idempotency-ledger.json"
+    opening = create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="idempotency-ledger",
+    )
+    payload = bind_databricks_run_idempotency_token(
+        _bounded_submit_payload(),
+        attempt_id=attempt_id,
+    )
+    _ledger, authorization = reserve_databricks_run_attempt_batch_authorized_json(
+        ledger_path,
+        (
+            DatabricksRunAttemptReservationRequest(
+                attempt_id=attempt_id,
+                workload_id="idempotency-recovery-test",
+                submit_payload=payload,
+            ),
+        ),
+        expected_predecessor_prefix=databricks_ledger_prefix(opening),
+    )
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example.cloud.databricks.com",
+        "secret-token",
+    )
+    return config, ledger_path, payload, authorization
+
+
+class _IdempotentSubmitService:
+    def __init__(self, *, fail_mode):
+        self.fail_mode = fail_mode
+        self.calls = 0
+        self.runs_by_token = {}
+
+    def __call__(self, request, *, timeout):
+        assert timeout > 0
+        self.calls += 1
+        payload = json.loads(request.data)
+        token = payload["idempotency_token"]
+        if self.calls == 1 and self.fail_mode == "accepted_timeout":
+            self.runs_by_token[token] = 701
+            raise TimeoutError("response was lost after acceptance")
+        if self.calls == 1 and self.fail_mode == "preaccept_failure":
+            raise ConnectionError("request failed before acceptance")
+        run_id = self.runs_by_token.setdefault(token, 702)
+        return _FakeResponse({"run_id": run_id})
+
+
+def test_pre_reserved_recovery_reuses_accepted_idempotent_run(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode="accepted_timeout")
+
+    with pytest.raises(TimeoutError, match="lost after acceptance"):
+        submit_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    recovered = recover_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+
+    assert recovered == {"run_id": "701"}
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert [item.run_id for item in ledger.submission_receipts] == ["701"]
+    assert service.calls == 2
+
+
+def test_pre_reserved_recovery_after_preaccept_failure_creates_one_run(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode="preaccept_failure")
+
+    with pytest.raises(ConnectionError, match="before acceptance"):
+        submit_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    assert service.runs_by_token == {}
+    recovered = recover_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+
+    assert recovered == {"run_id": "702"}
+    assert len(service.runs_by_token) == 1
+
+
+def test_pre_reserved_recovery_rejects_token_or_payload_drift_before_post(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode="accepted_timeout")
+    with pytest.raises(TimeoutError):
+        submit_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    calls = service.calls
+    missing_token = dict(payload)
+    missing_token.pop("idempotency_token")
+    with pytest.raises(ValueError, match="lacks idempotency_token"):
+        recover_pre_reserved_databricks_run(
+            config,
+            missing_token,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    changed = dict(payload)
+    changed["run_name"] = "changed-wire-bytes"
+    with pytest.raises(ValueError, match="idempotency token drift"):
+        recover_pre_reserved_databricks_run(
+            config,
+            changed,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    assert service.calls == calls
+
+
+def test_concurrent_pre_reserved_recovery_posts_once_and_returns_one_run(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode="accepted_timeout")
+    with pytest.raises(TimeoutError):
+        submit_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    def recover():
+        return recover_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: recover(), range(2)))
+
+    assert results == [{"run_id": "701"}, {"run_id": "701"}]
+    assert service.calls == 2
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts) == 1
 
 
 def _valid_databricks_run_status_record():

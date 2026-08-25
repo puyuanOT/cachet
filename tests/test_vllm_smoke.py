@@ -2,10 +2,11 @@ from dataclasses import fields
 from pathlib import Path
 import gc
 import hashlib
+import io
 import json
 import subprocess
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import weakref
 
 import pytest
@@ -16,7 +17,18 @@ from document_kv_cache.canary_orchestration import (
     representative_canary_matrix,
     representative_vllm_comparison_suite_id,
 )
-from document_kv_cache.serving_env import VLLM_SERVING_ENVIRONMENT_PROFILE
+from document_kv_cache.serving_env import (
+    VLLM_CUDA_REQUIREMENTS_SHA256,
+    VLLM_CUDA_VARIANT,
+    VLLM_DOCKERFILE_SHA256,
+    VLLM_PACKAGE_INDEX_URLS,
+    VLLM_SERVING_ENVIRONMENT_PROFILE,
+    VLLM_WHEEL_FILENAME,
+    VLLM_WHEEL_INSTALL_SPEC,
+    VLLM_WHEEL_SHA256,
+    VLLM_WHEEL_URL,
+    vllm_runtime_lock_path,
+)
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
     CACHET_TRANSFORMERS_MODEL_ID_ENV,
@@ -44,6 +56,9 @@ from document_kv_cache.vllm_smoke import (
     TOKENIZERS_CONSTRAINT,
     TRANSFORMERS_CONSTRAINT,
     VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT,
+    VLLM_PATCHED_WHEEL_SHA256_ENV,
+    VLLM_PATCHED_WHEEL_URI_ENV,
+    VLLM_PACKAGE_VERSION,
     VLLM_VERSION,
     VLLMPreparedHandoffGenerationConfig,
     VLLMSmokeBenchmarkConfig,
@@ -58,17 +73,21 @@ from document_kv_cache.vllm_smoke import (
     _build_lmcache_pass_args,
     dataset_args,
     dependency_constraints,
+    dependency_index_args,
+    vllm_dependency_install_requirements,
     dependency_override_constraints,
     document_kv_transfer_config_for_smoke,
     document_kv_package_install_spec,
-    apply_vllm_runtime_patches,
+    verify_vllm_runtime_patch_closure,
     install_document_kv_package,
     install_vllm,
     kv_transfer_config_json,
     parse_args,
     parse_dataset_specs,
+    patched_vllm_wheel_install_spec,
     prime_payload_cache,
     prepare_generated_benchmark_handoffs,
+    prepare_publication_latency_inputs,
     prewarm_cache_prefixes,
     prepared_benchmark_handoff_coverage_record,
     run_prompt_token_budget_probe,
@@ -100,7 +119,9 @@ from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import KVCacheKey
-from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
+from vllm_kv_injection.vllm_dynamic_connector import (
+    DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
+)
 from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -108,10 +129,83 @@ MODEL_REVISION = "a" * 40
 REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
 
 
-def test_payload_cache_option_is_appended_to_preserve_positional_config_api():
+def test_publication_options_are_appended_to_preserve_positional_config_api():
     field_names = [field.name for field in fields(VLLMSmokeBenchmarkConfig)]
 
-    assert field_names[-1] == "prewarm_payload_cache"
+    legacy_fields = [
+        "benchmark_id",
+        "output_dir",
+        "model_id",
+        "model_revision",
+        "tokenizer_revision",
+        "model_dtype",
+        "model_quantization",
+        "kv_cache_dtype",
+        "attention_backend",
+        "max_tokens",
+        "force_max_tokens",
+        "timeout_seconds",
+        "import_probe_timeout_seconds",
+        "server_start_timeout_seconds",
+        "local_root",
+        "server_host",
+        "server_port",
+        "client_host",
+        "max_model_len",
+        "max_num_seqs",
+        "gpu_memory_utilization",
+        "data_parallel_size",
+        "kv_connector_mode",
+        "lmcache_local_dir",
+        "lmcache_max_disk_gb",
+        "lmcache_chunk_size",
+        "lmcache_version",
+        "lmcache_local_cpu",
+        "lmcache_max_cpu_gb",
+        "benchmark_repeats",
+        "request_parallelism",
+        "benchmark_interleave_examples",
+        "runtime_telemetry_interval_seconds",
+        "benchmark_arms",
+        "benchmark_arm_specs",
+        "benchmark_evidence_policy",
+        "representative_canary",
+        "representative_workload_profile",
+        "benchmark_manifest_provenance",
+        "prewarm_cache_prefix",
+        "cache_runtime_prompt",
+        "prefix_cache_salt_mode",
+        "hardware_target",
+        "dataset_specs",
+        "allow_dataset_subset",
+        "package_install_spec",
+        "handoff_generation",
+        "runtime_identity",
+        "payload_cache_max_bytes",
+        "system_prompt_position",
+        "benchmark_suite_id",
+        "benchmark_runtime_id",
+        "prewarm_payload_cache",
+    ]
+    publication_fields = [
+        "publication_latency_schedule_record",
+        "publication_latency_schedule_path",
+        "publication_latency_expected_input_bundle_sha256",
+        "publication_handoff_generation_output_root",
+        "publication_handoff_generation_execution_file_sha256",
+        "publication_handoff_generation_execution_closed_record_sha256",
+        "publication_handoff_bundle_manifest_path",
+        "publication_handoff_bundle_source_root",
+        "publication_handoff_bundle_manifest_file_sha256",
+        "publication_handoff_bundle_manifest_closed_record_sha256",
+        "publication_handoff_local_nvme_dir",
+        "publication_handoff_stage_kind",
+        "temperature",
+        "generation_seed",
+        "payload_cache_prime_target_count",
+    ]
+
+    assert field_names == [*legacy_fields, *publication_fields]
     assert field_names.index("cache_runtime_prompt") == (
         field_names.index("prewarm_cache_prefix") + 1
     )
@@ -156,8 +250,7 @@ def representative_vllm_kwargs(
         "benchmark_repeats": profile.benchmark_repeats,
         "request_parallelism": profile.request_parallelism,
         "dataset_specs": tuple(
-            f"{dataset}={tmp_path / f'{dataset}.jsonl'}"
-            for dataset in SMOKE_DATASETS
+            f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
         ),
     }
 
@@ -192,7 +285,9 @@ def prepared_dataset_paths(tmp_path, *, include_handoffs=True):
             "documents": [{"document_id": "ada", "text": "Ada Lovelace biography"}],
         }
         if include_handoffs:
-            write_handoff_json(handoff_path, request_id=request_id, payload_uri=payload_uri)
+            write_handoff_json(
+                handoff_path, request_id=request_id, payload_uri=payload_uri
+            )
             record["kv_transfer_params"] = {
                 DOCUMENT_KV_REQUEST_ID_PARAM: request_id,
                 DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
@@ -204,7 +299,9 @@ def prepared_dataset_paths(tmp_path, *, include_handoffs=True):
     return paths
 
 
-def handoff_record(*, request_id: str, payload_uri: str, backend: str = "vllm") -> dict[str, object]:
+def handoff_record(
+    *, request_id: str, payload_uri: str, backend: str = "vllm"
+) -> dict[str, object]:
     layout = KVLayout(
         model_id="tiny-test-model",
         lora_id="base",
@@ -229,10 +326,17 @@ def handoff_record(*, request_id: str, payload_uri: str, backend: str = "vllm") 
     return engine_adapter_request_to_record(adapter_request, payload_uri=payload_uri)
 
 
-def write_handoff_json(path: Path, *, request_id: str, payload_uri: str, backend: str = "vllm") -> None:
+def write_handoff_json(
+    path: Path, *, request_id: str, payload_uri: str, backend: str = "vllm"
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(handoff_record(request_id=request_id, payload_uri=payload_uri, backend=backend), sort_keys=True),
+        json.dumps(
+            handoff_record(
+                request_id=request_id, payload_uri=payload_uri, backend=backend
+            ),
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
 
@@ -304,23 +408,61 @@ class TrackedOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
         type(self).last_ref = weakref.ref(self)
 
 
-def test_dependency_constraints_match_pinned_g5_vllm_stack():
-    assert dependency_constraints() == list(VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints)
+def test_dependency_constraints_match_pinned_g5_vllm_stack(monkeypatch, tmp_path):
+    patched_digest = "a" * 64
+    patched_wheel = tmp_path / (
+        "vllm-0.27.1+cu129-1cachete5m2aaaaaaaaaaaaaaaa-"
+        "cp38-abi3-manylinux_2_28_x86_64.whl"
+    )
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, str(patched_wheel))
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_SHA256_ENV, patched_digest)
+    assert dependency_constraints() == list(
+        VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints
+    )
     assert all("==" in constraint for constraint in dependency_constraints())
-    assert dependency_override_constraints() == [VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT]
-    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT == "opencv-python-headless==4.12.0.88"
-    assert VLLM_VERSION == "0.23.0"
+    assert dependency_index_args() == [
+        argument
+        for index_url in VLLM_PACKAGE_INDEX_URLS
+        for argument in ("--extra-index-url", index_url)
+    ]
+    install_requirements = vllm_dependency_install_requirements()
+    assert install_requirements[0] == (
+        f"vllm @ {patched_wheel.resolve().as_uri()}#sha256={patched_digest}"
+    )
+    assert VLLM_WHEEL_INSTALL_SPEC not in install_requirements
+    assert not any(
+        requirement.startswith("vllm==") for requirement in install_requirements
+    )
+    assert dependency_override_constraints() == []
+    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT in dependency_constraints()
+    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT == "opencv-python-headless==4.13.0.92"
+    assert VLLM_VERSION == "0.27.1"
     assert TRANSFORMERS_CONSTRAINT == "transformers==5.12.1"
     assert HUGGINGFACE_HUB_CONSTRAINT == "huggingface-hub==1.20.1"
     assert TOKENIZERS_CONSTRAINT == "tokenizers==0.22.2"
     assert NUMPY_CONSTRAINT == "numpy==2.3.5"
-    numpy_version = tuple(int(part) for part in NUMPY_CONSTRAINT.split("==", maxsplit=1)[1].split("."))
+    numpy_version = tuple(
+        int(part) for part in NUMPY_CONSTRAINT.split("==", maxsplit=1)[1].split(".")
+    )
     assert (1, 25, 0) <= numpy_version < (2, 4, 0)
     assert FASTAPI_CONSTRAINT == "fastapi[standard]==0.136.0"
-    fastapi_version = tuple(int(part) for part in FASTAPI_CONSTRAINT.split("==", maxsplit=1)[1].split("."))
+    fastapi_version = tuple(
+        int(part) for part in FASTAPI_CONSTRAINT.split("==", maxsplit=1)[1].split(".")
+    )
     assert (0, 115, 0) <= fastapi_version < (0, 137, 0)
-    assert PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT == "prometheus-fastapi-instrumentator==8.0.0"
+    assert (
+        PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT
+        == "prometheus-fastapi-instrumentator==8.0.0"
+    )
     assert HF_MODEL_ID == "Qwen/Qwen3-4B-Instruct-2507"
+
+
+def test_vllm_install_requirements_fail_closed_without_prepatched_wheel(monkeypatch):
+    monkeypatch.delenv(VLLM_PATCHED_WHEEL_URI_ENV, raising=False)
+    monkeypatch.delenv(VLLM_PATCHED_WHEEL_SHA256_ENV, raising=False)
+
+    with pytest.raises(RuntimeError, match=VLLM_PATCHED_WHEEL_URI_ENV):
+        vllm_dependency_install_requirements()
     assert SERVED_MODEL_NAME == "qwen3:4b-instruct"
 
 
@@ -335,7 +477,9 @@ def test_smoke_dataset_records_cover_v1_release_datasets():
     assert all(record["documents"] for record in records.values())
 
 
-def test_document_kv_package_install_spec_prefers_config_then_env(monkeypatch, tmp_path):
+def test_document_kv_package_install_spec_prefers_config_then_env(
+    monkeypatch, tmp_path
+):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
         output_dir=tmp_path / "out",
@@ -343,9 +487,14 @@ def test_document_kv_package_install_spec_prefers_config_then_env(monkeypatch, t
         package_install_spec="dbfs:/tmp/cachet/document_kv_cache.whl",
     )
 
-    assert document_kv_package_install_spec(config) == "/dbfs/tmp/cachet/document_kv_cache.whl"
+    assert (
+        document_kv_package_install_spec(config)
+        == "/dbfs/tmp/cachet/document_kv_cache.whl"
+    )
 
-    monkeypatch.setenv(DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV, "dbfs:/tmp/cachet/from-env.whl")
+    monkeypatch.setenv(
+        DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV, "dbfs:/tmp/cachet/from-env.whl"
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
         output_dir=tmp_path / "out",
@@ -355,7 +504,9 @@ def test_document_kv_package_install_spec_prefers_config_then_env(monkeypatch, t
     assert document_kv_package_install_spec(config) == "/dbfs/tmp/cachet/from-env.whl"
 
 
-def test_document_kv_package_install_spec_falls_back_to_source_checkout(monkeypatch, tmp_path):
+def test_document_kv_package_install_spec_falls_back_to_source_checkout(
+    monkeypatch, tmp_path
+):
     monkeypatch.delenv(DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV, raising=False)
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
@@ -384,29 +535,95 @@ def test_install_document_kv_package_uses_no_deps(monkeypatch, tmp_path):
     ]
 
 
-def test_install_vllm_applies_fips_opencv_override_after_vllm_stack(monkeypatch, tmp_path):
+def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path):
     calls = []
     python = tmp_path / "venv" / "bin" / "python"
+    patched_digest = "b" * 64
+    patched_wheel = tmp_path / (
+        "vllm-0.27.1+cu129-1cachete5m2bbbbbbbbbbbbbbbb-"
+        "cp38-abi3-manylinux_2_28_x86_64.whl"
+    )
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, str(patched_wheel))
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_SHA256_ENV, patched_digest)
     monkeypatch.setattr(public_vllm_smoke, "run", lambda argv: calls.append(argv))
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "validate_vllm_runtime_lock_platform",
+        lambda: {},
+    )
 
     install_vllm(python)
 
     assert calls == [
-        [str(python), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"],
-        [str(python), "-m", "pip", "install", *dependency_constraints()],
         [
             str(python),
             "-m",
             "pip",
             "install",
-            "--force-reinstall",
+            *dependency_index_args(),
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            "--requirement",
+            str(vllm_runtime_lock_path()),
+        ],
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
             "--no-deps",
-            *dependency_override_constraints(),
+            patched_vllm_wheel_install_spec(),
         ],
     ]
 
 
-def test_apply_vllm_runtime_patches_disables_e5m2_query_quant(tmp_path):
+def test_create_venv_fallback_is_hash_pinned_and_dependency_free(monkeypatch, tmp_path):
+    calls = []
+    venv_dir = tmp_path / "venv"
+    bootstrap = tmp_path / "reviewed-virtualenv.pyz"
+
+    def fake_run(argv):
+        calls.append(argv)
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(public_vllm_smoke, "run", fake_run)
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "materialize_virtualenv_bootstrap",
+        lambda output_dir: bootstrap,
+    )
+
+    public_vllm_smoke.create_venv(venv_dir)
+
+    assert calls == [
+        [sys.executable, "-m", "venv", str(venv_dir)],
+        [sys.executable, str(bootstrap), str(venv_dir)],
+    ]
+
+
+def test_materialize_virtualenv_bootstrap_hash_gates_zipapp(monkeypatch, tmp_path):
+    payload = b"self-contained virtualenv fixture"
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(public_vllm_smoke, "VIRTUALENV_BOOTSTRAP_SHA256", digest)
+    monkeypatch.setattr(public_vllm_smoke, "VIRTUALENV_BOOTSTRAP_VERSION", "20.39.1")
+    monkeypatch.setattr(
+        public_vllm_smoke.urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(payload),
+    )
+
+    path = public_vllm_smoke.materialize_virtualenv_bootstrap(tmp_path)
+
+    assert path.name == f"virtualenv-20.39.1-{digest[:16]}.pyz"
+    assert path.read_bytes() == payload
+    path.write_bytes(b"corrupt")
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        public_vllm_smoke.materialize_virtualenv_bootstrap(tmp_path)
+
+
+def test_verify_vllm_runtime_patch_closure_is_read_only(monkeypatch, tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
         output_dir=tmp_path / "out",
@@ -485,49 +702,260 @@ middle
         encoding="utf-8",
     )
 
-    patches = apply_vllm_runtime_patches(config)
+    attention_replacements = (
+        (
+            """        if (
+            self.impl.supports_quant_query_input
+            and (
+                self.kv_cache_dtype.startswith("fp8") or self.kv_cache_dtype == "nvfp4"
+            )
+            and not self.kv_cache_dtype.endswith("per_token_head")
+        ):
+""",
+            """        if (
+            self.impl.supports_quant_query_input
+            and self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}
+        ):
+""",
+        ),
+    )
+    reshape_replacements = (
+        (
+            """    kv_cache_torch_dtype = (
+        current_platform.fp8_dtype()
+        if is_quantized_kv_cache(kv_cache_dtype)
+        else key_cache.dtype
+    )
+""",
+            """    kv_cache_torch_dtype = (
+        torch.float8_e5m2
+        if kv_cache_dtype == "fp8_e5m2"
+        else current_platform.fp8_dtype()
+        if is_quantized_kv_cache(kv_cache_dtype)
+        else key_cache.dtype
+    )
+""",
+        ),
+        (
+            """    kv_cache_torch_dtype = (
+        current_platform.fp8_dtype()
+        if is_quantized_kv_cache(kv_cache_dtype)
+        else kv_cache.dtype
+    )
+""",
+            """    kv_cache_torch_dtype = (
+        torch.float8_e5m2
+        if kv_cache_dtype == "fp8_e5m2"
+        else current_platform.fp8_dtype()
+        if is_quantized_kv_cache(kv_cache_dtype)
+        else kv_cache.dtype
+    )
+""",
+        ),
+    )
+    triton_replacements = (
+        (
+            "        self.fp8_dtype = current_platform.fp8_dtype()\n",
+            """        self.fp8_dtype = (
+            torch.float8_e5m2
+            if kv_cache_dtype == "fp8_e5m2"
+            else current_platform.fp8_dtype()
+        )
+""",
+        ),
+    )
+
+    def patch_spec(patch_id, relative_path, path, replacements, reason):
+        source = path.read_text(encoding="utf-8")
+        patched = source
+        for old, new in replacements:
+            patched = patched.replace(old, new, 1)
+        return {
+            "id": patch_id,
+            "relative_path": relative_path,
+            "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+            "patched_sha256": hashlib.sha256(patched.encode()).hexdigest(),
+            "replacements": replacements,
+            "reason": reason,
+        }
+
+    reasons = (
+        "vLLM 0.27.1 must not construct its E4M3-only query quantizer for fp8_e5m2.",
+        "vLLM 0.27.1 must use the requested E5M2 cache view in reshape-and-cache.",
+        "vLLM 0.27.1 must bind Triton attention to E5M2 on the targeted SM80+ path.",
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "_VLLM_0271_E5M2_PATCH_CLOSURE",
+        (
+            patch_spec(
+                "vllm-qwen-attention-disable-e5m2-query-quant",
+                "vllm/model_executor/layers/attention/attention.py",
+                attention_path,
+                attention_replacements,
+                reasons[0],
+            ),
+            patch_spec(
+                "vllm-triton-reshape-cache-use-e5m2-dtype",
+                "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py",
+                reshape_path,
+                reshape_replacements,
+                reasons[1],
+            ),
+            patch_spec(
+                "vllm-triton-attn-use-e5m2-cache-view",
+                "vllm/v1/attention/backends/triton_attn.py",
+                triton_attn_path,
+                triton_replacements,
+                reasons[2],
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "installed_package_version",
+        lambda python, package: VLLM_PACKAGE_VERSION,
+    )
+
+    installed_paths = (attention_path, reshape_path, triton_attn_path)
+    for installed_path, patch in zip(
+        installed_paths,
+        public_vllm_smoke._VLLM_0271_E5M2_PATCH_CLOSURE,
+        strict=True,
+    ):
+        patched_text = installed_path.read_text(encoding="utf-8")
+        for old, new in patch["replacements"]:
+            patched_text = patched_text.replace(old, new, 1)
+        installed_path.write_text(patched_text, encoding="utf-8")
+    bytes_before = {path: path.read_bytes() for path in installed_paths}
+
+    patches = verify_vllm_runtime_patch_closure(config)
     text = attention_path.read_text(encoding="utf-8")
     reshape_text = reshape_path.read_text(encoding="utf-8")
     triton_attn_text = triton_attn_path.read_text(encoding="utf-8")
 
-    assert patches == [
+    compact_patches = [
+        {
+            "id": record["id"],
+            "path": record["path"],
+            "verified": record["verified"],
+            "reason": record["reason"],
+        }
+        for record in patches
+    ]
+    assert compact_patches == [
         {
             "id": "vllm-qwen-attention-disable-e5m2-query-quant",
             "path": str(attention_path),
-            "applied": True,
-            "reason": (
-                "vLLM 0.23.0 admits fp8_e5m2 KV cache in Triton metadata but its attention "
-                "wrapper's query quantization path asserts only fp8/fp8_e4m3/nvfp4."
-            ),
+            "verified": True,
+            "reason": reasons[0],
         },
         {
             "id": "vllm-triton-reshape-cache-use-e5m2-dtype",
             "path": str(reshape_path),
-            "applied": True,
-            "reason": (
-                "vLLM 0.23.0 routes all quantized KV cache dtypes through current_platform.fp8_dtype(); "
-                "on AWS g5/A10G that selects an E4M3 dtype even when --kv-cache-dtype=fp8_e5m2."
-            ),
+            "verified": True,
+            "reason": reasons[1],
         },
         {
             "id": "vllm-triton-attn-use-e5m2-cache-view",
             "path": str(triton_attn_path),
-            "applied": True,
-            "reason": (
-                "TritonAttentionImpl stores the platform default FP8 dtype and views quantized KV "
-                "cache pages through it; on AWS g5/A10G this selects E4M3 for fp8_e5m2 KV pages."
-            ),
+            "verified": True,
+            "reason": reasons[2],
         },
     ]
     assert 'self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}' in text
-    assert "startswith(\"fp8\")" not in text
+    assert 'startswith("fp8")' not in text
     assert 'if kv_cache_dtype == "fp8_e5m2"' in reshape_text
-    assert 'self.fp8_dtype = (\n            torch.float8_e5m2' in triton_attn_text
-    assert apply_vllm_runtime_patches(config) == [
-        {**patches[0], "applied": False},
-        {**patches[1], "applied": False},
-        {**patches[2], "applied": False},
+    assert "self.fp8_dtype = (\n            torch.float8_e5m2" in triton_attn_text
+    assert [
+        record["verified"] for record in verify_vllm_runtime_patch_closure(config)
+    ] == [
+        True,
+        True,
+        True,
     ]
+    assert {path: path.read_bytes() for path in installed_paths} == bytes_before
+
+
+def test_runtime_patch_verifier_rejects_unapproved_installed_source(
+    monkeypatch,
+    tmp_path,
+):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+    target = (
+        config.venv_dir
+        / "lib"
+        / "python3.11"
+        / "site-packages"
+        / "vllm"
+        / "unexpected.py"
+    )
+    target.parent.mkdir(parents=True)
+    target.write_text("unexpected source\n", encoding="utf-8")
+    bytes_before = target.read_bytes()
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "_VLLM_0271_E5M2_PATCH_CLOSURE",
+        (
+            {
+                "id": "test",
+                "relative_path": "vllm/unexpected.py",
+                "source_sha256": "0" * 64,
+                "patched_sha256": "1" * 64,
+                "replacements": (("old", "new"),),
+                "reason": "test",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "installed_package_version",
+        lambda python, package: VLLM_PACKAGE_VERSION,
+    )
+
+    with pytest.raises(ValueError, match="does not match approved patched source"):
+        verify_vllm_runtime_patch_closure(config)
+
+    assert target.read_bytes() == bytes_before
+
+
+def test_e5m2_runtime_patch_closure_is_bound_to_complete_tagged_files():
+    closure = public_vllm_smoke._VLLM_0271_E5M2_PATCH_CLOSURE
+
+    assert len(closure) == 3
+    assert {
+        record["id"]: (
+            record["source_sha256"],
+            record["patched_sha256"],
+        )
+        for record in closure
+    } == {
+        "vllm-qwen-attention-disable-e5m2-query-quant": (
+            "dae6d1f09448adc1d67c776089e77e8b75378332166844a234cd8fa45c18195e",
+            "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839",
+        ),
+        "vllm-triton-reshape-cache-e5m2-closure": (
+            "6cac51475b8c656992a21b2d150acd3a16a95a7ab7d49aab151a3ef13c24b80d",
+            "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08",
+        ),
+        "vllm-triton-attention-e5m2-closure": (
+            "20b4dd5f8c15cd2d6f9598268368f5fc572f2c980eb75327c5992100c49ff3ed",
+            "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390",
+        ),
+    }
+    for record in closure:
+        assert len(record["source_sha256"]) == 64
+        assert len(record["patched_sha256"]) == 64
+        assert record["source_sha256"] != record["patched_sha256"]
+        assert record["relative_path"].startswith("vllm/")
+    closure_text = repr(closure)
+    assert 'kv_cache_dtype == "fp8_e5m2"' in closure_text
+    assert "has_device_capability(80)" in closure_text
+    assert "torch.float8_e5m2" in closure_text
 
 
 def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
@@ -539,7 +967,12 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     )
     args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
 
-    assert args[:4] == [str(tmp_path / "venv" / "bin" / "python"), "-u", "-m", "vllm.entrypoints.openai.api_server"]
+    assert args[:4] == [
+        str(tmp_path / "venv" / "bin" / "python"),
+        "-u",
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+    ]
     assert args[args.index("--model") + 1] == HF_MODEL_ID
     assert args[args.index("--served-model-name") + 1] == SERVED_MODEL_NAME
     assert args[args.index("--host") + 1] == "127.0.0.1"
@@ -548,9 +981,11 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert args[args.index("--max-model-len") + 1] == "4096"
     assert args[args.index("--max-num-seqs") + 1] == "2"
     assert args[args.index("--gpu-memory-utilization") + 1] == "0.85"
-    assert json.loads(args[args.index("--kv-transfer-config") + 1]) == document_kv_transfer_config_for_smoke(config)
+    assert json.loads(
+        args[args.index("--kv-transfer-config") + 1]
+    ) == document_kv_transfer_config_for_smoke(config)
     assert "--enable-prefix-caching" in args
-    assert "--trust-remote-code" in args
+    assert "--trust-remote-code" not in args
     assert "--no-enable-log-requests" in args
     assert "--disable-log-requests" not in args
 
@@ -570,16 +1005,11 @@ def test_vllm_server_args_pin_runtime_identity(tmp_path):
         config,
         tmp_path / "venv" / "bin" / "python",
     )
-    transfer_config = json.loads(
-        args[args.index("--kv-transfer-config") + 1]
-    )
+    transfer_config = json.loads(args[args.index("--kv-transfer-config") + 1])
     extra_config = transfer_config["kv_connector_extra_config"]
 
     assert args[args.index("--revision") + 1] == MODEL_REVISION
-    assert (
-        args[args.index("--tokenizer-revision") + 1]
-        == MODEL_REVISION
-    )
+    assert args[args.index("--tokenizer-revision") + 1] == MODEL_REVISION
     assert extra_config["document_kv.runtime_identity"] == identity.to_record()
     assert extra_config["document_kv.require_runtime_handshake"] is True
 
@@ -676,14 +1106,18 @@ def test_lmcache_pass_args_use_baseline_arm_without_cache_salt(tmp_path):
         force_max_tokens=True,
     )
     dataset_paths = {"biography": tmp_path / "biography.jsonl"}
-    args = _build_lmcache_pass_args(config, dataset_paths, tmp_path / "cold.json", "cold")
+    args = _build_lmcache_pass_args(
+        config, dataset_paths, tmp_path / "cold.json", "cold"
+    )
     assert args[args.index("--arm") + 1] == "baseline_prefill"
     assert args[args.index("--request-parallelism") + 1] == "8"
     assert args[args.index("--output-json") + 1] == str(tmp_path / "cold.json")
     assert "--cache-base-url" not in args
     assert "cache_salt" not in " ".join(args)
     # forced-decode parity with the Cachet arm
-    assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {"ignore_eos": True}
+    assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {
+        "ignore_eos": True
+    }
 
 
 def test_parse_args_wires_lmcache_options(tmp_path):
@@ -759,6 +1193,49 @@ def test_vllm_config_rejects_unknown_kv_connector_mode(tmp_path):
             output_dir=tmp_path / "out",
             local_root=tmp_path / "local",
             kv_connector_mode="redis",
+        )
+
+
+@pytest.mark.parametrize("kv_connector_mode", ("lmcache", "multi"))
+@pytest.mark.parametrize("benchmark_evidence_policy", ("canary", "publication"))
+def test_vllm_locked_campaign_rejects_unlocked_connector_modes(
+    tmp_path,
+    kv_connector_mode,
+    benchmark_evidence_policy,
+):
+    with pytest.raises(ValueError, match="explicitly N/A"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="unsupported-locked-mode",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            kv_connector_mode=kv_connector_mode,
+            benchmark_evidence_policy=benchmark_evidence_policy,
+        )
+
+
+@pytest.mark.parametrize("benchmark_evidence_policy", ("canary", "publication"))
+def test_vllm_locked_campaign_pins_triton_attention(
+    tmp_path,
+    benchmark_evidence_policy,
+):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="locked-triton-attention",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+        benchmark_evidence_policy=benchmark_evidence_policy,
+    )
+
+    assert config.attention_backend == "TRITON_ATTN"
+
+    with pytest.raises(ValueError, match="attention_backend='TRITON_ATTN'"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="locked-wrong-attention",
+            output_dir=tmp_path / "out-2",
+            local_root=tmp_path / "local-2",
+            benchmark_evidence_policy=benchmark_evidence_policy,
+            attention_backend="FLASH_ATTN",
         )
 
 
@@ -857,6 +1334,249 @@ def test_vllm_server_args_accept_quantized_model_and_kv_overrides(tmp_path):
     assert args[args.index("--attention-backend") + 1] == "TRITON_ATTN"
 
 
+def _publication_dataset_specs(tmp_path):
+    return tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
+
+
+def _publication_baseline_config_kwargs(tmp_path, *, policy="publication"):
+    return {
+        "benchmark_id": "publication-baseline",
+        "output_dir": tmp_path / "out",
+        "local_root": tmp_path / "local",
+        "model_revision": MODEL_REVISION,
+        "tokenizer_revision": MODEL_REVISION,
+        "benchmark_evidence_policy": policy,
+        "benchmark_arms": ("baseline_prefill",),
+        "dataset_specs": _publication_dataset_specs(tmp_path / "inputs"),
+    }
+
+
+@pytest.mark.parametrize("policy", ["canary", "publication"])
+def test_publication_schedule_and_handoff_options_fail_closed_when_partial(
+    policy,
+    tmp_path,
+):
+    digest = "1" * 64
+    kwargs = _publication_baseline_config_kwargs(tmp_path, policy=policy)
+
+    with pytest.raises(ValueError, match="provided together"):
+        VLLMSmokeBenchmarkConfig(
+            **kwargs,
+            publication_latency_schedule_path=tmp_path / "schedule.json",
+        )
+    with pytest.raises(ValueError, match="provided together"):
+        VLLMSmokeBenchmarkConfig(
+            **kwargs,
+            publication_latency_expected_input_bundle_sha256=digest,
+        )
+    with pytest.raises(ValueError, match="must be provided together"):
+        VLLMSmokeBenchmarkConfig(
+            **kwargs,
+            publication_latency_schedule_path=tmp_path / "schedule.json",
+            publication_latency_expected_input_bundle_sha256=digest,
+            publication_handoff_generation_output_root=tmp_path / "generation",
+        )
+
+
+def test_publication_vanilla_schedule_requires_reusable_handoffs_and_forbids_inline_generation(
+    tmp_path,
+):
+    digest = "2" * 64
+    kwargs = {
+        **_publication_baseline_config_kwargs(tmp_path),
+        "benchmark_arms": (CACHE_REUSE_ARM,),
+        "publication_latency_schedule_path": tmp_path / "schedule.json",
+        "publication_latency_expected_input_bundle_sha256": digest,
+    }
+
+    with pytest.raises(ValueError, match="requires a closed distributed"):
+        VLLMSmokeBenchmarkConfig(**kwargs)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        VLLMSmokeBenchmarkConfig(
+            **kwargs,
+            handoff_generation=VLLMPreparedHandoffGenerationConfig(
+                generator_factory="module:factory",
+                output_dir=tmp_path / "inline",
+            ),
+            publication_handoff_generation_output_root=tmp_path / "generation",
+            publication_handoff_generation_execution_file_sha256=digest,
+            publication_handoff_generation_execution_closed_record_sha256=digest,
+            publication_handoff_local_nvme_dir=tmp_path / "local" / "staged",
+        )
+
+
+def test_publication_baseline_forwards_schedule_with_original_dataset_paths(tmp_path):
+    digest = "3" * 64
+    schedule_path = tmp_path / "schedule.json"
+    config = VLLMSmokeBenchmarkConfig(
+        **_publication_baseline_config_kwargs(tmp_path),
+        benchmark_repeats=2,
+        request_parallelism=4,
+        publication_latency_schedule_path=schedule_path,
+        publication_latency_expected_input_bundle_sha256=digest,
+    )
+    dataset_paths = parse_dataset_specs(config.dataset_specs)
+
+    args = build_benchmark_runner_args(config, dataset_paths)
+
+    assert args[args.index("--publication-latency-schedule-json") + 1] == str(
+        schedule_path
+    )
+    assert (
+        args[args.index("--publication-latency-expected-input-bundle-sha256") + 1]
+        == digest
+    )
+    assert dataset_args(dataset_paths) == args[-8:]
+    assert config.stages_publication_handoffs is False
+
+
+def test_inline_publication_schedule_is_materialized_canonically(tmp_path):
+    digest = "4" * 64
+    schedule = {
+        "z": [3, 2, 1],
+        "input_bundle_sha256": digest,
+        "a": {"nested": True},
+    }
+    config = VLLMSmokeBenchmarkConfig(
+        **_publication_baseline_config_kwargs(tmp_path),
+        publication_latency_schedule_record=schedule,
+        publication_latency_expected_input_bundle_sha256=digest,
+    )
+
+    args = build_benchmark_runner_args(
+        config,
+        parse_dataset_specs(config.dataset_specs),
+    )
+    schedule_path = Path(args[args.index("--publication-latency-schedule-json") + 1])
+
+    assert schedule_path == config.publication_latency_schedule_materialized_path
+    assert json.loads(schedule_path.read_text(encoding="utf-8")) == schedule
+    assert schedule_path.read_bytes().endswith(b"\n")
+
+
+def test_publication_vanilla_stages_closed_handoffs_and_persists_attestation(
+    monkeypatch,
+    tmp_path,
+):
+    digest = "5" * 64
+    original_root = tmp_path / "original"
+    staged_fixture_root = tmp_path / "staged-fixture"
+    original_root.mkdir()
+    staged_fixture_root.mkdir()
+    original_paths = prepared_dataset_paths(original_root, include_handoffs=False)
+    staged_paths = prepared_dataset_paths(staged_fixture_root)
+    generation_root = tmp_path / "reviewed-generation"
+    generation_root.mkdir()
+    execution_path = generation_root / (
+        public_vllm_smoke.PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME
+    )
+    execution_path.write_text('{"closed":true}\n', encoding="utf-8")
+    execution_file_sha256 = hashlib.sha256(execution_path.read_bytes()).hexdigest()
+    execution_closed_record_sha256 = "6" * 64
+    source_root = tmp_path / "durable-bundle"
+    local_stage = tmp_path / "local" / "publication-handoffs"
+    attestation_path = tmp_path / "fake-stage-attestation.json"
+    attestation_path.write_text('{"closed":true}\n', encoding="utf-8")
+    manifest = {
+        "context_tokens": 8192,
+        "datasets": [
+            {"entries": [{"cache_method": "vanilla_prefill"}]}
+            for _dataset in SMOKE_DATASETS
+        ],
+        "input_bundle_sha256": digest,
+    }
+    calls = []
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "read_publication_latency_handoff_generation_result",
+        lambda root: (
+            calls.append(("read_generation", root))
+            or SimpleNamespace(
+                record={
+                    "closed_record_sha256": execution_closed_record_sha256,
+                    "execution_mode": (
+                        public_vllm_smoke.PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED
+                    ),
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "resolve_publication_latency_worker_handoff_bundle",
+        lambda result, *, context_tokens: (
+            calls.append(("resolve_generation", result, context_tokens))
+            or SimpleNamespace(manifest=manifest, source_root=source_root)
+        ),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "stage_publication_latency_handoff_bundle",
+        lambda record, *, source_root, local_nvme_dir: (
+            calls.append(("stage", record, source_root, local_nvme_dir))
+            or SimpleNamespace(
+                dataset_paths=staged_paths,
+                attestation_path=attestation_path,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "validate_publication_latency_block_schedule",
+        lambda record, *, examples, expected_input_bundle_sha256: calls.append(
+            (
+                "validate_schedule",
+                record,
+                tuple((example.dataset, example.example_id) for example in examples),
+                expected_input_bundle_sha256,
+            )
+        ),
+    )
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="publication-vanilla",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+        benchmark_evidence_policy="publication",
+        benchmark_arms=(CACHE_REUSE_ARM,),
+        benchmark_manifest_provenance={"input_tokens_target": 8192},
+        dataset_specs=tuple(
+            f"{dataset}={path}" for dataset, path in original_paths.items()
+        ),
+        publication_latency_schedule_record={
+            "input_bundle_sha256": digest,
+        },
+        publication_latency_expected_input_bundle_sha256=digest,
+        publication_handoff_generation_output_root=generation_root,
+        publication_handoff_generation_execution_file_sha256=(execution_file_sha256),
+        publication_handoff_generation_execution_closed_record_sha256=(
+            execution_closed_record_sha256
+        ),
+        publication_handoff_local_nvme_dir=local_stage,
+    )
+
+    result = prepare_publication_latency_inputs(config, original_paths)
+
+    assert result == staged_paths
+    assert calls[0] == ("read_generation", generation_root)
+    assert calls[1][0] == "resolve_generation"
+    assert calls[1][1].record["closed_record_sha256"] == (
+        execution_closed_record_sha256
+    )
+    assert calls[1][2] == 8192
+    assert calls[2] == ("stage", manifest, source_root, local_stage)
+    assert calls[3][0] == "validate_schedule"
+    assert calls[3][2] == tuple((dataset, f"{dataset}-1") for dataset in SMOKE_DATASETS)
+    assert calls[3][3] == digest
+    assert config.publication_handoff_staging_attestation_copy_path.read_bytes() == (
+        attestation_path.read_bytes()
+    )
+
+
 def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
@@ -866,7 +1586,9 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
         local_root=tmp_path / "local",
         server_port=8123,
     )
-    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+    dataset_paths = {
+        name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()
+    }
 
     args = build_benchmark_runner_args(config, dataset_paths)
 
@@ -875,7 +1597,9 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     assert args[args.index("--base-url") + 1] == "http://127.0.0.1:8123"
     assert args[args.index("--model-id") + 1] == SERVED_MODEL_NAME
     assert args[args.index("--hardware-target") + 1] == "aws-g6-l4"
-    assert args[args.index("--output-json") + 1] == str(tmp_path / "out" / "v1-benchmark.json")
+    assert args[args.index("--output-json") + 1] == str(
+        tmp_path / "out" / "v1-benchmark.json"
+    )
     assert args[args.index("--repeats") + 1] == "1"
     assert args[args.index("--request-parallelism") + 1] == "1"
     assert "--server-usage" in args
@@ -902,7 +1626,9 @@ def test_benchmark_runner_args_preserve_configured_hardware_target(tmp_path):
         server_port=8123,
         hardware_target="aws-g5-a10g",
     )
-    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+    dataset_paths = {
+        name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()
+    }
 
     args = build_benchmark_runner_args(config, dataset_paths)
 
@@ -918,7 +1644,9 @@ def test_benchmark_runner_args_include_parallelism_and_selected_arm(tmp_path):
         request_parallelism=8,
         benchmark_arms=("baseline_prefill",),
     )
-    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+    dataset_paths = {
+        name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()
+    }
 
     args = build_benchmark_runner_args(config, dataset_paths)
 
@@ -926,8 +1654,12 @@ def test_benchmark_runner_args_include_parallelism_and_selected_arm(tmp_path):
     assert args[args.index("--arm") + 1] == "baseline_prefill"
 
 
-def test_benchmark_runner_args_use_cold_hydrate_cache_prompt_for_prepared_datasets(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+def test_benchmark_runner_args_use_cold_hydrate_cache_prompt_for_prepared_datasets(
+    tmp_path,
+):
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-1",
         output_dir=tmp_path / "out",
@@ -951,8 +1683,12 @@ def test_benchmark_runner_args_use_cold_hydrate_cache_prompt_for_prepared_datase
     assert args[args.index("--prefix-cache-salt-mode") + 1] == "per_request"
 
 
-def test_benchmark_runner_args_can_share_static_prefix_cache_for_prepared_datasets(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+def test_benchmark_runner_args_can_share_static_prefix_cache_for_prepared_datasets(
+    tmp_path,
+):
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-static-salt",
         output_dir=tmp_path / "out",
@@ -968,7 +1704,9 @@ def test_benchmark_runner_args_can_share_static_prefix_cache_for_prepared_datase
 
 
 def test_benchmark_runner_args_can_force_max_tokens_for_latency_protocol(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-force-256",
         output_dir=tmp_path / "out",
@@ -993,7 +1731,9 @@ def test_benchmark_runner_args_can_force_max_tokens_for_latency_protocol(tmp_pat
 
 
 def test_benchmark_runner_args_forward_arbitrary_arms_evidence_and_provenance(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     matrix = representative_canary_matrix()
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="representative-canary-8k-64",
@@ -1016,6 +1756,12 @@ def test_benchmark_runner_args_forward_arbitrary_arms_evidence_and_provenance(tm
             "input_tokens_target": 8192,
             "hardware_fingerprint": "g6.8xlarge-l4-128g",
             "measurement_scopes": ["latency", "resource"],
+            "package_revisions": {
+                "cachet-source": "git:revision-1",
+                "cachet-source-tree": f"sha256:{'a' * 64}",
+                "cachet-kv": f"wheel-sha256:{'b' * 64}",
+                "cachet-runner": f"sha256:{'c' * 64}",
+            },
         },
     )
 
@@ -1026,9 +1772,7 @@ def test_benchmark_runner_args_forward_arbitrary_arms_evidence_and_provenance(tm
         for index, value in enumerate(args)
         if value == "--arm-spec-json"
     ]
-    assert [arm["arm_id"] for arm in arm_specs] == [
-        run.arm_id for run in matrix.runs
-    ]
+    assert [arm["arm_id"] for arm in arm_specs] == [run.arm_id for run in matrix.runs]
     assert "--arm" not in args
     assert args[args.index("--evidence-policy") + 1] == "canary"
     assert args[args.index("--input-tokens-target") + 1] == "8192"
@@ -1040,9 +1784,10 @@ def test_benchmark_runner_args_forward_arbitrary_arms_evidence_and_provenance(tm
     ] == ["latency", "resource"]
     # Fixed decode length remains a canonical smoke option, not an arbitrary
     # per-arm payload override.
-    assert json.loads(args[args.index("--baseline-extra-body-json") + 1])[
-        "ignore_eos"
-    ] is True
+    assert (
+        json.loads(args[args.index("--baseline-extra-body-json") + 1])["ignore_eos"]
+        is True
+    )
     assert all("extra_body" not in arm for arm in arm_specs)
 
 
@@ -1113,6 +1858,50 @@ def test_vllm_representative_profiles_accept_only_the_registered_workloads(
     assert config.benchmark_manifest_provenance["package_revisions"]["cachet-kv"] == (
         f"wheel-sha256:{REPRESENTATIVE_WHEEL_SHA256}"
     )
+
+
+def test_vllm_resource_scope_requires_complete_software_closure(tmp_path):
+    with pytest.raises(ValueError, match="cachet-source"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="resource-missing-source-closure",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            benchmark_manifest_provenance={
+                "measurement_scopes": ["resource"],
+            },
+        )
+
+
+def test_representative_resource_closure_is_preserved_with_resolved_packages(
+    tmp_path,
+):
+    kwargs = representative_vllm_kwargs(tmp_path)
+    kwargs["benchmark_manifest_provenance"] = {
+        "input_tokens_target": 8192,
+        "measurement_scopes": ["latency", "resource"],
+        "package_revisions": {
+            "cachet-source": "git:revision-1",
+            "cachet-source-tree": f"sha256:{'a' * 64}",
+            "cachet-kv": f"wheel-sha256:{REPRESENTATIVE_WHEEL_SHA256}",
+            "cachet-runner": f"sha256:{'c' * 64}",
+        },
+    }
+
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="representative-resource-closure",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        **kwargs,
+    )
+
+    package_revisions = config.benchmark_manifest_provenance["package_revisions"]
+    assert package_revisions["cachet-source"] == "git:revision-1"
+    assert package_revisions["cachet-source-tree"] == f"sha256:{'a' * 64}"
+    assert package_revisions["cachet-runner"] == f"sha256:{'c' * 64}"
+    assert package_revisions["cachet-kv"] == (
+        f"wheel-sha256:{REPRESENTATIVE_WHEEL_SHA256}"
+    )
+    assert package_revisions["vllm"] == VLLM_PACKAGE_VERSION
 
 
 def test_vllm_representative_provenance_requires_verified_wheel_sha256(
@@ -1207,9 +1996,7 @@ def test_vllm_representative_prompt_budget_requires_actual_multi_document_input(
                 "dataset": "hotpotqa",
                 "example_id": "single-document",
                 "query": "Who?",
-                "documents": [
-                    {"document_id": "doc-1", "text": "Only one document."}
-                ],
+                "documents": [{"document_id": "doc-1", "text": "Only one document."}],
             }
         )
         + "\n",
@@ -1284,9 +2071,7 @@ def test_representative_generated_handoff_costs_are_recorded_on_matching_arm(
         encoding="utf-8",
     )
 
-    enriched = public_vllm_smoke._config_with_generated_handoff_offline_costs(
-        config
-    )
+    enriched = public_vllm_smoke._config_with_generated_handoff_offline_costs(config)
 
     assert enriched.benchmark_arm_specs[0]["offline_costs"] == {
         "artifact_generation_seconds": 12.5,
@@ -1317,9 +2102,9 @@ def test_fixed_representative_arm_rejects_invalid_offline_costs(
     offline_costs,
 ):
     spec = dict(
-        representative_canary_matrix().run_for_arm(
-            "document_kv_cache:full_prefix_prefill"
-        ).arm_spec
+        representative_canary_matrix()
+        .run_for_arm("document_kv_cache:full_prefix_prefill")
+        .arm_spec
     )
     spec["offline_costs"] = offline_costs
 
@@ -1339,9 +2124,9 @@ def test_fixed_representative_arm_rejects_tampered_identity_with_offline_costs(
     tmp_path,
 ):
     spec = dict(
-        representative_canary_matrix().run_for_arm(
-            "document_kv_cache:vanilla_prefill"
-        ).arm_spec
+        representative_canary_matrix()
+        .run_for_arm("document_kv_cache:vanilla_prefill")
+        .arm_spec
     )
     spec["offline_costs"] = {
         "artifact_generation_seconds": 12.5,
@@ -1450,8 +2235,12 @@ def test_upstream_cache_arm_does_not_require_cachet_handoff_metadata(tmp_path):
     assert config.requires_prepared_handoff_metadata is False
 
 
-def test_benchmark_runner_args_can_use_runtime_cache_prompt_for_prepared_datasets(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+def test_benchmark_runner_args_can_use_runtime_cache_prompt_for_prepared_datasets(
+    tmp_path,
+):
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-runtime-prompt",
         output_dir=tmp_path / "out",
@@ -1481,7 +2270,9 @@ def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
             encoding="utf-8",
         )
         dataset_paths[dataset] = path
-    config = VLLMSmokeBenchmarkConfig(benchmark_id="smoke-1", output_dir=tmp_path / "out")
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1", output_dir=tmp_path / "out"
+    )
 
     rows = build_prompt_token_budget_rows(config, dataset_paths)
 
@@ -1490,7 +2281,9 @@ def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
     assert all("Who is described?" in row["prompt"] for row in rows)
 
 
-def test_validate_prompt_token_budget_writes_artifact_and_rejects_over_budget(monkeypatch, tmp_path):
+def test_validate_prompt_token_budget_writes_artifact_and_rejects_over_budget(
+    monkeypatch, tmp_path
+):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
         output_dir=tmp_path / "out",
@@ -1498,12 +2291,16 @@ def test_validate_prompt_token_budget_writes_artifact_and_rejects_over_budget(mo
         max_model_len=32,
         max_tokens=4,
     )
-    dataset_paths = {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS}
+    dataset_paths = {
+        dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS
+    }
 
     monkeypatch.setattr(
         public_vllm_smoke,
         "build_prompt_token_budget_rows",
-        lambda cfg, paths: ({"dataset": "biography", "example_id": "bio-1", "prompt": "long prompt"},),
+        lambda cfg, paths: (
+            {"dataset": "biography", "example_id": "bio-1", "prompt": "long prompt"},
+        ),
     )
     monkeypatch.setattr(
         public_vllm_smoke,
@@ -1539,7 +2336,9 @@ def test_validate_prompt_token_budget_writes_artifact_and_rejects_over_budget(mo
     assert record["over_budget"][0]["total_tokens"] == 44
 
 
-def test_validate_prompt_token_budget_enforces_exact_manifest_target(monkeypatch, tmp_path):
+def test_validate_prompt_token_budget_enforces_exact_manifest_target(
+    monkeypatch, tmp_path
+):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="canary-8k",
         output_dir=tmp_path / "out",
@@ -1550,7 +2349,9 @@ def test_validate_prompt_token_budget_enforces_exact_manifest_target(monkeypatch
             "input_tokens_target": 8192,
         },
     )
-    dataset_paths = {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS}
+    dataset_paths = {
+        dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS
+    }
     monkeypatch.setattr(
         public_vllm_smoke,
         "build_prompt_token_budget_rows",
@@ -1588,17 +2389,23 @@ def test_validate_prompt_token_budget_enforces_exact_manifest_target(monkeypatch
     assert record["token_count_mismatches"][0]["prompt_tokens"] == 8191
 
 
-def test_validate_prompt_token_budget_writes_failed_probe_artifact(monkeypatch, tmp_path):
+def test_validate_prompt_token_budget_writes_failed_probe_artifact(
+    monkeypatch, tmp_path
+):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
     )
-    dataset_paths = {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS}
+    dataset_paths = {
+        dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS
+    }
     monkeypatch.setattr(
         public_vllm_smoke,
         "build_prompt_token_budget_rows",
-        lambda cfg, paths: ({"dataset": "biography", "example_id": "bio-1", "prompt": "prompt"},),
+        lambda cfg, paths: (
+            {"dataset": "biography", "example_id": "bio-1", "prompt": "prompt"},
+        ),
     )
     monkeypatch.setattr(
         public_vllm_smoke,
@@ -1622,7 +2429,9 @@ def test_validate_prompt_token_budget_writes_failed_probe_artifact(monkeypatch, 
 
 def test_run_prompt_token_budget_probe_returns_timeout_record(monkeypatch, tmp_path):
     def timeout_run(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=["python"], timeout=3, output="partial out", stderr="partial err")
+        raise subprocess.TimeoutExpired(
+            cmd=["python"], timeout=3, output="partial out", stderr="partial err"
+        )
 
     monkeypatch.setattr(public_vllm_smoke.subprocess, "run", timeout_run)
 
@@ -1649,7 +2458,9 @@ def test_run_prompt_token_budget_probe_returns_nonzero_record(monkeypatch, tmp_p
         stdout="not json",
         stderr="tokenizer failed",
     )
-    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(
+        public_vllm_smoke.subprocess, "run", lambda *args, **kwargs: completed
+    )
 
     record = run_prompt_token_budget_probe(
         tmp_path / "python",
@@ -1666,7 +2477,9 @@ def test_run_prompt_token_budget_probe_returns_nonzero_record(monkeypatch, tmp_p
     assert "tokenizer failed" in record["stderr_tail"]
 
 
-def test_run_prompt_token_budget_probe_pins_tokenizer_and_records_contract(monkeypatch, tmp_path):
+def test_run_prompt_token_budget_probe_pins_tokenizer_and_records_contract(
+    monkeypatch, tmp_path
+):
     captured = {}
     probe_record = {
         "rows": [
@@ -1774,7 +2587,9 @@ def test_run_benchmark_runner_reraises_with_failure_summary(monkeypatch, tmp_pat
 
 
 def test_parse_dataset_specs_requires_complete_v1_dataset_set(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
 
     paths = parse_dataset_specs(specs)
 
@@ -1797,7 +2612,9 @@ def test_parse_dataset_specs_requires_complete_v1_dataset_set(tmp_path):
 
 
 def test_parse_dataset_specs_maps_dbfs_uris_to_cluster_paths():
-    specs = tuple(f"{dataset}=dbfs:/benchmarks/v1/{dataset}.jsonl" for dataset in SMOKE_DATASETS)
+    specs = tuple(
+        f"{dataset}=dbfs:/benchmarks/v1/{dataset}.jsonl" for dataset in SMOKE_DATASETS
+    )
 
     paths = parse_dataset_specs(specs)
 
@@ -1805,8 +2622,12 @@ def test_parse_dataset_specs_maps_dbfs_uris_to_cluster_paths():
     assert paths["niah"] == Path("/dbfs/benchmarks/v1/niah.jsonl")
 
 
-def test_benchmark_dataset_paths_uses_prepared_specs_without_writing_smoke(monkeypatch, tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+def test_benchmark_dataset_paths_uses_prepared_specs_without_writing_smoke(
+    monkeypatch, tmp_path
+):
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="full-v1-1",
         output_dir=tmp_path / "out",
@@ -1817,12 +2638,16 @@ def test_benchmark_dataset_paths_uses_prepared_specs_without_writing_smoke(monke
     def fail_if_smoke_is_written(local_dir):
         raise AssertionError(f"unexpected smoke dataset write to {local_dir}")
 
-    monkeypatch.setattr(public_vllm_smoke, "write_smoke_datasets", fail_if_smoke_is_written)
+    monkeypatch.setattr(
+        public_vllm_smoke, "write_smoke_datasets", fail_if_smoke_is_written
+    )
 
     assert benchmark_dataset_paths(config) == parse_dataset_specs(specs)
 
 
-def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tmp_path, monkeypatch):
+def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(
+    tmp_path, monkeypatch
+):
     module = ModuleType("cachet_test_vllm_handoff_generator")
     module.build_generator = OneTokenBenchmarkKVGenerator
     monkeypatch.setitem(sys.modules, module.__name__, module)
@@ -1848,12 +2673,16 @@ def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tm
     assert list(generated_paths) == list(SMOKE_DATASETS)
     assert coverage is not None
     assert coverage["ok"] is True
-    generation = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
+    generation = json.loads(
+        config.prepared_handoff_generation_path.read_text(encoding="utf-8")
+    )
     assert generation["ok"] is True
     assert generation["dtype"] == "bfloat16"
     assert generation["datasets"]["biography"]["entries"] == 1
     enriched = json.loads(generated_paths["biography"].read_text(encoding="utf-8"))
-    assert enriched["kv_transfer_params"][DOCUMENT_KV_REQUEST_ID_PARAM].startswith("cachet-biography-biography-1-")
+    assert enriched["kv_transfer_params"][DOCUMENT_KV_REQUEST_ID_PARAM].startswith(
+        "cachet-biography-biography-1-"
+    )
     handoff_json = Path(enriched["kv_transfer_params"][DOCUMENT_KV_HANDOFF_JSON_PARAM])
     payload_uri = enriched["kv_transfer_params"][DOCUMENT_KV_PAYLOAD_URI_PARAM]
     assert handoff_json.exists()
@@ -1895,9 +2724,7 @@ def test_prepare_generated_vanilla_handoffs_binds_pre_rope_layout(
     assert bound_layout.rope_rotary_dim == 128
     assert bound_layout.shares_kv_storage is False
     assert bound_layout.storage_layout.value == "separate_key_value"
-    enriched = json.loads(
-        generated_paths["biography"].read_text(encoding="utf-8")
-    )
+    enriched = json.loads(generated_paths["biography"].read_text(encoding="utf-8"))
     handoff = read_engine_adapter_request_json(
         enriched["kv_transfer_params"][DOCUMENT_KV_HANDOFF_JSON_PARAM],
         expected_backend="vllm",
@@ -1909,7 +2736,9 @@ def test_prepare_generated_vanilla_handoffs_binds_pre_rope_layout(
     assert handoff["handle"]["layout"]["rope_rotary_dim"] == 128
 
 
-def test_prepare_generated_benchmark_handoffs_limits_enriched_inputs(tmp_path, monkeypatch):
+def test_prepare_generated_benchmark_handoffs_limits_enriched_inputs(
+    tmp_path, monkeypatch
+):
     module = ModuleType("cachet_test_vllm_limited_handoff_generator")
     module.build_generator = OneTokenBenchmarkKVGenerator
     monkeypatch.setitem(sys.modules, module.__name__, module)
@@ -1923,7 +2752,9 @@ def test_prepare_generated_benchmark_handoffs_limits_enriched_inputs(tmp_path, m
                         "example_id": f"{dataset}-2",
                         "query": "Who is described?",
                         "expected_answer": "Grace Hopper",
-                        "documents": [{"document_id": "grace", "text": "Grace Hopper biography"}],
+                        "documents": [
+                            {"document_id": "grace", "text": "Grace Hopper biography"}
+                        ],
                     },
                     sort_keys=True,
                 )
@@ -1947,7 +2778,9 @@ def test_prepare_generated_benchmark_handoffs_limits_enriched_inputs(tmp_path, m
 
     generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
 
-    generation = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
+    generation = json.loads(
+        config.prepared_handoff_generation_path.read_text(encoding="utf-8")
+    )
     assert generation["datasets"]["biography"]["entries"] == 1
     assert generation["datasets"]["biography"]["enriched_rows"] == 1
     assert sum(1 for _ in generated_paths["biography"].open(encoding="utf-8")) == 1
@@ -1955,7 +2788,9 @@ def test_prepare_generated_benchmark_handoffs_limits_enriched_inputs(tmp_path, m
     assert sum(1 for _ in limited_input.open(encoding="utf-8")) == 1
 
 
-def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(tmp_path, monkeypatch):
+def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(
+    tmp_path, monkeypatch
+):
     module = ModuleType("cachet_test_vllm_handoff_generator_cleanup")
     module.build_generator = TrackedOneTokenBenchmarkKVGenerator
     monkeypatch.setitem(sys.modules, module.__name__, module)
@@ -1964,7 +2799,9 @@ def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(
     def fake_release_handoff_generation_resources():
         gc.collect()
         generator_ref = TrackedOneTokenBenchmarkKVGenerator.last_ref
-        released_after_generator_collectable.append(generator_ref is not None and generator_ref() is None)
+        released_after_generator_collectable.append(
+            generator_ref is not None and generator_ref() is None
+        )
 
     monkeypatch.setattr(
         public_vllm_smoke,
@@ -2024,7 +2861,10 @@ def test_prewarm_cache_prefixes_posts_kv_aware_prefix_prompts(tmp_path, monkeypa
     assert first_body["request_id"].startswith("cachet-prewarm:prewarm-1:")
     assert "Ada Lovelace biography" in first_body["prompt"]
     assert first_body["prompt"].endswith("\n\nCache warmup.")
-    assert first_body["kv_transfer_params"][DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] == "logical"
+    assert (
+        first_body["kv_transfer_params"][DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM]
+        == "logical"
+    )
     assert DOCUMENT_KV_HANDOFF_JSON_PARAM in first_body["kv_transfer_params"]
     record = json.loads(config.prewarm_cache_prefix_path.read_text(encoding="utf-8"))
     assert record["ok"] is True
@@ -2090,7 +2930,9 @@ def test_prime_payload_cache_populates_then_verifies_every_prepared_artifact(
     assert len(request_ids) == len(calls)
     assert len(cache_salts) == len(calls)
     assert all(value.startswith("cachet-payload-prime:") for value in request_ids)
-    assert all(value.startswith(PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT) for value in cache_salts)
+    assert all(
+        value.startswith(PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT) for value in cache_salts
+    )
     assert CACHE_PREFIX_CACHE_SALT not in cache_salts
     assert all(
         call[1]["kv_transfer_params"][DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM]
@@ -2241,9 +3083,7 @@ def test_attest_payload_cache_measurements_requires_ram_hits_and_disjoint_gpu_ke
     )
     config.connector_telemetry_path.parent.mkdir(parents=True, exist_ok=True)
     config.connector_telemetry_path.write_text(
-        json.dumps(
-            _payload_cache_telemetry_record(measurement_request_id, hit=True)
-        )
+        json.dumps(_payload_cache_telemetry_record(measurement_request_id, hit=True))
         + "\n",
         encoding="utf-8",
     )
@@ -2259,8 +3099,9 @@ def test_attest_payload_cache_measurements_requires_ram_hits_and_disjoint_gpu_ke
     assert record["gpu_prefix_cache"]["measurement_prefix_prewarmed"] is False
     assert record["gpu_prefix_cache"]["reuse_prevented_by_salt_namespace"] is True
     assert measurement_cache_salt not in attestation_text
-    assert hashlib.sha256(measurement_cache_salt.encode()).hexdigest() in (
-        record["measurement_cache_salt_sha256s"]
+    assert (
+        hashlib.sha256(measurement_cache_salt.encode()).hexdigest()
+        in (record["measurement_cache_salt_sha256s"])
     )
 
 
@@ -2312,10 +3153,14 @@ def test_attest_payload_cache_measurements_fails_closed_on_measured_miss(tmp_pat
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="RAM payload-cache measurement attestation failed"):
+    with pytest.raises(
+        RuntimeError, match="RAM payload-cache measurement attestation failed"
+    ):
         attest_payload_cache_measurements(config)
 
-    record = json.loads(config.payload_cache_attestation_path.read_text(encoding="utf-8"))
+    record = json.loads(
+        config.payload_cache_attestation_path.read_text(encoding="utf-8")
+    )
     assert record["ok"] is False
     assert record["payload_cache"]["measurement_cache_misses"] == 1
     assert record["payload_cache"]["measurement_storage_bytes_read"] == 4
@@ -2342,9 +3187,7 @@ def test_attest_payload_cache_measurements_rejects_priming_salt_namespace(tmp_pa
                 "verification_all_hits": True,
                 "target_count": 1,
                 "request_id_sha256s": [],
-                "cache_salt_sha256s": [
-                    hashlib.sha256(cache_salt.encode()).hexdigest()
-                ],
+                "cache_salt_sha256s": [hashlib.sha256(cache_salt.encode()).hexdigest()],
             }
         ),
         encoding="utf-8",
@@ -2372,18 +3215,28 @@ def test_attest_payload_cache_measurements_rejects_priming_salt_namespace(tmp_pa
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="RAM payload-cache measurement attestation failed"):
+    with pytest.raises(
+        RuntimeError, match="RAM payload-cache measurement attestation failed"
+    ):
         attest_payload_cache_measurements(config)
 
-    record = json.loads(config.payload_cache_attestation_path.read_text(encoding="utf-8"))
+    record = json.loads(
+        config.payload_cache_attestation_path.read_text(encoding="utf-8")
+    )
     assert record["ok"] is False
-    assert record["gpu_prefix_cache"][
-        "priming_and_measurement_cache_salts_disjoint"
-    ] is False
-    assert any("reserved payload-cache priming salt namespace" in issue for issue in record["issues"])
+    assert (
+        record["gpu_prefix_cache"]["priming_and_measurement_cache_salts_disjoint"]
+        is False
+    )
+    assert any(
+        "reserved payload-cache priming salt namespace" in issue
+        for issue in record["issues"]
+    )
 
 
-def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_path, monkeypatch):
+def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(
+    tmp_path, monkeypatch
+):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
     representative_kwargs = representative_vllm_kwargs(tmp_path, arm_index=1)
@@ -2421,11 +3274,14 @@ def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_
         assert input_payload["max_tokens"] == 64
         assert input_payload["benchmark_repeats"] == 3
         assert input_payload["force_max_tokens"] is True
-        assert input_payload["benchmark_manifest_provenance"][
-            "input_tokens_target"
-        ] == 8192
+        assert (
+            input_payload["benchmark_manifest_provenance"]["input_tokens_target"]
+            == 8192
+        )
         assert len(input_payload["benchmark_arm_specs"]) == 1
-        assert input_payload["handoff_generation"]["generator_factory"] == "module:factory"
+        assert (
+            input_payload["handoff_generation"]["generator_factory"] == "module:factory"
+        )
         assert input_payload["handoff_generation"]["timeout_seconds"] == 1234.0
         assert input_payload["handoff_generation"]["limit"] == 2
         Path(argv[4]).parent.mkdir(parents=True, exist_ok=True)
@@ -2455,7 +3311,9 @@ def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_
     generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
 
     assert generated_paths == generated_worker_paths
-    generation = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
+    generation = json.loads(
+        config.prepared_handoff_generation_path.read_text(encoding="utf-8")
+    )
     assert generation["ok"] is True
     assert generation["generator_python"] == str(config.venv_python)
     assert len(calls) == 1
@@ -2485,11 +3343,15 @@ def test_prepared_benchmark_handoff_coverage_record_counts_enriched_rows(tmp_pat
     assert record["datasets"] == {dataset: 1 for dataset in SMOKE_DATASETS}
 
 
-def test_prepared_benchmark_handoff_coverage_treats_null_inline_record_as_absent(tmp_path):
+def test_prepared_benchmark_handoff_coverage_treats_null_inline_record_as_absent(
+    tmp_path,
+):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
     record = json.loads(dataset_paths["biography"].read_text(encoding="utf-8"))
     record["kv_transfer_params"][DOCUMENT_KV_HANDOFF_RECORD_PARAM] = None
-    dataset_paths["biography"].write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    dataset_paths["biography"].write_text(
+        json.dumps(record, sort_keys=True) + "\n", encoding="utf-8"
+    )
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-1",
@@ -2504,7 +3366,9 @@ def test_prepared_benchmark_handoff_coverage_treats_null_inline_record_as_absent
     assert coverage["invalid_handoff_references"] == []
 
 
-def test_validate_prepared_benchmark_handoffs_writes_artifact_and_rejects_missing_params(tmp_path):
+def test_validate_prepared_benchmark_handoffs_writes_artifact_and_rejects_missing_params(
+    tmp_path,
+):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
     config = VLLMSmokeBenchmarkConfig(
@@ -2517,18 +3381,21 @@ def test_validate_prepared_benchmark_handoffs_writes_artifact_and_rejects_missin
     with pytest.raises(ValueError, match="Cachet per-arm or legacy kv_transfer_params"):
         validate_prepared_benchmark_handoffs(config, dataset_paths)
 
-    record = json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8"))
+    record = json.loads(
+        config.prepared_handoff_coverage_path.read_text(encoding="utf-8")
+    )
     assert record["ok"] is False
     assert record["examples_with_kv_transfer_params"] == 0
     assert record["examples_with_loadable_handoff_references"] == 0
     assert record["missing_kv_transfer_params"] == [
-        f"{dataset}/{dataset}-1:{CACHE_REUSE_ARM}"
-        for dataset in SMOKE_DATASETS
+        f"{dataset}/{dataset}-1:{CACHE_REUSE_ARM}" for dataset in SMOKE_DATASETS
     ]
     assert record["invalid_handoff_references"] == []
 
 
-def test_validate_prepared_benchmark_handoffs_rejects_unloadable_handoff_references(tmp_path):
+def test_validate_prepared_benchmark_handoffs_rejects_unloadable_handoff_references(
+    tmp_path,
+):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
     bad_handoff = tmp_path / "missing-handoff.json"
     bad_backend = tmp_path / "sglang-handoff.json"
@@ -2561,7 +3428,9 @@ def test_validate_prepared_benchmark_handoffs_rejects_unloadable_handoff_referen
         record["kv_transfer_params"][DOCUMENT_KV_HANDOFF_JSON_PARAM] = str(handoff_path)
         if dataset == "niah":
             record["kv_transfer_params"].pop(DOCUMENT_KV_PAYLOAD_URI_PARAM)
-        dataset_paths[dataset].write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        dataset_paths[dataset].write_text(
+            json.dumps(record, sort_keys=True) + "\n", encoding="utf-8"
+        )
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-1",
@@ -2573,19 +3442,28 @@ def test_validate_prepared_benchmark_handoffs_rejects_unloadable_handoff_referen
     with pytest.raises(ValueError, match="invalid handoff references"):
         validate_prepared_benchmark_handoffs(config, dataset_paths)
 
-    record = json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8"))
+    record = json.loads(
+        config.prepared_handoff_coverage_path.read_text(encoding="utf-8")
+    )
     invalid = record["invalid_handoff_references"]
     assert record["ok"] is False
     assert record["examples_with_kv_transfer_params"] == len(SMOKE_DATASETS)
     assert record["examples_with_loadable_handoff_references"] == 0
-    assert [issue["dataset"] for issue in invalid] == ["biography", "hotpotqa", "musique", "niah"]
+    assert [issue["dataset"] for issue in invalid] == [
+        "biography",
+        "hotpotqa",
+        "musique",
+        "niah",
+    ]
     assert invalid[0]["error_type"] == "FileNotFoundError"
     assert "expected_backend" in invalid[1]["error"]
     assert "request_id" in invalid[2]["error"]
     assert "Engine probe runner can read only" in invalid[3]["error"]
 
 
-def test_validate_prepared_benchmark_handoffs_rejects_inline_non_vllm_handoff_record(tmp_path):
+def test_validate_prepared_benchmark_handoffs_rejects_inline_non_vllm_handoff_record(
+    tmp_path,
+):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
     record = json.loads(dataset_paths["biography"].read_text(encoding="utf-8"))
     request_id = "cachet-biography-1"
@@ -2597,7 +3475,9 @@ def test_validate_prepared_benchmark_handoffs_rejects_inline_non_vllm_handoff_re
             backend="sglang",
         ),
     }
-    dataset_paths["biography"].write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    dataset_paths["biography"].write_text(
+        json.dumps(record, sort_keys=True) + "\n", encoding="utf-8"
+    )
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-1",
@@ -2609,10 +3489,14 @@ def test_validate_prepared_benchmark_handoffs_rejects_inline_non_vllm_handoff_re
     with pytest.raises(ValueError, match="invalid handoff references"):
         validate_prepared_benchmark_handoffs(config, dataset_paths)
 
-    record = json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8"))
+    record = json.loads(
+        config.prepared_handoff_coverage_path.read_text(encoding="utf-8")
+    )
     invalid = record["invalid_handoff_references"]
     assert record["ok"] is False
-    assert record["examples_with_loadable_handoff_references"] == len(SMOKE_DATASETS) - 1
+    assert (
+        record["examples_with_loadable_handoff_references"] == len(SMOKE_DATASETS) - 1
+    )
     assert invalid == [
         {
             "arm_id": CACHE_REUSE_ARM,
@@ -2635,7 +3519,9 @@ def test_validate_prepared_benchmark_handoffs_skips_builtin_smoke(tmp_path):
     assert not config.prepared_handoff_coverage_path.exists()
 
 
-def test_validate_prepared_benchmark_handoffs_skips_baseline_only_prepared_run(tmp_path):
+def test_validate_prepared_benchmark_handoffs_skips_baseline_only_prepared_run(
+    tmp_path,
+):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
     config = VLLMSmokeBenchmarkConfig(
@@ -2685,7 +3571,10 @@ def test_validate_prepared_benchmark_handoffs_writes_ok_artifact(tmp_path):
 
     assert record is not None
     assert record["ok"] is True
-    assert json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8")) == record
+    assert (
+        json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8"))
+        == record
+    )
 
 
 def test_metadata_records_reproducible_smoke_context(tmp_path):
@@ -2708,8 +3597,23 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["server_client_host"] == "127.0.0.1"
     assert metadata["server_base_url"] == "http://127.0.0.1:8000"
     assert metadata["hf_home"] == str(tmp_path / "local" / "hf-cache")
-    assert metadata["vllm_python"] == str(tmp_path / "local" / "document-kv-vllm-smoke-smoke-1" / "vllm-venv" / "bin" / "python")
+    assert metadata["vllm_python"] == str(
+        tmp_path
+        / "local"
+        / "document-kv-vllm-smoke-smoke-1"
+        / "vllm-venv"
+        / "bin"
+        / "python"
+    )
     assert metadata["dependency_constraints"] == dependency_constraints()
+    assert metadata["dependency_index_urls"] == list(VLLM_PACKAGE_INDEX_URLS)
+    assert metadata["vllm_cuda_variant"] == VLLM_CUDA_VARIANT
+    assert metadata["vllm_cuda_requirements_sha256"] == VLLM_CUDA_REQUIREMENTS_SHA256
+    assert metadata["vllm_dockerfile_sha256"] == VLLM_DOCKERFILE_SHA256
+    assert metadata["vllm_package_version_requested"] == VLLM_PACKAGE_VERSION
+    assert metadata["vllm_wheel_filename"] == VLLM_WHEEL_FILENAME
+    assert metadata["vllm_wheel_url"] == VLLM_WHEEL_URL
+    assert metadata["vllm_wheel_sha256"] == VLLM_WHEEL_SHA256
     assert metadata["dataset_source"] == "smoke"
     assert metadata["dataset_specs"] == []
     assert metadata["cache_runtime_prompt"] is False
@@ -2723,18 +3627,28 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["request_parallelism"] == 1
     assert metadata["benchmark_arms"] == []
     assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
-    assert metadata["dependency_override_constraints"] == dependency_override_constraints()
+    assert (
+        metadata["dependency_override_constraints"] == dependency_override_constraints()
+    )
     assert metadata["vllm_server_env_overrides"] == {
         "PYTHONUNBUFFERED": "1",
         "VLLM_USE_FLASHINFER_SAMPLER": "0",
         "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
     }
-    assert metadata["document_kv_connector_telemetry_local_path"] == str(config.connector_telemetry_path)
-    assert metadata["document_kv_connector_telemetry_path"] == str(config.connector_telemetry_copy_path)
-    assert metadata["runtime_telemetry_local_path"] == str(config.runtime_telemetry_path)
+    assert metadata["document_kv_connector_telemetry_local_path"] == str(
+        config.connector_telemetry_path
+    )
+    assert metadata["document_kv_connector_telemetry_path"] == str(
+        config.connector_telemetry_copy_path
+    )
+    assert metadata["runtime_telemetry_local_path"] == str(
+        config.runtime_telemetry_path
+    )
     assert metadata["runtime_telemetry_path"] == str(config.runtime_telemetry_copy_path)
     assert metadata["runtime_telemetry_interval_seconds"] == 1.0
-    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config_for_smoke(config)
+    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config_for_smoke(
+        config
+    )
 
 
 def test_metadata_records_payload_cache_budget(tmp_path):
@@ -2747,7 +3661,9 @@ def test_metadata_records_payload_cache_budget(tmp_path):
 
     metadata = build_metadata(config)
 
-    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config_for_smoke(config)
+    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config_for_smoke(
+        config
+    )
     assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config(
         payload_cache_max_bytes=4096,
         telemetry_jsonl=str(config.connector_telemetry_path),
@@ -2768,12 +3684,20 @@ def test_metadata_records_launched_transfer_config_for_connector_mode(tmp_path, 
     # Provenance must describe the connector the server is actually launched with
     # (kv_transfer_config_json tracks kv_connector_mode), not the Cachet config, so
     # provenance-driven reruns reproduce the same LMCache/MultiConnector server.
-    assert metadata["vllm_kv_transfer_config"] == json.loads(kv_transfer_config_json(config))
-    assert metadata["vllm_kv_transfer_config"] != document_kv_transfer_config_for_smoke(config)
+    assert metadata["vllm_kv_transfer_config"] == json.loads(
+        kv_transfer_config_json(config)
+    )
+    assert metadata["vllm_kv_transfer_config"] != document_kv_transfer_config_for_smoke(
+        config
+    )
 
 
-def test_server_env_defaults_q4_handoff_generator_to_matching_transformers_config(tmp_path, monkeypatch):
-    dataset_specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+def test_server_env_defaults_q4_handoff_generator_to_matching_transformers_config(
+    tmp_path, monkeypatch
+):
+    dataset_specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     for name in (
         CACHET_TRANSFORMERS_MODEL_ID_ENV,
         CACHET_TRANSFORMERS_TOKENIZER_ID_ENV,
@@ -2804,11 +3728,15 @@ def test_server_env_defaults_q4_handoff_generator_to_matching_transformers_confi
     assert env[CACHET_TRANSFORMERS_MODEL_ID_ENV] == "Qwen/Qwen3-4B-Instruct-2507"
     assert env[CACHET_TRANSFORMERS_TOKENIZER_ID_ENV] == "Qwen/Qwen3-4B-Instruct-2507"
     assert env[CACHET_TRANSFORMERS_TORCH_DTYPE_ENV] == "bfloat16"
-    assert env[CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV] == "true"
+    assert env[CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV] == "false"
     assert env[CACHET_TRANSFORMERS_QUANTIZATION_ENV] == "bitsandbytes-4bit"
     assert env[CACHET_TRANSFORMERS_DEVICE_MAP_ENV] == "auto"
     assert json.loads(env[CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV]) == {
         "bnb_4bit_compute_dtype": "bfloat16",
+        "bnb_4bit_quant_storage": "uint8",
+        "bnb_4bit_quant_type": "nf4",
+        "bnb_4bit_use_double_quant": True,
+        "load_in_4bit": True,
     }
 
 
@@ -2854,13 +3782,18 @@ def test_vllm_native_provider_probe_record_instantiates_default_provider():
     assert record["document_kv_native_provider_ok"] is True
     assert (
         record["document_kv_provider_factory"]
-        == document_kv_transfer_config()["kv_connector_extra_config"][DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY]
+        == document_kv_transfer_config()["kv_connector_extra_config"][
+            DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
+        ]
     )
     assert (
         record["document_kv_provider_type"]
         == "vllm_kv_injection.vllm_native_provider.DocumentKVNativeProvider"
     )
-    assert record["document_kv_connector_type"] == "vllm_kv_injection.vllm_dynamic_connector.DocumentKVConnector"
+    assert (
+        record["document_kv_connector_type"]
+        == "vllm_kv_injection.vllm_dynamic_connector.DocumentKVConnector"
+    )
     assert record["document_kv_requires_native_runtime"] is True
 
 
@@ -2909,7 +3842,9 @@ def test_vllm_native_provider_probe_record_rejects_non_native_provider(monkeypat
 
     with pytest.raises(TypeError, match="native document KV provider"):
         build_vllm_native_provider_probe_record(
-            document_kv_transfer_config(provider_factory=f"{module.__name__}:build_provider")
+            document_kv_transfer_config(
+                provider_factory=f"{module.__name__}:build_provider"
+            )
         )
 
 
@@ -2928,8 +3863,15 @@ def test_probe_vllm_import_records_native_provider_evidence(monkeypatch, tmp_pat
 
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
-        assert "build_vllm_native_provider_probe_record" in argv[2]
-        assert 'md.version("cachet-kv")' in argv[2]
+        probe_source = Path(argv[1]).read_text(encoding="utf-8")
+        compile(probe_source, argv[1], "exec")
+        assert "build_vllm_native_provider_probe_record" in probe_source
+        assert 'md.version("cachet-kv")' in probe_source
+        assert 'torch.version.cuda != "12.9"' in probe_source
+        assert "_cachet_triton_probe" in probe_source
+        assert 'md.version("torchcodec")' not in probe_source
+        assert "'torchcodec': '0.16.0+cu129'" in probe_source
+        assert '"nvidia-smi"' in probe_source
         return completed
 
     monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
@@ -2958,7 +3900,9 @@ def test_installed_versions_uses_cachet_distribution_name(monkeypatch, tmp_path)
         requested_packages.append((python_executable, package_name))
         return f"{package_name}-version"
 
-    monkeypatch.setattr(public_vllm_smoke, "installed_package_version", fake_installed_package_version)
+    monkeypatch.setattr(
+        public_vllm_smoke, "installed_package_version", fake_installed_package_version
+    )
 
     python_executable = tmp_path / "venv" / "bin" / "python"
     versions = public_vllm_smoke.installed_versions(python_executable)
@@ -2973,8 +3917,90 @@ def test_installed_versions_uses_cachet_distribution_name(monkeypatch, tmp_path)
     ]
 
 
+def test_installed_package_freeze_records_complete_normalized_environment(
+    monkeypatch,
+    tmp_path,
+):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout="torch==2.13.0+cu129\nvllm==0.27.1+cu129\nPip==26.0\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+    python = tmp_path / "venv" / "bin" / "python"
+
+    frozen = public_vllm_smoke.installed_package_freeze(python)
+
+    assert frozen == [
+        "Pip==26.0",
+        "torch==2.13.0+cu129",
+        "vllm==0.27.1+cu129",
+    ]
+    assert calls == [
+        (
+            [str(python), "-m", "pip", "freeze", "--all"],
+            {"check": True, "capture_output": True, "text": True},
+        )
+    ]
+
+
+def test_verify_vllm_runtime_lock_installation_runs_pip_check_and_provenance(
+    monkeypatch,
+    tmp_path,
+):
+    calls = []
+    digest = "e" * 64
+    wheel = tmp_path / (
+        "vllm-0.27.1+cu129-1cachete5m2eeeeeeeeeeeeeeee-"
+        "cp38-abi3-manylinux_2_28_x86_64.whl"
+    )
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, str(wheel))
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_SHA256_ENV, digest)
+    expected_record = {
+        "runtime_lock_sha256": "f" * 64,
+        "locked_distribution_count": 196,
+        "vllm_package_version": VLLM_PACKAGE_VERSION,
+        "vllm_direct_url": wheel.resolve().as_uri(),
+        "vllm_wheel_sha256": digest,
+        "ok": True,
+    }
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=(json.dumps(expected_record) if "-c" in argv else ""),
+            stderr="",
+        )
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+    python = tmp_path / "venv" / "bin" / "python"
+
+    assert (
+        public_vllm_smoke.verify_vllm_runtime_lock_installation(python)
+        == expected_record
+    )
+    assert calls[0] == (
+        [str(python), "-m", "pip", "check"],
+        {"check": True},
+    )
+    assert calls[1][0][0:2] == [str(python), "-c"]
+    assert "verify_installed_vllm_runtime_lock" in calls[1][0][2]
+    assert calls[1][0][3] == patched_vllm_wheel_install_spec()
+    assert calls[1][1] == {"check": True, "capture_output": True, "text": True}
+
+
 def test_metadata_records_prepared_dataset_context(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="full-v1-1",
         output_dir=tmp_path / "out",
@@ -3008,7 +4034,9 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
 
 
 def test_metadata_records_runtime_cache_prompt_mode(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="full-v1-runtime",
         output_dir=tmp_path / "out",
@@ -3025,7 +4053,9 @@ def test_metadata_records_runtime_cache_prompt_mode(tmp_path):
 
 
 def test_metadata_marks_baseline_only_prepared_run_as_not_requiring_handoffs(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="baseline-v1-1",
         output_dir=tmp_path / "out",
@@ -3042,7 +4072,9 @@ def test_metadata_marks_baseline_only_prepared_run_as_not_requiring_handoffs(tmp
 
 
 def test_parse_args_builds_config_with_overrides(tmp_path):
-    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     config = parse_args(
         [
             "--benchmark-id",
@@ -3155,10 +4187,60 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
     )
 
 
+def test_parse_args_wires_publication_schedule_and_reusable_handoff_paths(tmp_path):
+    digest = "6" * 64
+    local_root = tmp_path / "local"
+    specs = _publication_dataset_specs(tmp_path / "inputs")
+
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "publication-vanilla",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--local-root",
+            str(local_root),
+            "--model-revision",
+            MODEL_REVISION,
+            "--tokenizer-revision",
+            MODEL_REVISION,
+            "--benchmark-evidence-policy",
+            "publication",
+            "--benchmark-arm",
+            CACHE_REUSE_ARM,
+            "--publication-latency-schedule-json",
+            "dbfs:/publication/schedule.json",
+            "--publication-latency-expected-input-bundle-sha256",
+            digest,
+            "--publication-handoff-generation-output-root",
+            "dbfs:/publication/handoff-generation",
+            "--publication-handoff-generation-execution-file-sha256",
+            digest,
+            "--publication-handoff-generation-execution-closed-record-sha256",
+            digest,
+            "--publication-handoff-local-nvme-dir",
+            str(local_root / "staged-handoffs"),
+            *sum((["--dataset", spec] for spec in specs), []),
+        ]
+    )
+
+    assert config.publication_latency_schedule_path == Path(
+        "/dbfs/publication/schedule.json"
+    )
+    assert config.publication_latency_expected_input_bundle_sha256 == digest
+    assert config.publication_handoff_generation_output_root == Path(
+        "/dbfs/publication/handoff-generation"
+    )
+    assert config.publication_handoff_generation_execution_file_sha256 == digest
+    assert (
+        config.publication_handoff_generation_execution_closed_record_sha256 == digest
+    )
+    assert config.publication_handoff_local_nvme_dir == (local_root / "staged-handoffs")
+
+
 def test_parse_args_wires_strict_method_handoff_contract(tmp_path):
     specs = tuple(
-        f"{dataset}={tmp_path / f'{dataset}.jsonl'}"
-        for dataset in SMOKE_DATASETS
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
     )
     identity = stored_post_rope_runtime_identity()
 
@@ -3189,10 +4271,7 @@ def test_parse_args_wires_strict_method_handoff_contract(tmp_path):
     assert config.runtime_identity == identity
     assert config.handoff_generation is not None
     assert config.handoff_generation.cache_method == "vanilla_prefill"
-    assert (
-        config.handoff_generation.benchmark_handoff_segment_per_document
-        is True
-    )
+    assert config.handoff_generation.benchmark_handoff_segment_per_document is True
     assert config.handoff_generation.require_artifact_contract is True
     runner_args = build_benchmark_runner_args(
         config,
@@ -3207,18 +4286,20 @@ def test_parse_args_wires_strict_method_handoff_contract(tmp_path):
 
 
 def test_handoff_artifact_contract_is_strict_by_default_with_legacy_opt_out(tmp_path):
-    assert VLLMPreparedHandoffGenerationConfig(
-        generator_factory="module:factory",
-        output_dir=tmp_path / "strict",
-    ).require_artifact_contract is True
+    assert (
+        VLLMPreparedHandoffGenerationConfig(
+            generator_factory="module:factory",
+            output_dir=tmp_path / "strict",
+        ).require_artifact_contract
+        is True
+    )
     legacy = VLLMPreparedHandoffGenerationConfig(
         generator_factory="module:factory",
         output_dir=tmp_path / "legacy",
         require_artifact_contract=False,
     )
     specs = tuple(
-        f"{dataset}={tmp_path / f'{dataset}.jsonl'}"
-        for dataset in SMOKE_DATASETS
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
     )
 
     with pytest.raises(ValueError, match="canary and publication"):
@@ -3247,7 +4328,9 @@ def test_handoff_artifact_contract_is_strict_by_default_with_legacy_opt_out(tmp_
 
 
 def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
-    dataset_specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    dataset_specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
     with pytest.raises(ValueError, match="benchmark_handoff_timeout_seconds"):
         VLLMPreparedHandoffGenerationConfig(
             generator_factory="module:factory",
@@ -3291,8 +4374,14 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"max_tokens": 0}, "max_tokens must be positive"),
         ({"force_max_tokens": "yes"}, "force_max_tokens must be a boolean"),
         ({"timeout_seconds": 0}, "timeout_seconds must be positive"),
-        ({"import_probe_timeout_seconds": 0}, "import_probe_timeout_seconds must be positive"),
-        ({"server_start_timeout_seconds": 0}, "server_start_timeout_seconds must be positive"),
+        (
+            {"import_probe_timeout_seconds": 0},
+            "import_probe_timeout_seconds must be positive",
+        ),
+        (
+            {"server_start_timeout_seconds": 0},
+            "server_start_timeout_seconds must be positive",
+        ),
         ({"server_host": ""}, "server_host must be non-empty"),
         ({"server_port": 0}, "server_port must be between 1 and 65535"),
         ({"server_port": 65536}, "server_port must be between 1 and 65535"),
@@ -3303,7 +4392,10 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
         ({"request_parallelism": 0}, "request_parallelism must be a positive integer"),
-        ({"runtime_telemetry_interval_seconds": 0}, "runtime_telemetry_interval_seconds must be positive"),
+        (
+            {"runtime_telemetry_interval_seconds": 0},
+            "runtime_telemetry_interval_seconds must be positive",
+        ),
         ({"benchmark_arms": ("unknown",)}, "Unknown benchmark arms"),
         ({"allow_dataset_subset": "yes"}, "allow_dataset_subset must be a boolean"),
         ({"prefix_cache_salt_mode": "dynamic"}, "prefix_cache_salt_mode"),
@@ -3323,19 +4415,25 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
             "requires a positive payload_cache_max_bytes",
         ),
         (
-                {
-                    "prewarm_cache_prefix": True,
-                    "prefix_cache_salt_mode": "per_request",
-                    "dataset_specs": dataset_specs,
-                },
+            {
+                "prewarm_cache_prefix": True,
+                "prefix_cache_salt_mode": "per_request",
+                "dataset_specs": dataset_specs,
+            },
             "requires prefix_cache_salt_mode='static'",
         ),
         (
             {"cache_runtime_prompt": True},
             "benchmark_cache_runtime_prompt requires prepared dataset specs",
         ),
-        ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
-        ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
+        (
+            {"payload_cache_max_bytes": -1},
+            "payload_cache_max_bytes must be a non-negative integer",
+        ),
+        (
+            {"dataset_specs": ("biography=/tmp/biography.jsonl",)},
+            "dataset specs missing required V1 datasets",
+        ),
         ({"package_install_spec": ""}, "package_install_spec must be non-empty"),
         (
             {
@@ -3374,7 +4472,9 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         dataset_specs=(f"biography={tmp_path / 'biography.jsonl'}",),
         allow_dataset_subset=True,
     )
-    assert benchmark_dataset_paths(subset_config) == {"biography": tmp_path / "biography.jsonl"}
+    assert benchmark_dataset_paths(subset_config) == {
+        "biography": tmp_path / "biography.jsonl"
+    }
 
 
 def test_parse_args_rejects_invalid_values_before_setup(tmp_path):
@@ -3392,7 +4492,14 @@ def test_parse_args_rejects_invalid_values_before_setup(tmp_path):
 
 
 def test_parse_args_maps_dbfs_output_dir_to_driver_filesystem():
-    config = parse_args(["--benchmark-id", "smoke-1", "--output-dir", "dbfs:/benchmarks/cachet-smoke/output"])
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "smoke-1",
+            "--output-dir",
+            "dbfs:/benchmarks/cachet-smoke/output",
+        ]
+    )
 
     assert config.output_dir == Path("/dbfs/benchmarks/cachet-smoke/output")
 
@@ -3445,19 +4552,52 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         local_root=tmp_path / "local",
         server_port=8123,
     )
-    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+    dataset_paths = {
+        name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()
+    }
 
-    monkeypatch.setattr(public_vllm_smoke, "create_venv", lambda path: calls.append(("create_venv", path)))
-    monkeypatch.setattr(public_vllm_smoke, "install_vllm", lambda python: calls.append(("install_vllm", python)))
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "create_venv",
+        lambda path: calls.append(("create_venv", path)),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "install_vllm",
+        lambda python: calls.append(("install_vllm", python)),
+    )
     monkeypatch.setattr(
         public_vllm_smoke,
         "install_document_kv_package",
-        lambda python, install_spec: calls.append(("install_document_kv_package", python, install_spec)),
+        lambda python, install_spec: calls.append(
+            ("install_document_kv_package", python, install_spec)
+        ),
     )
     monkeypatch.setattr(
         public_vllm_smoke,
         "installed_versions",
-        lambda python: {"vllm_version_installed": "0.23.0", "transformers_version_installed": "5.12.1"},
+        lambda python: {
+            "vllm_version_installed": VLLM_PACKAGE_VERSION,
+            "transformers_version_installed": "5.12.1",
+        },
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "verify_vllm_runtime_patch_closure",
+        lambda cfg: [],
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "verify_vllm_runtime_lock_installation",
+        lambda python: (
+            calls.append(("verify_vllm_runtime_lock_installation", python))
+            or {"ok": True}
+        ),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "installed_package_freeze",
+        lambda python: [f"vllm=={VLLM_PACKAGE_VERSION}"],
     )
     monkeypatch.setattr(
         public_vllm_smoke,
@@ -3469,23 +4609,32 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     monkeypatch.setattr(
         public_vllm_smoke,
         "write_smoke_datasets",
-        lambda local_dir: calls.append(("write_smoke_datasets", local_dir)) or dataset_paths,
+        lambda local_dir: (
+            calls.append(("write_smoke_datasets", local_dir)) or dataset_paths
+        ),
     )
     monkeypatch.setattr(
         public_vllm_smoke,
         "validate_prompt_token_budget",
-        lambda cfg, paths: calls.append(("validate_prompt_token_budget", cfg.benchmark_id, paths)),
+        lambda cfg, paths: calls.append(
+            ("validate_prompt_token_budget", cfg.benchmark_id, paths)
+        ),
     )
     monkeypatch.setattr(
         public_vllm_smoke,
         "start_vllm_server",
-        lambda cfg, python, log_path: calls.append(("start_vllm_server", cfg.server_base_url, python, log_path))
-        or fake_server,
+        lambda cfg, python, log_path: (
+            calls.append(("start_vllm_server", cfg.server_base_url, python, log_path))
+            or fake_server
+        ),
     )
+
     class FakeRuntimeTelemetrySampler:
         def __init__(self, output_path, *, process_pid, interval_seconds):
             self.output_path = output_path
-            calls.append(("runtime_telemetry_init", output_path, process_pid, interval_seconds))
+            calls.append(
+                ("runtime_telemetry_init", output_path, process_pid, interval_seconds)
+            )
 
         def start(self):
             calls.append(("runtime_telemetry_start", self.output_path))
@@ -3494,7 +4643,9 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         def stop(self):
             calls.append(("runtime_telemetry_stop", self.output_path))
 
-    monkeypatch.setattr(public_vllm_smoke, "RuntimeTelemetrySampler", FakeRuntimeTelemetrySampler)
+    monkeypatch.setattr(
+        public_vllm_smoke, "RuntimeTelemetrySampler", FakeRuntimeTelemetrySampler
+    )
     monkeypatch.setattr(
         public_vllm_smoke,
         "wait_for_server",
@@ -3502,8 +4653,25 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
             ("wait_for_server", server, log_path, cfg.server_base_url, timeout_seconds)
         ),
     )
-    monkeypatch.setattr(public_vllm_smoke, "run", lambda argv: calls.append(("run", argv)))
-    monkeypatch.setattr(public_vllm_smoke, "terminate_process", lambda server: calls.append(("terminate", server)))
+
+    def fake_run(argv):
+        calls.append(("run", argv))
+        config.benchmark_output_path.parent.mkdir(parents=True, exist_ok=True)
+        config.benchmark_output_path.write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(public_vllm_smoke, "run", fake_run)
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "terminate_process",
+        lambda server: calls.append(("terminate", server)),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "bind_runtime_resource_evidence_record_file",
+        lambda benchmark_path, telemetry_path: calls.append(
+            ("bind_runtime_resource_evidence", benchmark_path, telemetry_path)
+        ),
+    )
     monkeypatch.setattr(
         public_vllm_smoke,
         "copy_file_if_exists",
@@ -3516,6 +4684,7 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         ("create_venv", config.venv_dir),
         ("install_vllm", config.venv_python),
         ("install_document_kv_package", config.venv_python, str(REPO_ROOT)),
+        ("verify_vllm_runtime_lock_installation", config.venv_python),
         (
             "probe_vllm_import",
             config.venv_python,
@@ -3525,14 +4694,30 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         ),
         ("write_smoke_datasets", config.local_dir),
         ("validate_prompt_token_budget", "smoke-1", dataset_paths),
-        ("start_vllm_server", "http://127.0.0.1:8123", config.venv_python, config.server_log_path),
+        (
+            "start_vllm_server",
+            "http://127.0.0.1:8123",
+            config.venv_python,
+            config.server_log_path,
+        ),
         ("runtime_telemetry_init", config.runtime_telemetry_path, None, 1.0),
         ("runtime_telemetry_start", config.runtime_telemetry_path),
-        ("wait_for_server", fake_server, config.server_log_path, "http://127.0.0.1:8123", 480.0),
+        (
+            "wait_for_server",
+            fake_server,
+            config.server_log_path,
+            "http://127.0.0.1:8123",
+            480.0,
+        ),
         ("copy", config.server_log_path, config.server_log_copy_path),
         ("run", build_benchmark_runner_args(config, dataset_paths)),
         ("terminate", fake_server),
         ("runtime_telemetry_stop", config.runtime_telemetry_path),
+        (
+            "bind_runtime_resource_evidence",
+            config.benchmark_output_path,
+            config.runtime_telemetry_path,
+        ),
         ("copy", config.server_log_path, config.server_log_copy_path),
         ("copy", config.connector_telemetry_path, config.connector_telemetry_copy_path),
         ("copy", config.runtime_telemetry_path, config.runtime_telemetry_copy_path),
@@ -3542,7 +4727,9 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     assert metadata["hf_home"] == str(tmp_path / "local" / "hf-cache")
 
 
-def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(monkeypatch, tmp_path):
+def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(
+    monkeypatch, tmp_path
+):
     calls = []
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="lmcache-1",
@@ -3550,23 +4737,58 @@ def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(monkeypatch, 
         local_root=tmp_path / "local",
         kv_connector_mode="lmcache",
     )
-    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+    dataset_paths = {
+        name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()
+    }
     lmcache_cfg = tmp_path / "lmcache-config.json"
     lmcache_cfg.write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(public_vllm_smoke, "create_venv", lambda path: None)
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "run",
+        lambda argv: calls.append(("run", argv)),
+    )
     monkeypatch.setattr(public_vllm_smoke, "install_vllm", lambda python: None)
-    monkeypatch.setattr(public_vllm_smoke, "install_lmcache", lambda python, version: "0.3.10")
-    monkeypatch.setattr(public_vllm_smoke, "install_document_kv_package", lambda python, install_spec: None)
-    monkeypatch.setattr(public_vllm_smoke, "apply_vllm_runtime_patches", lambda cfg: [])
-    monkeypatch.setattr(public_vllm_smoke, "installed_versions", lambda python: {"vllm_version_installed": "0.23.0"})
-    monkeypatch.setattr(public_vllm_smoke, "write_lmcache_config", lambda cfg: lmcache_cfg)
+    monkeypatch.setattr(
+        public_vllm_smoke, "install_lmcache", lambda python, version: "0.3.10"
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "install_document_kv_package",
+        lambda python, install_spec: None,
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "verify_vllm_runtime_patch_closure",
+        lambda cfg: [],
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "verify_vllm_runtime_lock_installation",
+        lambda python: {"ok": True},
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "installed_versions",
+        lambda python: {"vllm_version_installed": VLLM_PACKAGE_VERSION},
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "installed_package_freeze",
+        lambda python: [f"vllm=={VLLM_PACKAGE_VERSION}"],
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke, "write_lmcache_config", lambda cfg: lmcache_cfg
+    )
     monkeypatch.setattr(
         public_vllm_smoke,
         "probe_lmcache_import",
         lambda python, output, *, timeout_seconds, env: None,
     )
-    monkeypatch.setattr(public_vllm_smoke, "benchmark_dataset_paths", lambda cfg: dataset_paths)
+    monkeypatch.setattr(
+        public_vllm_smoke, "benchmark_dataset_paths", lambda cfg: dataset_paths
+    )
     monkeypatch.setattr(
         public_vllm_smoke,
         "validate_prompt_token_budget",
@@ -3575,7 +4797,9 @@ def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(monkeypatch, 
     monkeypatch.setattr(
         public_vllm_smoke,
         "_run_lmcache_two_pass",
-        lambda cfg, paths, warm, measure: calls.append(("_run_lmcache_two_pass", paths)),
+        lambda cfg, paths, warm, measure: calls.append(
+            ("_run_lmcache_two_pass", paths)
+        ),
     )
 
     public_vllm_smoke.run_lmcache_cold_benchmark(config)
@@ -3588,7 +4812,9 @@ def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(monkeypatch, 
     )
 
 
-def test_public_vllm_smoke_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):
+def test_public_vllm_smoke_main_respects_document_namespace_monkeypatch(
+    monkeypatch, tmp_path
+):
     called = {}
 
     def fake_run(config):

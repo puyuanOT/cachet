@@ -15,6 +15,7 @@ from vllm_kv_injection.vllm_transfer_config import (
     DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,
     DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION,
     MULTI_CONNECTOR_CLASS,
+    MULTI_CONNECTOR_DEFAULT_ROLE,
     document_kv_transfer_config,
     document_kv_transfer_config_json,
     main,
@@ -63,7 +64,7 @@ def test_multi_connector_transfer_config_orders_cachet_first_lmcache_second():
     config = multi_connector_transfer_config(connectors=[cachet_child, lmcache_child])
 
     assert config["kv_connector"] == MULTI_CONNECTOR_CLASS
-    assert config["kv_role"] == DOCUMENT_KV_DEFAULT_ROLE
+    assert config["kv_role"] == MULTI_CONNECTOR_DEFAULT_ROLE
     children = config["kv_connector_extra_config"]["connectors"]
     # Order matters: MultiConnector loads from the first child that matches, so
     # Cachet (which only matches turn-1 document handoffs) must precede LMCache.
@@ -157,16 +158,18 @@ def test_document_kv_transfer_config_rejects_invalid_telemetry_jsonl(value):
 
 
 def test_document_kv_transfer_config_json_is_cli_ready():
-    payload = document_kv_transfer_config_json(
-        kv_role="kv_producer",
-    )
+    payload = document_kv_transfer_config_json()
 
     decoded = json.loads(payload)
 
-    assert decoded == document_kv_transfer_config(
-        kv_role="kv_producer",
-    )
+    assert decoded == document_kv_transfer_config()
     assert "\n" not in payload
+
+
+@pytest.mark.parametrize("kv_role", ["kv_producer", "kv_both"])
+def test_document_kv_transfer_config_rejects_non_consumer_role(kv_role):
+    with pytest.raises(ValueError, match="load-only.*kv_consumer"):
+        document_kv_transfer_config(kv_role=kv_role)
 
 
 @pytest.mark.parametrize(

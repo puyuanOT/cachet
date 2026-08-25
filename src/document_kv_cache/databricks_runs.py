@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+from contextlib import contextmanager
 from configparser import ConfigParser
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -25,9 +27,15 @@ from document_kv_cache._hardware_targets import (
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.databricks_resource_ledger import (
+    DatabricksBatchReservationAuthorization,
     DatabricksClusterHourReservation,
     DatabricksReservationValidator,
     canonical_databricks_submit_payload_snapshot,
+    databricks_ledger_path_sha256,
+    record_databricks_run_submission_receipt_json,
+    read_databricks_cluster_hour_ledger_json,
+    require_databricks_batch_reservation_authorization,
+    require_databricks_ledger_prefix,
     reserve_databricks_run_attempt_json,
 )
 
@@ -42,13 +50,19 @@ __all__ = [
     "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
+    "DatabricksPreReservedPostClaimExistsError",
     "DatabricksWorkspaceConfig",
     "databricks_workspace_config_from_env",
     "databricks_workspace_config_from_profile",
     "databricks_workspace_config_from_sdk_profile",
     "check_databricks_auth",
+    "bind_databricks_run_idempotency_token",
+    "require_databricks_run_idempotency_token",
     "submit_databricks_run",
     "reserve_and_submit_databricks_run",
+    "submit_pre_reserved_databricks_run",
+    "recover_pre_reserved_databricks_run",
+    "resume_pre_reserved_databricks_run",
     "reserve_and_submit_databricks_run_json",
     "get_databricks_run",
     "put_databricks_dbfs_file",
@@ -71,8 +85,12 @@ DATABRICKS_PROFILE_AUTH_MODES = ("auto", "static", "sdk")
 DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES = 1_000_000
 DATABRICKS_AUTH_CHECK_RECORD_TYPE = "document_kv.databricks_auth_check.v1"
 DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
-DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE = "document_kv.databricks_run_submit_payload.v1"
+DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE = (
+    "document_kv.databricks_run_submit_payload.v1"
+)
 _DATABRICKS_AUTH_CHECK_ENDPOINT = "/api/2.0/preview/scim/v2/Me"
+_DATABRICKS_IDEMPOTENCY_TOKEN_DOMAIN = "cachet.databricks_runs.submit_idempotency.v1"
+_DATABRICKS_IDEMPOTENCY_TOKEN_RE = re.compile(r"cachet-[0-9a-f]{57}\Z")
 _DATABRICKS_GPU_TYPE_FIELD = "aws_single_node_gpu_type"
 _LEGACY_DATABRICKS_GPU_TYPE_FIELD = "aws_g5_node_type"
 _DATABRICKS_GPU_TYPE_FIELDS = (
@@ -110,7 +128,9 @@ _DATABRICKS_SDK_PROFILE_ISOLATION_ATTRIBUTES = frozenset(
         "workspace_id",
     }
 )
-DATABRICKS_TERMINAL_LIFE_CYCLE_STATES = frozenset({"TERMINATED", "SKIPPED", "INTERNAL_ERROR"})
+DATABRICKS_TERMINAL_LIFE_CYCLE_STATES = frozenset(
+    {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}
+)
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _DATABRICKS_PAT_TOKEN_RE = re.compile(r"dapi[0-9a-fA-F]{32}")
 _DATABRICKS_RUN_STATUS_WRAPPER_KEYS = frozenset({"ok", "action", "summary"})
@@ -208,8 +228,14 @@ class DatabricksHTTPResponse(Protocol):
     def read(self) -> bytes: ...
 
 
+class DatabricksPreReservedPostClaimExistsError(RuntimeError):
+    """A pre-reserved member already owns the one durable POST claim."""
+
+
 class DatabricksURLOpener(Protocol):
-    def __call__(self, request: urllib.request.Request, *, timeout: float) -> DatabricksHTTPResponse: ...
+    def __call__(
+        self, request: urllib.request.Request, *, timeout: float
+    ) -> DatabricksHTTPResponse: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,7 +271,9 @@ def databricks_workspace_config_from_env(
         raise ValueError(f"{host_env} must be set")
     if not token:
         raise ValueError(f"{token_env} must be set")
-    return DatabricksWorkspaceConfig(host=host, token=token, timeout_seconds=timeout_seconds)
+    return DatabricksWorkspaceConfig(
+        host=host, token=token, timeout_seconds=timeout_seconds
+    )
 
 
 def databricks_workspace_config_from_profile(
@@ -267,7 +295,9 @@ def databricks_workspace_config_from_profile(
             timeout_seconds=timeout_seconds,
         )
     if host and token:
-        return DatabricksWorkspaceConfig(host=host, token=token, timeout_seconds=timeout_seconds)
+        return DatabricksWorkspaceConfig(
+            host=host, token=token, timeout_seconds=timeout_seconds
+        )
     if auth_mode == "auto" and values.get("auth_type", "").strip():
         return databricks_workspace_config_from_sdk_profile(
             profile_name,
@@ -298,13 +328,17 @@ def databricks_workspace_config_from_sdk_profile(
         )
     except Exception as exc:
         message = _redact_databricks_secret_text(str(exc))
-        raise ValueError(f"Databricks SDK profile {profile_name!r} could not be loaded: {message}") from exc
+        raise ValueError(
+            f"Databricks SDK profile {profile_name!r} could not be loaded: {message}"
+        ) from exc
     resolved_host = str(getattr(sdk_config, "host", "") or host).strip()
     try:
         auth_headers = sdk_config.authenticate()
     except Exception as exc:
         message = _redact_databricks_secret_text(str(exc))
-        raise ValueError(f"Databricks SDK profile {profile_name!r} could not authenticate: {message}") from exc
+        raise ValueError(
+            f"Databricks SDK profile {profile_name!r} could not authenticate: {message}"
+        ) from exc
     token = _databricks_bearer_token(auth_headers)
     if not token:
         raise ValueError(
@@ -355,7 +389,9 @@ def _databricks_sdk_config(
         )
     except Exception as exc:
         message = _redact_databricks_secret_text(str(exc))
-        raise ValueError(f"Databricks SDK profile {profile_name!r} could not be loaded: {message}") from exc
+        raise ValueError(
+            f"Databricks SDK profile {profile_name!r} could not be loaded: {message}"
+        ) from exc
     finally:
         _restore_environment(env_snapshot)
 
@@ -364,7 +400,8 @@ def _databricks_sdk_profile_env_names(config_type: Any) -> tuple[str, ...]:
     env_names: set[str] = set()
     for attribute in config_type.attributes():
         if not getattr(attribute, "auth", None) and (
-            getattr(attribute, "name", None) not in _DATABRICKS_SDK_PROFILE_ISOLATION_ATTRIBUTES
+            getattr(attribute, "name", None)
+            not in _DATABRICKS_SDK_PROFILE_ISOLATION_ATTRIBUTES
         ):
             continue
         env_name = getattr(attribute, "env", None)
@@ -407,6 +444,64 @@ def _databricks_profile_auth_mode(value: str) -> str:
     return value
 
 
+def bind_databricks_run_idempotency_token(
+    payload: Mapping[str, Any],
+    *,
+    attempt_id: str,
+) -> dict[str, Any]:
+    """Return canonical payload bytes bound to one deterministic Jobs token.
+
+    The token is derived from the attempt identity and the complete payload with
+    the token field removed, so changing either the intended attempt or any
+    submitted byte produces a different token.  Existing caller-supplied tokens
+    are accepted only when they are exactly the package-derived value.
+    """
+
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise ValueError("attempt_id must be a non-empty string")
+    snapshot, _canonical = canonical_databricks_submit_payload_snapshot(payload)
+    existing = snapshot.pop("idempotency_token", None)
+    identity = {
+        "attempt_id": attempt_id,
+        "domain": _DATABRICKS_IDEMPOTENCY_TOKEN_DOMAIN,
+        "submit_payload_without_idempotency_token": snapshot,
+    }
+    identity_bytes = json.dumps(
+        identity,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    token = "cachet-" + hashlib.sha256(identity_bytes).hexdigest()[:57]
+    if len(token) != 64 or _DATABRICKS_IDEMPOTENCY_TOKEN_RE.fullmatch(token) is None:
+        raise RuntimeError("derived Databricks idempotency token is invalid")
+    if existing is not None and existing != token:
+        raise ValueError("caller-supplied Databricks idempotency token drift")
+    snapshot["idempotency_token"] = token
+    canonical, _canonical_bytes = canonical_databricks_submit_payload_snapshot(snapshot)
+    return canonical
+
+
+def require_databricks_run_idempotency_token(
+    payload: Mapping[str, Any],
+    *,
+    attempt_id: str,
+) -> str:
+    """Require the exact deterministic token and return it."""
+
+    observed = payload.get("idempotency_token")
+    if not isinstance(observed, str):
+        raise ValueError("Databricks runs/submit payload lacks idempotency_token")
+    expected = bind_databricks_run_idempotency_token(
+        payload,
+        attempt_id=attempt_id,
+    )["idempotency_token"]
+    if observed != expected:
+        raise ValueError("Databricks runs/submit idempotency_token binding drift")
+    return observed
+
+
 def submit_databricks_run(
     config: DatabricksWorkspaceConfig,
     payload: dict[str, Any],
@@ -440,13 +535,9 @@ def reserve_and_submit_databricks_run(
     """
 
     resolved_opener = (
-        cast(DatabricksURLOpener, urllib.request.urlopen)
-        if opener is None
-        else opener
+        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
     )
-    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(
-        payload
-    )
+    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
     payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
 
     def validate_exact_reservation(
@@ -474,13 +565,390 @@ def reserve_and_submit_databricks_run(
         raise RuntimeError(
             "persisted ledger reservation digest does not match the submit payload snapshot"
         )
-    return _databricks_api_json(
+    response = _databricks_api_json(
         config,
         "POST",
         "/api/2.1/jobs/runs/submit",
         payload_json_bytes=canonical_payload,
         opener=resolved_opener,
     )
+    # The success path is not complete until the returned cloud run identity is
+    # durably joined to the pre-POST reservation.  HTTP failures remain
+    # conservatively reserved with no fabricated receipt because the remote
+    # outcome may be ambiguous.
+    record_databricks_run_submission_receipt_json(
+        ledger_path,
+        attempt_id=attempt_id,
+        submit_response=response,
+    )
+    return response
+
+
+def submit_pre_reserved_databricks_run(
+    config: DatabricksWorkspaceConfig,
+    payload: Mapping[str, Any],
+    *,
+    ledger_path: str | Path,
+    attempt_id: str,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    opener: DatabricksURLOpener | None = None,
+) -> dict[str, Any]:
+    """Submit one member only after its exact batch was atomically reserved."""
+
+    resolved_opener = (
+        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
+    )
+    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
+    payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
+    idempotency_token = require_databricks_run_idempotency_token(
+        snapshot,
+        attempt_id=attempt_id,
+    )
+    if databricks_ledger_path_sha256(ledger_path) != (
+        batch_authorization.ledger_path_sha256
+    ):
+        raise ValueError("pre-reserved submission ledger path binding drift")
+    batch_prefix = require_databricks_batch_reservation_authorization(
+        batch_authorization,
+        expected_predecessor_prefix=batch_authorization.predecessor_prefix,
+        expected_attempt_ids=batch_authorization.attempt_ids,
+        expected_submit_payload_sha256s=batch_authorization.submit_payload_sha256s,
+    )
+    if attempt_id not in batch_authorization.attempt_ids:
+        raise ValueError("attempt is not a member of the authorized atomic batch")
+    member_index = batch_authorization.attempt_ids.index(attempt_id)
+    if batch_authorization.submit_payload_sha256s[member_index] != payload_sha256:
+        raise ValueError("authorized batch member payload digest drift")
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    require_databricks_ledger_prefix(ledger, batch_prefix)
+    reservation = next(
+        (item for item in ledger.reservations if item.attempt_id == attempt_id),
+        None,
+    )
+    if reservation is None or reservation.submit_payload_sha256 != payload_sha256:
+        raise ValueError("pre-reserved attempt does not match the submit payload")
+    if any(item.attempt_id == attempt_id for item in ledger.submission_receipts):
+        raise ValueError("pre-reserved attempt already has a submission receipt")
+    if attempt_id in ledger.closed_attempt_ids:
+        raise ValueError("pre-reserved attempt is already terminal")
+    claim_path = _write_pre_reserved_post_claim(
+        ledger_path,
+        attempt_id=attempt_id,
+        batch_authorization=batch_authorization,
+        submit_payload_sha256=payload_sha256,
+        idempotency_token=idempotency_token,
+    )
+    with _exclusive_pre_reserved_recovery_lock(claim_path):
+        response = _databricks_api_json(
+            config,
+            "POST",
+            "/api/2.1/jobs/runs/submit",
+            payload_json_bytes=canonical_payload,
+            opener=resolved_opener,
+        )
+        record_databricks_run_submission_receipt_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            submit_response=response,
+        )
+    return response
+
+
+def recover_pre_reserved_databricks_run(
+    config: DatabricksWorkspaceConfig,
+    payload: Mapping[str, Any],
+    *,
+    ledger_path: str | Path,
+    attempt_id: str,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    opener: DatabricksURLOpener | None = None,
+) -> dict[str, Any]:
+    """Safely repeat an ambiguous POST using its exact idempotent wire body.
+
+    Recovery is possible only after the original durable claim exists.  A
+    per-member advisory lock serializes the original request and all recoveries;
+    once any caller records the receipt, later callers return its run ID without
+    issuing another POST.
+    """
+
+    resolved_opener = (
+        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
+    )
+    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
+    payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
+    idempotency_token = require_databricks_run_idempotency_token(
+        snapshot,
+        attempt_id=attempt_id,
+    )
+    _validate_pre_reserved_batch_member(
+        ledger_path,
+        attempt_id=attempt_id,
+        payload_sha256=payload_sha256,
+        batch_authorization=batch_authorization,
+        allow_existing_receipt=True,
+    )
+    claim_path = _pre_reserved_post_claim_path(ledger_path, attempt_id=attempt_id)
+    with _exclusive_pre_reserved_recovery_lock(claim_path):
+        _require_pre_reserved_post_claim(
+            claim_path,
+            attempt_id=attempt_id,
+            batch_authorization=batch_authorization,
+            submit_payload_sha256=payload_sha256,
+            idempotency_token=idempotency_token,
+        )
+        ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+        receipt = next(
+            (
+                item
+                for item in ledger.submission_receipts
+                if item.attempt_id == attempt_id
+            ),
+            None,
+        )
+        if receipt is not None:
+            return {"run_id": receipt.run_id}
+        response = _databricks_api_json(
+            config,
+            "POST",
+            "/api/2.1/jobs/runs/submit",
+            payload_json_bytes=canonical_payload,
+            opener=resolved_opener,
+        )
+        updated = record_databricks_run_submission_receipt_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            submit_response=response,
+        )
+        receipt = next(
+            item
+            for item in updated.submission_receipts
+            if item.attempt_id == attempt_id
+        )
+        return {"run_id": receipt.run_id}
+
+
+def resume_pre_reserved_databricks_run(
+    config: DatabricksWorkspaceConfig,
+    payload: Mapping[str, Any],
+    *,
+    ledger_path: str | Path,
+    attempt_id: str,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    opener: DatabricksURLOpener | None = None,
+) -> dict[str, Any]:
+    """Resume one exact batch member after any controller crash point.
+
+    A missing durable POST claim means the member was never submitted and is
+    claimed/submitted now.  An existing claim is recovered with the identical
+    idempotency token and wire bytes.  Races converge through O_EXCL claim
+    creation plus the per-member advisory lock, so at most one new cloud run is
+    created and all successful callers observe the same receipt-bound run ID.
+    """
+
+    claim_path = _pre_reserved_post_claim_path(ledger_path, attempt_id=attempt_id)
+    if claim_path.exists() or claim_path.is_symlink():
+        return recover_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=batch_authorization,
+            opener=opener,
+        )
+    try:
+        return submit_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=batch_authorization,
+            opener=opener,
+        )
+    except DatabricksPreReservedPostClaimExistsError:
+        return recover_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=batch_authorization,
+            opener=opener,
+        )
+
+
+def _write_pre_reserved_post_claim(
+    ledger_path: str | Path,
+    *,
+    attempt_id: str,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    submit_payload_sha256: str,
+    idempotency_token: str,
+) -> Path:
+    """Durably claim one batch member once before its potentially ambiguous POST."""
+
+    path = Path(ledger_path).expanduser().absolute()
+    claim_path = _pre_reserved_post_claim_path(path, attempt_id=attempt_id)
+    claim_root = claim_path.parent
+    if claim_root.is_symlink():
+        raise ValueError("pre-reserved POST claim root must not be a symlink")
+    try:
+        claim_root.mkdir(mode=0o700)
+        _fsync_local_directory(claim_root.parent)
+    except FileExistsError:
+        pass
+    if not claim_root.is_dir() or claim_root.is_symlink():
+        raise ValueError("pre-reserved POST claim root must be a real directory")
+    record = {
+        "attempt_id": attempt_id,
+        "batch_prefix_sha256": batch_authorization.batch_prefix.prefix_sha256,
+        "idempotency_token": idempotency_token,
+        "ledger_path_sha256": batch_authorization.ledger_path_sha256,
+        "record_type": "cachet.databricks_pre_reserved_post_claim.v1",
+        "submit_payload_sha256": submit_payload_sha256,
+    }
+    content = (
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(claim_path, flags, 0o600)
+    except FileExistsError as exc:
+        raise DatabricksPreReservedPostClaimExistsError(
+            "pre-reserved POST already has a durable claim; its outcome may be "
+            "ambiguous and must be reconciled before any retry"
+        ) from exc
+    try:
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        # A created claim is deliberately retained even if its durable write is
+        # interrupted: absence of a receipt is an ambiguous recovery state.
+        raise
+    _fsync_local_directory(claim_root)
+    return claim_path
+
+
+def _pre_reserved_post_claim_path(
+    ledger_path: str | Path,
+    *,
+    attempt_id: str,
+) -> Path:
+    path = Path(ledger_path).expanduser().absolute()
+    claim_root = path.with_name(f"{path.name}.post-claims")
+    claim_name = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest() + ".json"
+    return claim_root / claim_name
+
+
+def _require_pre_reserved_post_claim(
+    claim_path: Path,
+    *,
+    attempt_id: str,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    submit_payload_sha256: str,
+    idempotency_token: str,
+) -> None:
+    if claim_path.is_symlink() or not claim_path.is_file():
+        raise ValueError("pre-reserved recovery requires the durable POST claim")
+    content = claim_path.read_bytes()
+    try:
+        value = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("pre-reserved POST claim is invalid JSON") from exc
+    expected = {
+        "attempt_id": attempt_id,
+        "batch_prefix_sha256": batch_authorization.batch_prefix.prefix_sha256,
+        "idempotency_token": idempotency_token,
+        "ledger_path_sha256": batch_authorization.ledger_path_sha256,
+        "record_type": "cachet.databricks_pre_reserved_post_claim.v1",
+        "submit_payload_sha256": submit_payload_sha256,
+    }
+    canonical = (
+        json.dumps(
+            expected,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    if value != expected or content != canonical:
+        raise ValueError("pre-reserved POST claim binding drift")
+
+
+def _validate_pre_reserved_batch_member(
+    ledger_path: str | Path,
+    *,
+    attempt_id: str,
+    payload_sha256: str,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    allow_existing_receipt: bool,
+) -> None:
+    if databricks_ledger_path_sha256(ledger_path) != (
+        batch_authorization.ledger_path_sha256
+    ):
+        raise ValueError("pre-reserved submission ledger path binding drift")
+    batch_prefix = require_databricks_batch_reservation_authorization(
+        batch_authorization,
+        expected_predecessor_prefix=batch_authorization.predecessor_prefix,
+        expected_attempt_ids=batch_authorization.attempt_ids,
+        expected_submit_payload_sha256s=batch_authorization.submit_payload_sha256s,
+    )
+    if attempt_id not in batch_authorization.attempt_ids:
+        raise ValueError("attempt is not a member of the authorized atomic batch")
+    member_index = batch_authorization.attempt_ids.index(attempt_id)
+    if batch_authorization.submit_payload_sha256s[member_index] != payload_sha256:
+        raise ValueError("authorized batch member payload digest drift")
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    require_databricks_ledger_prefix(ledger, batch_prefix)
+    reservation = next(
+        (item for item in ledger.reservations if item.attempt_id == attempt_id),
+        None,
+    )
+    if reservation is None or reservation.submit_payload_sha256 != payload_sha256:
+        raise ValueError("pre-reserved attempt does not match the submit payload")
+    has_receipt = any(
+        item.attempt_id == attempt_id for item in ledger.submission_receipts
+    )
+    if has_receipt and not allow_existing_receipt:
+        raise ValueError("pre-reserved attempt already has a submission receipt")
+    if attempt_id in ledger.closed_attempt_ids:
+        raise ValueError("pre-reserved attempt is already terminal")
+
+
+@contextmanager
+def _exclusive_pre_reserved_recovery_lock(claim_path: Path):
+    lock_path = claim_path.with_suffix(".lock")
+    if lock_path.is_symlink():
+        raise ValueError("pre-reserved recovery lock must not be a symlink")
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _fsync_local_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def reserve_and_submit_databricks_run_json(
@@ -629,7 +1097,9 @@ def stage_and_submit_databricks_run(
         require_payload_dbfs_artifacts=require_payload_dbfs_artifacts,
         require_payload_staged_dbfs_artifacts=require_payload_staged_dbfs_artifacts,
     )
-    auth_record = check_databricks_auth(config, opener=opener) if preflight_auth_check else None
+    auth_record = (
+        check_databricks_auth(config, opener=opener) if preflight_auth_check else None
+    )
     artifact_uploads = [
         _put_prepared_databricks_dbfs_file_record(
             config,
@@ -644,14 +1114,17 @@ def stage_and_submit_databricks_run(
     if auth_record is not None:
         result["auth"] = auth_record
     result["artifact_uploads"] = [
-        _stage_and_submit_artifact_upload_record(record)
-        for record in artifact_uploads
+        _stage_and_submit_artifact_upload_record(record) for record in artifact_uploads
     ]
     return result
 
 
-def write_databricks_run_response_json(response: dict[str, Any], path: str | Path) -> None:
-    Path(path).write_text(json.dumps(response, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def write_databricks_run_response_json(
+    response: dict[str, Any], path: str | Path
+) -> None:
+    Path(path).write_text(
+        json.dumps(response, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def read_databricks_run_submit_payload(path: str | Path) -> dict[str, Any]:
@@ -670,7 +1143,9 @@ def summarize_databricks_run(
     state = _mapping(run.get("state"))
     life_cycle_state = _optional_str(state.get("life_cycle_state"))
     result_state = _optional_str(state.get("result_state"))
-    tasks = tuple(_task_summary(task) for task in _sequence_of_mappings(run.get("tasks")))
+    tasks = tuple(
+        _task_summary(task) for task in _sequence_of_mappings(run.get("tasks"))
+    )
     summary = {
         "record_type": DATABRICKS_RUN_STATUS_RECORD_TYPE,
         "run_id": run.get("run_id"),
@@ -703,17 +1178,33 @@ def summarize_databricks_run_submit_payload(
 ) -> dict[str, Any]:
     tasks = tuple(_sequence_of_mappings(payload.get("tasks")))
     task_summaries = tuple(_submit_payload_task_summary(task) for task in tasks)
-    node_type_ids = _sorted_unique_texts(summary.get("node_type_id") for summary in task_summaries)
-    driver_node_type_ids = _sorted_unique_texts(summary.get("driver_node_type_id") for summary in task_summaries)
+    node_type_ids = _sorted_unique_texts(
+        summary.get("node_type_id") for summary in task_summaries
+    )
+    driver_node_type_ids = _sorted_unique_texts(
+        summary.get("driver_node_type_id") for summary in task_summaries
+    )
     hardware_targets = _hardware_targets_for_task_summaries(task_summaries)
-    spark_versions = _sorted_unique_texts(summary.get("spark_version") for summary in task_summaries)
+    spark_versions = _sorted_unique_texts(
+        summary.get("spark_version") for summary in task_summaries
+    )
     spark_env_keys = _sorted_task_list_field_values(task_summaries, "spark_env_keys")
-    data_security_modes = _sorted_unique_texts(summary.get("data_security_mode") for summary in task_summaries)
-    canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    data_security_modes = _sorted_unique_texts(
+        summary.get("data_security_mode") for summary in task_summaries
+    )
+    canonical_payload = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     aws_single_node_gpu_type = (
         bool(task_summaries)
-        and all(_is_supported_aws_single_node_gpu_type(summary.get("node_type_id")) for summary in task_summaries)
-        and all(_is_supported_aws_single_node_gpu_type(summary.get("driver_node_type_id")) for summary in task_summaries)
+        and all(
+            _is_supported_aws_single_node_gpu_type(summary.get("node_type_id"))
+            for summary in task_summaries
+        )
+        and all(
+            _is_supported_aws_single_node_gpu_type(summary.get("driver_node_type_id"))
+            for summary in task_summaries
+        )
     )
     return {
         "record_type": DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
@@ -733,7 +1224,8 @@ def summarize_databricks_run_submit_payload(
         "spark_versions": spark_versions,
         "spark_env_keys": spark_env_keys,
         "data_security_modes": data_security_modes,
-        "single_node": bool(task_summaries) and all(summary["single_node"] for summary in task_summaries),
+        "single_node": bool(task_summaries)
+        and all(summary["single_node"] for summary in task_summaries),
         _DATABRICKS_GPU_TYPE_FIELD: aws_single_node_gpu_type,
         _LEGACY_DATABRICKS_GPU_TYPE_FIELD: aws_single_node_gpu_type,
     }
@@ -766,22 +1258,36 @@ def databricks_run_status_sidecar_issues(
     status_record = databricks_run_status_record(record)
     issues: list[str] = []
     if "response" in record:
-        issues.append("Databricks run status sidecar must not include the raw Jobs API response")
+        issues.append(
+            "Databricks run status sidecar must not include the raw Jobs API response"
+        )
     issues.extend(_databricks_run_status_container_key_issues(record))
     issues.extend(_databricks_run_status_wrapper_field_issues(record))
     if status_record is None:
-        issues.append("Databricks run status sidecar must be a status record or databricks_runs get --summary output")
+        issues.append(
+            "Databricks run status sidecar must be a status record or databricks_runs get --summary output"
+        )
         return _dedupe_strings(issues)
-    issues.extend(_unexpected_keys(status_record, _DATABRICKS_RUN_STATUS_KEYS, "Databricks run status sidecar summary"))
+    issues.extend(
+        _unexpected_keys(
+            status_record,
+            _DATABRICKS_RUN_STATUS_KEYS,
+            "Databricks run status sidecar summary",
+        )
+    )
     issues.extend(_databricks_run_status_field_issues(status_record))
     if status_record.get("record_type") != DATABRICKS_RUN_STATUS_RECORD_TYPE:
-        issues.append(f"Databricks run status sidecar record_type must be {DATABRICKS_RUN_STATUS_RECORD_TYPE!r}")
+        issues.append(
+            f"Databricks run status sidecar record_type must be {DATABRICKS_RUN_STATUS_RECORD_TYPE!r}"
+        )
     if status_record.get("terminal") is not True:
         issues.append("Databricks run status sidecar terminal must be true")
     if status_record.get("succeeded") is not True:
         issues.append("Databricks run status sidecar succeeded must be true")
     if status_record.get("life_cycle_state") != "TERMINATED":
-        issues.append("Databricks run status sidecar life_cycle_state must be 'TERMINATED'")
+        issues.append(
+            "Databricks run status sidecar life_cycle_state must be 'TERMINATED'"
+        )
     if status_record.get("result_state") != "SUCCESS":
         issues.append("Databricks run status sidecar result_state must be 'SUCCESS'")
     if (
@@ -789,19 +1295,33 @@ def databricks_run_status_sidecar_issues(
         and status_record.get("succeeded") is True
         and status_record.get("active_task_key") is not None
     ):
-        issues.append("Databricks run status sidecar active_task_key must be null for successful terminal runs")
+        issues.append(
+            "Databricks run status sidecar active_task_key must be null for successful terminal runs"
+        )
     run_id = status_record.get("run_id")
-    if not ((type(run_id) is int and run_id >= 0) or (isinstance(run_id, str) and run_id)):
-        issues.append("Databricks run status sidecar run_id must be a non-negative integer or non-empty string")
+    if not (
+        (type(run_id) is int and run_id >= 0) or (isinstance(run_id, str) and run_id)
+    ):
+        issues.append(
+            "Databricks run status sidecar run_id must be a non-negative integer or non-empty string"
+        )
     task_count = status_record.get("task_count")
     tasks = status_record.get("tasks")
     if type(task_count) is not int or task_count <= 0:
-        issues.append("Databricks run status sidecar task_count must be a positive integer")
-    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)) or not tasks:
+        issues.append(
+            "Databricks run status sidecar task_count must be a positive integer"
+        )
+    if (
+        not isinstance(tasks, Sequence)
+        or isinstance(tasks, (str, bytes, bytearray))
+        or not tasks
+    ):
         issues.append("Databricks run status sidecar tasks must be a non-empty array")
     else:
         if type(task_count) is int and task_count > 0 and len(tasks) != task_count:
-            issues.append("Databricks run status sidecar task_count must match tasks length")
+            issues.append(
+                "Databricks run status sidecar task_count must match tasks length"
+            )
         issues.extend(
             _databricks_run_status_task_issues(
                 tasks,
@@ -821,8 +1341,16 @@ def databricks_run_status_sidecar_issues(
                 expected_node_type_id=expected_node_type_id,
             )
         )
-        issues.extend(_databricks_run_submit_payload_identity_issues(status_record, submit_payload))
-        issues.extend(_databricks_run_submit_payload_spark_env_identity_issues(tasks, submit_payload))
+        issues.extend(
+            _databricks_run_submit_payload_identity_issues(
+                status_record, submit_payload
+            )
+        )
+        issues.extend(
+            _databricks_run_submit_payload_spark_env_identity_issues(
+                tasks, submit_payload
+            )
+        )
     return _dedupe_strings(issues)
 
 
@@ -886,7 +1414,9 @@ def _databricks_api_response_json(
             parsed = json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(_format_databricks_http_error(exc.code, body, token=config.token)) from exc
+        raise RuntimeError(
+            _format_databricks_http_error(exc.code, body, token=config.token)
+        ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Databricks request failed: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
@@ -930,7 +1460,8 @@ def _submit_payload_task_summary(task: Mapping[str, Any]) -> dict[str, Any]:
         "spark_env_keys": _spark_env_key_names(spark_env_vars),
         "data_security_mode": _optional_str(cluster.get("data_security_mode")),
         "num_workers": cluster.get("num_workers"),
-        "single_node": cluster.get("num_workers") == 0 and custom_tags.get("ResourceClass") == "SingleNode",
+        "single_node": cluster.get("num_workers") == 0
+        and custom_tags.get("ResourceClass") == "SingleNode",
         "purpose": _optional_str(custom_tags.get("purpose")),
     }
 
@@ -980,7 +1511,9 @@ def _sorted_unique_texts(values: Sequence[Any]) -> list[str]:
 
 
 _SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
-_HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
+_HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = (
+    HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
+)
 _V1_HARDWARE_TARGET_PREFIXES = tuple(
     (profile.hardware_target, profile.databricks_node_type_prefixes)
     for profile in V1_HARDWARE_TARGET_PROFILES
@@ -988,14 +1521,24 @@ _V1_HARDWARE_TARGET_PREFIXES = tuple(
 
 
 def _is_supported_aws_single_node_gpu_type(value: Any) -> bool:
-    return isinstance(value, str) and value.lower().startswith(_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES)
+    return isinstance(value, str) and value.lower().startswith(
+        _SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
+    )
 
 
-def _is_expected_aws_single_node_gpu_type(value: Any, expected_hardware_target: str | None) -> bool:
+def _is_expected_aws_single_node_gpu_type(
+    value: Any, expected_hardware_target: str | None
+) -> bool:
     if expected_hardware_target is None:
         return _is_supported_aws_single_node_gpu_type(value)
-    prefixes = _HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.get(expected_hardware_target)
-    return isinstance(value, str) and prefixes is not None and value.lower().startswith(prefixes)
+    prefixes = _HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.get(
+        expected_hardware_target
+    )
+    return (
+        isinstance(value, str)
+        and prefixes is not None
+        and value.lower().startswith(prefixes)
+    )
 
 
 def _hardware_target_for_node_type(value: Any) -> str | None:
@@ -1021,11 +1564,15 @@ def _hardware_targets_for_task_summaries(tasks: Sequence[Any]) -> list[str]:
 
 
 def _submit_payload_gpu_type_supported(record: Mapping[str, Any]) -> bool:
-    return all(record[field_name] is True for field_name in _present_gpu_type_fields(record))
+    return all(
+        record[field_name] is True for field_name in _present_gpu_type_fields(record)
+    )
 
 
 def _present_gpu_type_fields(record: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(field_name for field_name in _DATABRICKS_GPU_TYPE_FIELDS if field_name in record)
+    return tuple(
+        field_name for field_name in _DATABRICKS_GPU_TYPE_FIELDS if field_name in record
+    )
 
 
 def _sha256_hex(payload: bytes) -> str:
@@ -1041,18 +1588,34 @@ def _databricks_run_status_task_issues(
     issues: list[str] = []
     for index, task in enumerate(tasks):
         if not isinstance(task, Mapping):
-            issues.append(f"Databricks run status sidecar tasks[{index}] must be an object")
+            issues.append(
+                f"Databricks run status sidecar tasks[{index}] must be an object"
+            )
             continue
         issues.extend(
-            _unexpected_keys(task, _DATABRICKS_RUN_STATUS_TASK_KEYS, f"Databricks run status sidecar tasks[{index}]")
+            _unexpected_keys(
+                task,
+                _DATABRICKS_RUN_STATUS_TASK_KEYS,
+                f"Databricks run status sidecar tasks[{index}]",
+            )
         )
         issues.extend(_databricks_run_status_task_field_issues(task, index=index))
-        issues.extend(_list_of_strings_field(task, "spark_env_keys", f"Databricks run status sidecar tasks[{index}]"))
+        issues.extend(
+            _list_of_strings_field(
+                task, "spark_env_keys", f"Databricks run status sidecar tasks[{index}]"
+            )
+        )
         spark_env_keys = _valid_string_list(task.get("spark_env_keys"))
         if spark_env_keys is not None:
-            issues.extend(_spark_env_key_issues(spark_env_keys, f"Databricks run status sidecar tasks[{index}]"))
+            issues.extend(
+                _spark_env_key_issues(
+                    spark_env_keys, f"Databricks run status sidecar tasks[{index}]"
+                )
+            )
         if not isinstance(task.get("task_key"), str) or not task["task_key"]:
-            issues.append(f"Databricks run status sidecar tasks[{index}].task_key must be non-empty")
+            issues.append(
+                f"Databricks run status sidecar tasks[{index}].task_key must be non-empty"
+            )
         issues.extend(
             _databricks_run_status_task_node_type_issues(
                 task,
@@ -1062,9 +1625,13 @@ def _databricks_run_status_task_issues(
             )
         )
         if task.get("life_cycle_state") != "TERMINATED":
-            issues.append(f"Databricks run status sidecar tasks[{index}].life_cycle_state must be 'TERMINATED'")
+            issues.append(
+                f"Databricks run status sidecar tasks[{index}].life_cycle_state must be 'TERMINATED'"
+            )
         if task.get("result_state") != "SUCCESS":
-            issues.append(f"Databricks run status sidecar tasks[{index}].result_state must be 'SUCCESS'")
+            issues.append(
+                f"Databricks run status sidecar tasks[{index}].result_state must be 'SUCCESS'"
+            )
     return tuple(issues)
 
 
@@ -1111,7 +1678,13 @@ def _databricks_submit_payload_sidecar_issues(
     expected_node_type_id: str | None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
-    issues.extend(_unexpected_keys(record, _DATABRICKS_SUBMIT_PAYLOAD_KEYS, "Databricks run status sidecar submit_payload"))
+    issues.extend(
+        _unexpected_keys(
+            record,
+            _DATABRICKS_SUBMIT_PAYLOAD_KEYS,
+            "Databricks run status sidecar submit_payload",
+        )
+    )
     issues.extend(_databricks_submit_payload_field_issues(record))
     if record.get("record_type") != DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE:
         issues.append(
@@ -1119,22 +1692,46 @@ def _databricks_submit_payload_sidecar_issues(
         )
     source_path = record.get("source_path")
     if not isinstance(source_path, str) or not source_path:
-        issues.append("Databricks run status sidecar submit_payload.source_path must be non-empty")
-    if not isinstance(record.get("sha256"), str) or not _SHA256_HEX_RE.fullmatch(record["sha256"]):
-        issues.append("Databricks run status sidecar submit_payload.sha256 must be a 64-character lowercase hex digest")
+        issues.append(
+            "Databricks run status sidecar submit_payload.source_path must be non-empty"
+        )
+    if not isinstance(record.get("sha256"), str) or not _SHA256_HEX_RE.fullmatch(
+        record["sha256"]
+    ):
+        issues.append(
+            "Databricks run status sidecar submit_payload.sha256 must be a 64-character lowercase hex digest"
+        )
     if record.get("single_node") is not True:
-        issues.append("Databricks run status sidecar submit_payload.single_node must be true")
+        issues.append(
+            "Databricks run status sidecar submit_payload.single_node must be true"
+        )
     if _submit_payload_gpu_type_supported(record) is not True:
-        issues.append("Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true")
+        issues.append(
+            "Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true"
+        )
     task_count = record.get("task_count")
     payload_tasks = record.get("tasks")
     if type(task_count) is not int or task_count <= 0:
-        issues.append("Databricks run status sidecar submit_payload.task_count must be a positive integer")
-    if not isinstance(payload_tasks, Sequence) or isinstance(payload_tasks, (str, bytes, bytearray)) or not payload_tasks:
-        issues.append("Databricks run status sidecar submit_payload.tasks must be a non-empty array")
+        issues.append(
+            "Databricks run status sidecar submit_payload.task_count must be a positive integer"
+        )
+    if (
+        not isinstance(payload_tasks, Sequence)
+        or isinstance(payload_tasks, (str, bytes, bytearray))
+        or not payload_tasks
+    ):
+        issues.append(
+            "Databricks run status sidecar submit_payload.tasks must be a non-empty array"
+        )
     else:
-        if type(task_count) is int and task_count > 0 and len(payload_tasks) != task_count:
-            issues.append("Databricks run status sidecar submit_payload.task_count must match tasks length")
+        if (
+            type(task_count) is int
+            and task_count > 0
+            and len(payload_tasks) != task_count
+        ):
+            issues.append(
+                "Databricks run status sidecar submit_payload.task_count must match tasks length"
+            )
         issues.extend(
             _databricks_submit_payload_task_issues(
                 payload_tasks,
@@ -1142,26 +1739,48 @@ def _databricks_submit_payload_sidecar_issues(
                 expected_node_type_id=expected_node_type_id,
             )
         )
-        issues.extend(_databricks_submit_payload_summary_field_issues(record, payload_tasks))
+        issues.extend(
+            _databricks_submit_payload_summary_field_issues(record, payload_tasks)
+        )
     data_security_modes = record.get("data_security_modes")
-    if not isinstance(data_security_modes, Sequence) or isinstance(data_security_modes, (str, bytes, bytearray)):
-        issues.append("Databricks run status sidecar submit_payload.data_security_modes must be an array")
+    if not isinstance(data_security_modes, Sequence) or isinstance(
+        data_security_modes, (str, bytes, bytearray)
+    ):
+        issues.append(
+            "Databricks run status sidecar submit_payload.data_security_modes must be an array"
+        )
     elif "SINGLE_USER" not in data_security_modes:
-        issues.append("Databricks run status sidecar submit_payload.data_security_modes must include SINGLE_USER")
+        issues.append(
+            "Databricks run status sidecar submit_payload.data_security_modes must include SINGLE_USER"
+        )
     if isinstance(tasks, Sequence) and not isinstance(tasks, (str, bytes, bytearray)):
         status_task_keys = _task_key_list(tasks)
         payload_task_keys = _task_key_list(record.get("tasks"))
         if not status_task_keys:
             issues.append("Databricks run status sidecar tasks must include task keys")
         if not payload_task_keys:
-            issues.append("Databricks run status sidecar submit_payload.tasks must include task keys")
-        if status_task_keys and payload_task_keys and status_task_keys != payload_task_keys:
-            issues.append("Databricks run status sidecar submit_payload.task_keys must match status task keys")
-    if isinstance(record.get("task_keys"), Sequence) and not isinstance(record.get("task_keys"), (str, bytes, bytearray)):
-        declared_task_keys = [key for key in record["task_keys"] if isinstance(key, str) and key]
+            issues.append(
+                "Databricks run status sidecar submit_payload.tasks must include task keys"
+            )
+        if (
+            status_task_keys
+            and payload_task_keys
+            and status_task_keys != payload_task_keys
+        ):
+            issues.append(
+                "Databricks run status sidecar submit_payload.task_keys must match status task keys"
+            )
+    if isinstance(record.get("task_keys"), Sequence) and not isinstance(
+        record.get("task_keys"), (str, bytes, bytearray)
+    ):
+        declared_task_keys = [
+            key for key in record["task_keys"] if isinstance(key, str) and key
+        ]
         payload_task_keys = _task_key_list(record.get("tasks"))
         if declared_task_keys != payload_task_keys:
-            issues.append("Databricks run status sidecar submit_payload.task_keys must match submit_payload.tasks")
+            issues.append(
+                "Databricks run status sidecar submit_payload.task_keys must match submit_payload.tasks"
+            )
     return tuple(issues)
 
 
@@ -1178,7 +1797,9 @@ def _databricks_run_submit_payload_identity_issues(
         and submit_run_name
         and submit_run_name != run_name
     ):
-        return ("Databricks run status sidecar submit_payload.run_name must match run_name",)
+        return (
+            "Databricks run status sidecar submit_payload.run_name must match run_name",
+        )
     return ()
 
 
@@ -1187,14 +1808,20 @@ def _databricks_run_submit_payload_spark_env_identity_issues(
     submit_payload: Mapping[str, Any],
 ) -> tuple[str, ...]:
     payload_tasks = submit_payload.get("tasks")
-    if not isinstance(status_tasks, Sequence) or isinstance(status_tasks, (str, bytes, bytearray)):
+    if not isinstance(status_tasks, Sequence) or isinstance(
+        status_tasks, (str, bytes, bytearray)
+    ):
         return ()
-    if not isinstance(payload_tasks, Sequence) or isinstance(payload_tasks, (str, bytes, bytearray)):
+    if not isinstance(payload_tasks, Sequence) or isinstance(
+        payload_tasks, (str, bytes, bytearray)
+    ):
         return ()
     status_by_task_key = {
         task["task_key"]: task
         for task in status_tasks
-        if isinstance(task, Mapping) and isinstance(task.get("task_key"), str) and task["task_key"]
+        if isinstance(task, Mapping)
+        and isinstance(task.get("task_key"), str)
+        and task["task_key"]
     }
     issues: list[str] = []
     for payload_task in payload_tasks:
@@ -1243,10 +1870,18 @@ def _databricks_submit_payload_summary_field_issues(
             "Databricks run status sidecar submit_payload.spark_env_keys must be an array of non-empty strings"
         )
     else:
-        expected_spark_env_keys = _sorted_task_list_field_values(tasks, "spark_env_keys")
+        expected_spark_env_keys = _sorted_task_list_field_values(
+            tasks, "spark_env_keys"
+        )
         if actual_spark_env_keys != expected_spark_env_keys:
-            issues.append("Databricks run status sidecar submit_payload.spark_env_keys must match submit_payload.tasks")
-        issues.extend(_spark_env_key_issues(actual_spark_env_keys, "Databricks run status sidecar submit_payload"))
+            issues.append(
+                "Databricks run status sidecar submit_payload.spark_env_keys must match submit_payload.tasks"
+            )
+        issues.extend(
+            _spark_env_key_issues(
+                actual_spark_env_keys, "Databricks run status sidecar submit_payload"
+            )
+        )
     if "hardware_targets" in record:
         actual_hardware_targets = _valid_string_list(record.get("hardware_targets"))
     else:
@@ -1269,7 +1904,9 @@ def _databricks_submit_payload_task_issues(
     issues: list[str] = []
     for index, task in enumerate(tasks):
         if not isinstance(task, Mapping):
-            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}] must be an object")
+            issues.append(
+                f"Databricks run status sidecar submit_payload.tasks[{index}] must be an object"
+            )
             continue
         issues.extend(
             _unexpected_keys(
@@ -1280,7 +1917,9 @@ def _databricks_submit_payload_task_issues(
         )
         issues.extend(_databricks_submit_payload_task_field_issues(task, index=index))
         if not isinstance(task.get("task_key"), str) or not task["task_key"]:
-            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].task_key must be non-empty")
+            issues.append(
+                f"Databricks run status sidecar submit_payload.tasks[{index}].task_key must be non-empty"
+            )
         for field_name in ("node_type_id", "driver_node_type_id"):
             value = task.get(field_name)
             if not _is_supported_aws_single_node_gpu_type(value):
@@ -1288,7 +1927,9 @@ def _databricks_submit_payload_task_issues(
                     f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} "
                     "must be a supported V1 AWS GPU node type"
                 )
-            elif not _is_expected_aws_single_node_gpu_type(value, expected_hardware_target):
+            elif not _is_expected_aws_single_node_gpu_type(
+                value, expected_hardware_target
+            ):
                 issues.append(
                     f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must match "
                     f"hardware_target {expected_hardware_target!r}"
@@ -1299,7 +1940,9 @@ def _databricks_submit_payload_task_issues(
                     f"node_type_id {expected_node_type_id!r}"
                 )
         if task.get("single_node") is not True:
-            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].single_node must be true")
+            issues.append(
+                f"Databricks run status sidecar submit_payload.tasks[{index}].single_node must be true"
+            )
         if task.get("data_security_mode") != "SINGLE_USER":
             issues.append(
                 f"Databricks run status sidecar submit_payload.tasks[{index}].data_security_mode must be 'SINGLE_USER'"
@@ -1309,52 +1952,107 @@ def _databricks_submit_payload_task_issues(
 
 def _databricks_run_status_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     issues: list[str] = []
-    issues.extend(_required_str_field(record, "record_type", "Databricks run status sidecar"))
-    issues.extend(_run_id_field_issues(record, "run_id", "Databricks run status sidecar"))
-    for field_name in ("run_name", "run_page_url", "state_message", "active_task_key", "cluster_id"):
-        issues.extend(_optional_str_field(record, field_name, "Databricks run status sidecar"))
+    issues.extend(
+        _required_str_field(record, "record_type", "Databricks run status sidecar")
+    )
+    issues.extend(
+        _run_id_field_issues(record, "run_id", "Databricks run status sidecar")
+    )
+    for field_name in (
+        "run_name",
+        "run_page_url",
+        "state_message",
+        "active_task_key",
+        "cluster_id",
+    ):
+        issues.extend(
+            _optional_str_field(record, field_name, "Databricks run status sidecar")
+        )
     for field_name in ("life_cycle_state", "result_state"):
-        issues.extend(_required_str_field(record, field_name, "Databricks run status sidecar"))
+        issues.extend(
+            _required_str_field(record, field_name, "Databricks run status sidecar")
+        )
     for field_name in ("start_time", "end_time"):
-        issues.extend(_optional_int_field(record, field_name, "Databricks run status sidecar"))
+        issues.extend(
+            _optional_int_field(record, field_name, "Databricks run status sidecar")
+        )
     for field_name in ("terminal", "succeeded"):
         issues.extend(_bool_field(record, field_name, "Databricks run status sidecar"))
     return tuple(issues)
 
 
-def _databricks_run_status_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
+def _databricks_run_status_task_field_issues(
+    task: Mapping[str, Any], *, index: int
+) -> tuple[str, ...]:
     label = f"Databricks run status sidecar tasks[{index}]"
     issues: list[str] = []
     issues.extend(_required_str_field(task, "task_key", label))
     issues.extend(_run_id_field_issues(task, "run_id", label))
     for field_name in ("life_cycle_state", "result_state"):
         issues.extend(_required_str_field(task, field_name, label))
-    for field_name in ("state_message", "cluster_id", "node_type_id", "driver_node_type_id"):
+    for field_name in (
+        "state_message",
+        "cluster_id",
+        "node_type_id",
+        "driver_node_type_id",
+    ):
         issues.extend(_optional_str_field(task, field_name, label))
     for field_name in ("start_time", "end_time"):
         issues.extend(_optional_int_field(task, field_name, label))
     return tuple(issues)
 
 
-def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+def _databricks_submit_payload_field_issues(
+    record: Mapping[str, Any],
+) -> tuple[str, ...]:
     issues: list[str] = []
     for field_name in ("record_type", "source_path"):
-        issues.extend(_required_str_field(record, field_name, "Databricks run status sidecar submit_payload"))
-    issues.extend(_optional_str_field(record, "run_name", "Databricks run status sidecar submit_payload"))
-    for field_name in ("task_keys", "node_type_ids", "driver_node_type_ids", "spark_versions", "data_security_modes"):
-        issues.extend(_list_of_strings_field(record, field_name, "Databricks run status sidecar submit_payload"))
+        issues.extend(
+            _required_str_field(
+                record, field_name, "Databricks run status sidecar submit_payload"
+            )
+        )
+    issues.extend(
+        _optional_str_field(
+            record, "run_name", "Databricks run status sidecar submit_payload"
+        )
+    )
+    for field_name in (
+        "task_keys",
+        "node_type_ids",
+        "driver_node_type_ids",
+        "spark_versions",
+        "data_security_modes",
+    ):
+        issues.extend(
+            _list_of_strings_field(
+                record, field_name, "Databricks run status sidecar submit_payload"
+            )
+        )
     if "hardware_targets" in record:
         issues.extend(
-            _list_of_strings_field(record, "hardware_targets", "Databricks run status sidecar submit_payload")
+            _list_of_strings_field(
+                record,
+                "hardware_targets",
+                "Databricks run status sidecar submit_payload",
+            )
         )
-    issues.extend(_bool_field(record, "single_node", "Databricks run status sidecar submit_payload"))
+    issues.extend(
+        _bool_field(
+            record, "single_node", "Databricks run status sidecar submit_payload"
+        )
+    )
     if not _present_gpu_type_fields(record):
         issues.append(
             "Databricks run status sidecar submit_payload.aws_single_node_gpu_type or aws_g5_node_type must be present"
         )
     for field_name in _DATABRICKS_GPU_TYPE_FIELDS:
         if field_name in record:
-            issues.extend(_bool_field(record, field_name, "Databricks run status sidecar submit_payload"))
+            issues.extend(
+                _bool_field(
+                    record, field_name, "Databricks run status sidecar submit_payload"
+                )
+            )
     if _gpu_type_fields_contradict(record):
         issues.append(
             "Databricks run status sidecar submit_payload.aws_single_node_gpu_type and aws_g5_node_type must match"
@@ -1366,11 +2064,14 @@ def _gpu_type_fields_contradict(record: Mapping[str, Any]) -> bool:
     return (
         type(record.get(_DATABRICKS_GPU_TYPE_FIELD)) is bool
         and type(record.get(_LEGACY_DATABRICKS_GPU_TYPE_FIELD)) is bool
-        and record[_DATABRICKS_GPU_TYPE_FIELD] != record[_LEGACY_DATABRICKS_GPU_TYPE_FIELD]
+        and record[_DATABRICKS_GPU_TYPE_FIELD]
+        != record[_LEGACY_DATABRICKS_GPU_TYPE_FIELD]
     )
 
 
-def _databricks_submit_payload_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
+def _databricks_submit_payload_task_field_issues(
+    task: Mapping[str, Any], *, index: int
+) -> tuple[str, ...]:
     label = f"Databricks run status sidecar submit_payload.tasks[{index}]"
     issues: list[str] = []
     for field_name in (
@@ -1392,13 +2093,21 @@ def _databricks_submit_payload_task_field_issues(task: Mapping[str, Any], *, ind
     return tuple(issues)
 
 
-def _databricks_run_status_container_key_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+def _databricks_run_status_container_key_issues(
+    record: Mapping[str, Any],
+) -> tuple[str, ...]:
     if record.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE:
         return ()
-    return _unexpected_keys(record, _DATABRICKS_RUN_STATUS_WRAPPER_KEYS, "Databricks run status sidecar wrapper")
+    return _unexpected_keys(
+        record,
+        _DATABRICKS_RUN_STATUS_WRAPPER_KEYS,
+        "Databricks run status sidecar wrapper",
+    )
 
 
-def _databricks_run_status_wrapper_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+def _databricks_run_status_wrapper_field_issues(
+    record: Mapping[str, Any],
+) -> tuple[str, ...]:
     if record.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE:
         return ()
     issues: list[str] = []
@@ -1411,48 +2120,62 @@ def _databricks_run_status_wrapper_field_issues(record: Mapping[str, Any]) -> tu
     return tuple(issues)
 
 
-def _unexpected_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], label: str) -> tuple[str, ...]:
+def _unexpected_keys(
+    record: Mapping[str, Any], allowed_keys: frozenset[str], label: str
+) -> tuple[str, ...]:
     unexpected = sorted(str(key) for key in record if key not in allowed_keys)
     if not unexpected:
         return ()
     return (f"{label} has unsupported keys: {unexpected}",)
 
 
-def _required_str_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+def _required_str_field(
+    record: Mapping[str, Any], field_name: str, label: str
+) -> tuple[str, ...]:
     value = record.get(field_name)
     if isinstance(value, str) and value:
         return ()
     return (f"{label}.{field_name} must be a non-empty string",)
 
 
-def _optional_str_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+def _optional_str_field(
+    record: Mapping[str, Any], field_name: str, label: str
+) -> tuple[str, ...]:
     value = record.get(field_name)
     if value is None or isinstance(value, str):
         return ()
     return (f"{label}.{field_name} must be a string or null",)
 
 
-def _optional_int_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+def _optional_int_field(
+    record: Mapping[str, Any], field_name: str, label: str
+) -> tuple[str, ...]:
     value = record.get(field_name)
     if value is None or type(value) is int:
         return ()
     return (f"{label}.{field_name} must be an integer or null",)
 
 
-def _bool_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+def _bool_field(
+    record: Mapping[str, Any], field_name: str, label: str
+) -> tuple[str, ...]:
     if type(record.get(field_name)) is bool:
         return ()
     return (f"{label}.{field_name} must be boolean",)
 
 
-def _run_id_field_issues(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+def _run_id_field_issues(
+    record: Mapping[str, Any], field_name: str, label: str
+) -> tuple[str, ...]:
     value = record.get(field_name)
     if (type(value) is int and value >= 0) or (isinstance(value, str) and value):
         return ()
     return (f"{label}.{field_name} must be a non-negative integer or non-empty string",)
 
 
-def _list_of_strings_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+def _list_of_strings_field(
+    record: Mapping[str, Any], field_name: str, label: str
+) -> tuple[str, ...]:
     value = record.get(field_name)
     if _valid_string_list(value) is not None:
         return ()
@@ -1474,7 +2197,9 @@ def _sorted_task_field_values(tasks: Sequence[Any], field_name: str) -> list[str
         {
             task[field_name]
             for task in tasks
-            if isinstance(task, Mapping) and isinstance(task.get(field_name), str) and task[field_name]
+            if isinstance(task, Mapping)
+            and isinstance(task.get(field_name), str)
+            and task[field_name]
         }
     )
 
@@ -1493,7 +2218,9 @@ def _sorted_task_list_field_values(tasks: Sequence[Any], field_name: str) -> lis
 
 
 def _spark_env_key_names(spark_env_vars: Mapping[str, Any]) -> list[str]:
-    return _sorted_unique_texts(_safe_spark_env_key_name(key) for key in spark_env_vars.keys())
+    return _sorted_unique_texts(
+        _safe_spark_env_key_name(key) for key in spark_env_vars.keys()
+    )
 
 
 def _safe_spark_env_key_name(value: str) -> str:
@@ -1506,15 +2233,23 @@ def _spark_env_key_issues(values: Sequence[str], label: str) -> tuple[str, ...]:
     issues: list[str] = []
     for value in values:
         if value == _REDACTED_SPARK_ENV_TOKEN_KEY:
-            issues.append(f"{label}.spark_env_keys contains redacted Databricks token-pattern environment variable name")
+            issues.append(
+                f"{label}.spark_env_keys contains redacted Databricks token-pattern environment variable name"
+            )
             continue
         if _DATABRICKS_PAT_TOKEN_RE.search(value):
-            issues.append(f"{label}.spark_env_keys contains Databricks token-pattern environment variable name")
+            issues.append(
+                f"{label}.spark_env_keys contains Databricks token-pattern environment variable name"
+            )
             continue
         if _SPARK_ENV_VAR_KEY_RE.fullmatch(value) is None:
-            issues.append(f"{label}.spark_env_keys contains invalid environment variable name {value!r}")
+            issues.append(
+                f"{label}.spark_env_keys contains invalid environment variable name {value!r}"
+            )
         if _looks_secret_like_spark_env_key(value):
-            issues.append(f"{label}.spark_env_keys contains secret-looking environment variable name {value!r}")
+            issues.append(
+                f"{label}.spark_env_keys contains secret-looking environment variable name {value!r}"
+            )
     return tuple(issues)
 
 
@@ -1529,7 +2264,9 @@ def _task_key_list(tasks: Any) -> list[str]:
     return [
         task["task_key"]
         for task in tasks
-        if isinstance(task, Mapping) and isinstance(task.get("task_key"), str) and task["task_key"]
+        if isinstance(task, Mapping)
+        and isinstance(task.get("task_key"), str)
+        and task["task_key"]
     ]
 
 
@@ -1592,7 +2329,9 @@ def _put_databricks_dbfs_file_response_and_metadata(
     overwrite: bool,
     opener: DatabricksURLOpener,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    payload, metadata = _databricks_dbfs_put_payload(local_path, dbfs_path, overwrite=overwrite)
+    payload, metadata = _databricks_dbfs_put_payload(
+        local_path, dbfs_path, overwrite=overwrite
+    )
     response = _put_prepared_databricks_dbfs_file(config, payload, opener=opener)
     return response, metadata
 
@@ -1625,7 +2364,9 @@ def _put_prepared_databricks_dbfs_file_record(
     return result
 
 
-def _databricks_dbfs_file_metadata(local_path: str | Path, dbfs_path: str) -> dict[str, Any]:
+def _databricks_dbfs_file_metadata(
+    local_path: str | Path, dbfs_path: str
+) -> dict[str, Any]:
     path = Path(local_path)
     if not path.is_file():
         raise ValueError(f"local_path must be an existing file: {path}")
@@ -1645,7 +2386,9 @@ def _databricks_dbfs_api_path(dbfs_path: str) -> str:
     if dbfs_path.startswith("dbfs:/"):
         api_path = dbfs_path[len("dbfs:") :]
     if not api_path.startswith("/") or api_path == "/" or api_path.startswith("//"):
-        raise ValueError("dbfs_path must be a non-empty absolute DBFS path or dbfs:/ URI")
+        raise ValueError(
+            "dbfs_path must be a non-empty absolute DBFS path or dbfs:/ URI"
+        )
     return api_path
 
 
@@ -1685,13 +2428,10 @@ def _validate_payload_dbfs_artifacts_are_staged(
     artifacts: Sequence[tuple[str | Path, str]],
 ) -> None:
     staged_uris = {
-        _canonical_dbfs_uri(dbfs_path)
-        for _local_path, dbfs_path in artifacts
+        _canonical_dbfs_uri(dbfs_path) for _local_path, dbfs_path in artifacts
     }
     missing = tuple(
-        uri
-        for uri in _submit_payload_dbfs_uris(payload)
-        if uri not in staged_uris
+        uri for uri in _submit_payload_dbfs_uris(payload) if uri not in staged_uris
     )
     if missing:
         raise ValueError(
@@ -1706,7 +2446,9 @@ def _submit_payload_staged_dbfs_uris(payload: Mapping[str, Any]) -> tuple[str, .
         spark_python_task = task.get("spark_python_task")
         if isinstance(spark_python_task, Mapping):
             _collect_staged_dbfs_uri(spark_python_task.get("python_file"), found)
-            _collect_staged_parameter_dbfs_uris(spark_python_task.get("parameters"), found)
+            _collect_staged_parameter_dbfs_uris(
+                spark_python_task.get("parameters"), found
+            )
         _collect_library_dbfs_uris(task.get("libraries"), found)
     return _dedupe_strings(found)
 
@@ -1719,7 +2461,9 @@ def _payload_task_mappings(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any
 
 
 def _collect_staged_parameter_dbfs_uris(parameters: Any, found: list[str]) -> None:
-    if not isinstance(parameters, Sequence) or isinstance(parameters, (str, bytes, bytearray)):
+    if not isinstance(parameters, Sequence) or isinstance(
+        parameters, (str, bytes, bytearray)
+    ):
         return
     generated_fixture_uris = _generated_fixture_dbfs_uris(parameters)
     for index, value in enumerate(parameters[:-1]):
@@ -1732,7 +2476,9 @@ def _collect_staged_parameter_dbfs_uris(parameters: Any, found: list[str]) -> No
 
 def _generated_fixture_dbfs_uris(parameters: Sequence[Any]) -> frozenset[str]:
     fixture_output_dir = _parameter_value(parameters, "--fixture-output-dir")
-    if not isinstance(fixture_output_dir, str) or not fixture_output_dir.startswith("dbfs:/"):
+    if not isinstance(fixture_output_dir, str) or not fixture_output_dir.startswith(
+        "dbfs:/"
+    ):
         return frozenset()
     fixture_root = _canonical_dbfs_uri(fixture_output_dir).rstrip("/")
     return frozenset(
@@ -1749,7 +2495,9 @@ def _parameter_value(parameters: Sequence[Any], flag: str) -> Any:
 
 
 def _collect_library_dbfs_uris(libraries: Any, found: list[str]) -> None:
-    if not isinstance(libraries, Sequence) or isinstance(libraries, (str, bytes, bytearray)):
+    if not isinstance(libraries, Sequence) or isinstance(
+        libraries, (str, bytes, bytearray)
+    ):
         return
     for library in libraries:
         if not isinstance(library, Mapping):
@@ -1758,7 +2506,9 @@ def _collect_library_dbfs_uris(libraries: Any, found: list[str]) -> None:
             _collect_staged_dbfs_uri(library.get(key), found)
 
 
-def _collect_staged_dbfs_uri(value: Any, found: list[str], *, exclude: frozenset[str] = frozenset()) -> None:
+def _collect_staged_dbfs_uri(
+    value: Any, found: list[str], *, exclude: frozenset[str] = frozenset()
+) -> None:
     if isinstance(value, str) and value.startswith("dbfs:/"):
         uri = _canonical_dbfs_uri(value)
         if uri not in exclude:
@@ -1770,8 +2520,7 @@ def _validate_payload_staged_dbfs_artifacts_are_staged(
     artifacts: Sequence[tuple[str | Path, str]],
 ) -> None:
     staged_uris = {
-        _canonical_dbfs_uri(dbfs_path)
-        for _local_path, dbfs_path in artifacts
+        _canonical_dbfs_uri(dbfs_path) for _local_path, dbfs_path in artifacts
     }
     missing = tuple(
         uri
@@ -1785,7 +2534,9 @@ def _validate_payload_staged_dbfs_artifacts_are_staged(
         )
 
 
-def _stage_and_submit_artifact_upload_record(upload_record: Mapping[str, Any]) -> dict[str, Any]:
+def _stage_and_submit_artifact_upload_record(
+    upload_record: Mapping[str, Any],
+) -> dict[str, Any]:
     record = {"artifact": upload_record.get("artifact")}
     if "response" in upload_record:
         record["response"] = upload_record["response"]
@@ -1801,7 +2552,9 @@ def _stage_and_submit_artifact_plan_record(
         "upload_request": {
             "path": upload_payload.get("path"),
             "overwrite": upload_payload.get("overwrite"),
-            "contents_base64_bytes": len(str(upload_payload.get("contents", "")).encode("ascii")),
+            "contents_base64_bytes": len(
+                str(upload_payload.get("contents", "")).encode("ascii")
+            ),
         },
     }
 
@@ -1819,7 +2572,9 @@ def _databricks_request(
     data = (
         payload_json_bytes
         if payload_json_bytes is not None
-        else None if payload is None else json.dumps(payload).encode("utf-8")
+        else None
+        if payload is None
+        else json.dumps(payload).encode("utf-8")
     )
     return urllib.request.Request(
         f"{config.normalized_host}{path_and_query}",
@@ -1832,7 +2587,9 @@ def _databricks_request(
     )
 
 
-def _format_databricks_http_error(status_code: int, body: str, *, token: str | None = None) -> str:
+def _format_databricks_http_error(
+    status_code: int, body: str, *, token: str | None = None
+) -> str:
     try:
         parsed = json.loads(body)
     except json.JSONDecodeError:
@@ -1851,7 +2608,9 @@ def _redact_databricks_secret_text(text: str, *, token: str | None = None) -> st
     return re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/\-=]+", r"\1[REDACTED]", redacted)
 
 
-def _success_record(action: str, response: dict[str, Any] | None = None) -> dict[str, Any]:
+def _success_record(
+    action: str, response: dict[str, Any] | None = None
+) -> dict[str, Any]:
     result = {
         "ok": True,
         "action": action,
@@ -1861,7 +2620,9 @@ def _success_record(action: str, response: dict[str, Any] | None = None) -> dict
     return result
 
 
-def _write_error_record_or_stdout(result: dict[str, Any], output_json: str | None) -> None:
+def _write_error_record_or_stdout(
+    result: dict[str, Any], output_json: str | None
+) -> None:
     if not output_json:
         print(json.dumps(result, sort_keys=True))
         return
@@ -1880,7 +2641,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--host-env", default=DEFAULT_DATABRICKS_HOST_ENV)
     parser.add_argument("--token-env", default=DEFAULT_DATABRICKS_TOKEN_ENV)
-    parser.add_argument("--profile", help="Databricks profile name from ~/.databrickscfg.")
+    parser.add_argument(
+        "--profile", help="Databricks profile name from ~/.databrickscfg."
+    )
     parser.add_argument(
         "--profile-auth-mode",
         choices=DATABRICKS_PROFILE_AUTH_MODES,
@@ -1896,11 +2659,18 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_DATABRICKS_CONFIG_FILE,
         help="Databricks CLI config file used with --profile.",
     )
-    parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_DATABRICKS_TIMEOUT_SECONDS)
-    parser.add_argument("--output-json", help="Write the command result JSON to this path instead of stdout.")
+    parser.add_argument(
+        "--timeout-seconds", type=float, default=DEFAULT_DATABRICKS_TIMEOUT_SECONDS
+    )
+    parser.add_argument(
+        "--output-json",
+        help="Write the command result JSON to this path instead of stdout.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    submit_parser = subparsers.add_parser("submit", help="POST a Jobs runs/submit payload JSON.")
+    submit_parser = subparsers.add_parser(
+        "submit", help="POST a Jobs runs/submit payload JSON."
+    )
     submit_parser.add_argument("--payload-json", required=True)
 
     reserved_submit_parser = subparsers.add_parser(
@@ -1930,7 +2700,11 @@ def main(argv: list[str] | None = None) -> int:
 
     get_parser = subparsers.add_parser("get", help="GET a Databricks run by run id.")
     get_parser.add_argument("--run-id", required=True)
-    get_parser.add_argument("--summary", action="store_true", help="Write only a compact run/task status summary.")
+    get_parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Write only a compact run/task status summary.",
+    )
     get_parser.add_argument(
         "--submit-payload-json",
         help="Attach a sanitized hash and V1 AWS single-node GPU cluster summary for the runs/submit payload that launched this run.",
@@ -1969,10 +2743,18 @@ def main(argv: list[str] | None = None) -> int:
         "--expected-node-type-id",
         help="Validate the payload summary against an exact Databricks node_type_id.",
     )
-    put_parser = subparsers.add_parser("put-dbfs-file", help="Upload a small local artifact to DBFS.")
+    put_parser = subparsers.add_parser(
+        "put-dbfs-file", help="Upload a small local artifact to DBFS."
+    )
     put_parser.add_argument("--local-path", required=True, help="Local file to upload.")
-    put_parser.add_argument("--dbfs-path", required=True, help="Destination path such as dbfs:/FileStore/cachet/file.whl.")
-    put_parser.add_argument("--overwrite", action="store_true", help="Overwrite an existing DBFS file.")
+    put_parser.add_argument(
+        "--dbfs-path",
+        required=True,
+        help="Destination path such as dbfs:/FileStore/cachet/file.whl.",
+    )
+    put_parser.add_argument(
+        "--overwrite", action="store_true", help="Overwrite an existing DBFS file."
+    )
     stage_submit_parser = subparsers.add_parser(
         "stage-and-submit",
         help="Upload small DBFS artifacts, then submit a Databricks runs/submit payload.",
@@ -1985,7 +2767,9 @@ def main(argv: list[str] | None = None) -> int:
         metavar="LOCAL_PATH=DBFS_PATH",
         help="Artifact to stage before submit. Repeat for each runner or wheel required by the payload.",
     )
-    stage_submit_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing DBFS artifacts.")
+    stage_submit_parser.add_argument(
+        "--overwrite", action="store_true", help="Overwrite existing DBFS artifacts."
+    )
     stage_submit_parser.add_argument(
         "--require-payload-dbfs-artifacts",
         action="store_true",
@@ -2016,20 +2800,30 @@ def main(argv: list[str] | None = None) -> int:
             if not args.summary:
                 raise ValueError("--expected-hardware-target requires --summary")
             if not args.submit_payload_json:
-                raise ValueError("--expected-hardware-target requires --submit-payload-json")
+                raise ValueError(
+                    "--expected-hardware-target requires --submit-payload-json"
+                )
             if args.include_response:
-                raise ValueError("--expected-hardware-target cannot be combined with --include-response")
+                raise ValueError(
+                    "--expected-hardware-target cannot be combined with --include-response"
+                )
         if args.command == "get" and args.expected_node_type_id:
             if not args.summary:
                 raise ValueError("--expected-node-type-id requires --summary")
             if not args.submit_payload_json:
-                raise ValueError("--expected-node-type-id requires --submit-payload-json")
+                raise ValueError(
+                    "--expected-node-type-id requires --submit-payload-json"
+                )
             if args.include_response:
-                raise ValueError("--expected-node-type-id cannot be combined with --include-response")
+                raise ValueError(
+                    "--expected-node-type-id cannot be combined with --include-response"
+                )
         if args.command == "stage-and-submit" and args.dry_run:
             result = plan_databricks_stage_and_submit(
                 read_databricks_run_submit_payload(args.payload_json),
-                tuple(_parse_dbfs_artifact_mapping(artifact) for artifact in args.artifact),
+                tuple(
+                    _parse_dbfs_artifact_mapping(artifact) for artifact in args.artifact
+                ),
                 overwrite=args.overwrite,
                 require_payload_dbfs_artifacts=args.require_payload_dbfs_artifacts,
                 require_payload_staged_dbfs_artifacts=args.require_payload_staged_dbfs_artifacts,
@@ -2058,7 +2852,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             config = _databricks_workspace_config_from_args(args)
             if args.command == "submit":
-                response = submit_databricks_run(config, read_databricks_run_submit_payload(args.payload_json))
+                response = submit_databricks_run(
+                    config, read_databricks_run_submit_payload(args.payload_json)
+                )
             elif args.command == "reserve-and-submit":
                 reservation_validator = _cli_reservation_validator(
                     args.workload_id,
@@ -2090,7 +2886,10 @@ def main(argv: list[str] | None = None) -> int:
                 result = stage_and_submit_databricks_run(
                     config,
                     read_databricks_run_submit_payload(args.payload_json),
-                    tuple(_parse_dbfs_artifact_mapping(artifact) for artifact in args.artifact),
+                    tuple(
+                        _parse_dbfs_artifact_mapping(artifact)
+                        for artifact in args.artifact
+                    ),
                     overwrite=args.overwrite,
                     require_payload_dbfs_artifacts=args.require_payload_dbfs_artifacts,
                     require_payload_staged_dbfs_artifacts=args.require_payload_staged_dbfs_artifacts,
@@ -2105,7 +2904,9 @@ def main(argv: list[str] | None = None) -> int:
                 if args.submit_payload_json
                 else None
             )
-            result = _success_record(args.command, response if args.include_response else None)
+            result = _success_record(
+                args.command, response if args.include_response else None
+            )
             summary = summarize_databricks_run(
                 response,
                 submit_payload=submit_payload,
@@ -2146,12 +2947,16 @@ def main(argv: list[str] | None = None) -> int:
 
 def _validate_databricks_run_submit_payload_tasks(payload: Mapping[str, Any]) -> None:
     tasks = payload.get("tasks")
-    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)) or not tasks:
-        raise ValueError("Databricks run-submit payload tasks must be a non-empty array")
+    if (
+        not isinstance(tasks, Sequence)
+        or isinstance(tasks, (str, bytes, bytearray))
+        or not tasks
+    ):
+        raise ValueError(
+            "Databricks run-submit payload tasks must be a non-empty array"
+        )
     invalid_indices = [
-        str(index)
-        for index, task in enumerate(tasks)
-        if not isinstance(task, Mapping)
+        str(index) for index, task in enumerate(tasks) if not isinstance(task, Mapping)
     ]
     if invalid_indices:
         raise ValueError(
@@ -2176,7 +2981,9 @@ def _validate_databricks_submit_payload_summary(
         raise ValueError("; ".join(_dedupe_strings(issues)))
 
 
-def _databricks_workspace_config_from_args(args: argparse.Namespace) -> DatabricksWorkspaceConfig:
+def _databricks_workspace_config_from_args(
+    args: argparse.Namespace,
+) -> DatabricksWorkspaceConfig:
     if args.profile:
         return databricks_workspace_config_from_profile(
             args.profile,

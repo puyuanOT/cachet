@@ -11,6 +11,7 @@ from typing import Any, Literal
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
     CACHE_REUSE_ARM,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     BenchmarkArm,
     BenchmarkComparison,
     BenchmarkReportRow,
@@ -88,6 +89,15 @@ def _validate_positive_finite_number(value: Any, field_name: str) -> None:
         or value <= 0
     ):
         raise ValueError(f"{field_name} must be a positive finite number")
+
+
+def _validate_sha256_digest(value: Any, field_name: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
 
 
 def _json_object_mapping(value: Any, field_name: str) -> dict[str, Any]:
@@ -394,7 +404,7 @@ class BenchmarkManifestContext:
     tensor_parallel_size: int | None = None
     pipeline_parallel_size: int | None = None
     package_revisions: tuple[tuple[str, str], ...] = ()
-    prompt_template_version: str = "v1-benchmark"
+    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION
     input_tokens_target: int | None = None
     max_output_tokens: int | None = None
     temperature: float | None = None
@@ -618,6 +628,7 @@ class BenchmarkExperimentManifest:
         "separate_process_or_job",
     ] = "shared_process_sequential"
     source_execution_ids: tuple[tuple[str, str], ...] = ()
+    resource_evidence_ids: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in ("input_tokens_target", "output_tokens_target"):
@@ -647,6 +658,27 @@ class BenchmarkExperimentManifest:
             "decode_settings",
             _deep_freeze_json_mapping(normalized),
         )
+        arm_ids = {arm.arm_id for arm in self.arms}
+        resource_arm_ids: list[str] = []
+        for arm_id, evidence_digest in self.resource_evidence_ids:
+            _validate_non_empty_string(arm_id, "resource_evidence_ids arm_id")
+            _validate_sha256_digest(
+                evidence_digest,
+                f"resource_evidence_ids.{arm_id}",
+            )
+            if arm_id not in arm_ids:
+                raise ValueError(
+                    "resource_evidence_ids references unknown arm "
+                    f"{arm_id!r}"
+                )
+            resource_arm_ids.append(arm_id)
+        if len(set(resource_arm_ids)) != len(resource_arm_ids):
+            raise ValueError("resource_evidence_ids must not contain duplicate arm ids")
+        object.__setattr__(
+            self,
+            "resource_evidence_ids",
+            tuple(sorted(self.resource_evidence_ids)),
+        )
 
     @property
     def has_unresolved_provenance(self) -> bool:
@@ -673,6 +705,8 @@ class BenchmarkExecutionWindow:
     wall_seconds: float
     completion_tokens: int
     successful_requests: int
+    started_at_seconds: float | None = None
+    ended_at_seconds: float | None = None
 
     def __post_init__(self) -> None:
         _validate_non_empty_string(self.arm_id, "arm_id")
@@ -681,10 +715,146 @@ class BenchmarkExecutionWindow:
             raise ValueError("completion_tokens must be a non-negative integer")
         if type(self.successful_requests) is not int or self.successful_requests < 0:
             raise ValueError("successful_requests must be a non-negative integer")
+        if (self.started_at_seconds is None) != (self.ended_at_seconds is None):
+            raise ValueError(
+                "started_at_seconds and ended_at_seconds must be provided together"
+            )
+        if self.started_at_seconds is not None:
+            ended_at_seconds = self.ended_at_seconds
+            if ended_at_seconds is None:  # pragma: no cover - paired above.
+                raise ValueError("ended_at_seconds is required")
+            _validate_non_negative_finite_number(
+                self.started_at_seconds,
+                "started_at_seconds",
+            )
+            _validate_positive_finite_number(
+                ended_at_seconds,
+                "ended_at_seconds",
+            )
+            if ended_at_seconds <= self.started_at_seconds:
+                raise ValueError("ended_at_seconds must be after started_at_seconds")
 
     @property
     def aggregate_output_tokens_per_second(self) -> float:
         return self.completion_tokens / self.wall_seconds
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkResourceEvidence:
+    """Hash-bound resource measurements for one physical benchmark arm."""
+
+    experiment_id: str
+    arm_id: str
+    execution_id_digest: str
+    measurement_started_at_seconds: float
+    measurement_ended_at_seconds: float
+    sampling_interval_seconds: float
+    first_sample_at_seconds: float
+    last_sample_at_seconds: float
+    max_sample_gap_seconds: float
+    expected_sample_count: int
+    sample_count: int
+    error_count: int
+    complete: bool
+    telemetry_sha256: str
+    peak_gpu_process_memory_bytes: int
+    mean_gpu_utilization_percent: float
+    peak_gpu_utilization_percent: float
+    peak_process_tree_rss_bytes: int
+    peak_host_memory_used_bytes: int
+    source_revision: str
+    source_tree_sha256: str
+    wheel_sha256: str
+    runner_sha256: str
+    runtime_identity_sha256: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "experiment_id",
+            "arm_id",
+            "source_revision",
+        ):
+            _validate_non_empty_string(getattr(self, field_name), field_name)
+        for field_name in (
+            "execution_id_digest",
+            "telemetry_sha256",
+            "source_tree_sha256",
+            "wheel_sha256",
+            "runner_sha256",
+            "runtime_identity_sha256",
+        ):
+            _validate_sha256_digest(getattr(self, field_name), field_name)
+        for field_name in (
+            "measurement_started_at_seconds",
+            "first_sample_at_seconds",
+            "last_sample_at_seconds",
+            "max_sample_gap_seconds",
+            "mean_gpu_utilization_percent",
+            "peak_gpu_utilization_percent",
+        ):
+            _validate_non_negative_finite_number(getattr(self, field_name), field_name)
+        for field_name in (
+            "measurement_ended_at_seconds",
+            "sampling_interval_seconds",
+        ):
+            _validate_positive_finite_number(getattr(self, field_name), field_name)
+        if self.measurement_ended_at_seconds <= self.measurement_started_at_seconds:
+            raise ValueError(
+                "measurement_ended_at_seconds must be after "
+                "measurement_started_at_seconds"
+            )
+        if self.first_sample_at_seconds > self.last_sample_at_seconds:
+            raise ValueError("first_sample_at_seconds must not exceed last_sample_at_seconds")
+        for field_name in (
+            "expected_sample_count",
+            "sample_count",
+        ):
+            _validate_positive_int(getattr(self, field_name), field_name)
+        if type(self.error_count) is not int or self.error_count < 0:
+            raise ValueError("error_count must be a non-negative integer")
+        for field_name in (
+            "peak_gpu_process_memory_bytes",
+            "peak_process_tree_rss_bytes",
+            "peak_host_memory_used_bytes",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if type(self.complete) is not bool:
+            raise ValueError("complete must be a boolean")
+        if not 0 <= self.mean_gpu_utilization_percent <= 100:
+            raise ValueError("mean_gpu_utilization_percent must be in [0, 100]")
+        if not 0 <= self.peak_gpu_utilization_percent <= 100:
+            raise ValueError("peak_gpu_utilization_percent must be in [0, 100]")
+        if self.mean_gpu_utilization_percent > self.peak_gpu_utilization_percent:
+            raise ValueError(
+                "mean_gpu_utilization_percent must not exceed the peak"
+            )
+        if self.complete:
+            if self.error_count:
+                raise ValueError("complete resource evidence cannot contain errors")
+            if self.sample_count < self.expected_sample_count:
+                raise ValueError(
+                    "complete resource evidence requires the expected sample count"
+                )
+            if (
+                self.first_sample_at_seconds
+                > self.measurement_started_at_seconds + self.sampling_interval_seconds
+            ):
+                raise ValueError(
+                    "complete resource evidence does not cover the measurement start"
+                )
+            if (
+                self.last_sample_at_seconds
+                < self.measurement_ended_at_seconds - self.sampling_interval_seconds
+            ):
+                raise ValueError(
+                    "complete resource evidence does not cover the measurement end"
+                )
+            if self.max_sample_gap_seconds > self.sampling_interval_seconds * 2:
+                raise ValueError(
+                    "complete resource evidence has a gap larger than two intervals"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -712,6 +882,18 @@ class BenchmarkRunResult:
         "shared_process_concurrent",
         "separate_process_or_job",
     ] = "shared_process_sequential"
+    resource_evidence: tuple[BenchmarkResourceEvidence, ...] = ()
+
+    def __post_init__(self) -> None:
+        arm_ids: list[str] = []
+        for evidence in self.resource_evidence:
+            if not isinstance(evidence, BenchmarkResourceEvidence):
+                raise TypeError(
+                    "resource_evidence entries must be BenchmarkResourceEvidence"
+                )
+            arm_ids.append(evidence.arm_id)
+        if len(set(arm_ids)) != len(arm_ids):
+            raise ValueError("resource_evidence must not contain duplicate arm ids")
 
     @property
     def cache_arm_ids(self) -> tuple[str, ...]:
@@ -734,6 +916,7 @@ for _public_class in (
     BenchmarkScorerManifest,
     BenchmarkExperimentManifest,
     BenchmarkExecutionWindow,
+    BenchmarkResourceEvidence,
     BenchmarkRunResult,
 ):
     _public_class.__module__ = "document_kv_cache.benchmark_runner"

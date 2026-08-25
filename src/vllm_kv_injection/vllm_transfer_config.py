@@ -31,7 +31,8 @@ from vllm_kv_injection.vllm_native_provider_constants import (
 DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE = "vllm_kv_injection.document_kv_transfer_config.v1"
 DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION = 1
 DOCUMENT_KV_TRANSFER_CONFIG_PREFIX = "document_kv."
-DOCUMENT_KV_DEFAULT_ROLE = "kv_both"
+DOCUMENT_KV_DEFAULT_ROLE = "kv_consumer"
+MULTI_CONNECTOR_DEFAULT_ROLE = "kv_both"
 MULTI_CONNECTOR_CLASS = "MultiConnector"
 
 __all__ = [
@@ -45,6 +46,7 @@ __all__ = [
     "DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY",
     "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY",
     "MULTI_CONNECTOR_CLASS",
+    "MULTI_CONNECTOR_DEFAULT_ROLE",
     "document_kv_transfer_config",
     "document_kv_transfer_config_json",
     "multi_connector_transfer_config",
@@ -56,7 +58,7 @@ __all__ = [
 def multi_connector_transfer_config(
     *,
     connectors: Sequence[Mapping[str, Any]],
-    kv_role: str = DOCUMENT_KV_DEFAULT_ROLE,
+    kv_role: str = MULTI_CONNECTOR_DEFAULT_ROLE,
 ) -> dict[str, Any]:
     """Return a vLLM ``MultiConnector`` config wrapping ordered child connectors.
 
@@ -92,7 +94,7 @@ def multi_connector_transfer_config(
 def multi_connector_transfer_config_json(
     *,
     connectors: Sequence[Mapping[str, Any]],
-    kv_role: str = DOCUMENT_KV_DEFAULT_ROLE,
+    kv_role: str = MULTI_CONNECTOR_DEFAULT_ROLE,
 ) -> str:
     """Return compact JSON for a ``MultiConnector`` config for vLLM CLI launch."""
 
@@ -126,7 +128,7 @@ def document_kv_transfer_config(
 
     _validate_non_empty_string(kv_connector, field_name="kv_connector")
     _validate_non_empty_string(kv_connector_module_path, field_name="kv_connector_module_path")
-    _validate_non_empty_string(kv_role, field_name="kv_role")
+    _validate_document_kv_role(kv_role)
     config = {
         "kv_connector": kv_connector,
         "kv_connector_module_path": kv_connector_module_path,
@@ -336,6 +338,15 @@ def _extra_config_from_cli(values: list[str]) -> dict[str, Any]:
 def _validate_non_empty_string(value: str, *, field_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
+
+
+def _validate_document_kv_role(value: str) -> None:
+    _validate_non_empty_string(value, field_name="kv_role")
+    if value != DOCUMENT_KV_DEFAULT_ROLE:
+        raise ValueError(
+            "Cachet's document KV connector is load-only and requires "
+            f"kv_role={DOCUMENT_KV_DEFAULT_ROLE!r}"
+        )
 
 
 def _validate_module_attribute(value: str, *, field_name: str) -> None:

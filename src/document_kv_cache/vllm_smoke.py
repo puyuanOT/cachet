@@ -24,6 +24,9 @@ import urllib.request
 from document_kv_cache._hardware_targets import (
     validate_v1_vllm_kv_cache_dtype_for_hardware_target,
 )
+from document_kv_cache._benchmark_manifest import (
+    _resource_software_identity_from_package_revisions,
+)
 from document_kv_cache.artifact_identity import (
     RuntimeIdentity,
     UNRESOLVED_IDENTITY,
@@ -65,6 +68,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    SUPPORTED_V1_DATASETS,
     SUPPORTED_V1_HARDWARE_TARGETS,
     SYSTEM_PROMPT_POSITIONS,
     build_prompt_parts,
@@ -84,17 +88,64 @@ from document_kv_cache.model_profiles import (
     layout_for_model,
 )
 from document_kv_cache.models import CacheGenerationMethod
-from document_kv_cache.runtime_telemetry import RuntimeTelemetrySampler
+from document_kv_cache.publication_handoff_artifacts import (
+    PUBLICATION_HANDOFF_STAGING_ATTESTATION_FILENAME,
+    read_publication_latency_handoff_bundle,
+    stage_publication_latency_handoff_bundle,
+    validate_publication_latency_handoff_bundle,
+)
+from document_kv_cache.publication_latency_handoff_generation import (
+    PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME,
+    PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED,
+    read_publication_latency_handoff_generation_result,
+    resolve_publication_latency_worker_handoff_bundle,
+)
+from document_kv_cache.publication_inputs import (
+    PublicationLatencyExample,
+    validate_publication_latency_block_schedule,
+)
+from document_kv_cache.runtime_telemetry import (
+    RuntimeTelemetrySampler,
+    bind_runtime_resource_evidence_record_file,
+)
 from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
     NUMPY_CONSTRAINT,
+    OPENCV_PYTHON_HEADLESS_CONSTRAINT,
     PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT,
+    FLASHINFER_PYTHON_CONSTRAINT,
     TOKENIZERS_CONSTRAINT,
+    TORCH_CONSTRAINT,
+    TORCHAUDIO_CONSTRAINT,
+    TORCHCODEC_CONSTRAINT,
+    TORCHVISION_CONSTRAINT,
     TRANSFORMERS_CONSTRAINT,
+    TRITON_CONSTRAINT,
+    VLLM_CUDA_REQUIREMENTS_SHA256,
+    VLLM_CUDA_VARIANT,
+    VLLM_DOCKERFILE_SHA256,
+    VLLM_PACKAGE_VERSION,
+    VLLM_PACKAGE_INDEX_URLS,
+    VLLM_PATCHED_WHEEL_SHA256_ENV,
+    VLLM_PATCHED_WHEEL_URI_ENV,
+    VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT,
+    VLLM_RUNTIME_LOCK_FILENAME,
+    VLLM_RUNTIME_LOCK_SHA256,
     VLLM_SERVING_ENVIRONMENT_PROFILE,
     VLLM_VERSION,
+    VLLM_WHEEL_FILENAME,
+    VLLM_WHEEL_SHA256,
+    VLLM_WHEEL_URL,
+    VIRTUALENV_BOOTSTRAP_FILENAME,
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+    VIRTUALENV_BOOTSTRAP_VERSION,
+    patched_vllm_wheel_install_spec,
+    validate_vllm_runtime_lock_platform,
+    vllm_runtime_install_requirements,
+    vllm_runtime_lock_path,
 )
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
@@ -115,6 +166,10 @@ from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
     DocumentKVConnector,
     NoOpDocumentKVProvider,
+)
+from document_kv_cache.vllm_wheel_repack import (
+    VLLM_0271_E5M2_PATCH_CLOSURE as _APPROVED_VLLM_0271_E5M2_PATCH_CLOSURE,
+    validate_patched_vllm_member_bytes,
 )
 
 HF_MODEL_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
@@ -142,12 +197,16 @@ LMCACHE_CONNECTOR_CLASS = "LMCacheConnectorV1"
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV = "DOCUMENT_KV_PACKAGE_WHEEL_SHA256"
-VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
+VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = OPENCV_PYTHON_HEADLESS_CONSTRAINT
 VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
 PROMPT_TOKEN_PROBE_ADD_SPECIAL_TOKENS = False
 
+# Keep the runtime verifier and wheel builder on one authoritative closure.
+_VLLM_0271_E5M2_PATCH_CLOSURE = _APPROVED_VLLM_0271_E5M2_PATCH_CLOSURE
+
 __all__ = [
     "VLLM_VERSION",
+    "VLLM_PACKAGE_VERSION",
     "TRANSFORMERS_CONSTRAINT",
     "HUGGINGFACE_HUB_CONSTRAINT",
     "TOKENIZERS_CONSTRAINT",
@@ -160,6 +219,8 @@ __all__ = [
     "SMOKE_DATASETS",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
     "DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV",
+    "VLLM_PATCHED_WHEEL_URI_ENV",
+    "VLLM_PATCHED_WHEEL_SHA256_ENV",
     "VLLMRepresentativeWorkloadProfile",
     "VLLM_REPRESENTATIVE_WORKLOAD_PROFILES",
     "vllm_representative_workload_profile",
@@ -171,10 +232,16 @@ __all__ = [
     "build_vllm_native_provider_probe_record",
     "cuda_wheel_env_paths",
     "dependency_constraints",
+    "dependency_index_args",
+    "vllm_dependency_install_requirements",
+    "patched_vllm_wheel_install_spec",
     "dependency_override_constraints",
     "document_kv_package_install_spec",
     "install_document_kv_package",
-    "apply_vllm_runtime_patches",
+    "installed_package_freeze",
+    "verify_vllm_runtime_lock_installation",
+    "materialize_virtualenv_bootstrap",
+    "verify_vllm_runtime_patch_closure",
     "build_vllm_server_args",
     "document_kv_transfer_config_for_smoke",
     "build_benchmark_runner_args",
@@ -187,6 +254,7 @@ __all__ = [
     "benchmark_dataset_paths",
     "write_smoke_datasets",
     "prepare_generated_benchmark_handoffs",
+    "prepare_publication_latency_inputs",
     "release_handoff_generation_resources",
     "prime_payload_cache",
     "attest_payload_cache_measurements",
@@ -262,7 +330,9 @@ class VLLMRepresentativeWorkloadProfile:
                 "representative vLLM profiles must disable the payload cache"
             )
         if self.kv_connector_mode != CACHET_KV_CONNECTOR_MODE:
-            raise ValueError("representative vLLM profiles require the Cachet connector")
+            raise ValueError(
+                "representative vLLM profiles require the Cachet connector"
+            )
         if self.benchmark_evidence_policy != "canary":
             raise ValueError("representative vLLM profiles require canary evidence")
         if not self.multi_document_datasets or any(
@@ -295,14 +365,18 @@ def vllm_representative_workload_profile(
 ) -> VLLMRepresentativeWorkloadProfile:
     if isinstance(value, VLLMRepresentativeWorkloadProfile):
         if value not in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES:
-            raise ValueError("representative_workload_profile must be a registered profile")
+            raise ValueError(
+                "representative_workload_profile must be a registered profile"
+            )
         return value
     if not isinstance(value, str) or not value:
         raise ValueError("representative_workload_profile must be a profile ID")
     for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES:
         if profile.profile_id == value:
             return profile
-    supported = tuple(profile.profile_id for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES)
+    supported = tuple(
+        profile.profile_id for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES
+    )
     raise ValueError(
         f"unknown representative_workload_profile {value!r}; expected one of {supported}"
     )
@@ -323,7 +397,10 @@ class VLLMPreparedHandoffGenerationConfig:
     require_artifact_contract: bool = True
 
     def __post_init__(self) -> None:
-        if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
+        if (
+            not isinstance(self.generator_factory, str)
+            or not self.generator_factory.strip()
+        ):
             raise ValueError("benchmark_handoff_generator_factory must be non-empty")
         if self.output_dir is None:
             raise ValueError("benchmark_handoff_output_dir must be provided")
@@ -334,8 +411,14 @@ class VLLMPreparedHandoffGenerationConfig:
         if self.timeout_seconds <= 0:
             raise ValueError("benchmark_handoff_timeout_seconds must be positive")
         if self.limit is not None:
-            if isinstance(self.limit, bool) or not isinstance(self.limit, int) or self.limit < 0:
-                raise ValueError("benchmark_handoff_limit must be a non-negative integer")
+            if (
+                isinstance(self.limit, bool)
+                or not isinstance(self.limit, int)
+                or self.limit < 0
+            ):
+                raise ValueError(
+                    "benchmark_handoff_limit must be a non-negative integer"
+                )
         if not isinstance(self.benchmark_handoff_segment_per_document, bool):
             raise ValueError("benchmark_handoff_segment_per_document must be a boolean")
         if self.cache_method is not None:
@@ -422,7 +505,9 @@ class VLLMSmokeBenchmarkConfig:
     benchmark_arm_specs: tuple[Mapping[str, Any], ...] = ()
     benchmark_evidence_policy: str | None = None
     representative_canary: bool = False
-    representative_workload_profile: VLLMRepresentativeWorkloadProfile | str | None = None
+    representative_workload_profile: VLLMRepresentativeWorkloadProfile | str | None = (
+        None
+    )
     benchmark_manifest_provenance: Mapping[str, Any] = field(default_factory=dict)
     prewarm_cache_prefix: bool = False
     cache_runtime_prompt: bool = False
@@ -438,6 +523,21 @@ class VLLMSmokeBenchmarkConfig:
     benchmark_suite_id: str | None = None
     benchmark_runtime_id: str | None = None
     prewarm_payload_cache: bool = False
+    publication_latency_schedule_record: Mapping[str, Any] | None = None
+    publication_latency_schedule_path: Path | None = None
+    publication_latency_expected_input_bundle_sha256: str | None = None
+    publication_handoff_generation_output_root: Path | None = None
+    publication_handoff_generation_execution_file_sha256: str | None = None
+    publication_handoff_generation_execution_closed_record_sha256: str | None = None
+    publication_handoff_bundle_manifest_path: Path | None = None
+    publication_handoff_bundle_source_root: Path | None = None
+    publication_handoff_bundle_manifest_file_sha256: str | None = None
+    publication_handoff_bundle_manifest_closed_record_sha256: str | None = None
+    publication_handoff_local_nvme_dir: Path | None = None
+    publication_handoff_stage_kind: str = "local_nvme"
+    temperature: float = 0.0
+    generation_seed: int | None = None
+    payload_cache_prime_target_count: int | None = None
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -452,7 +552,9 @@ class VLLMSmokeBenchmarkConfig:
                     field_name,
                     _non_empty_string(value, field_name),
                 )
-        object.__setattr__(self, "model_id", _non_empty_string(self.model_id, "model_id"))
+        object.__setattr__(
+            self, "model_id", _non_empty_string(self.model_id, "model_id")
+        )
         for field_name in ("model_revision", "tokenizer_revision"):
             value = getattr(self, field_name)
             if value is not None:
@@ -461,7 +563,9 @@ class VLLMSmokeBenchmarkConfig:
                     field_name,
                     _non_empty_string(value, field_name),
                 )
-        object.__setattr__(self, "model_dtype", _non_empty_string(self.model_dtype, "model_dtype"))
+        object.__setattr__(
+            self, "model_dtype", _non_empty_string(self.model_dtype, "model_dtype")
+        )
         if self.model_quantization is not None:
             object.__setattr__(
                 self,
@@ -484,6 +588,16 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("max_tokens must be positive")
         if type(self.force_max_tokens) is not bool:
             raise ValueError("force_max_tokens must be a boolean")
+        if (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not math.isfinite(float(self.temperature))
+            or self.temperature < 0
+        ):
+            raise ValueError("temperature must be a non-negative finite number")
+        object.__setattr__(self, "temperature", float(self.temperature))
+        if self.generation_seed is not None and type(self.generation_seed) is not int:
+            raise ValueError("generation_seed must be an integer when provided")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if self.import_probe_timeout_seconds <= 0:
@@ -507,33 +621,67 @@ class VLLMSmokeBenchmarkConfig:
         if self.data_parallel_size <= 0:
             raise ValueError("data_parallel_size must be positive")
         if self.kv_connector_mode not in KV_CONNECTOR_MODES:
-            raise ValueError(f"kv_connector_mode must be one of {sorted(KV_CONNECTOR_MODES)}")
+            raise ValueError(
+                f"kv_connector_mode must be one of {sorted(KV_CONNECTOR_MODES)}"
+            )
         if self.system_prompt_position not in SYSTEM_PROMPT_POSITIONS:
             raise ValueError(
                 f"system_prompt_position must be one of {sorted(SYSTEM_PROMPT_POSITIONS)}"
             )
-        if isinstance(self.benchmark_repeats, bool) or not isinstance(self.benchmark_repeats, int):
+        if isinstance(self.benchmark_repeats, bool) or not isinstance(
+            self.benchmark_repeats, int
+        ):
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
             raise ValueError("benchmark_repeats must be a positive integer")
-        if isinstance(self.request_parallelism, bool) or not isinstance(self.request_parallelism, int):
+        if isinstance(self.request_parallelism, bool) or not isinstance(
+            self.request_parallelism, int
+        ):
             raise TypeError("request_parallelism must be a positive integer")
         if self.request_parallelism <= 0:
             raise ValueError("request_parallelism must be a positive integer")
         if self.runtime_telemetry_interval_seconds <= 0:
             raise ValueError("runtime_telemetry_interval_seconds must be positive")
-        object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
+        object.__setattr__(
+            self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms)
+        )
         object.__setattr__(
             self,
             "benchmark_arm_specs",
             validated_benchmark_arm_specs(self.benchmark_arm_specs),
         )
         if self.benchmark_arms and self.benchmark_arm_specs:
-            raise ValueError("benchmark_arms and benchmark_arm_specs are mutually exclusive")
-        if self.benchmark_evidence_policy not in {None, "smoke", "canary", "publication"}:
+            raise ValueError(
+                "benchmark_arms and benchmark_arm_specs are mutually exclusive"
+            )
+        if self.benchmark_evidence_policy not in {
+            None,
+            "smoke",
+            "canary",
+            "publication",
+        }:
             raise ValueError(
                 "benchmark_evidence_policy must be smoke, canary, publication, or None"
             )
+        if self.benchmark_evidence_policy in {"canary", "publication"}:
+            if self.kv_connector_mode in {
+                LMCACHE_KV_CONNECTOR_MODE,
+                MULTI_KV_CONNECTOR_MODE,
+            }:
+                raise ValueError(
+                    "vLLM 0.27.1 canary/publication runs do not support "
+                    f"kv_connector_mode={self.kv_connector_mode!r}: LMCache and "
+                    "Multi are explicitly N/A until they have a separate "
+                    "content-addressed, hash-locked runtime closure"
+                )
+            if self.attention_backend is None:
+                object.__setattr__(self, "attention_backend", "TRITON_ATTN")
+            elif self.attention_backend != "TRITON_ATTN":
+                raise ValueError(
+                    "vLLM 0.27.1 canary/publication runs require "
+                    "attention_backend='TRITON_ATTN' for the campaign sentinel "
+                    "and measurement matrix"
+                )
         if type(self.representative_canary) is not bool:
             raise TypeError("representative_canary must be a boolean")
         representative_profile = (
@@ -559,25 +707,18 @@ class VLLMSmokeBenchmarkConfig:
                 profile_id=representative_profile.profile_id,
             )
             if self.benchmark_suite_id is None:
-                raise ValueError(
-                    "representative benchmark_suite_id must be resolved"
-                )
+                raise ValueError("representative benchmark_suite_id must be resolved")
             if self.benchmark_suite_id != expected_suite_id:
                 raise ValueError(
                     "representative benchmark_suite_id must match the "
                     "hardware/profile comparison group"
                 )
             if self.benchmark_runtime_id in {None, UNRESOLVED_IDENTITY}:
-                raise ValueError(
-                    "representative benchmark_runtime_id must be resolved"
-                )
+                raise ValueError("representative benchmark_runtime_id must be resolved")
         provenance = validated_benchmark_manifest_provenance(
             self.benchmark_manifest_provenance
         )
-        if (
-            self.benchmark_runtime_id is not None
-            and "runtime_id" in provenance
-        ):
+        if self.benchmark_runtime_id is not None and "runtime_id" in provenance:
             raise ValueError(
                 "benchmark_runtime_id and "
                 "benchmark_manifest_provenance.runtime_id are mutually exclusive"
@@ -599,6 +740,10 @@ class VLLMSmokeBenchmarkConfig:
                 "benchmark_manifest_provenance.tokenizer_revision must match tokenizer_revision"
             )
         object.__setattr__(self, "benchmark_manifest_provenance", provenance)
+        if "resource" in provenance.get("measurement_scopes", ()):
+            _resource_software_identity_from_package_revisions(
+                provenance.get("package_revisions", {})
+            )
         if self.requires_pinned_revisions:
             if (
                 isinstance(
@@ -665,7 +810,10 @@ class VLLMSmokeBenchmarkConfig:
             raise TypeError("prewarm_payload_cache must be a boolean")
         if type(self.cache_runtime_prompt) is not bool:
             raise TypeError("cache_runtime_prompt must be a boolean")
-        if not isinstance(self.hardware_target, str) or not self.hardware_target.strip():
+        if (
+            not isinstance(self.hardware_target, str)
+            or not self.hardware_target.strip()
+        ):
             raise ValueError("hardware_target must be non-empty")
         validate_v1_hardware_target(self.hardware_target)
         validate_v1_vllm_kv_cache_dtype_for_hardware_target(
@@ -674,20 +822,40 @@ class VLLMSmokeBenchmarkConfig:
         )
         if type(self.allow_dataset_subset) is not bool:
             raise ValueError("allow_dataset_subset must be a boolean")
-        if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
+        if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(
+            self.payload_cache_max_bytes, int
+        ):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
             raise ValueError("payload_cache_max_bytes must be a non-negative integer")
+        if self.payload_cache_prime_target_count is not None and (
+            type(self.payload_cache_prime_target_count) is not int
+            or self.payload_cache_prime_target_count <= 0
+        ):
+            raise ValueError(
+                "payload_cache_prime_target_count must be a positive integer"
+            )
         object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
         if self.dataset_specs:
-            parse_dataset_specs(self.dataset_specs, allow_subset=self.allow_dataset_subset)
-        if self.package_install_spec is not None and not self.package_install_spec.strip():
+            parse_dataset_specs(
+                self.dataset_specs, allow_subset=self.allow_dataset_subset
+            )
+        if (
+            self.package_install_spec is not None
+            and not self.package_install_spec.strip()
+        ):
             raise ValueError("package_install_spec must be non-empty when provided")
         if self.handoff_generation is not None:
-            if not isinstance(self.handoff_generation, VLLMPreparedHandoffGenerationConfig):
-                raise TypeError("handoff_generation must be a VLLMPreparedHandoffGenerationConfig")
+            if not isinstance(
+                self.handoff_generation, VLLMPreparedHandoffGenerationConfig
+            ):
+                raise TypeError(
+                    "handoff_generation must be a VLLMPreparedHandoffGenerationConfig"
+                )
             if not self.dataset_specs:
-                raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
+                raise ValueError(
+                    "benchmark_handoff_generator_factory requires prepared dataset specs"
+                )
             if (
                 not self.handoff_generation.require_artifact_contract
                 and self.benchmark_evidence_policy in {"canary", "publication"}
@@ -696,6 +864,194 @@ class VLLMSmokeBenchmarkConfig:
                     "canary and publication handoff generation require the complete "
                     "registered method artifact contract"
                 )
+        schedule_record = self.publication_latency_schedule_record
+        schedule_path = self.publication_latency_schedule_path
+        expected_input_bundle_sha256 = (
+            self.publication_latency_expected_input_bundle_sha256
+        )
+        if schedule_record is not None and schedule_path is not None:
+            raise ValueError(
+                "publication_latency_schedule_record and "
+                "publication_latency_schedule_path are mutually exclusive"
+            )
+        if schedule_record is not None:
+            object.__setattr__(
+                self,
+                "publication_latency_schedule_record",
+                _normalized_json_object(
+                    schedule_record,
+                    "publication_latency_schedule_record",
+                ),
+            )
+        if schedule_path is not None:
+            object.__setattr__(
+                self,
+                "publication_latency_schedule_path",
+                _normalized_cluster_path(
+                    schedule_path,
+                    "publication_latency_schedule_path",
+                ),
+            )
+        schedule_enabled = schedule_record is not None or schedule_path is not None
+        if schedule_enabled != (expected_input_bundle_sha256 is not None):
+            raise ValueError(
+                "a publication latency schedule and "
+                "publication_latency_expected_input_bundle_sha256 must be "
+                "provided together"
+            )
+        if expected_input_bundle_sha256 is not None:
+            object.__setattr__(
+                self,
+                "publication_latency_expected_input_bundle_sha256",
+                _validated_sha256_digest(
+                    expected_input_bundle_sha256,
+                    "publication_latency_expected_input_bundle_sha256",
+                ),
+            )
+        if schedule_enabled:
+            if self.benchmark_evidence_policy not in {"canary", "publication"}:
+                raise ValueError(
+                    "publication latency schedules require "
+                    "benchmark_evidence_policy='canary' or 'publication'"
+                )
+            if not self.dataset_specs:
+                raise ValueError(
+                    "publication latency schedules require prepared dataset specs"
+                )
+            if self.allow_dataset_subset:
+                raise ValueError(
+                    "publication latency schedules require all governed datasets"
+                )
+            if self.benchmark_interleave_examples:
+                raise ValueError(
+                    "publication latency schedules own request order and forbid "
+                    "benchmark_interleave_examples"
+                )
+
+        generated_handoff_fields = (
+            "publication_handoff_generation_output_root",
+            "publication_handoff_generation_execution_file_sha256",
+            "publication_handoff_generation_execution_closed_record_sha256",
+        )
+        bundle_handoff_fields = (
+            "publication_handoff_bundle_manifest_path",
+            "publication_handoff_bundle_source_root",
+            "publication_handoff_bundle_manifest_file_sha256",
+            "publication_handoff_bundle_manifest_closed_record_sha256",
+        )
+        generated_values = tuple(
+            getattr(self, name) for name in generated_handoff_fields
+        )
+        bundle_values = tuple(getattr(self, name) for name in bundle_handoff_fields)
+        generated_handoff_enabled = all(value is not None for value in generated_values)
+        bundle_handoff_enabled = all(value is not None for value in bundle_values)
+        if any(value is not None for value in generated_values) and not (
+            generated_handoff_enabled
+        ):
+            raise ValueError(
+                "publication handoff generation output root and execution file/record "
+                "SHA-256 values must be provided together"
+            )
+        if (
+            any(value is not None for value in bundle_values)
+            and not bundle_handoff_enabled
+        ):
+            raise ValueError(
+                "publication handoff bundle manifest/source root and file/record "
+                "SHA-256 values must be provided together"
+            )
+        if generated_handoff_enabled and bundle_handoff_enabled:
+            raise ValueError(
+                "distributed and directly closed publication handoff sources are "
+                "mutually exclusive"
+            )
+        handoff_enabled = generated_handoff_enabled or bundle_handoff_enabled
+        if handoff_enabled:
+            if self.publication_handoff_local_nvme_dir is None:
+                raise ValueError(
+                    "publication handoff staging requires a staging directory"
+                )
+            path_fields = ["publication_handoff_local_nvme_dir"]
+            if generated_handoff_enabled:
+                path_fields.append("publication_handoff_generation_output_root")
+            else:
+                path_fields.extend(
+                    (
+                        "publication_handoff_bundle_manifest_path",
+                        "publication_handoff_bundle_source_root",
+                    )
+                )
+            for field_name in path_fields:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _normalized_cluster_path(getattr(self, field_name), field_name),
+                )
+            digest_fields = (
+                (
+                    "publication_handoff_generation_execution_file_sha256",
+                    "publication_handoff_generation_execution_closed_record_sha256",
+                )
+                if generated_handoff_enabled
+                else (
+                    "publication_handoff_bundle_manifest_file_sha256",
+                    "publication_handoff_bundle_manifest_closed_record_sha256",
+                )
+            )
+            for field_name in digest_fields:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _validated_sha256_digest(getattr(self, field_name), field_name),
+                )
+            if not schedule_enabled:
+                raise ValueError(
+                    "publication handoff staging requires a publication latency schedule"
+                )
+            if not self.runs_document_kv_cache_arm:
+                raise ValueError(
+                    "publication handoff staging requires a Cachet/Vanilla benchmark arm"
+                )
+            if self.handoff_generation is not None:
+                raise ValueError(
+                    "publication handoff staging and inline handoff generation are "
+                    "mutually exclusive"
+                )
+            if self.publication_handoff_stage_kind not in {
+                "local_nvme",
+                "uc_mounted",
+            }:
+                raise ValueError(
+                    "publication_handoff_stage_kind must be local_nvme or uc_mounted"
+                )
+            assert self.publication_handoff_local_nvme_dir is not None
+            stage_path = self.publication_handoff_local_nvme_dir.expanduser().resolve(
+                strict=False
+            )
+            local_root = Path(self.local_root).expanduser().resolve(strict=False)
+            if (
+                self.publication_handoff_stage_kind == "local_nvme"
+                and not stage_path.is_relative_to(local_root)
+            ):
+                raise ValueError(
+                    "publication_handoff_local_nvme_dir must be inside local_root"
+                )
+            if self.publication_handoff_stage_kind == "uc_mounted" and not str(
+                stage_path
+            ).startswith("/Volumes/"):
+                raise ValueError(
+                    "uc_mounted publication handoff staging requires /Volumes"
+                )
+        elif schedule_enabled and self.runs_document_kv_cache_arm:
+            if self.handoff_generation is not None:
+                raise ValueError(
+                    "publication/canary latency schedules forbid inline handoff "
+                    "generation; provide a closed publication handoff bundle"
+                )
+            raise ValueError(
+                "a publication/canary Vanilla latency run requires a closed "
+                "distributed handoff-generation record and local NVMe directory"
+            )
         if self.runtime_identity is not None and not isinstance(
             self.runtime_identity,
             RuntimeIdentity,
@@ -725,19 +1081,33 @@ class VLLMSmokeBenchmarkConfig:
                     + ", ".join(mismatches)
                 )
         if self.prewarm_cache_prefix and not self.dataset_specs:
-            raise ValueError("benchmark_prewarm_cache_prefix requires prepared dataset specs")
+            raise ValueError(
+                "benchmark_prewarm_cache_prefix requires prepared dataset specs"
+            )
         if self.prewarm_payload_cache and not self.dataset_specs:
-            raise ValueError("benchmark_prewarm_payload_cache requires prepared dataset specs")
+            raise ValueError(
+                "benchmark_prewarm_payload_cache requires prepared dataset specs"
+            )
         if self.prewarm_payload_cache and self.payload_cache_max_bytes <= 0:
             raise ValueError(
                 "benchmark_prewarm_payload_cache requires a positive payload_cache_max_bytes"
+            )
+        if (
+            self.payload_cache_prime_target_count is not None
+            and not self.prewarm_payload_cache
+        ):
+            raise ValueError(
+                "payload_cache_prime_target_count requires prewarm_payload_cache"
             )
         if self.prewarm_payload_cache and self.prewarm_cache_prefix:
             raise ValueError(
                 "benchmark_prewarm_payload_cache and benchmark_prewarm_cache_prefix "
                 "are mutually exclusive"
             )
-        if self.prewarm_payload_cache and self.kv_connector_mode != CACHET_KV_CONNECTOR_MODE:
+        if (
+            self.prewarm_payload_cache
+            and self.kv_connector_mode != CACHET_KV_CONNECTOR_MODE
+        ):
             raise ValueError(
                 "benchmark_prewarm_payload_cache requires kv_connector_mode='cachet'"
             )
@@ -751,7 +1121,9 @@ class VLLMSmokeBenchmarkConfig:
                 "benchmark_prewarm_payload_cache requires a Cachet handoff benchmark arm"
             )
         if self.cache_runtime_prompt and not self.dataset_specs:
-            raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
+            raise ValueError(
+                "benchmark_cache_runtime_prompt requires prepared dataset specs"
+            )
         if self.prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
             raise ValueError("prefix_cache_salt_mode must be 'static' or 'per_request'")
         if self.prewarm_cache_prefix and self.prefix_cache_salt_mode != "static":
@@ -884,6 +1256,28 @@ class VLLMSmokeBenchmarkConfig:
         return self.output_dir / "prepared-handoff-generation.json"
 
     @property
+    def publication_latency_schedule_materialized_path(self) -> Path:
+        return self.local_dir / "publication-latency-schedule.json"
+
+    @property
+    def publication_handoff_staging_attestation_copy_path(self) -> Path:
+        return self.output_dir / PUBLICATION_HANDOFF_STAGING_ATTESTATION_FILENAME
+
+    @property
+    def uses_publication_latency_schedule(self) -> bool:
+        return (
+            self.publication_latency_schedule_record is not None
+            or self.publication_latency_schedule_path is not None
+        )
+
+    @property
+    def stages_publication_handoffs(self) -> bool:
+        return (
+            self.publication_handoff_generation_output_root is not None
+            or self.publication_handoff_bundle_manifest_path is not None
+        )
+
+    @property
     def uses_prepared_datasets(self) -> bool:
         return bool(self.dataset_specs)
 
@@ -933,13 +1327,26 @@ def _resolved_representative_vllm_provenance(
         ),
     )
     wheel_sha256 = _verified_document_kv_package_wheel_sha256()
-    package_revisions = {
+    package_revisions: dict[str, str] = {
         package: version
         for package, version in (
             pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
         )
     }
     package_revisions["cachet-kv"] = f"wheel-sha256:{wheel_sha256}"
+    record = dict(provenance)
+    supplied_package_revisions = dict(record.pop("package_revisions", {}))
+    package_conflicts = {
+        package
+        for package, revision in supplied_package_revisions.items()
+        if package in package_revisions and package_revisions[package] != revision
+    }
+    if package_conflicts:
+        raise ValueError(
+            "benchmark_manifest_provenance.package_revisions conflicts with "
+            "resolved vLLM package settings: " + ", ".join(sorted(package_conflicts))
+        )
+    package_revisions.update(supplied_package_revisions)
     expected: dict[str, Any] = {
         "canonical_model_id": config.model_id,
         "model_revision": config.model_revision,
@@ -968,12 +1375,9 @@ def _resolved_representative_vllm_provenance(
         "pipeline_parallel_size": 1,
         "package_revisions": package_revisions,
     }
-    expected.update(
-        representative_vllm_environment_provenance(config.hardware_target)
-    )
+    expected.update(representative_vllm_environment_provenance(config.hardware_target))
     resolved_rope = resolved_layout_rope_provenance(layout)
     expected.update(resolved_rope)
-    record = dict(provenance)
     conflicts = {
         field_name
         for field_name, expected_value in expected.items()
@@ -1001,9 +1405,8 @@ def _verified_document_kv_package_wheel_sha256() -> str:
             "representative canary requires the verified Cachet wheel SHA-256 in "
             f"{DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV}"
         )
-    if (
-        len(digest) != 64
-        or any(character not in "0123456789abcdef" for character in digest)
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
     ):
         raise ValueError(
             f"{DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV} must be a lowercase SHA-256 digest"
@@ -1072,8 +1475,7 @@ def _validate_vllm_representative_workload(
     if mismatches:
         raise ValueError(
             f"representative workload profile {profile.profile_id!r} does not "
-            "match config: "
-            + ", ".join(mismatches)
+            "match config: " + ", ".join(mismatches)
         )
 
 
@@ -1125,6 +1527,58 @@ def _non_empty_string(value: str, field_name: str) -> str:
     return value.strip()
 
 
+def _normalized_json_object(
+    value: Mapping[str, Any],
+    field_name: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping")
+    normalized = {
+        key: _normalized_json_value(item, f"{field_name}.{key}")
+        for key, item in value.items()
+        if isinstance(key, str) and key
+    }
+    if len(normalized) != len(value):
+        raise ValueError(f"{field_name} keys must be non-empty strings")
+    return normalized
+
+
+def _normalized_json_value(value: Any, field_name: str) -> Any:
+    if value is None or isinstance(value, (str, bool)) or type(value) is int:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError(f"{field_name} must be JSON-compatible")
+        return value
+    if isinstance(value, Mapping):
+        return _normalized_json_object(value, field_name)
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray, memoryview),
+    ):
+        return [
+            _normalized_json_value(item, f"{field_name}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    raise ValueError(f"{field_name} must be JSON-compatible")
+
+
+def _normalized_cluster_path(value: str | Path, field_name: str) -> Path:
+    if not isinstance(value, (str, Path)) or not str(value):
+        raise ValueError(f"{field_name} must be a non-empty path")
+    return Path(_cluster_file_path(str(value)))
+
+
+def _validated_sha256_digest(value: str, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
+    return value
+
+
 def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     """Create an isolated vLLM env, start Qwen3, and run the V1 smoke suite."""
 
@@ -1138,7 +1592,9 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     # Propagate system-prompt placement to prompt-building subprocesses (handoff
     # generation, client benchmark runner, budget probe) via inherited os.environ.
-    os.environ[CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV] = config.system_prompt_position
+    os.environ[CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV] = (
+        config.system_prompt_position
+    )
 
     is_multi = config.kv_connector_mode == MULTI_KV_CONNECTOR_MODE
     metadata = build_metadata(config)
@@ -1147,7 +1603,16 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
 
     create_venv(config.venv_dir)
     install_vllm(config.venv_python)
-    install_document_kv_package(config.venv_python, document_kv_package_install_spec(config))
+    install_document_kv_package(
+        config.venv_python, document_kv_package_install_spec(config)
+    )
+    metadata["vllm_runtime_lock_verification"] = verify_vllm_runtime_lock_installation(
+        config.venv_python
+    )
+    metadata["vllm_runtime_lock_verification_scope"] = (
+        "base-runtime-before-unlocked-lmcache" if is_multi else "final-runtime"
+    )
+    metadata["strict_runtime_closure"] = not is_multi
     if is_multi:
         # Hybrid mode runs MultiConnector[Cachet, LMCache]; LMCache must be present
         # in the vLLM venv and configured with its disk tier for the second connector.
@@ -1156,9 +1621,13 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         os.environ["LMCACHE_CONFIG_FILE"] = str(lmcache_config_path)
         metadata["lmcache_version_installed"] = lmcache_version
         metadata["lmcache_config_path"] = str(lmcache_config_path)
-        metadata["lmcache_config"] = json.loads(lmcache_config_path.read_text(encoding="utf-8"))
-    metadata["vllm_runtime_patches"] = apply_vllm_runtime_patches(config)
+        metadata["lmcache_config"] = json.loads(
+            lmcache_config_path.read_text(encoding="utf-8")
+        )
+        run([str(config.venv_python), "-m", "pip", "check"])
+    metadata["vllm_runtime_patch_closure"] = verify_vllm_runtime_patch_closure(config)
     metadata.update(installed_versions(config.venv_python))
+    metadata["installed_package_freeze"] = installed_package_freeze(config.venv_python)
     metadata["cuda_wheel_env_paths"] = cuda_wheel_env_paths(config)
     write_json(config.metadata_path, metadata)
     # Multi mode must import both vLLM and LMCache cleanly (ABI check) before boot.
@@ -1171,25 +1640,37 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     )
 
     dataset_paths = benchmark_dataset_paths(config)
+    dataset_paths = prepare_publication_latency_inputs(config, dataset_paths)
     dataset_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
     config = _config_with_generated_handoff_offline_costs(config)
     metadata["benchmark_arm_specs"] = [
-        benchmark_json_mapping_to_record(spec)
-        for spec in config.benchmark_arm_specs
+        benchmark_json_mapping_to_record(spec) for spec in config.benchmark_arm_specs
     ]
     validate_prepared_benchmark_handoffs(config, dataset_paths)
     validate_prompt_token_budget(config, dataset_paths)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
-    metadata["document_kv_connector_telemetry_local_path"] = str(config.connector_telemetry_path)
-    metadata["document_kv_connector_telemetry_path"] = str(config.connector_telemetry_copy_path)
+    metadata["document_kv_connector_telemetry_local_path"] = str(
+        config.connector_telemetry_path
+    )
+    metadata["document_kv_connector_telemetry_path"] = str(
+        config.connector_telemetry_copy_path
+    )
     metadata["runtime_telemetry_local_path"] = str(config.runtime_telemetry_path)
     metadata["runtime_telemetry_path"] = str(config.runtime_telemetry_copy_path)
     metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
     if config.requires_prepared_handoff_metadata:
-        metadata["prepared_handoff_coverage_path"] = str(config.prepared_handoff_coverage_path)
+        metadata["prepared_handoff_coverage_path"] = str(
+            config.prepared_handoff_coverage_path
+        )
     if config.handoff_generation is not None:
-        metadata["prepared_handoff_generation_path"] = str(config.prepared_handoff_generation_path)
+        metadata["prepared_handoff_generation_path"] = str(
+            config.prepared_handoff_generation_path
+        )
+    if config.stages_publication_handoffs:
+        metadata["publication_handoff_staging_attestation_path"] = str(
+            config.publication_handoff_staging_attestation_copy_path
+        )
     if config.prewarm_cache_prefix:
         metadata["prewarm_cache_prefix_path"] = str(config.prewarm_cache_prefix_path)
     if config.prewarm_payload_cache:
@@ -1206,7 +1687,12 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         interval_seconds=config.runtime_telemetry_interval_seconds,
     ).start()
     try:
-        wait_for_server(server, config.server_log_path, config, timeout_seconds=config.server_start_timeout_seconds)
+        wait_for_server(
+            server,
+            config.server_log_path,
+            config,
+            timeout_seconds=config.server_start_timeout_seconds,
+        )
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
         prewarm_cache_prefixes(config, dataset_paths)
         prime_payload_cache(config, dataset_paths)
@@ -1218,9 +1704,18 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     finally:
         terminate_process(server)
         runtime_telemetry.stop()
+        if config.benchmark_output_path.exists():
+            bind_runtime_resource_evidence_record_file(
+                config.benchmark_output_path,
+                config.runtime_telemetry_path,
+            )
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
-        copy_file_if_exists(config.connector_telemetry_path, config.connector_telemetry_copy_path)
-        copy_file_if_exists(config.runtime_telemetry_path, config.runtime_telemetry_copy_path)
+        copy_file_if_exists(
+            config.connector_telemetry_path, config.connector_telemetry_copy_path
+        )
+        copy_file_if_exists(
+            config.runtime_telemetry_path, config.runtime_telemetry_copy_path
+        )
 
 
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
@@ -1237,27 +1732,59 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "kv_cache_dtype": config.kv_cache_dtype,
         "attention_backend": config.attention_backend,
         "vllm_version_requested": VLLM_VERSION,
+        "vllm_package_version_requested": VLLM_PACKAGE_VERSION,
+        "vllm_wheel_filename": VLLM_WHEEL_FILENAME,
+        "vllm_wheel_url": VLLM_WHEEL_URL,
+        "vllm_wheel_sha256": VLLM_WHEEL_SHA256,
+        "vllm_patched_wheel_uri": os.environ.get(VLLM_PATCHED_WHEEL_URI_ENV),
+        "vllm_patched_wheel_sha256": os.environ.get(VLLM_PATCHED_WHEEL_SHA256_ENV),
+        "vllm_runtime_lock": {
+            "filename": VLLM_RUNTIME_LOCK_FILENAME,
+            "sha256": VLLM_RUNTIME_LOCK_SHA256,
+            "locked_distribution_count": VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT,
+            "platform": "CPython 3.11 / Linux x86_64 / glibc 2.35",
+        },
+        "virtualenv_bootstrap": {
+            "version": VIRTUALENV_BOOTSTRAP_VERSION,
+            "filename": VIRTUALENV_BOOTSTRAP_FILENAME,
+            "url": VIRTUALENV_BOOTSTRAP_URL,
+            "sha256": VIRTUALENV_BOOTSTRAP_SHA256,
+        },
         "server_bind_host": config.server_host,
         "server_client_host": config.client_host,
         "server_base_url": config.server_base_url,
         "hf_home": str(config.hf_cache_dir),
         "vllm_python": str(config.venv_python),
-        "document_kv_connector_telemetry_local_path": str(config.connector_telemetry_path),
-        "document_kv_connector_telemetry_path": str(config.connector_telemetry_copy_path),
+        "document_kv_connector_telemetry_local_path": str(
+            config.connector_telemetry_path
+        ),
+        "document_kv_connector_telemetry_path": str(
+            config.connector_telemetry_copy_path
+        ),
         "runtime_telemetry_local_path": str(config.runtime_telemetry_path),
         "runtime_telemetry_path": str(config.runtime_telemetry_copy_path),
         "runtime_telemetry_interval_seconds": config.runtime_telemetry_interval_seconds,
         "dependency_constraints": dependency_constraints(),
+        "dependency_index_urls": list(VLLM_PACKAGE_INDEX_URLS),
+        "vllm_cuda_variant": VLLM_CUDA_VARIANT,
+        "vllm_cuda_requirements_sha256": VLLM_CUDA_REQUIREMENTS_SHA256,
+        "vllm_dockerfile_sha256": VLLM_DOCKERFILE_SHA256,
         "dataset_source": "prepared" if config.dataset_specs else "smoke",
         "dataset_specs": list(config.dataset_specs),
         "allow_dataset_subset": config.allow_dataset_subset,
         "prewarm_cache_prefix": config.prewarm_cache_prefix,
         "prewarm_payload_cache": config.prewarm_payload_cache,
+        "payload_cache_max_bytes": config.payload_cache_max_bytes,
+        "payload_cache_prime_target_count": (config.payload_cache_prime_target_count),
         "cache_runtime_prompt": config.cache_runtime_prompt,
         "cache_measurement_protocol": cache_measurement_protocol(config),
-        "cache_prompt_text_mode": "runtime" if config.cache_runtime_prompt else "logical",
+        "cache_prompt_text_mode": "runtime"
+        if config.cache_runtime_prompt
+        else "logical",
         "max_tokens": config.max_tokens,
         "force_max_tokens": config.force_max_tokens,
+        "temperature": config.temperature,
+        "generation_seed": config.generation_seed,
         "latency_decode_protocol": (
             {
                 "max_tokens": config.max_tokens,
@@ -1283,7 +1810,9 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "requires_kv_transfer_params": config.requires_prepared_handoff_metadata,
         "generates_prepared_handoffs": config.handoff_generation is not None,
         "benchmark_handoff_generation": (
-            None if config.handoff_generation is None else config.handoff_generation.to_metadata()
+            None
+            if config.handoff_generation is None
+            else config.handoff_generation.to_metadata()
         ),
         "runtime_identity": (
             None
@@ -1304,6 +1833,54 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
             for spec in config.benchmark_arm_specs
         ],
         "benchmark_evidence_policy": config.benchmark_evidence_policy,
+        "publication_latency_schedule_source": (
+            "inline_record"
+            if config.publication_latency_schedule_record is not None
+            else str(config.publication_latency_schedule_path)
+            if config.publication_latency_schedule_path is not None
+            else None
+        ),
+        "publication_latency_expected_input_bundle_sha256": (
+            config.publication_latency_expected_input_bundle_sha256
+        ),
+        "publication_handoff_generation_output_root": (
+            None
+            if config.publication_handoff_generation_output_root is None
+            else str(config.publication_handoff_generation_output_root)
+        ),
+        "publication_handoff_generation_execution_file_sha256": (
+            config.publication_handoff_generation_execution_file_sha256
+        ),
+        "publication_handoff_generation_execution_closed_record_sha256": (
+            config.publication_handoff_generation_execution_closed_record_sha256
+        ),
+        "publication_handoff_bundle_manifest_path": (
+            None
+            if config.publication_handoff_bundle_manifest_path is None
+            else str(config.publication_handoff_bundle_manifest_path)
+        ),
+        "publication_handoff_bundle_source_root": (
+            None
+            if config.publication_handoff_bundle_source_root is None
+            else str(config.publication_handoff_bundle_source_root)
+        ),
+        "publication_handoff_bundle_manifest_file_sha256": (
+            config.publication_handoff_bundle_manifest_file_sha256
+        ),
+        "publication_handoff_bundle_manifest_closed_record_sha256": (
+            config.publication_handoff_bundle_manifest_closed_record_sha256
+        ),
+        "publication_handoff_local_nvme_dir": (
+            None
+            if config.publication_handoff_local_nvme_dir is None
+            else str(config.publication_handoff_local_nvme_dir)
+        ),
+        "publication_handoff_stage_kind": config.publication_handoff_stage_kind,
+        "publication_handoff_staging_attestation_path": (
+            str(config.publication_handoff_staging_attestation_copy_path)
+            if config.stages_publication_handoffs
+            else None
+        ),
         "representative_canary": config.is_representative_submission,
         "representative_workload_profile": config.representative_workload_profile_id,
         "benchmark_manifest_provenance": benchmark_json_mapping_to_record(
@@ -1338,12 +1915,16 @@ def build_vllm_native_provider_probe_record(
 ) -> dict[str, object]:
     """Instantiate the configured vLLM connector and verify native provider wiring."""
 
-    config = document_kv_transfer_config() if transfer_config is None else transfer_config
+    config = (
+        document_kv_transfer_config() if transfer_config is None else transfer_config
+    )
     if not isinstance(config, Mapping):
         raise TypeError("vLLM KV transfer config must be a mapping")
     extra_config = config.get("kv_connector_extra_config")
     if not isinstance(extra_config, Mapping):
-        raise TypeError("vLLM KV transfer config kv_connector_extra_config must be a mapping")
+        raise TypeError(
+            "vLLM KV transfer config kv_connector_extra_config must be a mapping"
+        )
     provider_factory = extra_config.get(DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY)
     if not isinstance(provider_factory, str) or not provider_factory.strip():
         raise ValueError(
@@ -1352,7 +1933,9 @@ def build_vllm_native_provider_probe_record(
     if extra_config.get("document_kv.requires_native_runtime") is not True:
         raise ValueError("document_kv.requires_native_runtime must be true")
 
-    connector = DocumentKVConnector(vllm_config=SimpleNamespace(kv_transfer_config=config))
+    connector = DocumentKVConnector(
+        vllm_config=SimpleNamespace(kv_transfer_config=config)
+    )
     provider = connector.provider
     if isinstance(provider, NoOpDocumentKVProvider):
         raise ValueError("vLLM smoke cannot run with NoOpDocumentKVProvider")
@@ -1370,7 +1953,9 @@ def build_vllm_native_provider_probe_record(
     }
 
 
-def document_kv_transfer_config_for_smoke(config: VLLMSmokeBenchmarkConfig) -> dict[str, Any]:
+def document_kv_transfer_config_for_smoke(
+    config: VLLMSmokeBenchmarkConfig,
+) -> dict[str, Any]:
     return document_kv_transfer_config(
         payload_cache_max_bytes=config.payload_cache_max_bytes or None,
         telemetry_jsonl=str(config.connector_telemetry_path),
@@ -1385,8 +1970,37 @@ def dependency_constraints() -> list[str]:
     return list(VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints)
 
 
+def dependency_index_args() -> list[str]:
+    """Return the official indexes needed by the pinned CUDA 12.9 closure."""
+
+    return [
+        argument
+        for index_url in VLLM_PACKAGE_INDEX_URLS
+        for argument in ("--extra-index-url", index_url)
+    ]
+
+
+def vllm_dependency_install_requirements() -> list[str]:
+    """Substitute the approved patched wheel for the package-name pin."""
+
+    constraints = dependency_constraints()
+    expected_package_pin = f"vllm=={VLLM_PACKAGE_VERSION}"
+    if not constraints or constraints[0] != expected_package_pin:
+        raise RuntimeError(
+            "vLLM serving profile must start with the exact cu129 package identity"
+        )
+    requirements = list(vllm_runtime_install_requirements())
+    if requirements[1:] != constraints[1:]:
+        raise RuntimeError(
+            "vLLM runtime requirements diverged from the serving profile"
+        )
+    return requirements
+
+
 def dependency_override_constraints() -> list[str]:
-    return [VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT]
+    # OpenCV is part of the hash-locked runtime closure; no post-install
+    # replacement is permitted.
+    return []
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -1397,7 +2011,9 @@ def _cluster_file_path(uri: str) -> str:
 
 def _source_checkout_root() -> Path | None:
     for parent in Path(__file__).resolve().parents:
-        if (parent / "pyproject.toml").exists() and (parent / "src" / "document_kv_cache").exists():
+        if (parent / "pyproject.toml").exists() and (
+            parent / "src" / "document_kv_cache"
+        ).exists():
             return parent
     return None
 
@@ -1410,7 +2026,9 @@ def document_kv_package_install_spec(config: VLLMSmokeBenchmarkConfig) -> str:
     env_value = os.environ.get(DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV)
     if env_value is not None:
         if not env_value.strip():
-            raise ValueError(f"{DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV} must be non-empty when set")
+            raise ValueError(
+                f"{DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV} must be non-empty when set"
+            )
         return _cluster_file_path(env_value)
     source_root = _source_checkout_root()
     if source_root is not None:
@@ -1424,9 +2042,15 @@ def document_kv_package_install_spec(config: VLLMSmokeBenchmarkConfig) -> str:
 def installed_versions(python_executable: Path) -> dict[str, str]:
     return {
         "vllm_version_installed": installed_package_version(python_executable, "vllm"),
-        "document_kv_cache_version_installed": installed_package_version(python_executable, "cachet-kv"),
-        "transformers_version_installed": installed_package_version(python_executable, "transformers"),
-        "torch_version_installed": installed_package_version(python_executable, "torch"),
+        "document_kv_cache_version_installed": installed_package_version(
+            python_executable, "cachet-kv"
+        ),
+        "transformers_version_installed": installed_package_version(
+            python_executable, "transformers"
+        ),
+        "torch_version_installed": installed_package_version(
+            python_executable, "torch"
+        ),
         "opencv_python_headless_version_installed": installed_package_version(
             python_executable,
             "opencv-python-headless",
@@ -1434,12 +2058,62 @@ def installed_versions(python_executable: Path) -> dict[str, str]:
     }
 
 
+def installed_package_freeze(python_executable: Path) -> list[str]:
+    """Return the complete normalized post-install distribution snapshot."""
+
+    completed = subprocess.run(
+        [str(python_executable), "-m", "pip", "freeze", "--all"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return sorted(
+        (line.strip() for line in completed.stdout.splitlines() if line.strip()),
+        key=str.casefold,
+    )
+
+
+def verify_vllm_runtime_lock_installation(
+    python_executable: Path,
+) -> dict[str, Any]:
+    """Run pip consistency and the packaged lock/direct-URL verifier."""
+
+    subprocess.run(
+        [str(python_executable), "-m", "pip", "check"],
+        check=True,
+    )
+    code = (
+        "import json,sys; "
+        "from document_kv_cache.serving_env import "
+        "verify_installed_vllm_runtime_lock; "
+        "print(json.dumps(verify_installed_vllm_runtime_lock(sys.argv[1]), "
+        "sort_keys=True))"
+    )
+    completed = subprocess.run(
+        [
+            str(python_executable),
+            "-c",
+            code,
+            patched_vllm_wheel_install_spec(),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    record = json.loads(completed.stdout)
+    if not isinstance(record, dict) or record.get("ok") is not True:
+        raise RuntimeError("vLLM runtime lock verifier did not return an ok record")
+    return record
+
+
 def run(argv: list[str]) -> None:
     print("+", " ".join(argv), flush=True)
     subprocess.run(argv, check=True)
 
 
-def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+def validate_prompt_token_budget(
+    config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
+) -> None:
     rows = build_prompt_token_budget_rows(config, dataset_paths)
     write_prompt_token_budget_jsonl(config.prompt_token_budget_input_path, rows)
     expected_prompt_tokens = config.benchmark_manifest_provenance.get(
@@ -1515,7 +2189,13 @@ def build_prompt_token_budget_rows(
     rows = []
     for example in suite.examples:
         prompt = build_prompt_parts(example).prefill_prompt
-        rows.append({"dataset": example.dataset, "example_id": example.example_id, "prompt": prompt})
+        rows.append(
+            {
+                "dataset": example.dataset,
+                "example_id": example.example_id,
+                "prompt": prompt,
+            }
+        )
     return tuple(rows)
 
 
@@ -1562,13 +2242,17 @@ def prepared_benchmark_handoff_coverage_record(
     missing = tuple(
         f"{example.dataset}/{example.example_id}:{arm_id}"
         for example in suite.examples
-        for arm_id, params in params_by_example[(example.dataset, example.example_id)].items()
+        for arm_id, params in params_by_example[
+            (example.dataset, example.example_id)
+        ].items()
         if not params
     )
     invalid = tuple(
         issue
         for example in suite.examples
-        for arm_id, params in params_by_example[(example.dataset, example.example_id)].items()
+        for arm_id, params in params_by_example[
+            (example.dataset, example.example_id)
+        ].items()
         if params
         for issue in (
             _prepared_handoff_reference_issue(
@@ -1579,16 +2263,14 @@ def prepared_benchmark_handoff_coverage_record(
         )
         if issue is not None
     )
-    incomplete_examples = {
-        (item.split(":", 1)[0])
-        for item in missing
-    }.union(
-        f"{issue['dataset']}/{issue['example_id']}"
-        for issue in invalid
+    incomplete_examples = {(item.split(":", 1)[0]) for item in missing}.union(
+        f"{issue['dataset']}/{issue['example_id']}" for issue in invalid
     )
     counts_by_dataset: dict[str, int] = {}
     for example in suite.examples:
-        counts_by_dataset[example.dataset] = counts_by_dataset.get(example.dataset, 0) + 1
+        counts_by_dataset[example.dataset] = (
+            counts_by_dataset.get(example.dataset, 0) + 1
+        )
     issues = []
     if missing:
         issues.append("prepared benchmark rows missing kv_transfer_params")
@@ -1602,9 +2284,8 @@ def prepared_benchmark_handoff_coverage_record(
         "datasets": counts_by_dataset,
         "cache_arm_ids": list(cache_arm_ids),
         "examples": len(suite.examples),
-        "examples_with_kv_transfer_params": len(suite.examples) - len(
-            {item.split(":", 1)[0] for item in missing}
-        ),
+        "examples_with_kv_transfer_params": len(suite.examples)
+        - len({item.split(":", 1)[0] for item in missing}),
         "examples_with_loadable_handoff_references": (
             len(suite.examples) - len(incomplete_examples)
         ),
@@ -1654,11 +2335,7 @@ def _prepared_cache_arm_ids(config: VLLMSmokeBenchmarkConfig) -> tuple[str, ...]
             if _arm_spec_requires_cachet_handoff(spec)
         )
     elif config.benchmark_arms:
-        arm_ids = (
-            (CACHE_REUSE_ARM,)
-            if CACHE_REUSE_ARM in config.benchmark_arms
-            else ()
-        )
+        arm_ids = (CACHE_REUSE_ARM,) if CACHE_REUSE_ARM in config.benchmark_arms else ()
     else:
         arm_ids = (CACHE_REUSE_ARM,)
     if not arm_ids and config.kv_connector_mode == MULTI_KV_CONNECTOR_MODE:
@@ -1714,7 +2391,9 @@ def _prepared_handoff_reference_issue(
         if handoff_record is not None:
             record = handoff_record
             if not isinstance(record, Mapping):
-                raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object")
+                raise ValueError(
+                    f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object"
+                )
             validate_engine_adapter_request_record(
                 record,
                 expected_backend=ServingBackend.VLLM,
@@ -1777,7 +2456,9 @@ def _handoff_reference_issue(
     return record
 
 
-def write_prompt_token_budget_jsonl(path: Path, rows: tuple[dict[str, str], ...]) -> None:
+def write_prompt_token_budget_jsonl(
+    path: Path, rows: tuple[dict[str, str], ...]
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
@@ -1794,16 +2475,20 @@ def prepare_generated_benchmark_handoffs(
     if generation is None:
         return dataset_paths
     if config.venv_python.exists():
-        generated_paths, record = _generate_prepared_benchmark_handoff_inputs_in_subprocess(
-            config,
-            dataset_paths,
-            generation,
+        generated_paths, record = (
+            _generate_prepared_benchmark_handoff_inputs_in_subprocess(
+                config,
+                dataset_paths,
+                generation,
+            )
         )
         write_json(config.prepared_handoff_generation_path, record)
         return generated_paths
     generation.output_dir.mkdir(parents=True, exist_ok=True)
     try:
-        generated_paths, record = _generate_prepared_benchmark_handoff_inputs(config, dataset_paths, generation)
+        generated_paths, record = _generate_prepared_benchmark_handoff_inputs(
+            config, dataset_paths, generation
+        )
     finally:
         release_handoff_generation_resources()
     write_json(config.prepared_handoff_generation_path, record)
@@ -1855,7 +2540,9 @@ def _generate_prepared_benchmark_handoff_inputs_in_subprocess(
         "hardware_target": config.hardware_target,
         "system_prompt_position": config.system_prompt_position,
         "allow_dataset_subset": config.allow_dataset_subset,
-        "dataset_paths": {dataset: str(path) for dataset, path in dataset_paths.items()},
+        "dataset_paths": {
+            dataset: str(path) for dataset, path in dataset_paths.items()
+        },
         "handoff_generation": generation.to_metadata(),
     }
     write_json(input_path, payload)
@@ -1949,7 +2636,11 @@ write_json(
         str(input_path),
         str(output_path),
     ]
-    print("+", " ".join([argv[0], "-c", "<prepared handoff generation>", *argv[3:]]), flush=True)
+    print(
+        "+",
+        " ".join([argv[0], "-c", "<prepared handoff generation>", *argv[3:]]),
+        flush=True,
+    )
     try:
         completed = subprocess.run(
             argv,
@@ -1975,9 +2666,13 @@ write_json(
     generated_paths_payload = result.get("generated_paths")
     record = result.get("record")
     if not isinstance(generated_paths_payload, dict) or not isinstance(record, dict):
-        raise RuntimeError(f"prepared handoff generation wrote invalid result {output_path}")
+        raise RuntimeError(
+            f"prepared handoff generation wrote invalid result {output_path}"
+        )
     if record.get("ok") is not True:
-        raise RuntimeError(f"prepared handoff generation worker result was not ok in {output_path}")
+        raise RuntimeError(
+            f"prepared handoff generation worker result was not ok in {output_path}"
+        )
     expected_datasets = set(dataset_paths)
     if set(generated_paths_payload) != expected_datasets:
         raise RuntimeError(
@@ -1990,9 +2685,13 @@ write_json(
     }
     for dataset, path in generated_paths.items():
         if not str(path):
-            raise RuntimeError(f"prepared handoff generation worker returned empty path for {dataset}")
+            raise RuntimeError(
+                f"prepared handoff generation worker returned empty path for {dataset}"
+            )
         if not path.exists():
-            raise RuntimeError(f"prepared handoff generation worker output for {dataset} does not exist: {path}")
+            raise RuntimeError(
+                f"prepared handoff generation worker output for {dataset} does not exist: {path}"
+            )
     return generated_paths, record
 
 
@@ -2100,18 +2799,14 @@ def _generate_prepared_benchmark_handoff_inputs(
             getattr(generator, "rope_theta", None) if generator_pre_rope else None
         ),
         rope_rotary_dim=(
-            getattr(generator, "rope_rotary_dim", None)
-            if generator_pre_rope
-            else None
+            getattr(generator, "rope_rotary_dim", None) if generator_pre_rope else None
         ),
         key_position_encoding=(
             "pre_rope" if generator_pre_rope else "stored_post_rope"
         ),
         shares_kv_storage=False if generator_pre_rope else layout.shares_kv_storage,
         storage_layout=(
-            "separate_key_value"
-            if generator_pre_rope
-            else layout.storage_layout
+            "separate_key_value" if generator_pre_rope else layout.storage_layout
         ),
     )
     layout.validate()
@@ -2391,7 +3086,7 @@ input_path, max_model_len, max_tokens = Path(sys.argv[7]), int(sys.argv[8]), int
 tokenizer = AutoTokenizer.from_pretrained(
     tokenizer_id,
     revision=tokenizer_revision,
-    trust_remote_code=True,
+    trust_remote_code=False,
 )
 rows = []
 over_budget = []
@@ -2458,7 +3153,11 @@ print(
         str(max_model_len),
         str(max_tokens),
     ]
-    print("+", " ".join([argv[0], "-c", "<prompt token budget probe>", *argv[3:]]), flush=True)
+    print(
+        "+",
+        " ".join([argv[0], "-c", "<prompt token budget probe>", *argv[3:]]),
+        flush=True,
+    )
     try:
         completed = subprocess.run(
             argv,
@@ -2506,7 +3205,9 @@ print(
     return record
 
 
-def run_benchmark_runner(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+def run_benchmark_runner(
+    config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
+) -> None:
     try:
         run(build_benchmark_runner_args(config, dataset_paths))
     except subprocess.CalledProcessError as exc:
@@ -2550,7 +3251,9 @@ def write_lmcache_config(config: VLLMSmokeBenchmarkConfig) -> Path:
         payload["extra_config"] = {"use_odirect": True}
     path = config.local_dir / "lmcache-config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return path
 
 
@@ -2593,7 +3296,9 @@ def probe_lmcache_import(
     except (ValueError, IndexError):
         record = {"ok": False, "error": tail_text(completed.stdout + completed.stderr)}
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     if not record.get("ok"):
         raise RuntimeError(
             f"lmcache import probe failed: {record.get('error')!r}; "
@@ -2624,6 +3329,8 @@ def _build_lmcache_pass_args(
         config.hardware_target,
         "--max-tokens",
         str(config.max_tokens),
+        "--temperature",
+        str(config.temperature),
         "--timeout-seconds",
         str(config.timeout_seconds),
         "--repeats",
@@ -2636,8 +3343,15 @@ def _build_lmcache_pass_args(
         "--arm",
         BASELINE_PREFILL_ARM,
     ]
+    if config.generation_seed is not None:
+        args.extend(["--generation-seed", str(config.generation_seed)])
     if config.force_max_tokens:
-        args.extend(["--baseline-extra-body-json", json.dumps({"ignore_eos": True}, sort_keys=True)])
+        args.extend(
+            [
+                "--baseline-extra-body-json",
+                json.dumps({"ignore_eos": True}, sort_keys=True),
+            ]
+        )
     args.extend(dataset_args(dataset_paths))
     return args
 
@@ -2661,7 +3375,12 @@ def _run_lmcache_two_pass(
     log_path = config.local_dir / "vllm-server-lmcache.log"
     server = start_vllm_server(config, config.venv_python, log_path)
     try:
-        wait_for_server(server, log_path, config, timeout_seconds=config.server_start_timeout_seconds)
+        wait_for_server(
+            server,
+            log_path,
+            config,
+            timeout_seconds=config.server_start_timeout_seconds,
+        )
         # Phase 1: warm -- prefill each distinct document once so its KV persists to the disk tier.
         run(_build_lmcache_pass_args(config, dataset_paths, warm_output, "warm"))
         # Phase 2: best-effort page-cache drop; O_DIRECT reads bypass it anyway.
@@ -2701,7 +3420,9 @@ def run_lmcache_cold_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     # Propagate system-prompt placement to prompt-building subprocesses (handoff
     # generation, client benchmark runner, budget probe) via inherited os.environ.
-    os.environ[CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV] = config.system_prompt_position
+    os.environ[CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV] = (
+        config.system_prompt_position
+    )
 
     metadata = build_metadata(config)
     metadata["kv_connector_mode"] = LMCACHE_KV_CONNECTOR_MODE
@@ -2709,20 +3430,35 @@ def run_lmcache_cold_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
 
     create_venv(config.venv_dir)
     install_vllm(config.venv_python)
-    lmcache_version = install_lmcache(config.venv_python, config.lmcache_version)
     # cachet-kv is not used by the LMCache connector, but installing it keeps the
     # shared metadata/version plumbing (installed_versions) consistent.
-    install_document_kv_package(config.venv_python, document_kv_package_install_spec(config))
-    metadata["vllm_runtime_patches"] = apply_vllm_runtime_patches(config)
+    install_document_kv_package(
+        config.venv_python, document_kv_package_install_spec(config)
+    )
+    metadata["vllm_runtime_lock_verification"] = verify_vllm_runtime_lock_installation(
+        config.venv_python
+    )
+    metadata["vllm_runtime_lock_verification_scope"] = (
+        "base-runtime-before-unlocked-lmcache"
+    )
+    metadata["strict_runtime_closure"] = False
+    metadata["vllm_runtime_patch_closure"] = verify_vllm_runtime_patch_closure(config)
+    lmcache_version = install_lmcache(config.venv_python, config.lmcache_version)
+    run([str(config.venv_python), "-m", "pip", "check"])
     versions = installed_versions(config.venv_python)
     versions["lmcache_version_installed"] = lmcache_version
     metadata.update(versions)
+    metadata["installed_package_freeze"] = installed_package_freeze(config.venv_python)
 
     lmcache_config_path = write_lmcache_config(config)
     os.environ["LMCACHE_CONFIG_FILE"] = str(lmcache_config_path)
     metadata["lmcache_config_path"] = str(lmcache_config_path)
-    metadata["lmcache_config"] = json.loads(lmcache_config_path.read_text(encoding="utf-8"))
-    metadata["lmcache_warm_benchmark_path"] = str(config.output_dir / "lmcache-warm-benchmark.json")
+    metadata["lmcache_config"] = json.loads(
+        lmcache_config_path.read_text(encoding="utf-8")
+    )
+    metadata["lmcache_warm_benchmark_path"] = str(
+        config.output_dir / "lmcache-warm-benchmark.json"
+    )
     write_json(config.metadata_path, metadata)
 
     probe_lmcache_import(
@@ -2740,10 +3476,14 @@ def run_lmcache_cold_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
     write_json(config.metadata_path, metadata)
     warm_output = config.output_dir / "lmcache-warm-benchmark.json"
-    _run_lmcache_two_pass(config, dataset_paths, warm_output, config.benchmark_output_path)
+    _run_lmcache_two_pass(
+        config, dataset_paths, warm_output, config.benchmark_output_path
+    )
 
 
-def prewarm_cache_prefixes(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+def prewarm_cache_prefixes(
+    config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
+) -> None:
     """Load prepared cache prefixes into vLLM's resident prefix cache before measurement."""
 
     if not config.prewarm_cache_prefix:
@@ -2772,7 +3512,9 @@ def prewarm_cache_prefixes(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict
             "kv_transfer_params": kv_transfer_params,
         }
         try:
-            response = _post_json(completions_url, body, timeout_seconds=config.timeout_seconds)
+            response = _post_json(
+                completions_url, body, timeout_seconds=config.timeout_seconds
+            )
             usage = response.get("usage")
             rows.append(
                 {
@@ -2780,8 +3522,12 @@ def prewarm_cache_prefixes(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict
                     "dataset": example.dataset,
                     "example_id": example.example_id,
                     "elapsed_seconds": time.monotonic() - started,
-                    "prompt_tokens": usage.get("prompt_tokens") if isinstance(usage, Mapping) else None,
-                    "completion_tokens": usage.get("completion_tokens") if isinstance(usage, Mapping) else None,
+                    "prompt_tokens": usage.get("prompt_tokens")
+                    if isinstance(usage, Mapping)
+                    else None,
+                    "completion_tokens": usage.get("completion_tokens")
+                    if isinstance(usage, Mapping)
+                    else None,
                 }
             )
         except Exception as exc:
@@ -2956,12 +3702,8 @@ def prime_payload_cache(
             "priming_requests_load_isolated_gpu_blocks": True,
             "priming_namespace": PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT,
         },
-        "request_id_sha256s": sorted(
-            str(row["request_id_sha256"]) for row in rows
-        ),
-        "cache_salt_sha256s": sorted(
-            str(row["cache_salt_sha256"]) for row in rows
-        ),
+        "request_id_sha256s": sorted(str(row["request_id_sha256"]) for row in rows),
+        "cache_salt_sha256s": sorted(str(row["cache_salt_sha256"]) for row in rows),
         "rows": rows,
         "issues": issues,
     }
@@ -2980,7 +3722,10 @@ def attest_payload_cache_measurements(config: VLLMSmokeBenchmarkConfig) -> None:
         return
     issues: list[str] = []
     prime_record = _read_json_object(config.prewarm_payload_cache_path)
-    if prime_record.get("ok") is not True or prime_record.get("verification_all_hits") is not True:
+    if (
+        prime_record.get("ok") is not True
+        or prime_record.get("verification_all_hits") is not True
+    ):
         issues.append("payload-cache priming verification did not pass")
     benchmark_record = _read_json_object(config.benchmark_output_path)
     measurements = benchmark_record.get("measurements")
@@ -3078,9 +3823,7 @@ def attest_payload_cache_measurements(config: VLLMSmokeBenchmarkConfig) -> None:
     request_ids_disjoint = priming_request_digests.isdisjoint(
         measurement_request_digests
     )
-    cache_salts_disjoint = priming_salt_digests.isdisjoint(
-        measurement_salt_digests
-    )
+    cache_salts_disjoint = priming_salt_digests.isdisjoint(measurement_salt_digests)
     if not request_ids_disjoint:
         issues.append("priming and measurement request identities overlap")
     if not cache_salts_disjoint:
@@ -3096,9 +3839,7 @@ def attest_payload_cache_measurements(config: VLLMSmokeBenchmarkConfig) -> None:
             "enabled": True,
             "max_bytes": config.payload_cache_max_bytes,
             "priming_target_count": prime_record.get("target_count"),
-            "priming_verification_all_hits": prime_record.get(
-                "verification_all_hits"
-            ),
+            "priming_verification_all_hits": prime_record.get("verification_all_hits"),
             "measurement_request_count": len(measured_request_ids),
             "measurement_load_count": measurement_load_count,
             "measurement_all_hits": (
@@ -3147,7 +3888,9 @@ def _payload_cache_prime_targets(
     )
     cache_arm_ids = _prepared_cache_arm_ids(config)
     if not cache_arm_ids:
-        raise ValueError("payload-cache priming requires at least one Cachet handoff arm")
+        raise ValueError(
+            "payload-cache priming requires at least one Cachet handoff arm"
+        )
     targets: list[tuple[Any, str, Mapping[str, Any]]] = []
     for example in suite.examples:
         params_by_arm = _prepared_params_by_arm(
@@ -3163,6 +3906,31 @@ def _payload_cache_prime_targets(
             targets.append((example, arm_id, params))
     if not targets:
         raise ValueError("payload-cache priming resolved no prepared artifacts")
+    limit = config.payload_cache_prime_target_count
+    if limit is not None:
+        if limit > len(targets):
+            raise ValueError(
+                "payload-cache prime target count exceeds prepared targets"
+            )
+        by_dataset = {
+            dataset: sorted(
+                (target for target in targets if target[0].dataset == dataset),
+                key=lambda target: (target[0].example_id, target[1]),
+            )
+            for dataset in SUPPORTED_V1_DATASETS
+        }
+        if limit % len(SUPPORTED_V1_DATASETS):
+            raise ValueError(
+                "payload-cache prime target count must balance all datasets"
+            )
+        per_dataset = limit // len(SUPPORTED_V1_DATASETS)
+        if any(len(values) < per_dataset for values in by_dataset.values()):
+            raise ValueError("payload-cache prime target coverage is incomplete")
+        targets = [
+            target
+            for dataset in SUPPORTED_V1_DATASETS
+            for target in by_dataset[dataset][:per_dataset]
+        ]
     return targets
 
 
@@ -3182,7 +3950,10 @@ def _payload_cache_load_issues(
         return [*issues, f"{label} is missing cache_state_attestation"]
     if not isinstance(counts, Mapping):
         return [*issues, f"{label} is missing counts"]
-    if not isinstance(payload, Mapping) or payload.get("payload_cache_enabled") is not True:
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("payload_cache_enabled") is not True
+    ):
         issues.append(f"{label} does not attest an enabled payload cache")
     if require_hit:
         if state.get("payload_cache_hit") is not True:
@@ -3242,7 +4013,9 @@ def _payload_cache_prime_prompt_text(example: Any) -> str:
 
 
 def _prewarm_request_id(config: VLLMSmokeBenchmarkConfig, example: Any) -> str:
-    return f"cachet-prewarm:{config.benchmark_id}:{example.dataset}:{example.example_id}"
+    return (
+        f"cachet-prewarm:{config.benchmark_id}:{example.dataset}:{example.example_id}"
+    )
 
 
 # Follow-up turns for the hybrid multi-turn latency measurement. Turn 1 carries the
@@ -3254,7 +4027,9 @@ DEFAULT_MULTI_TURN_FOLLOWUPS = (
 )
 
 
-def build_multi_turn_followup_prompt(turn_prompt: str, turn_response: str, followup_question: str) -> str:
+def build_multi_turn_followup_prompt(
+    turn_prompt: str, turn_response: str, followup_question: str
+) -> str:
     """Append the model's response and the next user turn to the running conversation.
 
     Keeping the exact prior text (prompt + generated response) as a prefix is what lets
@@ -3273,7 +4048,9 @@ def _stream_completion_ttft(
 ) -> tuple[float, str, Mapping[str, Any]]:
     """POST a streaming completion and return (ttft_seconds, output_text, usage)."""
 
-    payload = json.dumps({**body, "stream": True, "stream_options": {"include_usage": True}}).encode("utf-8")
+    payload = json.dumps(
+        {**body, "stream": True, "stream_options": {"include_usage": True}}
+    ).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=payload,
@@ -3306,7 +4083,9 @@ def _stream_completion_ttft(
     return ttft, "".join(parts), usage
 
 
-def run_multi_turn_hybrid_latency(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+def run_multi_turn_hybrid_latency(
+    config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
+) -> None:
     """Measure per-turn TTFT for the hybrid handoff on a live MultiConnector server.
 
     Turn 1 sends the logical document prompt with the Cachet handoff, so the document
@@ -3374,7 +4153,9 @@ def run_multi_turn_hybrid_latency(config: VLLMSmokeBenchmarkConfig, dataset_path
                     served_by, has_handoff = "lmcache", False
                 if config.force_max_tokens:
                     body["ignore_eos"] = True
-                ttft, output_text, usage = _stream_completion_ttft(url, body, timeout_seconds=config.timeout_seconds)
+                ttft, output_text, usage = _stream_completion_ttft(
+                    url, body, timeout_seconds=config.timeout_seconds
+                )
                 conv["output"] = output_text
                 conv["turns"].append(
                     {
@@ -3382,17 +4163,27 @@ def run_multi_turn_hybrid_latency(config: VLLMSmokeBenchmarkConfig, dataset_path
                         "served_by": served_by,
                         "has_document_handoff": has_handoff,
                         "ttft_seconds": ttft,
-                        "prompt_tokens": usage.get("prompt_tokens") if isinstance(usage, Mapping) else None,
+                        "prompt_tokens": usage.get("prompt_tokens")
+                        if isinstance(usage, Mapping)
+                        else None,
                     }
                 )
             except Exception as exc:
                 ok = False
                 conv["failed"] = True
                 conv["turns"].append(
-                    {"turn": turn_index, "error": str(exc) or type(exc).__name__, "error_type": type(exc).__name__}
+                    {
+                        "turn": turn_index,
+                        "error": str(exc) or type(exc).__name__,
+                        "error_type": type(exc).__name__,
+                    }
                 )
     conversations = [
-        {"dataset": conv["example"].dataset, "example_id": conv["example"].example_id, "turns": conv["turns"]}
+        {
+            "dataset": conv["example"].dataset,
+            "example_id": conv["example"].example_id,
+            "turns": conv["turns"],
+        }
         for conv in convs
     ]
     record = {
@@ -3410,7 +4201,9 @@ def run_multi_turn_hybrid_latency(config: VLLMSmokeBenchmarkConfig, dataset_path
     # a single transient turn error; per-turn errors are recorded for the analysis.
 
 
-def _post_json(url: str, body: Mapping[str, object], *, timeout_seconds: float) -> Mapping[str, Any]:
+def _post_json(
+    url: str, body: Mapping[str, object], *, timeout_seconds: float
+) -> Mapping[str, Any]:
     payload = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -3455,7 +4248,9 @@ def benchmark_failure_summary(output_path: Path, *, limit: int = 3) -> str:
     return f"benchmark output had {issue_count}/{len(measurements)} errored measurements: {shown}"
 
 
-def _benchmark_error_summary(measurement: dict[str, object], *, max_chars: int = 400) -> str:
+def _benchmark_error_summary(
+    measurement: dict[str, object], *, max_chars: int = 400
+) -> str:
     dataset = measurement.get("dataset") or "unknown-dataset"
     arm_id = measurement.get("arm_id") or "unknown-arm"
     error = str(measurement.get("error") or "unknown error")
@@ -3470,8 +4265,55 @@ def create_venv(venv_dir: Path) -> None:
     try:
         run([sys.executable, "-m", "venv", str(venv_dir)])
     except subprocess.CalledProcessError:
-        run([sys.executable, "-m", "pip", "install", "virtualenv"])
-        run([sys.executable, "-m", "virtualenv", str(venv_dir)])
+        bootstrap = materialize_virtualenv_bootstrap(venv_dir.parent)
+        run([sys.executable, str(bootstrap), str(venv_dir)])
+
+
+def materialize_virtualenv_bootstrap(output_dir: Path) -> Path:
+    """Download and verify the reviewed self-contained virtualenv zipapp."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = output_dir / (
+        f"virtualenv-{VIRTUALENV_BOOTSTRAP_VERSION}-"
+        f"{VIRTUALENV_BOOTSTRAP_SHA256[:16]}.pyz"
+    )
+    if target.exists():
+        observed = _file_sha256(target)
+        if observed != VIRTUALENV_BOOTSTRAP_SHA256:
+            raise RuntimeError(
+                f"virtualenv bootstrap SHA-256 {observed} does not match "
+                f"{VIRTUALENV_BOOTSTRAP_SHA256}"
+            )
+        return target
+
+    temporary = target.with_suffix(".tmp")
+    request = urllib.request.Request(
+        VIRTUALENV_BOOTSTRAP_URL,
+        headers={"User-Agent": "cachet-vllm-runtime-bootstrap"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120.0) as response:
+            with temporary.open("wb") as stream:
+                shutil.copyfileobj(response, stream)
+        observed = _file_sha256(temporary)
+        if observed != VIRTUALENV_BOOTSTRAP_SHA256:
+            raise RuntimeError(
+                f"downloaded virtualenv bootstrap SHA-256 {observed} does not match "
+                f"{VIRTUALENV_BOOTSTRAP_SHA256}"
+            )
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def venv_python(venv_dir: Path) -> Path:
@@ -3479,14 +4321,20 @@ def venv_python(venv_dir: Path) -> Path:
 
 
 def install_vllm(python_executable: Path) -> None:
-    run([str(python_executable), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
+    validate_vllm_runtime_lock_platform()
+    runtime_lock = vllm_runtime_lock_path()
     run(
         [
             str(python_executable),
             "-m",
             "pip",
             "install",
-            *dependency_constraints(),
+            *dependency_index_args(),
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            "--requirement",
+            str(runtime_lock),
         ]
     )
     run(
@@ -3495,9 +4343,8 @@ def install_vllm(python_executable: Path) -> None:
             "-m",
             "pip",
             "install",
-            "--force-reinstall",
             "--no-deps",
-            *dependency_override_constraints(),
+            patched_vllm_wheel_install_spec(),
         ]
     )
 
@@ -3506,169 +4353,51 @@ def install_document_kv_package(python_executable: Path, install_spec: str) -> N
     run([str(python_executable), "-m", "pip", "install", "--no-deps", install_spec])
 
 
-def apply_vllm_runtime_patches(config: VLLMSmokeBenchmarkConfig) -> list[dict[str, object]]:
-    """Apply narrow installed-vLLM patches needed by benchmark-only configs."""
+def verify_vllm_runtime_patch_closure(
+    config: VLLMSmokeBenchmarkConfig,
+) -> list[dict[str, object]]:
+    """Read-only preflight for the prepatched vLLM 0.27.1 cu129 runtime."""
 
-    if config.kv_cache_dtype != "fp8_e5m2":
-        return []
-    patches: list[dict[str, object]] = []
-    attention_paths = [
-        site_packages / "vllm" / "model_executor" / "layers" / "attention" / "attention.py"
-        for site_packages in site_packages_dirs(config)
-    ]
-    existing_attention_paths = [path for path in attention_paths if path.is_file()]
-    if not existing_attention_paths:
-        raise FileNotFoundError("Could not find installed vLLM attention.py to patch for fp8_e5m2 KV cache")
-    if len(existing_attention_paths) != 1:
-        raise RuntimeError(f"Expected one installed vLLM attention.py, found {existing_attention_paths!r}")
-
-    path = existing_attention_paths[0]
-    applied = _replace_installed_text_once(
-        path,
-        old="""        if (
-            self.impl.supports_quant_query_input
-            and (
-                self.kv_cache_dtype.startswith("fp8") or self.kv_cache_dtype == "nvfp4"
-            )
-            and not self.kv_cache_dtype.endswith("per_token_head")
-        ):
-""",
-        new="""        if (
-            self.impl.supports_quant_query_input
-            and self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}
-        ):
-""",
-        description="query-quantization block for the fp8_e5m2 KV cache patch",
-    )
-    patches.append(
-        {
-            "id": "vllm-qwen-attention-disable-e5m2-query-quant",
-            "path": str(path),
-            "applied": applied,
-            "reason": (
-                "vLLM 0.23.0 admits fp8_e5m2 KV cache in Triton metadata but its attention "
-                "wrapper's query quantization path asserts only fp8/fp8_e4m3/nvfp4."
-            ),
-        }
-    )
-
-    reshape_paths = [
-        site_packages
-        / "vllm"
-        / "v1"
-        / "attention"
-        / "ops"
-        / "triton_reshape_and_cache_flash.py"
-        for site_packages in site_packages_dirs(config)
-    ]
-    existing_reshape_paths = [path for path in reshape_paths if path.is_file()]
-    if not existing_reshape_paths:
-        raise FileNotFoundError("Could not find installed vLLM triton_reshape_and_cache_flash.py")
-    if len(existing_reshape_paths) != 1:
+    observed_version = installed_package_version(config.venv_python, "vllm")
+    if observed_version != VLLM_PACKAGE_VERSION:
         raise RuntimeError(
-            f"Expected one installed vLLM triton_reshape_and_cache_flash.py, found {existing_reshape_paths!r}"
+            f"patched runtime requires vLLM {VLLM_PACKAGE_VERSION}, "
+            f"found {observed_version}"
         )
-    reshape_path = existing_reshape_paths[0]
-    replacements = (
-        (
-            """    kv_cache_torch_dtype = (
-        current_platform.fp8_dtype()
-        if is_quantized_kv_cache(kv_cache_dtype)
-        else key_cache.dtype
-    )
-""",
-            """    kv_cache_torch_dtype = (
-        torch.float8_e5m2
-        if kv_cache_dtype == "fp8_e5m2"
-        else current_platform.fp8_dtype()
-        if is_quantized_kv_cache(kv_cache_dtype)
-        else key_cache.dtype
-    )
-""",
-        ),
-        (
-            """    kv_cache_torch_dtype = (
-        current_platform.fp8_dtype()
-        if is_quantized_kv_cache(kv_cache_dtype)
-        else kv_cache.dtype
-    )
-""",
-            """    kv_cache_torch_dtype = (
-        torch.float8_e5m2
-        if kv_cache_dtype == "fp8_e5m2"
-        else current_platform.fp8_dtype()
-        if is_quantized_kv_cache(kv_cache_dtype)
-        else kv_cache.dtype
-    )
-""",
-        ),
-    )
-    reshape_applied = False
-    for old, new in replacements:
-        reshape_applied = (
-            _replace_installed_text_once(
-                reshape_path,
-                old=old,
-                new=new,
-                description="fp8_e5m2 Triton KV cache dtype mapping",
+
+    records: list[dict[str, object]] = []
+    for patch in _VLLM_0271_E5M2_PATCH_CLOSURE:
+        relative_path = Path(str(patch["relative_path"]))
+        candidates = [
+            site_packages / relative_path
+            for site_packages in site_packages_dirs(config)
+        ]
+        existing = [path for path in candidates if path.is_file()]
+        if len(existing) != 1:
+            raise RuntimeError(
+                f"Expected one installed {relative_path}, found {existing!r}"
             )
-            or reshape_applied
+        path = existing[0]
+        raw = path.read_bytes()
+        digest = validate_patched_vllm_member_bytes(
+            relative_path.as_posix(),
+            raw,
+            patch_closure=_VLLM_0271_E5M2_PATCH_CLOSURE,
         )
-    patches.append(
-        {
-            "id": "vllm-triton-reshape-cache-use-e5m2-dtype",
-            "path": str(reshape_path),
-            "applied": reshape_applied,
-            "reason": (
-                "vLLM 0.23.0 routes all quantized KV cache dtypes through current_platform.fp8_dtype(); "
-                "on AWS g5/A10G that selects an E4M3 dtype even when --kv-cache-dtype=fp8_e5m2."
-            ),
-        }
-    )
-    triton_attn_paths = [
-        site_packages / "vllm" / "v1" / "attention" / "backends" / "triton_attn.py"
-        for site_packages in site_packages_dirs(config)
-    ]
-    existing_triton_attn_paths = [path for path in triton_attn_paths if path.is_file()]
-    if not existing_triton_attn_paths:
-        raise FileNotFoundError("Could not find installed vLLM triton_attn.py")
-    if len(existing_triton_attn_paths) != 1:
-        raise RuntimeError(f"Expected one installed vLLM triton_attn.py, found {existing_triton_attn_paths!r}")
-    triton_attn_path = existing_triton_attn_paths[0]
-    triton_attn_applied = _replace_installed_text_once(
-        triton_attn_path,
-        old="""        self.fp8_dtype = current_platform.fp8_dtype()
-""",
-        new="""        self.fp8_dtype = (
-            torch.float8_e5m2
-            if kv_cache_dtype == "fp8_e5m2"
-            else current_platform.fp8_dtype()
+        records.append(
+            {
+                "id": patch["id"],
+                "base_version": VLLM_VERSION,
+                "package_version": VLLM_PACKAGE_VERSION,
+                "wheel_sha256": os.environ.get(VLLM_PATCHED_WHEEL_SHA256_ENV),
+                "path": str(path),
+                "verified": True,
+                "installed_sha256": digest,
+                "expected_patched_sha256": patch["patched_sha256"],
+                "reason": patch["reason"],
+            }
         )
-""",
-        description="fp8_e5m2 Triton attention KV cache view dtype",
-    )
-    patches.append(
-        {
-            "id": "vllm-triton-attn-use-e5m2-cache-view",
-            "path": str(triton_attn_path),
-            "applied": triton_attn_applied,
-            "reason": (
-                "TritonAttentionImpl stores the platform default FP8 dtype and views quantized KV "
-                "cache pages through it; on AWS g5/A10G this selects E4M3 for fp8_e5m2 KV pages."
-            ),
-        }
-    )
-    return patches
-
-
-def _replace_installed_text_once(path: Path, *, old: str, new: str, description: str) -> bool:
-    text = path.read_text(encoding="utf-8")
-    if new in text:
-        return False
-    if old not in text:
-        raise RuntimeError(f"Installed {path} did not contain the expected {description}")
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
-    return True
+    return records
 
 
 def installed_package_version(python_executable: Path, package_name: str) -> str:
@@ -3691,10 +4420,26 @@ def probe_vllm_import(
     timeout_seconds: float,
     env: dict[str, str] | None = None,
 ) -> None:
+    expected_versions = {
+        "flashinfer-python": FLASHINFER_PYTHON_CONSTRAINT.split("==", 1)[1],
+        "torch": TORCH_CONSTRAINT.split("==", 1)[1],
+        "torchaudio": TORCHAUDIO_CONSTRAINT.split("==", 1)[1],
+        "torchcodec": TORCHCODEC_CONSTRAINT.split("==", 1)[1],
+        "torchvision": TORCHVISION_CONSTRAINT.split("==", 1)[1],
+        "triton": TRITON_CONSTRAINT.split("==", 1)[1],
+        "vllm": VLLM_PACKAGE_VERSION,
+    }
     code = """
 import importlib.metadata as md
 import json
+import subprocess
 import torch
+import torchaudio
+import torchcodec
+import torchvision
+import triton
+import triton.language as tl
+import flashinfer
 import vllm
 import vllm.entrypoints.openai.api_server
 import document_kv_cache
@@ -3702,13 +4447,72 @@ import vllm_kv_injection.vllm_dynamic_connector as document_kv_vllm_connector
 from document_kv_cache.vllm_smoke import build_vllm_native_provider_probe_record
 from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
+EXPECTED_VERSIONS = __EXPECTED_VERSIONS__
+observed_versions = {
+    distribution: md.version(distribution)
+    for distribution in EXPECTED_VERSIONS
+}
+version_mismatches = {
+    distribution: {
+        "expected": expected,
+        "observed": observed_versions[distribution],
+    }
+    for distribution, expected in EXPECTED_VERSIONS.items()
+    if observed_versions[distribution] != expected
+}
+if version_mismatches:
+    raise RuntimeError(
+        "vLLM cu129 runtime package mismatch: "
+        + json.dumps(version_mismatches, sort_keys=True)
+    )
+if torch.version.cuda != "12.9":
+    raise RuntimeError(
+        f"vLLM cu129 runtime requires torch.version.cuda == '12.9', "
+        f"found {torch.version.cuda!r}"
+    )
+if not torch.cuda.is_available():
+    raise RuntimeError("vLLM cu129 runtime preflight requires an available CUDA GPU")
+
+@triton.jit
+def _cachet_triton_probe(input_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+    offsets = tl.program_id(axis=0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+    values = tl.load(input_ptr + offsets, mask=mask)
+    tl.store(output_ptr + offsets, values + 1.0, mask=mask)
+
+triton_input = torch.arange(256, device="cuda", dtype=torch.float32)
+triton_output = torch.empty_like(triton_input)
+_cachet_triton_probe[(1,)](
+    triton_input,
+    triton_output,
+    triton_input.numel(),
+    BLOCK_SIZE=256,
+)
+torch.cuda.synchronize()
+if not torch.equal(triton_output, triton_input + 1.0):
+    raise RuntimeError("Triton JIT probe returned incorrect values")
+
+nvidia_smi = subprocess.run(
+    [
+        "nvidia-smi",
+        "--query-gpu=driver_version,name",
+        "--format=csv,noheader,nounits",
+    ],
+    check=True,
+    capture_output=True,
+    text=True,
+)
 transfer_config = document_kv_transfer_config()
 payload = {
     "ok": True,
     "torch_version": torch.__version__,
+    "torch_cuda_version": torch.version.cuda,
     "cuda_available": torch.cuda.is_available(),
     "cuda_device_count": torch.cuda.device_count(),
     "vllm_version": md.version("vllm"),
+    "runtime_package_versions": observed_versions,
+    "nvidia_smi_driver_and_devices": nvidia_smi.stdout.strip().splitlines(),
+    "triton_jit_probe_ok": True,
     "document_kv_cache_version": md.version("cachet-kv"),
     "document_kv_cache_module": document_kv_cache.__name__,
     "document_kv_connector_module": document_kv_vllm_connector.__name__,
@@ -3717,10 +4521,14 @@ payload = {
 payload.update(build_vllm_native_provider_probe_record(transfer_config))
 if torch.cuda.is_available():
     payload["cuda_device_name"] = torch.cuda.get_device_name(0)
+    payload["cuda_device_capability"] = list(torch.cuda.get_device_capability(0))
 print(json.dumps(payload, sort_keys=True), flush=True)
-"""
-    argv = [str(python_executable), "-c", code]
-    print("+", " ".join([argv[0], "-c", "<vllm import probe>"]), flush=True)
+""".replace("__EXPECTED_VERSIONS__", repr(expected_versions))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    probe_script_path = output_path.with_name(f"{output_path.stem}.py")
+    probe_script_path.write_text(code, encoding="utf-8")
+    argv = [str(python_executable), str(probe_script_path)]
+    print("+", " ".join([argv[0], "<vllm import probe>"]), flush=True)
     try:
         completed = subprocess.run(
             argv,
@@ -3751,7 +4559,9 @@ print(json.dumps(payload, sort_keys=True), flush=True)
         record.update(last_json_object(completed.stdout))
     write_json(output_path, record)
     if completed.returncode != 0:
-        raise RuntimeError(f"vLLM import probe failed with return code {completed.returncode}")
+        raise RuntimeError(
+            f"vLLM import probe failed with return code {completed.returncode}"
+        )
 
 
 def last_json_object(text: str) -> dict[str, object]:
@@ -3774,13 +4584,236 @@ def write_smoke_datasets(local_dir: Path) -> dict[str, Path]:
     return paths
 
 
+def prepare_publication_latency_inputs(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> dict[str, Path]:
+    """Validate the closed schedule and optionally stage reusable Vanilla KV.
+
+    Baseline cells retain ``dataset_paths`` verbatim.  Vanilla cells replace them
+    only with the paths returned by the closed-bundle staging API.
+    """
+
+    if not config.uses_publication_latency_schedule:
+        return dataset_paths
+    expected_bundle_sha256 = config.publication_latency_expected_input_bundle_sha256
+    assert expected_bundle_sha256 is not None
+    runner_dataset_paths = dataset_paths
+    if config.stages_publication_handoffs:
+        generation_root = config.publication_handoff_generation_output_root
+        local_nvme_dir = config.publication_handoff_local_nvme_dir
+        assert local_nvme_dir is not None
+        input_tokens_target = config.benchmark_manifest_provenance.get(
+            "input_tokens_target"
+        )
+        if type(input_tokens_target) is not int:
+            raise ValueError(
+                "publication handoff staging requires integer input_tokens_target"
+            )
+        if generation_root is not None:
+            execution_file_sha256 = (
+                config.publication_handoff_generation_execution_file_sha256
+            )
+            execution_closed_record_sha256 = (
+                config.publication_handoff_generation_execution_closed_record_sha256
+            )
+            assert execution_file_sha256 is not None
+            assert execution_closed_record_sha256 is not None
+            execution_path = generation_root / (
+                PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME
+            )
+            if _file_sha256(execution_path) != execution_file_sha256:
+                raise ValueError(
+                    "publication handoff generation execution file SHA drift"
+                )
+            generation_result = read_publication_latency_handoff_generation_result(
+                generation_root
+            )
+            if generation_result.record.get("closed_record_sha256") != (
+                execution_closed_record_sha256
+            ) or generation_result.record.get("execution_mode") != (
+                PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED
+            ):
+                raise ValueError(
+                    "publication handoff generation execution binding drift"
+                )
+            serving_bundle = resolve_publication_latency_worker_handoff_bundle(
+                generation_result,
+                context_tokens=input_tokens_target,
+            )
+            manifest = serving_bundle.manifest
+            source_root = serving_bundle.source_root
+        else:
+            manifest_path = config.publication_handoff_bundle_manifest_path
+            bundle_source_root = config.publication_handoff_bundle_source_root
+            manifest_file_sha256 = (
+                config.publication_handoff_bundle_manifest_file_sha256
+            )
+            manifest_closed_record_sha256 = (
+                config.publication_handoff_bundle_manifest_closed_record_sha256
+            )
+            assert manifest_path is not None
+            assert bundle_source_root is not None
+            assert manifest_file_sha256 is not None
+            assert manifest_closed_record_sha256 is not None
+            source_root = bundle_source_root
+            if _file_sha256(manifest_path) != manifest_file_sha256:
+                raise ValueError("publication handoff bundle manifest file SHA drift")
+            manifest = read_publication_latency_handoff_bundle(manifest_path)
+            validate_publication_latency_handoff_bundle(
+                manifest,
+                bundle_root=source_root,
+            )
+            if manifest.get("closed_record_sha256") != (manifest_closed_record_sha256):
+                raise ValueError("publication handoff bundle manifest record SHA drift")
+        if manifest.get("input_bundle_sha256") != expected_bundle_sha256:
+            raise ValueError(
+                "publication handoff manifest input_bundle_sha256 does not match "
+                "the publication latency schedule input bundle"
+            )
+        if manifest.get("context_tokens") != input_tokens_target:
+            raise ValueError(
+                "publication handoff manifest context_tokens does not match "
+                "benchmark_manifest_provenance.input_tokens_target"
+            )
+        cache_methods = {
+            entry.get("cache_method")
+            for dataset in manifest.get("datasets", ())
+            for entry in dataset.get("entries", ())
+        }
+        if cache_methods != {CacheGenerationMethod.VANILLA_PREFILL.value}:
+            raise ValueError(
+                "publication handoff manifest must contain only vanilla_prefill "
+                "artifacts"
+            )
+        staged = stage_publication_latency_handoff_bundle(
+            manifest,
+            source_root=source_root,
+            local_nvme_dir=local_nvme_dir,
+        )
+        _persist_publication_handoff_staging_attestation(
+            staged.attestation_path,
+            config.publication_handoff_staging_attestation_copy_path,
+        )
+        runner_dataset_paths = staged.dataset_paths
+
+    schedule = _publication_latency_schedule_record(config)
+    suite = load_v1_jsonl_suite(
+        suite_id=config.resolved_benchmark_suite_id,
+        paths=runner_dataset_paths,
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+    )
+    validate_publication_latency_block_schedule(
+        schedule,
+        examples=tuple(
+            PublicationLatencyExample(
+                dataset=example.dataset,
+                example_id=example.example_id,
+            )
+            for example in suite.examples
+        ),
+        expected_input_bundle_sha256=expected_bundle_sha256,
+    )
+    _publication_latency_schedule_runner_path(config, schedule=schedule)
+    return runner_dataset_paths
+
+
+def _publication_latency_schedule_record(
+    config: VLLMSmokeBenchmarkConfig,
+) -> dict[str, Any]:
+    record = config.publication_latency_schedule_record
+    if record is not None:
+        return _normalized_json_object(
+            record,
+            "publication_latency_schedule_record",
+        )
+    path = config.publication_latency_schedule_path
+    if path is None:
+        raise ValueError("publication latency schedule is not configured")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"could not load publication latency schedule from {path}: {exc}"
+        ) from exc
+    if not isinstance(value, Mapping):
+        raise ValueError("publication latency schedule JSON must contain an object")
+    return _normalized_json_object(value, "publication_latency_schedule_path")
+
+
+def _publication_latency_schedule_runner_path(
+    config: VLLMSmokeBenchmarkConfig,
+    *,
+    schedule: Mapping[str, Any] | None = None,
+) -> Path | None:
+    if not config.uses_publication_latency_schedule:
+        return None
+    if config.publication_latency_schedule_path is not None:
+        return config.publication_latency_schedule_path
+    record = (
+        _publication_latency_schedule_record(config)
+        if schedule is None
+        else _normalized_json_object(schedule, "publication_latency_schedule_record")
+    )
+    path = config.publication_latency_schedule_materialized_path
+    content = (
+        json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if path.read_bytes() != content:
+            raise ValueError(
+                "refusing to replace a different materialized publication latency "
+                "schedule"
+            )
+        return path
+    try:
+        with path.open("xb") as handle:
+            handle.write(content)
+    except FileExistsError:
+        if path.read_bytes() != content:
+            raise ValueError(
+                "concurrent materialized publication latency schedule differs"
+            ) from None
+    return path
+
+
+def _persist_publication_handoff_staging_attestation(
+    source_path: Path,
+    target_path: Path,
+) -> None:
+    content = source_path.read_bytes()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if target_path.exists():
+        if target_path.read_bytes() != content:
+            raise FileExistsError(
+                "refusing to overwrite a different publication handoff staging "
+                f"attestation: {target_path}"
+            )
+        return
+    try:
+        with target_path.open("xb") as handle:
+            handle.write(content)
+    except FileExistsError:
+        if target_path.read_bytes() != content:
+            raise FileExistsError(
+                "concurrent publication handoff staging attestation differs: "
+                f"{target_path}"
+            ) from None
+
+
 def benchmark_dataset_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, Path]:
     if config.dataset_specs:
-        return parse_dataset_specs(config.dataset_specs, allow_subset=config.allow_dataset_subset)
+        return parse_dataset_specs(
+            config.dataset_specs, allow_subset=config.allow_dataset_subset
+        )
     return write_smoke_datasets(config.local_dir)
 
 
-def parse_dataset_specs(dataset_specs: tuple[str, ...], *, allow_subset: bool = False) -> dict[str, Path]:
+def parse_dataset_specs(
+    dataset_specs: tuple[str, ...], *, allow_subset: bool = False
+) -> dict[str, Path]:
     paths: dict[str, Path] = {}
     for spec in dataset_specs:
         dataset, separator, raw_path = spec.partition("=")
@@ -3793,7 +4826,9 @@ def parse_dataset_specs(dataset_specs: tuple[str, ...], *, allow_subset: bool = 
         paths[dataset] = Path(_cluster_file_path(raw_path))
     missing = set(SMOKE_DATASETS).difference(paths)
     if missing and not allow_subset:
-        raise ValueError(f"dataset specs missing required V1 datasets: {sorted(missing)}")
+        raise ValueError(
+            f"dataset specs missing required V1 datasets: {sorted(missing)}"
+        )
     return {dataset: paths[dataset] for dataset in SMOKE_DATASETS if dataset in paths}
 
 
@@ -3802,7 +4837,7 @@ def smoke_dataset_records() -> dict[str, dict[str, object]]:
         "biography": {
             "example_id": "biography-smoke-1",
             "dataset": "biography",
-            "query": "Which person is described in the biography?",
+            "query": "Which entity is described in the biography?",
             "expected_answer": "Katherine Johnson",
             "documents": [
                 {
@@ -3910,7 +4945,9 @@ def multi_transfer_config_json(config: VLLMSmokeBenchmarkConfig) -> str:
 
     cachet_child = json.loads(cachet_transfer_config_json(config))
     lmcache_child = json.loads(lmcache_transfer_config_json())
-    return multi_connector_transfer_config_json(connectors=[cachet_child, lmcache_child])
+    return multi_connector_transfer_config_json(
+        connectors=[cachet_child, lmcache_child]
+    )
 
 
 def kv_transfer_config_json(config: VLLMSmokeBenchmarkConfig) -> str:
@@ -3921,7 +4958,9 @@ def kv_transfer_config_json(config: VLLMSmokeBenchmarkConfig) -> str:
     return cachet_transfer_config_json(config)
 
 
-def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: Path) -> list[str]:
+def build_vllm_server_args(
+    config: VLLMSmokeBenchmarkConfig, python_executable: Path
+) -> list[str]:
     args = [
         str(python_executable),
         "-u",
@@ -3962,8 +5001,11 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
         # emits KV stats also registered prom metrics; Cachet's connector emits
         # stats but no prom metrics, so disable server-side stat logging for the
         # hybrid arm. TTFT is measured client-side, so this does not affect results.
-        *(["--disable-log-stats"] if config.kv_connector_mode == MULTI_KV_CONNECTOR_MODE else []),
-        "--trust-remote-code",
+        *(
+            ["--disable-log-stats"]
+            if config.kv_connector_mode == MULTI_KV_CONNECTOR_MODE
+            else []
+        ),
         "--no-enable-log-requests",
     ]
     if config.model_quantization is not None:
@@ -3986,7 +5028,13 @@ def start_vllm_server(
     argv = build_vllm_server_args(config, python_executable)
     print("+", " ".join(argv), flush=True)
     with log_path.open("w", encoding="utf-8") as log_handle:
-        return subprocess.Popen(argv, stdout=log_handle, stderr=subprocess.STDOUT, text=True, env=server_env(config))
+        return subprocess.Popen(
+            argv,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=server_env(config),
+        )
 
 
 def wait_for_server(
@@ -4002,15 +5050,25 @@ def wait_for_server(
     last_model_error = ""
     while time.monotonic() < deadline:
         if server.poll() is not None:
-            raise RuntimeError(f"vLLM server exited with {server.returncode}; log tail:\n{tail(log_path)}")
+            raise RuntimeError(
+                f"vLLM server exited with {server.returncode}; log tail:\n{tail(log_path)}"
+            )
         try:
             with urllib.request.urlopen(health_url, timeout=5) as response:
                 if 200 <= response.status < 300:
                     model_ids = fetch_served_model_ids(models_url)
                     if SERVED_MODEL_NAME in model_ids:
                         return
-                    last_model_error = f"health OK but served models were {sorted(model_ids)!r}"
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                    last_model_error = (
+                        f"health OK but served models were {sorted(model_ids)!r}"
+                    )
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+        ) as exc:
             last_model_error = str(exc)
             pass
         time.sleep(5)
@@ -4034,7 +5092,9 @@ def build_benchmark_runner_args(
     config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
 ) -> list[str]:
     baseline_extra_body = _benchmark_extra_body(
-        cache_salt=BASELINE_PREFIX_CACHE_SALT if config.uses_prepared_datasets else None,
+        cache_salt=BASELINE_PREFIX_CACHE_SALT
+        if config.uses_prepared_datasets
+        else None,
         force_max_tokens=config.force_max_tokens,
     )
     cache_extra_body = _benchmark_extra_body(
@@ -4055,6 +5115,8 @@ def build_benchmark_runner_args(
         config.hardware_target,
         "--max-tokens",
         str(config.max_tokens),
+        "--temperature",
+        str(config.temperature),
         "--timeout-seconds",
         str(config.timeout_seconds),
         "--repeats",
@@ -4065,6 +5127,20 @@ def build_benchmark_runner_args(
         "--output-json",
         str(config.benchmark_output_path),
     ]
+    if config.generation_seed is not None:
+        args.extend(["--generation-seed", str(config.generation_seed)])
+    publication_schedule_path = _publication_latency_schedule_runner_path(config)
+    if publication_schedule_path is not None:
+        expected_bundle_sha256 = config.publication_latency_expected_input_bundle_sha256
+        assert expected_bundle_sha256 is not None
+        args.extend(
+            [
+                "--publication-latency-schedule-json",
+                str(publication_schedule_path),
+                "--publication-latency-expected-input-bundle-sha256",
+                expected_bundle_sha256,
+            ]
+        )
     if config.benchmark_interleave_examples:
         args.append("--interleave-examples")
     if config.uses_prepared_datasets:
@@ -4077,9 +5153,16 @@ def build_benchmark_runner_args(
             ]
         )
     if baseline_extra_body:
-        args.extend(["--baseline-extra-body-json", json.dumps(baseline_extra_body, sort_keys=True)])
+        args.extend(
+            [
+                "--baseline-extra-body-json",
+                json.dumps(baseline_extra_body, sort_keys=True),
+            ]
+        )
     if cache_extra_body:
-        args.extend(["--cache-extra-body-json", json.dumps(cache_extra_body, sort_keys=True)])
+        args.extend(
+            ["--cache-extra-body-json", json.dumps(cache_extra_body, sort_keys=True)]
+        )
     if config.cache_runtime_prompt:
         args.append("--cache-runtime-prompt")
     for arm_id in config.benchmark_arms:
@@ -4098,9 +5181,7 @@ def build_benchmark_runner_args(
     if config.benchmark_evidence_policy is not None:
         args.extend(["--evidence-policy", config.benchmark_evidence_policy])
     args.extend(
-        benchmark_manifest_provenance_runner_args(
-            config.benchmark_manifest_provenance
-        )
+        benchmark_manifest_provenance_runner_args(config.benchmark_manifest_provenance)
     )
     if config.benchmark_runtime_id is not None:
         args.extend(["--runtime-id", config.benchmark_runtime_id])
@@ -4134,7 +5215,9 @@ def terminate_process(process: subprocess.Popen) -> None:
 
 def write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def copy_file_if_exists(source_path: Path, target_path: Path) -> None:
@@ -4155,7 +5238,9 @@ def server_env(config: VLLMSmokeBenchmarkConfig) -> dict[str, str]:
     return env
 
 
-def _populate_handoff_generation_env(env: dict[str, str], config: VLLMSmokeBenchmarkConfig) -> None:
+def _populate_handoff_generation_env(
+    env: dict[str, str], config: VLLMSmokeBenchmarkConfig
+) -> None:
     if config.is_representative_submission:
         _set_or_validate_env(env, "DOCUMENT_KV_EVICT_PAGE_CACHE", "1")
     if config.handoff_generation is None:
@@ -4175,7 +5260,7 @@ def _populate_handoff_generation_env(env: dict[str, str], config: VLLMSmokeBench
             config.tokenizer_revision,
         )
     env.setdefault(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, config.model_dtype)
-    env.setdefault(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, "true")
+    env.setdefault(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, "false")
     if _is_bitsandbytes_4bit_quantization(config.model_quantization):
         env.setdefault(CACHET_TRANSFORMERS_QUANTIZATION_ENV, "bitsandbytes-4bit")
         env.setdefault(CACHET_TRANSFORMERS_DEVICE_MAP_ENV, "auto")
@@ -4184,6 +5269,10 @@ def _populate_handoff_generation_env(env: dict[str, str], config: VLLMSmokeBench
             json.dumps(
                 {
                     "bnb_4bit_compute_dtype": config.model_dtype,
+                    "bnb_4bit_quant_storage": "uint8",
+                    "bnb_4bit_quant_type": "nf4",
+                    "bnb_4bit_use_double_quant": True,
+                    "load_in_4bit": True,
                 },
                 sort_keys=True,
             ),
@@ -4202,16 +5291,19 @@ def _set_or_validate_env(env: dict[str, str], name: str, value: str) -> None:
 def _is_bitsandbytes_4bit_quantization(value: str | None) -> bool:
     if value is None:
         return False
-    return value.strip().lower().replace("_", "-") in {"bitsandbytes", "bitsandbytes-4bit"}
+    return value.strip().lower().replace("_", "-") in {
+        "bitsandbytes",
+        "bitsandbytes-4bit",
+    }
 
 
 def vllm_server_env_overrides() -> dict[str, str]:
     return {
         "PYTHONUNBUFFERED": "1",
         "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
-        # Databricks' system nvcc can be older than the CUDA 13 headers in the
-        # vLLM wheel stack. The native sampler still exercises Cachet KV import
-        # while avoiding FlashInfer sampler JIT during the smoke.
+        # Databricks' system CUDA 12.1 toolchain can be older than the cu129
+        # wheel stack. The native sampler still exercises Cachet KV import while
+        # avoiding FlashInfer sampler JIT during the smoke.
         VLLM_USE_FLASHINFER_SAMPLER_ENV: "0",
     }
 
@@ -4276,17 +5368,19 @@ def tail_text(text: str | bytes | None, *, max_chars: int = 12000) -> str:
 def tail(path: Path, *, lines: int = 120) -> str:
     if not path.exists():
         return "<missing log>"
-    return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+    return "\n".join(
+        path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
-    parser = argparse.ArgumentParser(description="Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5/g6.")
+    parser = argparse.ArgumentParser(
+        description="Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5/g6."
+    )
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument(
         "--benchmark-suite-id",
-        help=(
-            "Shared benchmark suite/experiment ID for independently executed arms."
-        ),
+        help=("Shared benchmark suite/experiment ID for independently executed arms."),
     )
     parser.add_argument(
         "--runtime-id",
@@ -4294,7 +5388,11 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         help="Unique physical execution ID recorded in benchmark provenance.",
     )
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--model-id", default=HF_MODEL_ID, help="HF model path/id passed to vLLM --model.")
+    parser.add_argument(
+        "--model-id",
+        default=HF_MODEL_ID,
+        help="HF model path/id passed to vLLM --model.",
+    )
     parser.add_argument(
         "--model-revision",
         help="Immutable Hugging Face model revision passed to vLLM --revision.",
@@ -4306,10 +5404,18 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
             "--tokenizer-revision."
         ),
     )
-    parser.add_argument("--model-dtype", default="bfloat16", help="Model dtype passed to vLLM --dtype.")
-    parser.add_argument("--model-quantization", help="Optional vLLM --quantization value.")
-    parser.add_argument("--kv-cache-dtype", help="Optional vLLM --kv-cache-dtype value.")
-    parser.add_argument("--attention-backend", help="Optional vLLM --attention-backend value.")
+    parser.add_argument(
+        "--model-dtype", default="bfloat16", help="Model dtype passed to vLLM --dtype."
+    )
+    parser.add_argument(
+        "--model-quantization", help="Optional vLLM --quantization value."
+    )
+    parser.add_argument(
+        "--kv-cache-dtype", help="Optional vLLM --kv-cache-dtype value."
+    )
+    parser.add_argument(
+        "--attention-backend", help="Optional vLLM --attention-backend value."
+    )
     parser.add_argument("--max-tokens", type=int, default=32)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument("--import-probe-timeout-seconds", type=float, default=180.0)
@@ -4377,6 +5483,28 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
             "(distinct docs across concurrent requests) instead of repeating one example."
         ),
     )
+    schedule_source = parser.add_mutually_exclusive_group()
+    schedule_source.add_argument(
+        "--publication-latency-schedule-json",
+        help=(
+            "Path to the canonical closed publication latency schedule passed "
+            "unchanged to the benchmark runner."
+        ),
+    )
+    schedule_source.add_argument(
+        "--publication-latency-schedule-record-json",
+        help=(
+            "Canonical closed publication latency schedule as an inline JSON "
+            "object; materialized on node-local storage before runner launch."
+        ),
+    )
+    parser.add_argument(
+        "--publication-latency-expected-input-bundle-sha256",
+        help=(
+            "Verified main-latency input bundle SHA-256; required with either "
+            "publication latency schedule source."
+        ),
+    )
     parser.add_argument(
         "--system-prompt-position",
         choices=SYSTEM_PROMPT_POSITIONS,
@@ -4428,8 +5556,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument(
         "--representative-workload-profile",
         choices=tuple(
-            profile.profile_id
-            for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES
+            profile.profile_id for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES
         ),
         help=(
             "Registered exact representative workload profile. Must be supplied "
@@ -4519,6 +5646,28 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--publication-handoff-generation-output-root",
+        help=(
+            "Durable root containing the qualified distributed publication "
+            "handoff-generation execution record and closed bundles."
+        ),
+    )
+    parser.add_argument(
+        "--publication-handoff-generation-execution-file-sha256",
+        help="SHA-256 of the canonical distributed generation execution JSON.",
+    )
+    parser.add_argument(
+        "--publication-handoff-generation-execution-closed-record-sha256",
+        help="Closed-record SHA-256 inside the distributed generation execution JSON.",
+    )
+    parser.add_argument(
+        "--publication-handoff-local-nvme-dir",
+        help=(
+            "Nonexistent node-local destination under --local-root for atomic "
+            "publication handoff staging."
+        ),
+    )
+    parser.add_argument(
         "--benchmark-handoff-output-dir",
         help="Output directory for generated handoff bundles and enriched JSONL. Defaults under --output-dir.",
     )
@@ -4570,7 +5719,9 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     )
     args = parser.parse_args(argv)
     output_dir = Path(_cluster_file_path(args.output_dir))
-    handoff_generation = _handoff_generation_config_from_args(args, output_dir=output_dir)
+    handoff_generation = _handoff_generation_config_from_args(
+        args, output_dir=output_dir
+    )
     runtime_identity = (
         None
         if args.runtime_identity_json is None
@@ -4586,6 +5737,14 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         else _json_object_from_cli(
             args.benchmark_manifest_provenance_json,
             "--benchmark-manifest-provenance-json",
+        )
+    )
+    publication_latency_schedule_record = (
+        None
+        if args.publication_latency_schedule_record_json is None
+        else _json_object_from_cli(
+            args.publication_latency_schedule_record_json,
+            "--publication-latency-schedule-record-json",
         )
     )
     return VLLMSmokeBenchmarkConfig(
@@ -4642,6 +5801,33 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         package_install_spec=args.package_install_spec,
         handoff_generation=handoff_generation,
         runtime_identity=runtime_identity,
+        publication_latency_schedule_record=publication_latency_schedule_record,
+        publication_latency_schedule_path=(
+            None
+            if args.publication_latency_schedule_json is None
+            else Path(_cluster_file_path(args.publication_latency_schedule_json))
+        ),
+        publication_latency_expected_input_bundle_sha256=(
+            args.publication_latency_expected_input_bundle_sha256
+        ),
+        publication_handoff_generation_output_root=(
+            None
+            if args.publication_handoff_generation_output_root is None
+            else Path(
+                _cluster_file_path(args.publication_handoff_generation_output_root)
+            )
+        ),
+        publication_handoff_generation_execution_file_sha256=(
+            args.publication_handoff_generation_execution_file_sha256
+        ),
+        publication_handoff_generation_execution_closed_record_sha256=(
+            args.publication_handoff_generation_execution_closed_record_sha256
+        ),
+        publication_handoff_local_nvme_dir=(
+            None
+            if args.publication_handoff_local_nvme_dir is None
+            else Path(_cluster_file_path(args.publication_handoff_local_nvme_dir))
+        ),
     )
 
 

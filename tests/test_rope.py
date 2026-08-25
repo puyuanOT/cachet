@@ -178,8 +178,14 @@ def test_provider_rope_cos_sin_for_load_uses_absolute_positions():
         source_token_start = 4000
         token_count = 6
 
-    dst = torch.zeros(4, 2, 16, 8, 128)  # [blocks, 2, block_size, kv_heads, head_dim]
-    cos, sin = _rope_cos_sin_for_load(_Load(), dst, rope_theta=THETA, rotary_dim=None)
+    dst = torch.zeros(4, 8, 16, 256)  # [blocks, kv_heads, block_size, 2 * head_dim]
+    cos, sin = _rope_cos_sin_for_load(
+        _Load(),
+        dst,
+        head_dim=128,
+        rope_theta=THETA,
+        rotary_dim=None,
+    )
     assert cos.shape == (6, 128) and sin.shape == (6, 128)
     ref_cos, ref_sin = rope_cos_sin(torch.arange(4000, 4006), head_dim=128, rope_theta=THETA, rotary_dim=128)
     assert torch.allclose(cos, ref_cos, atol=1e-6)

@@ -1,10 +1,14 @@
 # Storage Benchmark Index
 
-Storage appears in the [benchmark root](../) as a storage-tier ablation and as
-resource-utilization fields. The current RAM, local-disk, and mounted Unity
-Catalog serving measurements are backed by the
-[sanitized descriptive evidence](../appendix/main-vanilla-descriptive-evidence/).
-The Unity Catalog backend-cache state is unproven, so that row is not labeled a
-strict cold-UC measurement. Historical storage-reader-only results were removed
-from `benchmarks/` because they did not measure model-serving latency under the
-current Q4-weight + Q8-document-KV protocol.
+The vLLM 0.27.1 campaign will refresh the implemented Vanilla KV storage
+comparison with a separate matched Disk/RAM/Unity Catalog trio in each of five
+deployment blocks. Every cell uses the same capacity-safe 16k schedule: two
+examples per dataset, 32 repeats, 256 requests, and concurrency 4. Disk is a
+fresh strict-cold local-NVMe control; RAM proves a 16-GiB provider payload cache
+was populated and verified before all measured hits; Unity Catalog proves
+mounted-path loads, successful OS-eviction requests, and exact bytes while
+retaining the honest `backend cache unproven` label. The combined hybrid policy
+remains unsupported.
+
+No prior storage number is carried forward. See the [benchmark root](../) for
+the explicit `N/A` table.

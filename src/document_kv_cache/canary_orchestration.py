@@ -42,7 +42,6 @@ from document_kv_cache.benchmarks import (
     build_prompt_parts,
 )
 from document_kv_cache.databricks_resource_ledger import (
-    MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
     create_databricks_cluster_hour_ledger_json,
@@ -60,6 +59,10 @@ from document_kv_cache.model_profiles import (
     QWEN3_4B_ROPE_THETA,
 )
 from document_kv_cache.models import CacheGenerationMethod
+from document_kv_cache.serving_env import (
+    VLLM_DEPENDENCY_CONSTRAINTS,
+    VLLM_VERSION,
+)
 from document_kv_cache.storage import local_path
 
 
@@ -79,9 +82,7 @@ HANDOFF_TOPOLOGY_ATTESTATION_SCHEMA_VERSION = 1
 # physical-isolated merge is an ordinary benchmark run, not a parallel schema.
 ISOLATED_CANARY_AGGREGATE_RECORD_TYPE = BENCHMARK_RUN_RECORD_TYPE
 REPRESENTATIVE_CANARY_JOB_COUNT = 10
-REPRESENTATIVE_CANARY_AGGREGATE_CLUSTER_HOUR_CAP = (
-    MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-)
+REPRESENTATIVE_CANARY_AGGREGATE_CLUSTER_HOUR_CAP = 120.0
 REPRESENTATIVE_CANARY_FIRST_WAVE_CLUSTER_HOURS = 40.0
 REPRESENTATIVE_CANARY_WORKLOAD_MANIFEST_RECORD_TYPE = (
     "document_kv.representative_canary_workload_manifest.v1"
@@ -92,17 +93,7 @@ REPRESENTATIVE_CANARY_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
 REPRESENTATIVE_CANARY_MODEL_REVISION = (
     "cdbee75f17c01a7cc42f958dc650907174af0554"
 )
-REPRESENTATIVE_VLLM_PACKAGE_PINS = (
-    "vllm==0.23.0",
-    "transformers==5.12.1",
-    "huggingface-hub==1.20.1",
-    "tokenizers==0.22.2",
-    "numpy==2.3.5",
-    "fastapi[standard]==0.136.0",
-    "prometheus-fastapi-instrumentator==8.0.0",
-    "bitsandbytes==0.49.2",
-    "accelerate==1.14.0",
-)
+REPRESENTATIVE_VLLM_PACKAGE_PINS = VLLM_DEPENDENCY_CONSTRAINTS
 REPRESENTATIVE_SGLANG_PACKAGE_PINS = ("sglang==0.5.10.post1",)
 REPRESENTATIVE_POST_ROPE_HANDOFF_GENERATOR_FACTORY = (
     "document_kv_cache.transformers_generator:"
@@ -1304,7 +1295,7 @@ def _validate_representative_vllm_payload_parameters(
         "tokenizer_id": REPRESENTATIVE_CANARY_MODEL_ID,
         "tokenizer_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
         "engine_id": "vllm",
-        "engine_version": "0.23.0",
+        "engine_version": VLLM_VERSION,
         "serving_platform": "vllm",
         "model_dtype": "bfloat16",
         "model_quantization": "none",

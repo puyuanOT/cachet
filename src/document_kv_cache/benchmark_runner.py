@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from itertools import zip_longest
 from hashlib import sha256
+import json
 import math
 import random
 import time
@@ -31,10 +32,13 @@ from document_kv_cache._benchmark_manifest import (
     benchmark_experiment_manifest_to_record,
 )
 from document_kv_cache._benchmark_records import (
+    BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE,
     BENCHMARK_RUN_RECORD_TYPE,
     benchmark_experiment_manifest_from_record,
     benchmark_record_aggregate_issues,
     benchmark_record_payload_digest,
+    benchmark_resource_evidence_from_record,
+    benchmark_resource_evidence_to_record,
     benchmark_run_result_from_record,
     benchmark_run_result_payload_to_record,
     benchmark_run_result_to_evidence_record,
@@ -47,6 +51,7 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
     DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
@@ -63,6 +68,7 @@ from document_kv_cache.benchmarks import (
     compare_to_baseline,
     document_kv_cache_arm,
     default_dataset_scorer_registry,
+    final_answer_measurement_metadata,
     require_runnable_cachet_benchmark_arm,
     summarize_measurements,
     validate_v1_dataset,
@@ -76,6 +82,7 @@ from document_kv_cache._benchmark_models import (
     BenchmarkExecutionWindow,
     BenchmarkExperimentManifest,
     BenchmarkManifestContext,
+    BenchmarkResourceEvidence,
     BenchmarkRunResult,
     BenchmarkScorerManifest,
     _deep_freeze_json_mapping,
@@ -84,23 +91,61 @@ from document_kv_cache._benchmark_models import (
     _validate_non_negative_finite_number,
     _validate_positive_finite_number,
     _validate_positive_int,
+    _validate_sha256_digest,
     _validated_decode_settings,
+)
+from document_kv_cache.publication_inputs import (
+    PublicationLatencyExample,
+    project_publication_latency_request_order,
 )
 
 
 DEFAULT_OPENAI_COMPLETIONS_ENDPOINT = "/v1/completions"
 PREFIX_CACHE_SALT_MODES = ("static", "per_request")
 
+PUBLICATION_LATENCY_SCHEDULE_SHA256_METADATA_KEY = (
+    "publication_latency_schedule_sha256"
+)
+PUBLICATION_LATENCY_REQUESTS_SHA256_METADATA_KEY = (
+    "publication_latency_requests_sha256"
+)
+PUBLICATION_LATENCY_INPUT_BUNDLE_SHA256_METADATA_KEY = (
+    "publication_latency_input_bundle_sha256"
+)
+PUBLICATION_LATENCY_SEED_SHA256_METADATA_KEY = "publication_latency_seed_sha256"
+PUBLICATION_LATENCY_DEPLOYMENT_BLOCK_METADATA_KEY = (
+    "publication_latency_deployment_block"
+)
+PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY = "publication_latency_request_id"
+PUBLICATION_LATENCY_REQUEST_INDEX_METADATA_KEY = "publication_latency_request_index"
+PUBLICATION_LATENCY_LOGICAL_KEY_SHA256_METADATA_KEY = (
+    "publication_latency_logical_key_sha256"
+)
+PUBLICATION_LATENCY_LANE_METADATA_KEY = "publication_latency_lane"
+PUBLICATION_LATENCY_LANE_POSITION_METADATA_KEY = "publication_latency_lane_position"
+
 
 __all__ = [
     "BENCHMARK_RUN_RECORD_TYPE",
+    "BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE",
     "BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE",
     "DEFAULT_OPENAI_COMPLETIONS_ENDPOINT",
+    "PUBLICATION_LATENCY_SCHEDULE_SHA256_METADATA_KEY",
+    "PUBLICATION_LATENCY_REQUESTS_SHA256_METADATA_KEY",
+    "PUBLICATION_LATENCY_INPUT_BUNDLE_SHA256_METADATA_KEY",
+    "PUBLICATION_LATENCY_SEED_SHA256_METADATA_KEY",
+    "PUBLICATION_LATENCY_DEPLOYMENT_BLOCK_METADATA_KEY",
+    "PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY",
+    "PUBLICATION_LATENCY_REQUEST_INDEX_METADATA_KEY",
+    "PUBLICATION_LATENCY_LOGICAL_KEY_SHA256_METADATA_KEY",
+    "PUBLICATION_LATENCY_LANE_METADATA_KEY",
+    "PUBLICATION_LATENCY_LANE_POSITION_METADATA_KEY",
     "BenchmarkGeneration",
     "BenchmarkEngineRequest",
     "BenchmarkEngine",
     "BenchmarkRunResult",
     "BenchmarkExecutionWindow",
+    "BenchmarkResourceEvidence",
     "BenchmarkArmManifest",
     "BenchmarkArmEnvironment",
     "BenchmarkScorerManifest",
@@ -117,6 +162,8 @@ __all__ = [
     "benchmark_run_result_to_record",
     "benchmark_run_result_to_evidence_record",
     "benchmark_record_payload_digest",
+    "benchmark_resource_evidence_to_record",
+    "benchmark_resource_evidence_from_record",
     "benchmark_experiment_manifest_to_record",
     "benchmark_experiment_manifest_from_record",
     "benchmark_run_result_from_record",
@@ -217,6 +264,20 @@ class BenchmarkEngine(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class _PublicationLatencyScheduleExecution:
+    schedule_sha256: str
+    requests_sha256: str
+    input_bundle_sha256: str
+    seed_sha256: str
+    deployment_block: int
+    projection: tuple[tuple[str, str, int], ...]
+    request_ids: tuple[str, ...]
+    lanes: tuple[tuple[int, ...], ...]
+    lane_by_request_index: tuple[int, ...]
+    lane_position_by_request_index: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class OpenAICompatibleBenchmarkConfig:
     suite_id: str
     dataset_paths: Mapping[str, str | Path]
@@ -270,7 +331,7 @@ class OpenAICompatibleBenchmarkConfig:
     tensor_parallel_size: int | None = None
     pipeline_parallel_size: int | None = None
     package_revisions: tuple[tuple[str, str], ...] = ()
-    prompt_template_version: str = "v1-benchmark"
+    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION
     input_tokens_target: int | None = None
     generation_seed: int | None = None
     hardware_fingerprint: str = "unresolved"
@@ -286,6 +347,9 @@ class OpenAICompatibleBenchmarkConfig:
     varied_setting: str = ""
     reference_arm_id: str = ""
     suite_contract: Literal["v1", "generalized"] = "v1"
+    publication_latency_schedule_record: Mapping[str, Any] | None = None
+    publication_latency_schedule_path: str | Path | None = None
+    publication_latency_expected_input_bundle_sha256: str | None = None
 
     def __post_init__(self) -> None:
         _validate_non_empty_string(self.suite_id, "suite_id")
@@ -400,6 +464,7 @@ class OpenAICompatibleBenchmarkConfig:
             raise ValueError("warmups must be a non-negative integer")
         if self.evidence_policy not in {"smoke", "canary", "publication"}:
             raise ValueError("evidence_policy must be smoke, canary, or publication")
+        _validate_publication_latency_config(self)
         # Validate all manifest metadata and normalize package/decode settings once.
         context = self.manifest_context
         object.__setattr__(self, "package_revisions", context.package_revisions)
@@ -476,6 +541,82 @@ def _validated_dataset_paths(value: Any) -> dict[str, str | Path]:
             raise ValueError(f"dataset_paths.{dataset} must be a path string or Path")
         paths[dataset] = path
     return paths
+
+
+def _validate_publication_latency_config(
+    config: OpenAICompatibleBenchmarkConfig,
+) -> None:
+    record = config.publication_latency_schedule_record
+    raw_path = config.publication_latency_schedule_path
+    expected_bundle_sha256 = (
+        config.publication_latency_expected_input_bundle_sha256
+    )
+    if record is not None and raw_path is not None:
+        raise ValueError(
+            "publication_latency_schedule_record and "
+            "publication_latency_schedule_path are mutually exclusive"
+        )
+    schedule_enabled = record is not None or raw_path is not None
+    if schedule_enabled != (expected_bundle_sha256 is not None):
+        raise ValueError(
+            "a publication latency schedule and "
+            "publication_latency_expected_input_bundle_sha256 must be provided "
+            "together"
+        )
+    if not schedule_enabled:
+        return
+    assert expected_bundle_sha256 is not None
+    _validate_sha256_digest(
+        expected_bundle_sha256,
+        "publication_latency_expected_input_bundle_sha256",
+    )
+    if config.shuffle or config.interleave_examples or config.seed is not None:
+        raise ValueError(
+            "a publication latency schedule owns request order; shuffle, "
+            "interleave_examples, and benchmark seed must be disabled"
+        )
+    if record is not None:
+        object.__setattr__(
+            config,
+            "publication_latency_schedule_record",
+            _deep_freeze_json_mapping(
+                _json_object_mapping(
+                    record,
+                    "publication_latency_schedule_record",
+                )
+            ),
+        )
+    if raw_path is not None:
+        if not isinstance(raw_path, (str, Path)) or not str(raw_path):
+            raise ValueError(
+                "publication_latency_schedule_path must be a non-empty path"
+            )
+        object.__setattr__(
+            config,
+            "publication_latency_schedule_path",
+            Path(raw_path).expanduser(),
+        )
+
+
+def _publication_latency_schedule_record_from_config(
+    config: OpenAICompatibleBenchmarkConfig,
+) -> Mapping[str, Any] | None:
+    record = config.publication_latency_schedule_record
+    if record is not None:
+        return _json_object_mapping(
+            record,
+            "publication_latency_schedule_record",
+        )
+    path = config.publication_latency_schedule_path
+    if path is None:
+        return None
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"could not load publication latency schedule from {path}: {exc}"
+        ) from exc
+    return _json_object_mapping(value, "publication_latency_schedule_path")
 
 
 _RESERVED_ARM_EXTRA_BODY_FIELDS = frozenset(
@@ -719,6 +860,265 @@ def _benchmark_arms_for_ids(arm_ids: Sequence[str] = ()) -> tuple[BenchmarkArm, 
     return tuple(by_id[arm_id] for arm_id in arm_ids)
 
 
+def _resolve_publication_latency_schedule(
+    suite: BenchmarkSuite,
+    *,
+    arms: Sequence[BenchmarkArm],
+    repeats: int,
+    request_parallelism: int,
+    isolate_arms: bool,
+    shuffle: bool,
+    seed: int | None,
+    interleave_examples: bool,
+    record: Mapping[str, Any] | None,
+    expected_input_bundle_sha256: str | None,
+) -> _PublicationLatencyScheduleExecution | None:
+    if (record is None) != (expected_input_bundle_sha256 is None):
+        raise ValueError(
+            "publication_latency_schedule_record and "
+            "publication_latency_expected_input_bundle_sha256 must be provided "
+            "together"
+        )
+    if record is None:
+        return None
+    assert expected_input_bundle_sha256 is not None
+    _validate_sha256_digest(
+        expected_input_bundle_sha256,
+        "publication_latency_expected_input_bundle_sha256",
+    )
+    if shuffle or interleave_examples or seed is not None:
+        raise ValueError(
+            "a publication latency schedule owns request order; shuffle, "
+            "interleave_examples, and benchmark seed must be disabled"
+        )
+    if len(arms) > 1 and not isolate_arms:
+        raise ValueError(
+            "publication latency schedules require isolated method phases"
+        )
+    schedule_examples = tuple(
+        PublicationLatencyExample(
+            dataset=example.dataset,
+            example_id=example.example_id,
+        )
+        for example in suite.examples
+    )
+    projection = project_publication_latency_request_order(
+        record,
+        examples=schedule_examples,
+        expected_input_bundle_sha256=expected_input_bundle_sha256,
+    )
+    expected_keys = {
+        (example.dataset, example.example_id, repeat_index)
+        for example in suite.examples
+        for repeat_index in range(1, repeats + 1)
+    }
+    if len(projection) != len(expected_keys) or set(projection) != expected_keys:
+        raise ValueError(
+            "publication latency schedule membership must cover every suite example "
+            "and configured repeat exactly once, with no extras"
+        )
+
+    lanes_by_parallelism = record.get("lanes")
+    if not isinstance(lanes_by_parallelism, Mapping):
+        raise ValueError("publication latency schedule lanes must be an object")
+    raw_lanes = lanes_by_parallelism.get(str(request_parallelism))
+    if not isinstance(raw_lanes, Sequence) or isinstance(
+        raw_lanes, (str, bytes, bytearray)
+    ):
+        raise ValueError(
+            "publication latency schedule does not define identity-sticky lanes "
+            f"for request_parallelism={request_parallelism}"
+        )
+    if len(raw_lanes) != request_parallelism:
+        raise ValueError(
+            "publication latency schedule lane count does not match "
+            "request_parallelism"
+        )
+    lanes: list[tuple[int, ...]] = []
+    lane_by_request_index = [-1] * len(projection)
+    lane_position_by_request_index = [-1] * len(projection)
+    for lane_index, raw_lane in enumerate(raw_lanes):
+        if not isinstance(raw_lane, Sequence) or isinstance(
+            raw_lane, (str, bytes, bytearray)
+        ):
+            raise ValueError("publication latency schedule lane must be an array")
+        lane: list[int] = []
+        for lane_position, request_index in enumerate(raw_lane):
+            if (
+                type(request_index) is not int
+                or request_index < 0
+                or request_index >= len(projection)
+                or lane_by_request_index[request_index] != -1
+            ):
+                raise ValueError(
+                    "publication latency schedule lanes must contain each request "
+                    "index exactly once"
+                )
+            lane.append(request_index)
+            lane_by_request_index[request_index] = lane_index
+            lane_position_by_request_index[request_index] = lane_position
+        lanes.append(tuple(lane))
+    if any(lane_index < 0 for lane_index in lane_by_request_index):
+        raise ValueError(
+            "publication latency schedule lanes are missing request indices"
+        )
+
+    raw_requests = record.get("requests")
+    if not isinstance(raw_requests, Sequence) or isinstance(
+        raw_requests, (str, bytes, bytearray)
+    ):
+        raise ValueError("publication latency schedule requests must be an array")
+    request_ids: list[str] = []
+    for request_index, raw_request in enumerate(raw_requests):
+        if not isinstance(raw_request, Mapping):
+            raise ValueError("publication latency schedule request must be an object")
+        request_id = raw_request.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError(
+                f"publication latency schedule request {request_index} has no request_id"
+            )
+        request_ids.append(request_id)
+
+    schedule_sha256 = record.get("closed_record_sha256")
+    requests_sha256 = record.get("requests_sha256")
+    seed_sha256 = record.get("seed_sha256")
+    input_bundle_sha256 = record.get("input_bundle_sha256")
+    for field_name, value in (
+        ("closed_record_sha256", schedule_sha256),
+        ("requests_sha256", requests_sha256),
+        ("seed_sha256", seed_sha256),
+        ("input_bundle_sha256", input_bundle_sha256),
+    ):
+        _validate_sha256_digest(value, f"publication_latency_schedule.{field_name}")
+    deployment_block = record.get("deployment_block")
+    if type(deployment_block) is not int or deployment_block <= 0:
+        raise ValueError(
+            "publication latency schedule deployment_block must be positive"
+        )
+    assert isinstance(schedule_sha256, str)
+    assert isinstance(requests_sha256, str)
+    assert isinstance(seed_sha256, str)
+    assert isinstance(input_bundle_sha256, str)
+    return _PublicationLatencyScheduleExecution(
+        schedule_sha256=schedule_sha256,
+        requests_sha256=requests_sha256,
+        input_bundle_sha256=input_bundle_sha256,
+        seed_sha256=seed_sha256,
+        deployment_block=deployment_block,
+        projection=projection,
+        request_ids=tuple(request_ids),
+        lanes=tuple(lanes),
+        lane_by_request_index=tuple(lane_by_request_index),
+        lane_position_by_request_index=tuple(lane_position_by_request_index),
+    )
+
+
+def _build_default_benchmark_requests(
+    suite: BenchmarkSuite,
+    *,
+    arms: Sequence[BenchmarkArm],
+    repeats: int,
+    shuffle: bool,
+    seed: int | None,
+    scorer_registry: DatasetScorerRegistry,
+    allow_legacy_cache_params: bool,
+) -> list[BenchmarkEngineRequest]:
+    requests: list[BenchmarkEngineRequest] = []
+    for example in suite.examples:
+        prompt_parts = build_prompt_parts(
+            example,
+            scorer=scorer_registry.get(example.dataset),
+        )
+        arm_sequence = list(arms) * repeats
+        if shuffle:
+            random.Random(
+                _example_seed(seed, example.dataset, example.example_id)
+            ).shuffle(arm_sequence)
+        repeat_indices_by_arm = {arm.arm_id: 0 for arm in arms}
+        for arm in arm_sequence:
+            repeat_indices_by_arm[arm.arm_id] += 1
+            requests.append(
+                _build_benchmark_engine_request(
+                    suite,
+                    example=example,
+                    arm=arm,
+                    prompt_parts=prompt_parts,
+                    repeat_index=repeat_indices_by_arm[arm.arm_id],
+                    allow_legacy_cache_params=allow_legacy_cache_params,
+                )
+            )
+    return requests
+
+
+def _build_publication_latency_requests(
+    suite: BenchmarkSuite,
+    *,
+    arms: Sequence[BenchmarkArm],
+    scorer_registry: DatasetScorerRegistry,
+    allow_legacy_cache_params: bool,
+    schedule: _PublicationLatencyScheduleExecution,
+) -> list[BenchmarkEngineRequest]:
+    examples_by_key = {
+        (example.dataset, example.example_id): example for example in suite.examples
+    }
+    prompt_parts_by_key = {
+        key: build_prompt_parts(
+            example,
+            scorer=scorer_registry.get(example.dataset),
+        )
+        for key, example in examples_by_key.items()
+    }
+    requests: list[BenchmarkEngineRequest] = []
+    for dataset, example_id, repeat_index in schedule.projection:
+        example = examples_by_key[(dataset, example_id)]
+        prompt_parts = prompt_parts_by_key[(dataset, example_id)]
+        for arm in arms:
+            requests.append(
+                _build_benchmark_engine_request(
+                    suite,
+                    example=example,
+                    arm=arm,
+                    prompt_parts=prompt_parts,
+                    repeat_index=repeat_index,
+                    allow_legacy_cache_params=allow_legacy_cache_params,
+                )
+            )
+    return requests
+
+
+def _build_benchmark_engine_request(
+    suite: BenchmarkSuite,
+    *,
+    example: BenchmarkExample,
+    arm: BenchmarkArm,
+    prompt_parts: BenchmarkPromptParts,
+    repeat_index: int,
+    allow_legacy_cache_params: bool,
+) -> BenchmarkEngineRequest:
+    kv_transfer_params = _kv_transfer_params_for_arm(
+        example,
+        arm,
+        allow_legacy=allow_legacy_cache_params,
+    )
+    return BenchmarkEngineRequest(
+        suite_id=suite.suite_id,
+        model_id=suite.model_id,
+        hardware_target=suite.hardware_target,
+        example=example,
+        arm=arm,
+        prompt_parts=prompt_parts,
+        request_id=_request_id_for_arm(
+            suite_id=suite.suite_id,
+            example=example,
+            arm=arm,
+            repeat_index=repeat_index,
+            kv_transfer_params=kv_transfer_params,
+        ),
+        kv_transfer_params=kv_transfer_params,
+        repeat_index=repeat_index,
+    )
+
+
 def run_benchmark_suite(
     suite: BenchmarkSuite,
     engines: Mapping[str, BenchmarkEngine],
@@ -738,6 +1138,8 @@ def run_benchmark_suite(
     reference_arm_id: str | None = None,
     method_registry: MethodRegistry | None = None,
     request_customization_digests: Mapping[str, str] | None = None,
+    publication_latency_schedule_record: Mapping[str, Any] | None = None,
+    publication_latency_expected_input_bundle_sha256: str | None = None,
 ) -> BenchmarkRunResult:
     if repeats <= 0:
         raise ValueError("repeats must be positive")
@@ -790,6 +1192,20 @@ def run_benchmark_suite(
         scorers,
         manifest_context=resolved_context,
     )
+    publication_schedule = _resolve_publication_latency_schedule(
+        suite,
+        arms=arms,
+        repeats=repeats,
+        request_parallelism=request_parallelism,
+        isolate_arms=isolate_arms,
+        shuffle=shuffle,
+        seed=seed,
+        interleave_examples=interleave_examples,
+        record=publication_latency_schedule_record,
+        expected_input_bundle_sha256=(
+            publication_latency_expected_input_bundle_sha256
+        ),
+    )
     if warmups:
         _run_benchmark_warmups(
             suite,
@@ -799,43 +1215,24 @@ def run_benchmark_suite(
             warmups=warmups,
             allow_legacy_cache_params=allow_legacy_cache_params,
         )
-    requests: list[BenchmarkEngineRequest] = []
-    for example in suite.examples:
-        prompt_parts = build_prompt_parts(
-            example,
-            scorer=scorers.get(example.dataset),
+    if publication_schedule is None:
+        requests = _build_default_benchmark_requests(
+            suite,
+            arms=arms,
+            repeats=repeats,
+            shuffle=shuffle,
+            seed=seed,
+            scorer_registry=scorers,
+            allow_legacy_cache_params=allow_legacy_cache_params,
         )
-        arm_sequence = list(arms) * repeats
-        if shuffle:
-            random.Random(
-                _example_seed(seed, example.dataset, example.example_id)
-            ).shuffle(arm_sequence)
-        repeat_indices_by_arm = {arm.arm_id: 0 for arm in arms}
-        for arm in arm_sequence:
-            repeat_indices_by_arm[arm.arm_id] += 1
-            kv_transfer_params = _kv_transfer_params_for_arm(
-                example,
-                arm,
-                allow_legacy=allow_legacy_cache_params,
-            )
-            request = BenchmarkEngineRequest(
-                suite_id=suite.suite_id,
-                model_id=suite.model_id,
-                hardware_target=suite.hardware_target,
-                example=example,
-                arm=arm,
-                prompt_parts=prompt_parts,
-                request_id=_request_id_for_arm(
-                    suite_id=suite.suite_id,
-                    example=example,
-                    arm=arm,
-                    repeat_index=repeat_indices_by_arm[arm.arm_id],
-                    kv_transfer_params=kv_transfer_params,
-                ),
-                kv_transfer_params=kv_transfer_params,
-                repeat_index=repeat_indices_by_arm[arm.arm_id],
-            )
-            requests.append(request)
+    else:
+        requests = _build_publication_latency_requests(
+            suite,
+            arms=arms,
+            scorer_registry=scorers,
+            allow_legacy_cache_params=allow_legacy_cache_params,
+            schedule=publication_schedule,
+        )
     # Example interleaving (opt-in): the loop above emits each example's repeats
     # contiguously, so a request_parallelism=N wave would hydrate the SAME document
     # set N times concurrently. Round-robin the requests across examples (per arm)
@@ -860,37 +1257,47 @@ def run_benchmark_suite(
         for arm in arms:
             arm_requests = requests_by_arm.get(arm.arm_id)
             if arm_requests:
+                window_started_at = time.time()
                 window_started = time.monotonic()
                 arm_measurements = _run_requests(
                     arm_requests,
                     engines,
                     scorer_registry=scorers,
                     request_parallelism=request_parallelism,
+                    publication_schedule=publication_schedule,
                 )
                 window_seconds = max(time.monotonic() - window_started, 1e-12)
+                window_ended_at = time.time()
                 measurements.extend(arm_measurements)
                 execution_windows.append(
                     _execution_window(
                         arm.arm_id,
                         arm_measurements,
                         wall_seconds=window_seconds,
+                        started_at_seconds=window_started_at,
+                        ended_at_seconds=window_ended_at,
                     )
                 )
     else:
+        window_started_at = time.time()
         window_started = time.monotonic()
         measurements = _run_requests(
             requests,
             engines,
             scorer_registry=scorers,
             request_parallelism=request_parallelism,
+            publication_schedule=publication_schedule,
         )
         window_seconds = max(time.monotonic() - window_started, 1e-12)
+        window_ended_at = time.time()
         if len(arms) == 1:
             execution_windows = [
                 _execution_window(
                     arms[0].arm_id,
                     measurements,
                     wall_seconds=window_seconds,
+                    started_at_seconds=window_started_at,
+                    ended_at_seconds=window_ended_at,
                 )
             ]
         else:
@@ -899,6 +1306,8 @@ def run_benchmark_suite(
                     "all_arms",
                     measurements,
                     wall_seconds=window_seconds,
+                    started_at_seconds=window_started_at,
+                    ended_at_seconds=window_ended_at,
                 )
             ]
     aggregate_throughput = {
@@ -974,6 +1383,8 @@ def _execution_window(
     measurements: Sequence[InferenceMeasurement],
     *,
     wall_seconds: float,
+    started_at_seconds: float,
+    ended_at_seconds: float,
 ) -> BenchmarkExecutionWindow:
     successful = tuple(measurement for measurement in measurements if measurement.ok)
     return BenchmarkExecutionWindow(
@@ -983,6 +1394,8 @@ def _execution_window(
             measurement.completion_tokens for measurement in successful
         ),
         successful_requests=len(successful),
+        started_at_seconds=started_at_seconds,
+        ended_at_seconds=ended_at_seconds,
     )
 
 
@@ -1048,6 +1461,9 @@ def run_openai_compatible_benchmark(
         hardware_target=config.hardware_target,
         limit_per_dataset=config.limit_per_dataset,
     )
+    publication_latency_schedule_record = (
+        _publication_latency_schedule_record_from_config(config)
+    )
     factory = engine_factory or _openai_compatible_engine
     arms = config.arms or _benchmark_arms_for_ids(config.arm_ids)
     request_customization_digests = {
@@ -1076,6 +1492,12 @@ def run_openai_compatible_benchmark(
         reference_arm_id=config.reference_arm_id or None,
         method_registry=method_registry,
         request_customization_digests=request_customization_digests,
+        publication_latency_schedule_record=(
+            publication_latency_schedule_record
+        ),
+        publication_latency_expected_input_bundle_sha256=(
+            config.publication_latency_expected_input_bundle_sha256
+        ),
     )
 
 
@@ -1105,7 +1527,15 @@ def _run_requests(
     *,
     scorer_registry: DatasetScorerRegistry,
     request_parallelism: int,
+    publication_schedule: _PublicationLatencyScheduleExecution | None = None,
 ) -> list[InferenceMeasurement]:
+    if publication_schedule is not None:
+        return _run_publication_latency_requests(
+            requests,
+            engines,
+            scorer_registry=scorer_registry,
+            schedule=publication_schedule,
+        )
     if request_parallelism == 1:
         return [
             _run_engine(
@@ -1126,6 +1556,128 @@ def _run_requests(
                 requests,
             )
         )
+
+
+def _run_publication_latency_requests(
+    requests: Sequence[BenchmarkEngineRequest],
+    engines: Mapping[str, BenchmarkEngine],
+    *,
+    scorer_registry: DatasetScorerRegistry,
+    schedule: _PublicationLatencyScheduleExecution,
+) -> list[InferenceMeasurement]:
+    actual_projection = tuple(
+        (
+            request.example.dataset,
+            request.example.example_id,
+            request.repeat_index,
+        )
+        for request in requests
+    )
+    if actual_projection != schedule.projection:
+        raise ValueError(
+            "publication latency execution requests must match the closed logical "
+            "order exactly, without omissions, extras, or reordering"
+        )
+
+    def run_lane(
+        lane_item: tuple[int, tuple[int, ...]],
+    ) -> tuple[tuple[int, InferenceMeasurement], ...]:
+        lane_index, request_indices = lane_item
+        lane_measurements: list[tuple[int, InferenceMeasurement]] = []
+        for lane_position, request_index in enumerate(request_indices):
+            request = requests[request_index]
+            measurement = _run_engine(
+                request,
+                engines[request.arm.arm_id],
+                scorer_registry=scorer_registry,
+            )
+            lane_measurements.append(
+                (
+                    request_index,
+                    _with_publication_latency_provenance(
+                        measurement,
+                        schedule=schedule,
+                        request_index=request_index,
+                        lane_index=lane_index,
+                        lane_position=lane_position,
+                    ),
+                )
+            )
+        return tuple(lane_measurements)
+
+    lane_items = tuple(enumerate(schedule.lanes))
+    completed_lanes: tuple[tuple[tuple[int, InferenceMeasurement], ...], ...]
+    if len(lane_items) == 1:
+        completed_lanes = (run_lane(lane_items[0]),)
+    else:
+        # One closed-loop worker owns each identity-sticky lane.  Because every
+        # identity's repeats are assigned to one lane, variable service times can
+        # never make two requests for the same example overlap.
+        with ThreadPoolExecutor(max_workers=len(lane_items)) as executor:
+            completed_lanes = tuple(executor.map(run_lane, lane_items))
+    ordered: list[InferenceMeasurement | None] = [None] * len(requests)
+    for lane_measurements in completed_lanes:
+        for request_index, measurement in lane_measurements:
+            if ordered[request_index] is not None:
+                raise RuntimeError(
+                    "publication latency lane execution produced a duplicate request"
+                )
+            ordered[request_index] = measurement
+    if any(measurement is None for measurement in ordered):
+        raise RuntimeError(
+            "publication latency lane execution omitted a scheduled request"
+        )
+    return [measurement for measurement in ordered if measurement is not None]
+
+
+def _with_publication_latency_provenance(
+    measurement: InferenceMeasurement,
+    *,
+    schedule: _PublicationLatencyScheduleExecution,
+    request_index: int,
+    lane_index: int,
+    lane_position: int,
+) -> InferenceMeasurement:
+    expected_lane = schedule.lane_by_request_index[request_index]
+    expected_lane_position = schedule.lane_position_by_request_index[request_index]
+    if lane_index != expected_lane or lane_position != expected_lane_position:
+        raise RuntimeError("publication latency lane provenance does not match schedule")
+    dataset, example_id, repeat_index = schedule.projection[request_index]
+    logical_key_sha256 = _sha256_json(
+        {
+            "dataset": dataset,
+            "example_id": example_id,
+            "repeat_index": repeat_index,
+        }
+    )
+    metadata = dict(measurement.metadata)
+    metadata.update(
+        {
+            PUBLICATION_LATENCY_SCHEDULE_SHA256_METADATA_KEY: (
+                schedule.schedule_sha256
+            ),
+            PUBLICATION_LATENCY_REQUESTS_SHA256_METADATA_KEY: (
+                schedule.requests_sha256
+            ),
+            PUBLICATION_LATENCY_INPUT_BUNDLE_SHA256_METADATA_KEY: (
+                schedule.input_bundle_sha256
+            ),
+            PUBLICATION_LATENCY_SEED_SHA256_METADATA_KEY: schedule.seed_sha256,
+            PUBLICATION_LATENCY_DEPLOYMENT_BLOCK_METADATA_KEY: str(
+                schedule.deployment_block
+            ),
+            PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY: schedule.request_ids[
+                request_index
+            ],
+            PUBLICATION_LATENCY_REQUEST_INDEX_METADATA_KEY: str(request_index),
+            PUBLICATION_LATENCY_LOGICAL_KEY_SHA256_METADATA_KEY: (
+                logical_key_sha256
+            ),
+            PUBLICATION_LATENCY_LANE_METADATA_KEY: str(lane_index),
+            PUBLICATION_LATENCY_LANE_POSITION_METADATA_KEY: str(lane_position),
+        }
+    )
+    return replace(measurement, metadata=metadata)
 
 
 def _run_engine(
@@ -1158,13 +1710,23 @@ def _run_engine(
             repeat_index=request.repeat_index,
         )
     scorer = scorer_registry.get(request.example.dataset)
-    quality_scores = scorer.score(
-        DatasetScoreContext(
-            dataset=request.example.dataset,
-            example_id=request.example.example_id,
-            output_text=generation.output_text,
-            references=request.example.references,
-            metadata=request.example.metadata,
+    extraction = scorer.parse_answer(generation.output_text)
+    scorer_output = (
+        generation.output_text
+        if extraction is None
+        else extraction.extracted_answer
+    )
+    quality_scores = (
+        scorer.zero_scores()
+        if extraction is not None and not extraction.valid
+        else scorer.score(
+            DatasetScoreContext(
+                dataset=request.example.dataset,
+                example_id=request.example.example_id,
+                output_text=scorer_output,
+                references=request.example.references,
+                metadata=request.example.metadata,
+            )
         )
     )
     metadata = dict(generation.metadata)
@@ -1180,6 +1742,11 @@ def _run_engine(
             "physical_transform_version": request.arm.physical_transform_version,
         }
     )
+    if extraction is not None:
+        metadata.update(final_answer_measurement_metadata(extraction))
+    niah_cell_id = request.example.metadata.get("niah_cell_id")
+    if request.example.dataset == "niah" and niah_cell_id is not None:
+        metadata["niah_cell_id"] = niah_cell_id
     return InferenceMeasurement(
         example_id=request.example.example_id,
         dataset=request.example.dataset,

@@ -958,7 +958,10 @@ def test_transformers_generator_from_pretrained_configures_bitsandbytes_quantiza
             device="cuda",
             torch_dtype="bfloat16",
             quantization="bitsandbytes-4bit",
-            quantization_config={"bnb_4bit_compute_dtype": "bfloat16"},
+            quantization_config={
+                "bnb_4bit_compute_dtype": "bfloat16",
+                "bnb_4bit_quant_storage": "uint8",
+            },
         )
     )
 
@@ -976,6 +979,7 @@ def test_transformers_generator_from_pretrained_configures_bitsandbytes_quantiza
     assert model_kwargs["quantization_config"].kwargs == {
         "load_in_4bit": True,
         "bnb_4bit_compute_dtype": torch.bfloat16,
+        "bnb_4bit_quant_storage": torch.uint8,
     }
     assert fake_model.to_calls == []
     assert fake_model.eval_called is True
