@@ -21,6 +21,7 @@ from document_kv_cache.serving_env import (
     vllm_runtime_lock_path,
 )
 from document_kv_cache.vllm_smoke import (
+    _pip_subprocess_environment,
     create_venv,
     install_document_kv_package,
     install_vllm,
@@ -71,11 +72,10 @@ def run_gpu_qualification_sentinel(
         [str(runtime_python), "-m", "pip", "check"],
         check=True,
         timeout=300,
+        env=_pip_subprocess_environment(),
     )
 
-    environment = dict(os.environ)
-    for ambient_path_variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
-        environment.pop(ambient_path_variable, None)
+    environment = _pip_subprocess_environment()
     environment.update(
         {
             "HF_HOME": "/local_disk0/cachet-vllm-0271-hf",
@@ -202,6 +202,7 @@ def _make_site_packages_read_only(runtime_python: Path) -> None:
         capture_output=True,
         text=True,
         timeout=30,
+        env=_pip_subprocess_environment(),
     )
     paths = json.loads(completed.stdout)
     if not isinstance(paths, list) or not paths:

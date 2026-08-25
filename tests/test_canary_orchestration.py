@@ -1120,10 +1120,23 @@ def test_databricks_bootstrap_verifies_wheel_bytes_before_install(
         "DOCUMENT_KV_PACKAGE_INSTALL_SPEC",
         "cachet-bootstrap-test-sentinel",
     )
+    monkeypatch.setitem(namespace["os"].environ, "PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setitem(
+        namespace["os"].environ,
+        "PIP_INDEX_URL",
+        "https://attacker.invalid/simple",
+    )
+    monkeypatch.setitem(namespace["os"].environ, "pip_no_index", "1")
+    monkeypatch.setitem(
+        namespace["os"].environ,
+        "PIP_REQUIREMENT",
+        "/attacker/requirements.txt",
+    )
+    monkeypatch.setitem(namespace["os"].environ, "VIRTUAL_ENV", "/attacker/venv")
     monkeypatch.setattr(
         namespace["subprocess"],
         "check_call",
-        lambda argv: install_calls.append(argv),
+        lambda argv, **kwargs: install_calls.append((argv, kwargs)),
     )
 
     remaining = install_package_wheel(
@@ -1139,6 +1152,26 @@ def test_databricks_bootstrap_verifies_wheel_bytes_before_install(
 
     assert remaining == ["--benchmark-id", "wheel-hash-test"]
     assert len(install_calls) == 1
+    _argv, kwargs = install_calls[0]
+    if runner_script == VLLM_SMOKE_RUNNER_SCRIPT:
+        assert _argv[-2:] == ["--no-deps", str(wheel_path)]
+        environment = kwargs["env"]
+        assert {
+            key for key in environment if key.upper().startswith("PIP_")
+        } == {
+            "PIP_CONFIG_FILE",
+            "PIP_DISABLE_PIP_VERSION_CHECK",
+            "PIP_NO_INPUT",
+        }
+        assert environment["PIP_CONFIG_FILE"] == os.devnull
+        assert environment["PYTHONNOUSERSITE"] == "1"
+        assert all(
+            variable not in environment
+            for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+        )
+    else:
+        assert "--no-deps" not in _argv
+        assert kwargs == {}
     wheel_path.write_bytes(b"tampered-cachet-wheel")
     with pytest.raises(ValueError, match="SHA-256 does not match"):
         install_package_wheel(

@@ -4,6 +4,7 @@ import gc
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
@@ -519,11 +520,20 @@ def test_document_kv_package_install_spec_falls_back_to_source_checkout(
 
 def test_install_document_kv_package_uses_no_deps(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(public_vllm_smoke, "run", lambda argv: calls.append(argv))
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("pip_no_index", "1")
+    monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
+    monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
+    monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "run",
+        lambda argv, *, env=None: calls.append((argv, env)),
+    )
 
     install_document_kv_package(tmp_path / "venv" / "bin" / "python", "/tmp/cachet.whl")
 
-    assert calls == [
+    assert [argv for argv, _env in calls] == [
         [
             str(tmp_path / "venv" / "bin" / "python"),
             "-m",
@@ -533,6 +543,23 @@ def test_install_document_kv_package_uses_no_deps(monkeypatch, tmp_path):
             "/tmp/cachet.whl",
         ]
     ]
+    environment = calls[0][1]
+    assert environment is not None
+    assert {
+        key for key in environment if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
+    assert environment["PIP_NO_INPUT"] == "1"
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert all(
+        variable not in environment
+        for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+    )
 
 
 def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path):
@@ -545,7 +572,14 @@ def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path)
     )
     monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, str(patched_wheel))
     monkeypatch.setenv(VLLM_PATCHED_WHEEL_SHA256_ENV, patched_digest)
-    monkeypatch.setattr(public_vllm_smoke, "run", lambda argv: calls.append(argv))
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "run",
+        lambda argv, *, env=None: calls.append((argv, env)),
+    )
     monkeypatch.setattr(
         public_vllm_smoke,
         "validate_vllm_runtime_lock_platform",
@@ -554,13 +588,12 @@ def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path)
 
     install_vllm(python)
 
-    assert calls == [
+    assert [argv for argv, _env in calls] == [
         [
             str(python),
             "-m",
             "pip",
             "install",
-            *dependency_index_args(),
             "--require-hashes",
             "--only-binary",
             ":all:",
@@ -576,6 +609,37 @@ def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path)
             patched_vllm_wheel_install_spec(),
         ],
     ]
+    assert all(environment is not None for _argv, environment in calls)
+    assert calls[0][1] == calls[1][1]
+    assert {
+        key for key in calls[0][1] if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert calls[0][1]["PIP_CONFIG_FILE"] == os.devnull
+    assert not any(
+        argument in {"--index-url", "--extra-index-url"}
+        for argument in calls[0][0]
+    )
+    calls.clear()
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "installed_package_version",
+        lambda executable, package: (
+            "0.3.10" if executable == python and package == "lmcache" else "unexpected"
+        ),
+    )
+    assert public_vllm_smoke.install_lmcache(python, "0.3.10") == "0.3.10"
+    assert calls[0][0] == [
+        str(python),
+        "-m",
+        "pip",
+        "install",
+        "lmcache==0.3.10",
+    ]
+    assert calls[0][1]["PIP_CONFIG_FILE"] == os.devnull
 
 
 def test_create_venv_fallback_is_hash_pinned_and_dependency_free(monkeypatch, tmp_path):
@@ -583,11 +647,18 @@ def test_create_venv_fallback_is_hash_pinned_and_dependency_free(monkeypatch, tm
     venv_dir = tmp_path / "venv"
     bootstrap = tmp_path / "reviewed-virtualenv.pyz"
 
-    def fake_run(argv):
-        calls.append(argv)
+    def fake_run(argv, *, env=None):
+        calls.append((argv, env))
         if len(calls) == 1:
             raise subprocess.CalledProcessError(1, argv)
 
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("pip_no_index", "1")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
+    monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
+    monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
     monkeypatch.setattr(public_vllm_smoke, "run", fake_run)
     monkeypatch.setattr(
         public_vllm_smoke,
@@ -597,10 +668,25 @@ def test_create_venv_fallback_is_hash_pinned_and_dependency_free(monkeypatch, tm
 
     public_vllm_smoke.create_venv(venv_dir)
 
-    assert calls == [
+    assert [argv for argv, _environment in calls] == [
         [sys.executable, "-m", "venv", str(venv_dir)],
         [sys.executable, str(bootstrap), str(venv_dir)],
     ]
+    assert calls[0][1] == calls[1][1]
+    environment = calls[0][1]
+    assert {
+        key for key in environment if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert all(
+        variable not in environment
+        for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+    )
 
 
 def test_materialize_virtualenv_bootstrap_hash_gates_zipapp(monkeypatch, tmp_path):
@@ -3933,6 +4019,10 @@ def test_installed_package_freeze_records_complete_normalized_environment(
         )
 
     monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("pip_no_index", "1")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
     python = tmp_path / "venv" / "bin" / "python"
 
     frozen = public_vllm_smoke.installed_package_freeze(python)
@@ -3942,12 +4032,20 @@ def test_installed_package_freeze_records_complete_normalized_environment(
         "torch==2.13.0+cu129",
         "vllm==0.27.1+cu129",
     ]
-    assert calls == [
-        (
-            [str(python), "-m", "pip", "freeze", "--all"],
-            {"check": True, "capture_output": True, "text": True},
-        )
-    ]
+    assert len(calls) == 1
+    assert calls[0][0] == [str(python), "-m", "pip", "freeze", "--all"]
+    assert {
+        key: value for key, value in calls[0][1].items() if key != "env"
+    } == {"check": True, "capture_output": True, "text": True}
+    environment = calls[0][1]["env"]
+    assert {
+        key for key in environment if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
 
 
 def test_verify_vllm_runtime_lock_installation_runs_pip_check_and_provenance(
@@ -3981,20 +4079,35 @@ def test_verify_vllm_runtime_lock_installation_runs_pip_check_and_provenance(
         )
 
     monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
     python = tmp_path / "venv" / "bin" / "python"
 
     assert (
         public_vllm_smoke.verify_vllm_runtime_lock_installation(python)
         == expected_record
     )
-    assert calls[0] == (
-        [str(python), "-m", "pip", "check"],
-        {"check": True},
-    )
+    assert calls[0][0] == [str(python), "-m", "pip", "check"]
+    assert {key: value for key, value in calls[0][1].items() if key != "env"} == {
+        "check": True
+    }
     assert calls[1][0][0:2] == [str(python), "-c"]
     assert "verify_installed_vllm_runtime_lock" in calls[1][0][2]
     assert calls[1][0][3] == patched_vllm_wheel_install_spec()
-    assert calls[1][1] == {"check": True, "capture_output": True, "text": True}
+    assert {
+        key: value for key, value in calls[1][1].items() if key != "env"
+    } == {"check": True, "capture_output": True, "text": True}
+    assert calls[0][1]["env"] == calls[1][1]["env"]
+    environment = calls[0][1]["env"]
+    assert {
+        key for key in environment if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
 
 
 def test_metadata_records_prepared_dataset_context(tmp_path):
@@ -4747,7 +4860,7 @@ def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(
     monkeypatch.setattr(
         public_vllm_smoke,
         "run",
-        lambda argv: calls.append(("run", argv)),
+        lambda argv, *, env=None: calls.append(("run", argv)),
     )
     monkeypatch.setattr(public_vllm_smoke, "install_vllm", lambda python: None)
     monkeypatch.setattr(

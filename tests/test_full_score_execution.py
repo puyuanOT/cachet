@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from hashlib import sha256
@@ -4560,11 +4561,35 @@ def test_consumer_recovery_finishes_a_partially_deleted_ready_tree(
     ]
 
 
-def test_bootstrap_builds_and_reexecs_only_the_locked_runtime():
+def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
     script = full_score.FULL_SCORE_RUNNER_SCRIPT
+    namespace = {"__name__": "full_score_runner_test"}
+    exec(compile(script, "full_score_runner.py", "exec"), namespace)
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("pip_no_index", "1")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
+    monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
+    monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    environment = namespace["_pip_subprocess_environment"]()
+    assert {
+        key for key in environment if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert all(
+        variable not in environment
+        for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+    )
     assert "--runner-sha256" in script
     assert '"--require-hashes"' in script
     assert '"--only-binary"' in script
+    assert '"--extra-index-url"' not in script
     assert script.count('"--no-deps"') == 2
     assert script.index('"--no-deps", patched_wheel') < script.index(
         '"--require-hashes"'

@@ -27,7 +27,7 @@ PUBLICATION_CAMPAIGN_RECORD_TYPE = "cachet.vllm_0271_publication_campaign.v1"
 PUBLICATION_CAMPAIGN_SCHEMA_VERSION = 1
 PUBLICATION_CAMPAIGN_ID = "vllm-0271-publication-v1"
 PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256 = (
-    "95e7e9b747bae357c1dccf54555de31ed8124afe28e78f0f8d32ae30a6b97c7f"
+    "9765b7b275c4a0b4db6a34af50c8563c171a779c3cc707b57c916a9593ea75ba"
 )
 PUBLICATION_CAMPAIGN_ENGINE_VERSION = "0.27.1"
 PUBLICATION_CAMPAIGN_METHODS = ("baseline_prefill", "vanilla_prefill")
@@ -135,16 +135,12 @@ PUBLICATION_CAMPAIGN_GPU_QUALIFICATION_MAX_RESERVED_GPU_HOURS = (
     / 3600.0
 )
 PUBLICATION_CAMPAIGN_CPU_COORDINATOR_NODE_TYPE_ID = "c5d.4xlarge"
-PUBLICATION_CAMPAIGN_CPU_COORDINATOR_SPARK_VERSION = (
-    "15.4.x-cpu-ml-scala2.12"
-)
+PUBLICATION_CAMPAIGN_CPU_COORDINATOR_SPARK_VERSION = "15.4.x-cpu-ml-scala2.12"
 PUBLICATION_CAMPAIGN_HANDOFF_CLOSURE_CPU_JOBS = 2
 PUBLICATION_CAMPAIGN_HANDOFF_CLOSURE_CPU_TIMEOUT_SECONDS = 12 * 60 * 60
 PUBLICATION_CAMPAIGN_LATENCY_SOURCE_CLOSURE_CPU_JOBS = 1
 PUBLICATION_CAMPAIGN_LATENCY_SOURCE_CLOSURE_CPU_TIMEOUT_SECONDS = 2 * 60 * 60
-PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_JOBS = (
-    PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES
-)
+PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_JOBS = PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES
 PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_TIMEOUT_SECONDS = 2 * 60 * 60
 PUBLICATION_CAMPAIGN_TOTAL_CPU_COORDINATOR_JOBS = (
     PUBLICATION_CAMPAIGN_HANDOFF_CLOSURE_CPU_JOBS
@@ -172,25 +168,24 @@ PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_UPPER_BOUND_GPU_HOURS = sum(
     timeout_hours * job_count
     for timeout_hours, job_count in PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_JOB_COUNTS
 )
-PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 59.134951666666694
+PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 61.28905027777782
 PUBLICATION_CAMPAIGN_LEDGER_ID = "representative-canary-823bd9d82a5c1730"
 PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256 = (
     "fd00fcc39375aa8c96dabba9e3e4c576ae2674dd911324622ef99293b9cfe865"
 )
 PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256 = (
+    "1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916"
+)
+PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_FILE_SHA256 = (
     "f76cce3b68417f8d14a5e030d9eacaef3e61d17f123a2a2b5d38be5428a89b94"
 )
-PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX = (
-    DatabricksLedgerPrefix(
-        ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
-        cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
-        reservation_count=124,
-        submission_receipt_count=0,
-        terminal_actual_count=124,
-        prefix_sha256=(
-            "1c4bfb602657393b3fb2a20570d8658e8b5ed4b00e9d3ec3461be83454c366ad"
-        ),
-    )
+PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX = DatabricksLedgerPrefix(
+    ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+    cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+    reservation_count=124,
+    submission_receipt_count=0,
+    terminal_actual_count=124,
+    prefix_sha256=("1c4bfb602657393b3fb2a20570d8658e8b5ed4b00e9d3ec3461be83454c366ad"),
 )
 PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
@@ -198,9 +193,7 @@ PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX = DatabricksLedgerPr
     reservation_count=138,
     submission_receipt_count=0,
     terminal_actual_count=138,
-    prefix_sha256=(
-        "a12b5e754da84e4c7b3e0f273c14d2b79ce9cb1483b02dcc77ca522185e89dea"
-    ),
+    prefix_sha256=("a12b5e754da84e4c7b3e0f273c14d2b79ce9cb1483b02dcc77ca522185e89dea"),
 )
 PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
@@ -208,9 +201,7 @@ PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX = DatabricksLedgerPrefi
     reservation_count=152,
     submission_receipt_count=14,
     terminal_actual_count=152,
-    prefix_sha256=(
-        "4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"
-    ),
+    prefix_sha256=("4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"),
 )
 PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX = (
     DatabricksLedgerPrefix(
@@ -224,15 +215,25 @@ PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX = (
         ),
     )
 )
+PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_PREFIX = (
+    DatabricksLedgerPrefix(
+        ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+        reservation_count=180,
+        submission_receipt_count=42,
+        terminal_actual_count=180,
+        prefix_sha256=(
+            "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
+        ),
+    )
+)
 PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
     cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
-    reservation_count=180,
-    submission_receipt_count=42,
-    terminal_actual_count=180,
-    prefix_sha256=(
-        "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
-    ),
+    reservation_count=194,
+    submission_receipt_count=56,
+    terminal_actual_count=194,
+    prefix_sha256=("381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"),
 )
 PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE = (
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
@@ -454,12 +455,9 @@ class PublicationCampaignPlan:
             raise ValueError("campaign_id differs from the frozen publication campaign")
         if not self.campaign_ledger_id:
             raise ValueError("campaign_ledger_id must be non-empty")
-        if (
-            len(self.campaign_ledger_path_sha256) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in self.campaign_ledger_path_sha256
-            )
+        if len(self.campaign_ledger_path_sha256) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in self.campaign_ledger_path_sha256
         ):
             raise ValueError(
                 "campaign_ledger_path_sha256 must be a lowercase SHA-256 digest"
@@ -690,7 +688,7 @@ def publication_campaign_plan_to_record(
                         "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
                     ),
                     "reconciled_ledger_file_sha256": (
-                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                        PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_FILE_SHA256
                     ),
                     "reconciliation_manifest_closed_record_sha256": (
                         "fbb1fd4250b3fc62b58778047b12fe3775e6cffbc8641b38a00c721a9d4c768d"
@@ -720,6 +718,69 @@ def publication_campaign_plan_to_record(
                         "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
                     ),
                     "terminal_result_state_counts": {"FAILED": 14},
+                    "verification_source": "direct_runs_get_and_runs_get_output",
+                },
+                "prefix_before_runtime_lock_index_failure_gpu_qualification": (
+                    PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_PREFIX.to_record()
+                ),
+                "runtime_lock_index_failure_gpu_qualification": {
+                    "actual_cluster_duration_seconds": 7_754.755,
+                    "actual_gpu_hours": 2.1540986111111113,
+                    "data_security_mode": "SINGLE_USER",
+                    "evidence_tree_byte_count": 1_564_133,
+                    "evidence_tree_file_count": 29,
+                    "evidence_tree_sha256": (
+                        "5016ed50001b77b77f329e858c01b1a65c5e927f1c55eec7fbc01208d8f25886"
+                    ),
+                    "failed_before_run_creation": False,
+                    "failure_class": "pip_requirements_file_index_precedence",
+                    "failure_reason": (
+                        "pip requirements-file index precedence omitted the PyTorch "
+                        "CU129 index and prevented hash-locked torch resolution"
+                    ),
+                    "normalized_error_sha256": (
+                        "7544cab6366fc1813af8d04da00a8a1f76f1098e3b06c738d8ff8ddd392ae235"
+                    ),
+                    "plan_sha256": (
+                        "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
+                    ),
+                    "predicted_terminal_prefix_sha256": (
+                        "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
+                    ),
+                    "reconciled_ledger_file_sha256": (
+                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                    ),
+                    "reconciliation_manifest_closed_record_sha256": (
+                        "2ee650e0e05ea059bd9f552d6975149c05cbda6dc8d3a715a73594913f078b29"
+                    ),
+                    "reconciliation_manifest_file_sha256": (
+                        "e0f56f1250c4ce213d1a8ba0384ccdad1a1b38fb964c1b6bfcf5729006150455"
+                    ),
+                    "reservation_count_delta": 14,
+                    "reviewed_runner_sha256": (
+                        "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
+                    ),
+                    "run_creation_count": 14,
+                    "runs_get_output_keys": [
+                        "error",
+                        "error_trace",
+                        "logs",
+                        "logs_truncated",
+                        "metadata",
+                    ],
+                    "single_user_name": "pliu@opentable.com",
+                    "submission_receipt_count_delta": 14,
+                    "task_life_cycle_state_counts": {"TERMINATED": 14},
+                    "task_result_state_counts": {"FAILED": 14},
+                    "terminal_actual_count_delta": 14,
+                    "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+                    "terminal_prefix_sha256": (
+                        "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
+                    ),
+                    "terminal_result_state_counts": {"FAILED": 14},
+                    "torch_resolution_log_marker": (
+                        "No matching distribution found for torch==2.13.0+cu129"
+                    ),
                     "verification_source": "direct_runs_get_and_runs_get_output",
                 },
                 "retained_opening_prefix": (
@@ -854,9 +915,7 @@ def publication_campaign_plan_to_record(
                 "execution_plan_sha256": (
                     PUBLICATION_CAMPAIGN_FULL_SCORE_EXECUTION_PLAN_SHA256
                 ),
-                "inventory_sha256": (
-                    PUBLICATION_CAMPAIGN_FULL_SCORE_INVENTORY_SHA256
-                ),
+                "inventory_sha256": (PUBLICATION_CAMPAIGN_FULL_SCORE_INVENTORY_SHA256),
                 "live_p90_admission_required_after_each_matched_wave": True,
                 "natural_prompt_inference_tokens": (
                     PUBLICATION_CAMPAIGN_FULL_SCORE_NATURAL_PROMPT_TOKENS
@@ -1001,7 +1060,9 @@ def validate_publication_campaign_plan_record(record: Mapping[str, Any]) -> None
         )
     raw_campaign_ledger_prefix = record.get("campaign_ledger_prefix")
     if not isinstance(raw_campaign_ledger_prefix, Mapping):
-        raise ValueError("publication campaign campaign_ledger_prefix must be an object")
+        raise ValueError(
+            "publication campaign campaign_ledger_prefix must be an object"
+        )
     campaign_ledger_prefix = databricks_ledger_prefix_from_record(
         raw_campaign_ledger_prefix
     )
@@ -1162,9 +1223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.campaign_ledger_json
             ),
             campaign_ledger_prefix=databricks_ledger_prefix(ledger),
-            campaign_opening_terminal_gpu_hours=(
-                ledger.terminal_actual_cluster_hours
-            ),
+            campaign_opening_terminal_gpu_hours=(ledger.terminal_actual_cluster_hours),
         ),
         args.output_json,
     )
@@ -1380,6 +1439,8 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX",
+    "PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_FILE_SHA256",
+    "PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_CLUSTER_IDENTITY_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX",

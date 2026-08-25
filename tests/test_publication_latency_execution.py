@@ -1,6 +1,7 @@
 import inspect
 import json
 import math
+import os
 import random
 from copy import deepcopy
 from pathlib import Path
@@ -1030,13 +1031,41 @@ def _reseal_source_closure_singleton(request):
     request["closed_record_sha256"] = execution._closed_record_sha256(request)
 
 
-def test_source_closure_request_result_and_cpu_payload_are_closed():
+def test_source_closure_request_result_and_cpu_payload_are_closed(monkeypatch):
     request, result, _final_artifacts = _source_closure_records()
 
-    compile(
-        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
-        "publication_latency_source_closure_runner.py",
-        "exec",
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("pip_no_index", "1")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
+    monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
+    monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    for filename, script in (
+        ("publication_latency_runner.py", execution.PUBLICATION_LATENCY_RUNNER_SCRIPT),
+        (
+            "publication_latency_source_closure_runner.py",
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+        ),
+    ):
+        namespace = {"__name__": "latency_runner_test"}
+        exec(compile(script, filename, "exec"), namespace)
+        environment = namespace["_pip_subprocess_environment"]()
+        assert {
+            key for key in environment if key.upper().startswith("PIP_")
+        } == {
+            "PIP_CONFIG_FILE",
+            "PIP_DISABLE_PIP_VERSION_CHECK",
+            "PIP_NO_INPUT",
+        }
+        assert environment["PIP_CONFIG_FILE"] == os.devnull
+        assert environment["PYTHONNOUSERSITE"] == "1"
+        assert all(
+            variable not in environment
+            for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+        )
+    assert '"--extra-index-url"' not in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
     execution.validate_publication_latency_source_closure_request(request)
     execution.validate_publication_latency_source_closure_result(

@@ -167,12 +167,37 @@ def _venv_python(venv_dir: str) -> str:
     return os.path.join(venv_dir, bindir, "python")
 
 
+def _pip_subprocess_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    for variable_name in tuple(env):
+        if variable_name.upper().startswith("PIP_"):
+            env.pop(variable_name)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(variable_name, None)
+    env.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    return env
+
+
 def _create_serving_venv(venv_dir: str) -> None:
+    env = _pip_subprocess_environment()
     try:
-        subprocess.check_call([sys.executable, "-m", "venv", "--clear", venv_dir])
+        subprocess.check_call(
+            [sys.executable, "-m", "venv", "--clear", venv_dir],
+            env=env,
+        )
     except subprocess.CalledProcessError:
         bootstrap = _materialize_virtualenv_bootstrap(os.path.dirname(venv_dir))
-        subprocess.check_call([sys.executable, bootstrap, "--clear", venv_dir])
+        subprocess.check_call(
+            [sys.executable, bootstrap, "--clear", venv_dir],
+            env=env,
+        )
 
 
 def _file_sha256(path: str) -> str:
@@ -225,9 +250,7 @@ def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
 
 
 def _venv_subprocess_env(venv_dir: str) -> dict[str, str]:
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    env["PYTHONNOUSERSITE"] = "1"
+    env = _pip_subprocess_environment()
     env["VIRTUAL_ENV"] = venv_dir
     env["PATH"] = os.path.dirname(_venv_python(venv_dir)) + os.pathsep + env.get("PATH", "")
     return env
@@ -364,7 +387,6 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
                     "-m",
                     "pip",
                     "install",
-                    *_vllm_index_args(),
                     "--require-hashes",
                     "--only-binary",
                     ":all:",

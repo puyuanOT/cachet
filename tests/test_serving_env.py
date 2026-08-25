@@ -1,7 +1,10 @@
 import json
+import tomllib
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 import document_kv_cache.serving_env as public_serving_env
 from document_kv_cache import ServingBackend
@@ -54,6 +57,8 @@ from document_kv_cache.serving_env import (
     VLLM_PYTORCH_INDEX_URL,
     VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT,
     VLLM_RUNTIME_LOCK_FILENAME,
+    VLLM_RUNTIME_LOCK_INDEX_HEADER,
+    VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256,
     VLLM_RUNTIME_LOCK_SHA256,
     VLLM_SERVING_ENVIRONMENT_PROFILE,
     VLLM_VERSION,
@@ -61,6 +66,7 @@ from document_kv_cache.serving_env import (
     VLLM_WHEEL_INSTALL_SPEC,
     VLLM_WHEEL_SHA256,
     VLLM_WHEEL_URL,
+    augment_vllm_runtime_lock_indexes,
     serving_environment_profile,
     serving_environment_profile_to_record,
     serving_environment_profiles,
@@ -71,7 +77,7 @@ from document_kv_cache.serving_env import (
 )
 
 
-def test_vllm_runtime_lock_is_packaged_hashed_and_excludes_vllm():
+def test_vllm_runtime_lock_is_packaged_hashed_and_excludes_vllm(monkeypatch):
     lock_path = vllm_runtime_lock_path()
     lock_bytes = lock_path.read_bytes()
     lock_text = lock_bytes.decode("utf-8")
@@ -83,6 +89,36 @@ def test_vllm_runtime_lock_is_packaged_hashed_and_excludes_vllm():
 
     assert lock_path.name == VLLM_RUNTIME_LOCK_FILENAME
     assert sha256(lock_bytes).hexdigest() == VLLM_RUNTIME_LOCK_SHA256
+    assert VLLM_RUNTIME_LOCK_SHA256 == (
+        "71c2c3e344ebdf1d8996adf2127a519328b6bad78a4eb7134c73e2a3f6115c44"
+    )
+    index_lines = tuple(
+        f"{line}\n"
+        for line in lock_text.splitlines()
+        if line.startswith(("--index-url", "--extra-index-url"))
+    )
+    assert "".join(index_lines) == VLLM_RUNTIME_LOCK_INDEX_HEADER
+    pytorch_directive = f"--extra-index-url {VLLM_PYTORCH_INDEX_URL}\n".encode()
+    assert lock_bytes.count(pytorch_directive) == 1
+    compiled_lock_bytes = lock_bytes.replace(pytorch_directive, b"", 1)
+    assert sha256(compiled_lock_bytes).hexdigest() == (
+        VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256
+    )
+    assert augment_vllm_runtime_lock_indexes(compiled_lock_bytes) == lock_bytes
+    with pytest.raises(RuntimeError, match="pre-augmentation hash"):
+        augment_vllm_runtime_lock_indexes(compiled_lock_bytes + b"\n")
+    headerless = compiled_lock_bytes.replace(
+        b"--index-url https://pypi.org/simple\n",
+        b"",
+        1,
+    )
+    monkeypatch.setattr(
+        public_serving_env,
+        "VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256",
+        sha256(headerless).hexdigest(),
+    )
+    with pytest.raises(RuntimeError, match="index header differs"):
+        augment_vllm_runtime_lock_indexes(headerless)
     assert len(requirement_lines) == VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT == 196
     assert not any(line.startswith("vllm") for line in requirement_lines)
     assert "pip==26.2.1 \\" in lock_text
@@ -91,6 +127,18 @@ def test_vllm_runtime_lock_is_packaged_hashed_and_excludes_vllm():
     assert "torchcodec==0.16.0+cu129 \\" in lock_text
     assert lock_text.count("--hash=sha256:") >= len(requirement_lines)
 
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    core_dependencies = project["project"]["dependencies"]
+    assert core_dependencies == ["packaging==26.3"]
+    packaging_requirement = Requirement(core_dependencies[0])
+    locked_versions = public_serving_env._vllm_runtime_lock_versions(lock_path)
+    assert packaging_requirement.name == "packaging"
+    assert locked_versions[packaging_requirement.name] in packaging_requirement.specifier
+
 
 def test_vllm_runtime_lock_readme_separates_replay_from_regeneration():
     readme = vllm_runtime_lock_path().with_name("README.md").read_text()
@@ -98,10 +146,16 @@ def test_vllm_runtime_lock_readme_separates_replay_from_regeneration():
     assert "Byte-for-byte artifact replay" in readme
     assert "consuming the checked-in lock unchanged" in readme
     assert VLLM_RUNTIME_LOCK_SHA256 in readme
+    assert VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256 in readme
+    assert "augment_vllm_runtime_lock_indexes" in readme
     assert "python -m pip install uv==0.11.6" in readme
     assert "--python-version 3.11.11" in readme
     assert "--python-platform x86_64-manylinux_2_35" in readme
     assert "--index-strategy first-index" in readme
+    assert "Cachet wheel pins `packaging==26.3`" in readme
+    assert "publication-latency-semantic-py311-macos-arm64.in" in readme
+    assert "`packaging==26.2`" in readme
+    assert "never co-installed into the Linux serving runtime" in readme
 
 
 def test_vllm_runtime_lock_platform_is_exact():

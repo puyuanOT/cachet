@@ -476,6 +476,24 @@ def _sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+def _pip_subprocess_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    for variable_name in tuple(env):
+        if variable_name.upper().startswith("PIP_"):
+            env.pop(variable_name)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(variable_name, None)
+    env.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    return env
+
+
 def _bootstrap(argv: list[str]) -> list[str]:
     package_uri = None
     pins = {}
@@ -526,6 +544,7 @@ def _bootstrap(argv: list[str]) -> list[str]:
             package_path,
         ],
         check=True,
+        env=_pip_subprocess_environment(),
     )
     return argv
 

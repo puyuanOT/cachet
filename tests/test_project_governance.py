@@ -97,7 +97,9 @@ SECRET_PATTERNS = {
     "pem_private_key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 }
 STABLE_EXACT_VERSION_RE = re.compile(r"^(?:==)?(?:\d+!)?\d+(?:\.\d+)*(?:\.post\d+)?$")
-EXACT_REQUIREMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+])?==(.*?)(?:;.*)?$")
+EXACT_REQUIREMENT_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+])?==(.*?)(?:;.*)?$"
+)
 DEPRECATED_TOOL_POETRY_METADATA_KEYS = {
     "authors",
     "classifiers",
@@ -115,7 +117,10 @@ ALLOWED_LEGACY_SOURCE_REFERENCES = {}
 
 
 def _is_ignored(path: Path) -> bool:
-    return any(part in GENERATED_OR_TOOLING_DIRS or part.endswith(".egg-info") for part in path.parts)
+    return any(
+        part in GENERATED_OR_TOOLING_DIRS or part.endswith(".egg-info")
+        for part in path.parts
+    )
 
 
 def _package_docstring(path: Path) -> str | None:
@@ -198,7 +203,9 @@ def _legacy_import_from_references(node: ast.ImportFrom) -> set[str]:
         return set()
     if node.module == LEGACY_PACKAGE_NAME:
         return {
-            f"{LEGACY_PACKAGE_NAME}.{alias.name}" if alias.name != "*" else f"{LEGACY_PACKAGE_NAME}.*"
+            f"{LEGACY_PACKAGE_NAME}.{alias.name}"
+            if alias.name != "*"
+            else f"{LEGACY_PACKAGE_NAME}.*"
             for alias in node.names
         }
     if node.module.startswith(LEGACY_PACKAGE_PREFIX):
@@ -212,13 +219,17 @@ def _legacy_string_reference(value: object) -> str | None:
     return None
 
 
-def _legacy_string_references_in_call(node: ast.Call, aliases: dict[str, str]) -> set[str]:
+def _legacy_string_references_in_call(
+    node: ast.Call, aliases: dict[str, str]
+) -> set[str]:
     call_name = _dotted_name(node.func)
     if call_name is None:
         return set()
     call_name = _resolve_import_alias(call_name, aliases)
     is_dynamic_import = call_name in DYNAMIC_LEGACY_IMPORT_CALLS
-    is_string_target = call_name in STRING_RESOLVED_TARGET_CALLS or call_name.endswith(STRING_RESOLVED_TARGET_SUFFIXES)
+    is_string_target = call_name in STRING_RESOLVED_TARGET_CALLS or call_name.endswith(
+        STRING_RESOLVED_TARGET_SUFFIXES
+    )
     if not is_dynamic_import and not is_string_target:
         return set()
 
@@ -272,7 +283,9 @@ def _literal_dict_key(value: ast.AST | None) -> object:
     return literal_key
 
 
-def _literal_dict_key_entries(node: ast.Dict, flattened_dicts: set[int] | None = None) -> list[tuple[object, int]]:
+def _literal_dict_key_entries(
+    node: ast.Dict, flattened_dicts: set[int] | None = None
+) -> list[tuple[object, int]]:
     entries = []
     for key, value in zip(node.keys, node.values, strict=True):
         if key is None:
@@ -298,9 +311,13 @@ def _duplicate_literal_dict_keys(path: Path) -> list[str]:
         if id(node) in flattened_dicts:
             continue
         seen = set()
-        for literal_key, line_number in _literal_dict_key_entries(node, flattened_dicts):
+        for literal_key, line_number in _literal_dict_key_entries(
+            node, flattened_dicts
+        ):
             if literal_key in seen:
-                duplicates.append(f"{_display_path(path)}:{line_number}:{literal_key!r}")
+                duplicates.append(
+                    f"{_display_path(path)}:{line_number}:{literal_key!r}"
+                )
             else:
                 seen.add(literal_key)
     return duplicates
@@ -322,7 +339,9 @@ def test_repository_directories_have_readme_or_package_docstring():
 
 
 def test_governance_directory_scan_skips_notebook_checkpoints():
-    assert _is_ignored(Path("notebooks/.ipynb_checkpoints/exploration-checkpoint.ipynb"))
+    assert _is_ignored(
+        Path("notebooks/.ipynb_checkpoints/exploration-checkpoint.ipynb")
+    )
 
 
 def test_source_layout_readme_reflects_document_owned_implementation():
@@ -331,11 +350,18 @@ def test_source_layout_readme_reflects_document_owned_implementation():
 
     assert "Cachet, the document KV-cache library" in compact_text
     assert "distribution package is `cachet-kv`" in text
-    assert "public product import namespace is the branded `cachet` facade" in compact_text
+    assert (
+        "public product import namespace is the branded `cachet` facade" in compact_text
+    )
     assert "`cachet/` is the branded import facade" in text
-    assert "`document_kv_cache/` is the canonical implementation and compatibility" in text
+    assert (
+        "`document_kv_cache/` is the canonical implementation and compatibility" in text
+    )
     assert "`restaurant_kv_serving/`" not in text
-    assert "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter" in compact_text
+    assert (
+        "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter"
+        in compact_text
+    )
     assert "contains the current implementation" not in text
 
 
@@ -362,7 +388,9 @@ def test_packaged_template_root_readmes_explain_subfolders():
 def test_document_package_readme_lists_public_modules_and_console_scripts():
     import document_kv_cache
 
-    text = (REPO_ROOT / "src" / "document_kv_cache" / "README.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "src" / "document_kv_cache" / "README.md").read_text(
+        encoding="utf-8"
+    )
     package_dir = REPO_ROOT / "src" / "document_kv_cache"
     package_modules = {
         path.stem
@@ -374,9 +402,13 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     compatibility_only_modules = sorted(
         package_modules - set(public_modules) - set(internal_modules)
     )
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     document_scripts = sorted(
-        name for name in pyproject["project"]["scripts"] if name.startswith("document-kv-")
+        name
+        for name in pyproject["project"]["scripts"]
+        if name.startswith("document-kv-")
     )
     cachet_scripts = sorted(
         name for name in pyproject["project"]["scripts"] if name.startswith("cachet-")
@@ -417,9 +449,7 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
 
 
 def test_method_docs_keep_custom_scorers_programmatic_and_remote_plans_v1_closed():
-    text = (REPO_ROOT / "docs" / "adding-a-kv-method.md").read_text(
-        encoding="utf-8"
-    )
+    text = (REPO_ROOT / "docs" / "adding-a-kv-method.md").read_text(encoding="utf-8")
     compact_text = " ".join(text.split())
 
     for required in (
@@ -436,7 +466,7 @@ def test_method_docs_keep_custom_scorers_programmatic_and_remote_plans_v1_closed
 
 
 def test_legacy_source_package_directory_is_removed():
-    legacy_source_dir = REPO_ROOT / "src" / ("restaurant" "_kv_serving")
+    legacy_source_dir = REPO_ROOT / "src" / ("restaurant_kv_serving")
 
     assert not legacy_source_dir.exists()
 
@@ -446,8 +476,12 @@ def test_legacy_compatibility_removal_gate_is_documented():
     maintainer_reference = (
         REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
     ).read_text(encoding="utf-8")
-    matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
-    gate = (REPO_ROOT / "docs" / "legacy-compatibility-removal.md").read_text(encoding="utf-8")
+    matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(
+        encoding="utf-8"
+    )
+    gate = (REPO_ROOT / "docs" / "legacy-compatibility-removal.md").read_text(
+        encoding="utf-8"
+    )
     compact_gate = " ".join(gate.split())
 
     assert "`docs/legacy-compatibility-removal.md`" in maintainer_reference
@@ -457,37 +491,68 @@ def test_legacy_compatibility_removal_gate_is_documented():
     assert "`puyuanOT/cachet`" in gate
     assert "`cachet-kv`" in gate
     assert "primary import surface is the branded `cachet` facade" in compact_gate
-    assert "`document_kv_cache` remains the canonical implementation namespace" in compact_gate
-    assert "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts" in compact_gate
-    assert "New code must not add production dependencies on the legacy package" in compact_gate
+    assert (
+        "`document_kv_cache` remains the canonical implementation namespace"
+        in compact_gate
+    )
+    assert (
+        "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts"
+        in compact_gate
+    )
+    assert (
+        "New code must not add production dependencies on the legacy package"
+        in compact_gate
+    )
     assert "from `src/`" in compact_gate
     assert "Completed Compatibility Contract" in gate
     assert "`pyproject.toml` no longer packages `restaurant_kv_serving`" in compact_gate
     assert "`src/document_kv_cache/release_bundle.py` rejects" in compact_gate
     assert "`restaurant_kv_serving/__init__.py`" in gate
     assert "`restaurant_kv_serving/py.typed`" in gate
-    assert "`tests/test_public_package.py` proves the public package surface" in compact_gate
+    assert (
+        "`tests/test_public_package.py` proves the public package surface"
+        in compact_gate
+    )
     assert "`tests/test_project_governance.py` prevents new accidental" in compact_gate
     assert "PR evidence sidecars with Refactor-skill evidence" in compact_gate
     assert "completed GPT-5.5 review" in compact_gate
-    assert "Downstream Databricks benchmark runners and QA jobs have migrated" in compact_gate
+    assert (
+        "Downstream Databricks benchmark runners and QA jobs have migrated"
+        in compact_gate
+    )
     assert "record type `document_kv.legacy_compatibility_migration.v1`" in compact_gate
-    assert "python -m document_kv_cache.legacy_compatibility --validate-json" in compact_gate
-    assert "`release`, `benchmark`, `storage`, `native_probe`, and `smoke`" in compact_gate
+    assert (
+        "python -m document_kv_cache.legacy_compatibility --validate-json"
+        in compact_gate
+    )
+    assert (
+        "`release`, `benchmark`, `storage`, `native_probe`, and `smoke`" in compact_gate
+    )
     assert "no checked runner uses `restaurant_kv_serving` imports" in compact_gate
     assert "`restaurant-kv-*` commands" in compact_gate
     assert "`legacy_migration_evidence` artifact role" in compact_gate
     assert "Current AWS g6/L4 release evidence" in compact_gate
     assert "optional AWS g5/A10G compatibility evidence" in compact_gate
     assert "strict release-bundle package-wheel gates are updated" in compact_gate
-    assert "Keep `restaurant_kv_serving` absent from `pyproject.toml` package metadata" in compact_gate
+    assert (
+        "Keep `restaurant_kv_serving` absent from `pyproject.toml` package metadata"
+        in compact_gate
+    )
     assert "Keep `src/restaurant_kv_serving` absent" in compact_gate
-    assert "Run the focused governance, public-package, and release-bundle tests" in compact_gate
-    assert "Refresh the tested wheel and strict release bundle before publication" in compact_gate
+    assert (
+        "Run the focused governance, public-package, and release-bundle tests"
+        in compact_gate
+    )
+    assert (
+        "Refresh the tested wheel and strict release bundle before publication"
+        in compact_gate
+    )
 
 
 def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
-    evidence_dir = REPO_ROOT / "docs" / "release-ops" / "evidence" / "legacy-migration" / "current"
+    evidence_dir = (
+        REPO_ROOT / "docs" / "release-ops" / "evidence" / "legacy-migration" / "current"
+    )
     scan_config_path = evidence_dir / "legacy-migration-scan-config.json"
     evidence_path = evidence_dir / "legacy-migration-evidence.json"
     validation_path = evidence_dir / "legacy-migration-validation.json"
@@ -508,16 +573,24 @@ def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
     assert evidence.issues == ()
     assert validation_record["ok"] is True
     assert validation_record == committed_record
-    assert {job["category"] for job in committed_record["checked_downstream_jobs"]} == set(
-        LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES
+    assert {
+        job["category"] for job in committed_record["checked_downstream_jobs"]
+    } == set(LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES)
+    assert all(
+        job["legacy_imports_present"] is False
+        for job in committed_record["checked_downstream_jobs"]
     )
-    assert all(job["legacy_imports_present"] is False for job in committed_record["checked_downstream_jobs"])
     assert all(
         job["legacy_console_scripts_present"] is False
         for job in committed_record["checked_downstream_jobs"]
     )
-    assert all(job["legacy_reference_hits"] == [] for job in committed_record["checked_downstream_jobs"])
-    assert {evidence["hardware_target"] for evidence in committed_record["release_evidence"]} == {
+    assert all(
+        job["legacy_reference_hits"] == []
+        for job in committed_record["checked_downstream_jobs"]
+    )
+    assert {
+        evidence["hardware_target"] for evidence in committed_record["release_evidence"]
+    } == {
         "aws-g6-l4",
         "aws-g5-a10g",
     }
@@ -667,7 +740,9 @@ def test_duplicate_literal_dict_key_scanner_reports_silent_overwrites(tmp_path):
 
 def test_python_source_files_do_not_repeat_literal_dict_keys():
     duplicates = []
-    for path in sorted((REPO_ROOT / "src").rglob("*.py")) + sorted((REPO_ROOT / "tests").rglob("*.py")):
+    for path in sorted((REPO_ROOT / "src").rglob("*.py")) + sorted(
+        (REPO_ROOT / "tests").rglob("*.py")
+    ):
         relative = path.relative_to(REPO_ROOT)
         if _is_ignored(relative):
             continue
@@ -696,11 +771,16 @@ def test_contributing_doc_is_friendly_to_external_contributors():
     assert "custom serving engine" in text
     assert "handoff boundary" in text
     assert "Maintainer-Only Release Gates" in text
-    assert "External contributors do not need to produce those artifacts" in compact_text
+    assert (
+        "External contributors do not need to produce those artifacts" in compact_text
+    )
     assert "Refactor skill" not in text
     assert "GPT-5.5 review" not in text
     assert "Direct pushes to `main`" not in compact_text
-    assert "Internal PR workflow gates such as Refactor-skill evidence" in compact_maintainer_checklist
+    assert (
+        "Internal PR workflow gates such as Refactor-skill evidence"
+        in compact_maintainer_checklist
+    )
     assert "GPT-5.5 review" in maintainer_checklist
 
 
@@ -829,9 +909,9 @@ def test_readme_minimal_api_uses_cachet_public_imports():
 def test_maintainer_reference_engine_adapter_handoff_example_uses_public_payload_reader():
     import document_kv_cache
 
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     example = _first_python_fence_after(text, "For engine-specific integration code")
     tree = ast.parse(example)
     document_imports = {
@@ -843,11 +923,13 @@ def test_maintainer_reference_engine_adapter_handoff_example_uses_public_payload
 
     assert "adapter_storage" not in example
     assert "write_engine_adapter_handoff_bundle(" in example
-    assert ".open(\"wb\")" not in example
+    assert '.open("wb")' not in example
     assert "payload = read_engine_adapter_payload(" in example
-    assert "expected_bytes=record[\"payload_source\"][\"total_bytes\"]" in example
+    assert 'expected_bytes=record["payload_source"]["total_bytes"]' in example
     assert document_imports
-    missing_exports = sorted(name for name in document_imports if not hasattr(document_kv_cache, name))
+    missing_exports = sorted(
+        name for name in document_imports if not hasattr(document_kv_cache, name)
+    )
     assert missing_exports == []
 
 
@@ -856,26 +938,44 @@ def test_maintainer_reference_benchmark_plan_examples_include_release_actions_si
         REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
     ).read_text(encoding="utf-8")
     compact_root_text = " ".join(root_text.split())
-    root_example = _first_bash_fence_after(root_text, "To run the V1 benchmark contract")
+    root_example = _first_bash_fence_after(
+        root_text, "To run the V1 benchmark contract"
+    )
 
-    assert "--engine-probe-output-json vllm=/data/vllm-engine-probe.json" in root_example
-    assert "--engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json" in root_example
-    assert "--engine-probe-output-json sglang=/data/sglang-engine-probe.json" in root_example
-    assert "--engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json" in root_example
+    assert (
+        "--engine-probe-output-json vllm=/data/vllm-engine-probe.json" in root_example
+    )
+    assert (
+        "--engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json"
+        in root_example
+    )
+    assert (
+        "--engine-probe-output-json sglang=/data/sglang-engine-probe.json"
+        in root_example
+    )
+    assert (
+        "--engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json"
+        in root_example
+    )
     assert "--release-evidence-output-json /data/release-evidence.json" in root_example
 
-    assert "release evidence must include `--engine-probe-actions-output-json`" in compact_root_text
+    assert (
+        "release evidence must include `--engine-probe-actions-output-json`"
+        in compact_root_text
+    )
     assert "actions_output_json" in root_text
-    assert "native probe and connector-action records already exist" in compact_root_text
+    assert (
+        "native probe and connector-action records already exist" in compact_root_text
+    )
     assert "--release-engine-actions-json" in compact_root_text
 
 
 def test_maintainer_reference_model_profile_example_uses_portable_definition_artifact():
     import document_kv_cache
 
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     example = _first_python_fence_after(text, "Future Qwen3.5, MiniMax")
     tree = ast.parse(example)
     document_imports = {
@@ -891,12 +991,16 @@ def test_maintainer_reference_model_profile_example_uses_portable_definition_art
     assert "Provider/Future-MQA-4B" in example
     assert "future-mqa-profile.json" in example
     assert document_imports
-    missing_exports = sorted(name for name in document_imports if not hasattr(document_kv_cache, name))
+    missing_exports = sorted(
+        name for name in document_imports if not hasattr(document_kv_cache, name)
+    )
     assert missing_exports == []
 
 
 def test_project_metadata_uses_cachet_branded_distribution():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     project = pyproject["project"]
 
     assert project["name"] == "cachet-kv"
@@ -904,7 +1008,9 @@ def test_project_metadata_uses_cachet_branded_distribution():
     assert "cachet" in project["keywords"]
     assert project["license"] == "Apache-2.0"
     assert project["license-files"] == ["LICENSE"]
-    assert "License :: OSI Approved :: Apache Software License" in project["classifiers"]
+    assert (
+        "License :: OSI Approved :: Apache Software License" in project["classifiers"]
+    )
 
 
 def test_readme_and_root_license_document_apache_2_license():
@@ -920,7 +1026,9 @@ def test_readme_and_root_license_document_apache_2_license():
 
 
 def test_project_metadata_exposes_repository_and_issue_urls():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
 
     assert pyproject["project"]["urls"] == {
         "Repository": "https://github.com/puyuanOT/cachet",
@@ -947,9 +1055,9 @@ def test_readme_avoids_workspace_local_script_references():
 
 
 def test_maintainer_reference_manifest_schema_mentions_storage_layout():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     logical_model = _markdown_section(text, "Logical Model")
     manifest_start = logical_model.index("Manifest table:")
     fence_start = logical_model.rindex("```text", 0, manifest_start)
@@ -960,9 +1068,9 @@ def test_maintainer_reference_manifest_schema_mentions_storage_layout():
 
 
 def test_maintainer_reference_remaining_work_keeps_serving_boundary_explicit():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     remaining_work = _markdown_section(text, "Remaining V1 Work")
 
     assert "connector action descriptors" in remaining_work
@@ -1028,7 +1136,9 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
 
 
 def test_native_engine_integration_doc_examples_are_validated():
-    text = (REPO_ROOT / "docs" / "native-engine-integration.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "native-engine-integration.md").read_text(
+        encoding="utf-8"
+    )
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -1070,22 +1180,32 @@ def test_native_engine_integration_doc_examples_are_validated():
     assert isinstance(vllm_launch_config, dict)
     assert isinstance(sglang_launch_config, dict)
     assert vllm_launch_config["kv_connector"] == "DocumentKVConnector"
-    assert vllm_launch_config["kv_connector_extra_config"]["document_kv.backend"] == "vllm"
-    assert json.loads(sglang_launch_config["hicache_storage_backend_extra_config"])[
-        "document_kv.backend"
-    ] == "sglang"
+    assert (
+        vllm_launch_config["kv_connector_extra_config"]["document_kv.backend"] == "vllm"
+    )
+    assert (
+        json.loads(sglang_launch_config["hicache_storage_backend_extra_config"])[
+            "document_kv.backend"
+        ]
+        == "sglang"
+    )
 
 
 def test_repository_map_and_evidence_policy_are_documented():
     root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     repo_map = (REPO_ROOT / "docs" / "repo-map.md").read_text(encoding="utf-8")
-    evidence_policy = (REPO_ROOT / "docs" / "evidence-policy.md").read_text(encoding="utf-8")
+    evidence_policy = (REPO_ROOT / "docs" / "evidence-policy.md").read_text(
+        encoding="utf-8"
+    )
     compact_repo_map = " ".join(repo_map.split())
     compact_evidence_policy = " ".join(evidence_policy.split())
 
     assert "[`docs/repo-map.md`](docs/repo-map.md)" in root_readme
-    assert "`evidence-policy.md` defines which machine-readable records belong" in docs_readme
+    assert (
+        "`evidence-policy.md` defines which machine-readable records belong"
+        in docs_readme
+    )
     assert "`release-ops/` keeps maintainer-only release machinery" in docs_readme
     assert "`repo-map.md` is the human navigation map" in docs_readme
     assert "one project and one distribution package" in compact_repo_map
@@ -1120,8 +1240,9 @@ def test_repository_map_and_evidence_policy_are_documented():
         "repository hygiene",
     ):
         assert required_boundary in compact_evidence_policy
-    assert "Keep exploratory run payloads and task status files under ignored `databricks-runs/`" in (
-        compact_evidence_policy
+    assert (
+        "Keep exploratory run payloads and task status files under ignored `databricks-runs/`"
+        in (compact_evidence_policy)
     )
 
 
@@ -1129,7 +1250,9 @@ def test_release_ops_doc_classifies_installed_cli_surface():
     release_ops = (REPO_ROOT / "docs" / "release-ops" / "README.md").read_text(
         encoding="utf-8"
     )
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     scripts = pyproject["project"]["scripts"]
     cachet_scripts = sorted(name for name in scripts if name.startswith("cachet-"))
 
@@ -1138,7 +1261,9 @@ def test_release_ops_doc_classifies_installed_cli_surface():
     assert "`cachet-engine-launch-config`" in release_ops
     for script_name in cachet_scripts:
         assert f"`{script_name}`" in release_ops
-    assert "The `document-kv-*` console scripts are compatibility aliases" in release_ops
+    assert (
+        "The `document-kv-*` console scripts are compatibility aliases" in release_ops
+    )
     assert "Prefer `cachet-*` in new documentation" in release_ops
 
 
@@ -1196,9 +1321,11 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     assert "N/A (runner not implemented)" in score_table
     for method in ("KV&nbsp;Packet", "CacheBlend", "InfoFlow&nbsp;KV"):
         assert method in root_readme
-    assert "59.134952 reconciled GPU-hours" in root_readme
-    assert "exact 180/42/180 post-migration append-only prefix" in root_readme
-    assert "No benchmark result evidence is currently published here." in appendix_readme
+    assert "61.289050 reconciled GPU-hours" in root_readme
+    assert "exact 194/56/194 post-migration append-only prefix" in root_readme
+    assert (
+        "No benchmark result evidence is currently published here." in appendix_readme
+    )
     assert "Superseded result folders were removed" in appendix_readme
 
     expected_files = {
@@ -1218,9 +1345,9 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     }
     assert actual_files == expected_files
 
-    ledger_doc = (
-        REPO_ROOT / "docs" / "databricks-cluster-hour-ledger.md"
-    ).read_text(encoding="utf-8")
+    ledger_doc = (REPO_ROOT / "docs" / "databricks-cluster-hour-ledger.md").read_text(
+        encoding="utf-8"
+    )
     compact_ledger_doc = " ".join(ledger_doc.split())
     assert (
         "live-P90 projection applies to each producer and consumer phase of "
@@ -1228,18 +1355,17 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "phases use hard cap/headroom admission"
     ) in compact_ledger_doc
     assert (
-        "retained opening is now the exact 180-reservation, 42-receipt, "
-        "180-terminal prefix"
+        "retained opening is now the exact 194-reservation, 56-receipt, "
+        "194-terminal prefix"
     ) in compact_ledger_doc
     assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
     assert (
-        "intermediate 138/0/138, 152/14/152, and 166/28/166 prefixes"
+        "intermediate 138/0/138, 152/14/152, 166/28/166, and 180/42/180 prefixes"
         in compact_ledger_doc
     )
     assert "analysis.opening_ledger_provenance" in compact_ledger_doc
     assert (
-        "18,292-byte observed parameters JSON versus the 10,000-byte server "
-        "limit"
+        "18,292-byte observed parameters JSON versus the 10,000-byte server limit"
     ) in compact_ledger_doc
     assert "zero observed active runs" in compact_ledger_doc
     assert (
@@ -1285,7 +1411,52 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         in compact_ledger_doc
     )
     assert (
-        "reconciled opening balance is therefore 59.134952 GPU-hours"
+        "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
+        in compact_ledger_doc
+    )
+    assert (
+        "pip requirements-file index precedence omitted the PyTorch CU129 "
+        "index and prevented hash-locked torch resolution"
+    ) in compact_ledger_doc
+    assert (
+        "exactly the five logged keys `error`, `error_trace`, `logs`, "
+        "`logs_truncated`, and `metadata`"
+    ) in compact_ledger_doc
+    assert (
+        "7544cab6366fc1813af8d04da00a8a1f76f1098e3b06c738d8ff8ddd392ae235"
+        in compact_ledger_doc
+    )
+    assert (
+        "5016ed50001b77b77f329e858c01b1a65c5e927f1c55eec7fbc01208d8f25886"
+        in compact_ledger_doc
+    )
+    assert "exactly 29 regular files and 1,564,133 bytes" in compact_ledger_doc
+    assert (
+        "2ee650e0e05ea059bd9f552d6975149c05cbda6dc8d3a715a73594913f078b29"
+        in compact_ledger_doc
+    )
+    assert (
+        "e0f56f1250c4ce213d1a8ba0384ccdad1a1b38fb964c1b6bfcf5729006150455"
+        in compact_ledger_doc
+    )
+    assert (
+        "Its 7,754.755 terminal cluster-seconds add 2.154098611111 GPU-hours"
+        in compact_ledger_doc
+    )
+    assert (
+        "predicted terminal prefix and final offline-reconciled prefix are "
+        "both the exact 194/56/194 prefix"
+    ) in compact_ledger_doc
+    assert (
+        "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
+        in compact_ledger_doc
+    )
+    assert (
+        "1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916"
+        in compact_ledger_doc
+    )
+    assert (
+        "reconciled opening balance is therefore 61.289050 GPU-hours"
     ) in compact_ledger_doc
 
     subindex_expectations = {
@@ -1307,9 +1478,9 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
 
 
 def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     compact_text = " ".join(text.split())
     remaining_v1_work = _markdown_section(text, "Remaining V1 Work")
     compact_remaining_v1_work = " ".join(remaining_v1_work.split())
@@ -1333,7 +1504,10 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
 
     assert "package name/version for wheel artifacts" in compact_text
     assert "records the normalized package name and package version" in compact_text
-    assert "current project version from `pyproject.toml` or installed package metadata" in compact_text
+    assert (
+        "current project version from `pyproject.toml` or installed package metadata"
+        in compact_text
+    )
     assert "free of active task keys" in compact_text
     assert "task summaries carry non-empty `purpose` tags" in compact_text
     assert "summary arrays match the task summaries" in compact_text
@@ -1348,7 +1522,10 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "enable GitHub auto-merge" in compact_text
     assert "delete head branches after merge" in compact_text
     assert "Freeze the vLLM 0.27.1 source snapshot" in compact_remaining_v1_work
-    assert "complete five-block Baseline/Vanilla latency factorial" in compact_remaining_v1_work
+    assert (
+        "complete five-block Baseline/Vanilla latency factorial"
+        in compact_remaining_v1_work
+    )
     assert "concurrency 1/2/4" in compact_remaining_v1_work
     assert "paired full-dataset score pass" in compact_remaining_v1_work
     assert "Do not publish partial or pre-reset numbers" in compact_remaining_v1_work
@@ -1359,15 +1536,17 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
         compact_remaining_v1_work
     )
     assert "Current governance evidence is green" in compact_remaining_v1_work
-    assert "`legacy_migration_evidence` release-bundle role" in compact_remaining_v1_work
+    assert (
+        "`legacy_migration_evidence` release-bundle role" in compact_remaining_v1_work
+    )
     for stale_blocker in stale_release_blockers:
         assert stale_blocker not in text
 
 
 def test_maintainer_reference_native_probe_diagnostics_include_serving_environment_profile():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     serving_handoff = _markdown_section(text, "Serving Engine Handoff")
     compact_serving_handoff = " ".join(serving_handoff.split())
 
@@ -1378,16 +1557,18 @@ def test_maintainer_reference_native_probe_diagnostics_include_serving_environme
     assert "document-kv-native-probe-factories" in serving_handoff
     assert "fail closed" in compact_serving_handoff
     assert "pinned isolated serving-environment profile" in compact_serving_handoff
-    assert "target engine versions and dependency constraints" in compact_serving_handoff
+    assert (
+        "target engine versions and dependency constraints" in compact_serving_handoff
+    )
     assert "EngineKVInjectionPlan" in serving_handoff
     assert "layout-derived byte totals, block totals" in serving_handoff
     assert "before native block-manager calls" in compact_serving_handoff
 
 
 def test_maintainer_reference_workflow_api_shows_single_text_document_helper():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     storage_backends = _markdown_section(text, "Storage Backends")
     workflow_api = _markdown_section(text, "Workflow API")
 
@@ -1406,7 +1587,9 @@ def test_maintainer_reference_workflow_api_shows_single_text_document_helper():
 
 
 def test_pull_request_template_is_public_contributor_friendly():
-    text = (REPO_ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / ".github" / "pull_request_template.md").read_text(
+        encoding="utf-8"
+    )
 
     for required in (
         "# What Changed",
@@ -1426,8 +1609,14 @@ def test_pull_request_template_is_public_contributor_friendly():
 
 
 def test_github_main_branch_protection_payload_requires_pr_review_and_ci():
-    payload = json.loads((REPO_ROOT / ".github" / "main-branch-protection.json").read_text(encoding="utf-8"))
-    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    payload = json.loads(
+        (REPO_ROOT / ".github" / "main-branch-protection.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
     ci_job_names = re.findall(r"^    name: (.+)$", ci_text, flags=re.MULTILINE)
 
     assert ci_job_names == [
@@ -1491,7 +1680,8 @@ def test_github_ci_workflow_runs_pr_quality_gate():
     run_commands = [
         line.split("run:", maxsplit=1)[1].strip()
         for line in text.splitlines()
-        if line.lstrip().startswith("run: ") and line.split("run:", maxsplit=1)[1].strip() != "|"
+        if line.lstrip().startswith("run: ")
+        and line.split("run:", maxsplit=1)[1].strip() != "|"
     ]
     assert run_commands == [
         "python -m pip install poetry==2.4.1",
@@ -1516,16 +1706,21 @@ def test_github_ci_workflow_verifies_installed_console_scripts():
     text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "Verify console script entry points" in text
-    assert 'tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]' in text
+    assert (
+        'tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]'
+        in text
+    )
     assert "for script_name in sorted(scripts):" in text
     assert "shutil.which(script_name)" in text
-    assert 'subprocess.run(' in text
+    assert "subprocess.run(" in text
     assert '[script_path, "--help"]' in text
 
 
 def test_github_ci_workflow_smokes_built_wheel_imports():
     text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    workflow_readme = (REPO_ROOT / ".github" / "workflows" / "README.md").read_text(encoding="utf-8")
+    workflow_readme = (REPO_ROOT / ".github" / "workflows" / "README.md").read_text(
+        encoding="utf-8"
+    )
     compact_workflow_readme = " ".join(workflow_readme.split())
 
     assert "Verify PEP 517 wheel build" in text
@@ -1539,13 +1734,15 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert 'archive.read(f"{roots.pop()}/{filename}").decode("utf-8")' in text
     assert re.search(r"document_kv_cache-[^/\"']+\.dist-info/", text) is None
     assert "Requires-Python: >=3.11,<4.0" in text
-    assert "Requires-Dist: packaging (==26.2)" in text
+    assert "Requires-Dist: packaging (==26.3)" in text
     assert "Tag: py3-none-any" in text
     assert "cachet-benchmark-plan=cachet.benchmark_plan:main" in text
     assert "cachet-pr-evidence=cachet.pr_evidence:main" in text
     assert "Verify built wheel import smoke" in text
     assert "python -m venv /tmp/cachet-wheel-smoke" in text
-    assert "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/cachet_kv-*.whl" in text
+    assert (
+        "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/cachet_kv-*.whl" in text
+    )
     assert "import cachet" in text
     assert "import document_kv_cache" in text
     assert 'legacy_package = "restaurant" "_kv_serving"' in text
@@ -1667,7 +1864,10 @@ def _iter_repository_text_files():
             continue
         if not path.is_file():
             continue
-        if path.name in REPOSITORY_TEXT_FILE_NAMES or path.suffix in REPOSITORY_TEXT_FILE_SUFFIXES:
+        if (
+            path.name in REPOSITORY_TEXT_FILE_NAMES
+            or path.suffix in REPOSITORY_TEXT_FILE_SUFFIXES
+        ):
             yield path
 
 
@@ -1684,7 +1884,9 @@ def _requirement_version(requirement: str) -> str:
 
 def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
     dependency_versions = {}
-    assert "dependency-groups" not in pyproject, "Use [tool.poetry.group.*.dependencies] for dependency groups"
+    assert "dependency-groups" not in pyproject, (
+        "Use [tool.poetry.group.*.dependencies] for dependency groups"
+    )
 
     poetry_core_requirements = [
         requirement
@@ -1692,7 +1894,9 @@ def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
         if _requirement_name(requirement) == "poetry-core"
     ]
     assert len(poetry_core_requirements) == 1
-    dependency_versions["build-system.poetry-core"] = _requirement_version(poetry_core_requirements[0])
+    dependency_versions["build-system.poetry-core"] = _requirement_version(
+        poetry_core_requirements[0]
+    )
 
     poetry_config = pyproject["tool"]["poetry"]
     project_config = pyproject["project"]
@@ -1706,8 +1910,12 @@ def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
     )
 
     for requirement in project_config.get("dependencies", ()):
-        dependency_versions[f"project.dependencies.{_requirement_name(requirement)}"] = _requirement_version(requirement)
-    for extra_name, requirements in project_config.get("optional-dependencies", {}).items():
+        dependency_versions[
+            f"project.dependencies.{_requirement_name(requirement)}"
+        ] = _requirement_version(requirement)
+    for extra_name, requirements in project_config.get(
+        "optional-dependencies", {}
+    ).items():
         for requirement in requirements:
             dependency_versions[
                 f"project.optional-dependencies.{extra_name}.{_requirement_name(requirement)}"
@@ -1715,7 +1923,10 @@ def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
 
     dependency_tables = []
     dependency_tables.extend(
-        (f"tool.poetry.group.{group_name}.dependencies", group_config.get("dependencies", {}))
+        (
+            f"tool.poetry.group.{group_name}.dependencies",
+            group_config.get("dependencies", {}),
+        )
         for group_name, group_config in poetry_config.get("group", {}).items()
     )
     for table_name, dependencies in dependency_tables:
@@ -1732,7 +1943,14 @@ def test_exact_stable_version_pin_helper_rejects_ranges_and_prereleases():
     assert _is_exact_stable_version_pin("1.2.3.post1")
     assert _is_exact_stable_version_pin("1!2.0.0")
 
-    for version in ("^1.2.3", ">=1.2.3", "1.2.3rc1", "1.2.3.dev0", "1.2.3+local", "1.2.3, <2"):
+    for version in (
+        "^1.2.3",
+        ">=1.2.3",
+        "1.2.3rc1",
+        "1.2.3.dev0",
+        "1.2.3+local",
+        "1.2.3, <2",
+    ):
         assert not _is_exact_stable_version_pin(version)
 
 
@@ -1813,24 +2031,34 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
 
 
 def test_poetry_dependencies_use_exact_direct_pins():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
 
     dependency_versions = _collect_poetry_dependency_versions(pyproject)
     assert dependency_versions
     for name, version in dependency_versions.items():
-        assert _is_exact_stable_version_pin(version), f"{name} is not exactly pinned to a stable version: {version}"
+        assert _is_exact_stable_version_pin(version), (
+            f"{name} is not exactly pinned to a stable version: {version}"
+        )
 
 
 def test_poetry_lockfile_tracks_direct_runtime_pins():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     lock_path = REPO_ROOT / "poetry.lock"
 
     assert lock_path.is_file()
     lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
     assert lock["metadata"]["lock-version"] == "2.1"
-    assert lock["metadata"]["python-versions"] == pyproject["project"]["requires-python"]
+    assert (
+        lock["metadata"]["python-versions"] == pyproject["project"]["requires-python"]
+    )
 
-    locked_versions = {package["name"]: f"=={package['version']}" for package in lock["package"]}
+    locked_versions = {
+        package["name"]: f"=={package['version']}" for package in lock["package"]
+    }
     direct_requirements = list(pyproject["project"].get("dependencies", ()))
     for requirements in pyproject["project"].get("optional-dependencies", {}).values():
         direct_requirements.extend(requirements)
@@ -1847,14 +2075,30 @@ def test_poetry_lockfile_tracks_direct_runtime_pins():
 
 
 def test_runtime_packaging_pin_stays_databricks_ml_compatible():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     dependency_versions = _collect_poetry_dependency_versions(pyproject)
 
-    assert dependency_versions["project.dependencies.packaging"] == "==26.2"
+    assert dependency_versions["project.dependencies.packaging"] == "==26.3"
+    semantic_input = (
+        REPO_ROOT
+        / "src/document_kv_cache/runtime_locks/"
+        "publication-latency-semantic-py311-macos-arm64.in"
+    ).read_text(encoding="utf-8")
+    semantic_lock = (
+        REPO_ROOT
+        / "src/document_kv_cache/runtime_locks/"
+        "publication-latency-semantic-py311-macos-arm64.lock"
+    ).read_text(encoding="utf-8")
+    assert semantic_input.splitlines()[0] == "packaging==26.2"
+    assert "packaging==26.2 \\" in semantic_lock
 
 
 def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     dependencies = pyproject["project"].get("dependencies", ())
     optional_dependencies = pyproject["project"].get("optional-dependencies", {})
     dependency_names = {_requirement_name(requirement) for requirement in dependencies}
@@ -1862,7 +2106,9 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
         extra_name: {_requirement_name(requirement) for requirement in requirements}
         for extra_name, requirements in optional_dependencies.items()
     }
-    optional_dependency_names = set().union(*optional_dependency_names_by_extra.values())
+    optional_dependency_names = set().union(
+        *optional_dependency_names_by_extra.values()
+    )
 
     assert "vllm" not in dependency_names
     assert "sglang" not in dependency_names
@@ -1874,7 +2120,9 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
 
 
 def test_public_and_adapter_packages_publish_pep561_markers():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     includes = {
         include["path"]
         for include in pyproject["tool"]["poetry"]["include"]
@@ -1890,5 +2138,5 @@ def test_public_and_adapter_packages_publish_pep561_markers():
     for marker_path in marker_paths:
         assert (REPO_ROOT / marker_path).is_file()
         assert marker_path in includes
-    assert not (REPO_ROOT / "src" / ("restaurant" "_kv_serving") / "py.typed").exists()
+    assert not (REPO_ROOT / "src" / ("restaurant_kv_serving") / "py.typed").exists()
     assert "src/restaurant_kv_serving/py.typed" not in includes

@@ -317,6 +317,24 @@ def _verified(uri: str, expected: str, label: str) -> str:
     return path
 
 
+def _pip_subprocess_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    for variable_name in tuple(env):
+        if variable_name.upper().startswith("PIP_"):
+            env.pop(variable_name)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(variable_name, None)
+    env.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    return env
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-record-json", required=True)
@@ -335,7 +353,8 @@ def main() -> None:
         "Cachet package wheel",
     )
     subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", wheel]
+        [sys.executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", wheel],
+        env=_pip_subprocess_environment(),
     )
     sys.argv = [
         "document_kv_cache.publication_latency_execution",
@@ -391,6 +410,24 @@ def _verified(uri: str, expected: str, label: str) -> str:
     return path
 
 
+def _pip_subprocess_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    for variable_name in tuple(env):
+        if variable_name.upper().startswith("PIP_"):
+            env.pop(variable_name)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(variable_name, None)
+    env.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    return env
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runner-sha256", required=True)
@@ -433,15 +470,32 @@ def main() -> None:
         raise ValueError("source-closure runtime venv escaped /local_disk0")
     if os.path.exists(venv_dir):
         raise FileExistsError("refusing to reuse an unverified source-closure runtime")
-    subprocess.check_call([sys.executable, "-m", "venv", venv_dir])
+    pip_environment = _pip_subprocess_environment()
+    subprocess.check_call(
+        [sys.executable, "-m", "venv", venv_dir],
+        env=pip_environment,
+    )
     venv_python = os.path.join(venv_dir, "bin", "python")
+    pip_environment["VIRTUAL_ENV"] = venv_dir
+    pip_environment["PATH"] = (
+        os.path.dirname(venv_python)
+        + os.pathsep
+        + pip_environment.get("PATH", "")
+    )
     pip = [venv_python, "-m", "pip"]
     subprocess.check_call(
-        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", runtime_lock]
+        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", runtime_lock],
+        env=pip_environment,
     )
-    subprocess.check_call([*pip, "install", "--no-deps", patched_wheel])
-    subprocess.check_call([*pip, "install", "--no-deps", package_wheel])
-    subprocess.check_call([*pip, "check"])
+    subprocess.check_call(
+        [*pip, "install", "--no-deps", patched_wheel],
+        env=pip_environment,
+    )
+    subprocess.check_call(
+        [*pip, "install", "--no-deps", package_wheel],
+        env=pip_environment,
+    )
+    subprocess.check_call([*pip, "check"], env=pip_environment)
     expected_spec = (
         "vllm @ file://" + os.path.abspath(patched_wheel)
         + "#sha256=" + args.patched_vllm_wheel_sha256
@@ -452,11 +506,13 @@ def main() -> None:
         "print(json.dumps(verify(sys.argv[1]), sort_keys=True))"
     )
     verified = subprocess.check_output(
-        [venv_python, "-c", verifier, expected_spec], text=True
+        [venv_python, "-c", verifier, expected_spec],
+        text=True,
+        env=pip_environment,
     )
     if json.loads(verified).get("ok") is not True:
         raise RuntimeError("source-closure locked runtime verification failed")
-    env = dict(os.environ)
+    env = dict(pip_environment)
     env["CACHET_LATENCY_SOURCE_CLOSURE_LOCKED_RUNTIME"] = (
         args.runtime_lock_sha256
     )

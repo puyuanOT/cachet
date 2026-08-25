@@ -2,6 +2,7 @@ import base64
 import hashlib
 import inspect
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -3891,7 +3892,7 @@ def test_bootstrap_writer_publishes_exact_content_addressed_stdlib_script(
     destination = tmp_path / "gpu-qualification-bootstrap.py"
 
     assert GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256 == (
-        "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
+        "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
     )
     assert _pins().runner_sha256 == GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
     observed = write_gpu_qualification_bootstrap_runner(destination)
@@ -3911,7 +3912,10 @@ def test_bootstrap_writer_publishes_exact_content_addressed_stdlib_script(
         write_gpu_qualification_bootstrap_runner(destination)
 
 
-def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount():
+def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
     namespace: dict[str, Any] = {"__name__": "gpuq_bootstrap_test"}
     exec(GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT, namespace)
 
@@ -3927,6 +3931,53 @@ def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount():
     assert qualification_job._cluster_file_path("dbfs:/legacy/result.json") == Path(
         "/dbfs/legacy/result.json"
     )
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("pip_no_index", "1")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
+    monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
+    monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    environments = (
+        namespace["_pip_subprocess_environment"](),
+        qualification_sentinels._pip_subprocess_environment(),
+        sentinel_worker._pip_subprocess_environment(),
+    )
+    for environment in environments:
+        assert {
+            key for key in environment if key.upper().startswith("PIP_")
+        } == {
+            "PIP_CONFIG_FILE",
+            "PIP_DISABLE_PIP_VERSION_CHECK",
+            "PIP_NO_INPUT",
+        }
+        assert environment["PIP_CONFIG_FILE"] == os.devnull
+        assert environment["PYTHONNOUSERSITE"] == "1"
+        assert all(
+            variable not in environment
+            for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+        )
+    site_packages = tmp_path / "runtime" / "site-packages"
+    site_packages.mkdir(parents=True)
+    discovery_calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def discover_site_packages(argv, **kwargs):
+        discovery_calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps([str(site_packages)]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        qualification_sentinels.subprocess,
+        "run",
+        discover_site_packages,
+    )
+    qualification_sentinels._make_site_packages_read_only(tmp_path / "python")
+    assert len(discovery_calls) == 1
+    assert discovery_calls[0][1]["env"] == environments[1]
 
 
 def test_emitted_bootstrap_verifies_its_compiled_path_without_file_global(
@@ -3950,12 +4001,19 @@ def test_emitted_bootstrap_verifies_its_compiled_path_without_file_global(
         namespace,
     )
     assert "__file__" not in namespace
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict[str, Any]]] = []
     monkeypatch.setattr(
         namespace["subprocess"],
         "run",
-        lambda command, **_kwargs: calls.append(command),
+        lambda command, **kwargs: calls.append((command, kwargs)),
     )
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("pip_no_index", "1")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
+    monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
+    monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
     pins = {
         "cachet_source_tree_sha256": "1" * 64,
         "input_bundle_sha256": "2" * 64,
@@ -3971,7 +4029,21 @@ def test_emitted_bootstrap_verifies_its_compiled_path_without_file_global(
     bootstrap = namespace["_bootstrap"]
     assert bootstrap(argv) == argv
     assert len(calls) == 1
-    assert calls[0][-1] == str(package_path)
+    assert calls[0][0][-1] == str(package_path)
+    environment = calls[0][1]["env"]
+    assert {
+        key for key in environment if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert all(
+        variable not in environment
+        for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+    )
 
     reviewed_copy = tmp_path / "reviewed-copy.py"
     reviewed_copy.write_text(

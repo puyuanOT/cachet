@@ -2053,6 +2053,9 @@ def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_p
     assert "--skip-runtime-package-install" in script
     assert "PYTHONPATH" in script
     assert "PYTHONNOUSERSITE" in script
+    assert "PIP_CONFIG_FILE" in script
+    assert "PIP_DISABLE_PIP_VERSION_CHECK" in script
+    assert "PIP_NO_INPUT" in script
     assert "--require-hashes" in script
     assert "--only-binary" in script
     assert "VLLM_RUNTIME_LOCK_SHA256" in script
@@ -2116,6 +2119,9 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
         ],
     )
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
 
     exec(
         compile(path.read_text(encoding="utf-8"), str(path), "exec"),
@@ -2163,9 +2169,27 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             "/dbfs/wheels/cachet_kv-0.2.0-py3-none-any.whl",
         ),
     ]
-    assert install_envs[0] is None
-    assert all(env is not None and "PYTHONPATH" not in env for env in install_envs[1:])
-    assert all(env is not None and env["PYTHONNOUSERSITE"] == "1" for env in install_envs[1:])
+    assert all(env is not None and "PYTHONPATH" not in env for env in install_envs)
+    assert all(
+        env is not None and env["PYTHONNOUSERSITE"] == "1"
+        for env in install_envs
+    )
+    assert all(
+        {
+            key for key in env if key.upper().startswith("PIP_")
+        }
+        == {
+            "PIP_CONFIG_FILE",
+            "PIP_DISABLE_PIP_VERSION_CHECK",
+            "PIP_NO_INPUT",
+        }
+        for env in install_envs
+        if env is not None
+    )
+    assert all(
+        env is not None and env["PIP_CONFIG_FILE"] == os.devnull
+        for env in install_envs
+    )
     assert reexec_calls == [
         (
             str(venv_python),
@@ -2197,16 +2221,21 @@ def test_generated_runner_installs_locked_vllm_closure_and_patched_wheel(
         wheel.writestr(lock_member, lock_bytes)
 
     install_calls = []
-    monkeypatch.setattr(
-        subprocess,
-        "check_call",
-        lambda argv, **kwargs: install_calls.append(tuple(argv)),
-    )
+    install_envs = []
+
+    def capture_install(argv, **kwargs):
+        install_calls.append(tuple(argv))
+        install_envs.append(kwargs.get("env"))
+
+    monkeypatch.setattr(subprocess, "check_call", capture_install)
     monkeypatch.setattr(subprocess, "call", lambda argv, **kwargs: 0)
     monkeypatch.setattr(sys, "version_info", (3, 11, 11, "final", 0))
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(platform, "libc_ver", lambda: ("glibc", "2.35"))
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("PIP_TARGET", "/attacker/target")
     package_args = [
         argument
         for package in VLLM_RUNTIME_PACKAGES
@@ -2241,11 +2270,6 @@ def test_generated_runner_installs_locked_vllm_closure_and_patched_wheel(
             "-m",
             "pip",
             "install",
-            *(
-                argument
-                for index_url in VLLM_PACKAGE_INDEX_URLS
-                for argument in ("--extra-index-url", index_url)
-            ),
             "--require-hashes",
             "--only-binary",
             ":all:",
@@ -2274,6 +2298,23 @@ def test_generated_runner_installs_locked_vllm_closure_and_patched_wheel(
     assert len(install_calls[5]) == 4
     assert "verify_installed_vllm_runtime_lock" in install_calls[5][2]
     assert install_calls[5][3] == VLLM_RUNTIME_PACKAGE
+    assert all(environment is not None for environment in install_envs)
+    assert all(
+        {
+            key for key in environment if key.upper().startswith("PIP_")
+        }
+        == {
+            "PIP_CONFIG_FILE",
+            "PIP_DISABLE_PIP_VERSION_CHECK",
+            "PIP_NO_INPUT",
+        }
+        for environment in install_envs
+        if environment is not None
+    )
+    assert all(
+        environment is not None and environment["PIP_CONFIG_FILE"] == os.devnull
+        for environment in install_envs
+    )
     assert VLLM_RUNTIME_LOCK_SHA256 == sha256(lock_bytes).hexdigest()
 
 
@@ -3059,8 +3100,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
                 "/dbfs/tmp/cachet/custom_vllm_probe_extension-0.1.0-py3-none-any.whl",
             ],
         ]
-    assert pip_records[0]["has_env"] is False
-    assert all(record["has_env"] is True for record in pip_records[1:])
+    assert all(record["has_env"] is True for record in pip_records)
     assert pip_calls[2][0] == str(venv_python)
     assert pip_calls[3][0] == str(venv_python)
     reexec_records = [json.loads(line) for line in reexec_calls_path.read_text(encoding="utf-8").splitlines()]

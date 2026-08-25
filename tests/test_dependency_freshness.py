@@ -26,7 +26,7 @@ CURRENT_EVIDENCE_PATH = (
 )
 CURRENT_LATEST_VERSIONS = {
     "poetry-core": "2.4.1",
-    "packaging": "26.2",
+    "packaging": "26.3",
     "pyspark": "4.1.2",
     "databricks-sdk": "0.118.0",
     "pytest": "9.1.1",

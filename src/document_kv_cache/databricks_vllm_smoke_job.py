@@ -88,6 +88,24 @@ def _cluster_file_path(uri: str) -> str:
     return uri
 
 
+def _pip_subprocess_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    for variable_name in tuple(env):
+        if variable_name.upper().startswith("PIP_"):
+            env.pop(variable_name)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(variable_name, None)
+    env.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    return env
+
+
 def _install_package_wheel(argv: list[str]) -> list[str]:
     os.environ.pop("DOCUMENT_KV_PACKAGE_WHEEL_SHA256", None)
     parser = argparse.ArgumentParser(add_help=False)
@@ -108,7 +126,15 @@ def _install_package_wheel(argv: list[str]) -> list[str]:
             if not hmac.compare_digest(verified_digest, args.package_wheel_sha256):
                 raise ValueError("Cachet package wheel SHA-256 does not match")
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", package_wheel_path]
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                package_wheel_path,
+            ],
+            env=_pip_subprocess_environment(),
         )
         os.environ["DOCUMENT_KV_PACKAGE_INSTALL_SPEC"] = package_wheel_path
         if verified_digest is not None:

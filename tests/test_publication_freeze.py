@@ -362,6 +362,16 @@ def test_source_closure_builder_propagates_the_repaired_bootstrap_pin(
     campaign["sha256"] = hashlib.sha256(
         inputs.campaign_plan.read_bytes()
     ).hexdigest()
+    runtime_lock = next(
+        item
+        for item in expected["references"]
+        if item["role"] == "runtime_lock"
+    )
+    runtime_lock["byte_count"] = inputs.runtime_lock.stat().st_size
+    runtime_lock["sha256"] = hashlib.sha256(
+        inputs.runtime_lock.read_bytes()
+    ).hexdigest()
+    expected["runtime"]["runtime_lock_sha256"] = freeze.VLLM_RUNTIME_LOCK_SHA256
     expected["closed_record_sha256"] = freeze._closed_record_sha256(expected)
     assert record == expected
     output = inputs.artifact_output_root / "cachet-source-closure.json"

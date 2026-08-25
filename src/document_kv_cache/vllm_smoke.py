@@ -1624,7 +1624,10 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         metadata["lmcache_config"] = json.loads(
             lmcache_config_path.read_text(encoding="utf-8")
         )
-        run([str(config.venv_python), "-m", "pip", "check"])
+        run(
+            [str(config.venv_python), "-m", "pip", "check"],
+            env=_pip_subprocess_environment(),
+        )
     metadata["vllm_runtime_patch_closure"] = verify_vllm_runtime_patch_closure(config)
     metadata.update(installed_versions(config.venv_python))
     metadata["installed_package_freeze"] = installed_package_freeze(config.venv_python)
@@ -2066,6 +2069,7 @@ def installed_package_freeze(python_executable: Path) -> list[str]:
         check=True,
         capture_output=True,
         text=True,
+        env=_pip_subprocess_environment(),
     )
     return sorted(
         (line.strip() for line in completed.stdout.splitlines() if line.strip()),
@@ -2078,9 +2082,11 @@ def verify_vllm_runtime_lock_installation(
 ) -> dict[str, Any]:
     """Run pip consistency and the packaged lock/direct-URL verifier."""
 
+    pip_environment = _pip_subprocess_environment()
     subprocess.run(
         [str(python_executable), "-m", "pip", "check"],
         check=True,
+        env=pip_environment,
     )
     code = (
         "import json,sys; "
@@ -2099,6 +2105,7 @@ def verify_vllm_runtime_lock_installation(
         check=True,
         capture_output=True,
         text=True,
+        env=pip_environment,
     )
     record = json.loads(completed.stdout)
     if not isinstance(record, dict) or record.get("ok") is not True:
@@ -2106,9 +2113,13 @@ def verify_vllm_runtime_lock_installation(
     return record
 
 
-def run(argv: list[str]) -> None:
+def run(
+    argv: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> None:
     print("+", " ".join(argv), flush=True)
-    subprocess.run(argv, check=True)
+    subprocess.run(argv, check=True, env=None if env is None else dict(env))
 
 
 def validate_prompt_token_budget(
@@ -3221,7 +3232,10 @@ def install_lmcache(python_executable: Path, version: str = "") -> str:
     """Install LMCache into the vLLM venv and return the resolved version."""
 
     spec = f"lmcache=={version}" if version else "lmcache"
-    run([str(python_executable), "-m", "pip", "install", spec])
+    run(
+        [str(python_executable), "-m", "pip", "install", spec],
+        env=_pip_subprocess_environment(),
+    )
     return installed_package_version(python_executable, "lmcache")
 
 
@@ -3444,7 +3458,10 @@ def run_lmcache_cold_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     metadata["strict_runtime_closure"] = False
     metadata["vllm_runtime_patch_closure"] = verify_vllm_runtime_patch_closure(config)
     lmcache_version = install_lmcache(config.venv_python, config.lmcache_version)
-    run([str(config.venv_python), "-m", "pip", "check"])
+    run(
+        [str(config.venv_python), "-m", "pip", "check"],
+        env=_pip_subprocess_environment(),
+    )
     versions = installed_versions(config.venv_python)
     versions["lmcache_version_installed"] = lmcache_version
     metadata.update(versions)
@@ -4262,11 +4279,18 @@ def _benchmark_error_summary(
 def create_venv(venv_dir: Path) -> None:
     if venv_python(venv_dir).exists():
         return
+    pip_environment = _pip_subprocess_environment()
     try:
-        run([sys.executable, "-m", "venv", str(venv_dir)])
+        run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            env=pip_environment,
+        )
     except subprocess.CalledProcessError:
         bootstrap = materialize_virtualenv_bootstrap(venv_dir.parent)
-        run([sys.executable, str(bootstrap), str(venv_dir)])
+        run(
+            [sys.executable, str(bootstrap), str(venv_dir)],
+            env=pip_environment,
+        )
 
 
 def materialize_virtualenv_bootstrap(output_dir: Path) -> Path:
@@ -4320,22 +4344,45 @@ def venv_python(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
 
+def _pip_subprocess_environment(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a pip environment with no inherited option or config authority."""
+
+    environment = dict(os.environ if environ is None else environ)
+    for variable_name in tuple(environment):
+        if variable_name.upper().startswith("PIP_"):
+            environment.pop(variable_name)
+    for ambient_path_variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        environment.pop(ambient_path_variable, None)
+    environment.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    return environment
+
+
 def install_vllm(python_executable: Path) -> None:
     validate_vllm_runtime_lock_platform()
     runtime_lock = vllm_runtime_lock_path()
+    pip_environment = _pip_subprocess_environment()
     run(
         [
             str(python_executable),
             "-m",
             "pip",
             "install",
-            *dependency_index_args(),
             "--require-hashes",
             "--only-binary",
             ":all:",
             "--requirement",
             str(runtime_lock),
-        ]
+        ],
+        env=pip_environment,
     )
     run(
         [
@@ -4345,12 +4392,16 @@ def install_vllm(python_executable: Path) -> None:
             "install",
             "--no-deps",
             patched_vllm_wheel_install_spec(),
-        ]
+        ],
+        env=pip_environment,
     )
 
 
 def install_document_kv_package(python_executable: Path, install_spec: str) -> None:
-    run([str(python_executable), "-m", "pip", "install", "--no-deps", install_spec])
+    run(
+        [str(python_executable), "-m", "pip", "install", "--no-deps", install_spec],
+        env=_pip_subprocess_environment(),
+    )
 
 
 def verify_vllm_runtime_patch_closure(
@@ -4406,6 +4457,7 @@ def installed_package_version(python_executable: Path, package_name: str) -> str
         check=True,
         capture_output=True,
         text=True,
+        env=_pip_subprocess_environment(),
     )
     for line in completed.stdout.splitlines():
         if line.startswith("Version:"):

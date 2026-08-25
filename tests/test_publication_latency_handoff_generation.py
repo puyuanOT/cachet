@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from collections import Counter
 from hashlib import sha256
 
@@ -485,7 +486,7 @@ def test_generation_plan_binds_pinned_tokenizer(prepared):
     assert config.tokenizer_revision == MAIN_LATENCY_TOKENIZER_REVISION
 
 
-def test_production_config_pins_q8_nf4_double_quant_and_loader_source():
+def test_production_config_pins_q8_nf4_double_quant_and_loader_source(monkeypatch):
     config = build_publication_latency_handoff_execution_config(
         vllm_bitsandbytes_loader_source_sha256=(
             GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256
@@ -504,6 +505,39 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source():
         "bnb_4bit_use_double_quant": True,
         "load_in_4bit": True,
     }
+    namespace = {"__name__": "latency_handoff_runner_test"}
+    exec(
+        compile(
+            generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT,
+            "publication_latency_handoff_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    monkeypatch.setenv("PIP_CONFIG_FILE", "/attacker/pip.conf")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("pip_no_index", "1")
+    monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
+    monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
+    monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    environment = namespace["_pip_subprocess_environment"]()
+    assert {
+        key for key in environment if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert all(
+        variable not in environment
+        for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+    )
+    assert '"--extra-index-url"' not in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
 
 
 def fake_hardware_qualification(monkeypatch, prepared):

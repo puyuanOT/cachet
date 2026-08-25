@@ -9,9 +9,9 @@
     },
     {
       "current": true,
-      "latest_version": "26.2",
+      "latest_version": "26.3",
       "package": "packaging",
-      "pinned_version": "26.2",
+      "pinned_version": "26.3",
       "source": "project.dependencies"
     },
     {

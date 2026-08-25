@@ -196,12 +196,12 @@ divergent branches. Every later phase must extend the immediately prior
 authorized prefix and acquire one atomic whole-wave lease before its first
 submission.
 
-The retained opening is now the exact 180-reservation, 42-receipt,
-180-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
-pre-run rejection, and the intermediate 138/0/138, 152/14/152, and 166/28/166
-prefixes. The rejected plan SHA-256, rejection-evidence file SHA-256, HTTP 400
-status, 18,292-byte observed parameters JSON versus the 10,000-byte server
-limit, and zero observed active runs remain bound in
+The retained opening is now the exact 194-reservation, 56-receipt,
+194-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
+pre-run rejection, and the intermediate 138/0/138, 152/14/152, 166/28/166,
+and 180/42/180 prefixes. The rejected plan SHA-256, rejection-evidence file
+SHA-256, HTTP 400 status, 18,292-byte observed parameters JSON versus the
+10,000-byte server limit, and zero observed active runs remain bound in
 `analysis.opening_ledger_provenance`.
 
 The first live 14-job qualification batch is a second explicit provenance hop.
@@ -245,8 +245,34 @@ reconciliation produced the exact 180/42/180 prefix
 `376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f`
 and canonical ledger file SHA-256
 `f76cce3b68417f8d14a5e030d9eacaef3e61d17f123a2a2b5d38be5428a89b94`.
-The reconciled opening balance is therefore 59.134952 GPU-hours, with zero
-active reservations and 964.865048 hours remaining under the 1,024-hour
+
+The fifth 14-job `SINGLE_USER` batch is retained as the runtime-lock-index
+failure provenance hop. Plan
+`f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33`
+used the same reviewed runner
+`04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0`.
+All 14 tasks failed with `INTERNAL_ERROR` before package installation because
+exactly `pip requirements-file index precedence omitted the PyTorch CU129
+index and prevented hash-locked torch resolution`. Every complete
+`runs/get-output` record uses exactly the five logged keys `error`,
+`error_trace`, `logs`, `logs_truncated`, and `metadata`; the path-normalized
+error SHA-256 is
+`7544cab6366fc1813af8d04da00a8a1f76f1098e3b06c738d8ff8ddd392ae235`.
+The sealed evidence tree contains exactly 29 regular files and 1,564,133 bytes
+and has SHA-256
+`5016ed50001b77b77f329e858c01b1a65c5e927f1c55eec7fbc01208d8f25886`.
+It closes in manifest
+`2ee650e0e05ea059bd9f552d6975149c05cbda6dc8d3a715a73594913f078b29`
+whose exact file SHA-256 is
+`e0f56f1250c4ce213d1a8ba0384ccdad1a1b38fb964c1b6bfcf5729006150455`.
+Its 7,754.755 terminal cluster-seconds add 2.154098611111 GPU-hours. The
+predicted terminal prefix and final offline-reconciled prefix are both the
+exact 194/56/194 prefix
+`381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26`.
+The canonical ledger file SHA-256 is
+`1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916`.
+The reconciled opening balance is therefore 61.289050 GPU-hours, with zero
+active reservations and 962.710950 hours remaining under the 1,024-hour
 aggregate cap.
 
 Every publication `runs/submit` payload also carries a package-derived,
@@ -336,8 +362,8 @@ every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
 hard cap/headroom admission. The three generation workloads contain 72,871,510
 cache-prefix tokens; at the required 35 effective
 tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
-retained ledger opens the reset with 59.134952 terminal GPU-hours, leaving only
-262.519731 hours inside the protected 900-hour envelope for qualification,
+retained ledger opens the reset with 61.289050 terminal GPU-hours, leaving only
+260.365632 hours inside the protected 900-hour envelope for qualification,
 timed latency, and full-score consumers at that generation threshold.
 
 The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);

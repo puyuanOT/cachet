@@ -1069,7 +1069,9 @@ def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
     runner_text = path.read_text(encoding="utf-8")
     assert "--package-wheel-uri" in runner_text
     assert "DOCUMENT_KV_PACKAGE_INSTALL_SPEC" in runner_text
-    assert "pip\", \"install\"" in runner_text
+    assert '"pip"' in runner_text
+    assert '"install"' in runner_text
+    assert '"--no-deps"' in runner_text
     assert "dbfs:/" in runner_text
     assert "document_kv_cache.vllm_smoke" in runner_text
     assert "if exit_code:" in runner_text
@@ -1124,11 +1126,11 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
                 "import os",
                 "import subprocess",
                 "",
-                "def _capture_check_call(argv):",
+                "def _capture_check_call(argv, **kwargs):",
                 "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
                 "        handle.write(json.dumps({'event': 'pip_install'}) + '\\n')",
                 "    with open(os.environ['PIP_CALL_JSON'], 'w', encoding='utf-8') as handle:",
-                "        json.dump(argv, handle)",
+                "        json.dump({'argv': argv, 'env': kwargs.get('env')}, handle)",
                 "    return 0",
                 "",
                 "subprocess.check_call = _capture_check_call",
@@ -1146,6 +1148,11 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
         "MAIN_ARGS_JSON": str(main_args_path),
         "RUNNER_EVENTS_JSONL": str(events_path),
         "DOCUMENT_KV_PACKAGE_WHEEL_SHA256": "a" * 64,
+        "PIP_CONFIG_FILE": "/attacker/pip.conf",
+        "PIP_INDEX_URL": "https://attacker.invalid/simple",
+        "pip_no_index": "1",
+        "PIP_REQUIREMENT": "/attacker/requirements.txt",
+        "VIRTUAL_ENV": "/attacker/venv",
     }
 
     subprocess.run(
@@ -1168,13 +1175,28 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
     )
 
     pip_call = json.loads(pip_call_path.read_text(encoding="utf-8"))
-    assert Path(pip_call[0]).resolve() == Path(sys.executable).resolve()
-    assert pip_call[1:] == [
+    assert Path(pip_call["argv"][0]).resolve() == Path(sys.executable).resolve()
+    assert pip_call["argv"][1:] == [
         "-m",
         "pip",
         "install",
+        "--no-deps",
         str(wheel_path),
     ]
+    pip_environment = pip_call["env"]
+    assert {
+        key for key in pip_environment if key.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE",
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_INPUT",
+    }
+    assert pip_environment["PIP_CONFIG_FILE"] == os.devnull
+    assert pip_environment["PYTHONNOUSERSITE"] == "1"
+    assert all(
+        variable not in pip_environment
+        for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+    )
     main_payload = json.loads(main_args_path.read_text(encoding="utf-8"))
     assert main_payload == {
         "argv": [

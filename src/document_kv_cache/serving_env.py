@@ -59,8 +59,22 @@ VLLM_PACKAGE_INDEX_URLS = (
 VLLM_RUNTIME_LOCK_FILENAME = (
     "vllm-0.27.1-cu129-py311-manylinux_2_35.lock"
 )
-VLLM_RUNTIME_LOCK_SHA256 = (
+VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256 = (
     "5788ee492a9a9ff48c8e1eae68cd0576fcec625263858129cc9dd918bcb856a6"
+)
+VLLM_RUNTIME_LOCK_SHA256 = (
+    "71c2c3e344ebdf1d8996adf2127a519328b6bad78a4eb7134c73e2a3f6115c44"
+)
+_VLLM_RUNTIME_LOCK_COMPILED_INDEX_HEADER = (
+    "--index-url https://pypi.org/simple\n"
+    f"--extra-index-url {VLLM_FLASHINFER_JIT_INDEX_URL}\n"
+    f"--extra-index-url {VLLM_FLASHINFER_INDEX_URL}\n"
+)
+VLLM_RUNTIME_LOCK_INDEX_HEADER = (
+    "--index-url https://pypi.org/simple\n"
+    f"--extra-index-url {VLLM_PYTORCH_INDEX_URL}\n"
+    f"--extra-index-url {VLLM_FLASHINFER_JIT_INDEX_URL}\n"
+    f"--extra-index-url {VLLM_FLASHINFER_INDEX_URL}\n"
 )
 # The generated lock has 196 hashed distributions. vLLM is deliberately
 # excluded and installed separately from the reviewed patched wheel, yielding
@@ -215,8 +229,37 @@ def vllm_runtime_install_requirements() -> tuple[str, ...]:
     )
 
 
+def augment_vllm_runtime_lock_indexes(compiled_lock_bytes: bytes) -> bytes:
+    """Add the one PyTorch runtime index omitted by uv's torch backend output."""
+
+    if not isinstance(compiled_lock_bytes, bytes):
+        raise TypeError("compiled_lock_bytes must be bytes")
+    compiled_digest = sha256(compiled_lock_bytes).hexdigest()
+    if compiled_digest != VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256:
+        raise RuntimeError(
+            "Compiled vLLM runtime lock failed its pre-augmentation hash: "
+            f"expected {VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256}, "
+            f"found {compiled_digest}"
+        )
+    compiled_header = _VLLM_RUNTIME_LOCK_COMPILED_INDEX_HEADER.encode("utf-8")
+    if compiled_lock_bytes.count(compiled_header) != 1:
+        raise RuntimeError("Compiled vLLM runtime lock index header differs")
+    augmented = compiled_lock_bytes.replace(
+        compiled_header,
+        VLLM_RUNTIME_LOCK_INDEX_HEADER.encode("utf-8"),
+        1,
+    )
+    augmented_digest = sha256(augmented).hexdigest()
+    if augmented_digest != VLLM_RUNTIME_LOCK_SHA256:
+        raise RuntimeError(
+            "Augmented vLLM runtime lock failed its content hash: "
+            f"expected {VLLM_RUNTIME_LOCK_SHA256}, found {augmented_digest}"
+        )
+    return augmented
+
+
 def vllm_runtime_lock_path() -> Path:
-    """Return and content-verify the packaged Python 3.11 Linux hash lock."""
+    """Return and replay-verify the packaged Python 3.11 Linux hash lock."""
 
     lock_path = Path(__file__).with_name("runtime_locks") / VLLM_RUNTIME_LOCK_FILENAME
     try:
@@ -229,6 +272,16 @@ def vllm_runtime_lock_path() -> Path:
             "Packaged vLLM runtime lock failed its content hash: "
             f"expected {VLLM_RUNTIME_LOCK_SHA256}, found {observed_digest}"
         )
+    runtime_header = VLLM_RUNTIME_LOCK_INDEX_HEADER.encode("utf-8")
+    if lock_bytes.count(runtime_header) != 1:
+        raise RuntimeError("Packaged vLLM runtime lock index header differs")
+    compiled_lock_bytes = lock_bytes.replace(
+        runtime_header,
+        _VLLM_RUNTIME_LOCK_COMPILED_INDEX_HEADER.encode("utf-8"),
+        1,
+    )
+    if augment_vllm_runtime_lock_indexes(compiled_lock_bytes) != lock_bytes:
+        raise RuntimeError("Packaged vLLM runtime lock augmentation is not replayable")
     return lock_path
 
 
@@ -611,6 +664,8 @@ __all__ = [
     "VLLM_PYTORCH_INDEX_URL",
     "VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT",
     "VLLM_RUNTIME_LOCK_FILENAME",
+    "VLLM_RUNTIME_LOCK_INDEX_HEADER",
+    "VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256",
     "VLLM_RUNTIME_LOCK_SHA256",
     "VLLM_INSTALL_REQUIREMENTS",
     "VLLM_SERVING_ENVIRONMENT_PROFILE",
@@ -623,6 +678,7 @@ __all__ = [
     "VIRTUALENV_BOOTSTRAP_SHA256",
     "VIRTUALENV_BOOTSTRAP_URL",
     "VIRTUALENV_BOOTSTRAP_VERSION",
+    "augment_vllm_runtime_lock_indexes",
     "patched_vllm_wheel_install_spec",
     "vllm_runtime_install_requirements",
     "vllm_runtime_lock_path",

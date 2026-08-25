@@ -758,12 +758,31 @@ def _direct_url_matches_patched_wheel() -> bool:
     return Path(unquote(parsed.path)).resolve() == Path(wheel_uri).resolve()
 
 
+def _pip_subprocess_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    for variable_name in tuple(environment):
+        if variable_name.upper().startswith("PIP_"):
+            environment.pop(variable_name)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        environment.pop(variable_name, None)
+    environment.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    return environment
+
+
 def _pip_check_ok() -> bool:
     completed = subprocess.run(
         [sys.executable, "-m", "pip", "check"],
         capture_output=True,
         text=True,
         timeout=300,
+        env=_pip_subprocess_environment(),
     )
     return completed.returncode == 0
 
