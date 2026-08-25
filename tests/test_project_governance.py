@@ -1321,8 +1321,8 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     assert "N/A (runner not implemented)" in score_table
     for method in ("KV&nbsp;Packet", "CacheBlend", "InfoFlow&nbsp;KV"):
         assert method in root_readme
-    assert "64.483036 reconciled GPU-hours" in root_readme
-    assert "exact 208/70/208 post-migration append-only prefix" in root_readme
+    assert "67.930336 reconciled GPU-hours" in root_readme
+    assert "exact 222/84/222 post-migration append-only prefix" in root_readme
     assert (
         "No benchmark result evidence is currently published here." in appendix_readme
     )
@@ -1507,7 +1507,69 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         in compact_ledger_doc
     )
     assert (
-        "reconciled opening balance is therefore 64.483036 GPU-hours"
+        "c0bede45ea211798c9a5eb31010a91074ded70e370f8ea4fcbeb59b3b9f95598"
+        in compact_ledger_doc
+    )
+    assert (
+        "fe59e32c44ab50f91bae5114a587268d44ebb9acfba74500aedb66158e2541b7"
+        in compact_ledger_doc
+    )
+    assert (
+        "all fourteen hash-locked qualification runtimes installed and "
+        "verified; the two packed-page-roundtrip workers returned measurements "
+        "before post-success runtime observation rejected the virtualenv-created "
+        "runtime/bin/python symlink, while the other twelve sentinel-worker "
+        "subprocesses exited nonzero and the reviewed launcher did not surface "
+        "their captured child stdout/stderr, so their underlying worker causes "
+        "remain unknown"
+    ) in compact_ledger_doc
+    assert (
+        "3662915979987aef1fe4bcf9e0e62f06c67992ee73da679e44f6b6a261e634f5"
+        in compact_ledger_doc
+    )
+    assert (
+        "3f1ddd73298cd46347cf57b84d6cf22f7d6e98802b50ded9457d7a999563786b"
+        in compact_ledger_doc
+    )
+    assert "exactly 29 regular files and 1,828,218 bytes" in compact_ledger_doc
+    assert (
+        "bb6636f3b9bdf5afae0b7d1beb97f5f3192017ba5b04abb651f2a389889aa57f"
+        in compact_ledger_doc
+    )
+    assert (
+        "6c4cca0ec4fbcf4ccb434573f965eeb8022909ce5bdd6afdf31d61085807fa9b"
+        in compact_ledger_doc
+    )
+    assert (
+        "53fd4b076a642101790d21ebbc03b1eb7e609428c2ccd7eafb8cbad5a9a3a112"
+        in compact_ledger_doc
+    )
+    assert (
+        "Its 12,410.279 terminal cluster-seconds add 3.447299722222222 GPU-hours"
+        in compact_ledger_doc
+    )
+    assert (
+        "predicted terminal prefix and final offline-reconciled prefix are "
+        "both the exact 222/84/222 prefix"
+    ) in compact_ledger_doc
+    assert (
+        "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
+        in compact_ledger_doc
+    )
+    assert (
+        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
+        in compact_ledger_doc
+    )
+    assert (
+        "c805c303a92dba3fdd0390699c757974c1f738ebc4c553bb651618cb27bf8056"
+        in compact_ledger_doc
+    )
+    assert (
+        "1f1682a99e69ad691dfab68a85cc9555eff4daea437d5095d93410af2430c490"
+        in compact_ledger_doc
+    )
+    assert (
+        "reconciled opening balance is therefore 67.930336 GPU-hours"
     ) in compact_ledger_doc
 
     subindex_expectations = {

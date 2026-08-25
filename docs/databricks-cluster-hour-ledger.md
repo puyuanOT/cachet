@@ -295,11 +295,47 @@ Its 11,498.35 terminal cluster-seconds add 3.193986111111 GPU-hours. The
 predicted terminal prefix and final offline-reconciled prefix are both the
 exact 208/70/208 prefix
 `a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9`.
-The canonical ledger file SHA-256 is
+The pre-c0bede canonical ledger file SHA-256 is
 `fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87`.
-The reconciled opening balance is therefore 64.483036 GPU-hours, with zero
-active reservations and 959.516964 hours remaining under the 1,024-hour
-aggregate cap.
+
+The seventh 14-job `SINGLE_USER` batch is retained as the split runtime
+observation and opaque worker-subprocess failure provenance hop. Plan
+`c0bede45ea211798c9a5eb31010a91074ded70e370f8ea4fcbeb59b3b9f95598`
+is stored in the exact file
+`fe59e32c44ab50f91bae5114a587268d44ebb9acfba74500aedb66158e2541b7`
+and used reviewed runner
+`ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc`.
+The exact frozen reason is: all fourteen hash-locked qualification runtimes
+installed and verified; the two packed-page-roundtrip workers returned
+measurements before post-success runtime observation rejected the
+virtualenv-created runtime/bin/python symlink, while the other twelve
+sentinel-worker subprocesses exited nonzero and the reviewed launcher did not
+surface their captured child stdout/stderr, so their underlying worker causes
+remain unknown. The two observer failures have path-normalized error SHA-256
+`3662915979987aef1fe4bcf9e0e62f06c67992ee73da679e44f6b6a261e634f5`;
+the twelve opaque worker-subprocess errors have normalized SHA-256
+`3f1ddd73298cd46347cf57b84d6cf22f7d6e98802b50ded9457d7a999563786b`.
+Every job's raw error SHA-256 and UTF-8 byte count is separately source-pinned.
+The sealed evidence tree contains exactly 29 regular files and 1,828,218 bytes
+and has SHA-256
+`bb6636f3b9bdf5afae0b7d1beb97f5f3192017ba5b04abb651f2a389889aa57f`.
+It closes in manifest
+`6c4cca0ec4fbcf4ccb434573f965eeb8022909ce5bdd6afdf31d61085807fa9b`
+whose exact file SHA-256 is
+`53fd4b076a642101790d21ebbc03b1eb7e609428c2ccd7eafb8cbad5a9a3a112`.
+Its 12,410.279 terminal cluster-seconds add 3.447299722222222 GPU-hours.
+The predicted terminal prefix and final offline-reconciled prefix are both the
+exact 222/84/222 prefix
+`22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a`.
+The canonical ledger file SHA-256 is
+`38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef`.
+The pre-c0bede campaign file
+`c805c303a92dba3fdd0390699c757974c1f738ebc4c553bb651618cb27bf8056`
+and its closed record
+`1f1682a99e69ad691dfab68a85cc9555eff4daea437d5095d93410af2430c490`
+remain immutable provenance. The reconciled opening balance is therefore
+67.930336 GPU-hours, with zero active reservations and 956.069664 hours
+remaining under the 1,024-hour aggregate cap.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
@@ -388,8 +424,8 @@ every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
 hard cap/headroom admission. The three generation workloads contain 72,871,510
 cache-prefix tokens; at the required 35 effective
 tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
-retained ledger opens the reset with 64.483036 terminal GPU-hours, leaving only
-257.171646 hours inside the protected 900-hour envelope for qualification,
+retained ledger opens the reset with 67.930336 terminal GPU-hours, leaving only
+253.724346 hours inside the protected 900-hour envelope for qualification,
 timed latency, and full-score consumers at that generation threshold.
 
 The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);

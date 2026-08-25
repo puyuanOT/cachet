@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import pytest
 
+import document_kv_cache.gpu_qualification_databricks as qualification_job
 from document_kv_cache.databricks_resource_ledger import (
     DatabricksLedgerPrefix,
     create_databricks_cluster_hour_ledger_json,
@@ -28,9 +29,18 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_FILE_SHA256,
     PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_CLOSED_RECORD_SHA256,
+    PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_FILE_SHA256,
+    PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_FILE_SHA256,
+    PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_FILE_SHA256,
     PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
+    PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB,
+    PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB,
+    PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_JOB_IDS,
+    PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OPAQUE_WORKER_JOB_IDS,
+    PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON,
     PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS,
     PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE,
     build_publication_campaign_plan,
@@ -66,9 +76,9 @@ def test_publication_campaign_is_the_frozen_115_job_design():
     assert record["campaign_ledger_id"] == CAMPAIGN_LEDGER_ID
     assert record["campaign_ledger_path_sha256"] == CAMPAIGN_LEDGER_PATH_SHA256
     assert record["campaign_ledger_prefix"] == CAMPAIGN_LEDGER_PREFIX.to_record()
-    assert record["campaign_ledger_prefix"]["reservation_count"] == 208
-    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 70
-    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 208
+    assert record["campaign_ledger_prefix"]["reservation_count"] == 222
+    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 84
+    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 222
     assert record["closed_record_sha256"] == PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
     assert record["campaign_opening_terminal_gpu_hours"] == (
         PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -174,7 +184,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE
             ),
             "non_generation_gpu_hours_available_after_opening_balance_and_headroom": (
-                pytest.approx(257.1716461507936)
+                pytest.approx(253.72434642857138)
             ),
             "scope": [
                 "latency_q8_handoffs",
@@ -220,7 +230,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             },
             "launch_policy": "terminal_actual_and_hard_headroom_gated",
         },
-        "opening_terminal_gpu_hours": pytest.approx(64.48303638888892),
+        "opening_terminal_gpu_hours": pytest.approx(67.93033611111115),
         "total_latency_jobs": 115,
         "unreserved_headroom_hours": 124.0,
     }
@@ -492,7 +502,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
             ),
             "reconciled_ledger_file_sha256": (
-                PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_FILE_SHA256
             ),
             "reconciliation_manifest_closed_record_sha256": (
                 "a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7"
@@ -524,8 +534,109 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "terminal_result_state_counts": {"FAILED": 14},
             "verification_source": "direct_runs_get_and_runs_get_output",
         },
+        "prefix_before_runtime_observation_and_worker_subprocess_failure_gpu_qualification": (
+            PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_PREFIX.to_record()
+        ),
+        "runtime_observation_and_worker_subprocess_failure_gpu_qualification": {
+            "actual_cluster_duration_seconds": 12_410.279,
+            "actual_gpu_hours": 3.447299722222222,
+            "data_security_mode": "SINGLE_USER",
+            "evidence_tree_byte_count": 1_828_218,
+            "evidence_tree_file_count": 29,
+            "evidence_tree_sha256": (
+                "bb6636f3b9bdf5afae0b7d1beb97f5f3192017ba5b04abb651f2a389889aa57f"
+            ),
+            "failed_before_run_creation": False,
+            "failure_class": (
+                "post_success_runtime_observation_and_opaque_worker_subprocess"
+            ),
+            "failure_reason": (
+                PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON
+            ),
+            "normalized_observer_error_sha256": (
+                "3662915979987aef1fe4bcf9e0e62f06c67992ee73da679e44f6b6a261e634f5"
+            ),
+            "normalized_worker_error_sha256": (
+                "3f1ddd73298cd46347cf57b84d6cf22f7d6e98802b50ded9457d7a999563786b"
+            ),
+            "observer_job_count": 2,
+            "observer_job_ids": list(
+                PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_JOB_IDS
+            ),
+            "observer_jobs_returned_measurements": True,
+            "opaque_worker_job_count": 12,
+            "opaque_worker_job_ids": list(
+                PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OPAQUE_WORKER_JOB_IDS
+            ),
+            "opaque_worker_underlying_causes_known": False,
+            "plan_file_sha256": (
+                "fe59e32c44ab50f91bae5114a587268d44ebb9acfba74500aedb66158e2541b7"
+            ),
+            "plan_sha256": (
+                "c0bede45ea211798c9a5eb31010a91074ded70e370f8ea4fcbeb59b3b9f95598"
+            ),
+            "predecessor_campaign_closed_record_sha256": (
+                PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_CLOSED_RECORD_SHA256
+            ),
+            "predecessor_campaign_file_sha256": (
+                PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_FILE_SHA256
+            ),
+            "predicted_terminal_prefix_sha256": (
+                "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
+            ),
+            "raw_error_sha256_by_job": dict(
+                PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
+            ),
+            "raw_error_utf8_bytes_by_job": dict(
+                PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+            ),
+            "reconciled_accounted_gpu_hours": 67.93033611111115,
+            "reconciled_active_reserved_gpu_hours": 0.0,
+            "reconciled_ledger_file_sha256": (
+                PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+            ),
+            "reconciled_remaining_gpu_hours": 956.0696638888888,
+            "reconciled_terminal_actual_gpu_hours": 67.93033611111115,
+            "reconciliation_manifest_closed_record_sha256": (
+                "6c4cca0ec4fbcf4ccb434573f965eeb8022909ce5bdd6afdf31d61085807fa9b"
+            ),
+            "reconciliation_manifest_file_sha256": (
+                "53fd4b076a642101790d21ebbc03b1eb7e609428c2ccd7eafb8cbad5a9a3a112"
+            ),
+            "reservation_count_delta": 14,
+            "reviewed_runner_sha256": (
+                "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+            ),
+            "run_creation_count": 14,
+            "runs_get_output_keys": [
+                "error",
+                "error_trace",
+                "logs",
+                "logs_truncated",
+                "metadata",
+            ],
+            "single_user_name": "pliu@opentable.com",
+            "submission_receipt_count_delta": 14,
+            "task_life_cycle_state_counts": {"TERMINATED": 14},
+            "task_result_state_counts": {"FAILED": 14},
+            "terminal_actual_count_delta": 14,
+            "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+            "terminal_prefix_sha256": (
+                "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
+            ),
+            "terminal_result_state_counts": {"FAILED": 14},
+            "verification_source": "direct_runs_get_and_runs_get_output",
+        },
         "retained_opening_prefix": CAMPAIGN_LEDGER_PREFIX.to_record(),
     }
+    assert (
+        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
+        == qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
+    )
+    assert (
+        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+        == qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+    )
     assert record["full_score_program"] == {
         "cache_prefix_generation_tokens": 63_455_746,
         "complete_population_required": True,

@@ -26,8 +26,10 @@ from document_kv_cache.databricks_resource_ledger import (
 PUBLICATION_CAMPAIGN_RECORD_TYPE = "cachet.vllm_0271_publication_campaign.v1"
 PUBLICATION_CAMPAIGN_SCHEMA_VERSION = 1
 PUBLICATION_CAMPAIGN_ID = "vllm-0271-publication-v1"
+PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_FILE_SHA256 = "c805c303a92dba3fdd0390699c757974c1f738ebc4c553bb651618cb27bf8056"
+PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_CLOSED_RECORD_SHA256 = "1f1682a99e69ad691dfab68a85cc9555eff4daea437d5095d93410af2430c490"
 PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256 = (
-    "1f1682a99e69ad691dfab68a85cc9555eff4daea437d5095d93410af2430c490"
+    "5f90b531b30ac6f4b29e0151d688a005b0377b205ca39645376d7d43aef5e305"
 )
 PUBLICATION_CAMPAIGN_ENGINE_VERSION = "0.27.1"
 PUBLICATION_CAMPAIGN_METHODS = ("baseline_prefill", "vanilla_prefill")
@@ -168,13 +170,14 @@ PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_UPPER_BOUND_GPU_HOURS = sum(
     timeout_hours * job_count
     for timeout_hours, job_count in PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_JOB_COUNTS
 )
-PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 64.48303638888892
+PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 67.93033611111115
 PUBLICATION_CAMPAIGN_LEDGER_ID = "representative-canary-823bd9d82a5c1730"
 PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256 = (
     "fd00fcc39375aa8c96dabba9e3e4c576ae2674dd911324622ef99293b9cfe865"
 )
+PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_FILE_SHA256 = "fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87"
 PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256 = (
-    "fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87"
+    "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
 )
 PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_FILE_SHA256 = (
     "1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916"
@@ -242,13 +245,140 @@ PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_PREFIX = (
         ),
     )
 )
-PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
+PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
     cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     reservation_count=208,
     submission_receipt_count=70,
     terminal_actual_count=208,
     prefix_sha256=("a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"),
+)
+PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
+    ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+    cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+    reservation_count=222,
+    submission_receipt_count=84,
+    terminal_actual_count=222,
+    prefix_sha256=("22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"),
+)
+PUBLICATION_CAMPAIGN_OPENING_ACTIVE_RESERVED_GPU_HOURS = 0.0
+PUBLICATION_CAMPAIGN_OPENING_ACCOUNTED_GPU_HOURS = 67.93033611111115
+PUBLICATION_CAMPAIGN_OPENING_REMAINING_GPU_HOURS = 956.0696638888888
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ACTUAL_CLUSTER_DURATION_SECONDS = 12_410.279
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ACTUAL_GPU_HOURS = 3.447299722222222
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_FILE_SHA256 = "fe59e32c44ab50f91bae5114a587268d44ebb9acfba74500aedb66158e2541b7"
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256 = (
+    "c0bede45ea211798c9a5eb31010a91074ded70e370f8ea4fcbeb59b3b9f95598"
+)
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_RUNNER_SHA256 = (
+    "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+)
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_FILE_SHA256 = "53fd4b076a642101790d21ebbc03b1eb7e609428c2ccd7eafb8cbad5a9a3a112"
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_SHA256 = "6c4cca0ec4fbcf4ccb434573f965eeb8022909ce5bdd6afdf31d61085807fa9b"
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_SHA256 = "bb6636f3b9bdf5afae0b7d1beb97f5f3192017ba5b04abb651f2a389889aa57f"
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_FILE_COUNT = 29
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_TOTAL_BYTES = 1_828_218
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_OBSERVER_ERROR_SHA256 = "3662915979987aef1fe4bcf9e0e62f06c67992ee73da679e44f6b6a261e634f5"
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_WORKER_ERROR_SHA256 = "3f1ddd73298cd46347cf57b84d6cf22f7d6e98802b50ded9457d7a999563786b"
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON = (
+    "all fourteen hash-locked qualification runtimes installed and verified; "
+    "the two packed-page-roundtrip workers returned measurements before "
+    "post-success runtime observation rejected the virtualenv-created "
+    "runtime/bin/python symlink, while the other twelve sentinel-worker "
+    "subprocesses exited nonzero and the reviewed launcher did not surface their "
+    "captured child stdout/stderr, so their underlying worker causes remain unknown"
+)
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_JOB_IDS = (
+    "aws-g5-a10g-packed-page-roundtrip",
+    "aws-g6-l4-packed-page-roundtrip",
+)
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OPAQUE_WORKER_JOB_IDS = (
+    "aws-g5-a10g-16k-c4-capacity",
+    "aws-g5-a10g-auto-backend-diagnostic",
+    "aws-g5-a10g-forced-triton-runtime-handoff",
+    "aws-g5-a10g-matched-token-logit",
+    "aws-g6-l4-32k-c4-gmu-70",
+    "aws-g6-l4-32k-c4-gmu-75",
+    "aws-g6-l4-32k-c4-gmu-80",
+    "aws-g6-l4-auto-backend-diagnostic",
+    "aws-g6-l4-forced-triton-runtime-handoff",
+    "aws-g6-l4-generation-throughput",
+    "aws-g6-l4-matched-token-logit",
+    "aws-g6e-l40s-generation-throughput",
+)
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB = (
+    (
+        "aws-g5-a10g-16k-c4-capacity",
+        "3a4094c819734ed0dddfe7b32bd9602b801ec6e95127a9e9bac82d6947032892",
+    ),
+    (
+        "aws-g5-a10g-auto-backend-diagnostic",
+        "7a67afd26245bb8ceed7e518a72c6f4a8432bd5ac27dd2e9467a7f325db33609",
+    ),
+    (
+        "aws-g5-a10g-forced-triton-runtime-handoff",
+        "b2292081d99661861af1eade188b179e2a2e459764845f9a8227df6aea559708",
+    ),
+    (
+        "aws-g5-a10g-matched-token-logit",
+        "e6655eafb38fd5ffc514848b5d0b58a0f596c6ae774b24bd701c7ebd30e4a542",
+    ),
+    (
+        "aws-g5-a10g-packed-page-roundtrip",
+        "4f57e38b2c170b37907bcacc1d64d18af14751a05a11fe7a8ca5ca83dab84a4d",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-70",
+        "42d5c7f85201050c07e1ef702151b1016eccf91b6e9b00fab4c992dcd83d9e57",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-75",
+        "178e7fc6e44a38819f4bdb12a74019e66826244f933e1bf5261774ef6484d8ce",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-80",
+        "023f005c378816eba82665743ea578810c81e654f68c098eabb4c3e8a9dd1d56",
+    ),
+    (
+        "aws-g6-l4-auto-backend-diagnostic",
+        "54715e131389ec2a14aca8489ef578d1126d629ed2dd275e0b6d320c7aed2086",
+    ),
+    (
+        "aws-g6-l4-forced-triton-runtime-handoff",
+        "5ee2a73a8860e1ad1ce72a3b8dce8c6e00271a6db1aae7f485cbdf955d339be8",
+    ),
+    (
+        "aws-g6-l4-generation-throughput",
+        "16428f8492bfef5cdf5e75cb5cd97c530915815394d678a0c25ad9eee167b583",
+    ),
+    (
+        "aws-g6-l4-matched-token-logit",
+        "a0df4005431bb97344c6a6affcd237a6e0d4683a1754d4cec5b7bb6e48895b86",
+    ),
+    (
+        "aws-g6-l4-packed-page-roundtrip",
+        "6c2a32edd3da00f486c8256abe68b09b66f9d759cc0c42c21d33ead2d780c1d7",
+    ),
+    (
+        "aws-g6e-l40s-generation-throughput",
+        "be19d2e9041301609073014961eb3eb7cf162168384f5d72345a4a3787e1dd75",
+    ),
+)
+PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB = (
+    ("aws-g5-a10g-16k-c4-capacity", 1_186),
+    ("aws-g5-a10g-auto-backend-diagnostic", 1_234),
+    ("aws-g5-a10g-forced-triton-runtime-handoff", 1_270),
+    ("aws-g5-a10g-matched-token-logit", 1_210),
+    ("aws-g5-a10g-packed-page-roundtrip", 244),
+    ("aws-g6-l4-32k-c4-gmu-70", 1_162),
+    ("aws-g6-l4-32k-c4-gmu-75", 1_162),
+    ("aws-g6-l4-32k-c4-gmu-80", 1_162),
+    ("aws-g6-l4-auto-backend-diagnostic", 1_222),
+    ("aws-g6-l4-forced-triton-runtime-handoff", 1_258),
+    ("aws-g6-l4-generation-throughput", 1_210),
+    ("aws-g6-l4-matched-token-logit", 1_198),
+    ("aws-g6-l4-packed-page-roundtrip", 242),
+    ("aws-g6e-l40s-generation-throughput", 1_228),
 )
 PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE = (
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
@@ -541,6 +671,47 @@ def publication_campaign_plan_to_record(
 
     if not isinstance(plan, PublicationCampaignPlan):
         raise TypeError("plan must be a PublicationCampaignPlan")
+    reviewed_error_sha256_by_job = dict(
+        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
+    )
+    reviewed_error_utf8_bytes_by_job = dict(
+        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+    )
+    reviewed_failure_job_ids = (
+        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_JOB_IDS
+        + PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OPAQUE_WORKER_JOB_IDS
+    )
+    if (
+        len(reviewed_error_sha256_by_job) != PUBLICATION_CAMPAIGN_GPU_QUALIFICATION_JOBS
+        or tuple(reviewed_error_sha256_by_job)
+        != tuple(sorted(reviewed_error_sha256_by_job))
+        or tuple(reviewed_error_utf8_bytes_by_job)
+        != tuple(sorted(reviewed_error_utf8_bytes_by_job))
+        or set(reviewed_error_sha256_by_job) != set(reviewed_failure_job_ids)
+        or set(reviewed_error_utf8_bytes_by_job) != set(reviewed_failure_job_ids)
+        or len(
+            PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_JOB_IDS
+        )
+        != 2
+        or len(
+            PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OPAQUE_WORKER_JOB_IDS
+        )
+        != 12
+        or len(set(reviewed_failure_job_ids))
+        != PUBLICATION_CAMPAIGN_GPU_QUALIFICATION_JOBS
+        or any(
+            len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            for digest in reviewed_error_sha256_by_job.values()
+        )
+        or any(
+            type(byte_count) is not int or byte_count <= 0
+            for byte_count in reviewed_error_utf8_bytes_by_job.values()
+        )
+    ):
+        raise RuntimeError(
+            "runtime observation and worker subprocess failure source closure drift"
+        )
     record: dict[str, Any] = {
         "record_type": PUBLICATION_CAMPAIGN_RECORD_TYPE,
         "schema_version": PUBLICATION_CAMPAIGN_SCHEMA_VERSION,
@@ -833,7 +1004,7 @@ def publication_campaign_plan_to_record(
                         "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
                     ),
                     "reconciled_ledger_file_sha256": (
-                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                        PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_FILE_SHA256
                     ),
                     "reconciliation_manifest_closed_record_sha256": (
                         "a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7"
@@ -861,6 +1032,115 @@ def publication_campaign_plan_to_record(
                     "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
                     "terminal_prefix_sha256": (
                         "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
+                    ),
+                    "terminal_result_state_counts": {"FAILED": 14},
+                    "verification_source": "direct_runs_get_and_runs_get_output",
+                },
+                "prefix_before_runtime_observation_and_worker_subprocess_failure_gpu_qualification": (
+                    PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_PREFIX.to_record()
+                ),
+                "runtime_observation_and_worker_subprocess_failure_gpu_qualification": {
+                    "actual_cluster_duration_seconds": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ACTUAL_CLUSTER_DURATION_SECONDS
+                    ),
+                    "actual_gpu_hours": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ACTUAL_GPU_HOURS
+                    ),
+                    "data_security_mode": "SINGLE_USER",
+                    "evidence_tree_byte_count": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_TOTAL_BYTES
+                    ),
+                    "evidence_tree_file_count": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_FILE_COUNT
+                    ),
+                    "evidence_tree_sha256": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_SHA256
+                    ),
+                    "failed_before_run_creation": False,
+                    "failure_class": (
+                        "post_success_runtime_observation_and_opaque_worker_subprocess"
+                    ),
+                    "failure_reason": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON
+                    ),
+                    "normalized_observer_error_sha256": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_OBSERVER_ERROR_SHA256
+                    ),
+                    "normalized_worker_error_sha256": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_WORKER_ERROR_SHA256
+                    ),
+                    "observer_job_count": len(
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_JOB_IDS
+                    ),
+                    "observer_job_ids": list(
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_JOB_IDS
+                    ),
+                    "observer_jobs_returned_measurements": True,
+                    "opaque_worker_job_count": len(
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OPAQUE_WORKER_JOB_IDS
+                    ),
+                    "opaque_worker_job_ids": list(
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OPAQUE_WORKER_JOB_IDS
+                    ),
+                    "opaque_worker_underlying_causes_known": False,
+                    "plan_file_sha256": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_FILE_SHA256
+                    ),
+                    "plan_sha256": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
+                    ),
+                    "predecessor_campaign_closed_record_sha256": (
+                        PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_CLOSED_RECORD_SHA256
+                    ),
+                    "predecessor_campaign_file_sha256": (
+                        PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_FILE_SHA256
+                    ),
+                    "predicted_terminal_prefix_sha256": (
+                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.prefix_sha256
+                    ),
+                    "raw_error_sha256_by_job": reviewed_error_sha256_by_job,
+                    "raw_error_utf8_bytes_by_job": reviewed_error_utf8_bytes_by_job,
+                    "reconciled_accounted_gpu_hours": (
+                        PUBLICATION_CAMPAIGN_OPENING_ACCOUNTED_GPU_HOURS
+                    ),
+                    "reconciled_active_reserved_gpu_hours": (
+                        PUBLICATION_CAMPAIGN_OPENING_ACTIVE_RESERVED_GPU_HOURS
+                    ),
+                    "reconciled_ledger_file_sha256": (
+                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                    ),
+                    "reconciled_remaining_gpu_hours": (
+                        PUBLICATION_CAMPAIGN_OPENING_REMAINING_GPU_HOURS
+                    ),
+                    "reconciled_terminal_actual_gpu_hours": (
+                        PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+                    ),
+                    "reconciliation_manifest_closed_record_sha256": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_SHA256
+                    ),
+                    "reconciliation_manifest_file_sha256": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_FILE_SHA256
+                    ),
+                    "reservation_count_delta": 14,
+                    "reviewed_runner_sha256": (
+                        PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_RUNNER_SHA256
+                    ),
+                    "run_creation_count": 14,
+                    "runs_get_output_keys": [
+                        "error",
+                        "error_trace",
+                        "logs",
+                        "logs_truncated",
+                        "metadata",
+                    ],
+                    "single_user_name": "pliu@opentable.com",
+                    "submission_receipt_count_delta": 14,
+                    "task_life_cycle_state_counts": {"TERMINATED": 14},
+                    "task_result_state_counts": {"FAILED": 14},
+                    "terminal_actual_count_delta": 14,
+                    "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+                    "terminal_prefix_sha256": (
+                        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.prefix_sha256
                     ),
                     "terminal_result_state_counts": {"FAILED": 14},
                     "verification_source": "direct_runs_get_and_runs_get_output",
@@ -1466,6 +1746,8 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS",
     "PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS",
     "PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256",
+    "PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_CLOSED_RECORD_SHA256",
+    "PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_CAMPAIGN_FILE_SHA256",
     "PUBLICATION_CAMPAIGN_CPU_COORDINATOR_NODE_TYPE_ID",
     "PUBLICATION_CAMPAIGN_CPU_COORDINATOR_SPARK_VERSION",
     "PUBLICATION_CAMPAIGN_CPU_COORDINATOR_TIMEOUT_NODE_HOURS",
@@ -1518,9 +1800,14 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_METHODS",
     "PUBLICATION_CAMPAIGN_MIN_GENERATION_TOKENS_PER_SECOND",
     "PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE",
+    "PUBLICATION_CAMPAIGN_OPENING_ACCOUNTED_GPU_HOURS",
+    "PUBLICATION_CAMPAIGN_OPENING_ACTIVE_RESERVED_GPU_HOURS",
     "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX",
+    "PUBLICATION_CAMPAIGN_OPENING_REMAINING_GPU_HOURS",
+    "PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_FILE_SHA256",
+    "PUBLICATION_CAMPAIGN_PRE_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_FILE_SHA256",
     "PUBLICATION_CAMPAIGN_PRE_SITE_PACKAGES_PATH_FAILURE_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_RUNTIME_LOCK_INDEX_FAILURE_LEDGER_FILE_SHA256",
@@ -1533,6 +1820,23 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_REPEATS_PER_EXAMPLE",
     "PUBLICATION_CAMPAIGN_REQUEST_PARALLELISM",
     "PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ACTUAL_CLUSTER_DURATION_SECONDS",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ACTUAL_GPU_HOURS",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_FILE_COUNT",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_SHA256",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_TOTAL_BYTES",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_FILE_SHA256",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_SHA256",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_OBSERVER_ERROR_SHA256",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_WORKER_ERROR_SHA256",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_JOB_IDS",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OPAQUE_WORKER_JOB_IDS",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_FILE_SHA256",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON",
+    "PUBLICATION_CAMPAIGN_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_RUNNER_SHA256",
     "PUBLICATION_CAMPAIGN_SCHEMA_VERSION",
     "PUBLICATION_CAMPAIGN_STORAGE_CONTROL_SETTING",
     "PUBLICATION_CAMPAIGN_STORAGE_EXAMPLES_PER_DATASET",
