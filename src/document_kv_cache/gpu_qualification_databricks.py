@@ -87,6 +87,7 @@ from document_kv_cache.gpu_qualification import (
     validate_gpu_job_result_record,
     validate_gpu_qualification_evidence_record,
     validate_gpu_qualification_plan_record,
+    validate_local_preflight_evidence_record,
 )
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS,
@@ -120,6 +121,17 @@ _QUALIFICATION_PHASE_LEASE_RECORD_TYPE: Final = (
 )
 _QUALIFICATION_BATCH_MARKER_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_qualification_batch_reserved.v1"
+)
+_QUALIFICATION_PREFLIGHT_PATH_DOMAIN: Final = (
+    "cachet.vllm_0271_gpu_qualification_preflight_path.v1"
+)
+_QUALIFICATION_PREFLIGHT_BINDING_KEYS: Final = frozenset(
+    {
+        "completed_at_utc",
+        "file_sha256",
+        "path_sha256",
+        "record_sha256",
+    }
 )
 
 _SUBMIT_RECEIPT_KEYS: Final = frozenset(
@@ -513,17 +525,71 @@ def _qualification_batch_requests(
     )
 
 
+def _validated_local_preflight_binding(
+    path: str | Path,
+    *,
+    plan: Mapping[str, Any],
+) -> tuple[dict[str, str], datetime, dict[str, Any]]:
+    preflight_path = _validated_existing_regular_file(
+        path, "local_preflight_evidence_path"
+    )
+    record = _read_canonical_json_object_file(
+        preflight_path, "local preflight evidence"
+    )
+    plan_sha256 = _required_sha256(
+        plan.get("closed_record_sha256"), "plan.closed_record_sha256"
+    )
+    completed_at = validate_local_preflight_evidence_record(
+        record,
+        plan_sha256=plan_sha256,
+    )
+    binding = {
+        "completed_at_utc": _non_empty_string(
+            record.get("completed_at_utc"), "local preflight completed_at_utc"
+        ),
+        "file_sha256": _file_sha256(preflight_path),
+        "path_sha256": _canonical_json_sha256(
+            {
+                "domain": _QUALIFICATION_PREFLIGHT_PATH_DOMAIN,
+                "path": str(preflight_path),
+            }
+        ),
+        "record_sha256": _required_sha256(
+            record.get("closed_record_sha256"),
+            "local preflight closed_record_sha256",
+        ),
+    }
+    return binding, completed_at, record
+
+
+def _require_local_preflight_before_submission(
+    completed_at: datetime,
+    *,
+    submission_boundary: datetime,
+) -> None:
+    boundary = _parse_utc_timestamp(
+        _utc_timestamp(submission_boundary),
+        "submission boundary",
+    )
+    if completed_at >= boundary:
+        raise ValueError("local preflight must complete before qualification submission")
+
+
 def _qualification_phase_lease_record(
     *,
     plan: Mapping[str, Any],
     ledger_path_sha256: str,
     predecessor_prefix: DatabricksLedgerPrefix,
     contracts: Sequence[Mapping[str, Any]],
+    local_preflight_binding: Mapping[str, str],
 ) -> dict[str, Any]:
+    if frozenset(local_preflight_binding) != _QUALIFICATION_PREFLIGHT_BINDING_KEYS:
+        raise ValueError("local preflight binding has an open schema")
     record: dict[str, Any] = {
         "attempt_ids": [str(item["reservation_attempt_id"]) for item in contracts],
         "closed_record_sha256": "",
         "ledger_path_sha256": ledger_path_sha256,
+        "local_preflight": dict(local_preflight_binding),
         "plan_sha256": plan["closed_record_sha256"],
         "predecessor_prefix": predecessor_prefix.to_record(),
         "record_type": _QUALIFICATION_PHASE_LEASE_RECORD_TYPE,
@@ -560,6 +626,7 @@ def _replay_qualification_batch_marker(
     contracts: Sequence[Mapping[str, Any]],
     ledger_path: str | Path,
     submit_receipt_root: str | Path,
+    local_preflight_binding: Mapping[str, str],
 ) -> tuple[DatabricksBatchReservationAuthorization, dict[str, Any]]:
     root = _validated_existing_controller_evidence_root(
         submit_receipt_root, "submit_receipt_root"
@@ -579,6 +646,7 @@ def _replay_qualification_batch_marker(
         ),
         predecessor_prefix=expected_predecessor,
         contracts=contracts,
+        local_preflight_binding=local_preflight_binding,
     )
     if lease != expected_lease:
         raise ValueError("qualification phase lease differs from the frozen batch")
@@ -749,6 +817,7 @@ def submit_gpu_qualification_jobs(
     submit_payloads: Sequence[Mapping[str, Any]],
     ledger_path: str | Path,
     submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
     opener: DatabricksURLOpener | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> tuple[dict[str, Any], ...]:
@@ -756,6 +825,17 @@ def submit_gpu_qualification_jobs(
 
     plan, _pins = _validated_plan_and_pins(plan_record)
     contracts = _validated_qualification_payloads(plan, submit_payloads)
+    clock = now or _utc_now
+    local_preflight_binding, preflight_completed_at, _preflight_record = (
+        _validated_local_preflight_binding(
+            local_preflight_evidence_path,
+            plan=plan,
+        )
+    )
+    _require_local_preflight_before_submission(
+        preflight_completed_at,
+        submission_boundary=clock(),
+    )
     initial_ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     if databricks_ledger_path_sha256(ledger_path) != plan.get(
         "campaign_ledger_path_sha256"
@@ -832,6 +912,7 @@ def submit_gpu_qualification_jobs(
         ),
         predecessor_prefix=campaign_ledger_prefix,
         contracts=contracts,
+        local_preflight_binding=local_preflight_binding,
     )
     lease_path = receipt_root / _QUALIFICATION_PHASE_LEASE_FILENAME
     _write_canonical_exclusive(lease_record, lease_path)
@@ -861,7 +942,6 @@ def submit_gpu_qualification_jobs(
     resolved_opener = (
         cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
     )
-    clock = now or _utc_now
     receipts: list[dict[str, Any]] = []
     for contract in contracts:
         attempt_id = str(contract["reservation_attempt_id"])
@@ -908,6 +988,7 @@ def resume_gpu_qualification_job_submissions(
     submit_payloads: Sequence[Mapping[str, Any]],
     ledger_path: str | Path,
     submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
     opener: DatabricksURLOpener | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> tuple[dict[str, Any], ...]:
@@ -915,16 +996,27 @@ def resume_gpu_qualification_job_submissions(
 
     plan, _pins = _validated_plan_and_pins(plan_record)
     contracts = _validated_qualification_payloads(plan, submit_payloads)
+    clock = now or _utc_now
+    local_preflight_binding, preflight_completed_at, _preflight_record = (
+        _validated_local_preflight_binding(
+            local_preflight_evidence_path,
+            plan=plan,
+        )
+    )
+    _require_local_preflight_before_submission(
+        preflight_completed_at,
+        submission_boundary=clock(),
+    )
     batch_authorization, batch_marker = _replay_qualification_batch_marker(
         plan=plan,
         contracts=contracts,
         ledger_path=ledger_path,
         submit_receipt_root=submit_receipt_root,
+        local_preflight_binding=local_preflight_binding,
     )
     root = _validated_existing_controller_evidence_root(
         submit_receipt_root, "submit_receipt_root"
     )
-    clock = now or _utc_now
     receipts: list[dict[str, Any]] = []
     batch_marker_sha256 = str(batch_marker["closed_record_sha256"])
     for contract in contracts:
@@ -1188,6 +1280,12 @@ def collect_gpu_qualification_evidence(
 
     plan, pins = _validated_plan_and_pins(plan_record)
     contracts = _validated_qualification_payloads(plan, submit_payloads)
+    local_preflight_binding, _preflight_completed_at, local_preflight = (
+        _validated_local_preflight_binding(
+            local_preflight_evidence_path,
+            plan=plan,
+        )
+    )
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     if databricks_ledger_path_sha256(ledger_path) != plan.get(
         "campaign_ledger_path_sha256"
@@ -1198,6 +1296,7 @@ def collect_gpu_qualification_evidence(
         contracts=contracts,
         ledger_path=ledger_path,
         submit_receipt_root=submit_receipt_root,
+        local_preflight_binding=local_preflight_binding,
     )
     submit_receipts = _load_submit_receipts(
         submit_receipt_root,
@@ -1205,9 +1304,6 @@ def collect_gpu_qualification_evidence(
         plan=plan,
         ledger=ledger,
         phase_batch_record_sha256=str(batch_marker["closed_record_sha256"]),
-    )
-    local_preflight = _read_canonical_json_object_file(
-        local_preflight_evidence_path, "local preflight evidence"
     )
     terminal_root = _validated_fresh_controller_evidence_root(terminal_receipt_root)
     _require_fresh_output_path(Path(evidence_output_json))
@@ -1333,6 +1429,7 @@ def collect_gpu_qualification_evidence(
         submit_payloads=submit_payloads,
         ledger_path=ledger_path,
         submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
         terminal_receipt_root=terminal_root,
         evidence_path=evidence_path,
         expected_campaign_id=str(plan["campaign_id"]),
@@ -1347,6 +1444,7 @@ def replay_gpu_qualification_launch_authorization(
     submit_payloads: Sequence[Mapping[str, Any]],
     ledger_path: str | Path,
     submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
     terminal_receipt_root: str | Path,
     evidence_path: str | Path,
     expected_campaign_id: str,
@@ -1365,6 +1463,12 @@ def replay_gpu_qualification_launch_authorization(
     if pins != expected_artifact_pins:
         raise ValueError("replay artifact pins differ from the frozen expectation")
     contracts = _validated_qualification_payloads(plan, submit_payloads)
+    local_preflight_binding, _preflight_completed_at, local_preflight = (
+        _validated_local_preflight_binding(
+            local_preflight_evidence_path,
+            plan=plan,
+        )
+    )
     ledger_file = _validated_existing_regular_file(ledger_path, "ledger_path")
     ledger = read_databricks_cluster_hour_ledger_json(ledger_file)
     ledger_path_sha256 = databricks_ledger_path_sha256(ledger_file)
@@ -1383,6 +1487,7 @@ def replay_gpu_qualification_launch_authorization(
         contracts=contracts,
         ledger_path=ledger_file,
         submit_receipt_root=submit_receipt_root,
+        local_preflight_binding=local_preflight_binding,
     )
     submit_receipts = _load_submit_receipts(
         submit_receipt_root,
@@ -1415,6 +1520,15 @@ def replay_gpu_qualification_launch_authorization(
         expected_campaign_id=expected_campaign_id,
         expected_artifact_pins=expected_artifact_pins,
     )
+    if dict(
+        _required_mapping(
+            evidence.get("local_preflight_evidence"),
+            "local_preflight_evidence",
+        )
+    ) != local_preflight:
+        raise ValueError(
+            "persisted local preflight differs from qualification evidence"
+        )
     cloud = _required_mapping(evidence.get("cloud_gpu_evidence"), "cloud_gpu_evidence")
     embedded_receipts = cloud.get("terminal_receipts")
     if not isinstance(embedded_receipts, list) or embedded_receipts != list(

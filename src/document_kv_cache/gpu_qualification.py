@@ -601,6 +601,19 @@ def build_local_preflight_evidence(
     return record
 
 
+def validate_local_preflight_evidence_record(
+    record: Mapping[str, Any],
+    *,
+    plan_sha256: str,
+) -> datetime:
+    """Validate the closed local preflight and return its completion time."""
+
+    if not isinstance(record, Mapping):
+        raise TypeError("local preflight evidence must be a mapping")
+    _require_sha256(plan_sha256, field_name="plan_sha256")
+    return _validate_local_preflight_evidence(record, plan_sha256)
+
+
 def build_gpu_job_result(
     *,
     plan_record: Mapping[str, Any],
@@ -2912,6 +2925,7 @@ __all__ = [
     "validate_gpu_qualification_evidence_record",
     "validate_gpu_job_result_record",
     "validate_gpu_qualification_plan_record",
+    "validate_local_preflight_evidence_record",
     "write_canonical_gpu_qualification_json",
     "write_gpu_qualification_evidence_json",
     "write_gpu_qualification_plan_json",

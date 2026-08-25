@@ -32,6 +32,7 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_VLLM_VERSION,
     GPUQualificationArtifactPins,
     GPUQualificationSelection,
+    build_local_preflight_evidence,
     build_gpu_qualification_plan,
     canonical_gpu_qualification_json,
 )
@@ -229,6 +230,80 @@ def _render(plan: dict[str, Any], uris: dict[str, str]):
     )
 
 
+def _write_local_preflight(
+    plan: dict[str, Any],
+    path: Path,
+    *,
+    completed_at_utc: str = "2026-08-23T00:00:00Z",
+) -> Path:
+    record = build_local_preflight_evidence(
+        plan_sha256=plan["closed_record_sha256"],
+        completed_at_utc=completed_at_utc,
+        check_evidence_sha256={
+            check_id: _digest(f"local-preflight:{check_id}")
+            for check_id in plan["local_preflight"]["check_ids"]
+        },
+    )
+    path.write_text(
+        canonical_gpu_qualification_json(record) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _invalid_local_preflight_path(
+    case: str,
+    *,
+    plan: dict[str, Any],
+    path: Path,
+) -> Path:
+    if case == "missing":
+        return path
+    if case == "wrong-plan":
+        wrong_plan = _plan(
+            pins=replace(
+                _pins(),
+                package_wheel_sha256=_digest("wrong-plan-package-wheel"),
+            )
+        )
+        assert wrong_plan["closed_record_sha256"] != plan["closed_record_sha256"]
+        return _write_local_preflight(wrong_plan, path)
+    if case == "future-completion":
+        return _write_local_preflight(
+            plan,
+            path,
+            completed_at_utc="2026-08-25T00:00:00Z",
+        )
+    if case == "tampered":
+        _write_local_preflight(plan, path)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["checks"][0]["evidence_sha256"] = _digest("tampered-check-output")
+        path.write_text(
+            canonical_gpu_qualification_json(record) + "\n",
+            encoding="utf-8",
+        )
+        return path
+    if case in {"failed-check", "wrong-check-id", "resealed-tampered"}:
+        _write_local_preflight(plan, path)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if case == "failed-check":
+            record["checks"][0]["status"] = "failed"
+        elif case == "wrong-check-id":
+            record["checks"][0]["check_id"] = "unfrozen-check"
+        else:
+            record["checks"][0]["evidence_sha256"] = _digest(
+                "resealed-tampered-check-output"
+            )
+        record["closed_record_sha256"] = ""
+        qualification_job._seal_record(record)
+        path.write_text(
+            canonical_gpu_qualification_json(record) + "\n",
+            encoding="utf-8",
+        )
+        return path
+    raise AssertionError(f"unhandled local preflight case: {case}")
+
+
 def _option_values(parameters: list[str], option: str) -> list[str]:
     return [
         parameters[index + 1]
@@ -342,6 +417,9 @@ def test_submitter_receipt_binds_the_exact_fourteen_reserved_payloads(
     opener = _SequentialOpener(
         [{"run_id": 10_000 + index} for index in range(len(payloads))]
     )
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
 
     receipts = submit_gpu_qualification_jobs(
         DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
@@ -349,6 +427,7 @@ def test_submitter_receipt_binds_the_exact_fourteen_reserved_payloads(
         submit_payloads=payloads,
         ledger_path=ledger_path,
         submit_receipt_root=receipt_root,
+        local_preflight_evidence_path=local_preflight_path,
         opener=opener,
         now=lambda: datetime(2026, 8, 24, 0, 0, tzinfo=UTC),
     )
@@ -379,6 +458,7 @@ def test_submitter_receipt_binds_the_exact_fourteen_reserved_payloads(
         submit_payloads=payloads,
         ledger_path=ledger_path,
         submit_receipt_root=receipt_root,
+        local_preflight_evidence_path=local_preflight_path,
         opener=lambda *_args, **_kwargs: pytest.fail("completed phase must not POST"),
     )
     assert [item["cloud_run_id"] for item in resumed] == [
@@ -397,6 +477,9 @@ def test_submitter_rejects_incomplete_or_mutated_job_closure_before_post(
         ledger_id="gpu-qualification",
     )
     opener = _SequentialOpener([{"run_id": 1}])
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
 
     with pytest.raises(ValueError, match="exact planned job closure"):
         submit_gpu_qualification_jobs(
@@ -405,6 +488,7 @@ def test_submitter_rejects_incomplete_or_mutated_job_closure_before_post(
             submit_payloads=payloads[:-1],
             ledger_path=ledger_path,
             submit_receipt_root=tmp_path / "missing-receipts",
+            local_preflight_evidence_path=local_preflight_path,
             opener=opener,
         )
     mutated = json.loads(json.dumps(payloads))
@@ -416,10 +500,59 @@ def test_submitter_rejects_incomplete_or_mutated_job_closure_before_post(
             submit_payloads=mutated,
             ledger_path=ledger_path,
             submit_receipt_root=tmp_path / "mutated-receipts",
+            local_preflight_evidence_path=local_preflight_path,
             opener=opener,
         )
     assert opener.requests == []
     assert read_databricks_cluster_hour_ledger_json(ledger_path).reservations == ()
+
+
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
+        ("missing", "must be one regular file"),
+        ("tampered", "closed_record_sha256 is invalid"),
+        ("wrong-plan", "plan_sha256 mismatch"),
+        ("future-completion", "must complete before qualification submission"),
+        ("failed-check", "did not pass in canonical order"),
+        ("wrong-check-id", "did not pass in canonical order"),
+    ],
+)
+def test_submitter_rejects_invalid_local_preflight_without_ledger_or_post_side_effects(
+    case: str,
+    error: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ledger_path = tmp_path / "cluster-hours.json"
+    _copy_retained_campaign_ledger(ledger_path, monkeypatch)
+    plan = _plan()
+    payloads = _render(plan, _artifact_uris())
+    local_preflight_path = _invalid_local_preflight_path(
+        case,
+        plan=plan,
+        path=tmp_path / "local-preflight.json",
+    )
+    receipt_root = tmp_path / "submit-receipts"
+    opener = _SequentialOpener([{"run_id": 1}])
+    ledger_before = ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match=error):
+        submit_gpu_qualification_jobs(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=receipt_root,
+            local_preflight_evidence_path=local_preflight_path,
+            opener=opener,
+            now=lambda: datetime(2026, 8, 24, 0, 0, tzinfo=UTC),
+        )
+
+    assert ledger_path.read_bytes() == ledger_before
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 124
+    assert opener.requests == []
+    assert not receipt_root.exists()
 
 
 def test_submitter_preexisting_phase_lease_leaves_zero_reservations_and_posts(
@@ -435,6 +568,9 @@ def test_submitter_preexisting_phase_lease_leaves_zero_reservations_and_posts(
     receipt_root = tmp_path / "submit-receipts"
     receipt_root.mkdir()
     opener = _SequentialOpener([{"run_id": 1}])
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
 
     with pytest.raises(FileExistsError, match="already exists"):
         submit_gpu_qualification_jobs(
@@ -443,6 +579,7 @@ def test_submitter_preexisting_phase_lease_leaves_zero_reservations_and_posts(
             submit_payloads=payloads,
             ledger_path=ledger_path,
             submit_receipt_root=receipt_root,
+            local_preflight_evidence_path=local_preflight_path,
             opener=opener,
         )
     assert opener.requests == []
@@ -460,6 +597,9 @@ def test_resume_recovers_post_reservation_pre_marker_controller_crash(
     _copy_retained_campaign_ledger(ledger_path, monkeypatch)
     plan = _plan()
     payloads = _render(plan, _artifact_uris())
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
     original_writer = qualification_job._write_canonical_exclusive
 
     def crash_before_marker(record, path):
@@ -477,6 +617,7 @@ def test_resume_recovers_post_reservation_pre_marker_controller_crash(
             submit_payloads=payloads,
             ledger_path=ledger_path,
             submit_receipt_root=receipt_root,
+            local_preflight_evidence_path=local_preflight_path,
             opener=lambda *_args, **_kwargs: pytest.fail("crash occurs before POST"),
         )
     crashed = read_databricks_cluster_hour_ledger_json(ledger_path)
@@ -493,6 +634,7 @@ def test_resume_recovers_post_reservation_pre_marker_controller_crash(
         submit_payloads=payloads,
         ledger_path=ledger_path,
         submit_receipt_root=receipt_root,
+        local_preflight_evidence_path=local_preflight_path,
         opener=_SequentialOpener([{"run_id": 70_000 + index} for index in range(14)]),
     )
     assert len(resumed) == 14
@@ -501,6 +643,85 @@ def test_resume_recovers_post_reservation_pre_marker_controller_crash(
         len(read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts)
         == 14
     )
+
+
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
+        ("missing", "must be one regular file"),
+        ("tampered", "closed_record_sha256 is invalid"),
+        ("wrong-plan", "plan_sha256 mismatch"),
+        ("future-completion", "must complete before qualification submission"),
+        ("failed-check", "did not pass in canonical order"),
+        ("wrong-check-id", "did not pass in canonical order"),
+        ("resealed-tampered", "phase lease differs from the frozen batch"),
+    ],
+)
+def test_resumer_rejects_invalid_local_preflight_without_reservation_or_post_side_effects(
+    case: str,
+    error: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ledger_path = tmp_path / "cluster-hours.json"
+    receipt_root = tmp_path / "submit-receipts"
+    local_preflight_path = tmp_path / "local-preflight.json"
+    _copy_retained_campaign_ledger(ledger_path, monkeypatch)
+    plan = _plan()
+    payloads = _render(plan, _artifact_uris())
+    _write_local_preflight(plan, local_preflight_path)
+    original_writer = qualification_job._write_canonical_exclusive
+
+    def crash_before_marker(record, path):
+        if path.name == "batch-reserved.json":
+            raise RuntimeError("simulated controller crash before batch marker")
+        original_writer(record, path)
+
+    monkeypatch.setattr(
+        qualification_job, "_write_canonical_exclusive", crash_before_marker
+    )
+    with pytest.raises(RuntimeError, match="simulated controller crash"):
+        submit_gpu_qualification_jobs(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=receipt_root,
+            local_preflight_evidence_path=local_preflight_path,
+            opener=lambda *_args, **_kwargs: pytest.fail("crash occurs before POST"),
+            now=lambda: datetime(2026, 8, 24, 0, 0, tzinfo=UTC),
+        )
+    monkeypatch.setattr(
+        qualification_job, "_write_canonical_exclusive", original_writer
+    )
+
+    if case == "missing":
+        local_preflight_path.unlink()
+    else:
+        _invalid_local_preflight_path(
+            case,
+            plan=plan,
+            path=local_preflight_path,
+        )
+    ledger_before_resume = ledger_path.read_bytes()
+    opener = _SequentialOpener([{"run_id": 1}])
+
+    with pytest.raises(ValueError, match=error):
+        resume_gpu_qualification_job_submissions(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=receipt_root,
+            local_preflight_evidence_path=local_preflight_path,
+            opener=opener,
+            now=lambda: datetime(2026, 8, 24, 0, 0, tzinfo=UTC),
+        )
+
+    assert ledger_path.read_bytes() == ledger_before_resume
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 138
+    assert opener.requests == []
+    assert {path.name for path in receipt_root.iterdir()} == {"phase-lease.json"}
 
 
 def test_submitter_rejects_qualification_when_global_active_tasks_cannot_fit(
@@ -521,6 +742,9 @@ def test_submitter_rejects_qualification_when_global_active_tasks_cannot_fit(
     plan = _plan()
     payloads = _render(plan, _artifact_uris())
     opener = _SequentialOpener([{"run_id": 1}])
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
 
     with pytest.raises(ValueError, match="complete current ledger|global 16-job"):
         submit_gpu_qualification_jobs(
@@ -529,6 +753,7 @@ def test_submitter_rejects_qualification_when_global_active_tasks_cannot_fit(
             submit_payloads=payloads,
             ledger_path=ledger_path,
             submit_receipt_root=tmp_path / "submit-receipts",
+            local_preflight_evidence_path=local_preflight_path,
             opener=opener,
         )
     assert opener.requests == []
@@ -589,6 +814,9 @@ def test_qualification_requires_1024_cap_and_preserves_exact_124h_headroom(
     plan = _plan()
     payloads = _render(plan, _artifact_uris())
     small_opener = _SequentialOpener([{"run_id": 1}])
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
     with pytest.raises(ValueError, match="1024-hour"):
         submit_gpu_qualification_jobs(
             workspace,
@@ -596,6 +824,7 @@ def test_qualification_requires_1024_cap_and_preserves_exact_124h_headroom(
             submit_payloads=payloads,
             ledger_path=small_ledger,
             submit_receipt_root=tmp_path / "small-receipts",
+            local_preflight_evidence_path=local_preflight_path,
             opener=small_opener,
         )
     assert small_opener.requests == []
@@ -622,6 +851,9 @@ def test_qualification_rejects_fresh_same_id_ledger_reset_before_batch_or_post(
     plan = _plan()
     payloads = _render(plan, _artifact_uris())
     opener = _SequentialOpener([{"run_id": 1}])
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
     with pytest.raises(ValueError, match="shorter than its authorized prefix"):
         submit_gpu_qualification_jobs(
             DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
@@ -629,6 +861,7 @@ def test_qualification_rejects_fresh_same_id_ledger_reset_before_batch_or_post(
             submit_payloads=payloads,
             ledger_path=reset_ledger,
             submit_receipt_root=tmp_path / "reset-receipts",
+            local_preflight_evidence_path=local_preflight_path,
             opener=opener,
         )
     assert opener.requests == []
@@ -874,12 +1107,16 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
     plan = _plan()
     payloads = _render(plan, _artifact_uris())
     run_ids = [30_000 + index for index in range(14)]
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
     submit_gpu_qualification_jobs(
         DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
         plan_record=plan,
         submit_payloads=payloads,
         ledger_path=ledger_path,
         submit_receipt_root=submit_root,
+        local_preflight_evidence_path=local_preflight_path,
         opener=_SequentialOpener([{"run_id": run_id} for run_id in run_ids]),
         now=lambda: datetime(2026, 8, 24, 0, 0, tzinfo=UTC),
     )
@@ -960,8 +1197,6 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
             encoding="utf-8",
         )
 
-    local_preflight_path = tmp_path / "local-preflight.json"
-    local_preflight_path.write_text('{"fixture":true}\n', encoding="utf-8")
     monkeypatch.setattr(
         qualification_job,
         "get_databricks_run",
@@ -1059,12 +1294,16 @@ def test_collector_reconciles_a_never_started_failure_before_rejecting_campaign(
     plan = _plan()
     payloads = _render(plan, _artifact_uris())
     run_ids = [50_000 + index for index in range(14)]
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
     submit_gpu_qualification_jobs(
         DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
         plan_record=plan,
         submit_payloads=payloads,
         ledger_path=ledger_path,
         submit_receipt_root=submit_root,
+        local_preflight_evidence_path=local_preflight_path,
         opener=_SequentialOpener([{"run_id": run_id} for run_id in run_ids]),
     )
     first_task = payloads[0]["tasks"][0]
@@ -1097,8 +1336,6 @@ def test_collector_reconciles_a_never_started_failure_before_rejecting_campaign(
         "get_databricks_run",
         lambda config, run_id: failed_run,
     )
-    local_preflight_path = tmp_path / "local-preflight.json"
-    local_preflight_path.write_text('{"fixture":true}\n', encoding="utf-8")
     terminal_root = tmp_path / "terminal-receipts"
     evidence_path = tmp_path / "qualification-evidence.json"
 
