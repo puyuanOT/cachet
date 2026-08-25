@@ -106,7 +106,19 @@ GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS: Final = (
     DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
 )
 GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES: Final = 9_500
-GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE: Final = "NONE"
+GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE: Final = "SINGLE_USER"
+GPU_QUALIFICATION_LEGACY_UC_FAILURE_PLAN_SHA256: Final = (
+    "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
+)
+GPU_QUALIFICATION_LEGACY_UC_BROKEN_RUNNER_SHA256: Final = (
+    "acec0bf48ffcd67ee005e2c017b86540e3601ab3d9739f71f243069cae9007db"
+)
+GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256: Final = (
+    "644048afcd8f478aa6ba2776be97f4e6fce4396ddf853001c3d200cfbbd259eb"
+)
+GPU_QUALIFICATION_LEGACY_UC_FAILURE_TERMINAL_PREFIX_SHA256: Final = (
+    "4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"
+)
 GPU_QUALIFICATION_ARTIFACT_KEYS: Final = (
     "cachet_source_tree_sha256",
     "input_bundle_sha256",
@@ -121,6 +133,13 @@ GPU_QUALIFICATION_SUBMIT_RECEIPT_RECORD_TYPE: Final = (
 )
 GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_qualification_submission_rejection.v1"
+)
+GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_RECORD_TYPE: Final = (
+    "cachet.gpu_qualification_failed_attempt_reconciliation.v1"
+)
+GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_REASON: Final = (
+    "qualification payload used NONE access mode and could not resolve Unity Catalog "
+    "Volume bootstrap; remaining pending jobs canceled after first failures"
 )
 GPU_QUALIFICATION_LOCAL_WORK_ROOT: Final = "/local_disk0/cachet-vllm-0271-qualification"
 _QUALIFICATION_PHASE_LEASE_FILENAME: Final = "phase-lease.json"
@@ -269,6 +288,8 @@ _KEYS = {
 
 
 def _cluster_path(value: str) -> str:
+    if value.startswith("dbfs:/Volumes/"):
+        return "/" + value.removeprefix("dbfs:/").lstrip("/")
     if value.startswith("dbfs:/"):
         return "/dbfs/" + value.removeprefix("dbfs:/").lstrip("/")
     if value.startswith("file://"):
@@ -450,6 +471,7 @@ class GPUQualificationSentinelRunner(Protocol):
 def render_gpu_qualification_submit_payloads(
     plan_record: Mapping[str, Any],
     *,
+    single_user_name: str,
     runner_uri: str,
     package_wheel_uri: str,
     patched_vllm_wheel_uri: str,
@@ -465,6 +487,7 @@ def render_gpu_qualification_submit_payloads(
     """
 
     plan, pins = _validated_plan_and_pins(plan_record)
+    principal = _validated_single_user_name(single_user_name)
     uris = _validated_artifact_uris(
         artifact_uris,
         runner_uri=runner_uri,
@@ -516,6 +539,7 @@ def render_gpu_qualification_submit_payloads(
         )
         cluster = _qualification_cluster(
             hardware_id=hardware_id,
+            single_user_name=principal,
             custom_tags={
                 "campaign": _safe_tag_value(plan.get("campaign_id")),
                 "job_id": job_id,
@@ -620,6 +644,43 @@ def _validated_local_preflight_binding(
         ),
     }
     return binding, completed_at, record
+
+
+def _non_authorizing_local_preflight_binding(
+    path: str | Path,
+    *,
+    plan: Mapping[str, Any],
+) -> dict[str, str]:
+    """Bind retained preflight bytes without replaying or granting authority."""
+
+    preflight_path = _validated_existing_regular_file(
+        path, "local_preflight_evidence_path"
+    )
+    record = _read_canonical_json_object_file(
+        preflight_path, "local preflight evidence"
+    )
+    validate_local_preflight_evidence_record(
+        record,
+        plan_sha256=_required_sha256(
+            plan.get("closed_record_sha256"), "plan.closed_record_sha256"
+        ),
+    )
+    return {
+        "completed_at_utc": _non_empty_string(
+            record.get("completed_at_utc"), "local preflight completed_at_utc"
+        ),
+        "file_sha256": _file_sha256(preflight_path),
+        "path_sha256": _canonical_json_sha256(
+            {
+                "domain": _QUALIFICATION_PREFLIGHT_PATH_DOMAIN,
+                "path": str(preflight_path),
+            }
+        ),
+        "record_sha256": _required_sha256(
+            record.get("closed_record_sha256"),
+            "local preflight closed_record_sha256",
+        ),
+    }
 
 
 def _require_gpu_qualification_local_preflight_bundle(
@@ -812,11 +873,20 @@ def _require_qualification_phase_ledger_closure(
     terminals = ledger.terminal_actuals[terminal_start:terminal_stop]
     if tuple(item.attempt_id for item in receipts) != attempts:
         raise ValueError("qualification ledger receipt slice is not the exact batch")
-    if tuple(item.attempt_id for item in terminals) != attempts:
+    expected_terminal_digests = dict(zip(attempts, digests, strict=True))
+    observed_terminal_ids = tuple(item.attempt_id for item in terminals)
+    if (
+        len(terminals) != len(attempts)
+        or len(set(observed_terminal_ids)) != len(attempts)
+        or set(observed_terminal_ids) != set(attempts)
+    ):
         raise ValueError("qualification ledger terminal slice is not the exact batch")
     if tuple(item.submit_payload_sha256 for item in receipts) != digests:
         raise ValueError("qualification ledger receipt payload slice drift")
-    if tuple(item.submit_payload_sha256 for item in terminals) != digests:
+    if any(
+        item.submit_payload_sha256 != expected_terminal_digests[item.attempt_id]
+        for item in terminals
+    ):
         raise ValueError("qualification ledger terminal payload slice drift")
     if any(attempt_id not in ledger.closed_attempt_ids for attempt_id in attempts):
         raise ValueError("qualification ledger still has an active batch member")
@@ -1220,6 +1290,8 @@ def _require_qualification_ledger_admission(
 def _validated_qualification_payloads(
     plan: Mapping[str, Any],
     submit_payloads: Sequence[Mapping[str, Any]],
+    *,
+    require_legacy_uc_broken_security_shape: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     if isinstance(submit_payloads, (str, bytes, bytearray)) or not isinstance(
         submit_payloads, Sequence
@@ -1230,6 +1302,13 @@ def _validated_qualification_payloads(
         raise ValueError(
             "qualification submission requires the exact planned job closure"
         )
+    if type(require_legacy_uc_broken_security_shape) is not bool:
+        raise TypeError("require_legacy_uc_broken_security_shape must be a bool")
+    single_user_name = (
+        None
+        if require_legacy_uc_broken_security_shape
+        else _qualification_single_user_name_from_payloads(submit_payloads)
+    )
     pins = pins_from_plan_record(plan)
     plan_digest = _required_sha256(
         plan.get("closed_record_sha256"), "plan.closed_record_sha256"
@@ -1275,13 +1354,23 @@ def _validated_qualification_payloads(
             != GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS
         ):
             raise ValueError("qualification task retry/timeout identity differs")
-        expected_cluster = _qualification_cluster(
-            hardware_id=_safe_id(planned_job.get("hardware_id"), "hardware_id"),
-            custom_tags={
-                "campaign": _safe_tag_value(plan.get("campaign_id")),
-                "job_id": job_id,
-                "plan_sha256": plan_digest[:32],
-            },
+        hardware_id = _safe_id(planned_job.get("hardware_id"), "hardware_id")
+        custom_tags = {
+            "campaign": _safe_tag_value(plan.get("campaign_id")),
+            "job_id": job_id,
+            "plan_sha256": plan_digest[:32],
+        }
+        expected_cluster = (
+            _legacy_uc_broken_qualification_cluster(
+                hardware_id=hardware_id,
+                custom_tags=custom_tags,
+            )
+            if require_legacy_uc_broken_security_shape
+            else _qualification_cluster(
+                hardware_id=hardware_id,
+                single_user_name=cast(str, single_user_name),
+                custom_tags=custom_tags,
+            )
         )
         if task.get("new_cluster") != expected_cluster:
             raise ValueError("qualification cluster specification differs")
@@ -1349,6 +1438,145 @@ def _validated_qualification_payloads(
             }
         )
     return tuple(contracts)
+
+
+def reconcile_gpu_qualification_failed_attempt_evidence(
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    runs_get_evidence_root: str | Path,
+    require_zero_actual: bool = False,
+) -> DatabricksClusterHourLedger:
+    """Reconcile the retained legacy UC failures without issuing launch authority.
+
+    This boundary is intentionally offline: it consumes the canonical direct
+    ``runs/get`` files and their sealed manifest, never calls Databricks, and
+    returns only the updated ledger.  ``require_zero_actual`` is a fail-before-
+    write audit guard; it never rewrites a nonzero observed interval to zero.
+    """
+
+    if type(require_zero_actual) is not bool:
+        raise TypeError("require_zero_actual must be a bool")
+    plan, _pins = _validated_legacy_uc_failure_plan_and_pins(plan_record)
+    contracts = _validated_qualification_payloads(
+        plan,
+        submit_payloads,
+        require_legacy_uc_broken_security_shape=True,
+    )
+    local_preflight_binding = _non_authorizing_local_preflight_binding(
+        local_preflight_evidence_path,
+        plan=plan,
+    )
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    if databricks_ledger_path_sha256(ledger_path) != plan.get(
+        "campaign_ledger_path_sha256"
+    ):
+        raise ValueError("reconciliation ledger path differs from the legacy plan")
+    batch_authorization, batch_marker = _replay_qualification_batch_marker(
+        plan=plan,
+        contracts=contracts,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_binding=local_preflight_binding,
+    )
+    submit_receipts = _load_submit_receipts(
+        submit_receipt_root,
+        contracts=contracts,
+        plan=plan,
+        ledger=ledger,
+        phase_batch_record_sha256=str(batch_marker["closed_record_sha256"]),
+    )
+    evidence_root = _validated_existing_controller_evidence_root(
+        runs_get_evidence_root,
+        "runs_get_evidence_root",
+    )
+    expected_names = {
+        "reconciliation-manifest.json",
+        *(f"{contract['job_id']}.runs-get.json" for contract in contracts),
+    }
+    if {path.name for path in evidence_root.iterdir()} != expected_names:
+        raise ValueError("runs/get evidence root is not the exact fourteen-job closure")
+    runs: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
+    for contract, receipt in zip(contracts, submit_receipts, strict=True):
+        evidence_path = evidence_root / f"{contract['job_id']}.runs-get.json"
+        run = _read_canonical_json_object_file(
+            evidence_path,
+            f"failed runs/get {contract['job_id']}",
+        )
+        entry = _failed_attempt_reconciliation_entry(
+            run,
+            contract=contract,
+            submit_receipt=receipt,
+            evidence_file_sha256=_file_sha256(evidence_path),
+        )
+        runs.append(run)
+        entries.append(entry)
+    manifest_path = _validated_existing_regular_file(
+        evidence_root / "reconciliation-manifest.json",
+        "failed-attempt reconciliation manifest",
+    )
+    manifest = _canonical_json_object_from_bytes(
+        manifest_path.read_bytes(),
+        pretty=True,
+        label="failed-attempt reconciliation manifest",
+    )
+    _validate_failed_attempt_reconciliation_manifest(
+        manifest,
+        plan=plan,
+        expected_entries=entries,
+    )
+    if manifest.get("closed_record_sha256") != (
+        GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256
+    ):
+        raise ValueError("failed-attempt reconciliation manifest is not reviewed")
+    if require_zero_actual and any(
+        entry["actual_cluster_duration_seconds"] != 0.0 for entry in entries
+    ):
+        raise ValueError(
+            "runs/get evidence contains nonzero task intervals; zero reconciliation refused"
+        )
+
+    updated = ledger
+    ordered_reconciliations = sorted(
+        zip(contracts, runs, entries, strict=True),
+        key=lambda item: str(item[0]["job_id"]),
+    )
+    for contract, run, entry in ordered_reconciliations:
+        updated = record_databricks_verified_run_terminal_actual_json(
+            ledger_path,
+            attempt_id=str(contract["reservation_attempt_id"]),
+            run_record=run,
+        )
+        actual = next(
+            item
+            for item in updated.terminal_actuals
+            if item.attempt_id == contract["reservation_attempt_id"]
+        )
+        if (
+            actual.actual_cluster_duration_seconds
+            != entry["actual_cluster_duration_seconds"]
+            or actual.control_plane_status_sha256
+            != entry["control_plane_status_sha256"]
+        ):
+            raise RuntimeError("ledger actual differs from retained runs/get evidence")
+    terminal_prefix = _require_qualification_phase_ledger_closure(
+        updated,
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+    )
+    if (
+        terminal_prefix.reservation_count != 152
+        or terminal_prefix.submission_receipt_count != 14
+        or terminal_prefix.terminal_actual_count != 152
+        or terminal_prefix.prefix_sha256
+        != GPU_QUALIFICATION_LEGACY_UC_FAILURE_TERMINAL_PREFIX_SHA256
+    ):
+        raise RuntimeError("failed-attempt reconciliation terminal prefix drift")
+    return updated
 
 
 def collect_gpu_qualification_evidence(
@@ -1964,6 +2192,7 @@ def _validate_control_plane_run(
         "driver_node_type_id",
         "spark_version",
         "data_security_mode",
+        "single_user_name",
         "num_workers",
     ):
         if observed_cluster.get(field_name) != submitted_cluster.get(field_name):
@@ -1995,6 +2224,139 @@ def _validate_control_plane_run(
         "task_run_id": task_run_id_value,
         "task_start_time_ms": task_start,
     }
+
+
+def _failed_attempt_reconciliation_entry(
+    run: Mapping[str, Any],
+    *,
+    contract: Mapping[str, Any],
+    submit_receipt: Mapping[str, Any],
+    evidence_file_sha256: str,
+) -> dict[str, Any]:
+    run_id = _databricks_run_id(run.get("run_id"), "failed runs/get run_id")
+    if run_id != submit_receipt.get("cloud_run_id"):
+        raise ValueError("failed runs/get run_id differs from the submit receipt")
+    payload = _required_mapping(contract.get("payload"), "legacy submit payload")
+    if run.get("run_name") != payload.get("run_name"):
+        raise ValueError("failed runs/get run_name differs from the submit payload")
+    if run.get("run_type") != "SUBMIT_RUN":
+        raise ValueError("failed qualification run is not a one-time submit run")
+    if run.get("repair_history") not in (None, []):
+        raise ValueError("failed qualification run has repair history")
+    original_attempt_run_id = run.get("original_attempt_run_id")
+    if original_attempt_run_id is not None and not (
+        (type(original_attempt_run_id) is int and original_attempt_run_id == 0)
+        or original_attempt_run_id == "0"
+    ):
+        raise ValueError("failed qualification run is not attempt zero")
+    state = _required_mapping(run.get("state"), "failed runs/get state")
+    life_cycle_state = state.get("life_cycle_state")
+    result_state = state.get("result_state")
+    if life_cycle_state not in {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}:
+        raise ValueError("failed qualification runs/get response is not terminal")
+    if result_state == "SUCCESS":
+        raise ValueError("successful qualification run cannot be failure evidence")
+    tasks = run.get("tasks")
+    if (
+        not isinstance(tasks, list)
+        or len(tasks) != 1
+        or not isinstance(tasks[0], Mapping)
+    ):
+        raise ValueError("failed qualification runs/get must contain exactly one task")
+    task = tasks[0]
+    if task.get("task_key") != contract.get("task_key"):
+        raise ValueError("failed qualification task_key differs")
+    if type(task.get("attempt_number")) is not int or task.get("attempt_number") != 0:
+        raise ValueError("failed qualification task was retried")
+    task_state = _required_mapping(task.get("state"), "failed task state")
+    if task_state.get("life_cycle_state") not in {
+        "TERMINATED",
+        "SKIPPED",
+        "INTERNAL_ERROR",
+    }:
+        raise ValueError("failed qualification task is not terminal")
+    if task_state.get("result_state") == "SUCCESS":
+        raise ValueError("successful qualification task cannot be failure evidence")
+    task_run_id = task.get("run_id")
+    normalized_task_run_id = _databricks_run_id(
+        task_run_id, "failed qualification task run_id"
+    )
+    if normalized_task_run_id == run_id:
+        raise ValueError("failed qualification task run_id must differ from its parent")
+    task_start = task.get("start_time")
+    task_end = task.get("end_time")
+    never_started = (task_start is None and task_end is None) or (
+        type(task_start) is int
+        and task_start == 0
+        and type(task_end) is int
+        and task_end == 0
+    )
+    if never_started:
+        duration_seconds = 0.0
+    elif (
+        type(task_start) is int
+        and type(task_end) is int
+        and task_start >= 0
+        and task_end > task_start
+    ):
+        duration_seconds = (task_end - task_start) / 1000.0
+    else:
+        raise ValueError("failed qualification task interval is invalid")
+    return {
+        "actual_cluster_duration_seconds": duration_seconds,
+        "attempt_id": contract["reservation_attempt_id"],
+        "control_plane_status_sha256": _canonical_json_sha256(run),
+        "file_sha256": _required_sha256(
+            evidence_file_sha256, "evidence_file_sha256"
+        ),
+        "job_id": contract["job_id"],
+        "life_cycle_state": life_cycle_state,
+        "result_state": result_state,
+        "run_id": run_id,
+        "task_end_time": task_end,
+        "task_run_id": task_run_id,
+        "task_start_time": task_start,
+    }
+
+
+def _validate_failed_attempt_reconciliation_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+    expected_entries: Sequence[Mapping[str, Any]],
+) -> None:
+    if set(manifest) != {
+        "closed_record_sha256",
+        "entries",
+        "plan_sha256",
+        "reason",
+        "record_type",
+        "schema_version",
+    }:
+        raise ValueError("failed-attempt reconciliation manifest has an open schema")
+    observed_digest = _required_sha256(
+        manifest.get("closed_record_sha256"),
+        "failed-attempt reconciliation manifest.closed_record_sha256",
+    )
+    unsigned = dict(manifest)
+    unsigned["closed_record_sha256"] = ""
+    if _canonical_json_sha256(unsigned) != observed_digest:
+        raise ValueError(
+            "failed-attempt reconciliation manifest closed_record_sha256 mismatch"
+        )
+    if (
+        manifest.get("record_type")
+        != GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_RECORD_TYPE
+        or manifest.get("schema_version") != GPU_QUALIFICATION_SCHEMA_VERSION
+        or manifest.get("plan_sha256") != plan.get("closed_record_sha256")
+        or manifest.get("reason")
+        != GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_REASON
+    ):
+        raise ValueError("failed-attempt reconciliation manifest identity differs")
+    entries = manifest.get("entries")
+    ordered_expected = sorted(expected_entries, key=lambda item: str(item["job_id"]))
+    if not isinstance(entries, list) or entries != ordered_expected:
+        raise ValueError("failed-attempt reconciliation manifest entries differ")
 
 
 def _validate_result_submission_binding(
@@ -2107,11 +2469,62 @@ def _control_plane_launch_cluster(task: Mapping[str, Any]) -> Mapping[str, Any]:
     raise ValueError("runs/get task does not expose its launch cluster")
 
 
+def _validated_single_user_name(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ValueError("single_user_name must be a normalized non-empty string")
+    return value
+
+
+def _qualification_single_user_name_from_payloads(
+    submit_payloads: Sequence[Mapping[str, Any]],
+) -> str:
+    """Require one exact ``SINGLE_USER`` principal across the payload closure."""
+
+    if isinstance(submit_payloads, (str, bytes, bytearray)) or not isinstance(
+        submit_payloads, Sequence
+    ):
+        raise TypeError("submit_payloads must be a sequence")
+    principals: list[str] = []
+    for index, raw_payload in enumerate(submit_payloads):
+        payload = _required_mapping(raw_payload, f"qualification payload {index}")
+        tasks = payload.get("tasks")
+        if (
+            not isinstance(tasks, list)
+            or len(tasks) != 1
+            or not isinstance(tasks[0], Mapping)
+        ):
+            raise ValueError("qualification payload must contain exactly one task")
+        cluster = _required_mapping(
+            tasks[0].get("new_cluster"), f"qualification cluster {index}"
+        )
+        if cluster.get("data_security_mode") != (
+            GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE
+        ):
+            raise ValueError("qualification cluster must use SINGLE_USER")
+        principals.append(
+            _validated_single_user_name(cluster.get("single_user_name"))
+        )
+    if not principals:
+        raise ValueError("qualification payload closure must be non-empty")
+    if any(principal != principals[0] for principal in principals[1:]):
+        raise ValueError("qualification single_user_name values drift")
+    return principals[0]
+
+
 def _qualification_cluster(
-    *, hardware_id: str, custom_tags: Mapping[str, str]
+    *,
+    hardware_id: str,
+    single_user_name: str,
+    custom_tags: Mapping[str, str],
 ) -> dict[str, Any]:
     """Build a closed single-node cluster without widening V1 serving targets."""
 
+    principal = _validated_single_user_name(single_user_name)
     if hardware_id != GPU_QUALIFICATION_GENERATION_HARDWARE_ID:
         return build_single_node_gpu_cluster(
             DatabricksSingleNodeGPUClusterConfig(
@@ -2119,6 +2532,7 @@ def _qualification_cluster(
                 node_type_id=databricks_node_type_for_hardware_target(hardware_id),
                 spark_version=DEFAULT_DATABRICKS_SPARK_VERSION,
                 data_security_mode=GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE,
+                single_user_name=principal,
                 custom_tags=custom_tags,
             )
         )
@@ -2134,6 +2548,42 @@ def _qualification_cluster(
         "node_type_id": GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE,
         "driver_node_type_id": GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE,
         "data_security_mode": GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE,
+        "single_user_name": principal,
+        "num_workers": 0,
+        "spark_conf": {
+            "spark.master": "local[*]",
+            "spark.databricks.cluster.profile": "singleNode",
+        },
+        "custom_tags": tags,
+        "aws_attributes": {"availability": "ON_DEMAND", "zone_id": "auto"},
+    }
+
+
+def _legacy_uc_broken_qualification_cluster(
+    *, hardware_id: str, custom_tags: Mapping[str, str]
+) -> dict[str, Any]:
+    """Reconstruct only the retained failed launch payloads for reconciliation."""
+
+    if hardware_id != GPU_QUALIFICATION_GENERATION_HARDWARE_ID:
+        return build_single_node_gpu_cluster(
+            DatabricksSingleNodeGPUClusterConfig(
+                purpose=GPU_QUALIFICATION_DATABRICKS_PURPOSE,
+                node_type_id=databricks_node_type_for_hardware_target(hardware_id),
+                spark_version=DEFAULT_DATABRICKS_SPARK_VERSION,
+                data_security_mode="NONE",
+                custom_tags=custom_tags,
+            )
+        )
+    tags = {
+        "ResourceClass": "SingleNode",
+        "purpose": GPU_QUALIFICATION_DATABRICKS_PURPOSE,
+        **dict(custom_tags),
+    }
+    return {
+        "spark_version": DEFAULT_DATABRICKS_SPARK_VERSION,
+        "node_type_id": GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE,
+        "driver_node_type_id": GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE,
+        "data_security_mode": "NONE",
         "num_workers": 0,
         "spark_conf": {
             "spark.master": "local[*]",
@@ -2360,6 +2810,35 @@ def _validated_plan_and_pins(
         expected_campaign_id=campaign_id,
         expected_artifact_pins=pins,
     )
+    return plan, pins
+
+
+def _validated_legacy_uc_failure_plan_and_pins(
+    plan_record: Mapping[str, Any],
+) -> tuple[dict[str, Any], GPUQualificationArtifactPins]:
+    """Validate the one historical plan after campaign genesis has advanced."""
+
+    if not isinstance(plan_record, Mapping):
+        raise TypeError("plan_record must be a mapping")
+    plan = _json_object(plan_record, "legacy plan_record")
+    if (
+        plan.get("record_type") != GPU_QUALIFICATION_PLAN_RECORD_TYPE
+        or plan.get("closed_record_sha256")
+        != GPU_QUALIFICATION_LEGACY_UC_FAILURE_PLAN_SHA256
+    ):
+        raise ValueError("failed-attempt reconciliation requires the exact legacy plan")
+    _require_closed_record_digest(plan, "legacy qualification plan")
+    pins = pins_from_plan_record(plan)
+    if (
+        pins.runner_sha256 != GPU_QUALIFICATION_LEGACY_UC_BROKEN_RUNNER_SHA256
+        or pins.input_bundle_sha256
+        != GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256
+        or pins.patched_vllm_wheel_sha256
+        != GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
+        or pins.runtime_lock_sha256 != VLLM_RUNTIME_LOCK_SHA256
+        or len(_planned_jobs(plan)) != 14
+    ):
+        raise ValueError("legacy qualification plan immutable closure differs")
     return plan, pins
 
 
@@ -3370,6 +3849,8 @@ def _is_durable_cluster_path(path: PurePosixPath) -> bool:
 
 def _cluster_file_path(value: str | Path) -> Path:
     raw = str(value)
+    if raw.startswith("dbfs:/Volumes/"):
+        return Path("/", raw.removeprefix("dbfs:/").lstrip("/"))
     if raw.startswith("dbfs:/"):
         return Path("/dbfs", raw.removeprefix("dbfs:/").lstrip("/"))
     parsed = urlsplit(raw)
@@ -3656,6 +4137,7 @@ __all__ = [
     "GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE",
     "GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES",
     "GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS",
+    "GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_RECORD_TYPE",
     "GPU_QUALIFICATION_LOCAL_WORK_ROOT",
     "GPU_QUALIFICATION_OUTPUT_FILENAME",
     "GPU_QUALIFICATION_SUBMIT_RECEIPT_RECORD_TYPE",
@@ -3667,6 +4149,7 @@ __all__ = [
     "gpu_qualification_reservation_attempt_id",
     "main",
     "pins_from_plan_record",
+    "reconcile_gpu_qualification_failed_attempt_evidence",
     "replay_gpu_qualification_launch_authorization",
     "render_gpu_qualification_submit_payloads",
     "resume_gpu_qualification_job_submissions",

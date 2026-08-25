@@ -196,17 +196,22 @@ divergent branches. Every later phase must extend the immediately prior
 authorized prefix and acquire one atomic whole-wave lease before its first
 submission.
 
-The retained opening is now the exact 138-reservation, zero-receipt,
-138-terminal prefix. It preserves the earlier 124/0/124 history plus all 14
-reservations from the rejected GPU-qualification launch; those attempts are
-closed as `failed` with `legacy_manual` verification and zero actual seconds.
-The rejected plan SHA-256, rejection-evidence file SHA-256, HTTP 400 status,
-18,292-byte observed parameters JSON versus the 10,000-byte server limit, and
-zero observed active runs are all bound in
-`analysis.opening_ledger_provenance`, together with the prior prefix and the
-14/0/14 transition. Because the rejected launch consumed zero actual GPU-hours,
-the opening balance remains 54.994161 GPU-hours and the publication budget
-identity is unchanged.
+The retained opening is now the exact 152-reservation, 14-receipt,
+152-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
+pre-run rejection, and the intermediate 138/0/138 prefix. The rejected plan
+SHA-256, rejection-evidence file SHA-256, HTTP 400 status, 18,292-byte observed
+parameters JSON versus the 10,000-byte server limit, and zero observed active
+runs remain bound in `analysis.opening_ledger_provenance`.
+
+The first live 14-job qualification batch is a second explicit provenance hop.
+All 14 submissions received run identities, but `NONE` data-security mode could
+not resolve the Unity Catalog Volume bootstrap. Seven runs failed and the other
+seven were canceled after those failures. The exact intermediate prefix, batch
+plan SHA-256, direct `runs/get` reconciliation-manifest closure, 14/14/14
+transition, terminal-state counts, and 1.599130277778 actual GPU-hours are bound
+in the campaign record. The reconciled opening balance is therefore 56.593291
+GPU-hours, with zero active reservations and 967.406709 hours remaining under
+the 1,024-hour aggregate cap.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
@@ -295,8 +300,8 @@ every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
 hard cap/headroom admission. The three generation workloads contain 72,871,510
 cache-prefix tokens; at the required 35 effective
 tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
-retained ledger opens the reset with 54.994161 terminal GPU-hours, leaving only
-266.660521 hours inside the protected 900-hour envelope for qualification,
+retained ledger opens the reset with 56.593291 terminal GPU-hours, leaving only
+265.061391 hours inside the protected 900-hour envelope for qualification,
 timed latency, and full-score consumers at that generation threshold.
 
 The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);

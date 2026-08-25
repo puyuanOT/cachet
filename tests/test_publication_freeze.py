@@ -43,6 +43,16 @@ _WORKSPACE_CONFIG = freeze.DatabricksWorkspaceConfig(
     "https://dbc.example",
     "test-token",
 )
+_SINGLE_USER_NAME = "publication@example.com"
+
+
+@pytest.fixture(autouse=True)
+def _stub_exact_workspace_current_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    def require(_config, *, expected_user_name: str):
+        assert expected_user_name == _SINGLE_USER_NAME
+        return {"authenticated": True}
+
+    monkeypatch.setattr(freeze, "require_databricks_current_user_name", require)
 
 
 def _digest(value: str) -> str:
@@ -131,7 +141,7 @@ def _retained_inputs(
     )
 
 
-def test_source_closure_builder_reproduces_retained_canonical_schema(
+def test_source_closure_builder_propagates_the_repaired_bootstrap_pin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -139,7 +149,21 @@ def test_source_closure_builder_reproduces_retained_canonical_schema(
 
     record = freeze.build_publication_source_closure(inputs)
 
-    assert record == _retained_record()
+    expected = _retained_record()
+    bootstrap = next(
+        item
+        for item in expected["files"]
+        if item["role"] == "gpu_qualification_bootstrap"
+    )
+    assert bootstrap["sha256"] == (
+        "acec0bf48ffcd67ee005e2c017b86540e3601ab3d9739f71f243069cae9007db"
+    )
+    bootstrap["byte_count"] = len(
+        freeze.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT.encode("utf-8")
+    )
+    bootstrap["sha256"] = freeze.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
+    expected["closed_record_sha256"] = freeze._closed_record_sha256(expected)
+    assert record == expected
     output = inputs.artifact_output_root / "cachet-source-closure.json"
     freeze.write_publication_source_closure_json(
         record,
@@ -147,7 +171,7 @@ def test_source_closure_builder_reproduces_retained_canonical_schema(
         repository_root=inputs.repository_root,
         artifact_root=inputs.artifact_output_root,
     )
-    assert output.read_bytes() == _RETAINED_SOURCE_CLOSURE.read_bytes()
+    assert output.read_bytes() != _RETAINED_SOURCE_CLOSURE.read_bytes()
     with pytest.raises(FileExistsError):
         freeze.write_publication_source_closure_json(
             record,
@@ -284,7 +308,20 @@ def _preflight_inputs(tmp_path: Path, plan_path: Path) -> freeze.GPUQualificatio
     submit_payloads = tmp_path / "submit-payloads.json"
     submit_payloads.write_bytes(
         freeze._canonical_json_bytes(
-            [{"payload_index": index} for index in range(14)],
+            [
+                {
+                    "payload_index": index,
+                    "tasks": [
+                        {
+                            "new_cluster": {
+                                "data_security_mode": "SINGLE_USER",
+                                "single_user_name": _SINGLE_USER_NAME,
+                            }
+                        }
+                    ],
+                }
+                for index in range(14)
+            ],
             pretty=False,
         )
     )
@@ -652,6 +689,7 @@ def test_preflight_rejects_alternate_consistent_submit_payload_closure_before_re
         }
         payloads = freeze.render_gpu_qualification_submit_payloads(
             plan,
+            single_user_name=_SINGLE_USER_NAME,
             runner_uri=uris["runner_sha256"],
             package_wheel_uri=uris["package_wheel_sha256"],
             patched_vllm_wheel_uri=uris["patched_vllm_wheel_sha256"],
@@ -747,7 +785,10 @@ def test_preflight_and_git_subprocesses_ignore_hostile_ambient_environment(
     assert b"test_preflight_and_git_subprocesses_ignore_hostile" in collected.stdout
     with pytest.raises(RuntimeError, match="exact no-skip publication suite"):
         freeze._require_exact_pytest_completion(
-            b".\n3253 passed, 1 skipped in 1.00s\n"
+            (
+                f".\n{freeze.PUBLICATION_FREEZE_EXPECTED_TEST_COUNT - 1} "
+                "passed, 1 skipped in 1.00s\n"
+            ).encode("utf-8")
         )
 
 
@@ -907,6 +948,7 @@ def test_live_workspace_uses_authenticated_state_and_remote_hashes(
         _WORKSPACE_CONFIG,
         inputs=inputs,
         plan=plan,
+        single_user_name=_SINGLE_USER_NAME,
         require_fresh_workspace=True,
     )
     assert listed_directories == [
@@ -931,6 +973,7 @@ def test_live_workspace_uses_authenticated_state_and_remote_hashes(
             _WORKSPACE_CONFIG,
             inputs=inputs,
             plan=plan,
+            single_user_name=_SINGLE_USER_NAME,
             require_fresh_workspace=True,
         )
 
@@ -984,6 +1027,7 @@ def test_live_workspace_rejects_active_run_and_existing_output_child(
             _WORKSPACE_CONFIG,
             inputs=inputs,
             plan=plan,
+            single_user_name=_SINGLE_USER_NAME,
             require_fresh_workspace=True,
         )
 
@@ -1016,6 +1060,7 @@ def test_live_workspace_rejects_active_run_and_existing_output_child(
             _WORKSPACE_CONFIG,
             inputs=inputs,
             plan=plan,
+            single_user_name=_SINGLE_USER_NAME,
             require_fresh_workspace=True,
         )
 

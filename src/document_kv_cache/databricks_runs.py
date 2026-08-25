@@ -67,6 +67,7 @@ __all__ = [
     "databricks_workspace_config_from_profile",
     "databricks_workspace_config_from_sdk_profile",
     "check_databricks_auth",
+    "require_databricks_current_user_name",
     "bind_databricks_run_idempotency_token",
     "require_databricks_run_idempotency_token",
     "submit_databricks_run",
@@ -1042,6 +1043,57 @@ def check_databricks_auth(
         "http_status": status,
         "workspace_host_sha256": _sha256_hex(config.normalized_host.encode("utf-8")),
         "response_keys": sorted(str(key) for key in response),
+    }
+
+
+def require_databricks_current_user_name(
+    config: DatabricksWorkspaceConfig,
+    *,
+    expected_user_name: str,
+    opener: DatabricksURLOpener | None = None,
+) -> dict[str, Any]:
+    """Authenticate one exact Databricks ``SINGLE_USER`` principal.
+
+    The SCIM ``Me`` response is consumed only inside this package boundary.  The
+    returned attestation binds a digest of the principal so callers do not need
+    to persist or log the workspace identity.
+    """
+
+    if (
+        not isinstance(expected_user_name, str)
+        or not expected_user_name
+        or expected_user_name.strip() != expected_user_name
+    ):
+        raise ValueError("expected_user_name must be a normalized non-empty string")
+    resolved_opener = (
+        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
+    )
+    response, status = _databricks_api_response_json(
+        config,
+        "GET",
+        _DATABRICKS_AUTH_CHECK_ENDPOINT,
+        opener=resolved_opener,
+    )
+    observed_user_name = response.get("userName")
+    if (
+        not isinstance(observed_user_name, str)
+        or not observed_user_name
+        or observed_user_name.strip() != observed_user_name
+    ):
+        raise ValueError("Databricks current-user response lacks a normalized userName")
+    if response.get("active") is not True:
+        raise ValueError("Databricks current-user identity is not explicitly active")
+    if observed_user_name != expected_user_name:
+        raise ValueError(
+            "Databricks current-user identity differs from single_user_name"
+        )
+    return {
+        "record_type": "document_kv.databricks_current_user_binding.v1",
+        "authenticated": True,
+        "endpoint": _DATABRICKS_AUTH_CHECK_ENDPOINT,
+        "http_status": status,
+        "user_name_sha256": _sha256_hex(observed_user_name.encode("utf-8")),
+        "workspace_host_sha256": _sha256_hex(config.normalized_host.encode("utf-8")),
     }
 
 

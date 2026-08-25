@@ -41,6 +41,7 @@ from document_kv_cache.gpu_qualification_databricks import (
     GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT,
     GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
     GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES,
+    _qualification_single_user_name_from_payloads,
     _verify_input_bundle_byte_closure,
     pins_from_plan_record,
     render_gpu_qualification_submit_payloads,
@@ -48,6 +49,7 @@ from document_kv_cache.gpu_qualification_databricks import (
 from document_kv_cache.databricks_runs import (
     DatabricksWorkspaceConfig,
     list_databricks_volume_directory,
+    require_databricks_current_user_name,
 )
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_ID,
@@ -98,7 +100,7 @@ PUBLICATION_FREEZE_MAX_CHECK_RECORD_BYTES: Final = 2 * 1024 * 1024
 PUBLICATION_FREEZE_MAX_COMMAND_OUTPUT_BYTES: Final = 1024 * 1024
 PUBLICATION_FREEZE_COMMAND_TAIL_BYTES: Final = 8 * 1024
 PUBLICATION_FREEZE_COMMAND_TIMEOUT_SECONDS: Final = 30 * 60
-PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 3_254
+PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 3_270
 _DEFAULT_PYTHON_EXECUTABLE: Final = Path(
     "/opt/homebrew/opt/python@3.11/bin/python3.11"
 ).resolve()
@@ -614,6 +616,9 @@ def validate_gpu_qualification_local_preflight_bundle(
         inputs,
         submitted_payload_bytes=submitted_payload_bytes,
     )
+    single_user_name = _qualification_single_user_name_from_payloads(
+        submit_payloads
+    )
     with tempfile.TemporaryDirectory(prefix="cachet-gpuq-live-preflight-") as temp:
         replay_root = Path(temp).resolve() / "preflight"
         _run_gpu_qualification_local_preflight(
@@ -626,6 +631,7 @@ def validate_gpu_qualification_local_preflight_bundle(
         workspace_config,
         inputs=inputs,
         plan=plan,
+        single_user_name=single_user_name,
         require_fresh_workspace=require_fresh_workspace,
     )
     after = _preflight_bundle_file_hashes(evidence_path)
@@ -736,6 +742,7 @@ def _validate_live_workspace_and_remote_artifacts(
     *,
     inputs: GPUQualificationLocalPreflightInputs,
     plan: Mapping[str, Any],
+    single_user_name: str,
     require_fresh_workspace: bool,
 ) -> None:
     from document_kv_cache.databricks_runs import (
@@ -744,6 +751,10 @@ def _validate_live_workspace_and_remote_artifacts(
         stream_databricks_volume_file_sha256,
     )
 
+    require_databricks_current_user_name(
+        config,
+        expected_user_name=single_user_name,
+    )
     active_runs = list_active_databricks_runs(config, max_runs=256)
     if require_fresh_workspace and active_runs:
         raise ValueError("qualification launch requires zero direct active runs")
@@ -1101,8 +1112,10 @@ def _check_canonical_plan(
     runner_uri = _required_string(uris, "runner_sha256")
     package_uri = _required_string(uris, "package_wheel_sha256")
     patched_uri = _required_string(uris, "patched_vllm_wheel_sha256")
+    single_user_name = _qualification_single_user_name_from_payloads(payloads_raw)
     expected = render_gpu_qualification_submit_payloads(
         plan,
+        single_user_name=single_user_name,
         runner_uri=runner_uri,
         package_wheel_uri=package_uri,
         patched_vllm_wheel_uri=patched_uri,

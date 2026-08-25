@@ -20,6 +20,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourLedger,
     DatabricksLedgerPrefix,
     create_databricks_cluster_hour_ledger_json,
+    databricks_cluster_hour_ledger_to_record,
     databricks_ledger_prefix,
     read_databricks_cluster_hour_ledger_json,
     record_databricks_run_terminal_actual_json,
@@ -75,6 +76,7 @@ from document_kv_cache.serving_env import (
 CAMPAIGN_ID = PUBLICATION_CAMPAIGN_ID
 CAMPAIGN_LEDGER_ID = PUBLICATION_CAMPAIGN_LEDGER_ID
 CAMPAIGN_RECORD_SHA256 = PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
+SINGLE_USER_NAME = "publication@example.com"
 _RETAINED_LEDGER_PATH = (
     Path(__file__).parents[1]
     / "databricks-runs"
@@ -285,6 +287,7 @@ def _publication_artifact_uris() -> dict[str, str]:
 def _render(plan: dict[str, Any], uris: dict[str, str]):
     return render_gpu_qualification_submit_payloads(
         plan,
+        single_user_name=SINGLE_USER_NAME,
         runner_uri=uris["runner_sha256"],
         package_wheel_uri=uris["package_wheel_sha256"],
         patched_vllm_wheel_uri=uris["patched_vllm_wheel_sha256"],
@@ -549,6 +552,8 @@ def test_renderer_emits_fourteen_unique_single_task_no_retry_payloads():
         assert len(payload["tasks"]) == 1
         task = payload["tasks"][0]
         assert task["max_retries"] == 0
+        assert task["new_cluster"]["data_security_mode"] == "SINGLE_USER"
+        assert task["new_cluster"]["single_user_name"] == SINGLE_USER_NAME
         assert task["spark_python_task"]["python_file"] == uris["runner_sha256"]
         parameters = task["spark_python_task"]["parameters"]
         assert _option_values(parameters, "--attempt-number") == ["0"]
@@ -592,11 +597,74 @@ def test_renderer_emits_fourteen_unique_single_task_no_retry_payloads():
     ]
 
 
+def test_renderer_repairs_the_legacy_none_shape_for_l4_a10g_and_l40s():
+    plan = _plan()
+    payloads = _render(plan, _artifact_uris())
+    clusters_by_hardware: dict[str, dict[str, Any]] = {}
+    for job, payload in zip(
+        plan["cloud_qualification"]["jobs"], payloads, strict=True
+    ):
+        clusters_by_hardware.setdefault(
+            job["hardware_id"], payload["tasks"][0]["new_cluster"]
+        )
+
+    assert {
+        hardware_id: cluster["node_type_id"]
+        for hardware_id, cluster in clusters_by_hardware.items()
+    } == {
+        "aws-g5-a10g": "g5.8xlarge",
+        "aws-g6-l4": "g6.8xlarge",
+        "aws-g6e-l40s": "g6e.4xlarge",
+    }
+    assert all(
+        cluster["data_security_mode"] == "SINGLE_USER"
+        and cluster["single_user_name"] == SINGLE_USER_NAME
+        for cluster in clusters_by_hardware.values()
+    )
+
+    # This is the exact security fragment that produced the current
+    # "No Unity token" launch failures: NONE and no principal binding.
+    legacy_payloads = json.loads(json.dumps(payloads))
+    for payload in legacy_payloads:
+        cluster = payload["tasks"][0]["new_cluster"]
+        cluster["data_security_mode"] = "NONE"
+        cluster.pop("single_user_name")
+    assert all(
+        payload["tasks"][0]["new_cluster"]["data_security_mode"] == "NONE"
+        and "single_user_name" not in payload["tasks"][0]["new_cluster"]
+        for payload in legacy_payloads
+    )
+    with pytest.raises(ValueError, match="must use SINGLE_USER"):
+        qualification_job._validated_qualification_payloads(plan, legacy_payloads)
+
+
+@pytest.mark.parametrize("case", ("missing", "drift", "none"))
+def test_structural_validator_rejects_missing_or_drifted_principal_and_none_mode(
+    case: str,
+):
+    plan = _plan()
+    payloads = json.loads(json.dumps(_render(plan, _artifact_uris())))
+    cluster = payloads[1]["tasks"][0]["new_cluster"]
+    if case == "missing":
+        cluster.pop("single_user_name")
+        error = "single_user_name"
+    elif case == "drift":
+        cluster["single_user_name"] = "other@example.com"
+        error = "values drift"
+    else:
+        cluster["data_security_mode"] = "NONE"
+        cluster.pop("single_user_name")
+        error = "must use SINGLE_USER"
+    with pytest.raises(ValueError, match=error):
+        qualification_job._validated_qualification_payloads(plan, payloads)
+
+
 def test_current_plan_production_parameters_stay_below_databricks_safety_cap():
     plan = _plan()
     uris = _publication_artifact_uris()
     payloads = render_gpu_qualification_submit_payloads(
         plan,
+        single_user_name=SINGLE_USER_NAME,
         runner_uri=uris["runner_sha256"],
         package_wheel_uri=uris["package_wheel_sha256"],
         patched_vllm_wheel_uri=uris["patched_vllm_wheel_sha256"],
@@ -627,6 +695,7 @@ def test_parameters_cap_counts_unicode_as_databricks_json_escapes():
     with pytest.raises(ValueError, match="9500-byte safety cap"):
         render_gpu_qualification_submit_payloads(
             plan,
+            single_user_name=SINGLE_USER_NAME,
             runner_uri=uris["runner_sha256"],
             package_wheel_uri=uris["package_wheel_sha256"],
             patched_vllm_wheel_uri=uris["patched_vllm_wheel_sha256"],
@@ -845,9 +914,9 @@ def test_submitter_receipt_binds_the_exact_fourteen_reserved_payloads(
         *(f"{job['job_id']}.json" for job in plan["cloud_qualification"]["jobs"]),
     }
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(ledger.reservations) == 152
-    assert len(ledger.submission_receipts) == 14
-    assert len(ledger.terminal_actuals) == 138
+    assert len(ledger.reservations) == 166
+    assert len(ledger.submission_receipts) == 28
+    assert len(ledger.terminal_actuals) == 152
     assert all(
         receipt["authorization_scope"]
         == "submission_identity_only_requires_direct_terminal_collection"
@@ -1029,7 +1098,7 @@ def test_submitter_rejects_invalid_local_preflight_without_ledger_or_post_side_e
         )
 
     assert ledger_path.read_bytes() == ledger_before
-    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 138
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 152
     assert opener.requests == []
     assert not receipt_root.exists()
 
@@ -1149,7 +1218,7 @@ def test_submitter_preexisting_phase_lease_leaves_zero_reservations_and_posts(
         )
     assert opener.requests == []
     assert (
-        len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 138
+        len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 152
     )
 
 
@@ -1186,8 +1255,8 @@ def test_resume_recovers_post_reservation_pre_marker_controller_crash(
             opener=lambda *_args, **_kwargs: pytest.fail("crash occurs before POST"),
         )
     crashed = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(crashed.reservations) == 152
-    assert len(crashed.submission_receipts) == 0
+    assert len(crashed.reservations) == 166
+    assert len(crashed.submission_receipts) == 14
     assert {item.name for item in receipt_root.iterdir()} == {"phase-lease.json"}
 
     monkeypatch.setattr(
@@ -1206,7 +1275,7 @@ def test_resume_recovers_post_reservation_pre_marker_controller_crash(
     assert (receipt_root / "batch-reserved.json").is_file()
     assert (
         len(read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts)
-        == 14
+        == 28
     )
 
 
@@ -1284,7 +1353,7 @@ def test_resumer_rejects_invalid_local_preflight_without_reservation_or_post_sid
         )
 
     assert ledger_path.read_bytes() == ledger_before_resume
-    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 152
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 166
     assert opener.requests == []
     assert {path.name for path in receipt_root.iterdir()} == {"phase-lease.json"}
 
@@ -1612,6 +1681,127 @@ def test_collected_identity_closure_rejects_reused_cluster_or_task_run_id():
         )
 
 
+def test_retained_uc_failure_evidence_refuses_false_zero_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root = (
+        Path(__file__).parents[1]
+        / "databricks-runs/vllm-0271-publication-prep/"
+        "gpu-qualification-plan-sha256-"
+        "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
+    ).resolve()
+    plan = json.loads((root / "gpu-qualification-plan.json").read_text())
+    payloads = json.loads((root / "submit-payloads.json").read_text())
+    contracts = qualification_job._validated_qualification_payloads(
+        plan,
+        payloads,
+        require_legacy_uc_broken_security_shape=True,
+    )
+    binding = qualification_job._non_authorizing_local_preflight_binding(
+        root / "local-preflight-valid/local-preflight-evidence.json",
+        plan=plan,
+    )
+    batch_authorization, marker = qualification_job._replay_qualification_batch_marker(
+        plan=plan,
+        contracts=contracts,
+        ledger_path=_RETAINED_LEDGER_PATH,
+        submit_receipt_root=root / "submit-receipts",
+        local_preflight_binding=binding,
+    )
+    ledger_path = tmp_path.resolve() / "cluster-hours.json"
+    shutil.copyfile(_RETAINED_LEDGER_PATH, ledger_path)
+    before = ledger_path.read_bytes()
+    monkeypatch.setattr(
+        qualification_job,
+        "databricks_ledger_path_sha256",
+        lambda _path: plan["campaign_ledger_path_sha256"],
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "_replay_qualification_batch_marker",
+        lambda **_kwargs: (batch_authorization, marker),
+    )
+    terminal_prefix = qualification_job._require_qualification_phase_ledger_closure(
+        read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH),
+        batch_authorization=batch_authorization,
+        contracts=contracts,
+    )
+    assert terminal_prefix.to_record() == {
+        "cap_cluster_hours": 1024.0,
+        "ledger_id": "representative-canary-823bd9d82a5c1730",
+        "prefix_sha256": (
+            "4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"
+        ),
+        "reservation_count": 152,
+        "submission_receipt_count": 14,
+        "terminal_actual_count": 152,
+    }
+
+    reviewed_manifest_sha256 = (
+        qualification_job.GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256",
+        "0" * 64,
+    )
+    with pytest.raises(ValueError, match="manifest is not reviewed"):
+        qualification_job.reconcile_gpu_qualification_failed_attempt_evidence(
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=root / "submit-receipts",
+            local_preflight_evidence_path=(
+                root / "local-preflight-valid/local-preflight-evidence.json"
+            ),
+            runs_get_evidence_root=root / "failed-attempt-uc-volume-access",
+        )
+    monkeypatch.setattr(
+        qualification_job,
+        "GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256",
+        reviewed_manifest_sha256,
+    )
+    assert ledger_path.read_bytes() == before
+
+    with pytest.raises(ValueError, match="nonzero task intervals"):
+        qualification_job.reconcile_gpu_qualification_failed_attempt_evidence(
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=root / "submit-receipts",
+            local_preflight_evidence_path=(
+                root / "local-preflight-valid/local-preflight-evidence.json"
+            ),
+            runs_get_evidence_root=root / "failed-attempt-uc-volume-access",
+            require_zero_actual=True,
+        )
+
+    assert ledger_path.read_bytes() == before
+
+    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
+    pre_terminal = replace(retained, terminal_actuals=retained.terminal_actuals[:138])
+    ledger_path.write_text(
+        json.dumps(
+            databricks_cluster_hour_ledger_to_record(pre_terminal),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reconciled = qualification_job.reconcile_gpu_qualification_failed_attempt_evidence(
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=root / "submit-receipts",
+        local_preflight_evidence_path=(
+            root / "local-preflight-valid/local-preflight-evidence.json"
+        ),
+        runs_get_evidence_root=root / "failed-attempt-uc-volume-access",
+    )
+    assert databricks_ledger_prefix(reconciled) == terminal_prefix
+
 def test_launch_capability_cannot_be_constructed_by_record_only_callers():
     selection = GPUQualificationSelection(
         attention_backend="TRITON_ATTN",
@@ -1827,7 +2017,7 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
     assert evidence_path.is_file()
     assert len(list(terminal_root.glob("*.json"))) == 14
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(ledger.terminal_actuals) == 152
+    assert len(ledger.terminal_actuals) == 166
     assert ledger.active_reserved_cluster_hours == 0.0
     qualification_attempt_ids = {
         contract["reservation_attempt_id"]
@@ -1917,7 +2107,7 @@ def test_collector_reconciles_a_never_started_failure_before_rejecting_campaign(
         )
 
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(ledger.terminal_actuals) == 139
+    assert len(ledger.terminal_actuals) == 153
     failed_actual = next(
         item
         for item in ledger.terminal_actuals
@@ -1956,7 +2146,7 @@ def test_bootstrap_writer_publishes_exact_content_addressed_stdlib_script(
     destination = tmp_path / "gpu-qualification-bootstrap.py"
 
     assert GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256 == (
-        "acec0bf48ffcd67ee005e2c017b86540e3601ab3d9739f71f243069cae9007db"
+        "f5ee833621428d630df1a59952a485d4ac55cabf987186d98a40274a2cf8a958"
     )
     assert _pins().runner_sha256 == GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
     observed = write_gpu_qualification_bootstrap_runner(destination)
@@ -1974,6 +2164,50 @@ def test_bootstrap_writer_publishes_exact_content_addressed_stdlib_script(
     assert "transformers" not in GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT.lower()
     with pytest.raises(FileExistsError):
         write_gpu_qualification_bootstrap_runner(destination)
+
+
+def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount():
+    namespace: dict[str, Any] = {"__name__": "gpuq_bootstrap_test"}
+    exec(GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT, namespace)
+
+    assert namespace["_cluster_path"](
+        "dbfs:/Volumes/catalog/schema/volume/package.whl"
+    ) == "/Volumes/catalog/schema/volume/package.whl"
+    assert namespace["_cluster_path"]("dbfs:/legacy/package.whl") == (
+        "/dbfs/legacy/package.whl"
+    )
+    assert qualification_job._cluster_file_path(
+        "dbfs:/Volumes/catalog/schema/volume/result.json"
+    ) == Path("/Volumes/catalog/schema/volume/result.json")
+    assert qualification_job._cluster_file_path("dbfs:/legacy/result.json") == Path(
+        "/dbfs/legacy/result.json"
+    )
+
+
+def test_uc_volume_artifact_and_output_resolvers_preserve_uri_and_mount_identity():
+    plan = _plan()
+    job = plan["cloud_qualification"]["jobs"][0]
+    root = "dbfs:/Volumes/catalog/schema/volume/results"
+    output = (
+        f"{root}/{plan['closed_record_sha256']}/{job['job_id']}/"
+        "gpu-job-result.json"
+    )
+
+    assert qualification_job._validated_cluster_artifact_uri(
+        "dbfs:/Volumes/catalog/schema/volume/package.whl", "package"
+    ) == "dbfs:/Volumes/catalog/schema/volume/package.whl"
+    assert qualification_job._validated_result_output_json(
+        output,
+        plan_digest=plan["closed_record_sha256"],
+        job_id=job["job_id"],
+    ) == output
+    assert qualification_job._cluster_file_path(output).parts[:5] == (
+        "/",
+        "Volumes",
+        "catalog",
+        "schema",
+        "volume",
+    )
 
 
 def test_work_dir_rejects_durable_dbfs_and_file_uris():
@@ -2020,6 +2254,7 @@ def test_renderer_rejects_node_local_artifact_and_output_paths(tmp_path: Path):
     with pytest.raises(ValueError, match="DBFS or a UC Volume"):
         render_gpu_qualification_submit_payloads(
             _plan(),
+            single_user_name=SINGLE_USER_NAME,
             runner_uri=_artifact_uris()["runner_sha256"],
             package_wheel_uri=_artifact_uris()["package_wheel_sha256"],
             patched_vllm_wheel_uri=_artifact_uris()["patched_vllm_wheel_sha256"],

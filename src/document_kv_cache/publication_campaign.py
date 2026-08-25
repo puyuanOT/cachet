@@ -27,7 +27,7 @@ PUBLICATION_CAMPAIGN_RECORD_TYPE = "cachet.vllm_0271_publication_campaign.v1"
 PUBLICATION_CAMPAIGN_SCHEMA_VERSION = 1
 PUBLICATION_CAMPAIGN_ID = "vllm-0271-publication-v1"
 PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256 = (
-    "5e295c95b8a7a9a0e86193a760d2923ef0828bf2dfcbffd10cfa39da42427660"
+    "d1cd32a25f5c4129f43576827da7ed519aca5b724225a2f859b8ae07a643ecc9"
 )
 PUBLICATION_CAMPAIGN_ENGINE_VERSION = "0.27.1"
 PUBLICATION_CAMPAIGN_METHODS = ("baseline_prefill", "vanilla_prefill")
@@ -172,7 +172,7 @@ PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_UPPER_BOUND_GPU_HOURS = sum(
     timeout_hours * job_count
     for timeout_hours, job_count in PUBLICATION_CAMPAIGN_LATENCY_TIMEOUT_JOB_COUNTS
 )
-PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 54.994161111111126
+PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS = 56.5932913888889
 PUBLICATION_CAMPAIGN_LEDGER_ID = "representative-canary-823bd9d82a5c1730"
 PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256 = (
     "fd00fcc39375aa8c96dabba9e3e4c576ae2674dd911324622ef99293b9cfe865"
@@ -189,7 +189,7 @@ PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX = (
         ),
     )
 )
-PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
+PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
     cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     reservation_count=138,
@@ -197,6 +197,16 @@ PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
     terminal_actual_count=138,
     prefix_sha256=(
         "a12b5e754da84e4c7b3e0f273c14d2b79ce9cb1483b02dcc77ca522185e89dea"
+    ),
+)
+PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX = DatabricksLedgerPrefix(
+    ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+    cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+    reservation_count=152,
+    submission_receipt_count=14,
+    terminal_actual_count=152,
+    prefix_sha256=(
+        "4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"
     ),
 )
 PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE = (
@@ -570,6 +580,35 @@ def publication_campaign_plan_to_record(
                     "terminal_actual_count_delta": 14,
                     "terminal_state": "failed",
                     "verification_source": "legacy_manual",
+                },
+                "prefix_before_failed_live_gpu_qualification": (
+                    PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX.to_record()
+                ),
+                "failed_live_gpu_qualification": {
+                    "actual_gpu_hours": 1.5991302777777774,
+                    "data_security_mode": "NONE",
+                    "failed_before_run_creation": False,
+                    "failure_class": "unity_catalog_volume_access",
+                    "failure_reason": (
+                        "qualification payload used NONE access mode and could not "
+                        "resolve Unity Catalog Volume bootstrap; remaining pending "
+                        "jobs canceled after first failures"
+                    ),
+                    "plan_sha256": (
+                        "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
+                    ),
+                    "reconciliation_manifest_closed_record_sha256": (
+                        "644048afcd8f478aa6ba2776be97f4e6fce4396ddf853001c3d200cfbbd259eb"
+                    ),
+                    "reservation_count_delta": 14,
+                    "run_creation_count": 14,
+                    "submission_receipt_count_delta": 14,
+                    "terminal_actual_count_delta": 14,
+                    "terminal_result_state_counts": {
+                        "CANCELED": 7,
+                        "FAILED": 7,
+                    },
+                    "verification_source": "direct_runs_get",
                 },
                 "retained_opening_prefix": (
                     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
@@ -1228,6 +1267,7 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_NON_GENERATION_GPU_HOURS_AVAILABLE_AT_GATE",
     "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS",
     "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX",
+    "PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX",
     "PUBLICATION_CAMPAIGN_RECORD_TYPE",
     "PUBLICATION_CAMPAIGN_REPEATS_PER_EXAMPLE",

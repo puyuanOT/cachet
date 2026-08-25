@@ -1226,8 +1226,8 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "phases use hard cap/headroom admission"
     ) in compact_ledger_doc
     assert (
-        "retained opening is now the exact 138-reservation, zero-receipt, "
-        "138-terminal prefix"
+        "retained opening is now the exact 152-reservation, 14-receipt, "
+        "152-terminal prefix"
     ) in compact_ledger_doc
     assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
     assert "analysis.opening_ledger_provenance" in compact_ledger_doc
@@ -1237,8 +1237,10 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     ) in compact_ledger_doc
     assert "zero observed active runs" in compact_ledger_doc
     assert (
-        "rejected launch consumed zero actual GPU-hours, the opening balance "
-        "remains 54.994161 GPU-hours"
+        "Seven runs failed and the other seven were canceled after those failures"
+    ) in compact_ledger_doc
+    assert (
+        "reconciled opening balance is therefore 56.593291 GPU-hours"
     ) in compact_ledger_doc
 
     subindex_expectations = {

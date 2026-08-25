@@ -21,6 +21,7 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_REJECTED_QUALIFICATION_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
     PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS,
@@ -58,9 +59,9 @@ def test_publication_campaign_is_the_frozen_115_job_design():
     assert record["campaign_ledger_id"] == CAMPAIGN_LEDGER_ID
     assert record["campaign_ledger_path_sha256"] == CAMPAIGN_LEDGER_PATH_SHA256
     assert record["campaign_ledger_prefix"] == CAMPAIGN_LEDGER_PREFIX.to_record()
-    assert record["campaign_ledger_prefix"]["reservation_count"] == 138
-    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 0
-    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 138
+    assert record["campaign_ledger_prefix"]["reservation_count"] == 152
+    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 14
+    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 152
     assert record["closed_record_sha256"] == PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
     assert record["campaign_opening_terminal_gpu_hours"] == (
         PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -166,7 +167,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE
             ),
             "non_generation_gpu_hours_available_after_opening_balance_and_headroom": (
-                pytest.approx(266.6605214285713)
+                pytest.approx(265.06139115079354)
             ),
             "scope": [
                 "latency_q8_handoffs",
@@ -212,7 +213,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             },
                 "launch_policy": "terminal_actual_and_hard_headroom_gated",
         },
-        "opening_terminal_gpu_hours": pytest.approx(54.994161111111126),
+        "opening_terminal_gpu_hours": pytest.approx(56.5932913888889),
         "total_latency_jobs": 115,
         "unreserved_headroom_hours": 124.0,
     }
@@ -274,6 +275,32 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "terminal_actual_count_delta": 14,
             "terminal_state": "failed",
             "verification_source": "legacy_manual",
+        },
+        "prefix_before_failed_live_gpu_qualification": (
+            PUBLICATION_CAMPAIGN_PRE_FAILED_QUALIFICATION_LEDGER_PREFIX.to_record()
+        ),
+        "failed_live_gpu_qualification": {
+            "actual_gpu_hours": 1.5991302777777774,
+            "data_security_mode": "NONE",
+            "failed_before_run_creation": False,
+            "failure_class": "unity_catalog_volume_access",
+            "failure_reason": (
+                "qualification payload used NONE access mode and could not resolve "
+                "Unity Catalog Volume bootstrap; remaining pending jobs canceled "
+                "after first failures"
+            ),
+            "plan_sha256": (
+                "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
+            ),
+            "reconciliation_manifest_closed_record_sha256": (
+                "644048afcd8f478aa6ba2776be97f4e6fce4396ddf853001c3d200cfbbd259eb"
+            ),
+            "reservation_count_delta": 14,
+            "run_creation_count": 14,
+            "submission_receipt_count_delta": 14,
+            "terminal_actual_count_delta": 14,
+            "terminal_result_state_counts": {"CANCELED": 7, "FAILED": 7},
+            "verification_source": "direct_runs_get",
         },
         "retained_opening_prefix": CAMPAIGN_LEDGER_PREFIX.to_record(),
     }

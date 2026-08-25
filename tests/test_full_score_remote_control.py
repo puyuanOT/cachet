@@ -520,7 +520,7 @@ def test_remote_request_and_cpu_payload_are_closed_and_c5d_only():
     assert payload["tasks"][0]["new_cluster"]["num_workers"] == 0
     assert (
         payload["tasks"][0]["new_cluster"]["custom_tags"]["campaign_closure"]
-        == "5e295c95b8a7a9a0e86193a760d2923ef0828bf2dfcbffd10cfa39da42427660"
+        == remote.PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
     )
     assert payload["tasks"][0]["max_retries"] == 0
     assert payload["tasks"][0]["timeout_seconds"] == 7200

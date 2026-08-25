@@ -49,6 +49,7 @@ from document_kv_cache.databricks_runs import (
     plan_databricks_stage_and_submit,
     put_databricks_dbfs_file,
     read_databricks_run_submit_payload,
+    require_databricks_current_user_name,
     recover_pre_reserved_databricks_run,
     reserve_and_submit_databricks_run,
     reserve_and_submit_databricks_run_json,
@@ -487,6 +488,89 @@ def test_check_databricks_auth_calls_identity_endpoint_without_user_pii():
     assert "person@example.com" not in serialized
     assert "Person Example" not in serialized
     assert "secret-token" not in serialized
+
+
+def test_current_user_binding_requires_exact_active_single_user_without_pii():
+    opener = _FakeOpener(
+        {
+            "active": True,
+            "id": "123",
+            "userName": "person@example.com",
+        }
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+
+    record = require_databricks_current_user_name(
+        config,
+        expected_user_name="person@example.com",
+        opener=opener,
+    )
+
+    assert record == {
+        "record_type": "document_kv.databricks_current_user_binding.v1",
+        "authenticated": True,
+        "endpoint": "/api/2.0/preview/scim/v2/Me",
+        "http_status": 200,
+        "user_name_sha256": hashlib.sha256(b"person@example.com").hexdigest(),
+        "workspace_host_sha256": hashlib.sha256(b"https://dbc.example").hexdigest(),
+    }
+    serialized = json.dumps(record, sort_keys=True)
+    assert "person@example.com" not in serialized
+    assert "secret-token" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_user_name", "error"),
+    [
+        ({"active": True}, "person@example.com", "lacks a normalized userName"),
+        (
+            {"active": False, "userName": "person@example.com"},
+            "person@example.com",
+            "not explicitly active",
+        ),
+        (
+            {"userName": "person@example.com"},
+            "person@example.com",
+            "not explicitly active",
+        ),
+        (
+            {"active": None, "userName": "person@example.com"},
+            "person@example.com",
+            "not explicitly active",
+        ),
+        (
+            {"active": 0, "userName": "person@example.com"},
+            "person@example.com",
+            "not explicitly active",
+        ),
+        (
+            {"active": 1, "userName": "person@example.com"},
+            "person@example.com",
+            "not explicitly active",
+        ),
+        (
+            {"active": "true", "userName": "person@example.com"},
+            "person@example.com",
+            "not explicitly active",
+        ),
+        (
+            {"active": True, "userName": "other@example.com"},
+            "person@example.com",
+            "differs from single_user_name",
+        ),
+    ],
+)
+def test_current_user_binding_rejects_missing_inactive_or_drifted_identity(
+    response,
+    expected_user_name,
+    error,
+):
+    with pytest.raises(ValueError, match=error):
+        require_databricks_current_user_name(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            expected_user_name=expected_user_name,
+            opener=_FakeOpener(response),
+        )
 
 
 def test_submit_databricks_run_posts_payload_with_bearer_token():
