@@ -352,6 +352,119 @@ GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_ERROR_SHA256_BY_JOB: Final = (
         "fc37553551e0850b595d3a6be360fe41efdb58fb04252ca2f60f7a1b58567ca8",
     ),
 )
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256: Final = "c0bede45ea211798c9a5eb31010a91074ded70e370f8ea4fcbeb59b3b9f95598"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_RUNNER_SHA256: Final = "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_SHA256: Final = "6c4cca0ec4fbcf4ccb434573f965eeb8022909ce5bdd6afdf31d61085807fa9b"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_FILE_SHA256: Final = "53fd4b076a642101790d21ebbc03b1eb7e609428c2ccd7eafb8cbad5a9a3a112"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_SHA256: Final = "bb6636f3b9bdf5afae0b7d1beb97f5f3192017ba5b04abb651f2a389889aa57f"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_FILE_COUNT: Final = 29
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_TOTAL_BYTES: Final = 1_828_218
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_TERMINAL_PREFIX_SHA256: Final = "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON: Final = (
+    "all fourteen hash-locked qualification runtimes installed and verified; "
+    "the two packed-page-roundtrip workers returned measurements before "
+    "post-success runtime observation rejected the virtualenv-created "
+    "runtime/bin/python symlink, while the other twelve sentinel-worker "
+    "subprocesses exited nonzero and the reviewed launcher did not surface their "
+    "captured child stdout/stderr, so their underlying worker causes remain unknown"
+)
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS: Final = (
+    "aws-g5-a10g-packed-page-roundtrip",
+    "aws-g6-l4-packed-page-roundtrip",
+)
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_OBSERVER_ERROR_SHA256: Final = "3662915979987aef1fe4bcf9e0e62f06c67992ee73da679e44f6b6a261e634f5"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_WORKER_ERROR_SHA256: Final = "3f1ddd73298cd46347cf57b84d6cf22f7d6e98802b50ded9457d7a999563786b"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PIP_CHECK_LOG_MARKER: Final = "No broken requirements found."
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_VIRTUALENV_LOG_PREFIX: Final = "created virtual environment CPython3.11.11.final.0-64-x86_64 in "
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ENSUREPIP_LOG_ARGV: Final = "'-m', 'ensurepip', '--upgrade', '--default-pip'"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_MODULE_MARKER: Final = "document_kv_cache._gpu_qualification_sentinel_worker"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_TRACE_MARKER: Final = "_observe_gpu_runtime"
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_TRACE_MARKERS: Final = (
+    "runtime = _observe_gpu_runtime(local_work_dir)",
+    "if not runtime_python.is_file() or runtime_python.is_symlink():",
+)
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_TRACE_MARKERS: Final = (
+    "measurements = sentinel_runner(",
+    "_make_site_packages_read_only(runtime_python)",
+    "completed = subprocess.run(",
+    "capture_output=True",
+    "check=True",
+    "subprocess.py:571",
+)
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB: Final = (
+    (
+        "aws-g5-a10g-16k-c4-capacity",
+        "3a4094c819734ed0dddfe7b32bd9602b801ec6e95127a9e9bac82d6947032892",
+    ),
+    (
+        "aws-g5-a10g-auto-backend-diagnostic",
+        "7a67afd26245bb8ceed7e518a72c6f4a8432bd5ac27dd2e9467a7f325db33609",
+    ),
+    (
+        "aws-g5-a10g-forced-triton-runtime-handoff",
+        "b2292081d99661861af1eade188b179e2a2e459764845f9a8227df6aea559708",
+    ),
+    (
+        "aws-g5-a10g-matched-token-logit",
+        "e6655eafb38fd5ffc514848b5d0b58a0f596c6ae774b24bd701c7ebd30e4a542",
+    ),
+    (
+        "aws-g5-a10g-packed-page-roundtrip",
+        "4f57e38b2c170b37907bcacc1d64d18af14751a05a11fe7a8ca5ca83dab84a4d",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-70",
+        "42d5c7f85201050c07e1ef702151b1016eccf91b6e9b00fab4c992dcd83d9e57",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-75",
+        "178e7fc6e44a38819f4bdb12a74019e66826244f933e1bf5261774ef6484d8ce",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-80",
+        "023f005c378816eba82665743ea578810c81e654f68c098eabb4c3e8a9dd1d56",
+    ),
+    (
+        "aws-g6-l4-auto-backend-diagnostic",
+        "54715e131389ec2a14aca8489ef578d1126d629ed2dd275e0b6d320c7aed2086",
+    ),
+    (
+        "aws-g6-l4-forced-triton-runtime-handoff",
+        "5ee2a73a8860e1ad1ce72a3b8dce8c6e00271a6db1aae7f485cbdf955d339be8",
+    ),
+    (
+        "aws-g6-l4-generation-throughput",
+        "16428f8492bfef5cdf5e75cb5cd97c530915815394d678a0c25ad9eee167b583",
+    ),
+    (
+        "aws-g6-l4-matched-token-logit",
+        "a0df4005431bb97344c6a6affcd237a6e0d4683a1754d4cec5b7bb6e48895b86",
+    ),
+    (
+        "aws-g6-l4-packed-page-roundtrip",
+        "6c2a32edd3da00f486c8256abe68b09b66f9d759cc0c42c21d33ead2d780c1d7",
+    ),
+    (
+        "aws-g6e-l40s-generation-throughput",
+        "be19d2e9041301609073014961eb3eb7cf162168384f5d72345a4a3787e1dd75",
+    ),
+)
+GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB: Final = (
+    ("aws-g5-a10g-16k-c4-capacity", 1_186),
+    ("aws-g5-a10g-auto-backend-diagnostic", 1_234),
+    ("aws-g5-a10g-forced-triton-runtime-handoff", 1_270),
+    ("aws-g5-a10g-matched-token-logit", 1_210),
+    ("aws-g5-a10g-packed-page-roundtrip", 244),
+    ("aws-g6-l4-32k-c4-gmu-70", 1_162),
+    ("aws-g6-l4-32k-c4-gmu-75", 1_162),
+    ("aws-g6-l4-32k-c4-gmu-80", 1_162),
+    ("aws-g6-l4-auto-backend-diagnostic", 1_222),
+    ("aws-g6-l4-forced-triton-runtime-handoff", 1_258),
+    ("aws-g6-l4-generation-throughput", 1_210),
+    ("aws-g6-l4-matched-token-logit", 1_198),
+    ("aws-g6-l4-packed-page-roundtrip", 242),
+    ("aws-g6e-l40s-generation-throughput", 1_228),
+)
 _RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR: Final = (
     "CalledProcessError: Command '['{runtime_python}', '-m', 'pip', 'install', "
     "'--extra-index-url', 'https://download.pytorch.org/whl/cu129', "
@@ -367,6 +480,19 @@ _RUNTIME_LOCK_INDEX_FAILURE_LOCK_PATH_RE: Final = re.compile(
 )
 _SITE_PACKAGES_PATH_FAILURE_NORMALIZED_ERROR: Final = (
     "RuntimeError: invalid isolated site-packages path: {invalid_site_packages}"
+)
+_RUNTIME_OBSERVATION_FAILURE_NORMALIZED_ERROR: Final = (
+    "RuntimeError: sentinel did not materialize the required isolated runtime "
+    "Python at {work_root}/runtime/bin/python"
+)
+_WORKER_SUBPROCESS_FAILURE_NORMALIZED_ERROR: Final = (
+    "CalledProcessError: Command '['{work_root}/runtime/bin/python', '-m', "
+    "'document_kv_cache._gpu_qualification_sentinel_worker', '--plan-json', "
+    "'{work_root}/worker/plan.json', '--job-json', "
+    "'{work_root}/worker/planned-job.json', '--input-bundle', "
+    "'{work_root}/artifact-snapshot/input_bundle_sha256', '--work-dir', "
+    "'{work_root}/worker/runtime-work', '--output-json', "
+    "'{work_root}/worker/measurements.json']' returned non-zero exit status 1."
 )
 GPU_QUALIFICATION_ARTIFACT_KEYS: Final = (
     "cachet_source_tree_sha256",
@@ -1997,6 +2123,28 @@ def _validated_reviewed_error_sha256_by_job(
     return {job_id: observed[job_id] for job_id in planned_job_ids}
 
 
+def _validated_reviewed_error_utf8_bytes_by_job(
+    expected_error_utf8_bytes_by_job: Mapping[str, int],
+    *,
+    contracts: Sequence[Mapping[str, Any]],
+) -> dict[str, int]:
+    if not isinstance(expected_error_utf8_bytes_by_job, Mapping):
+        raise TypeError("expected_error_utf8_bytes_by_job must be a mapping")
+    observed: dict[str, int] = {}
+    for raw_job_id, raw_byte_count in expected_error_utf8_bytes_by_job.items():
+        job_id = _safe_id(raw_job_id, "expected_error_utf8_bytes_by_job job ID")
+        observed[job_id] = _positive_int(
+            raw_byte_count,
+            f"expected_error_utf8_bytes_by_job[{job_id!r}]",
+        )
+    planned_job_ids = tuple(str(contract["job_id"]) for contract in contracts)
+    if len(observed) != len(planned_job_ids) or set(observed) != set(planned_job_ids):
+        raise ValueError(
+            "expected_error_utf8_bytes_by_job must cover the exact planned job IDs"
+        )
+    return {job_id: observed[job_id] for job_id in planned_job_ids}
+
+
 def _normalize_runtime_lock_index_failure_error(
     error: str,
     *,
@@ -2191,6 +2339,251 @@ def _validated_site_packages_path_failure_error(
     return error
 
 
+def _normalize_runtime_observation_and_worker_subprocess_failure_error(
+    error: str,
+    *,
+    plan_sha256: str,
+    job_id: str,
+) -> str:
+    reviewed_error = _non_empty_string(
+        error,
+        "runtime observation and worker subprocess failure error",
+    )
+    reviewed_plan_sha256 = _required_sha256(plan_sha256, "plan_sha256")
+    if (
+        reviewed_plan_sha256
+        != GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
+    ):
+        raise ValueError(
+            "runtime observation and worker subprocess failure plan is not reviewed"
+        )
+    reviewed_job_id = _safe_id(job_id, "job_id")
+    reviewed_job_ids = {
+        pinned_job_id
+        for pinned_job_id, _ in (
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
+        )
+    }
+    if reviewed_job_id not in reviewed_job_ids:
+        raise ValueError(
+            "runtime observation and worker subprocess failure job is not reviewed"
+        )
+    work_root = (
+        f"{GPU_QUALIFICATION_LOCAL_WORK_ROOT}/{reviewed_plan_sha256}/{reviewed_job_id}"
+    )
+    observer_failure = reviewed_job_id in (
+        GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS
+    )
+    expected_work_root_count = 1 if observer_failure else 6
+    if reviewed_error.count(work_root) != expected_work_root_count:
+        raise ValueError(
+            "runtime observation and worker subprocess failure error must contain "
+            "the exact planned work root the reviewed number of times"
+        )
+    normalized = reviewed_error.replace(work_root, "{work_root}")
+    expected_normalized = (
+        _RUNTIME_OBSERVATION_FAILURE_NORMALIZED_ERROR
+        if observer_failure
+        else _WORKER_SUBPROCESS_FAILURE_NORMALIZED_ERROR
+    )
+    if normalized != expected_normalized:
+        raise ValueError(
+            "runtime observation and worker subprocess failure error grammar differs"
+        )
+    expected_normalized_sha256 = (
+        GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_OBSERVER_ERROR_SHA256
+        if observer_failure
+        else GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_WORKER_ERROR_SHA256
+    )
+    if sha256(normalized.encode("utf-8")).hexdigest() != expected_normalized_sha256:
+        raise RuntimeError(
+            "runtime observation and worker subprocess normalized error source pin drift"
+        )
+    return normalized
+
+
+def _validated_runtime_observation_and_worker_subprocess_failure_error(
+    run_output: Mapping[str, Any],
+    *,
+    run: Mapping[str, Any],
+    plan_sha256: str,
+    job_id: str,
+    expected_error_sha256: str,
+    expected_error_utf8_bytes: int,
+) -> str:
+    _validate_failed_run_output_schema(run_output)
+    if set(run_output) != _FAILED_RUN_OUTPUT_LOGGED_KEYS:
+        raise ValueError(
+            "runtime observation and worker subprocess failure requires the exact "
+            "logged output schema"
+        )
+    reviewed_job_id = _safe_id(job_id, "job_id")
+    error = _non_empty_string(
+        run_output.get("error"),
+        "runtime observation and worker subprocess failure error",
+    )
+    try:
+        encoded_error = error.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            "runtime observation and worker subprocess failure error must be valid UTF-8"
+        ) from exc
+    reviewed_error_sha256 = _required_sha256(
+        expected_error_sha256,
+        "expected_error_sha256",
+    )
+    reviewed_error_utf8_bytes = _positive_int(
+        expected_error_utf8_bytes,
+        "expected_error_utf8_bytes",
+    )
+    if sha256(encoded_error).hexdigest() != reviewed_error_sha256:
+        raise ValueError(
+            "runtime observation and worker subprocess failure raw error is not reviewed"
+        )
+    if len(encoded_error) != reviewed_error_utf8_bytes:
+        raise ValueError(
+            "runtime observation and worker subprocess failure raw error UTF-8 byte "
+            "count is not reviewed"
+        )
+    _normalize_runtime_observation_and_worker_subprocess_failure_error(
+        error,
+        plan_sha256=plan_sha256,
+        job_id=reviewed_job_id,
+    )
+    if run_output.get("logs_truncated") is not False:
+        raise ValueError(
+            "runtime observation and worker subprocess failure logs must be complete"
+        )
+    logs = run_output.get("logs")
+    if type(logs) is not str:
+        raise ValueError(
+            "runtime observation and worker subprocess failure logs must be an exact string"
+        )
+    expected_log_markers = (
+        (
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PIP_CHECK_LOG_MARKER,
+            2,
+            "two successful pip checks",
+        ),
+        (
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_VIRTUALENV_LOG_PREFIX,
+            1,
+            "one reviewed virtualenv creation prefix",
+        ),
+        (
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ENSUREPIP_LOG_ARGV,
+            1,
+            "one reviewed ensurepip argv",
+        ),
+        (
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_MODULE_MARKER,
+            0,
+            "no surfaced sentinel-worker output",
+        ),
+    )
+    for marker, expected_count, description in expected_log_markers:
+        if logs.count(marker) != expected_count:
+            raise ValueError(
+                "runtime observation and worker subprocess failure logs must prove "
+                f"exactly {description}"
+            )
+
+    error_trace = _non_empty_string(
+        run_output.get("error_trace"),
+        "runtime observation and worker subprocess failure error_trace",
+    )
+    normalized_trace = re.sub(r"\x1b\[[0-9;]*m", "", error_trace)
+    worker_marker = GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_MODULE_MARKER
+    observer_marker = GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_TRACE_MARKER
+    observer_failure = reviewed_job_id in (
+        GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS
+    )
+    if normalized_trace.count(error) != 1:
+        raise ValueError(
+            "runtime observation and worker subprocess failure trace must contain "
+            "the exact reviewed error once"
+        )
+    if observer_failure:
+        if (
+            normalized_trace.count(observer_marker) != 2
+            or any(
+                normalized_trace.count(marker) != 1
+                for marker in (
+                    GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_TRACE_MARKERS
+                )
+            )
+            or worker_marker in normalized_trace
+            or "CalledProcessError" in normalized_trace
+        ):
+            raise ValueError(
+                "runtime observation failure trace must prove the exact post-success "
+                "observer call and symlink guard without a worker subprocess failure"
+            )
+    elif (
+        normalized_trace.count(worker_marker) != 2
+        or any(
+            normalized_trace.count(marker) != 1
+            for marker in (
+                GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_TRACE_MARKERS
+            )
+        )
+        or observer_marker in normalized_trace
+        or normalized_trace.count("CalledProcessError") != 3
+    ):
+        raise ValueError(
+            "worker subprocess failure trace must prove the exact reviewed sentinel, "
+            "freezer, captured checked subprocess and stdlib failure frames without "
+            "final runtime observation"
+        )
+
+    raw_tasks = run.get("tasks")
+    metadata = _required_mapping(run_output.get("metadata"), "run-output metadata")
+    metadata_tasks = metadata.get("tasks")
+    if (
+        not isinstance(raw_tasks, list)
+        or len(raw_tasks) != 1
+        or not isinstance(raw_tasks[0], Mapping)
+        or not isinstance(metadata_tasks, list)
+        or len(metadata_tasks) != 1
+        or not isinstance(metadata_tasks[0], Mapping)
+    ):
+        raise ValueError(
+            "runtime observation and worker subprocess failure terminal task closure "
+            "differs"
+        )
+    observed_task = raw_tasks[0]
+    metadata_task = metadata_tasks[0]
+    expected_states = (
+        (run, "INTERNAL_ERROR", "FAILED"),
+        (observed_task, "TERMINATED", "FAILED"),
+        (metadata, "TERMINATED", "FAILED"),
+        (metadata_task, "TERMINATED", "FAILED"),
+    )
+    for (
+        terminal_record,
+        expected_life_cycle_state,
+        expected_result_state,
+    ) in expected_states:
+        state = _required_mapping(
+            terminal_record.get("state"),
+            "runtime observation and worker subprocess failure state",
+        )
+        status = _required_mapping(
+            terminal_record.get("status"),
+            "runtime observation and worker subprocess failure status",
+        )
+        if (
+            state.get("life_cycle_state") != expected_life_cycle_state
+            or state.get("result_state") != expected_result_state
+            or status.get("state") != "TERMINATED"
+        ):
+            raise ValueError(
+                "runtime observation and worker subprocess failure terminal states "
+                "are not reviewed"
+            )
+    return error
+
+
 def _failed_attempt_evidence_tree_binding(
     evidence_root: Path,
 ) -> tuple[int, int, str]:
@@ -2233,6 +2626,14 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     | None = None,
     expected_site_packages_path_error_sha256_by_job: Mapping[str, str]
     | None = None,
+    expected_runtime_observation_and_worker_subprocess_error_sha256_by_job: Mapping[
+        str, str
+    ]
+    | None = None,
+    expected_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job: Mapping[
+        str, int
+    ]
+    | None = None,
     expected_evidence_tree_sha256: str | None = None,
     expected_evidence_tree_file_count: int | None = None,
     expected_evidence_tree_total_bytes: int | None = None,
@@ -2264,10 +2665,28 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         "expected_terminal_prefix_sha256",
     )
     reason = _non_empty_string(expected_failure_reason, "expected_failure_reason")
+    runtime_observation_and_worker_subprocess_error_pins = (
+        expected_runtime_observation_and_worker_subprocess_error_sha256_by_job,
+        expected_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job,
+    )
+    if any(
+        value is None for value in runtime_observation_and_worker_subprocess_error_pins
+    ) and any(
+        value is not None
+        for value in runtime_observation_and_worker_subprocess_error_pins
+    ):
+        raise ValueError(
+            "reviewed runtime observation and worker subprocess error pins must "
+            "include both SHA-256 and UTF-8 byte maps"
+        )
     expected_error_modes = (
         expected_error is not None,
         expected_runtime_lock_index_error_sha256_by_job is not None,
         expected_site_packages_path_error_sha256_by_job is not None,
+        all(
+            value is not None
+            for value in runtime_observation_and_worker_subprocess_error_pins
+        ),
     )
     if sum(expected_error_modes) != 1:
         raise ValueError(
@@ -2336,6 +2755,24 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         if expected_site_packages_path_error_sha256_by_job is None
         else _validated_reviewed_error_sha256_by_job(
             expected_site_packages_path_error_sha256_by_job,
+            contracts=contracts,
+        )
+    )
+    reviewed_runtime_observation_and_worker_subprocess_error_sha256_by_job = (
+        None
+        if expected_runtime_observation_and_worker_subprocess_error_sha256_by_job
+        is None
+        else _validated_reviewed_error_sha256_by_job(
+            expected_runtime_observation_and_worker_subprocess_error_sha256_by_job,
+            contracts=contracts,
+        )
+    )
+    reviewed_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job = (
+        None
+        if expected_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job
+        is None
+        else _validated_reviewed_error_utf8_bytes_by_job(
+            expected_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job,
             contracts=contracts,
         )
     )
@@ -2422,6 +2859,28 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
                     job_id=job_id,
                     expected_error_sha256=(
                         reviewed_site_packages_error_sha256_by_job[job_id]
+                    ),
+                )
+            elif (
+                reviewed_runtime_observation_and_worker_subprocess_error_sha256_by_job
+                is not None
+                and reviewed_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job
+                is not None
+            ):
+                reviewed_job_error = _validated_runtime_observation_and_worker_subprocess_failure_error(
+                    run_output,
+                    run=run,
+                    plan_sha256=reviewed_plan_sha256,
+                    job_id=job_id,
+                    expected_error_sha256=(
+                        reviewed_runtime_observation_and_worker_subprocess_error_sha256_by_job[
+                            job_id
+                        ]
+                    ),
+                    expected_error_utf8_bytes=(
+                        reviewed_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job[
+                            job_id
+                        ]
                     ),
                 )
             else:
@@ -2711,6 +3170,69 @@ def reconcile_gpu_qualification_site_packages_path_failure_evidence(
         ),
         expected_evidence_tree_total_bytes=(
             GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_TOTAL_BYTES
+        ),
+    )
+
+
+def reconcile_gpu_qualification_runtime_observation_and_worker_subprocess_failure_evidence(
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    runs_get_evidence_root: str | Path,
+) -> DatabricksClusterHourLedger:
+    """Account the reviewed c0bede split runtime/worker failure closure.
+
+    The source-pinned boundary recognizes only the two packed-page post-success
+    runtime-observation errors and the other twelve exact worker-subprocess argv
+    errors.  It binds every raw error by SHA-256 and UTF-8 length, validates the
+    complete logs, category-specific traces and terminal states, and closes the
+    exact 29-file evidence tree before the first terminal-actual append.
+    """
+
+    return _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
+        plan_record=plan_record,
+        submit_payloads=submit_payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        runs_get_evidence_root=runs_get_evidence_root,
+        expected_plan_sha256=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
+        ),
+        expected_runner_sha256=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_RUNNER_SHA256
+        ),
+        expected_manifest_closed_record_sha256=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_SHA256
+        ),
+        expected_manifest_file_sha256=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_FILE_SHA256
+        ),
+        expected_terminal_prefix_sha256=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_TERMINAL_PREFIX_SHA256
+        ),
+        expected_failure_reason=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON
+        ),
+        expected_error=None,
+        expected_run_output_keys=_FAILED_RUN_OUTPUT_LOGGED_KEYS,
+        expected_runtime_observation_and_worker_subprocess_error_sha256_by_job=dict(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
+        ),
+        expected_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job=dict(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+        ),
+        expected_evidence_tree_sha256=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_SHA256
+        ),
+        expected_evidence_tree_file_count=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_FILE_COUNT
+        ),
+        expected_evidence_tree_total_bytes=(
+            GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_TOTAL_BYTES
         ),
     )
 
@@ -5888,6 +6410,27 @@ __all__ = [
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_REASON",
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_RUNNER_SHA256",
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ENSUREPIP_LOG_ARGV",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_FILE_COUNT",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_TOTAL_BYTES",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_FILE_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_OBSERVER_ERROR_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_WORKER_ERROR_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_TRACE_MARKER",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_TRACE_MARKERS",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PIP_CHECK_LOG_MARKER",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_RUNNER_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_TERMINAL_PREFIX_SHA256",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_VIRTUALENV_LOG_PREFIX",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_MODULE_MARKER",
+    "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_TRACE_MARKERS",
     "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_ERROR_SHA256_BY_JOB",
     "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_FILE_COUNT",
     "GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_EVIDENCE_TREE_SHA256",
@@ -5927,6 +6470,7 @@ __all__ = [
     "reconcile_gpu_qualification_bootstrap_file_global_failure_evidence",
     "reconcile_gpu_qualification_failed_attempt_evidence",
     "reconcile_gpu_qualification_runtime_lock_index_failure_evidence",
+    "reconcile_gpu_qualification_runtime_observation_and_worker_subprocess_failure_evidence",
     "reconcile_gpu_qualification_site_packages_path_failure_evidence",
     "replay_gpu_qualification_launch_authorization",
     "render_gpu_qualification_submit_payloads",

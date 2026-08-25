@@ -4036,6 +4036,592 @@ def test_site_packages_path_reconciliation_rejects_tamper_before_write(
     assert ledger_path.read_bytes() == ledger_before
 
 
+def _runtime_observation_and_worker_subprocess_failure_replay_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    plan_sha256 = (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
+    )
+    plan_root = (
+        Path(__file__).parents[1]
+        / "databricks-runs/vllm-0271-publication-prep"
+        / f"gpu-qualification-plan-sha256-{plan_sha256}"
+    ).resolve()
+    evidence_root = (
+        plan_root
+        / "failed-attempt-runtime-observation-and-worker-subprocess-v2"
+    )
+    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
+    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+    manifest = json.loads((evidence_root / "reconciliation-manifest.json").read_text())
+    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
+    assert (
+        len(retained.reservations),
+        len(retained.submission_receipts),
+        len(retained.terminal_actuals),
+    ) == (222, 84, 208)
+    ledger_path = tmp_path / "cluster-hours.json"
+    ledger_path.write_bytes(_RETAINED_LEDGER_PATH.read_bytes())
+    monkeypatch.setattr(
+        qualification_job,
+        "databricks_ledger_path_sha256",
+        lambda _path: plan["campaign_ledger_path_sha256"],
+    )
+    monkeypatch.setattr(
+        resource_ledger,
+        "databricks_ledger_path_sha256",
+        lambda _path: plan["campaign_ledger_path_sha256"],
+    )
+    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
+
+
+def _reconcile_runtime_observation_and_worker_subprocess_failure(
+    *,
+    plan_root: Path,
+    evidence_root: Path,
+    plan: dict[str, Any],
+    payloads: list[dict[str, Any]],
+    ledger_path: Path,
+) -> DatabricksClusterHourLedger:
+    return qualification_job.reconcile_gpu_qualification_runtime_observation_and_worker_subprocess_failure_evidence(
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=plan_root / "submit-receipts",
+        local_preflight_evidence_path=(
+            plan_root / "local-preflight-valid/local-preflight-evidence.json"
+        ),
+        runs_get_evidence_root=evidence_root,
+    )
+
+
+def test_runtime_observation_and_worker_subprocess_failure_source_pins_exact_closure():
+    plan_sha256 = (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
+    )
+    plan_root = (
+        Path(__file__).parents[1]
+        / "databricks-runs/vllm-0271-publication-prep"
+        / f"gpu-qualification-plan-sha256-{plan_sha256}"
+    ).resolve()
+    evidence_root = (
+        plan_root
+        / "failed-attempt-runtime-observation-and-worker-subprocess-v2"
+    )
+    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
+    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_error_sha256 = dict(
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
+    )
+    expected_error_utf8_bytes = dict(
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+    )
+    expected_job_ids = {str(contract["job_id"]) for contract in contracts}
+    observer_job_ids = set(
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS
+    )
+
+    assert len(expected_job_ids) == 14
+    assert set(expected_error_sha256) == expected_job_ids
+    assert set(expected_error_utf8_bytes) == expected_job_ids
+    assert len(observer_job_ids) == 2
+    normalized_sha256_by_category: dict[str, set[str]] = {
+        "observer": set(),
+        "worker": set(),
+    }
+    for contract in contracts:
+        job_id = str(contract["job_id"])
+        run = json.loads((evidence_root / f"{job_id}.runs-get.json").read_text())
+        run_output = json.loads(
+            (evidence_root / f"{job_id}.runs-get-output.json").read_text()
+        )
+        error = run_output["error"]
+        assert set(run_output) == {
+            "error",
+            "error_trace",
+            "logs",
+            "logs_truncated",
+            "metadata",
+        }
+        assert hashlib.sha256(error.encode("utf-8")).hexdigest() == (
+            expected_error_sha256[job_id]
+        )
+        assert len(error.encode("utf-8")) == expected_error_utf8_bytes[job_id]
+        assert (
+            qualification_job._validated_runtime_observation_and_worker_subprocess_failure_error(
+                run_output,
+                run=run,
+                plan_sha256=plan_sha256,
+                job_id=job_id,
+                expected_error_sha256=expected_error_sha256[job_id],
+                expected_error_utf8_bytes=expected_error_utf8_bytes[job_id],
+            )
+            == error
+        )
+        normalized = qualification_job._normalize_runtime_observation_and_worker_subprocess_failure_error(
+            error,
+            plan_sha256=plan_sha256,
+            job_id=job_id,
+        )
+        category = "observer" if job_id in observer_job_ids else "worker"
+        normalized_sha256_by_category[category].add(
+            hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        )
+
+    assert normalized_sha256_by_category == {
+        "observer": {
+            qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_OBSERVER_ERROR_SHA256
+        },
+        "worker": {
+            qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_NORMALIZED_WORKER_ERROR_SHA256
+        },
+    }
+    assert qualification_job._failed_attempt_evidence_tree_binding(evidence_root) == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_FILE_COUNT,
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_TOTAL_BYTES,
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_SHA256,
+    )
+
+
+def test_runtime_observation_and_worker_subprocess_wrapper_is_deterministic_idempotent_and_source_pinned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan_root,
+        evidence_root,
+        plan,
+        payloads,
+        manifest,
+        ledger_path,
+    ) = _runtime_observation_and_worker_subprocess_failure_replay_fixture(
+        tmp_path, monkeypatch
+    )
+    second_ledger_path = tmp_path / "cluster-hours-second.json"
+    second_ledger_path.write_bytes(ledger_path.read_bytes())
+    live_ledger_before = _RETAINED_LEDGER_PATH.read_bytes()
+    live_ledger_stat_before = _RETAINED_LEDGER_PATH.stat()
+    evidence_before = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in evidence_root.iterdir()
+    }
+
+    reconciled = _reconcile_runtime_observation_and_worker_subprocess_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=ledger_path,
+    )
+    second = _reconcile_runtime_observation_and_worker_subprocess_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=second_ledger_path,
+    )
+
+    assert reconciled == second
+    assert ledger_path.read_bytes() == second_ledger_path.read_bytes()
+    assert len(ledger_path.read_bytes()) == 202_986
+    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
+        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
+    )
+    assert plan["closed_record_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
+    )
+    assert plan["runtime_contract"]["artifact_sha256"]["runner_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_RUNNER_SHA256
+    )
+    assert manifest["closed_record_sha256"] == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_SHA256
+    )
+    assert manifest["reason"] == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_REASON
+    )
+    assert qualification_job._file_sha256(
+        evidence_root / "reconciliation-manifest.json"
+    ) == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_MANIFEST_FILE_SHA256
+    )
+    assert (
+        len(reconciled.reservations),
+        len(reconciled.submission_receipts),
+        len(reconciled.terminal_actuals),
+    ) == (222, 84, 222)
+    assert reconciled.active_reserved_task_count == 0
+    assert reconciled.active_reserved_cluster_hours == 0.0
+    assert reconciled.terminal_actual_cluster_hours == 67.93033611111115
+    assert reconciled.accounted_cluster_hours == 67.93033611111115
+    assert reconciled.remaining_cluster_hours == 956.0696638888888
+    assert sum(
+        item.actual_cluster_duration_seconds
+        for item in reconciled.terminal_actuals[-14:]
+    ) == pytest.approx(12_410.279)
+    assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
+        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_TERMINAL_PREFIX_SHA256
+    )
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_attempt_order = [
+        contract["reservation_attempt_id"]
+        for contract in sorted(contracts, key=lambda item: item["job_id"])
+    ]
+    assert [item.attempt_id for item in reconciled.terminal_actuals[-14:]] == (
+        expected_attempt_order
+    )
+    public_name = (
+        "reconcile_gpu_qualification_runtime_observation_and_worker_subprocess_failure_evidence"
+    )
+    assert public_name in qualification_job.__all__
+    assert not any(
+        name.startswith("expected_")
+        for name in inspect.signature(getattr(qualification_job, public_name)).parameters
+    )
+
+    closed_bytes = ledger_path.read_bytes()
+    closed_stat = ledger_path.stat()
+    assert (
+        _reconcile_runtime_observation_and_worker_subprocess_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+        == reconciled
+    )
+    replayed_stat = ledger_path.stat()
+    assert ledger_path.read_bytes() == closed_bytes
+    assert (
+        replayed_stat.st_ino,
+        replayed_stat.st_mode,
+        replayed_stat.st_mtime_ns,
+        replayed_stat.st_size,
+    ) == (
+        closed_stat.st_ino,
+        closed_stat.st_mode,
+        closed_stat.st_mtime_ns,
+        closed_stat.st_size,
+    )
+    live_ledger_stat_after = _RETAINED_LEDGER_PATH.stat()
+    assert _RETAINED_LEDGER_PATH.read_bytes() == live_ledger_before
+    assert (
+        live_ledger_stat_after.st_ino,
+        live_ledger_stat_after.st_mode,
+        live_ledger_stat_after.st_mtime_ns,
+        live_ledger_stat_after.st_size,
+    ) == (
+        live_ledger_stat_before.st_ino,
+        live_ledger_stat_before.st_mode,
+        live_ledger_stat_before.st_mtime_ns,
+        live_ledger_stat_before.st_size,
+    )
+    assert {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in evidence_root.iterdir()
+    } == evidence_before
+
+
+def test_runtime_observation_and_worker_subprocess_reconciliation_resumes_canonical_partial_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan_root,
+        evidence_root,
+        plan,
+        payloads,
+        _manifest,
+        ledger_path,
+    ) = _runtime_observation_and_worker_subprocess_failure_replay_fixture(
+        tmp_path, monkeypatch
+    )
+    clean_ledger_path = tmp_path / "cluster-hours-clean.json"
+    clean_ledger_path.write_bytes(ledger_path.read_bytes())
+    real_record = qualification_job.record_databricks_verified_run_terminal_actual_json
+    completed = 0
+
+    def interrupt_after_five(ledger_path_arg, *, attempt_id, run_record):
+        nonlocal completed
+        if completed == 5:
+            raise RuntimeError("simulated c0bede reconciliation interruption")
+        updated = real_record(
+            ledger_path_arg,
+            attempt_id=attempt_id,
+            run_record=run_record,
+        )
+        completed += 1
+        return updated
+
+    monkeypatch.setattr(
+        qualification_job,
+        "record_databricks_verified_run_terminal_actual_json",
+        interrupt_after_five,
+    )
+    with pytest.raises(RuntimeError, match="simulated c0bede"):
+        _reconcile_runtime_observation_and_worker_subprocess_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+    partial = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert len(partial.terminal_actuals) == 213
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_attempt_order = [
+        contract["reservation_attempt_id"]
+        for contract in sorted(contracts, key=lambda item: item["job_id"])
+    ]
+    assert [item.attempt_id for item in partial.terminal_actuals[-5:]] == (
+        expected_attempt_order[:5]
+    )
+
+    monkeypatch.setattr(
+        qualification_job,
+        "record_databricks_verified_run_terminal_actual_json",
+        real_record,
+    )
+    resumed = _reconcile_runtime_observation_and_worker_subprocess_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=ledger_path,
+    )
+    clean = _reconcile_runtime_observation_and_worker_subprocess_failure(
+        plan_root=plan_root,
+        evidence_root=evidence_root,
+        plan=plan,
+        payloads=payloads,
+        ledger_path=clean_ledger_path,
+    )
+    assert resumed == clean
+    assert ledger_path.read_bytes() == clean_ledger_path.read_bytes()
+    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
+        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("extra-file", "exact batch closure"),
+        ("raw-error", "raw error is not reviewed"),
+        ("path", "exact planned work root"),
+        ("category", "exact planned work root"),
+        ("grammar", "error grammar differs"),
+        ("schema", "incident schema"),
+        ("truncated", "logs must be complete"),
+        ("trace", "exact reviewed sentinel"),
+        ("worker-control-flow", "exact reviewed sentinel"),
+        ("observer-control-flow", "exact post-success observer"),
+        ("pip-check", "exactly two successful pip checks"),
+        ("virtualenv", "exactly one reviewed virtualenv creation prefix"),
+        ("ensurepip", "exactly one reviewed ensurepip argv"),
+        ("worker-log", "exactly no surfaced sentinel-worker output"),
+        ("tree-pin", "evidence tree is not reviewed"),
+        ("manifest", "manifest file is not reviewed"),
+        ("plan", "plan is not reviewed"),
+        ("runner", "plan is not reviewed"),
+        ("parent-status", "terminal states are not reviewed"),
+        ("task-status", "terminal states are not reviewed"),
+    ],
+)
+def test_runtime_observation_and_worker_subprocess_reconciliation_rejects_tamper_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+):
+    (
+        plan_root,
+        source_evidence_root,
+        plan,
+        payloads,
+        _manifest,
+        ledger_path,
+    ) = _runtime_observation_and_worker_subprocess_failure_replay_fixture(
+        tmp_path, monkeypatch
+    )
+    evidence_root = tmp_path / "c0bede-evidence-copy"
+    shutil.copytree(source_evidence_root, evidence_root)
+    output_path = (
+        evidence_root
+        / "aws-g5-a10g-packed-page-roundtrip.runs-get-output.json"
+        if mutation == "observer-control-flow"
+        else sorted(evidence_root.glob("*.runs-get-output.json"))[0]
+    )
+    job_id = output_path.name.removesuffix(".runs-get-output.json")
+
+    def repin_error(error: str) -> None:
+        reviewed_hashes = tuple(
+            (
+                reviewed_job_id,
+                hashlib.sha256(error.encode("utf-8")).hexdigest(),
+            )
+            if reviewed_job_id == job_id
+            else (reviewed_job_id, reviewed_sha256)
+            for reviewed_job_id, reviewed_sha256 in (
+                qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
+            )
+        )
+        reviewed_bytes = tuple(
+            (reviewed_job_id, len(error.encode("utf-8")))
+            if reviewed_job_id == job_id
+            else (reviewed_job_id, byte_count)
+            for reviewed_job_id, byte_count in (
+                qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+            )
+        )
+        monkeypatch.setattr(
+            qualification_job,
+            "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB",
+            reviewed_hashes,
+        )
+        monkeypatch.setattr(
+            qualification_job,
+            "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_BYTES_BY_JOB",
+            reviewed_bytes,
+        )
+
+    if mutation == "extra-file":
+        (evidence_root / "unreviewed.json").write_text("{}\n", encoding="utf-8")
+    elif mutation == "manifest":
+        manifest_path = evidence_root / "reconciliation-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["reason"] = "unreviewed"
+        manifest_path.write_text(
+            canonical_gpu_qualification_json(manifest) + "\n",
+            encoding="utf-8",
+        )
+    elif mutation == "tree-pin":
+        monkeypatch.setattr(
+            qualification_job,
+            "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_SHA256",
+            "0" * 64,
+        )
+    elif mutation == "plan":
+        monkeypatch.setattr(
+            qualification_job,
+            "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256",
+            "0" * 64,
+        )
+    elif mutation == "runner":
+        monkeypatch.setattr(
+            qualification_job,
+            "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_RUNNER_SHA256",
+            "0" * 64,
+        )
+    elif mutation in {"parent-status", "task-status"}:
+        run_path = evidence_root / f"{job_id}.runs-get.json"
+        run = json.loads(run_path.read_text())
+        terminal_record = run if mutation == "parent-status" else run["tasks"][0]
+        terminal_record["status"]["state"] = "RUNNING"
+        run_path.write_text(
+            canonical_gpu_qualification_json(run) + "\n",
+            encoding="utf-8",
+        )
+    elif mutation == "category":
+        monkeypatch.setattr(
+            qualification_job,
+            "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS",
+            (*qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS, job_id),
+        )
+    else:
+        output = json.loads(output_path.read_text())
+        if mutation == "raw-error":
+            output["error"] += " tampered"
+        elif mutation == "path":
+            work_root = (
+                f"{qualification_job.GPU_QUALIFICATION_LOCAL_WORK_ROOT}/"
+                f"{plan['closed_record_sha256']}/{job_id}"
+            )
+            output["error"] = output["error"].replace(
+                work_root,
+                "/local_disk0/unreviewed-foreign-work-root",
+                1,
+            )
+            repin_error(output["error"])
+        elif mutation == "grammar":
+            output["error"] += " unreviewed"
+            repin_error(output["error"])
+        elif mutation == "schema":
+            output["unreviewed"] = "field"
+        elif mutation == "truncated":
+            output["logs_truncated"] = True
+        elif mutation == "trace":
+            output["error_trace"] += (
+                qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_TRACE_MARKER
+            )
+        elif mutation == "worker-control-flow":
+            marker = qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_TRACE_MARKERS[
+                1
+            ]
+            output["error_trace"] = output["error_trace"].replace(
+                marker,
+                "unreviewed freezer",
+                1,
+            )
+        elif mutation == "observer-control-flow":
+            marker = qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_OBSERVER_TRACE_MARKERS[
+                1
+            ]
+            output["error_trace"] += marker
+        elif mutation == "pip-check":
+            output["logs"] = output["logs"].replace(
+                qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PIP_CHECK_LOG_MARKER,
+                "unreviewed",
+                1,
+            )
+        elif mutation == "virtualenv":
+            output["logs"] = output["logs"].replace(
+                qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_VIRTUALENV_LOG_PREFIX,
+                "unreviewed",
+                1,
+            )
+        elif mutation == "ensurepip":
+            output["logs"] = output["logs"].replace(
+                qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ENSUREPIP_LOG_ARGV,
+                "unreviewed",
+                1,
+            )
+        else:
+            output["logs"] += (
+                qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_WORKER_MODULE_MARKER
+            )
+        output_path.write_text(
+            canonical_gpu_qualification_json(output) + "\n",
+            encoding="utf-8",
+        )
+    ledger_before = ledger_path.read_bytes()
+    ledger_stat_before = ledger_path.stat()
+
+    with pytest.raises(ValueError, match=message):
+        _reconcile_runtime_observation_and_worker_subprocess_failure(
+            plan_root=plan_root,
+            evidence_root=evidence_root,
+            plan=plan,
+            payloads=payloads,
+            ledger_path=ledger_path,
+        )
+    ledger_stat_after = ledger_path.stat()
+    assert ledger_path.read_bytes() == ledger_before
+    assert (
+        ledger_stat_after.st_ino,
+        ledger_stat_after.st_mode,
+        ledger_stat_after.st_mtime_ns,
+        ledger_stat_after.st_size,
+    ) == (
+        ledger_stat_before.st_ino,
+        ledger_stat_before.st_mode,
+        ledger_stat_before.st_mtime_ns,
+        ledger_stat_before.st_size,
+    )
+
+
 def test_v2_failed_capture_publication_removes_partial_staging(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
