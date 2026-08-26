@@ -1,9 +1,13 @@
 import hashlib
+import io
 import json
 import os
 import sys
+import traceback
 import types
 import urllib.error
+import urllib.response
+from email.message import Message
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -35,6 +39,7 @@ from document_kv_cache.databricks_runs import (
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
     check_databricks_auth,
+    create_databricks_volume_directory_idempotent,
     databricks_run_status_record,
     databricks_run_status_sidecar_issues,
     databricks_workspace_config_from_env,
@@ -62,6 +67,7 @@ from document_kv_cache.databricks_runs import (
     summarize_databricks_run_submit_payload,
     validate_databricks_run_status_sidecar,
     upload_databricks_volume_file_bytes_exclusive,
+    upload_databricks_volume_file_path_exclusive,
     write_databricks_run_response_json,
 )
 from document_kv_cache.databricks_resource_ledger import (
@@ -491,6 +497,216 @@ def test_check_databricks_auth_calls_identity_endpoint_without_user_pii():
     assert "secret-token" not in serialized
 
 
+def test_databricks_no_redirect_handler_blocks_every_redirect_method_and_status():
+    for status_code in (301, 302, 303, 307, 308):
+        for method in ("GET", "HEAD", "POST", "PUT"):
+            transport = _RedirectingHTTPHandler(status_code)
+            opener = urllib.request.build_opener(
+                public_databricks_runs._DatabricksNoRedirectHandler(),
+                transport,
+            )
+            request = urllib.request.Request(
+                "http://workspace.example/api/2.0/test",
+                data=b"{}" if method in {"POST", "PUT"} else None,
+                method=method,
+                headers={"Authorization": "Bearer secret-token"},
+            )
+
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                opener.open(request, timeout=1)
+
+            assert excinfo.value.code == status_code
+            assert len(transport.requests) == 1
+            assert transport.requests[0].full_url.startswith(
+                "http://workspace.example/"
+            )
+            assert transport.requests[0].headers["Authorization"] == (
+                "Bearer secret-token"
+            )
+
+
+def test_all_authenticated_databricks_defaults_reject_redirects_without_following(
+    tmp_path,
+    monkeypatch,
+):
+    real_build_opener = urllib.request.build_opener
+    active_transport = None
+
+    def controlled_build_opener(*handlers):
+        assert active_transport is not None
+        return real_build_opener(*handlers, active_transport)
+
+    monkeypatch.setattr(
+        public_databricks_runs.urllib.request,
+        "build_opener",
+        controlled_build_opener,
+    )
+    config = DatabricksWorkspaceConfig("http://workspace.example", "secret-token")
+    source = tmp_path / "package.whl"
+    source.write_bytes(b"package")
+    source_sha256 = hashlib.sha256(b"package").hexdigest()
+    volume_file = "dbfs:/Volumes/c/s/v/package.whl"
+    volume_directory = "dbfs:/Volumes/c/s/v/runtime"
+    cases = (
+        ("GET", lambda: check_databricks_auth(config)),
+        (
+            "GET",
+            lambda: require_databricks_current_user_name(
+                config,
+                expected_user_name="person@example.com",
+            ),
+        ),
+        ("POST", lambda: submit_databricks_run(config, {"run_name": "run"})),
+        ("GET", lambda: get_databricks_run(config, 1)),
+        ("GET", lambda: get_databricks_run_output(config, 1)),
+        ("GET", lambda: list_active_databricks_runs(config)),
+        ("GET", lambda: list_databricks_node_types(config)),
+        (
+            "GET",
+            lambda: download_databricks_volume_file_bytes(config, volume_file),
+        ),
+        (
+            "GET",
+            lambda: stream_databricks_volume_file_sha256(config, volume_file),
+        ),
+        (
+            "HEAD",
+            lambda: get_databricks_volume_file_metadata(config, volume_file),
+        ),
+        (
+            "GET",
+            lambda: list_databricks_volume_directory(config, volume_directory),
+        ),
+        (
+            "PUT",
+            lambda: upload_databricks_volume_file_bytes_exclusive(
+                config,
+                volume_file,
+                b"package",
+            ),
+        ),
+        (
+            "PUT",
+            lambda: upload_databricks_volume_file_path_exclusive(
+                config,
+                volume_file,
+                source,
+                expected_sha256=source_sha256,
+                expected_size=7,
+            ),
+        ),
+        (
+            "PUT",
+            lambda: create_databricks_volume_directory_idempotent(
+                config,
+                volume_directory,
+            ),
+        ),
+        (
+            "POST",
+            lambda: put_databricks_dbfs_file(
+                config,
+                source,
+                "dbfs:/FileStore/package.whl",
+            ),
+        ),
+        (
+            "HEAD",
+            lambda: public_databricks_runs._prove_databricks_volume_directory_exists(
+                config,
+                "/Volumes/c/s/v/runtime",
+                opener=None,
+            ),
+        ),
+    )
+
+    for method, action in cases:
+        active_transport = _RedirectingHTTPHandler(302)
+        with pytest.raises(RuntimeError) as excinfo:
+            action()
+        formatted = "".join(
+            traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+        )
+        assert "secret-token" not in formatted
+        assert len(active_transport.requests) == 1
+        assert active_transport.requests[0].get_method() == method
+        assert active_transport.requests[0].full_url.startswith(
+            "http://workspace.example/"
+        )
+
+
+def test_databricks_json_response_is_status_and_content_length_closed():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    payload = b'{"id":"123"}'
+    exact = _StreamingBinaryOpener(
+        payload,
+        status=200,
+        headers={"content-length": str(len(payload))},
+    )
+    assert check_databricks_auth(config, opener=exact)["http_status"] == 200
+    assert exact.response.read_limits == [len(payload), 1]
+
+    chunked = _StreamingBinaryOpener(
+        payload,
+        status=200,
+        headers={"transfer-encoding": "chunked"},
+    )
+    assert check_databricks_auth(config, opener=chunked)["http_status"] == 200
+
+    for status in (201, 204, 301, 302, 303, 307, 308, 200.0, True, None):
+        wrong_status = _BinaryOpener(b"not-json", status=status)
+        with pytest.raises(RuntimeError, match="unexpected HTTP status"):
+            check_databricks_auth(config, opener=wrong_status)
+        assert wrong_status.response.read_limits == []
+
+    cases = (
+        (
+            _StreamingBinaryOpener(
+                payload,
+                headers={"content-length": str(len(payload) + 1)},
+            ),
+            "ended before content-length",
+        ),
+        (
+            _StreamingBinaryOpener(
+                payload,
+                headers={"content-length": str(len(payload) - 1)},
+            ),
+            "bytes beyond content-length",
+        ),
+        (
+            _BinaryOpener(
+                payload,
+                headers={
+                    "content-length": str(len(payload)),
+                    "transfer-encoding": "chunked",
+                },
+            ),
+            "cannot combine content-length",
+        ),
+        (
+            _BinaryOpener(
+                b"",
+                headers={
+                    "content-length": str(DATABRICKS_API_PAGE_MAX_BYTES + 1)
+                },
+            ),
+            "content-length exceeds.*byte cap",
+        ),
+        (
+            _BinaryOpener(
+                payload,
+                headers={"content-length": "1"},
+                oversized_reads=True,
+            ),
+            "chunk byte cap",
+        ),
+    )
+    for malformed, error_match in cases:
+        with pytest.raises(RuntimeError, match=error_match):
+            check_databricks_auth(config, opener=malformed)
+
+
 def test_current_user_binding_requires_exact_active_single_user_without_pii():
     opener = _FakeOpener(
         {
@@ -861,7 +1077,10 @@ def test_get_databricks_run_output_fetches_child_run_by_id():
     )
     assert request.get_method() == "GET"
     assert request.data is None
-    assert opener.response.read_limits == [DATABRICKS_API_PAGE_MAX_BYTES + 1]
+    assert opener.response.read_limits == [
+        public_databricks_runs._DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES,
+        public_databricks_runs._DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES,
+    ]
 
 
 def test_download_databricks_volume_file_bytes_uses_authenticated_files_api():
@@ -889,7 +1108,7 @@ def test_download_databricks_volume_file_bytes_uses_authenticated_files_api():
     assert request.headers["Authorization"] == "Bearer secret-token"
     assert request.headers["Accept"] == "application/octet-stream"
     assert opener.timeouts == [9]
-    assert opener.response.read_limits == [len(expected) + 1]
+    assert opener.response.read_limits == [len(expected) + 1, 1]
 
 
 @pytest.mark.parametrize(
@@ -1014,6 +1233,10 @@ def test_stream_volume_file_sha256_is_authenticated_bounded_and_unbuffered():
         ({"content-length": "not-an-int"}, "content-length.*missing or invalid"),
         ({"content-length": "5"}, "content-length exceeds.*byte cap"),
         (
+            {"content-length": "4", "transfer-encoding": "chunked"},
+            "transfer-encoding is unexpected",
+        ),
+        (
             {"content-length": "4", "content-encoding": "gzip"},
             "content-encoding is not identity",
         ),
@@ -1051,6 +1274,7 @@ def test_stream_volume_file_sha256_rejects_short_trailing_and_oversized_chunks()
     oversized_chunk = _BinaryOpener(
         b"12",
         headers={"content-length": "1"},
+        oversized_reads=True,
     )
     with pytest.raises(RuntimeError, match="chunk byte cap"):
         stream_databricks_volume_file_sha256(config, uri, opener=oversized_chunk)
@@ -1081,6 +1305,12 @@ def test_stream_volume_file_sha256_caps_inputs_status_and_redacts_errors():
             config,
             uri,
             opener=_StreamingBinaryOpener(b"", status=206),
+        )
+    with pytest.raises(RuntimeError, match="unexpected HTTP status"):
+        stream_databricks_volume_file_sha256(
+            config,
+            uri,
+            opener=_StreamingBinaryOpener(b"", status=200.0),
         )
 
     error_body = _BytesFile(b'{"message":"Bearer secret-token"}')
@@ -1769,6 +1999,595 @@ def test_upload_databricks_volume_file_bytes_exclusive_redacts_http_errors():
         )
 
     assert "secret-token" not in str(excinfo.value)
+
+
+def test_upload_databricks_volume_file_path_exclusive_streams_and_proves_remote(
+    tmp_path,
+):
+    content = b"verified-local-upload" * 100_000
+    source = tmp_path / "runtime wheel.whl"
+    source.write_bytes(content)
+    upload = _ConsumingUploadOpener()
+    readback = _StreamingBinaryOpener(content)
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=19
+    )
+    uri = "dbfs:/Volumes/catalog/schema/volume/runtime/runtime wheel.whl"
+
+    record = upload_databricks_volume_file_path_exclusive(
+        config,
+        uri,
+        source,
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        expected_size=len(content),
+        opener=upload,
+        readback_opener=readback,
+    )
+
+    assert record == {
+        "created": True,
+        "dbfs_uri": uri,
+        "file_sha256": hashlib.sha256(content).hexdigest(),
+        "size_bytes": len(content),
+    }
+    request = upload.requests[0]
+    assert request.get_method() == "PUT"
+    assert request.full_url.endswith(
+        "/runtime/runtime%20wheel.whl?overwrite=false"
+    )
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert request.headers["Content-length"] == str(len(content))
+    assert request.headers["Content-type"] == "application/octet-stream"
+    assert not isinstance(request.data, bytes)
+    assert upload.sha256 == hashlib.sha256(content).hexdigest()
+    assert upload.total_bytes == len(content)
+    assert max(upload.chunk_sizes) <= (
+        public_databricks_runs._DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES
+    )
+    assert upload.timeouts == [19]
+    assert readback.requests[0].get_method() == "GET"
+
+
+def test_upload_databricks_volume_file_path_exclusive_streams_83113106_sparse_bytes(
+    tmp_path,
+):
+    size_bytes = 83_113_106
+    source = tmp_path / "flashinfer-python.whl"
+    with source.open("wb") as stream:
+        stream.seek(size_bytes - 1)
+        stream.write(b"\0")
+    expected_sha256 = _repeated_zero_sha256(size_bytes)
+    upload = _ConsumingUploadOpener()
+    readback = _GeneratedZeroStreamingOpener(size_bytes)
+
+    record = upload_databricks_volume_file_path_exclusive(
+        DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+        "dbfs:/Volumes/c/s/v/runtime/flashinfer-python.whl",
+        source,
+        expected_sha256=expected_sha256,
+        expected_size=size_bytes,
+        opener=upload,
+        readback_opener=readback,
+    )
+
+    assert record["size_bytes"] == size_bytes
+    assert record["file_sha256"] == expected_sha256
+    assert upload.total_bytes == size_bytes
+    assert upload.sha256 == expected_sha256
+    assert max(upload.chunk_sizes) <= 1024 * 1024
+    assert max(readback.response.read_limits) <= 1024 * 1024
+
+
+def test_upload_databricks_volume_file_path_exclusive_rejects_caps_and_bad_pins(
+    tmp_path,
+):
+    source = tmp_path / "package.whl"
+    source.write_bytes(b"package")
+    digest = hashlib.sha256(b"package").hexdigest()
+    uri = "dbfs:/Volumes/c/s/v/package.whl"
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    upload = _ConsumingUploadOpener()
+
+    cases = (
+        {"expected_sha256": "A" * 64, "expected_size": 7},
+        {"expected_sha256": digest, "expected_size": False},
+        {"expected_sha256": digest, "expected_size": 8},
+        {"expected_sha256": "0" * 64, "expected_size": 7},
+        {
+            "expected_sha256": digest,
+            "expected_size": 7,
+            "max_bytes": DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES + 1,
+        },
+        {"expected_sha256": digest, "expected_size": 7, "max_bytes": 6},
+    )
+    for arguments in cases:
+        with pytest.raises(ValueError, match="expected|max_bytes|SHA-256|size"):
+            upload_databricks_volume_file_path_exclusive(
+                config,
+                uri,
+                source,
+                opener=upload,
+                **arguments,
+            )
+    assert upload.requests == []
+
+
+def test_upload_databricks_volume_file_path_exclusive_rejects_unsafe_sources(
+    tmp_path,
+    monkeypatch,
+):
+    content = b"package"
+    digest = hashlib.sha256(content).hexdigest()
+    source = tmp_path / "package.whl"
+    source.write_bytes(content)
+    symlink = tmp_path / "symlink.whl"
+    symlink.symlink_to(source)
+    hardlink = tmp_path / "hardlink.whl"
+    os.link(source, hardlink)
+    fifo = tmp_path / "package.fifo"
+    os.mkfifo(fifo)
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    uri = "dbfs:/Volumes/c/s/v/package.whl"
+    upload = _ConsumingUploadOpener()
+
+    for unsafe in (source.name, symlink, hardlink, fifo):
+        with pytest.raises(ValueError, match="canonical|symbolic|hard link|regular"):
+            upload_databricks_volume_file_path_exclusive(
+                config,
+                uri,
+                unsafe,
+                expected_sha256=digest,
+                expected_size=len(content),
+                opener=upload,
+            )
+    os.unlink(hardlink)
+    real_uid = os.getuid()
+    monkeypatch.setattr(
+        public_databricks_runs.os, "getuid", lambda: real_uid + 1
+    )
+    with pytest.raises(ValueError, match="owned by the current user"):
+        upload_databricks_volume_file_path_exclusive(
+            config,
+            uri,
+            source,
+            expected_sha256=digest,
+            expected_size=len(content),
+            opener=upload,
+        )
+    assert upload.requests == []
+
+
+def test_upload_databricks_volume_file_path_exclusive_rejects_replacement(
+    tmp_path,
+):
+    content = b"original-package"
+    source = tmp_path / "package.whl"
+    source.write_bytes(content)
+
+    def replace_source():
+        source.rename(tmp_path / "original.whl")
+        source.write_bytes(content)
+
+    upload = _ConsumingUploadOpener(before_consume=replace_source)
+    with pytest.raises(RuntimeError, match="source identity drifted"):
+        upload_databricks_volume_file_path_exclusive(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/package.whl",
+            source,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_size=len(content),
+            opener=upload,
+        )
+    assert upload.chunk_sizes == []
+
+
+def test_upload_databricks_volume_file_path_exclusive_rejects_midstream_mutation(
+    tmp_path,
+):
+    chunk_size = public_databricks_runs._DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES
+    content = b"a" * (chunk_size + 1)
+    source = tmp_path / "package.whl"
+    source.write_bytes(content)
+
+    def mutate_source(_chunk_count):
+        with source.open("r+b") as stream:
+            stream.seek(-1, os.SEEK_END)
+            stream.write(b"b")
+
+    upload = _ConsumingUploadOpener(after_chunk=mutate_source)
+    with pytest.raises(RuntimeError, match="source identity drifted"):
+        upload_databricks_volume_file_path_exclusive(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/package.whl",
+            source,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_size=len(content),
+            opener=upload,
+        )
+    assert len(upload.chunk_sizes) == 1
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "error_match"),
+    (("short", "ended before"), ("extra", "beyond its verified size")),
+)
+def test_upload_databricks_volume_file_path_exclusive_rejects_read_drift(
+    tmp_path,
+    monkeypatch,
+    failure_mode,
+    error_match,
+):
+    content = b"abc"
+    source = tmp_path / "package.whl"
+    source.write_bytes(content)
+    real_read = os.read
+    call_count = 0
+
+    def drifting_read(file_descriptor, amount):
+        nonlocal call_count
+        call_count += 1
+        if failure_mode == "short" and call_count == 3:
+            return b""
+        if failure_mode == "extra" and call_count == 4:
+            return b"x"
+        return real_read(file_descriptor, amount)
+
+    monkeypatch.setattr(public_databricks_runs.os, "read", drifting_read)
+    with pytest.raises(RuntimeError, match=error_match):
+        upload_databricks_volume_file_path_exclusive(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/package.whl",
+            source,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_size=len(content),
+            opener=_ConsumingUploadOpener(),
+        )
+
+
+@pytest.mark.parametrize("failure", (400, 409, "timeout"))
+def test_upload_databricks_volume_file_path_exclusive_proves_replay(
+    tmp_path,
+    failure,
+):
+    content = b"canonical-package"
+    source = tmp_path / "package.whl"
+    source.write_bytes(content)
+    if isinstance(failure, int):
+        error = urllib.error.HTTPError(
+            "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/package.whl",
+            failure,
+            "Conflict",
+            {},
+            _BytesFile(b'{"error_code":"RESOURCE_ALREADY_EXISTS"}'),
+        )
+        upload = _RecordingHTTPErrorOpener(error)
+    else:
+        upload = _ExceptionOpener(TimeoutError("accepted response lost"))
+
+    record = upload_databricks_volume_file_path_exclusive(
+        DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+        "dbfs:/Volumes/c/s/v/package.whl",
+        source,
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        expected_size=len(content),
+        opener=upload,
+        readback_opener=_StreamingBinaryOpener(content),
+    )
+
+    assert record["created"] is False
+    assert record["file_sha256"] == hashlib.sha256(content).hexdigest()
+
+
+def test_upload_databricks_volume_file_path_exclusive_rejects_wrong_readback(
+    tmp_path,
+):
+    content = b"canonical-package"
+    source = tmp_path / "package.whl"
+    source.write_bytes(content)
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    uri = "dbfs:/Volumes/c/s/v/package.whl"
+    digest = hashlib.sha256(content).hexdigest()
+    conflict = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/package.whl",
+        409,
+        "Conflict",
+        {},
+        _BytesFile(b'{"error_code":"RESOURCE_ALREADY_EXISTS"}'),
+    )
+    with pytest.raises(RuntimeError, match="different remote file"):
+        upload_databricks_volume_file_path_exclusive(
+            config,
+            uri,
+            source,
+            expected_sha256=digest,
+            expected_size=len(content),
+            opener=_HTTPErrorOpener(conflict),
+            readback_opener=_StreamingBinaryOpener(b"different-package"),
+        )
+    with pytest.raises(RuntimeError, match="post-PUT readback"):
+        upload_databricks_volume_file_path_exclusive(
+            config,
+            uri,
+            source,
+            expected_sha256=digest,
+            expected_size=len(content),
+            opener=_ConsumingUploadOpener(),
+            readback_opener=_StreamingBinaryOpener(b"different-package"),
+        )
+    with pytest.raises(RuntimeError, match="post-PUT readback"):
+        upload_databricks_volume_file_path_exclusive(
+            config,
+            uri,
+            source,
+            expected_sha256=digest,
+            expected_size=len(content),
+            opener=_ConsumingUploadOpener(),
+            readback_opener=_StreamingBinaryOpener(content + b"x"),
+        )
+    missing = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/package.whl",
+        404,
+        "Not Found",
+        {},
+        _BytesFile(b'{"error_code":"RESOURCE_DOES_NOT_EXIST"}'),
+    )
+    with pytest.raises(RuntimeError, match="readback did not prove replay"):
+        upload_databricks_volume_file_path_exclusive(
+            config,
+            uri,
+            source,
+            expected_sha256=digest,
+            expected_size=len(content),
+            opener=_ExceptionOpener(TimeoutError("lost")),
+            readback_opener=_HTTPErrorOpener(missing),
+        )
+    raw_conflict_record = upload_databricks_volume_file_path_exclusive(
+        config,
+        uri,
+        source,
+        expected_sha256=digest,
+        expected_size=len(content),
+        opener=_ConsumingUploadOpener(response_status=409),
+        readback_opener=_StreamingBinaryOpener(content),
+    )
+    assert raw_conflict_record["created"] is False
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "headers", "error_match"),
+    (
+        (200, b"", {}, "unexpected HTTP status"),
+        (204.0, b"", {}, "unexpected HTTP status"),
+        (400.0, b"", {}, "unexpected HTTP status"),
+        (204, b"unexpected", {}, "body is not empty"),
+        (204, b"", {"content-length": "1"}, "content-length is not zero"),
+        (204, b"", {"content-encoding": "gzip"}, "content-encoding"),
+        (204, b"", {"transfer-encoding": "chunked"}, "transfer-encoding"),
+    ),
+)
+def test_upload_databricks_volume_file_path_exclusive_rejects_response_anomalies(
+    tmp_path,
+    status,
+    payload,
+    headers,
+    error_match,
+):
+    content = b"canonical-package"
+    source = tmp_path / "package.whl"
+    source.write_bytes(content)
+    with pytest.raises(RuntimeError, match=error_match):
+        upload_databricks_volume_file_path_exclusive(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/package.whl",
+            source,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_size=len(content),
+            opener=_ConsumingUploadOpener(
+                response_payload=payload,
+                response_status=status,
+                response_headers=headers,
+            ),
+        )
+
+
+def test_upload_databricks_volume_file_path_exclusive_redacts_errors(tmp_path):
+    content = b"canonical-package"
+    source = tmp_path / "package.whl"
+    source.write_bytes(content)
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/files/Volumes/c/s/v/package.whl",
+        403,
+        "Forbidden",
+        {},
+        _BytesFile(b'{"message":"Bearer secret-token token=secret-token"}'),
+    )
+    with pytest.raises(RuntimeError, match="HTTP 403") as excinfo:
+        upload_databricks_volume_file_path_exclusive(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/package.whl",
+            source,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_size=len(content),
+            opener=_HTTPErrorOpener(error),
+        )
+    assert "secret-token" not in str(excinfo.value)
+    assert "secret-token" not in "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
+
+    with pytest.raises(RuntimeError, match="exclusive path upload failed") as excinfo:
+        upload_databricks_volume_file_path_exclusive(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/package.whl",
+            source,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_size=len(content),
+            opener=_ExceptionOpener(RuntimeError("Bearer secret-token")),
+        )
+    assert "secret-token" not in "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
+
+    with pytest.raises(RuntimeError, match="readback did not prove replay") as excinfo:
+        upload_databricks_volume_file_path_exclusive(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            "dbfs:/Volumes/c/s/v/package.whl",
+            source,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            expected_size=len(content),
+            opener=_ExceptionOpener(
+                urllib.error.URLError("Bearer secret-token")
+            ),
+            readback_opener=_ExceptionOpener(
+                urllib.error.URLError("token=secret-token")
+            ),
+        )
+    assert "secret-token" not in "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
+
+
+def test_create_databricks_volume_directory_idempotent_uses_official_put():
+    opener = _BinaryOpener(
+        b"",
+        status=204,
+        headers={"content-length": "0"},
+    )
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/", "secret-token", timeout_seconds=23
+    )
+    uri = "dbfs:/Volumes/catalog/schema/volume/runtime/package wheels"
+
+    record = create_databricks_volume_directory_idempotent(
+        config,
+        uri,
+        opener=opener,
+    )
+
+    assert record == {"dbfs_uri": uri}
+    request = opener.requests[0]
+    assert request.get_method() == "PUT"
+    assert request.full_url.endswith(
+        "/api/2.0/fs/directories/Volumes/catalog/schema/volume/runtime/"
+        "package%20wheels"
+    )
+    assert request.data is None
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert request.headers["Content-length"] == "0"
+    assert opener.timeouts == [23]
+
+
+@pytest.mark.parametrize("failure", (400, 409, "timeout"))
+def test_create_databricks_volume_directory_idempotent_proves_uncertain_outcome(
+    failure,
+):
+    if isinstance(failure, int):
+        error = urllib.error.HTTPError(
+            "https://dbc.example/api/2.0/fs/directories/Volumes/c/s/v/runtime",
+            failure,
+            "Conflict",
+            {},
+            _BytesFile(b'{"error_code":"RESOURCE_ALREADY_EXISTS"}'),
+        )
+        put = _HTTPErrorOpener(error)
+    else:
+        put = _ExceptionOpener(TimeoutError("accepted response lost"))
+    proof = _BinaryOpener(
+        b"",
+        status=200,
+        headers={"content-length": "0"},
+    )
+    uri = "dbfs:/Volumes/c/s/v/runtime/nested"
+
+    assert create_databricks_volume_directory_idempotent(
+        DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+        uri,
+        opener=put,
+        proof_opener=proof,
+    ) == {"dbfs_uri": uri}
+    assert proof.requests[0].get_method() == "HEAD"
+    assert proof.requests[0].headers["Authorization"] == "Bearer secret-token"
+    assert proof.requests[0].full_url.endswith("/Volumes/c/s/v/runtime/nested")
+
+
+def test_create_databricks_volume_directory_idempotent_rejects_anomalies_and_redacts():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    opener = _BinaryOpener(b"", status=204)
+    with pytest.raises(ValueError, match="canonical"):
+        create_databricks_volume_directory_idempotent(
+            config,
+            "dbfs:/Volumes/c/s/v/runtime/../escape",
+            opener=opener,
+        )
+    assert opener.requests == []
+
+    with pytest.raises(RuntimeError, match="body is not empty"):
+        create_databricks_volume_directory_idempotent(
+            config,
+            "dbfs:/Volumes/c/s/v/runtime",
+            opener=_BinaryOpener(b"unexpected", status=204),
+        )
+
+    with pytest.raises(RuntimeError, match="unexpected HTTP status"):
+        create_databricks_volume_directory_idempotent(
+            config,
+            "dbfs:/Volumes/c/s/v/runtime",
+            opener=_BinaryOpener(b"", status=204.0),
+        )
+
+    assert create_databricks_volume_directory_idempotent(
+        config,
+        "dbfs:/Volumes/c/s/v/runtime",
+        opener=_BinaryOpener(b"conflict", status=409),
+        proof_opener=_BinaryOpener(
+            b"",
+            status=200,
+            headers={"content-length": "0"},
+        ),
+    ) == {"dbfs_uri": "dbfs:/Volumes/c/s/v/runtime"}
+
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/fs/directories/Volumes/c/s/v/runtime",
+        403,
+        "Forbidden",
+        {},
+        _BytesFile(b'{"message":"Bearer secret-token token=secret-token"}'),
+    )
+    with pytest.raises(RuntimeError, match="HTTP 403") as excinfo:
+        create_databricks_volume_directory_idempotent(
+            config,
+            "dbfs:/Volumes/c/s/v/runtime",
+            opener=_HTTPErrorOpener(error),
+        )
+    assert "secret-token" not in str(excinfo.value)
+    assert "secret-token" not in "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
+
+    with pytest.raises(RuntimeError, match="directory create failed") as excinfo:
+        create_databricks_volume_directory_idempotent(
+            config,
+            "dbfs:/Volumes/c/s/v/runtime",
+            opener=_ExceptionOpener(RuntimeError("Bearer secret-token")),
+        )
+    assert "secret-token" not in "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
+
+    with pytest.raises(RuntimeError, match="existence proof failed") as excinfo:
+        create_databricks_volume_directory_idempotent(
+            config,
+            "dbfs:/Volumes/c/s/v/runtime",
+            opener=_ExceptionOpener(
+                urllib.error.URLError("Bearer secret-token")
+            ),
+            proof_opener=_ExceptionOpener(
+                RuntimeError("token=secret-token")
+            ),
+        )
+    assert "secret-token" not in "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
 
 
 def test_put_databricks_dbfs_file_posts_base64_payload_with_bearer_token(tmp_path):
@@ -2804,6 +3623,9 @@ def test_databricks_http_errors_are_sanitized():
         get_databricks_run(config, 123, opener=opener)
 
     assert "secret-token" not in str(excinfo.value)
+    assert "secret-token" not in "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
 
 
 def test_databricks_http_error_body_echoed_credentials_are_redacted():
@@ -2826,6 +3648,9 @@ def test_databricks_http_error_body_echoed_credentials_are_redacted():
     assert "secret-token" not in error
     assert "Bearer [REDACTED]" in error
     assert "token=[REDACTED]" in error
+    assert "secret-token" not in "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
 
 
 def test_read_and_write_databricks_run_json_helpers(tmp_path):
@@ -2852,7 +3677,8 @@ class _FakeResponse:
     status = 200
 
     def __init__(self, payload):
-        self._payload = payload
+        self._payload = json.dumps(payload).encode("utf-8")
+        self._offset = 0
 
     def __enter__(self):
         return self
@@ -2860,8 +3686,15 @@ class _FakeResponse:
     def __exit__(self, exc_type, exc, traceback):
         return False
 
-    def read(self):
-        return json.dumps(self._payload).encode("utf-8")
+    def read(self, amt=-1):
+        end = (
+            len(self._payload)
+            if amt < 0
+            else min(len(self._payload), self._offset + amt)
+        )
+        chunk = self._payload[self._offset : end]
+        self._offset = end
+        return chunk
 
 
 class _FakeOpener:
@@ -2889,8 +3722,17 @@ class _SequentialOpener:
 
 
 class _BinaryResponse:
-    def __init__(self, payload, *, status=200, headers=None):
+    def __init__(
+        self,
+        payload,
+        *,
+        status=200,
+        headers=None,
+        oversized_reads=False,
+    ):
         self._payload = payload
+        self._offset = 0
+        self._oversized_reads = oversized_reads
         self.status = status
         self.headers = {} if headers is None else dict(headers)
         self.read_limits = []
@@ -2903,12 +3745,33 @@ class _BinaryResponse:
 
     def read(self, amt=-1):
         self.read_limits.append(amt)
-        return self._payload
+        if self._oversized_reads:
+            return self._payload
+        end = (
+            len(self._payload)
+            if amt < 0
+            else min(len(self._payload), self._offset + amt)
+        )
+        chunk = self._payload[self._offset : end]
+        self._offset = end
+        return chunk
 
 
 class _BinaryOpener:
-    def __init__(self, payload, *, status=200, headers=None):
-        self.response = _BinaryResponse(payload, status=status, headers=headers)
+    def __init__(
+        self,
+        payload,
+        *,
+        status=200,
+        headers=None,
+        oversized_reads=False,
+    ):
+        self.response = _BinaryResponse(
+            payload,
+            status=status,
+            headers=headers,
+            oversized_reads=oversized_reads,
+        )
         self.requests = []
         self.timeouts = []
 
@@ -2959,6 +3822,123 @@ class _StreamingBinaryOpener:
         self.requests.append(request)
         self.timeouts.append(timeout)
         return self.response
+
+
+class _ConsumingUploadOpener:
+    def __init__(
+        self,
+        *,
+        response_payload=b"",
+        response_status=204,
+        response_headers=None,
+        before_consume=None,
+        after_chunk=None,
+    ):
+        self._response_payload = response_payload
+        self._response_status = response_status
+        self._response_headers = response_headers
+        self._before_consume = before_consume
+        self._after_chunk = after_chunk
+        self.requests = []
+        self.timeouts = []
+        self.chunk_sizes = []
+        self.total_bytes = 0
+        self.sha256 = hashlib.sha256(b"").hexdigest()
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        self.timeouts.append(timeout)
+        if self._before_consume is not None:
+            self._before_consume()
+        digest = hashlib.sha256()
+        for chunk_count, chunk in enumerate(request.data, start=1):
+            assert type(chunk) is bytes
+            self.chunk_sizes.append(len(chunk))
+            self.total_bytes += len(chunk)
+            digest.update(chunk)
+            if self._after_chunk is not None:
+                self._after_chunk(chunk_count)
+        self.sha256 = digest.hexdigest()
+        return _BinaryResponse(
+            self._response_payload,
+            status=self._response_status,
+            headers=self._response_headers,
+        )
+
+
+class _GeneratedZeroStreamingResponse:
+    def __init__(self, size_bytes):
+        self._size_bytes = size_bytes
+        self._offset = 0
+        self.status = 200
+        self.headers = {"content-length": str(size_bytes)}
+        self.read_limits = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, amt=-1):
+        self.read_limits.append(amt)
+        remaining = self._size_bytes - self._offset
+        read_size = remaining if amt < 0 else min(remaining, amt)
+        self._offset += read_size
+        return b"\0" * read_size
+
+
+class _GeneratedZeroStreamingOpener:
+    def __init__(self, size_bytes):
+        self.response = _GeneratedZeroStreamingResponse(size_bytes)
+        self.requests = []
+        self.timeouts = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        self.timeouts.append(timeout)
+        return self.response
+
+
+class _RedirectingHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, status_code, redirect_url="http://attacker.example/steal"):
+        super().__init__()
+        self._status_code = status_code
+        self._redirect_url = redirect_url
+        self.requests = []
+
+    def http_open(self, request):
+        self.requests.append(request)
+        if len(self.requests) > 1:
+            response = urllib.response.addinfourl(
+                io.BytesIO(b'{"attacker":true}'),
+                Message(),
+                request.full_url,
+                code=200,
+            )
+            response.msg = "OK"
+            return response
+        headers = Message()
+        headers["Location"] = self._redirect_url
+        response = urllib.response.addinfourl(
+            io.BytesIO(b'{"redirect":true}'),
+            headers,
+            request.full_url,
+            code=self._status_code,
+        )
+        response.msg = "Bearer secret-token redirect"
+        return response
+
+
+def _repeated_zero_sha256(size_bytes):
+    digest = hashlib.sha256()
+    chunk = b"\0" * (1024 * 1024)
+    remaining = size_bytes
+    while remaining:
+        read_size = min(len(chunk), remaining)
+        digest.update(chunk[:read_size])
+        remaining -= read_size
+    return digest.hexdigest()
 
 
 class _SequentialBinaryOpener:

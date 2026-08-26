@@ -67,7 +67,8 @@ class _FakeDatabricksResponse:
     status = 200
 
     def __init__(self, payload):
-        self._payload = payload
+        self._payload = json.dumps(payload).encode("utf-8")
+        self._offset = 0
 
     def __enter__(self):
         return self
@@ -75,8 +76,15 @@ class _FakeDatabricksResponse:
     def __exit__(self, exc_type, exc, traceback):
         return False
 
-    def read(self):
-        return json.dumps(self._payload).encode("utf-8")
+    def read(self, amt=-1):
+        end = (
+            len(self._payload)
+            if amt < 0
+            else min(len(self._payload), self._offset + amt)
+        )
+        chunk = self._payload[self._offset : end]
+        self._offset = end
+        return chunk
 
 
 class _FakeDatabricksOpener:

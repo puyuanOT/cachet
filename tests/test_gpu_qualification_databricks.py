@@ -118,7 +118,8 @@ class _FakeResponse:
     status = 200
 
     def __init__(self, payload: dict[str, Any]):
-        self._payload = payload
+        self._body = json.dumps(payload).encode()
+        self._offset = 0
 
     def __enter__(self):
         return self
@@ -126,8 +127,13 @@ class _FakeResponse:
     def __exit__(self, exc_type, exc, traceback):
         return False
 
-    def read(self) -> bytes:
-        return json.dumps(self._payload).encode()
+    def read(self, amt: int = -1) -> bytes:
+        if amt < 0:
+            amt = len(self._body) - self._offset
+        end = min(self._offset + amt, len(self._body))
+        chunk = self._body[self._offset : end]
+        self._offset = end
+        return chunk
 
 
 class _SequentialOpener:

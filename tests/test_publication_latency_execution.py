@@ -555,7 +555,8 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
         status = 200
 
         def __init__(self, run_id):
-            self.run_id = run_id
+            self._body = json.dumps({"run_id": run_id}).encode()
+            self._offset = 0
 
         def __enter__(self):
             return self
@@ -563,8 +564,13 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
         def __exit__(self, *_args):
             return False
 
-        def read(self):
-            return json.dumps({"run_id": self.run_id}).encode()
+        def read(self, amt=-1):
+            if amt < 0:
+                amt = len(self._body) - self._offset
+            end = min(self._offset + amt, len(self._body))
+            chunk = self._body[self._offset : end]
+            self._offset = end
+            return chunk
 
     with pytest.raises(TimeoutError, match="lost response"):
         execution.submit_publication_latency_launch_wave(
@@ -1307,14 +1313,23 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
     class Response:
         status = 200
 
+        def __init__(self):
+            self._body = b'{"run_id":101}'
+            self._offset = 0
+
         def __enter__(self):
             return self
 
         def __exit__(self, *_args):
             return False
 
-        def read(self):
-            return b'{"run_id":101}'
+        def read(self, amt=-1):
+            if amt < 0:
+                amt = len(self._body) - self._offset
+            end = min(self._offset + amt, len(self._body))
+            chunk = self._body[self._offset : end]
+            self._offset = end
+            return chunk
 
     submission, authorization = execution.resume_publication_latency_source_closure(
         workspace,

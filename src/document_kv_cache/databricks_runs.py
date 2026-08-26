@@ -7,13 +7,14 @@ import base64
 import hashlib
 from contextlib import contextmanager
 from configparser import ConfigParser
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 import fcntl
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 from typing import Any, Protocol, cast
 import urllib.error
 import urllib.parse
@@ -84,7 +85,9 @@ __all__ = [
     "list_active_databricks_runs",
     "list_databricks_node_types",
     "list_databricks_volume_directory",
+    "create_databricks_volume_directory_idempotent",
     "upload_databricks_volume_file_bytes_exclusive",
+    "upload_databricks_volume_file_path_exclusive",
     "put_databricks_dbfs_file",
     "plan_databricks_stage_and_submit",
     "stage_and_submit_databricks_run",
@@ -259,7 +262,7 @@ class DatabricksHTTPResponse(Protocol):
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool: ...
 
-    def read(self) -> bytes: ...
+    def read(self, amt: int = -1) -> bytes: ...
 
 
 class DatabricksBinaryHTTPResponse(Protocol):
@@ -277,6 +280,131 @@ class DatabricksBinaryURLOpener(Protocol):
     def __call__(
         self, request: urllib.request.Request, *, timeout: float
     ) -> DatabricksBinaryHTTPResponse: ...
+
+
+class _DatabricksNoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject every redirect before a bearer-authenticated follow-up request."""
+
+    def redirect_request(
+        self,
+        _request: urllib.request.Request,
+        _file_pointer: Any,
+        _status_code: int,
+        _message: str,
+        _headers: Any,
+        _new_url: str,
+    ) -> None:
+        return None
+
+
+def _databricks_no_redirect_urlopen(
+    request: urllib.request.Request,
+    *,
+    timeout: float,
+) -> DatabricksBinaryHTTPResponse:
+    opener = urllib.request.build_opener(_DatabricksNoRedirectHandler())
+    return cast(
+        DatabricksBinaryHTTPResponse,
+        opener.open(request, timeout=timeout),
+    )
+
+
+class _DatabricksLocalUploadError(RuntimeError):
+    """A local source invariant failed before an upload could be trusted."""
+
+
+class _DatabricksStreamingUploadBody:
+    """Single-use bounded iterable over one already-verified file descriptor."""
+
+    def __init__(
+        self,
+        file_descriptor: int,
+        source_path: Path,
+        identity: tuple[int, ...],
+        size_bytes: int,
+    ) -> None:
+        self._file_descriptor = file_descriptor
+        self._source_path = source_path
+        self._identity = identity
+        self._size_bytes = size_bytes
+        self._started = False
+        self._complete = False
+        self._digest = hashlib.sha256()
+
+    def __iter__(self) -> Iterator[bytes]:
+        if self._started:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload body is single-use"
+            )
+        self._started = True
+        sent_bytes = 0
+        while sent_bytes < self._size_bytes:
+            _require_stable_databricks_local_upload_source(
+                self._file_descriptor,
+                self._source_path,
+                self._identity,
+            )
+            read_size = min(
+                _DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES,
+                self._size_bytes - sent_bytes,
+            )
+            try:
+                chunk = os.read(self._file_descriptor, read_size)
+            except OSError:
+                raise _DatabricksLocalUploadError(
+                    "Databricks Files API local upload source read failed"
+                ) from None
+            if type(chunk) is not bytes:
+                raise _DatabricksLocalUploadError(
+                    "Databricks Files API local upload source chunk must be bytes"
+                )
+            if not chunk:
+                raise _DatabricksLocalUploadError(
+                    "Databricks Files API local upload source ended before its "
+                    "verified size"
+                )
+            if len(chunk) > read_size:
+                raise _DatabricksLocalUploadError(
+                    "Databricks Files API local upload source exceeded the chunk "
+                    "byte cap"
+                )
+            sent_bytes += len(chunk)
+            self._digest.update(chunk)
+            _require_stable_databricks_local_upload_source(
+                self._file_descriptor,
+                self._source_path,
+                self._identity,
+            )
+            yield chunk
+        try:
+            trailing = os.read(self._file_descriptor, 1)
+        except OSError:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source EOF probe failed"
+            ) from None
+        if type(trailing) is not bytes:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source EOF probe must return bytes"
+            )
+        if trailing:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source contains bytes beyond its "
+                "verified size"
+            )
+        _require_stable_databricks_local_upload_source(
+            self._file_descriptor,
+            self._source_path,
+            self._identity,
+        )
+        self._complete = True
+
+    @property
+    def complete(self) -> bool:
+        return self._complete
+
+    @property
+    def sha256(self) -> str:
+        return self._digest.hexdigest()
 
 
 class DatabricksPreReservedPostClaimExistsError(RuntimeError):
@@ -381,7 +509,7 @@ def databricks_workspace_config_from_sdk_profile(
         message = _redact_databricks_secret_text(str(exc))
         raise ValueError(
             f"Databricks SDK profile {profile_name!r} could not be loaded: {message}"
-        ) from exc
+        ) from None
     resolved_host = str(getattr(sdk_config, "host", "") or host).strip()
     try:
         auth_headers = sdk_config.authenticate()
@@ -389,7 +517,7 @@ def databricks_workspace_config_from_sdk_profile(
         message = _redact_databricks_secret_text(str(exc))
         raise ValueError(
             f"Databricks SDK profile {profile_name!r} could not authenticate: {message}"
-        ) from exc
+        ) from None
     token = _databricks_bearer_token(auth_headers)
     if not token:
         raise ValueError(
@@ -425,11 +553,11 @@ def _databricks_sdk_config(
 ) -> Any:
     try:
         from databricks.sdk.core import Config
-    except ModuleNotFoundError as exc:
+    except ModuleNotFoundError:
         raise ValueError(
             "Databricks SDK profile auth requires installing the databricks extra "
             "with cachet-kv[databricks]"
-        ) from exc
+        ) from None
     env_snapshot = _unset_environment(_databricks_sdk_profile_env_names(Config))
     try:
         return Config(
@@ -442,7 +570,7 @@ def _databricks_sdk_config(
         message = _redact_databricks_secret_text(str(exc))
         raise ValueError(
             f"Databricks SDK profile {profile_name!r} could not be loaded: {message}"
-        ) from exc
+        ) from None
     finally:
         _restore_environment(env_snapshot)
 
@@ -557,7 +685,7 @@ def submit_databricks_run(
     config: DatabricksWorkspaceConfig,
     payload: dict[str, Any],
     *,
-    opener: DatabricksURLOpener = urllib.request.urlopen,
+    opener: DatabricksURLOpener = _databricks_no_redirect_urlopen,
 ) -> dict[str, Any]:
     return _databricks_api_json(
         config,
@@ -586,7 +714,9 @@ def reserve_and_submit_databricks_run(
     """
 
     resolved_opener = (
-        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
+        cast(DatabricksURLOpener, _databricks_no_redirect_urlopen)
+        if opener is None
+        else opener
     )
     snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
     payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
@@ -647,7 +777,9 @@ def submit_pre_reserved_databricks_run(
     """Submit one member only after its exact batch was atomically reserved."""
 
     resolved_opener = (
-        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
+        cast(DatabricksURLOpener, _databricks_no_redirect_urlopen)
+        if opener is None
+        else opener
     )
     snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
     payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
@@ -723,7 +855,9 @@ def recover_pre_reserved_databricks_run(
     """
 
     resolved_opener = (
-        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
+        cast(DatabricksURLOpener, _databricks_no_redirect_urlopen)
+        if opener is None
+        else opener
     )
     snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
     payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
@@ -1029,7 +1163,7 @@ def reserve_and_submit_databricks_run_json(
 def check_databricks_auth(
     config: DatabricksWorkspaceConfig,
     *,
-    opener: DatabricksURLOpener = urllib.request.urlopen,
+    opener: DatabricksURLOpener = _databricks_no_redirect_urlopen,
 ) -> dict[str, Any]:
     response, status = _databricks_api_response_json(
         config,
@@ -1067,7 +1201,9 @@ def require_databricks_current_user_name(
     ):
         raise ValueError("expected_user_name must be a normalized non-empty string")
     resolved_opener = (
-        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
+        cast(DatabricksURLOpener, _databricks_no_redirect_urlopen)
+        if opener is None
+        else opener
     )
     response, status = _databricks_api_response_json(
         config,
@@ -1102,7 +1238,7 @@ def get_databricks_run(
     config: DatabricksWorkspaceConfig,
     run_id: int | str,
     *,
-    opener: DatabricksURLOpener = urllib.request.urlopen,
+    opener: DatabricksURLOpener = _databricks_no_redirect_urlopen,
 ) -> dict[str, Any]:
     run_id_text = str(run_id)
     if not run_id_text:
@@ -1136,7 +1272,7 @@ def get_databricks_run_output(
         payload=None,
     )
     resolved_opener = (
-        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        _databricks_no_redirect_urlopen
         if opener is None
         else opener
     )
@@ -1163,7 +1299,7 @@ def list_active_databricks_runs(
         label="max_runs",
     )
     resolved_opener = (
-        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        _databricks_no_redirect_urlopen
         if opener is None
         else opener
     )
@@ -1270,7 +1406,7 @@ def list_databricks_node_types(
         },
     )
     resolved_opener = (
-        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        _databricks_no_redirect_urlopen
         if opener is None
         else opener
     )
@@ -1348,31 +1484,38 @@ def download_databricks_volume_file_bytes(
         },
     )
     resolved_opener = (
-        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        _databricks_no_redirect_urlopen
         if opener is None
         else opener
     )
     try:
         with resolved_opener(request, timeout=config.timeout_seconds) as response:
             status = getattr(response, "status", None)
-            if status != 200:
+            if type(status) is not int or status != 200:
                 raise RuntimeError(
                     f"Databricks Files API returned unexpected HTTP status {status!r}"
                 )
-            content = response.read(max_bytes + 1)
-    except urllib.error.HTTPError as exc:
-        error_content = exc.read(_DATABRICKS_ERROR_BODY_MAX_BYTES + 1)
-        if len(error_content) > _DATABRICKS_ERROR_BODY_MAX_BYTES:
-            error_content = (
-                error_content[:_DATABRICKS_ERROR_BODY_MAX_BYTES] + b"...[truncated]"
+            content = _read_databricks_response_bytes_bounded(
+                response,
+                max_bytes=max_bytes,
+                label="Databricks Files API response",
             )
-        body = error_content.decode("utf-8", errors="replace")
-        raise RuntimeError(
-            _format_databricks_http_error(exc.code, body, token=config.token)
-        ) from exc
+    except urllib.error.HTTPError as exc:
+        raise _databricks_binary_http_error(exc, token=config.token) from None
     except urllib.error.URLError as exc:
         reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
-        raise RuntimeError(f"Databricks request failed: {reason}") from exc
+        raise RuntimeError(f"Databricks request failed: {reason}") from None
+    except TimeoutError as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise TimeoutError(reason) from None
+    except ConnectionError as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise ConnectionError(reason) from None
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise RuntimeError(
+            f"Databricks Files API download failed: {reason}"
+        ) from None
     if not isinstance(content, bytes):
         raise RuntimeError("Databricks Files API response body must be bytes")
     if len(content) > max_bytes:
@@ -1414,14 +1557,14 @@ def stream_databricks_volume_file_sha256(
         },
     )
     resolved_opener = (
-        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        _databricks_no_redirect_urlopen
         if opener is None
         else opener
     )
     try:
         with resolved_opener(request, timeout=config.timeout_seconds) as response:
             status = getattr(response, "status", None)
-            if status != 200:
+            if type(status) is not int or status != 200:
                 raise RuntimeError(
                     "Databricks Files API stream returned unexpected HTTP "
                     f"status {status!r}"
@@ -1430,6 +1573,11 @@ def stream_databricks_volume_file_sha256(
             if raw_headers is None or not hasattr(raw_headers, "get"):
                 raise RuntimeError(
                     "Databricks Files API stream response headers are missing"
+                )
+            transfer_encoding = raw_headers.get("transfer-encoding")
+            if transfer_encoding not in (None, ""):
+                raise RuntimeError(
+                    "Databricks Files API stream transfer-encoding is unexpected"
                 )
             content_length = _required_databricks_content_length(
                 raw_headers.get("content-length"),
@@ -1475,13 +1623,15 @@ def stream_databricks_volume_file_sha256(
                     "Databricks Files API stream contains bytes beyond content-length"
                 )
     except urllib.error.HTTPError as exc:
-        raise _databricks_binary_http_error(exc, token=config.token) from exc
+        raise _databricks_binary_http_error(exc, token=config.token) from None
     except urllib.error.URLError as exc:
         reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
-        raise RuntimeError(f"Databricks request failed: {reason}") from exc
+        raise RuntimeError(f"Databricks request failed: {reason}") from None
     except Exception as exc:
         reason = _redact_databricks_secret_text(str(exc), token=config.token)
-        raise RuntimeError(reason or "Databricks Files API stream failed") from exc
+        raise RuntimeError(
+            reason or "Databricks Files API stream failed"
+        ) from None
     if size_bytes != content_length:
         raise AssertionError("Databricks Files API stream size accounting drift")
     return {
@@ -1521,14 +1671,14 @@ def get_databricks_volume_file_metadata(
         },
     )
     resolved_opener = (
-        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        _databricks_no_redirect_urlopen
         if opener is None
         else opener
     )
     try:
         with resolved_opener(request, timeout=config.timeout_seconds) as response:
             status = getattr(response, "status", None)
-            if status != 200:
+            if type(status) is not int or status != 200:
                 raise RuntimeError(
                     "Databricks Files API metadata returned unexpected HTTP "
                     f"status {status!r}"
@@ -1543,18 +1693,23 @@ def get_databricks_volume_file_metadata(
             last_modified_raw = raw_headers.get("last-modified")
             unexpected_body = response.read(1)
     except urllib.error.HTTPError as exc:
-        raise _databricks_binary_http_error(exc, token=config.token) from exc
+        raise _databricks_binary_http_error(exc, token=config.token) from None
     except urllib.error.URLError as exc:
         reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
-        raise RuntimeError(f"Databricks request failed: {reason}") from exc
+        raise RuntimeError(f"Databricks request failed: {reason}") from None
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise RuntimeError(
+            f"Databricks Files API metadata failed: {reason}"
+        ) from None
     if unexpected_body != b"":
         raise RuntimeError("Databricks Files API metadata response body is not empty")
     try:
         content_length = int(content_length_raw)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError):
         raise RuntimeError(
             "Databricks Files API metadata content-length is invalid"
-        ) from exc
+        ) from None
     if content_length < 0 or content_length > max_bytes:
         raise RuntimeError(
             "Databricks Files API metadata content-length exceeds the controller "
@@ -1617,7 +1772,7 @@ def upload_databricks_volume_file_bytes_exclusive(
         },
     )
     resolved_opener = (
-        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        _databricks_no_redirect_urlopen
         if opener is None
         else opener
     )
@@ -1625,7 +1780,7 @@ def upload_databricks_volume_file_bytes_exclusive(
     try:
         with resolved_opener(request, timeout=config.timeout_seconds) as response:
             status = getattr(response, "status", None)
-            if status != 204:
+            if type(status) is not int or status != 204:
                 raise RuntimeError(
                     "Databricks Files API exclusive upload returned unexpected "
                     f"HTTP status {status!r}"
@@ -1637,10 +1792,15 @@ def upload_databricks_volume_file_bytes_exclusive(
                 )
     except urllib.error.HTTPError as exc:
         if exc.code not in {400, 409}:
-            raise _databricks_binary_http_error(exc, token=config.token) from exc
+            raise _databricks_binary_http_error(exc, token=config.token) from None
         replay_reason = exc
     except (urllib.error.URLError, TimeoutError) as exc:
         replay_reason = exc
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise RuntimeError(
+            f"Databricks Files API exclusive upload failed: {reason}"
+        ) from None
     if replay_reason is not None:
         resolved_readback_opener = readback_opener
         if resolved_readback_opener is None:
@@ -1652,26 +1812,26 @@ def upload_databricks_volume_file_bytes_exclusive(
                 max_bytes=max_bytes,
                 opener=resolved_readback_opener,
             )
-        except Exception as readback_error:
+        except Exception:
             if isinstance(replay_reason, urllib.error.HTTPError):
                 formatted = _databricks_binary_http_error(
                     replay_reason, token=config.token
                 )
                 raise RuntimeError(
                     f"{formatted}; exclusive upload readback did not prove replay"
-                ) from readback_error
+                ) from None
             reason = _redact_databricks_secret_text(
                 str(replay_reason), token=config.token
             )
             raise RuntimeError(
                 "Databricks Files API exclusive upload outcome was uncertain and "
                 f"readback did not prove replay: {reason}"
-            ) from readback_error
+            ) from None
         if existing != content:
             raise RuntimeError(
                 "Databricks Files API exclusive upload conflicts with different "
                 "existing bytes"
-            ) from replay_reason
+            ) from None
         created = False
     else:
         created = True
@@ -1681,6 +1841,316 @@ def upload_databricks_volume_file_bytes_exclusive(
         "file_sha256": hashlib.sha256(content).hexdigest(),
         "size_bytes": len(content),
     }
+
+
+def upload_databricks_volume_file_path_exclusive(
+    config: DatabricksWorkspaceConfig,
+    dbfs_uri: str,
+    local_path: str | Path,
+    *,
+    expected_sha256: str,
+    expected_size: int,
+    max_bytes: int = DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES,
+    opener: DatabricksBinaryURLOpener | None = None,
+    readback_opener: DatabricksBinaryURLOpener | None = None,
+) -> dict[str, Any]:
+    """Exclusively stream one pinned local file to a UC Volume.
+
+    The source is opened once with ``O_NOFOLLOW`` and must be a canonical,
+    same-user, single-link regular file.  Its exact bytes are hashed before the
+    PUT through that descriptor, then streamed from the rewound descriptor in
+    bounded chunks with an explicit ``Content-Length``.  A streaming remote
+    SHA-256/size proof is mandatory both after a new 204 response and when a
+    400, 409, URL, or timeout error makes the exclusive PUT outcome uncertain.
+    """
+
+    volume_path = _canonical_databricks_volume_file_path(dbfs_uri)
+    _validate_databricks_volume_byte_cap(
+        max_bytes,
+        upper_bound=DATABRICKS_VOLUME_FILE_MAX_STREAM_BYTES,
+        label="max_bytes",
+    )
+    pinned_sha256 = _required_databricks_sha256(
+        expected_sha256,
+        label="expected_sha256",
+    )
+    if (
+        type(expected_size) is not int
+        or expected_size < 0
+        or expected_size > max_bytes
+    ):
+        raise ValueError(
+            "expected_size must be a non-negative integer no greater than max_bytes"
+        )
+    source_path = _canonical_databricks_local_upload_path(local_path)
+    file_descriptor = _open_databricks_local_upload_source(source_path)
+    try:
+        initial_stat = os.fstat(file_descriptor)
+        identity = _databricks_local_upload_identity(initial_stat)
+        _require_stable_databricks_local_upload_source(
+            file_descriptor,
+            source_path,
+            identity,
+        )
+        if initial_stat.st_size != expected_size:
+            raise ValueError(
+                "local upload source size does not match expected_size: "
+                f"{initial_stat.st_size} != {expected_size}"
+            )
+        observed_sha256 = _sha256_databricks_local_upload_source(
+            file_descriptor,
+            source_path,
+            identity,
+            expected_size=expected_size,
+        )
+        if observed_sha256 != pinned_sha256:
+            raise ValueError(
+                "local upload source SHA-256 does not match expected_sha256"
+            )
+        try:
+            offset = os.lseek(file_descriptor, 0, os.SEEK_SET)
+        except OSError:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source rewind failed"
+            ) from None
+        if offset != 0:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source rewind drifted"
+            )
+        _require_stable_databricks_local_upload_source(
+            file_descriptor,
+            source_path,
+            identity,
+        )
+
+        upload_body = _DatabricksStreamingUploadBody(
+            file_descriptor,
+            source_path,
+            identity,
+            expected_size,
+        )
+        encoded_path = urllib.parse.quote(volume_path, safe="/-._~")
+        request = urllib.request.Request(
+            f"{config.normalized_host}/api/2.0/fs/files{encoded_path}"
+            "?overwrite=false",
+            data=cast(Any, upload_body),
+            method="PUT",
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "Authorization": f"Bearer {config.token}",
+                "Content-Length": str(expected_size),
+                "Content-Type": "application/octet-stream",
+            },
+        )
+        resolved_opener = (
+            _databricks_no_redirect_urlopen
+            if opener is None
+            else opener
+        )
+        replay_reason: BaseException | None = None
+        try:
+            with resolved_opener(
+                request, timeout=config.timeout_seconds
+            ) as response:
+                status = getattr(response, "status", None)
+                if type(status) is int and status in {400, 409}:
+                    replay_reason = RuntimeError(
+                        "Databricks Files API exclusive path upload returned "
+                        f"HTTP {status}"
+                    )
+                elif type(status) is not int or status != 204:
+                    raise RuntimeError(
+                        "Databricks Files API exclusive path upload returned "
+                        f"unexpected HTTP status {status!r}"
+                    )
+                else:
+                    _require_empty_databricks_binary_response(
+                        response,
+                        label="Databricks Files API exclusive path upload",
+                    )
+        except _DatabricksLocalUploadError:
+            raise
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {400, 409}:
+                raise _databricks_binary_http_error(
+                    exc, token=config.token
+                ) from None
+            replay_reason = exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            replay_reason = exc
+        except Exception as exc:
+            reason = _redact_databricks_secret_text(
+                str(exc),
+                token=config.token,
+            )
+            raise RuntimeError(
+                "Databricks Files API exclusive path upload failed: "
+                f"{reason}"
+            ) from None
+        if replay_reason is None:
+            if not upload_body.complete:
+                raise RuntimeError(
+                    "Databricks Files API exclusive path upload did not consume "
+                    "the complete verified source"
+                )
+            if upload_body.sha256 != pinned_sha256:
+                raise _DatabricksLocalUploadError(
+                    "Databricks Files API local upload stream SHA-256 drifted"
+                )
+        _require_stable_databricks_local_upload_source(
+            file_descriptor,
+            source_path,
+            identity,
+        )
+
+        resolved_readback_opener = readback_opener
+        if resolved_readback_opener is None:
+            resolved_readback_opener = opener
+        try:
+            readback = stream_databricks_volume_file_sha256(
+                config,
+                dbfs_uri,
+                max_bytes=max(1, expected_size),
+                opener=resolved_readback_opener,
+            )
+        except Exception:
+            if isinstance(replay_reason, urllib.error.HTTPError):
+                formatted = _databricks_binary_http_error(
+                    replay_reason,
+                    token=config.token,
+                )
+                raise RuntimeError(
+                    f"{formatted}; exclusive path upload readback did not prove "
+                    "replay"
+                ) from None
+            if replay_reason is not None:
+                reason = _redact_databricks_secret_text(
+                    str(replay_reason),
+                    token=config.token,
+                )
+                raise RuntimeError(
+                    "Databricks Files API exclusive path upload outcome was "
+                    "uncertain and readback did not prove replay: "
+                    f"{reason}"
+                ) from None
+            raise RuntimeError(
+                "Databricks Files API exclusive path upload post-PUT readback "
+                "did not prove the remote file"
+            ) from None
+        if readback != {
+            "dbfs_uri": dbfs_uri,
+            "file_sha256": pinned_sha256,
+            "size_bytes": expected_size,
+        }:
+            if replay_reason is None:
+                raise RuntimeError(
+                    "Databricks Files API exclusive path upload post-PUT readback "
+                    "does not match the verified local file"
+                )
+            raise RuntimeError(
+                "Databricks Files API exclusive path upload conflicts with a "
+                "different remote file"
+            ) from None
+        _require_stable_databricks_local_upload_source(
+            file_descriptor,
+            source_path,
+            identity,
+        )
+        return {
+            "created": replay_reason is None,
+            "dbfs_uri": dbfs_uri,
+            "file_sha256": pinned_sha256,
+            "size_bytes": expected_size,
+        }
+    finally:
+        os.close(file_descriptor)
+
+
+def create_databricks_volume_directory_idempotent(
+    config: DatabricksWorkspaceConfig,
+    dbfs_uri: str,
+    *,
+    opener: DatabricksBinaryURLOpener | None = None,
+    proof_opener: DatabricksBinaryURLOpener | None = None,
+) -> dict[str, Any]:
+    """Create a canonical UC Volume directory, proving uncertain outcomes."""
+
+    directory_path = _canonical_databricks_volume_directory_path(dbfs_uri)
+    encoded_path = urllib.parse.quote(directory_path, safe="/-._~")
+    request = urllib.request.Request(
+        f"{config.normalized_host}/api/2.0/fs/directories{encoded_path}",
+        method="PUT",
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "Authorization": f"Bearer {config.token}",
+            "Content-Length": "0",
+        },
+    )
+    resolved_opener = (
+        _databricks_no_redirect_urlopen
+        if opener is None
+        else opener
+    )
+    uncertain_reason: BaseException | None = None
+    try:
+        with resolved_opener(request, timeout=config.timeout_seconds) as response:
+            status = getattr(response, "status", None)
+            if type(status) is int and status in {400, 409}:
+                uncertain_reason = RuntimeError(
+                    "Databricks Files API directory create returned "
+                    f"HTTP {status}"
+                )
+            elif type(status) is not int or status != 204:
+                raise RuntimeError(
+                    "Databricks Files API directory create returned unexpected "
+                    f"HTTP status {status!r}"
+                )
+            else:
+                _require_empty_databricks_binary_response(
+                    response,
+                    label="Databricks Files API directory create",
+                )
+    except urllib.error.HTTPError as exc:
+        if exc.code not in {400, 409}:
+            raise _databricks_binary_http_error(exc, token=config.token) from None
+        uncertain_reason = exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        uncertain_reason = exc
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise RuntimeError(
+            f"Databricks Files API directory create failed: {reason}"
+        ) from None
+    if uncertain_reason is not None:
+        resolved_proof_opener = proof_opener
+        if resolved_proof_opener is None:
+            resolved_proof_opener = opener
+        try:
+            _prove_databricks_volume_directory_exists(
+                config,
+                directory_path,
+                opener=resolved_proof_opener,
+            )
+        except Exception:
+            if isinstance(uncertain_reason, urllib.error.HTTPError):
+                formatted = _databricks_binary_http_error(
+                    uncertain_reason,
+                    token=config.token,
+                )
+                raise RuntimeError(
+                    f"{formatted}; directory existence proof failed"
+                ) from None
+            reason = _redact_databricks_secret_text(
+                str(uncertain_reason),
+                token=config.token,
+            )
+            raise RuntimeError(
+                "Databricks Files API directory create outcome was uncertain and "
+                f"existence proof failed: {reason}"
+            ) from None
+    return {"dbfs_uri": dbfs_uri}
 
 
 def list_databricks_volume_directory(
@@ -1710,7 +2180,7 @@ def list_databricks_volume_directory(
             f"{DATABRICKS_VOLUME_DIRECTORY_MAX_ENTRIES}"
         )
     resolved_opener = (
-        cast(DatabricksBinaryURLOpener, urllib.request.urlopen)
+        _databricks_no_redirect_urlopen
         if opener is None
         else opener
     )
@@ -1747,10 +2217,10 @@ def list_databricks_volume_directory(
         )
         try:
             page = json.loads(raw_page)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             raise RuntimeError(
                 "Databricks Files API directory listing was not valid UTF-8 JSON"
-            ) from exc
+            ) from None
         if not isinstance(page, dict) or set(page) - {
             "contents",
             "next_page_token",
@@ -1807,7 +2277,7 @@ def put_databricks_dbfs_file(
     dbfs_path: str,
     *,
     overwrite: bool = False,
-    opener: DatabricksURLOpener = urllib.request.urlopen,
+    opener: DatabricksURLOpener = _databricks_no_redirect_urlopen,
 ) -> dict[str, Any]:
     response, _metadata = _put_databricks_dbfs_file_response_and_metadata(
         config,
@@ -1825,7 +2295,7 @@ def _put_databricks_dbfs_file_record(
     dbfs_path: str,
     *,
     overwrite: bool = False,
-    opener: DatabricksURLOpener = urllib.request.urlopen,
+    opener: DatabricksURLOpener = _databricks_no_redirect_urlopen,
 ) -> dict[str, Any]:
     response, metadata = _put_databricks_dbfs_file_response_and_metadata(
         config,
@@ -1876,7 +2346,7 @@ def stage_and_submit_databricks_run(
     require_payload_dbfs_artifacts: bool = False,
     require_payload_staged_dbfs_artifacts: bool = False,
     preflight_auth_check: bool = False,
-    opener: DatabricksURLOpener = urllib.request.urlopen,
+    opener: DatabricksURLOpener = _databricks_no_redirect_urlopen,
 ) -> dict[str, Any]:
     prepared_artifacts = _prepare_databricks_stage_artifacts(
         payload,
@@ -2197,18 +2667,39 @@ def _databricks_api_response_json(
     )
     try:
         with opener(request, timeout=config.timeout_seconds) as response:
-            body = response.read().decode("utf-8")
             status = getattr(response, "status", None)
-            parsed = json.loads(body) if body else {}
+            if type(status) is not int or status != 200:
+                raise RuntimeError(
+                    "Databricks API response returned unexpected HTTP status "
+                    f"{status!r}"
+                )
+            raw_body = _read_databricks_response_bytes_bounded(
+                response,
+                max_bytes=DATABRICKS_API_PAGE_MAX_BYTES,
+                label="Databricks API response",
+            )
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            _format_databricks_http_error(exc.code, body, token=config.token)
-        ) from exc
+        raise _databricks_binary_http_error(exc, token=config.token) from None
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Databricks request failed: {exc.reason}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Databricks response was not valid JSON") from exc
+        reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
+        raise RuntimeError(f"Databricks request failed: {reason}") from None
+    except TimeoutError as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise TimeoutError(reason) from None
+    except ConnectionError as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise ConnectionError(reason) from None
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise RuntimeError(f"Databricks API response failed: {reason}") from None
+    try:
+        body = raw_body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise RuntimeError("Databricks response was not valid UTF-8") from None
+    try:
+        parsed = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        raise RuntimeError("Databricks response was not valid JSON") from None
     if not isinstance(parsed, dict):
         raise RuntimeError("Databricks response JSON must be an object")
     return parsed, status
@@ -3430,6 +3921,257 @@ def _canonical_databricks_volume_directory_path(dbfs_uri: str) -> str:
     return path.as_posix()
 
 
+def _required_databricks_sha256(value: Any, *, label: str) -> str:
+    if not isinstance(value, str) or _SHA256_HEX_RE.fullmatch(value) is None:
+        raise ValueError(f"{label} must be one lowercase hexadecimal SHA-256")
+    return value
+
+
+def _canonical_databricks_local_upload_path(value: str | Path) -> Path:
+    try:
+        raw_path = os.fspath(value)
+    except TypeError:
+        raise TypeError("local_path must be a string or Path") from None
+    if type(raw_path) is not str:
+        raise TypeError("local_path must be a string or Path")
+    if (
+        not raw_path
+        or not os.path.isabs(raw_path)
+        or raw_path.startswith("//")
+        or os.path.normpath(raw_path) != raw_path
+        or any(ord(character) < 32 or ord(character) == 127 for character in raw_path)
+    ):
+        raise ValueError("local_path must be one canonical absolute path")
+    try:
+        resolved_path = os.path.realpath(raw_path, strict=True)
+    except (OSError, ValueError):
+        raise ValueError(
+            "local_path must identify an existing canonical regular file"
+        ) from None
+    if resolved_path != raw_path:
+        raise ValueError(
+            "local_path must be canonical and cannot traverse symbolic links"
+        )
+    return Path(raw_path)
+
+
+def _databricks_local_upload_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _require_databricks_local_upload_stat(value: os.stat_result) -> None:
+    if not stat.S_ISREG(value.st_mode):
+        raise ValueError("local_path must identify a regular non-symlink file")
+    if value.st_uid != os.getuid():
+        raise ValueError("local_path must be owned by the current user")
+    if value.st_nlink != 1:
+        raise ValueError("local_path must have exactly one hard link")
+
+
+def _open_databricks_local_upload_source(source_path: Path) -> int:
+    try:
+        path_stat = os.lstat(source_path)
+    except OSError:
+        raise ValueError(
+            "local_path must identify an existing regular file"
+        ) from None
+    _require_databricks_local_upload_stat(path_stat)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if type(nofollow) is not int:
+        raise RuntimeError("this platform cannot open local_path with O_NOFOLLOW")
+    flags = os.O_RDONLY | os.O_NONBLOCK | nofollow
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    if type(cloexec) is int:
+        flags |= cloexec
+    try:
+        file_descriptor = os.open(source_path, flags)
+    except OSError:
+        raise ValueError(
+            "local_path could not be opened as a regular non-symlink file"
+        ) from None
+    try:
+        descriptor_stat = os.fstat(file_descriptor)
+        _require_databricks_local_upload_stat(descriptor_stat)
+        if _databricks_local_upload_identity(
+            descriptor_stat
+        ) != _databricks_local_upload_identity(path_stat):
+            raise ValueError("local_path identity changed while it was opened")
+    except Exception:
+        os.close(file_descriptor)
+        raise
+    return file_descriptor
+
+
+def _require_stable_databricks_local_upload_source(
+    file_descriptor: int,
+    source_path: Path,
+    identity: tuple[int, ...],
+) -> None:
+    try:
+        descriptor_stat = os.fstat(file_descriptor)
+        path_stat = os.lstat(source_path)
+    except OSError:
+        raise _DatabricksLocalUploadError(
+            "Databricks Files API local upload source identity became unavailable"
+        ) from None
+    try:
+        _require_databricks_local_upload_stat(descriptor_stat)
+        _require_databricks_local_upload_stat(path_stat)
+    except ValueError:
+        raise _DatabricksLocalUploadError(
+            "Databricks Files API local upload source invariants drifted"
+        ) from None
+    if (
+        _databricks_local_upload_identity(descriptor_stat) != identity
+        or _databricks_local_upload_identity(path_stat) != identity
+    ):
+        raise _DatabricksLocalUploadError(
+            "Databricks Files API local upload source identity drifted"
+        )
+
+
+def _sha256_databricks_local_upload_source(
+    file_descriptor: int,
+    source_path: Path,
+    identity: tuple[int, ...],
+    *,
+    expected_size: int,
+) -> str:
+    digest = hashlib.sha256()
+    observed_size = 0
+    while observed_size < expected_size:
+        _require_stable_databricks_local_upload_source(
+            file_descriptor,
+            source_path,
+            identity,
+        )
+        read_size = min(
+            _DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES,
+            expected_size - observed_size,
+        )
+        try:
+            chunk = os.read(file_descriptor, read_size)
+        except OSError:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source prehash read failed"
+            ) from None
+        if type(chunk) is not bytes:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source prehash chunk must be bytes"
+            )
+        if not chunk:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source ended during prehash"
+            )
+        if len(chunk) > read_size:
+            raise _DatabricksLocalUploadError(
+                "Databricks Files API local upload source prehash exceeded the "
+                "chunk byte cap"
+            )
+        observed_size += len(chunk)
+        digest.update(chunk)
+    try:
+        trailing = os.read(file_descriptor, 1)
+    except OSError:
+        raise _DatabricksLocalUploadError(
+            "Databricks Files API local upload source prehash EOF probe failed"
+        ) from None
+    if type(trailing) is not bytes:
+        raise _DatabricksLocalUploadError(
+            "Databricks Files API local upload source prehash EOF probe must be bytes"
+        )
+    if trailing:
+        raise _DatabricksLocalUploadError(
+            "Databricks Files API local upload source contains bytes beyond "
+            "expected_size"
+        )
+    _require_stable_databricks_local_upload_source(
+        file_descriptor,
+        source_path,
+        identity,
+    )
+    return digest.hexdigest()
+
+
+def _require_empty_databricks_binary_response(
+    response: DatabricksBinaryHTTPResponse,
+    *,
+    label: str,
+) -> None:
+    raw_headers = getattr(response, "headers", None)
+    if raw_headers is None or not hasattr(raw_headers, "get"):
+        raise RuntimeError(f"{label} response headers are missing")
+    content_length = raw_headers.get("content-length")
+    if content_length not in (None, "0"):
+        raise RuntimeError(f"{label} response content-length is not zero")
+    content_encoding = raw_headers.get("content-encoding")
+    if content_encoding not in (None, "", "identity"):
+        raise RuntimeError(f"{label} response content-encoding is not identity")
+    transfer_encoding = raw_headers.get("transfer-encoding")
+    if transfer_encoding not in (None, ""):
+        raise RuntimeError(f"{label} response transfer-encoding is unexpected")
+    response_body = response.read(1)
+    if type(response_body) is not bytes:
+        raise RuntimeError(f"{label} response body must be bytes")
+    if response_body:
+        raise RuntimeError(f"{label} response body is not empty")
+
+
+def _prove_databricks_volume_directory_exists(
+    config: DatabricksWorkspaceConfig,
+    directory_path: str,
+    *,
+    opener: DatabricksBinaryURLOpener | None,
+) -> None:
+    encoded_path = urllib.parse.quote(directory_path, safe="/-._~")
+    request = urllib.request.Request(
+        f"{config.normalized_host}/api/2.0/fs/directories{encoded_path}",
+        method="HEAD",
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "Authorization": f"Bearer {config.token}",
+        },
+    )
+    resolved_opener = (
+        _databricks_no_redirect_urlopen
+        if opener is None
+        else opener
+    )
+    try:
+        with resolved_opener(request, timeout=config.timeout_seconds) as response:
+            status = getattr(response, "status", None)
+            if type(status) is not int or status != 200:
+                raise RuntimeError(
+                    "Databricks Files API directory existence proof returned "
+                    f"unexpected HTTP status {status!r}"
+                )
+            _require_empty_databricks_binary_response(
+                response,
+                label="Databricks Files API directory existence proof",
+            )
+    except urllib.error.HTTPError as exc:
+        raise _databricks_binary_http_error(exc, token=config.token) from None
+    except urllib.error.URLError as exc:
+        reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
+        raise RuntimeError(f"Databricks request failed: {reason}") from None
+    except Exception as exc:
+        reason = _redact_databricks_secret_text(str(exc), token=config.token)
+        raise RuntimeError(
+            "Databricks Files API directory existence proof failed: "
+            f"{reason}"
+        ) from None
+
+
 def _validated_databricks_volume_directory_entry(
     value: Any,
     *,
@@ -3631,6 +4373,79 @@ def _databricks_binary_http_error(
     return RuntimeError(_format_databricks_http_error(error.code, body, token=token))
 
 
+def _read_databricks_response_bytes_bounded(
+    response: DatabricksHTTPResponse,
+    *,
+    max_bytes: int,
+    label: str,
+) -> bytes:
+    raw_headers = getattr(response, "headers", None)
+    if raw_headers is not None and not hasattr(raw_headers, "get"):
+        raise RuntimeError(f"{label} headers are invalid")
+    content_length_raw = (
+        None if raw_headers is None else raw_headers.get("content-length")
+    )
+    transfer_encoding = (
+        None if raw_headers is None else raw_headers.get("transfer-encoding")
+    )
+    if content_length_raw is not None:
+        if transfer_encoding not in (None, ""):
+            raise RuntimeError(
+                f"{label} cannot combine content-length and transfer-encoding"
+            )
+        content_length = _required_databricks_content_length(
+            content_length_raw,
+            max_bytes=max_bytes,
+            label=label,
+        )
+        exact_chunks: list[bytes] = []
+        total_bytes = 0
+        while total_bytes < content_length:
+            read_size = min(
+                _DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES,
+                content_length - total_bytes,
+            )
+            chunk = response.read(read_size)
+            if type(chunk) is not bytes:
+                raise RuntimeError(f"{label} chunk must be bytes")
+            if not chunk:
+                raise RuntimeError(f"{label} ended before content-length")
+            if len(chunk) > read_size:
+                raise RuntimeError(f"{label} exceeded the response chunk byte cap")
+            total_bytes += len(chunk)
+            exact_chunks.append(chunk)
+        eof = response.read(1)
+        if type(eof) is not bytes:
+            raise RuntimeError(f"{label} EOF probe must return bytes")
+        if eof:
+            raise RuntimeError(f"{label} contains bytes beyond content-length")
+        return b"".join(exact_chunks)
+    if transfer_encoding not in (None, "", "chunked", "identity"):
+        raise RuntimeError(f"{label} transfer-encoding is unsupported")
+    streamed_chunks: list[bytes] = []
+    total_bytes = 0
+    while True:
+        read_size = min(
+            _DATABRICKS_VOLUME_FILE_STREAM_CHUNK_BYTES,
+            max_bytes - total_bytes + 1,
+        )
+        chunk = response.read(read_size)
+        if type(chunk) is not bytes:
+            raise RuntimeError(f"{label} chunk must be bytes")
+        if len(chunk) > read_size:
+            raise RuntimeError(f"{label} exceeded the response chunk byte cap")
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise RuntimeError(
+                f"{label} exceeds the controller byte cap: more than "
+                f"{max_bytes} bytes"
+            )
+        streamed_chunks.append(chunk)
+    return b"".join(streamed_chunks)
+
+
 def _bounded_databricks_binary_response(
     config: DatabricksWorkspaceConfig,
     request: urllib.request.Request,
@@ -3642,19 +4457,23 @@ def _bounded_databricks_binary_response(
     try:
         with opener(request, timeout=config.timeout_seconds) as response:
             status = getattr(response, "status", None)
-            if status != 200:
+            if type(status) is not int or status != 200:
                 raise RuntimeError(
                     f"{label} returned unexpected HTTP status {status!r}"
                 )
-            content = response.read(max_bytes + 1)
+            content = _read_databricks_response_bytes_bounded(
+                response,
+                max_bytes=max_bytes,
+                label=f"{label} response",
+            )
     except urllib.error.HTTPError as exc:
-        raise _databricks_binary_http_error(exc, token=config.token) from exc
+        raise _databricks_binary_http_error(exc, token=config.token) from None
     except urllib.error.URLError as exc:
         reason = _redact_databricks_secret_text(str(exc.reason), token=config.token)
-        raise RuntimeError(f"Databricks request failed: {reason}") from exc
+        raise RuntimeError(f"Databricks request failed: {reason}") from None
     except Exception as exc:
         reason = _redact_databricks_secret_text(str(exc), token=config.token)
-        raise RuntimeError(f"{label} failed: {reason}") from exc
+        raise RuntimeError(f"{label} failed: {reason}") from None
     if not isinstance(content, bytes):
         raise RuntimeError(f"{label} response body must be bytes")
     if len(content) > max_bytes:
@@ -3685,8 +4504,8 @@ def _bounded_databricks_json_object(
             raw,
             object_pairs_hook=_unique_databricks_json_object,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"{label} was not valid UTF-8 JSON") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise RuntimeError(f"{label} was not valid UTF-8 JSON") from None
     if not isinstance(parsed, dict):
         raise RuntimeError(f"{label} JSON must be an object")
     return parsed

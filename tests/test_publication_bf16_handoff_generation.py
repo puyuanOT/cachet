@@ -72,8 +72,11 @@ class CharacterTokenizer:
 
 
 class JsonHTTPResponse:
+    status = 200
+
     def __init__(self, value):
-        self._value = value
+        self._body = json.dumps(value).encode("utf-8")
+        self._offset = 0
 
     def __enter__(self):
         return self
@@ -81,8 +84,13 @@ class JsonHTTPResponse:
     def __exit__(self, exc_type, exc, traceback):
         return False
 
-    def read(self):
-        return json.dumps(self._value).encode("utf-8")
+    def read(self, amt=-1):
+        if amt < 0:
+            amt = len(self._body) - self._offset
+        end = min(self._offset + amt, len(self._body))
+        chunk = self._body[self._offset : end]
+        self._offset = end
+        return chunk
 
 
 def _canonical_jsonl(path, records):
