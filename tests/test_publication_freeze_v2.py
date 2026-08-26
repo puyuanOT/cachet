@@ -442,6 +442,49 @@ def test_source_closure_v2_validates_seal_and_rejects_v1_identity(
             verify_rebuild=False,
         )
 
+    public_calls = []
+
+    def reject_static_public_validation(
+        *_args: object,
+        verify_rebuild: bool,
+        latency_semantic_mode: freeze_v2._LatencySemanticValidationMode,
+        **_kwargs: object,
+    ) -> None:
+        public_calls.append((latency_semantic_mode, verify_rebuild))
+        if latency_semantic_mode is freeze_v2._LatencySemanticValidationMode.STATIC:
+            raise ValueError("source reference changed during latency validation")
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "_validate_publication_source_closure_v2_record",
+        reject_static_public_validation,
+    )
+    with pytest.raises(ValueError, match="source reference changed"):
+        freeze_v2.validate_publication_source_closure_v2_record(
+            record,
+            repository_root=repository,
+            artifact_root=artifact_root,
+        )
+    assert public_calls == [
+        (freeze_v2._LatencySemanticValidationMode.EXECUTE, True),
+        (freeze_v2._LatencySemanticValidationMode.STATIC, False),
+    ]
+
+    public_calls.clear()
+    output = tmp_path / "must-not-write-source-closure.json"
+    with pytest.raises(ValueError, match="source reference changed"):
+        freeze_v2.write_publication_source_closure_v2_json(
+            record,
+            output,
+            repository_root=repository,
+            artifact_root=artifact_root,
+        )
+    assert public_calls == [
+        (freeze_v2._LatencySemanticValidationMode.EXECUTE, True),
+        (freeze_v2._LatencySemanticValidationMode.STATIC, False),
+    ]
+    assert not output.exists()
+
 
 def test_source_builder_reference_failure_leaves_no_artifact_root(
     tmp_path: Path,
@@ -525,6 +568,134 @@ def test_source_builder_reference_failure_leaves_no_artifact_root(
     with pytest.raises(ValueError, match="full-score semantic closure differs"):
         freeze_v2.build_publication_source_closure_v2(inputs)
     assert not output.exists()
+
+    observed_events: list[object] = []
+
+    def reject_static_reference_replay(
+        _inputs: freeze_v2.PublicationSourceClosureInputsV2,
+        *,
+        root: Path,
+        latency_semantic_mode: freeze_v2._LatencySemanticValidationMode,
+    ) -> None:
+        assert root == repository
+        observed_events.append(latency_semantic_mode)
+        if latency_semantic_mode is freeze_v2._LatencySemanticValidationMode.STATIC:
+            raise ValueError("source reference changed during latency validation")
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "_validate_source_references",
+        reject_static_reference_replay,
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_build_package_twice",
+        lambda *_args, **_kwargs: observed_events.append("build")
+        or (object(), object()),
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_require_matching_build_outputs",
+        lambda *_args: observed_events.append("match"),
+    )
+    with pytest.raises(ValueError, match="source reference changed"):
+        freeze_v2.build_publication_source_closure_v2(inputs)
+    assert observed_events == [
+        freeze_v2._LatencySemanticValidationMode.EXECUTE,
+        "build",
+        "match",
+        freeze_v2._LatencySemanticValidationMode.STATIC,
+    ]
+    assert not output.exists()
+
+
+def test_latency_semantic_static_mode_pins_dependencies_without_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    plan_path = _touch(repository / "latency-plan.json", b"{}\n")
+    prepared_input = (
+        repository / freeze_v1._LATENCY_SEMANTIC_PREPARED_INPUT_RELATIVE_PATH
+    )
+    prepared_input.mkdir(parents=True)
+    uv = _touch(tmp_path / "uv")
+    python = _touch(tmp_path / "python")
+    runtime_lock = _touch(repository / "latency-runtime.lock")
+    monkeypatch.setattr(freeze_v1, "_LATENCY_SEMANTIC_UV_EXECUTABLE", uv)
+    monkeypatch.setattr(freeze_v1, "_DEFAULT_PYTHON_EXECUTABLE", python)
+    monkeypatch.setattr(
+        freeze_v1,
+        "_LATENCY_SEMANTIC_UV_SHA256",
+        hashlib.sha256(uv.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_LATENCY_SEMANTIC_PYTHON_SHA256",
+        hashlib.sha256(python.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_LATENCY_SEMANTIC_RUNTIME_LOCK_RELATIVE_PATH",
+        runtime_lock.relative_to(repository),
+    )
+    events = []
+    plan = {"coverage": {"task_count": 384}, "sharding": {"worker_count": 16}}
+    attestation = {"validated": True}
+    monkeypatch.setattr(
+        freeze_v1,
+        "_verified_publication_latency_runtime_lock",
+        lambda path: events.append(("runtime_lock", path)) or b"lock\n",
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_validated_frozen_latency_handoff_plan",
+        lambda path: events.append(("plan", path)) or plan,
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_input_bundle_closure_sha256",
+        lambda path: events.append(("input", path)) or _digest("input"),
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_publication_latency_semantic_attestation",
+        lambda observed: events.append(("attestation", observed)) or attestation,
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_validate_publication_latency_handoff_reference",
+        lambda *_args, **_kwargs: pytest.fail("STATIC mode executed latency child"),
+    )
+
+    assert freeze_v2._validate_publication_latency_handoff_reference_v2(
+        plan_path,
+        repository_root=repository,
+        mode=freeze_v2._LatencySemanticValidationMode.STATIC,
+    ) == {"validated": True}
+    assert events == [
+        ("runtime_lock", runtime_lock),
+        ("plan", plan_path),
+        ("input", prepared_input),
+        ("attestation", plan),
+    ]
+
+    execute_calls = []
+    monkeypatch.setattr(
+        freeze_v1,
+        "_validate_publication_latency_handoff_reference",
+        lambda path, *, repository_root: execute_calls.append(
+            (path, repository_root)
+        )
+        or attestation,
+    )
+    assert freeze_v2._validate_publication_latency_handoff_reference_v2(
+        plan_path,
+        repository_root=repository,
+        mode=freeze_v2._LatencySemanticValidationMode.EXECUTE,
+    ) == attestation
+    assert execute_calls == [(plan_path, repository)]
 
 
 class _FullScoreCharacterTokenizer:
@@ -897,14 +1068,29 @@ def _repository_binding(path: Path) -> dict[str, Any]:
 
 def _patch_synthetic_preflight(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    latency_modes: list[freeze_v2._LatencySemanticValidationMode] | None = None,
 ) -> None:
     monkeypatch.setattr(
         freeze_v2,
         "_require_canonical_preflight_tool_paths",
         lambda _inputs: None,
     )
+    def observed_python_check_specs(
+        inputs: freeze_v2.GPUQualificationLocalPreflightInputsV2,
+        **kwargs: object,
+    ) -> tuple[
+        tuple[str, Callable[[], tuple[dict[str, Any], list[dict[str, Any]]]]],
+        ...,
+    ]:
+        mode = kwargs.get("latency_semantic_mode")
+        assert isinstance(mode, freeze_v2._LatencySemanticValidationMode)
+        if latency_modes is not None:
+            latency_modes.append(mode)
+        return _synthetic_python_check_specs(inputs, **kwargs)
+
     monkeypatch.setattr(
-        freeze_v2, "_python_check_specs", _synthetic_python_check_specs
+        freeze_v2, "_python_check_specs", observed_python_check_specs
     )
     monkeypatch.setattr(freeze_v1, "_repository_binding", _repository_binding)
     monkeypatch.setattr(
@@ -952,9 +1138,11 @@ def _runner(*, fail_check: str | None = None) -> freeze_v2.CommandRunner:
 def _run_synthetic_preflight(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    latency_modes: list[freeze_v2._LatencySemanticValidationMode] | None = None,
 ) -> tuple[dict[str, Any], Path, dict[str, Any]]:
     inputs, plan = _preflight_inputs(tmp_path)
-    _patch_synthetic_preflight(monkeypatch)
+    _patch_synthetic_preflight(monkeypatch, latency_modes=latency_modes)
     output = tmp_path / "preflight"
     evidence = freeze_v2._run_gpu_qualification_local_preflight_v2(
         inputs,
@@ -969,9 +1157,18 @@ def test_preflight_writes_exact_eight_children_and_parent_file_seals(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    latency_modes = []
     evidence, output, _plan_record = _run_synthetic_preflight(
-        tmp_path, monkeypatch
+        tmp_path,
+        monkeypatch,
+        latency_modes=latency_modes,
     )
+    assert latency_modes == [
+        freeze_v2._LatencySemanticValidationMode.STATIC,
+        freeze_v2._LatencySemanticValidationMode.STATIC,
+        freeze_v2._LatencySemanticValidationMode.EXECUTE,
+        freeze_v2._LatencySemanticValidationMode.STATIC,
+    ]
     assert {path.name for path in output.iterdir()} == {
         *(f"{check_id}.json" for check_id in GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS),
         "local-preflight-evidence.json",
@@ -1040,6 +1237,243 @@ def test_preflight_command_failure_never_writes_parent_seal(
     failed = json.loads((output / "mypy.json").read_text(encoding="utf-8"))
     assert failed["status"] == "failed"
     assert failed["exit_code"] == 2
+
+    original_structural = freeze_v2._validate_preflight_bundle_structural
+    execute_calls = 0
+
+    def reject_latency_execution(
+        evidence_path: Path,
+        *,
+        plan: Mapping[str, Any],
+        latency_semantic_mode: freeze_v2._LatencySemanticValidationMode,
+    ) -> tuple[dict[str, Any], freeze_v2.GPUQualificationLocalPreflightInputsV2]:
+        nonlocal execute_calls
+        if latency_semantic_mode is freeze_v2._LatencySemanticValidationMode.EXECUTE:
+            execute_calls += 1
+            raise RuntimeError("latency semantic child failed")
+        return original_structural(
+            evidence_path,
+            plan=plan,
+            latency_semantic_mode=latency_semantic_mode,
+        )
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "_validate_preflight_bundle_structural",
+        reject_latency_execution,
+    )
+    latency_failed_output = tmp_path / "latency-failed-preflight"
+    with pytest.raises(RuntimeError, match="latency semantic child failed"):
+        freeze_v2._run_gpu_qualification_local_preflight_v2(
+            inputs,
+            latency_failed_output,
+            command_runner=_runner(),
+            now=_clock(),
+        )
+    assert execute_calls == 1
+    assert not (latency_failed_output / "local-preflight-evidence.json").exists()
+
+
+def test_live_preflight_executes_latency_once_after_remote_and_detects_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence, output, plan = _run_synthetic_preflight(tmp_path, monkeypatch)
+    evidence_path = output / "local-preflight-evidence.json"
+    original_structural = freeze_v2._validate_preflight_bundle_structural
+    original_hashes = freeze_v2._preflight_bundle_file_hashes
+    events: list[str] = []
+    mutate_after_execute = False
+    mutate_during_remote_at: int | None = None
+    remote_failure_at: int | None = None
+    remote_calls = 0
+    ruff_path = output / "ruff.json"
+    original_ruff_bytes = ruff_path.read_bytes()
+
+    def observed_structural(
+        path: Path,
+        *,
+        plan: Mapping[str, Any],
+        latency_semantic_mode: freeze_v2._LatencySemanticValidationMode,
+    ) -> tuple[dict[str, Any], freeze_v2.GPUQualificationLocalPreflightInputsV2]:
+        events.append(f"structural:{latency_semantic_mode.value}")
+        result = original_structural(
+            path,
+            plan=plan,
+            latency_semantic_mode=latency_semantic_mode,
+        )
+        if (
+            mutate_after_execute
+            and latency_semantic_mode
+            is freeze_v2._LatencySemanticValidationMode.EXECUTE
+        ):
+            ruff_path.write_bytes(ruff_path.read_bytes() + b" ")
+        return result
+
+    def observed_hashes(path: Path) -> dict[str, str]:
+        events.append("hash")
+        return original_hashes(path)
+
+    def replay_without_latency(
+        _inputs: freeze_v2.GPUQualificationLocalPreflightInputsV2,
+        _output_root: str | Path,
+        *,
+        final_latency_semantic_mode: freeze_v2._LatencySemanticValidationMode,
+        **_kwargs: object,
+    ) -> dict[str, Any]:
+        events.append(f"ephemeral:{final_latency_semantic_mode.value}")
+        return evidence
+
+    def validate_remote(*_args: object, **_kwargs: object) -> None:
+        nonlocal remote_calls
+        remote_calls += 1
+        events.append("remote")
+        if remote_calls == mutate_during_remote_at:
+            ruff_path.write_bytes(ruff_path.read_bytes() + b" ")
+        if remote_calls == remote_failure_at:
+            raise RuntimeError("remote validation stopped")
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "_validate_preflight_bundle_structural",
+        observed_structural,
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "_preflight_bundle_file_hashes",
+        observed_hashes,
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "_run_gpu_qualification_local_preflight_v2",
+        replay_without_latency,
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "_validate_live_workspace_and_remote_artifacts_v2",
+        validate_remote,
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "_require_submit_payload_closure_binding",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "_qualification_single_user_name_from_payloads",
+        lambda _payloads: "user@example.com",
+    )
+    submit_payloads = tuple({} for _ in range(14))
+    config = freeze_v2.DatabricksWorkspaceConfig(
+        "https://workspace.example",
+        "secret",
+    )
+
+    assert freeze_v2.validate_gpu_qualification_local_preflight_bundle_v2(
+        evidence_path,
+        plan_record=plan,
+        submit_payloads=submit_payloads,
+        workspace_config=config,
+    ) == evidence
+    assert events == [
+        "hash",
+        "structural:static",
+        "ephemeral:static",
+        "remote",
+        "hash",
+        "structural:execute",
+        "hash",
+        "remote",
+        "structural:static",
+        "hash",
+    ]
+
+    events.clear()
+    remote_calls = 0
+    remote_failure_at = 1
+    with pytest.raises(RuntimeError, match="remote validation stopped"):
+        freeze_v2.validate_gpu_qualification_local_preflight_bundle_v2(
+            evidence_path,
+            plan_record=plan,
+            submit_payloads=submit_payloads,
+            workspace_config=config,
+        )
+    assert events == [
+        "hash",
+        "structural:static",
+        "ephemeral:static",
+        "remote",
+    ]
+
+    events.clear()
+    remote_calls = 0
+    remote_failure_at = 2
+    with pytest.raises(RuntimeError, match="remote validation stopped"):
+        freeze_v2.validate_gpu_qualification_local_preflight_bundle_v2(
+            evidence_path,
+            plan_record=plan,
+            submit_payloads=submit_payloads,
+            workspace_config=config,
+        )
+    assert events == [
+        "hash",
+        "structural:static",
+        "ephemeral:static",
+        "remote",
+        "hash",
+        "structural:execute",
+        "hash",
+        "remote",
+    ]
+
+    events.clear()
+    remote_calls = 0
+    remote_failure_at = None
+    mutate_after_execute = True
+    with pytest.raises(
+        ValueError,
+        match="changed during latency semantic validation",
+    ):
+        freeze_v2.validate_gpu_qualification_local_preflight_bundle_v2(
+            evidence_path,
+            plan_record=plan,
+            submit_payloads=submit_payloads,
+            workspace_config=config,
+        )
+    assert events == [
+        "hash",
+        "structural:static",
+        "ephemeral:static",
+        "remote",
+        "hash",
+        "structural:execute",
+        "hash",
+    ]
+
+    ruff_path.write_bytes(original_ruff_bytes)
+    events.clear()
+    remote_calls = 0
+    mutate_after_execute = False
+    mutate_during_remote_at = 2
+    with pytest.raises(ValueError):
+        freeze_v2.validate_gpu_qualification_local_preflight_bundle_v2(
+            evidence_path,
+            plan_record=plan,
+            submit_payloads=submit_payloads,
+            workspace_config=config,
+        )
+    assert events == [
+        "hash",
+        "structural:static",
+        "ephemeral:static",
+        "remote",
+        "hash",
+        "structural:execute",
+        "hash",
+        "remote",
+        "structural:static",
+    ]
+    ruff_path.write_bytes(original_ruff_bytes)
 
 
 def test_v2_artifact_and_check_role_constants_are_exact() -> None:

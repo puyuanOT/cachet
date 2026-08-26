@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from hashlib import sha256
 import json
 import os
@@ -293,6 +294,18 @@ class CompletedCommand(Protocol):
 CommandRunner = Callable[[Sequence[str], Path, Mapping[str, str]], CompletedCommand]
 
 
+class _LatencySemanticValidationMode(Enum):
+    STATIC = "static"
+    EXECUTE = "execute"
+
+
+def _require_latency_semantic_validation_mode(
+    mode: _LatencySemanticValidationMode,
+) -> None:
+    if not isinstance(mode, _LatencySemanticValidationMode):
+        raise TypeError("latency semantic validation mode is invalid")
+
+
 def build_publication_source_closure_v2(
     inputs: PublicationSourceClosureInputsV2,
 ) -> dict[str, Any]:
@@ -306,7 +319,11 @@ def build_publication_source_closure_v2(
     git = freeze_v1._git_identity(root)  # noqa: SLF001
     freeze_v1._require_freeze_toolchain()  # noqa: SLF001
     freeze_v1._require_freeze_build_system(root)  # noqa: SLF001
-    _validate_source_references(inputs, root=root)
+    _validate_source_references(
+        inputs,
+        root=root,
+        latency_semantic_mode=_LatencySemanticValidationMode.EXECUTE,
+    )
     first_build, second_build = freeze_v1._build_package_twice(  # noqa: SLF001
         root,
         commit=cast(str, git["commit"]),
@@ -314,6 +331,11 @@ def build_publication_source_closure_v2(
     )
     freeze_v1._require_matching_build_outputs(  # noqa: SLF001
         first_build, second_build
+    )
+    _validate_source_references(
+        inputs,
+        root=root,
+        latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
     )
     artifact_root = freeze_v1._create_directory_exclusive(  # noqa: SLF001
         inputs.artifact_output_root,
@@ -395,6 +417,7 @@ def build_publication_source_closure_v2(
         artifact_root=artifact_root,
         explicit_artifact_paths=None,
         verify_rebuild=False,
+        latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
     )
     return record
 
@@ -414,6 +437,15 @@ def validate_publication_source_closure_v2_record(
         artifact_root=artifact_root,
         explicit_artifact_paths=explicit_artifact_paths,
         verify_rebuild=True,
+        latency_semantic_mode=_LatencySemanticValidationMode.EXECUTE,
+    )
+    _validate_publication_source_closure_v2_record(
+        record,
+        repository_root=repository_root,
+        artifact_root=artifact_root,
+        explicit_artifact_paths=explicit_artifact_paths,
+        verify_rebuild=False,
+        latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
     )
 
 
@@ -424,7 +456,11 @@ def _validate_publication_source_closure_v2_record(
     artifact_root: str | Path,
     explicit_artifact_paths: Mapping[str, str | Path] | None,
     verify_rebuild: bool,
+    latency_semantic_mode: _LatencySemanticValidationMode = (
+        _LatencySemanticValidationMode.EXECUTE
+    ),
 ) -> None:
+    _require_latency_semantic_validation_mode(latency_semantic_mode)
     normalized = _mapping_copy(record, "v2 source closure")
     _require_exact_keys(normalized, _SOURCE_KEYS, "v2 source closure")
     if normalized.get("record_type") != PUBLICATION_SOURCE_CLOSURE_V2_RECORD_TYPE:
@@ -538,7 +574,11 @@ def _validate_publication_source_closure_v2_record(
             candidate, item, f"v2 source reference {relative}"
         )
         reference_paths[cast(str, item["role"])] = candidate
-    _validate_reference_paths(reference_paths, repository_root=root)
+    _validate_reference_paths(
+        reference_paths,
+        repository_root=root,
+        latency_semantic_mode=latency_semantic_mode,
+    )
     runtime = _required_mapping(normalized, "runtime")
     _require_exact_keys(runtime, _SOURCE_RUNTIME_KEYS, "v2 source runtime")
     if canonical_gpu_qualification_json(runtime) != canonical_gpu_qualification_json(
@@ -600,6 +640,7 @@ def run_gpu_qualification_local_preflight_v2(
         output_root,
         command_runner=_run_command,
         now=_utc_now,
+        final_latency_semantic_mode=_LatencySemanticValidationMode.EXECUTE,
     )
 
 
@@ -633,6 +674,7 @@ def validate_gpu_qualification_local_preflight_bundle_v2(
     evidence, inputs = _validate_preflight_bundle_structural(
         evidence_path,
         plan=plan,
+        latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
     )
     _require_submit_payload_closure_binding(
         inputs,
@@ -649,6 +691,7 @@ def validate_gpu_qualification_local_preflight_bundle_v2(
             Path(temporary).resolve() / "preflight",
             command_runner=_run_command,
             now=_utc_now,
+            final_latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
         )
     _validate_live_workspace_and_remote_artifacts_v2(
         workspace_config,
@@ -660,9 +703,19 @@ def validate_gpu_qualification_local_preflight_bundle_v2(
     after = _preflight_bundle_file_hashes(evidence_path)
     if after != before:
         raise ValueError("v2 local preflight bundle changed during live replay")
-    final_evidence, final_inputs = _validate_preflight_bundle_structural(
+    final_evidence, final_inputs = _validate_preflight_bundle_with_latency_once(
         evidence_path,
         plan=plan,
+        expected_hashes=before,
+        between_execute_and_static=lambda: (
+            _validate_live_workspace_and_remote_artifacts_v2(
+                workspace_config,
+                inputs=inputs,
+                plan=plan,
+                single_user_name=single_user_name,
+                require_fresh_workspace=require_fresh_workspace,
+            )
+        ),
     )
     if final_evidence != evidence or final_inputs != inputs:
         raise ValueError("v2 local preflight bindings changed during replay")
@@ -680,9 +733,13 @@ def _run_gpu_qualification_local_preflight_v2(
     command_runner: CommandRunner,
     now: Callable[[], datetime],
     verify_source_rebuild: bool = True,
+    final_latency_semantic_mode: _LatencySemanticValidationMode = (
+        _LatencySemanticValidationMode.EXECUTE
+    ),
 ) -> dict[str, Any]:
     if not isinstance(inputs, GPUQualificationLocalPreflightInputsV2):
         raise TypeError("inputs must be GPUQualificationLocalPreflightInputsV2")
+    _require_latency_semantic_validation_mode(final_latency_semantic_mode)
     _require_canonical_preflight_tool_paths(inputs)
     root = Path(output_root)
     if root.exists() or root.is_symlink():
@@ -708,6 +765,7 @@ def _run_gpu_qualification_local_preflight_v2(
         plan=plan,
         pins=pins,
         verify_source_rebuild=verify_source_rebuild,
+        latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
     )
     check_hashes: dict[str, str] = {}
     for check_id, check in python_checks:
@@ -812,6 +870,7 @@ def _run_gpu_qualification_local_preflight_v2(
         root,
         plan=plan,
         expected_hashes=check_hashes,
+        latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
     )
     evidence = build_local_preflight_evidence_v2(
         plan_sha256=plan_sha256,
@@ -825,10 +884,18 @@ def _run_gpu_qualification_local_preflight_v2(
         "v2 local preflight evidence",
     )
     try:
-        validated, _ = _validate_preflight_bundle_structural(
-            evidence_path,
-            plan=plan,
-        )
+        if final_latency_semantic_mode is _LatencySemanticValidationMode.EXECUTE:
+            validated, _ = _validate_preflight_bundle_with_latency_once(
+                evidence_path,
+                plan=plan,
+                expected_hashes=_preflight_bundle_file_hashes(evidence_path),
+            )
+        else:
+            validated, _ = _validate_preflight_bundle_structural(
+                evidence_path,
+                plan=plan,
+                latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
+            )
     except BaseException:
         if evidence_path.is_file() and not evidence_path.is_symlink():
             evidence_path.unlink()
@@ -842,6 +909,7 @@ def _python_check_specs(
     plan: Mapping[str, Any],
     pins: GPUQualificationArtifactPinsV2,
     verify_source_rebuild: bool,
+    latency_semantic_mode: _LatencySemanticValidationMode,
 ) -> tuple[
     tuple[str, Callable[[], tuple[dict[str, Any], list[dict[str, Any]]]]], ...
 ]:
@@ -869,6 +937,7 @@ def _python_check_specs(
                 plan,
                 pins,
                 verify_rebuild=verify_source_rebuild,
+                latency_semantic_mode=latency_semantic_mode,
             ),
         ),
     )
@@ -1057,6 +1126,7 @@ def _check_source_runner_inputs(
     pins: GPUQualificationArtifactPinsV2,
     *,
     verify_rebuild: bool,
+    latency_semantic_mode: _LatencySemanticValidationMode,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     source = freeze_v1._read_canonical_json(  # noqa: SLF001
         inputs.source_closure_json,
@@ -1069,6 +1139,7 @@ def _check_source_runner_inputs(
         artifact_root=inputs.source_artifact_root,
         explicit_artifact_paths=None,
         verify_rebuild=verify_rebuild,
+        latency_semantic_mode=latency_semantic_mode,
     )
     source_digest = freeze_v1._file_sha256(inputs.source_closure_json)  # noqa: SLF001
     if source_digest != pins.cachet_source_tree_sha256:
@@ -1112,7 +1183,11 @@ def _validate_preflight_bundle_structural(
     evidence_path: Path,
     *,
     plan: Mapping[str, Any],
+    latency_semantic_mode: _LatencySemanticValidationMode = (
+        _LatencySemanticValidationMode.EXECUTE
+    ),
 ) -> tuple[dict[str, Any], GPUQualificationLocalPreflightInputsV2]:
+    _require_latency_semantic_validation_mode(latency_semantic_mode)
     root = freeze_v1._regular_directory(  # noqa: SLF001
         evidence_path.parent, "v2 preflight bundle root"
     )
@@ -1167,8 +1242,47 @@ def _validate_preflight_bundle_structural(
     if check_times and completion < max(check_times):
         raise ValueError("v2 preflight completed before a child check")
     inputs = _preflight_inputs_from_sidecars(records)
-    _validate_sidecar_semantics(records, inputs=inputs, plan=plan)
+    _validate_sidecar_semantics(
+        records,
+        inputs=inputs,
+        plan=plan,
+        latency_semantic_mode=latency_semantic_mode,
+    )
     return evidence, inputs
+
+
+def _validate_preflight_bundle_with_latency_once(
+    evidence_path: Path,
+    *,
+    plan: Mapping[str, Any],
+    expected_hashes: Mapping[str, str],
+    between_execute_and_static: Callable[[], None] | None = None,
+) -> tuple[dict[str, Any], GPUQualificationLocalPreflightInputsV2]:
+    executed_evidence, executed_inputs = _validate_preflight_bundle_structural(
+        evidence_path,
+        plan=plan,
+        latency_semantic_mode=_LatencySemanticValidationMode.EXECUTE,
+    )
+    if _preflight_bundle_file_hashes(evidence_path) != dict(expected_hashes):
+        raise ValueError(
+            "v2 local preflight bundle changed during latency semantic validation"
+        )
+    if between_execute_and_static is not None:
+        between_execute_and_static()
+    static_evidence, static_inputs = _validate_preflight_bundle_structural(
+        evidence_path,
+        plan=plan,
+        latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
+    )
+    if _preflight_bundle_file_hashes(evidence_path) != dict(expected_hashes):
+        raise ValueError(
+            "v2 local preflight bundle changed during post-latency validation"
+        )
+    if static_evidence != executed_evidence or static_inputs != executed_inputs:
+        raise ValueError(
+            "v2 local preflight bindings changed during latency semantic validation"
+        )
+    return static_evidence, static_inputs
 
 
 def _validate_written_checks_before_seal(
@@ -1176,7 +1290,9 @@ def _validate_written_checks_before_seal(
     *,
     plan: Mapping[str, Any],
     expected_hashes: Mapping[str, str],
+    latency_semantic_mode: _LatencySemanticValidationMode,
 ) -> None:
+    _require_latency_semantic_validation_mode(latency_semantic_mode)
     expected_names = {
         f"{check_id}.json" for check_id in GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS
     }
@@ -1202,7 +1318,12 @@ def _validate_written_checks_before_seal(
     if observed_hashes != dict(expected_hashes):
         raise RuntimeError("v2 pre-seal sidecar bytes changed")
     inputs = _preflight_inputs_from_sidecars(records)
-    _validate_sidecar_semantics(records, inputs=inputs, plan=plan)
+    _validate_sidecar_semantics(
+        records,
+        inputs=inputs,
+        plan=plan,
+        latency_semantic_mode=latency_semantic_mode,
+    )
 
 
 def _preflight_inputs_from_sidecars(
@@ -1275,7 +1396,9 @@ def _validate_sidecar_semantics(
     *,
     inputs: GPUQualificationLocalPreflightInputsV2,
     plan: Mapping[str, Any],
+    latency_semantic_mode: _LatencySemanticValidationMode,
 ) -> None:
+    _require_latency_semantic_validation_mode(latency_semantic_mode)
     _require_canonical_preflight_tool_paths(inputs)
     pins = pins_from_gpu_qualification_plan_v2(plan)
     _require_fixed_v2_pins(pins)
@@ -1284,6 +1407,7 @@ def _validate_sidecar_semantics(
         plan=plan,
         pins=pins,
         verify_source_rebuild=False,
+        latency_semantic_mode=latency_semantic_mode,
     )
     empty_output = freeze_v1._command_output_binding(b"")  # noqa: SLF001
     python_identity = _python_api_identity_v2()
@@ -1846,19 +1970,29 @@ def _validate_source_references(
     inputs: PublicationSourceClosureInputsV2,
     *,
     root: Path,
+    latency_semantic_mode: _LatencySemanticValidationMode,
 ) -> None:
+    _require_latency_semantic_validation_mode(latency_semantic_mode)
     paths = {
         role: freeze_v1._regular_file(path, role)  # noqa: SLF001
         for path, role in _source_reference_inputs(inputs)
     }
-    _validate_reference_paths(paths, repository_root=root)
+    _validate_reference_paths(
+        paths,
+        repository_root=root,
+        latency_semantic_mode=latency_semantic_mode,
+    )
 
 
 def _validate_reference_paths(
     paths: Mapping[str, Path],
     *,
     repository_root: Path,
+    latency_semantic_mode: _LatencySemanticValidationMode = (
+        _LatencySemanticValidationMode.EXECUTE
+    ),
 ) -> None:
+    _require_latency_semantic_validation_mode(latency_semantic_mode)
     if tuple(paths) != _SOURCE_REFERENCE_ROLES:
         raise ValueError("v2 source reference coverage differs")
     if freeze_v1._file_sha256(paths["runtime_source_lock"]) != (  # noqa: SLF001
@@ -1873,9 +2007,10 @@ def _validate_reference_paths(
         paths["campaign_plan"], pretty=True, label="campaign plan"
     )
     validate_publication_campaign_plan_record(campaign_record)
-    freeze_v1._validate_publication_latency_handoff_reference(  # noqa: SLF001
+    _validate_publication_latency_handoff_reference_v2(
         paths["latency_handoff_plan"],
         repository_root=repository_root,
+        mode=latency_semantic_mode,
     )
     _validate_publication_full_score_references(
         inventory_path=paths["full_score_inventory"],
@@ -1892,6 +2027,47 @@ def _validate_reference_paths(
         flashinfer_manifest=paths["patched_flashinfer_manifest"],
         closure_manifest=paths["runtime_closure_manifest"],
     )
+
+
+def _validate_publication_latency_handoff_reference_v2(
+    plan_path: Path,
+    *,
+    repository_root: Path,
+    mode: _LatencySemanticValidationMode,
+) -> dict[str, Any]:
+    _require_latency_semantic_validation_mode(mode)
+    if mode is _LatencySemanticValidationMode.EXECUTE:
+        return freeze_v1._validate_publication_latency_handoff_reference(  # noqa: SLF001
+            plan_path,
+            repository_root=repository_root,
+        )
+    uv = freeze_v1._regular_file(  # noqa: SLF001
+        freeze_v1._LATENCY_SEMANTIC_UV_EXECUTABLE,  # noqa: SLF001
+        "latency semantic uv executable",
+    )
+    python = freeze_v1._regular_file(  # noqa: SLF001
+        freeze_v1._DEFAULT_PYTHON_EXECUTABLE,  # noqa: SLF001
+        "latency semantic Python executable",
+    )
+    if (
+        freeze_v1._file_sha256(uv)  # noqa: SLF001
+        != freeze_v1._LATENCY_SEMANTIC_UV_SHA256  # noqa: SLF001
+        or freeze_v1._file_sha256(python)  # noqa: SLF001
+        != freeze_v1._LATENCY_SEMANTIC_PYTHON_SHA256  # noqa: SLF001
+    ):
+        raise RuntimeError("latency semantic executable identity differs")
+    freeze_v1._verified_publication_latency_runtime_lock(  # noqa: SLF001
+        repository_root
+        / freeze_v1._LATENCY_SEMANTIC_RUNTIME_LOCK_RELATIVE_PATH  # noqa: SLF001
+    )
+    plan = freeze_v1._validated_frozen_latency_handoff_plan(plan_path)  # noqa: SLF001
+    prepared_input_dir = freeze_v1._regular_directory(  # noqa: SLF001
+        repository_root
+        / freeze_v1._LATENCY_SEMANTIC_PREPARED_INPUT_RELATIVE_PATH,  # noqa: SLF001
+        "latency semantic prepared input bundle",
+    )
+    freeze_v1._input_bundle_closure_sha256(prepared_input_dir)  # noqa: SLF001
+    return freeze_v1._publication_latency_semantic_attestation(plan)  # noqa: SLF001
 
 
 def _validate_publication_full_score_references(
