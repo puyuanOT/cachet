@@ -2226,7 +2226,12 @@ def list_databricks_volume_directory(
             "next_page_token",
         }:
             raise RuntimeError("Databricks Files API directory listing schema drift")
-        contents = page.get("contents")
+        if page == {} and page_token is None and not entries:
+            contents: object = []
+        elif "contents" not in page:
+            raise RuntimeError("Databricks Files API directory listing schema drift")
+        else:
+            contents = page["contents"]
         if not isinstance(contents, list):
             raise RuntimeError(
                 "Databricks Files API directory listing contents must be an array"

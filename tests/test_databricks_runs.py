@@ -1660,6 +1660,88 @@ def test_list_databricks_volume_directory_is_authenticated_paginated_and_sorted(
     assert opener.timeouts == [11, 11]
 
 
+def test_list_databricks_volume_directory_accepts_empty_page_forms():
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example", "secret-token", timeout_seconds=13
+    )
+    for payload in (b"{}", {"contents": []}):
+        opener = _SequentialBinaryOpener([payload])
+
+        assert list_databricks_volume_directory(
+            config,
+            "dbfs:/Volumes/catalog/schema/volume/results",
+            opener=opener,
+        ) == ()
+
+        assert len(opener.requests) == 1
+        assert opener.requests[0].headers["Authorization"] == "Bearer secret-token"
+        assert opener.timeouts == [13]
+
+
+def test_list_databricks_volume_directory_rejects_empty_mapping_after_page():
+    parent = "/Volumes/catalog/schema/volume/results"
+    entry = {
+        "file_size": 1,
+        "is_directory": False,
+        "last_modified": 1,
+        "name": "result.json",
+        "path": parent + "/result.json",
+    }
+    for first_page_contents in ([], [entry]):
+        opener = _SequentialBinaryOpener(
+            [
+                {"contents": first_page_contents, "next_page_token": "next"},
+                b"{}",
+            ]
+        )
+
+        with pytest.raises(RuntimeError, match="schema drift"):
+            list_databricks_volume_directory(
+                DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+                "dbfs:" + parent,
+                opener=opener,
+            )
+
+        assert len(opener.requests) == 2
+        assert opener.requests[1].full_url.endswith(
+            "?page_size=1000&page_token=next"
+        )
+
+
+def test_list_databricks_volume_directory_rejects_nonempty_missing_contents():
+    malformed_pages = (
+        {"next_page_token": "next"},
+        {"unexpected": "Bearer secret-token"},
+        {"contents": None},
+        {"contents": {}},
+        {"contents": "[]"},
+        {"contents": False},
+        {"contents": 0},
+        {"contents": [], "unexpected": True},
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+
+    for page in malformed_pages:
+        with pytest.raises(
+            RuntimeError,
+            match="schema drift|contents must be an array",
+        ) as exc_info:
+            list_databricks_volume_directory(
+                config,
+                "dbfs:/Volumes/catalog/schema/volume/results",
+                opener=_SequentialBinaryOpener([page]),
+            )
+
+        formatted = "".join(
+            traceback.format_exception(
+                type(exc_info.value),
+                exc_info.value,
+                exc_info.value.__traceback__,
+            )
+        )
+        assert "secret-token" not in formatted
+
+
 @pytest.mark.parametrize(
     "entry",
     (
