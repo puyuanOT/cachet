@@ -52,6 +52,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
+    databricks_cluster_hour_ledger_to_record,
     databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
     databricks_ledger_path_sha256,
@@ -465,6 +466,172 @@ GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_B
     ("aws-g6-l4-packed-page-roundtrip", 242),
     ("aws-g6e-l40s-generation-throughput", 1_228),
 )
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PLAN_SHA256: Final = (
+    "694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830"
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_RUNNER_SHA256: Final = (
+    "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_MANIFEST_SHA256: Final = (
+    "13ad4eabd10bde1b5c7e0aa7b9721dd3bd8fbe57f6c20204093749df8d84954f"
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_MANIFEST_FILE_SHA256: Final = (
+    "a6e0c985d64b0072776dd1247094600d81b885cfe4a3fb0f6418e8b811134304"
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_SHA256: Final = (
+    "7455fa1e30356bb79ccb75a8dbe24df32f33a365141505e0270eb13c7f39b71d"
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_FILE_COUNT: Final = 29
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_TOTAL_BYTES: Final = 2_094_892
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TERMINAL_PREFIX_SHA256: Final = (
+    "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_REASON: Final = (
+    "the fourteen terminal qualification failures comprise two post-measurement "
+    "vLLM version-contract mismatches, two forced-runtime-handoff unresolved-native-"
+    "object failures, eight sentinel layout-conflict failures, and two auto-backend "
+    "FlashInfer array.array TypeError engine-initialization failures"
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VERSION_MISMATCH_JOB_IDS: Final = (
+    "aws-g5-a10g-packed-page-roundtrip",
+    "aws-g6-l4-packed-page-roundtrip",
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_UNRESOLVED_NATIVE_JOB_IDS: Final = (
+    "aws-g5-a10g-forced-triton-runtime-handoff",
+    "aws-g6-l4-forced-triton-runtime-handoff",
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_LAYOUT_CONFLICT_JOB_IDS: Final = (
+    "aws-g5-a10g-16k-c4-capacity",
+    "aws-g5-a10g-matched-token-logit",
+    "aws-g6-l4-32k-c4-gmu-70",
+    "aws-g6-l4-32k-c4-gmu-75",
+    "aws-g6-l4-32k-c4-gmu-80",
+    "aws-g6-l4-generation-throughput",
+    "aws-g6-l4-matched-token-logit",
+    "aws-g6e-l40s-generation-throughput",
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FLASHINFER_JOB_IDS: Final = (
+    "aws-g5-a10g-auto-backend-diagnostic",
+    "aws-g6-l4-auto-backend-diagnostic",
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_SHA256_BY_JOB: Final = (
+    (
+        "aws-g5-a10g-16k-c4-capacity",
+        "59825b10900d049102b32f58e0b25bb6626f3539c6cde57b89f33e779da738b5",
+    ),
+    (
+        "aws-g5-a10g-auto-backend-diagnostic",
+        "8e08607cb3549eb9ea1cb80857044c44b6037c2bf4208127a31b9d2e312cb412",
+    ),
+    (
+        "aws-g5-a10g-forced-triton-runtime-handoff",
+        "355a98d0e8824fcd3535a9373ab3eaa754421b288ea9d4421bbeb38f159ea1cb",
+    ),
+    (
+        "aws-g5-a10g-matched-token-logit",
+        "794f86dcb4e3b89762a9912bfb2140657a91ab0df4dee95567af9c2b87f6e460",
+    ),
+    (
+        "aws-g5-a10g-packed-page-roundtrip",
+        "525c315ed7781384cef5fa876eac7aadfd19398edef393c3484fe73b87a5a869",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-70",
+        "443693966c8832bfc21b9318818a2db6a985d8324c6a4de45d1a8eec6ecd7f2b",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-75",
+        "220c4912372cfa444b14b35f15564b4fe93f5055fd416be794dba372517a0b98",
+    ),
+    (
+        "aws-g6-l4-32k-c4-gmu-80",
+        "9e1326b6abef77a80367c3e0fe0c1b1c3f45d7ff5ab0a4f8ecbaa9513c10aca8",
+    ),
+    (
+        "aws-g6-l4-auto-backend-diagnostic",
+        "ff228ca25675d3c8ee31327e46d633302023a6fd8fe8f684ae6ff205acedaceb",
+    ),
+    (
+        "aws-g6-l4-forced-triton-runtime-handoff",
+        "bd1aaa527607060c813c0fdc089ee331b7d0c95c98075d89de67c1416f613b7d",
+    ),
+    (
+        "aws-g6-l4-generation-throughput",
+        "0b5cfff5762b6e19484961c57bb782d9745a9b47ef50f8ae8a2323e49cfb26f7",
+    ),
+    (
+        "aws-g6-l4-matched-token-logit",
+        "015a8e1887c894b8056340eeef2e1241f1d47315400b50b3ceca8f9293b80b58",
+    ),
+    (
+        "aws-g6-l4-packed-page-roundtrip",
+        "1fb0a09907cee02a066ea424f16f7893f0a7e804b60a0f9a315a4c79b4b4d6f2",
+    ),
+    (
+        "aws-g6e-l40s-generation-throughput",
+        "2f408a4de16b3314b9ee261720e4c161aaa8c3a4acf37f56c926b8a16cd86315",
+    ),
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_UTF8_BYTES_BY_JOB: Final = (
+    ("aws-g5-a10g-16k-c4-capacity", 4_385),
+    ("aws-g5-a10g-auto-backend-diagnostic", 6_416),
+    ("aws-g5-a10g-forced-triton-runtime-handoff", 2_009),
+    ("aws-g5-a10g-matched-token-logit", 4_390),
+    ("aws-g5-a10g-packed-page-roundtrip", 78),
+    ("aws-g6-l4-32k-c4-gmu-70", 4_380),
+    ("aws-g6-l4-32k-c4-gmu-75", 4_380),
+    ("aws-g6-l4-32k-c4-gmu-80", 4_380),
+    ("aws-g6-l4-auto-backend-diagnostic", 6_415),
+    ("aws-g6-l4-forced-triton-runtime-handoff", 1_999),
+    ("aws-g6-l4-generation-throughput", 4_390),
+    ("aws-g6-l4-matched-token-logit", 4_388),
+    ("aws-g6-l4-packed-page-roundtrip", 76),
+    ("aws-g6e-l40s-generation-throughput", 4_393),
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PIP_CHECK_LOG_MARKER: Final = "No broken requirements found."
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VIRTUALENV_LOG_PREFIX: Final = "created virtual environment CPython3.11.11.final.0-64-x86_64 in "
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ENSUREPIP_LOG_ARGV: Final = "'-m', 'ensurepip', '--upgrade', '--default-pip'"
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_WORKER_MODULE_MARKER: Final = "document_kv_cache._gpu_qualification_sentinel_worker"
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_WORKER_TRACE_MARKERS: Final = (
+    ("execute_gpu_qualification_job", 2),
+    ("_builtin_sentinel_runner", 2),
+    ("run_gpu_qualification_sentinel", 2),
+    ("_run_bounded_worker_process", 2),
+    ("_worker_process_failure", 1),
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VERSION_TRACE_MARKERS: Final = (
+    ("execute_gpu_qualification_job", 2),
+    ("_builtin_sentinel_runner", 1),
+    ("validate_gpu_job_result_record", 2),
+    ("_validate_job_result_common", 2),
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_UNRESOLVED_NATIVE_ERROR_MARKERS: Final = (
+    '_gpu_qualification_sentinel_worker.py", line 509, in _runtime_handoff_sentinel',
+    'raise RuntimeError("the isolated runtime has unresolved native objects")',
+    "RuntimeError: the isolated runtime has unresolved native objects",
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_LAYOUT_ERROR_MARKERS: Final = (
+    "bind_layout(layout)",
+    'transformers_generator.py", line 263, in bind_layout',
+    'raise ValueError("generator layout conflicts with the resolved handoff layout")',
+    "ValueError: generator layout conflicts with the resolved handoff layout",
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FLASHINFER_ERROR_MARKERS: Final = (
+    'flashinfer/comm/fd_exchange.py", line 55, in <module>',
+    "def _fd_ancillary(fd: int) -> tuple[tuple[int, int, array.array[int]]]",
+    "TypeError: type \\'array.array\\' is not subscriptable",
+    "RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}",
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_LEDGER_SHA256: Final = (
+    "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d"
+)
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_LEDGER_BYTES: Final = 220_426
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_RESERVATION_COUNT: Final = 236
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_SUBMISSION_RECEIPT_COUNT: Final = 98
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_TERMINAL_ACTUAL_COUNT: Final = 236
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_TERMINAL_HOURS: Final = 71.39012833333337
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_REMAINING_HOURS: Final = 952.6098716666667
+GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_NEW_TERMINAL_SECONDS: Final = 12_455.252
 _RUNTIME_LOCK_INDEX_FAILURE_NORMALIZED_ERROR: Final = (
     "CalledProcessError: Command '['{runtime_python}', '-m', 'pip', 'install', "
     "'--extra-index-url', 'https://download.pytorch.org/whl/cu129', "
@@ -2735,6 +2902,455 @@ def _validated_runtime_observation_and_worker_subprocess_failure_error(
     return error
 
 
+def _mixed_sentinel_and_result_validation_failure_categories() -> dict[str, str]:
+    """Return the source-reviewed disjoint category for every 694441 job."""
+
+    groups = (
+        (
+            "version_mismatch",
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VERSION_MISMATCH_JOB_IDS,
+            2,
+        ),
+        (
+            "unresolved_native",
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_UNRESOLVED_NATIVE_JOB_IDS,
+            2,
+        ),
+        (
+            "layout_conflict",
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_LAYOUT_CONFLICT_JOB_IDS,
+            8,
+        ),
+        (
+            "flashinfer",
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FLASHINFER_JOB_IDS,
+            2,
+        ),
+    )
+    categories: dict[str, str] = {}
+    for category, job_ids, expected_count in groups:
+        if (
+            len(job_ids) != expected_count
+            or len(set(job_ids)) != expected_count
+            or tuple(job_ids) != tuple(sorted(job_ids))
+        ):
+            raise ValueError(
+                "mixed sentinel/result-validation failure category job set differs"
+            )
+        for job_id in job_ids:
+            reviewed_job_id = _safe_id(job_id, "reviewed mixed failure job_id")
+            if reviewed_job_id in categories:
+                raise ValueError(
+                    "mixed sentinel/result-validation failure categories overlap"
+                )
+            categories[reviewed_job_id] = category
+    sha256_job_ids = tuple(
+        job_id
+        for job_id, _ in (
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_SHA256_BY_JOB
+        )
+    )
+    byte_job_ids = tuple(
+        job_id
+        for job_id, _ in (
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+        )
+    )
+    if (
+        len(categories) != 14
+        or sha256_job_ids != tuple(sorted(categories))
+        or byte_job_ids != sha256_job_ids
+    ):
+        raise ValueError(
+            "mixed sentinel/result-validation failure job sets are not exhaustive"
+        )
+    return categories
+
+
+def _require_mixed_sentinel_and_result_validation_terminal_topology(
+    run: Mapping[str, Any],
+    run_output: Mapping[str, Any],
+) -> None:
+    """Require the exact parent/task/metadata attempt-zero terminal topology."""
+
+    raw_tasks = run.get("tasks")
+    metadata = _required_mapping(run_output.get("metadata"), "run-output metadata")
+    metadata_tasks = metadata.get("tasks")
+    if (
+        not isinstance(raw_tasks, list)
+        or len(raw_tasks) != 1
+        or not isinstance(raw_tasks[0], Mapping)
+        or not isinstance(metadata_tasks, list)
+        or len(metadata_tasks) != 1
+        or not isinstance(metadata_tasks[0], Mapping)
+    ):
+        raise ValueError(
+            "mixed sentinel/result-validation terminal task topology differs"
+        )
+    observed_task = raw_tasks[0]
+    metadata_task = metadata_tasks[0]
+    task_key = _safe_id(observed_task.get("task_key"), "failed task_key")
+    parent_message = (
+        f"Task {task_key} failed with message: Workload failed, see run output "
+        "for details."
+    )
+    task_message = "Workload failed, see run output for details"
+    expected_records = (
+        (run, "INTERNAL_ERROR", parent_message),
+        (observed_task, "TERMINATED", task_message),
+        (metadata, "TERMINATED", task_message),
+        (metadata_task, "TERMINATED", task_message),
+    )
+    for terminal_record, life_cycle_state, state_message in expected_records:
+        if terminal_record.get("state") != {
+            "life_cycle_state": life_cycle_state,
+            "result_state": "FAILED",
+            "state_message": state_message,
+            "user_cancelled_or_timedout": False,
+        }:
+            raise ValueError(
+                "mixed sentinel/result-validation terminal states are not reviewed"
+            )
+        status = _required_mapping(
+            terminal_record.get("status"),
+            "mixed sentinel/result-validation status",
+        )
+        termination_details = _required_mapping(
+            status.get("termination_details"),
+            "mixed sentinel/result-validation termination details",
+        )
+        if status.get("state") != "TERMINATED" or termination_details != {
+            "code": "RUN_EXECUTION_ERROR",
+            "message": state_message,
+            "type": "CLIENT_ERROR",
+        }:
+            raise ValueError(
+                "mixed sentinel/result-validation terminal statuses are not reviewed"
+            )
+    for terminal_record, label in (
+        (run, "parent"),
+        (observed_task, "task"),
+        (metadata, "metadata"),
+        (metadata_task, "metadata task"),
+    ):
+        if (
+            terminal_record.get("repair_history") not in (None, [])
+            or terminal_record.get("original_attempt_run_id") is not None
+        ):
+            raise ValueError(
+                "mixed sentinel/result-validation failure has repair history"
+            )
+        if (terminal_record is observed_task or terminal_record is metadata_task) and (
+            type(terminal_record.get("attempt_number")) is not int
+            or terminal_record.get("attempt_number") != 0
+        ):
+            raise ValueError(
+                f"mixed sentinel/result-validation {label} is not attempt zero"
+            )
+
+
+def _validated_mixed_sentinel_and_result_validation_failure_error(
+    run_output: Mapping[str, Any],
+    *,
+    run: Mapping[str, Any],
+    plan_sha256: str,
+    job_id: str,
+    expected_error_sha256: str,
+    expected_error_utf8_bytes: int,
+) -> str:
+    """Validate one exact 694441 failure record without caller review authority."""
+
+    _validate_failed_run_output_schema(run_output)
+    if set(run_output) != _FAILED_RUN_OUTPUT_LOGGED_KEYS:
+        raise ValueError(
+            "mixed sentinel/result-validation failure requires the exact logged "
+            "output schema"
+        )
+    if (
+        _required_sha256(plan_sha256, "plan_sha256")
+        != GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PLAN_SHA256
+    ):
+        raise ValueError("mixed sentinel/result-validation failure plan is not reviewed")
+    reviewed_job_id = _safe_id(job_id, "job_id")
+    category = _mixed_sentinel_and_result_validation_failure_categories().get(
+        reviewed_job_id
+    )
+    if category is None:
+        raise ValueError("mixed sentinel/result-validation failure job is not reviewed")
+    error = _non_empty_string(
+        run_output.get("error"),
+        "mixed sentinel/result-validation failure error",
+    )
+    try:
+        encoded_error = error.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            "mixed sentinel/result-validation failure error must be valid UTF-8"
+        ) from exc
+    if sha256(encoded_error).hexdigest() != _required_sha256(
+        expected_error_sha256,
+        "expected_error_sha256",
+    ):
+        raise ValueError(
+            "mixed sentinel/result-validation failure raw error is not reviewed"
+        )
+    if len(encoded_error) != _positive_int(
+        expected_error_utf8_bytes,
+        "expected_error_utf8_bytes",
+    ):
+        raise ValueError(
+            "mixed sentinel/result-validation failure raw error UTF-8 byte count "
+            "is not reviewed"
+        )
+    if run_output.get("logs_truncated") is not False:
+        raise ValueError(
+            "mixed sentinel/result-validation failure logs must be complete"
+        )
+    logs = run_output.get("logs")
+    if type(logs) is not str:
+        raise ValueError(
+            "mixed sentinel/result-validation failure logs must be an exact string"
+        )
+    expected_log_markers = (
+        (
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PIP_CHECK_LOG_MARKER,
+            2,
+        ),
+        (
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VIRTUALENV_LOG_PREFIX,
+            1,
+        ),
+        (
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ENSUREPIP_LOG_ARGV,
+            1,
+        ),
+        (
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_WORKER_MODULE_MARKER,
+            0,
+        ),
+    )
+    if any(logs.count(marker) != count for marker, count in expected_log_markers):
+        raise ValueError(
+            "mixed sentinel/result-validation failure logs differ from the reviewed "
+            "install and worker-output grammar"
+        )
+    work_root_prefix = f"{GPU_QUALIFICATION_LOCAL_WORK_ROOT}/"
+    work_root = f"{work_root_prefix}{plan_sha256}/{reviewed_job_id}"
+    if (
+        logs.count(work_root_prefix) != 12
+        or logs.count(work_root) != 12
+    ):
+        raise ValueError(
+            "mixed sentinel/result-validation logs contain an unreviewed work path"
+        )
+
+    error_trace = _non_empty_string(
+        run_output.get("error_trace"),
+        "mixed sentinel/result-validation failure error_trace",
+    )
+    normalized_error = _normalized_failed_run_exception_text(error)
+    normalized_trace = _normalized_failed_run_exception_text(error_trace)
+    if normalized_trace.count(normalized_error) != 1:
+        raise ValueError(
+            "mixed sentinel/result-validation trace must contain the normalized "
+            "reviewed error exactly once"
+        )
+    html_prefix = _DATABRICKS_ANSI_RUNTIME_ERROR_HTML_PREFIX
+    worker_module = (
+        GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_WORKER_MODULE_MARKER
+    )
+    if category == "version_mismatch":
+        if (
+            error
+            != f"ValueError: job result {reviewed_job_id} vLLM version mismatch"
+            or html_prefix in error
+            or "<span" in error
+            or any(
+                normalized_trace.count(marker) != count
+                for marker, count in (
+                    GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VERSION_TRACE_MARKERS
+                )
+            )
+            or any(
+                marker in normalized_trace
+                for marker in (
+                    worker_module,
+                    "run_gpu_qualification_sentinel",
+                    "_run_bounded_worker_process",
+                    "_worker_process_failure",
+                )
+            )
+        ):
+            raise ValueError(
+                "mixed result-validation failure grammar or trace differs"
+            )
+    else:
+        if (
+            normalized_error.count(work_root_prefix) == 0
+            or normalized_error.count(work_root_prefix)
+            != normalized_error.count(work_root)
+            or normalized_trace.count(work_root_prefix)
+            != normalized_trace.count(work_root)
+        ):
+            raise ValueError(
+                "mixed sentinel/result-validation failure contains an unreviewed "
+                "work path"
+            )
+        if (
+            not error.startswith(f"{html_prefix}: ")
+            or error.count(html_prefix) != 1
+            or error.count("<span") != 1
+            or error.count("</span>") != 1
+            or html_prefix in normalized_error
+            or "<span" in normalized_trace
+            or any(
+                normalized_trace.count(marker) != count
+                for marker, count in (
+                    GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_WORKER_TRACE_MARKERS
+                )
+            )
+            or normalized_trace.count(worker_module) != 1
+        ):
+            raise ValueError(
+                "mixed sentinel failure HTML projection or worker trace differs"
+            )
+        envelope = re.fullmatch(
+            r"RuntimeError: GPU sentinel '([^']+)' worker exited with status 1; "
+            r"stdout\(bytes=(0|[1-9][0-9]*),sha256=([0-9a-f]{64}),"
+            r"truncated=(true|false),tail=(.+?)\); stderr\(bytes=([1-9][0-9]*),"
+            r"sha256=([0-9a-f]{64}),truncated=(true|false),tail=(.+)\)",
+            normalized_error,
+            flags=re.DOTALL,
+        )
+        if envelope is None or envelope.group(1) != reviewed_job_id:
+            raise ValueError("mixed sentinel failure stream envelope differs")
+        (
+            stdout_bytes,
+            stdout_sha256,
+            stdout_truncated,
+            stdout_tail,
+            _stderr_bytes,
+            _stderr_sha256,
+            stderr_truncated,
+            stderr_tail,
+        ) = envelope.groups()[1:]
+        if (
+            not stdout_tail.startswith("'")
+            or not stdout_tail.endswith("'")
+            or not stderr_tail.startswith("'")
+            or not stderr_tail.endswith("'")
+            or stderr_tail == "''"
+        ):
+            raise ValueError("mixed sentinel failure stream tail grammar differs")
+        empty_sha256 = sha256(b"").hexdigest()
+        if category == "flashinfer":
+            expected_stream_shape = (
+                stdout_bytes != "0"
+                and stdout_truncated == "true"
+                and stdout_tail != "''"
+                and stderr_truncated == "true"
+            )
+        else:
+            expected_stream_shape = (
+                stdout_bytes == "0"
+                and stdout_sha256 == empty_sha256
+                and stdout_truncated == "false"
+                and stdout_tail == "''"
+                and stderr_truncated
+                == ("false" if category == "unresolved_native" else "true")
+            )
+        if not expected_stream_shape:
+            raise ValueError("mixed sentinel failure stream category differs")
+
+        category_markers = {
+            "unresolved_native": (
+                GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_UNRESOLVED_NATIVE_ERROR_MARKERS
+            ),
+            "layout_conflict": (
+                GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_LAYOUT_ERROR_MARKERS
+            ),
+            "flashinfer": (
+                GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FLASHINFER_ERROR_MARKERS
+            ),
+        }
+        reviewed_markers = category_markers[category]
+        other_markers = {
+            marker
+            for other_category, markers in category_markers.items()
+            if other_category != category
+            for marker in markers
+        }
+        if (
+            any(normalized_error.count(marker) != 1 for marker in reviewed_markers)
+            or any(normalized_trace.count(marker) != 1 for marker in reviewed_markers)
+            or any(marker in normalized_error for marker in other_markers)
+            or any(marker in normalized_trace for marker in other_markers)
+            or any(marker in logs for marker in reviewed_markers)
+        ):
+            raise ValueError(
+                "mixed sentinel failure category-specific grammar differs"
+            )
+
+    _require_mixed_sentinel_and_result_validation_terminal_topology(run, run_output)
+    return error
+
+
+def _require_mixed_sentinel_and_result_validation_predicted_ledger(
+    predicted: DatabricksClusterHourLedger,
+    *,
+    predecessor_terminal_count: int,
+    terminal_prefix: DatabricksLedgerPrefix,
+) -> None:
+    """Pin the complete canonical ledger projection before the first append."""
+
+    if terminal_prefix.prefix_sha256 != (
+        GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TERMINAL_PREFIX_SHA256
+    ):
+        raise ValueError("mixed failure predicted terminal prefix is not reviewed")
+    expected_counts = (
+        GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_RESERVATION_COUNT,
+        GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_SUBMISSION_RECEIPT_COUNT,
+        GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_TERMINAL_ACTUAL_COUNT,
+    )
+    if (
+        (
+            len(predicted.reservations),
+            len(predicted.submission_receipts),
+            len(predicted.terminal_actuals),
+        )
+        != expected_counts
+        or predicted.active_reserved_task_count != 0
+        or predicted.active_reserved_cluster_hours != 0.0
+        or predicted.terminal_actual_cluster_hours
+        != GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_TERMINAL_HOURS
+        or predicted.accounted_cluster_hours
+        != GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_TERMINAL_HOURS
+        or predicted.remaining_cluster_hours
+        != GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_REMAINING_HOURS
+        or sum(
+            actual.actual_cluster_duration_seconds
+            for actual in predicted.terminal_actuals[predecessor_terminal_count:]
+        )
+        != GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_NEW_TERMINAL_SECONDS
+    ):
+        raise ValueError("mixed failure predicted ledger accounting is not reviewed")
+    canonical_bytes = (
+        json.dumps(
+            databricks_cluster_hour_ledger_to_record(predicted),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    if (
+        len(canonical_bytes)
+        != GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_LEDGER_BYTES
+        or sha256(canonical_bytes).hexdigest()
+        != GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_LEDGER_SHA256
+    ):
+        raise ValueError("mixed failure canonical predicted ledger is not reviewed")
+
+
 def _failed_attempt_evidence_tree_binding(
     evidence_root: Path,
 ) -> tuple[int, int, str]:
@@ -2785,6 +3401,7 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         str, int
     ]
     | None = None,
+    expected_mixed_sentinel_and_result_validation_failure: bool = False,
     expected_evidence_tree_sha256: str | None = None,
     expected_evidence_tree_file_count: int | None = None,
     expected_evidence_tree_total_bytes: int | None = None,
@@ -2830,6 +3447,10 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
             "reviewed runtime observation and worker subprocess error pins must "
             "include both SHA-256 and UTF-8 byte maps"
         )
+    if type(expected_mixed_sentinel_and_result_validation_failure) is not bool:
+        raise TypeError(
+            "expected_mixed_sentinel_and_result_validation_failure must be a bool"
+        )
     expected_error_modes = (
         expected_error is not None,
         expected_runtime_lock_index_error_sha256_by_job is not None,
@@ -2838,6 +3459,7 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
             value is not None
             for value in runtime_observation_and_worker_subprocess_error_pins
         ),
+        expected_mixed_sentinel_and_result_validation_failure,
     )
     if sum(expected_error_modes) != 1:
         raise ValueError(
@@ -2893,6 +3515,19 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     ):
         raise ValueError("failed-attempt reconciliation plan is not reviewed")
     contracts = _validated_qualification_payloads(plan, submit_payloads)
+    mixed_failure_categories = (
+        _mixed_sentinel_and_result_validation_failure_categories()
+        if expected_mixed_sentinel_and_result_validation_failure
+        else None
+    )
+    contract_job_ids = {str(contract["job_id"]) for contract in contracts}
+    if (
+        mixed_failure_categories is not None
+        and set(mixed_failure_categories) != contract_job_ids
+    ):
+        raise ValueError(
+            "mixed sentinel/result-validation failure job sets differ from the plan"
+        )
     reviewed_error_sha256_by_job = (
         None
         if expected_runtime_lock_index_error_sha256_by_job is None
@@ -2926,6 +3561,26 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
             expected_runtime_observation_and_worker_subprocess_error_utf8_bytes_by_job,
             contracts=contracts,
         )
+    )
+    reviewed_mixed_failure_error_sha256_by_job = (
+        _validated_reviewed_error_sha256_by_job(
+            dict(
+                GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_SHA256_BY_JOB
+            ),
+            contracts=contracts,
+        )
+        if mixed_failure_categories is not None
+        else None
+    )
+    reviewed_mixed_failure_error_utf8_bytes_by_job = (
+        _validated_reviewed_error_utf8_bytes_by_job(
+            dict(
+                GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+            ),
+            contracts=contracts,
+        )
+        if mixed_failure_categories is not None
+        else None
     )
     local_preflight_binding = _non_authorizing_local_preflight_binding(
         local_preflight_evidence_path,
@@ -3034,6 +3689,22 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
                         ]
                     ),
                 )
+            elif (
+                reviewed_mixed_failure_error_sha256_by_job is not None
+                and reviewed_mixed_failure_error_utf8_bytes_by_job is not None
+            ):
+                reviewed_job_error = _validated_mixed_sentinel_and_result_validation_failure_error(
+                    run_output,
+                    run=run,
+                    plan_sha256=reviewed_plan_sha256,
+                    job_id=job_id,
+                    expected_error_sha256=(
+                        reviewed_mixed_failure_error_sha256_by_job[job_id]
+                    ),
+                    expected_error_utf8_bytes=(
+                        reviewed_mixed_failure_error_utf8_bytes_by_job[job_id]
+                    ),
+                )
             else:
                 raise RuntimeError("reviewed per-job error closure is unavailable")
         entry = _failed_attempt_reconciliation_v2_entry(
@@ -3056,6 +3727,14 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
     )
     if terminal_prefix.prefix_sha256 != reviewed_terminal_prefix_sha256:
         raise ValueError("failed-attempt terminal prefix is not reviewed")
+    if mixed_failure_categories is not None:
+        _require_mixed_sentinel_and_result_validation_predicted_ledger(
+            predicted,
+            predecessor_terminal_count=(
+                batch_authorization.predecessor_prefix.terminal_actual_count
+            ),
+            terminal_prefix=terminal_prefix,
+        )
     manifest_path = _validated_existing_regular_file(
         evidence_root / "reconciliation-manifest.json",
         "failed-attempt reconciliation v2 manifest",
@@ -3384,6 +4063,64 @@ def reconcile_gpu_qualification_runtime_observation_and_worker_subprocess_failur
         ),
         expected_evidence_tree_total_bytes=(
             GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_EVIDENCE_TREE_TOTAL_BYTES
+        ),
+    )
+
+
+def reconcile_gpu_qualification_mixed_sentinel_and_result_validation_failure_evidence(
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    evidence_root: str | Path,
+) -> DatabricksClusterHourLedger:
+    """Account the reviewed 694441 mixed terminal-failure closure.
+
+    This zero-authority boundary admits only the source-pinned two version
+    mismatches, two unresolved-native failures, eight layout conflicts, and two
+    FlashInfer engine-initialization failures.  It validates every raw error,
+    exact terminal topology, 29-file evidence tree, manifest, and final canonical
+    ledger projection before the first deterministic terminal-actual append.
+    """
+
+    return _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
+        plan_record=plan_record,
+        submit_payloads=submit_payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        runs_get_evidence_root=evidence_root,
+        expected_plan_sha256=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PLAN_SHA256
+        ),
+        expected_runner_sha256=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_RUNNER_SHA256
+        ),
+        expected_manifest_closed_record_sha256=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_MANIFEST_SHA256
+        ),
+        expected_manifest_file_sha256=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_MANIFEST_FILE_SHA256
+        ),
+        expected_terminal_prefix_sha256=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TERMINAL_PREFIX_SHA256
+        ),
+        expected_failure_reason=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_REASON
+        ),
+        expected_error=None,
+        expected_run_output_keys=_FAILED_RUN_OUTPUT_LOGGED_KEYS,
+        expected_mixed_sentinel_and_result_validation_failure=True,
+        expected_evidence_tree_sha256=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_SHA256
+        ),
+        expected_evidence_tree_file_count=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_FILE_COUNT
+        ),
+        expected_evidence_tree_total_bytes=(
+            GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_TOTAL_BYTES
         ),
     )
 
@@ -6630,6 +7367,38 @@ __all__ = [
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_REASON",
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_RUNNER_SHA256",
     "GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_TERMINAL_PREFIX_SHA256",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ENSUREPIP_LOG_ARGV",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_SHA256_BY_JOB",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_UTF8_BYTES_BY_JOB",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_FILE_COUNT",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_SHA256",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_TOTAL_BYTES",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_LEDGER_BYTES",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_LEDGER_SHA256",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_REMAINING_HOURS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_RESERVATION_COUNT",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_SUBMISSION_RECEIPT_COUNT",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_TERMINAL_ACTUAL_COUNT",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FINAL_TERMINAL_HOURS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FLASHINFER_ERROR_MARKERS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FLASHINFER_JOB_IDS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_LAYOUT_CONFLICT_JOB_IDS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_LAYOUT_ERROR_MARKERS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_MANIFEST_FILE_SHA256",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_MANIFEST_SHA256",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_NEW_TERMINAL_SECONDS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PIP_CHECK_LOG_MARKER",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PLAN_SHA256",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_REASON",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_RUNNER_SHA256",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TERMINAL_PREFIX_SHA256",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_UNRESOLVED_NATIVE_ERROR_MARKERS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_UNRESOLVED_NATIVE_JOB_IDS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VERSION_MISMATCH_JOB_IDS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VERSION_TRACE_MARKERS",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VIRTUALENV_LOG_PREFIX",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_WORKER_MODULE_MARKER",
+    "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_WORKER_TRACE_MARKERS",
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB",
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_LOG_MARKER",
     "GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_MANIFEST_FILE_SHA256",
@@ -6699,6 +7468,7 @@ __all__ = [
     "reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence",
     "reconcile_gpu_qualification_bootstrap_file_global_failure_evidence",
     "reconcile_gpu_qualification_failed_attempt_evidence",
+    "reconcile_gpu_qualification_mixed_sentinel_and_result_validation_failure_evidence",
     "reconcile_gpu_qualification_runtime_lock_index_failure_evidence",
     "reconcile_gpu_qualification_runtime_observation_and_worker_subprocess_failure_evidence",
     "reconcile_gpu_qualification_site_packages_path_failure_evidence",
