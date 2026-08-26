@@ -3,7 +3,9 @@ from __future__ import annotations
 from copy import deepcopy
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 from types import SimpleNamespace
 from typing import Any
@@ -81,6 +83,37 @@ _CLOSURE_PATH = (
 _PACKAGE_SHA256 = "a" * 64
 _SOURCE_SHA256 = "b" * 64
 _RUNNER_SHA256 = "c" * 64
+
+
+def _bounded_stream_result(
+    data: bytes,
+    *,
+    byte_count: int | None = None,
+    digest: str | None = None,
+    limit_exceeded: bool = False,
+) -> runtime_v2._BoundedBinaryStreamResult:
+    return runtime_v2._BoundedBinaryStreamResult(
+        retained=data,
+        byte_count=len(data) if byte_count is None else byte_count,
+        sha256=sha256(data).hexdigest() if digest is None else digest,
+        limit_exceeded=limit_exceeded,
+    )
+
+
+def _bounded_process_result(
+    *,
+    stdout: bytes = runtime_v2._FINAL_VERIFIER_PIP_CHECK_STDOUT,
+    stderr: bytes = b"",
+    returncode: int = 0,
+    timed_out: bool = False,
+    output_limit_exceeded: bool = False,
+) -> runtime_v2._BoundedBinarySubprocessResult:
+    return runtime_v2._BoundedBinarySubprocessResult(
+        returncode=returncode,
+        stdout=_bounded_stream_result(stdout, limit_exceeded=output_limit_exceeded),
+        stderr=_bounded_stream_result(stderr),
+        timed_out=timed_out,
+    )
 
 
 def _pins() -> GPUQualificationArtifactPinsV2:
@@ -419,6 +452,338 @@ def test_runtime_installer_rejects_nonexact_sealed_plan_or_job_before_install(
         )
 
 
+def test_standalone_verifier_pip_check_is_exact_bounded_binary_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = {"PIP_CONFIG_FILE": "/reviewed/pip.conf"}
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(
+        runtime_v2, "_pip_subprocess_environment", lambda: dict(environment)
+    )
+
+    def run(
+        arguments: list[str], **kwargs: Any
+    ) -> runtime_v2._BoundedBinarySubprocessResult:
+        calls.append((list(arguments), dict(kwargs)))
+        return _bounded_process_result()
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    monkeypatch.setattr(runtime_v2, "_file_sha256", lambda _path: "0" * 64)
+    with pytest.raises(RuntimeError, match="base lock SHA-256 differs"):
+        runtime_v2.verify_gpu_qualification_v2_runtime_installation(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+    assert calls == [
+        (
+            [runtime_v2.sys.executable, "-m", "pip", "check"],
+            {
+                "cwd": Path(runtime_v2.sys.prefix),
+                "environment": {**environment, "PYTHONSAFEPATH": "1"},
+                "output_limit_bytes": (
+                    runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES
+                ),
+                "timeout_seconds": (
+                    runtime_v2._FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS
+                ),
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        (b"No broken requirements found.\r\n", b""),
+        (b"No broken requirements found.\nextra\n", b""),
+        (b"No broken requirements found.\n", b"stderr-secret"),
+    ],
+)
+def test_standalone_verifier_rejects_pip_check_marker_mismatch_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(stdout=stdout, stderr=stderr),
+    )
+    with pytest.raises(RuntimeError, match="pip check output differs") as raised:
+        runtime_v2.verify_gpu_qualification_v2_runtime_installation(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+    assert "stderr-secret" not in str(raised.value)
+
+
+@pytest.mark.parametrize("failure", ["nonzero", "timeout"])
+def test_standalone_verifier_pip_failure_is_fixed_and_does_not_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+
+    def run(*_args: Any, **_kwargs: Any) -> runtime_v2._BoundedBinarySubprocessResult:
+        if failure == "timeout":
+            return _bounded_process_result(
+                stdout=b"stdout-secret",
+                stderr=b"stderr-secret",
+                timed_out=True,
+            )
+        return _bounded_process_result(
+            returncode=17,
+            stdout=b"stdout-secret",
+            stderr=b"stderr-secret",
+        )
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    expected = "timed out" if failure == "timeout" else "pip check failed"
+    with pytest.raises(RuntimeError, match=expected) as raised:
+        runtime_v2.verify_gpu_qualification_v2_runtime_installation(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+    diagnostic = str(raised.value)
+    assert "command-secret" not in diagnostic
+    assert "stdout-secret" not in diagnostic
+    assert "stderr-secret" not in diagnostic
+
+
+def test_bounded_binary_subprocess_stops_incremental_oversize_and_caps_retention(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_popen = subprocess.Popen
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def popen(arguments: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        calls.append((list(arguments), dict(kwargs)))
+        return real_popen(arguments, **kwargs)
+
+    monkeypatch.setattr(runtime_v2.subprocess, "Popen", popen)
+    environment = {"PYTHONSAFEPATH": "1"}
+    arguments = [
+        runtime_v2.sys.executable,
+        "-c",
+        "import os\nchunk=b'x'*65536\nwhile True: os.write(1,chunk)",
+    ]
+    result = runtime_v2._run_bounded_binary_subprocess(
+        arguments,
+        timeout_seconds=5,
+        output_limit_bytes=4096,
+        environment=environment,
+        cwd=tmp_path,
+    )
+
+    assert result.timed_out is False
+    assert result.output_limit_exceeded is True
+    assert result.stdout.byte_count > 4096
+    assert result.stdout.retained == b"x" * 4096
+    assert result.stdout.sha256 != runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256
+    assert result.stderr == _bounded_stream_result(b"")
+    assert len(calls) == 1
+    observed_arguments, kwargs = calls[0]
+    assert observed_arguments == arguments
+    assert kwargs == {
+        "bufsize": 0,
+        "cwd": tmp_path,
+        "env": environment,
+        "start_new_session": True,
+        "stderr": subprocess.PIPE,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "text": False,
+    }
+
+
+def test_bounded_binary_subprocess_timeout_terminates_then_kills_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_signal = runtime_v2._signal_bounded_subprocess_group
+    signals: list[tuple[int, int]] = []
+
+    def record_signal(process: subprocess.Popen[bytes], signal_number: int) -> None:
+        signals.append((process.pid, signal_number))
+        real_signal(process, signal_number)
+
+    monkeypatch.setattr(runtime_v2, "_signal_bounded_subprocess_group", record_signal)
+    result = runtime_v2._run_bounded_binary_subprocess(
+        [
+            runtime_v2.sys.executable,
+            "-c",
+            (
+                "import signal,time;"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                "time.sleep(60)"
+            ),
+        ],
+        timeout_seconds=1,
+        output_limit_bytes=4096,
+        environment={"PYTHONSAFEPATH": "1"},
+        cwd=tmp_path,
+    )
+
+    assert result.timed_out is True
+    assert result.output_limit_exceeded is False
+    assert [signal_number for _pid, signal_number in signals[:2]] == [
+        signal.SIGTERM,
+        signal.SIGKILL,
+    ]
+    process_id = signals[0][0]
+    assert (
+        runtime_v2._bounded_subprocess_group_exists(SimpleNamespace(pid=process_id))
+        is False
+    )
+
+
+def test_final_verifier_timeout_hierarchy_has_strict_cleanup_and_import_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert runtime_v2._FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS == 180
+    assert runtime_v2._FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS == 300
+    assert runtime_v2._FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS == 10
+    assert runtime_v2._FINAL_VERIFIER_POST_PIP_BUDGET_SECONDS == 60
+    assert runtime_v2._FINAL_VERIFIER_REQUIRED_HIERARCHY_MARGIN_SECONDS == 90
+    runtime_v2._require_final_verifier_timeout_hierarchy()
+
+    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS", 211.0)
+    with pytest.raises(RuntimeError, match="timeout hierarchy differs"):
+        runtime_v2._require_final_verifier_timeout_hierarchy()
+
+
+def _process_or_group_exists(identifier: int, *, group: bool) -> bool:
+    try:
+        if group:
+            os.killpg(identifier, 0)
+        else:
+            os.kill(identifier, 0)
+    except (PermissionError, ProcessLookupError):
+        return False
+    return True
+
+
+def test_outer_final_verifier_waits_for_nested_pip_group_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    inner_marker = tmp_path / "inner-pid-pgid.txt"
+    outer_marker = tmp_path / "outer-pid-pgid.txt"
+    fake_python = tmp_path / "term-ignoring-python"
+    fake_python.write_text(
+        f"#!{runtime_v2.sys.executable}\n"
+        "import os\n"
+        "import signal\n"
+        "import time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "marker = os.environ['CACHET_TEST_INNER_MARKER']\n"
+        "with open(marker, 'w', encoding='ascii') as stream:\n"
+        "    stream.write(f'{os.getpid()} {os.getpgid(0)}\\n')\n"
+        "    stream.flush()\n"
+        "    os.fsync(stream.fileno())\n"
+        "while True:\n"
+        "    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+
+    hook_dir = tmp_path / "site-hook"
+    hook_dir.mkdir()
+    (hook_dir / "sitecustomize.py").write_text(
+        "import os\n"
+        "import document_kv_cache._gpu_qualification_sentinels_v2 as runtime_v2\n"
+        "runtime_v2._require_runtime_platform = lambda: None\n"
+        "runtime_v2._FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS = 1.5\n"
+        "runtime_v2.sys.executable = os.environ['CACHET_TEST_FAKE_PYTHON']\n"
+        "marker = os.environ['CACHET_TEST_OUTER_MARKER']\n"
+        "with open(marker, 'w', encoding='ascii') as stream:\n"
+        "    stream.write(f'{os.getpid()} {os.getpgid(0)}\\n')\n"
+        "    stream.flush()\n"
+        "    os.fsync(stream.fileno())\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS", 1.5)
+    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS", 7.0)
+    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS", 1.5)
+    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_POST_PIP_BUDGET_SECONDS", 0.5)
+    monkeypatch.setattr(
+        runtime_v2, "_FINAL_VERIFIER_REQUIRED_HIERARCHY_MARGIN_SECONDS", 4.0
+    )
+    environment = {
+        "CACHET_TEST_FAKE_PYTHON": str(fake_python),
+        "CACHET_TEST_INNER_MARKER": str(inner_marker),
+        "CACHET_TEST_OUTER_MARKER": str(outer_marker),
+        "HOME": str(tmp_path),
+        "LC_ALL": "C",
+        "PATH": os.environ["PATH"],
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONEXECUTABLE": str(fake_python),
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONPATH": os.pathsep.join((str(hook_dir), str(_ROOT / "src"))),
+        "PYTHONSAFEPATH": "1",
+    }
+
+    started = runtime_v2.monotonic()
+    with pytest.raises(
+        RuntimeError,
+        match=r"rejected the installation \(pip_check/subprocess_timeout\)",
+    ):
+        runtime_v2._run_final_runtime_verifier(
+            Path(runtime_v2.sys.executable),
+            runtime_lock=tmp_path / "unused-base.lock",
+            vllm_uri="file:///unused-vllm.whl",
+            flashinfer_uri="file:///unused-flashinfer.whl",
+            closure_path=tmp_path / "unused-closure.json",
+            package_uri="file:///unused-cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment=environment,
+        )
+    assert runtime_v2.monotonic() - started < 7
+
+    outer_pid, outer_pgid = (
+        int(value) for value in outer_marker.read_text(encoding="ascii").split()
+    )
+    inner_pid, inner_pgid = (
+        int(value) for value in inner_marker.read_text(encoding="ascii").split()
+    )
+    assert outer_pid == outer_pgid
+    assert inner_pid == inner_pgid
+    assert not _process_or_group_exists(outer_pid, group=False)
+    assert not _process_or_group_exists(outer_pgid, group=True)
+    assert not _process_or_group_exists(inner_pid, group=False)
+    assert not _process_or_group_exists(inner_pgid, group=True)
+
+
+def test_bounded_binary_accumulator_retains_only_its_cap_incrementally() -> None:
+    accumulator = runtime_v2._BoundedBinaryAccumulator(7)
+    assert accumulator.add(b"abc") is False
+    assert accumulator.add(b"defgh") is True
+    result = accumulator.result()
+    assert result.retained == b"abcdefg"
+    assert result.byte_count == 8
+    assert result.sha256 == sha256(b"abcdefgh").hexdigest()
+    assert result.limit_exceeded is True
+
+
 class _Distribution:
     def __init__(
         self,
@@ -453,9 +818,9 @@ def _patch_verifier_through_distribution_scan(
     monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
     monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
     monkeypatch.setattr(
-        runtime_v2.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0),
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(),
     )
     monkeypatch.setattr(
         runtime_v2, "_file_sha256", lambda _path: VLLM_RUNTIME_BASE_LOCK_SHA256
@@ -695,9 +1060,9 @@ def test_real_base_lock_has_exact_projection_and_verifier_rejects_tamper(
     monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
     monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
     monkeypatch.setattr(
-        runtime_v2.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0),
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(),
     )
     with pytest.raises(RuntimeError, match="base lock SHA-256 differs"):
         runtime_v2.verify_gpu_qualification_v2_runtime_installation(
@@ -708,3 +1073,425 @@ def test_real_base_lock_has_exact_projection_and_verifier_rejects_tamper(
             package_uri="file:///cachet.whl",
             package_sha256=_PACKAGE_SHA256,
         )
+
+
+def _final_child_arguments() -> list[str]:
+    return [
+        "base.lock",
+        "file:///vllm.whl",
+        "file:///flashinfer.whl",
+        "closure.json",
+        "file:///cachet.whl",
+        _PACKAGE_SHA256,
+    ]
+
+
+def _final_child_success_envelope(attestation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "attestation": attestation,
+        "category": "none",
+        "ok": True,
+        "record_type": runtime_v2._FINAL_VERIFIER_CHILD_RECORD_TYPE,
+        "schema_version": runtime_v2._FINAL_VERIFIER_CHILD_SCHEMA_VERSION,
+        "stage": "complete",
+        "stderr_bytes": 0,
+        "stderr_sha256": runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256,
+        "stdout_bytes": 0,
+        "stdout_sha256": runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256,
+    }
+
+
+def test_final_verifier_child_success_envelope_is_canonical_and_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attestation = {"ok": True, "reviewed": "attestation"}
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        callback = kwargs["stage_callback"]
+        callback("complete")
+        return attestation
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_gpu_qualification_v2_runtime_installation", verify
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    assert envelope == _final_child_success_envelope(attestation)
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert encoded.endswith(b"\n")
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [("nonzero", "subprocess_nonzero"), ("timeout", "subprocess_timeout")],
+)
+def test_final_verifier_child_failure_hashes_streams_and_never_leaks(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    category: str,
+) -> None:
+    captured_stdout = b"captured-stdout-secret"
+    captured_stderr = b"captured-stderr-secret"
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        callback = kwargs["stage_callback"]
+        callback("pip_check")
+        assert os.write(1, captured_stdout) == len(captured_stdout)
+        assert os.write(2, captured_stderr) == len(captured_stderr)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(
+                cmd=["exception-command-secret"],
+                timeout=300,
+                output=b"exception-stdout-secret",
+                stderr=b"exception-stderr-secret",
+            )
+        raise subprocess.CalledProcessError(
+            19,
+            ["exception-command-secret"],
+            output=b"exception-stdout-secret",
+            stderr=b"exception-stderr-secret",
+        )
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_gpu_qualification_v2_runtime_installation", verify
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["attestation"] is None
+    assert envelope["stage"] == "pip_check"
+    assert envelope["category"] == category
+    assert envelope["stdout_bytes"] == len(captured_stdout)
+    assert envelope["stdout_sha256"] == sha256(captured_stdout).hexdigest()
+    assert envelope["stderr_bytes"] == len(captured_stderr)
+    assert envelope["stderr_sha256"] == sha256(captured_stderr).hexdigest()
+    for secret in (
+        captured_stdout,
+        captured_stderr,
+        b"exception-command-secret",
+        b"exception-stdout-secret",
+        b"exception-stderr-secret",
+    ):
+        assert secret not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_final_verifier_child_incremental_oversize_is_bounded_and_contaminated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"captured-oversize-secret-" + b"x" * (
+        runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES + 4096
+    )
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        callback = kwargs["stage_callback"]
+        callback("complete")
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(1, payload[offset:])
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_gpu_qualification_v2_runtime_installation", verify
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["attestation"] is None
+    assert envelope["stage"] == "attestation"
+    assert envelope["category"] == "verification_rejected"
+    assert envelope["stdout_bytes"] == len(payload)
+    assert envelope["stdout_sha256"] == sha256(payload).hexdigest()
+    assert b"captured-oversize-secret" not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_final_verifier_child_invalid_arguments_have_exact_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_v2,
+        "_verify_gpu_qualification_v2_runtime_installation",
+        lambda **_kwargs: pytest.fail("invalid arguments reached verification"),
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(["incomplete"])
+    assert envelope["ok"] is False
+    assert envelope["stage"] == "arguments"
+    assert envelope["category"] == "invalid_arguments"
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+@pytest.mark.parametrize("failure", ["import", "os"])
+def test_final_verifier_child_maps_ordinary_import_or_os_error_to_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        callback = kwargs["stage_callback"]
+        callback("flashinfer_import")
+        if failure == "import":
+            raise ImportError("import-error-secret")
+        raise OSError("os-error-secret-path")
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_gpu_qualification_v2_runtime_installation", verify
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["stage"] == "flashinfer_import"
+    assert envelope["category"] == "verification_rejected"
+    assert b"import-error-secret" not in encoded
+    assert b"os-error-secret-path" not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_final_verifier_child_classifies_pip_subprocess_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+
+    def fail_start(*_args: Any, **_kwargs: Any) -> None:
+        raise runtime_v2._BoundedSubprocessStartFailure("start-failure-secret")
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", fail_start)
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["stage"] == "pip_check"
+    assert envelope["category"] == "subprocess_start_failure"
+    assert b"start-failure-secret" not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_final_verifier_parent_accepts_only_binary_canonical_child_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    attestation = {"ok": True, "reviewed": "attestation"}
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        _final_child_success_envelope(attestation)
+    )
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(
+        arguments: list[str], **kwargs: Any
+    ) -> runtime_v2._BoundedBinarySubprocessResult:
+        calls.append((list(arguments), dict(kwargs)))
+        return _bounded_process_result(stdout=encoded)
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    observed = runtime_v2._run_final_runtime_verifier(
+        runtime_python,
+        runtime_lock=tmp_path / "base.lock",
+        vllm_uri="file:///vllm.whl",
+        flashinfer_uri="file:///flashinfer.whl",
+        closure_path=tmp_path / "closure.json",
+        package_uri="file:///cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+        environment={"PYTHONSAFEPATH": "1"},
+    )
+    assert observed == attestation
+    assert len(calls) == 1
+    arguments, kwargs = calls[0]
+    assert arguments[0:2] == [str(runtime_python), "-c"]
+    assert "_final_runtime_verifier_child_main" in arguments[2]
+    assert arguments[3:] == [
+        str(tmp_path / "base.lock"),
+        "file:///vllm.whl",
+        "file:///flashinfer.whl",
+        str(tmp_path / "closure.json"),
+        "file:///cachet.whl",
+        _PACKAGE_SHA256,
+    ]
+    assert kwargs == {
+        "cwd": runtime_python.parent.parent,
+        "environment": {"PYTHONSAFEPATH": "1"},
+        "output_limit_bytes": (runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES),
+        "timeout_seconds": runtime_v2._FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS,
+    }
+
+
+def _malformed_final_child_outputs() -> list[tuple[str, bytes]]:
+    empty_digest = runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256
+    envelope = runtime_v2._final_runtime_verifier_failure_envelope(
+        stage="pip_check",
+        category="verification_rejected",
+        stdout_bytes=0,
+        stdout_sha256=empty_digest,
+        stderr_bytes=0,
+        stderr_sha256=empty_digest,
+    )
+    canonical = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    duplicate = canonical.replace(
+        b'{"attestation":null,',
+        b'{"attestation":null,"attestation":null,',
+        1,
+    )
+    nan = canonical.replace(b'"attestation":null', b'"attestation":NaN', 1)
+    extra = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        {**envelope, "extra": None}
+    )
+    noncanonical = (json.dumps(envelope, indent=2, sort_keys=True) + "\n").encode()
+    return [
+        ("duplicate", duplicate),
+        ("nan", nan),
+        ("extra", extra),
+        ("noncanonical", noncanonical),
+        ("empty", b""),
+        ("missing-lf", canonical[:-1]),
+        ("prefix", b"polluted-prefix" + canonical),
+        ("suffix", canonical + b"polluted-suffix"),
+        ("two-objects", canonical + canonical),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("_case", "raw"),
+    _malformed_final_child_outputs(),
+    ids=[case for case, _raw in _malformed_final_child_outputs()],
+)
+def test_final_verifier_parser_rejects_malformed_or_polluted_output(
+    _case: str,
+    raw: bytes,
+) -> None:
+    with pytest.raises(RuntimeError, match="protocol failed"):
+        runtime_v2._parse_final_runtime_verifier_child_envelope(raw)
+
+
+@pytest.mark.parametrize(
+    ("stage", "category"),
+    [
+        ("complete", "verification_rejected"),
+        ("arguments", "subprocess_timeout"),
+        ("platform", "invalid_arguments"),
+        ("base_lock", "subprocess_nonzero"),
+        ("attestation", "subprocess_start_failure"),
+    ],
+)
+def test_final_verifier_parser_rejects_invalid_stage_category_relation(
+    stage: str,
+    category: str,
+) -> None:
+    empty_digest = runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256
+    envelope = runtime_v2._final_runtime_verifier_failure_envelope(
+        stage=stage,
+        category=category,
+        stdout_bytes=0,
+        stdout_sha256=empty_digest,
+        stderr_bytes=0,
+        stderr_sha256=empty_digest,
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    with pytest.raises(RuntimeError, match="protocol failed"):
+        runtime_v2._parse_final_runtime_verifier_child_envelope(encoded)
+
+
+@pytest.mark.parametrize("failure", ["stderr", "oversize"])
+def test_final_verifier_parent_rejects_stderr_or_oversize_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        _final_child_success_envelope({"ok": True})
+    )
+    result = _bounded_process_result(
+        stdout=encoded,
+        stderr=b"parent-stderr-secret" if failure == "stderr" else b"",
+    )
+    if failure == "oversize":
+        result = runtime_v2._BoundedBinarySubprocessResult(
+            returncode=0,
+            stdout=_bounded_stream_result(
+                b"oversize-secret",
+                byte_count=(runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES + 1),
+                digest="d" * 64,
+                limit_exceeded=True,
+            ),
+            stderr=_bounded_stream_result(b""),
+            timed_out=False,
+        )
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: result,
+    )
+    expected = "protocol failed" if failure == "stderr" else "exceeds its limit"
+    with pytest.raises(RuntimeError, match=expected) as raised:
+        runtime_v2._run_final_runtime_verifier(
+            tmp_path / "runtime" / "bin" / "python",
+            runtime_lock=tmp_path / "base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            closure_path=tmp_path / "closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment={},
+        )
+    diagnostic = str(raised.value)
+    assert "parent-stderr-secret" not in diagnostic
+    assert "oversize-secret" not in diagnostic
+
+
+@pytest.mark.parametrize("failure", ["nonzero", "timeout"])
+def test_final_verifier_parent_process_failure_is_fixed_and_does_not_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    def run(*_args: Any, **_kwargs: Any) -> runtime_v2._BoundedBinarySubprocessResult:
+        if failure == "timeout":
+            return _bounded_process_result(
+                stdout=b"parent-stdout-secret",
+                stderr=b"parent-stderr-secret",
+                timed_out=True,
+            )
+        return _bounded_process_result(
+            returncode=23,
+            stdout=b"parent-stdout-secret",
+            stderr=b"parent-stderr-secret",
+        )
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    expected = "timed out" if failure == "timeout" else "process failed"
+    with pytest.raises(RuntimeError, match=expected) as raised:
+        runtime_v2._run_final_runtime_verifier(
+            tmp_path / "runtime" / "bin" / "python",
+            runtime_lock=tmp_path / "base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            closure_path=tmp_path / "closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment={},
+        )
+    diagnostic = str(raised.value)
+    assert "parent-command-secret" not in diagnostic
+    assert "parent-stdout-secret" not in diagnostic
+    assert "parent-stderr-secret" not in diagnostic

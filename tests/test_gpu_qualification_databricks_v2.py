@@ -152,16 +152,16 @@ def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 22240
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "48943881882808518ac595bd9640d573f0b9336f20b149c5577ad20de441b531"
+        "47d1f101a7b842ca5a81b395c2cd7bbcc8107a7d7a6d86db2b71c51867dcb4b3"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15393
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 121627
+    assert len(payload_bytes) == 121683
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "b1683a6fe936d84a4104748dda59338ec9e56110c001d23610af2382ae5a3914"
+        "170a9f51f872e575e37f2436fbe4eeeab63d664c289448174000ab043ede4d97"
     )
 
 
@@ -192,8 +192,8 @@ def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> 
             task["spark_python_task"]["python_file"]
             == (_artifact_uris()["runner_sha256"])
         )
-    assert min(sizes) == 7603
-    assert max(sizes) == 7675
+    assert min(sizes) == 7607
+    assert max(sizes) == 7679
     assert (
         max(sizes) < databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
     )
