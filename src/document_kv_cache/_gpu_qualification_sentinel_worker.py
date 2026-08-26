@@ -498,7 +498,7 @@ def _runtime_handoff_sentinel(
     }
     if installed != _CORE_VERSIONS:
         raise RuntimeError(f"locked runtime distributions differ: {installed!r}")
-    runtime_lock_attestation = _runtime_lock_attestation()
+    runtime_lock_attestation = _runtime_lock_attestation_for_plan(plan_record)
     if importlib.metadata.version("vllm") != GPU_QUALIFICATION_VLLM_VERSION:
         raise RuntimeError("installed vLLM version differs from the qualification pin")
     patch_hashes = _installed_vllm_member_hashes(_PATCH_MEMBER_SHA256)
@@ -612,6 +612,39 @@ def _runtime_lock_attestation() -> dict[str, Any]:
     if not isinstance(direct_url, str) or not direct_url.startswith("file:"):
         raise RuntimeError("full runtime-lock attestation has no local vLLM origin")
     return dict(value)
+
+
+def _runtime_lock_attestation_for_plan(
+    plan_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    if plan_record.get("record_type") != (
+        "cachet.vllm_0271_gpu_qualification_plan.v2"
+    ):
+        return _runtime_lock_attestation()
+    from document_kv_cache.gpu_qualification_v2 import (
+        GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+        GPU_QUALIFICATION_V2_SCHEMA_VERSION,
+        validate_gpu_qualification_v2_runtime_attestation,
+    )
+
+    if (
+        plan_record.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE
+        or type(plan_record.get("schema_version")) is not int
+        or plan_record.get("schema_version")
+        != GPU_QUALIFICATION_V2_SCHEMA_VERSION
+    ):
+        raise RuntimeError("full runtime-lock attestation has an open v2 plan schema")
+    raw = os.environ.get(_RUNTIME_LOCK_ATTESTATION_ENV)
+    if not raw:
+        raise RuntimeError("full v2 runtime-lock attestation is unavailable")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("full v2 runtime-lock attestation is invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("full v2 runtime-lock attestation must contain an object")
+    validate_gpu_qualification_v2_runtime_attestation(value)
+    return value
 
 
 def _exercise_all_layer_handoff(work_dir: Path) -> dict[str, Any]:

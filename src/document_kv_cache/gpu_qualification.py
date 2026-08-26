@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -1703,6 +1703,21 @@ def _validate_terminal_receipt(
 def _validate_runtime_handoff_measurements(
     value: Mapping[str, Any], *, hardware_id: str
 ) -> None:
+    _validate_runtime_handoff_measurements_with_attestation(
+        value,
+        hardware_id=hardware_id,
+        attestation_validator=_validate_runtime_lock_attestation,
+    )
+
+
+def _validate_runtime_handoff_measurements_with_attestation(
+    value: Mapping[str, Any],
+    *,
+    hardware_id: str,
+    attestation_validator: Callable[[Mapping[str, Any]], None],
+) -> None:
+    if not callable(attestation_validator):
+        raise TypeError("attestation_validator must be callable")
     expected_keys = frozenset(
         {
             "attention_backend_observed",
@@ -1825,7 +1840,7 @@ def _validate_runtime_handoff_measurements(
             "weight_quantizer_attestation",
         )
     )
-    _validate_runtime_lock_attestation(
+    attestation_validator(
         _mapping(
             value.get("runtime_lock_attestation"),
             "runtime_lock_attestation",

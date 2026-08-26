@@ -574,6 +574,8 @@ EXPECTED_PUBLIC_SUBMODULES = frozenset(
     'github_governance',
     'gpu_qualification',
     'gpu_qualification_databricks',
+    'gpu_qualification_databricks_v2',
+    'gpu_qualification_v2',
     'kvpack',
     'legacy_compatibility',
     'live_server',

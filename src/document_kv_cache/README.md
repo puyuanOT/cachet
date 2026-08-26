@@ -131,6 +131,10 @@ return as a production dependency.
 - `gpu_qualification_databricks.py` renders the fourteen single-task,
   no-retry qualification jobs and provides the hash-locked bootstrap and
   fail-closed GPU result executor.
+- `gpu_qualification_v2.py` defines the additive eight-artifact qualification
+  records for the separately patched FlashInfer runtime closure.
+- `gpu_qualification_databricks_v2.py` renders and executes the isolated v2
+  bootstrap contract without reinterpreting retained v1 records.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
 - `legacy_compatibility.py` validates downstream migration evidence proving the
   legacy `restaurant_kv_serving` compatibility facade was removed safely.
