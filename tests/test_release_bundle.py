@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import zipfile
@@ -3194,6 +3195,190 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
 
+def test_package_wheel_structure_rejects_record_closed_path_and_mode_adversaries(
+    tmp_path: Path,
+) -> None:
+    valid_wheel = _write_wheel(
+        tmp_path / "valid" / "cachet_kv-0.2.0-py3-none-any.whl"
+    )
+    assert (
+        public_release_bundle._package_wheel_issues(  # noqa: SLF001
+            str(valid_wheel),
+            valid_wheel.read_bytes(),
+            expected_version="0.2.0",
+        )
+        == ()
+    )
+
+    cases = (
+        ("absolute", "/escape.py", b"ESCAPE = True\n", None, None, "relative POSIX"),
+        ("traversal", "../escape.py", b"ESCAPE = True\n", None, None, "canonical and safe"),
+        ("dot", "cachet/./dot.py", b"DOT = True\n", None, None, "canonical and safe"),
+        ("backslash", "cachet\\escape.py", b"ESCAPE = True\n", None, None, "relative POSIX"),
+        ("drive", "C:/escape.py", b"ESCAPE = True\n", None, None, "canonical and safe"),
+        ("empty-component", "cachet//alias.py", b"ALIAS = True\n", None, None, "canonical and safe"),
+        ("case-alias", "cachet/__INIT__.py", b"ALIAS = True\n", None, None, "aliasing paths"),
+        ("file-parent", "cachet", b"NOT_A_DIRECTORY = True\n", None, None, "file as a directory"),
+        ("case-parent", "Cachet", b"NOT_A_DIRECTORY = True\n", None, None, "file as a directory"),
+        ("non-nfc", "cachet/e\u0301.py", b"NFC = False\n", None, None, "canonical and safe"),
+        ("control", "cachet/control\x01.py", b"CONTROL = True\n", None, None, "canonical and safe"),
+        ("trailing-dot", "cachet/__init__.py.", b"ALIAS = True\n", None, None, "canonical and safe"),
+        ("trailing-space", "cachet/alias.py ", b"ALIAS = True\n", None, None, "canonical and safe"),
+        ("reserved-device", "cachet/CON.py", b"DEVICE = True\n", None, None, "canonical and safe"),
+        ("reserved-superscript", "cachet/COM\u00b9.py", b"DEVICE = True\n", None, None, "canonical and safe"),
+        ("oversized-component", f"cachet/{'a' * 256}.py", b"LONG = True\n", None, None, "canonical and safe"),
+        ("question", "cachet/a?b.py", b"INVALID = True\n", None, None, "canonical and safe"),
+        ("star", "cachet/a*b.py", b"INVALID = True\n", None, None, "canonical and safe"),
+        ("less", "cachet/a<b.py", b"INVALID = True\n", None, None, "canonical and safe"),
+        ("greater", "cachet/a>b.py", b"INVALID = True\n", None, None, "canonical and safe"),
+        ("pipe", "cachet/a|b.py", b"INVALID = True\n", None, None, "canonical and safe"),
+        ("quote", 'cachet/a"b.py', b"INVALID = True\n", None, None, "canonical and safe"),
+        (
+            "symlink",
+            "cachet/symlink.py",
+            b"cachet/__init__.py",
+            (stat.S_IFLNK | 0o777) << 16,
+            3,
+            "regular file",
+        ),
+        ("fifo", "cachet/fifo", b"", (stat.S_IFIFO | 0o600) << 16, 3, "regular file"),
+        ("executable", "cachet/tool.py", b"", (stat.S_IFREG | 0o755) << 16, 3, "mode 0600 or 0644"),
+        ("writable", "cachet/writable.py", b"", (stat.S_IFREG | 0o666) << 16, 3, "mode 0600 or 0644"),
+        ("dos", "cachet/dos.py", b"", 0o600 << 16, 0, "Unix external attributes"),
+        ("directory", "cachet/empty/", b"", None, None, "regular file"),
+        (
+            "foreign-record",
+            "nested/evil.dist-info/RECORD",
+            b"",
+            None,
+            None,
+            "expected root-level .dist-info",
+        ),
+        (
+            "case-foreign-record",
+            "nested/evil.DIST-INFO/RECORD",
+            b"",
+            None,
+            None,
+            "expected root-level .dist-info",
+        ),
+    )
+    for label, member_name, payload, external_attr, create_system, expected_issue in cases:
+        adversarial = _write_wheel_with_recorded_extra(
+            valid_wheel,
+            tmp_path / label / "cachet_kv-0.2.0-py3-none-any.whl",
+            member_name=member_name,
+            payload=payload,
+            external_attr=external_attr,
+            create_system=create_system,
+        )
+        issues = public_release_bundle._package_wheel_issues(  # noqa: SLF001
+            str(adversarial),
+            adversarial.read_bytes(),
+            expected_version="0.2.0",
+        )
+        assert any(expected_issue in issue for issue in issues), (label, issues)
+
+    sized_record_self = _write_wheel_with_sized_record_self(
+        valid_wheel,
+        tmp_path / "sized-record-self" / valid_wheel.name,
+    )
+    assert any(
+        "self path" in issue and "empty hash and size" in issue
+        for issue in public_release_bundle._package_wheel_issues(  # noqa: SLF001
+            str(sized_record_self),
+            sized_record_self.read_bytes(),
+            expected_version="0.2.0",
+        )
+    )
+
+    local_header_mismatch = tmp_path / "local-header" / valid_wheel.name
+    local_header_mismatch.parent.mkdir(parents=True)
+    malformed = bytearray(valid_wheel.read_bytes())
+    with zipfile.ZipFile(valid_wheel) as wheel_zip:
+        info = wheel_zip.getinfo("cachet/__init__.py")
+        central_start = wheel_zip.start_dir
+    local_name_offset = info.header_offset + 30
+    malformed[local_name_offset] = ord("d")
+    local_header_mismatch.write_bytes(malformed)
+    local_header_issues = public_release_bundle._package_wheel_issues(  # noqa: SLF001
+        str(local_header_mismatch),
+        local_header_mismatch.read_bytes(),
+        expected_version="0.2.0",
+    )
+    assert local_header_issues
+
+    for label, field_offset, value in (
+        ("version", 4, 19),
+        ("flag", 6, 0x08),
+        ("method", 8, 99),
+        ("time", 10, 1),
+        ("date", 12, 1),
+        ("crc", 14, 1),
+        ("compressed-size", 18, 1),
+        ("file-size", 22, 1),
+        ("extra-size", 28, 1),
+    ):
+        mutated_path = tmp_path / f"local-{label}" / valid_wheel.name
+        mutated_path.parent.mkdir(parents=True)
+        mutated = bytearray(valid_wheel.read_bytes())
+        width = 2 if field_offset in {4, 6, 8, 10, 12, 28} else 4
+        mutated[info.header_offset + field_offset : info.header_offset + field_offset + width] = (
+            value.to_bytes(width, "little")
+        )
+        mutated_path.write_bytes(mutated)
+        assert public_release_bundle._package_wheel_issues(  # noqa: SLF001
+            str(mutated_path),
+            mutated_path.read_bytes(),
+            expected_version="0.2.0",
+        )
+
+    for label, field_offset, value in (
+        ("made-version", 4, (3 << 8) | 19),
+        ("extract-version", 6, 19),
+        ("time", 12, 1),
+        ("date", 14, 1),
+        ("internal-attr", 36, 1),
+    ):
+        mutated_path = tmp_path / f"central-{label}" / valid_wheel.name
+        mutated_path.parent.mkdir(parents=True)
+        mutated = bytearray(valid_wheel.read_bytes())
+        mutated[central_start + field_offset : central_start + field_offset + 2] = (
+            value.to_bytes(2, "little")
+        )
+        mutated_path.write_bytes(mutated)
+        assert public_release_bundle._package_wheel_issues(  # noqa: SLF001
+            str(mutated_path),
+            mutated_path.read_bytes(),
+            expected_version="0.2.0",
+        )
+
+    valid_payload = valid_wheel.read_bytes()
+    for label, payload in (
+        ("trailing-byte", valid_payload + b"X"),
+        ("extra-end-record", valid_payload + valid_payload[-22:]),
+    ):
+        ambiguous = tmp_path / label / valid_wheel.name
+        ambiguous.parent.mkdir(parents=True)
+        ambiguous.write_bytes(payload)
+        assert public_release_bundle._package_wheel_issues(  # noqa: SLF001
+            str(ambiguous),
+            ambiguous.read_bytes(),
+            expected_version="0.2.0",
+        )
+
+    central_size_tamper = tmp_path / "central-size" / valid_wheel.name
+    central_size_tamper.parent.mkdir(parents=True)
+    malformed_central = bytearray(valid_payload)
+    malformed_central[-10:-6] = (1).to_bytes(4, "little")
+    central_size_tamper.write_bytes(malformed_central)
+    assert public_release_bundle._package_wheel_issues(  # noqa: SLF001
+        str(central_size_tamper),
+        central_size_tamper.read_bytes(),
+        expected_version="0.2.0",
+    )
+
+
 def test_build_release_bundle_rejects_existing_outputs_without_overwrite(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
     bundle_dir = tmp_path / "bundle"
@@ -4339,6 +4524,88 @@ def _write_wheel(
                     f"{dist_info_prefix}/RECORD,,",
                 )
             wheel_zip.writestr(f"{dist_info_prefix}/RECORD", "\n".join(record_lines))
+    return path
+
+
+def _write_wheel_with_recorded_extra(
+    source: Path,
+    path: Path,
+    *,
+    member_name: str,
+    payload: bytes,
+    external_attr: int | None,
+    create_system: int | None,
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(source) as source_zip:
+        record_names = [
+            info.filename
+            for info in source_zip.infolist()
+            if info.filename.endswith(".dist-info/RECORD")
+        ]
+        assert len(record_names) == 1
+        record_name = record_names[0]
+        source_entries = [
+            (info, source_zip.read(info))
+            for info in source_zip.infolist()
+            if info.filename != record_name
+        ]
+    extra_info = zipfile.ZipInfo(member_name)
+    if create_system is not None:
+        extra_info.create_system = create_system
+    if external_attr is not None:
+        extra_info.external_attr = external_attr
+    with zipfile.ZipFile(path, "w") as wheel_zip:
+        for info, content in source_entries:
+            wheel_zip.writestr(info, content)
+        wheel_zip.writestr(extra_info, payload)
+        record_lines = [
+            _wheel_record_line(info.filename, content)
+            for info, content in source_entries
+        ]
+        record_lines.append(
+            f"{member_name},,"
+            if member_name.endswith(".dist-info/RECORD")
+            else _wheel_record_line(member_name, payload)
+        )
+        record_lines.append(f"{record_name},,")
+        wheel_zip.writestr(record_name, "\n".join(record_lines))
+    return path
+
+
+def _write_wheel_with_sized_record_self(source: Path, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(source) as source_zip:
+        record_names = [
+            info.filename
+            for info in source_zip.infolist()
+            if info.filename.endswith(".dist-info/RECORD")
+        ]
+        assert len(record_names) == 1
+        record_name = record_names[0]
+        source_entries = [
+            (info, source_zip.read(info))
+            for info in source_zip.infolist()
+            if info.filename != record_name
+        ]
+    record_prefix = (
+        "\n".join(
+            _wheel_record_line(info.filename, content)
+            for info, content in source_entries
+        )
+        + f"\n{record_name},,"
+    )
+    record_size = len(record_prefix.encode("utf-8"))
+    while True:
+        record_payload = f"{record_prefix}{record_size}".encode("utf-8")
+        next_size = len(record_payload)
+        if next_size == record_size:
+            break
+        record_size = next_size
+    with zipfile.ZipFile(path, "w") as wheel_zip:
+        for info, content in source_entries:
+            wheel_zip.writestr(info, content)
+        wheel_zip.writestr(record_name, record_payload)
     return path
 
 
