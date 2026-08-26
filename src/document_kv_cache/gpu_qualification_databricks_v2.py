@@ -850,6 +850,7 @@ def write_gpu_qualification_bootstrap_runner_v2(path: str | Path) -> str:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             stream.write(GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT)
             stream.flush()
+            os.fchmod(stream.fileno(), 0o750)
             os.fsync(stream.fileno())
     except BaseException:
         destination.unlink(missing_ok=True)

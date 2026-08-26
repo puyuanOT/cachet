@@ -6334,9 +6334,14 @@ def test_bootstrap_writer_publishes_exact_content_addressed_stdlib_script(
         "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
     )
     assert _pins().runner_sha256 == GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
-    observed = write_gpu_qualification_bootstrap_runner(destination)
+    previous_umask = os.umask(0o077)
+    try:
+        observed = write_gpu_qualification_bootstrap_runner(destination)
+    finally:
+        os.umask(previous_umask)
 
     assert observed == GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
+    assert destination.stat().st_mode & 0o777 == 0o750
     assert destination.read_text(encoding="utf-8") == (
         GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT
     )

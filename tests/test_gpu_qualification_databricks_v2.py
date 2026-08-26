@@ -1,6 +1,7 @@
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 import subprocess
 import types
@@ -533,10 +534,15 @@ def test_v2_bootstrap_rejects_transport_tamper_before_install(
 
 
 def test_v2_bootstrap_writer_is_exclusive_and_transport_signature_is_narrow(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "runner.py"
-    databricks_v2.write_gpu_qualification_bootstrap_runner_v2(path)
+    previous_umask = os.umask(0o077)
+    try:
+        databricks_v2.write_gpu_qualification_bootstrap_runner_v2(path)
+    finally:
+        os.umask(previous_umask)
     assert path.read_text(encoding="utf-8") == (
         databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT
     )
@@ -548,6 +554,21 @@ def test_v2_bootstrap_writer_is_exclusive_and_transport_signature_is_narrow(
     )
     assert "runner_uri" not in signature.parameters
     assert "package_wheel_uri" not in signature.parameters
+
+    failed_path = tmp_path / "fchmod-failure.py"
+
+    def fail_fchmod(_descriptor: int, _mode: int) -> None:
+        raise OSError("forced fchmod failure")
+
+    monkeypatch.setattr(databricks_v2.os, "fchmod", fail_fchmod)
+    previous_umask = os.umask(0o077)
+    try:
+        with pytest.raises(OSError, match="forced fchmod failure"):
+            databricks_v2.write_gpu_qualification_bootstrap_runner_v2(failed_path)
+    finally:
+        os.umask(previous_umask)
+    assert not failed_path.exists()
+    assert not failed_path.is_symlink()
     assert "patched_vllm_wheel_uri" not in signature.parameters
 
 
