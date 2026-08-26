@@ -121,6 +121,9 @@ return as a production dependency.
   retains only bounded, causally closed result/evidence JSON in a locked
   content-addressed mirror; publication aggregation never mounts `/dbfs` or
   mirrors Q8 KV payloads.
+- `flashinfer_wheel_repack.py` validates the exact pristine FlashInfer wheel,
+  applies the CPython 3.11 postponed-annotation patch, and produces a sealed,
+  byte-deterministic patched wheel and manifest.
 - `gpu_qualification.py` defines the closed L4/A10G/L40S vLLM 0.27.1
   qualification plan and validates local inputs, cloud execution records,
   safe 32k GPU-memory-utilization selection, and byte-identical segmented
@@ -227,6 +230,9 @@ return as a production dependency.
   operations and concrete runtime KV layout.
 - `rope.py` provides the shared rotate-half rotary-position-embedding helper
   (`apply_rope_to_keys`, `rope_cos_sin`) used for absolute pre-RoPE positioning.
+- `runtime_artifact_closure.py` derives the FlashInfer-direct base lock and
+  seals the immutable vLLM, patched-FlashInfer, install-order, and pending
+  live-runtime verification closure.
 - `runtime_kv_offload_probe.py` writes an empirical evidence record for
   platform-native runtime KV offload launch config and Cachet hierarchical
   document-KV persistence behavior.
