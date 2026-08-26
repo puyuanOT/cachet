@@ -6202,11 +6202,13 @@ def _observe_gpu_runtime(
         environment=environment,
     )
     probe = (
-        "import json,sys,torch,vllm; "
+        "import importlib.metadata as metadata,json,sys,torch,vllm; "
         "p=torch.cuda.get_device_properties(0); "
         "print(json.dumps({'gpu':p.name,'gpu_compute_capability':"
         "f'{p.major}.{p.minor}','torch_cuda_version':torch.version.cuda,"
-        "'vllm_version':vllm.__version__,'python_executable':sys.executable,"
+        "'vllm_source_version':vllm.__version__,"
+        "'vllm_version':metadata.version('vllm'),"
+        "'python_executable':sys.executable,"
         "'python_prefix':sys.prefix,'python_base_prefix':sys.base_prefix,"
         "'python_implementation':sys.implementation.name,"
         "'python_version':'.'.join(map(str,sys.version_info[:3]))},"
@@ -6252,6 +6254,7 @@ def _observe_gpu_runtime(
         "python_prefix",
         "python_version",
         "torch_cuda_version",
+        "vllm_source_version",
         "vllm_version",
     }:
         raise RuntimeError("GPU runtime identity probe did not return its closed object")
@@ -6283,6 +6286,9 @@ def _observe_gpu_runtime(
         ),
         "nvidia_driver_version": next(iter(driver_versions)),
     }
+    _non_empty_string(
+        observed.get("vllm_source_version"), "observed vLLM source version"
+    )
     return result
 
 

@@ -437,6 +437,36 @@ def test_pre_rope_generator_captures_keys_preserves_values_and_restores_hook(
     assert pack_chunk.key.artifact_identity.rope_rotary_dim == 4
 
 
+def test_pre_rope_layout_binding_is_idempotent_and_rejects_real_conflicts() -> None:
+    model = SimpleNamespace(
+        config=SimpleNamespace(rope_theta=5_000_000.0, head_dim=4)
+    )
+    generator = TransformersKVChunkGenerator(
+        model=model,
+        tokenizer=TinyTokenizer(),
+        pre_rope=True,
+    )
+    layout = replace(
+        tiny_layout(num_layers=2, head_size=4),
+        pre_rope=True,
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=4,
+        key_position_encoding="pre_rope",
+        shares_kv_storage=False,
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+    )
+
+    generator.bind_layout(layout)
+    generator.bind_layout(layout)
+    assert generator.layout == layout
+
+    with pytest.raises(
+        ValueError,
+        match="generator layout conflicts with the resolved handoff layout",
+    ):
+        generator.bind_layout(replace(layout, lora_id="conflicting-adapter"))
+
+
 @pytest.mark.parametrize(
     ("capture_mode", "message"),
     (

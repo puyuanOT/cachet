@@ -201,6 +201,65 @@ def _digest(value: str | bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _canonical_ledger_bytes(ledger: DatabricksClusterHourLedger) -> bytes:
+    return (
+        json.dumps(
+            databricks_cluster_hour_ledger_to_record(ledger),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _current_live_and_prior_receipt_ledgers() -> tuple[
+    bytes,
+    os.stat_result,
+    DatabricksClusterHourLedger,
+]:
+    live_bytes = _RETAINED_LEDGER_PATH.read_bytes()
+    live_stat = _RETAINED_LEDGER_PATH.stat()
+    assert len(live_bytes) == 220_426
+    assert hashlib.sha256(live_bytes).hexdigest() == (
+        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d"
+    )
+    live = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
+    assert (
+        len(live.reservations),
+        len(live.submission_receipts),
+        len(live.terminal_actuals),
+    ) == (236, 98, 236)
+    assert live.active_reserved_task_count == 0
+    assert live.active_reserved_cluster_hours == 0
+    assert live.terminal_actual_cluster_hours == 71.39012833333337
+    assert live.accounted_cluster_hours == 71.39012833333337
+    assert live.remaining_cluster_hours == 952.6098716666667
+    assert databricks_ledger_prefix(live).prefix_sha256 == (
+        "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
+    )
+
+    prior_receipt = replace(live, terminal_actuals=live.terminal_actuals[:222])
+    prior_bytes = _canonical_ledger_bytes(prior_receipt)
+    assert len(prior_bytes) == 213_024
+    assert hashlib.sha256(prior_bytes).hexdigest() == (
+        "1ea82ff83621d97448cf79138061d933a211ca2d7b619d13cc27c6357d1831be"
+    )
+    assert (
+        len(prior_receipt.reservations),
+        len(prior_receipt.submission_receipts),
+        len(prior_receipt.terminal_actuals),
+    ) == (236, 98, 222)
+    assert prior_receipt.active_reserved_task_count == 14
+    assert prior_receipt.active_reserved_cluster_hours == 56.0
+    assert prior_receipt.terminal_actual_cluster_hours == 67.93033611111115
+    assert prior_receipt.accounted_cluster_hours == 123.93033611111115
+    assert prior_receipt.remaining_cluster_hours == 900.0696638888888
+    assert databricks_ledger_prefix(prior_receipt).prefix_sha256 == (
+        "7c83650851e5b169adb85961226745d3082fecc9ae9c007ee84606f7b1329b07"
+    )
+    return live_bytes, live_stat, prior_receipt
+
+
 def _pins(*, runner_sha256: str = GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256):
     return GPUQualificationArtifactPins(
         runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
@@ -4480,24 +4539,8 @@ def _runtime_observation_and_worker_subprocess_failure_replay_fixture(
     plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
     payloads = json.loads((plan_root / "submit-payloads.json").read_text())
     manifest = json.loads((evidence_root / "reconciliation-manifest.json").read_text())
-    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
-    retained_stat_before = _RETAINED_LEDGER_PATH.stat()
-    assert hashlib.sha256(retained_bytes).hexdigest() == (
-        "1ea82ff83621d97448cf79138061d933a211ca2d7b619d13cc27c6357d1831be"
-    )
-    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
-    assert (
-        len(retained.reservations),
-        len(retained.submission_receipts),
-        len(retained.terminal_actuals),
-    ) == (236, 98, 222)
-    assert retained.active_reserved_task_count == 14
-    assert retained.active_reserved_cluster_hours == 56.0
-    assert retained.terminal_actual_cluster_hours == 67.93033611111115
-    assert retained.accounted_cluster_hours == 123.93033611111115
-    assert retained.remaining_cluster_hours == 900.0696638888888
-    assert databricks_ledger_prefix(retained).prefix_sha256 == (
-        "7c83650851e5b169adb85961226745d3082fecc9ae9c007ee84606f7b1329b07"
+    retained_bytes, retained_stat_before, retained = (
+        _current_live_and_prior_receipt_ledgers()
     )
     closed = replace(
         retained,
@@ -4518,14 +4561,7 @@ def _runtime_observation_and_worker_subprocess_failure_replay_fixture(
     assert databricks_ledger_prefix(closed).prefix_sha256 == (
         "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
     )
-    closed_bytes = (
-        json.dumps(
-            databricks_cluster_hour_ledger_to_record(closed),
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("utf-8")
+    closed_bytes = _canonical_ledger_bytes(closed)
     assert len(closed_bytes) == 202_986
     assert hashlib.sha256(closed_bytes).hexdigest() == (
         "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
@@ -5142,29 +5178,12 @@ def _mixed_sentinel_and_result_validation_failure_replay_fixture(
     plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
     payloads = json.loads((plan_root / "submit-payloads.json").read_text())
     manifest = json.loads((evidence_root / "reconciliation-manifest.json").read_text())
-    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
-    retained_stat_before = _RETAINED_LEDGER_PATH.stat()
-    assert len(retained_bytes) == 213_024
-    assert hashlib.sha256(retained_bytes).hexdigest() == (
-        "1ea82ff83621d97448cf79138061d933a211ca2d7b619d13cc27c6357d1831be"
-    )
-    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
-    assert (
-        len(retained.reservations),
-        len(retained.submission_receipts),
-        len(retained.terminal_actuals),
-    ) == (236, 98, 222)
-    assert retained.active_reserved_task_count == 14
-    assert retained.active_reserved_cluster_hours == 56.0
-    assert retained.terminal_actual_cluster_hours == 67.93033611111115
-    assert retained.accounted_cluster_hours == 123.93033611111115
-    assert retained.remaining_cluster_hours == 900.0696638888888
-    assert databricks_ledger_prefix(retained).prefix_sha256 == (
-        "7c83650851e5b169adb85961226745d3082fecc9ae9c007ee84606f7b1329b07"
+    retained_bytes, retained_stat_before, retained = (
+        _current_live_and_prior_receipt_ledgers()
     )
     ledger_path = tmp_path / "cluster-hours.json"
-    shutil.copyfile(_RETAINED_LEDGER_PATH, ledger_path)
-    assert ledger_path.read_bytes() == retained_bytes
+    resource_ledger._atomic_write_ledger(ledger_path, retained)
+    assert ledger_path.read_bytes() == _canonical_ledger_bytes(retained)
     assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
     retained_stat_after = _RETAINED_LEDGER_PATH.stat()
     assert (
@@ -6681,7 +6700,7 @@ def _observer_runtime_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
     return work_dir, python, version
 
 
-def test_observe_gpu_runtime_attests_copied_python_before_and_after_probe(
+def test_observe_gpu_runtime_attests_identity_and_uses_distribution_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -6708,6 +6727,7 @@ def test_observe_gpu_runtime_attests_copied_python_before_and_after_probe(
                 "python_prefix": str(runtime),
                 "python_version": version,
                 "torch_cuda_version": "12.9",
+                "vllm_source_version": "0.27.1",
                 "vllm_version": GPU_QUALIFICATION_VLLM_VERSION,
             }
         else:
@@ -6740,6 +6760,12 @@ def test_observe_gpu_runtime_attests_copied_python_before_and_after_probe(
         "vllm_version": GPU_QUALIFICATION_VLLM_VERSION,
     }
     assert len(calls) == 4
+    assert "'base_prefix':sys.base_prefix" in calls[0][0][2]
+    assert "metadata.version('vllm')" in calls[1][0][2]
+    assert "'vllm_source_version':vllm.__version__" in calls[1][0][2]
+    assert "'vllm_version':vllm.__version__" not in calls[1][0][2]
+    assert calls[2][0][0] == "nvidia-smi"
+    assert "'base_prefix':sys.base_prefix" in calls[3][0][2]
 
 
 @pytest.mark.parametrize("mutation", ["replace", "rewrite"])
@@ -6773,6 +6799,7 @@ def test_observe_gpu_runtime_detects_python_mutation_across_probe(
                 "python_prefix": str(runtime),
                 "python_version": version,
                 "torch_cuda_version": "12.9",
+                "vllm_source_version": "0.27.1",
                 "vllm_version": GPU_QUALIFICATION_VLLM_VERSION,
             }
         else:
@@ -6797,6 +6824,445 @@ def test_observe_gpu_runtime_detects_python_mutation_across_probe(
             work_dir,
             expected_python_version=version,
         )
+
+
+class _FakeOwnedDistribution:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        files: tuple[str, ...] | None,
+        version: str,
+        locations: Mapping[str, Path] | None = None,
+    ) -> None:
+        self.files = files
+        self.version = version
+        self._root = root
+        self._locations = dict(locations or {})
+
+    def locate_file(self, member) -> Path:
+        value = str(member)
+        if not value:
+            return self._root
+        return self._locations.get(value, self._root / value)
+
+
+def _owned_distribution_versions() -> dict[str, str]:
+    return {
+        "bitsandbytes": "0.49.2",
+        "torch": "2.13.0+cu129",
+        "triton": "3.7.1",
+        "vllm": GPU_QUALIFICATION_VLLM_VERSION,
+    }
+
+
+def _install_owned_distribution_fakes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    files_by_distribution: Mapping[str, tuple[str, ...]],
+) -> tuple[Path, dict[str, _FakeOwnedDistribution]]:
+    root = tmp_path / "site-packages"
+    root.mkdir()
+    distributions: dict[str, _FakeOwnedDistribution] = {}
+    for distribution, version in _owned_distribution_versions().items():
+        files = files_by_distribution[distribution]
+        for member in files:
+            if member.startswith("/") or ".." in Path(member).parts:
+                continue
+            path = root / member
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"{distribution}:{member}".encode())
+        distributions[distribution] = _FakeOwnedDistribution(
+            root,
+            files=files,
+            version=version,
+        )
+    monkeypatch.setattr(
+        sentinel_worker.importlib.metadata,
+        "distribution",
+        lambda name: distributions[name],
+    )
+    return root, distributions
+
+
+def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    files_by_distribution = {
+        "bitsandbytes": ("bitsandbytes/libbitsandbytes.so",),
+        "torch": ("torch/lib/libtorch.so.2",),
+        "triton": ("triton/_C/libtriton.so",),
+        "vllm": ("vllm/libalias.so", "vllm/libreal.so.1"),
+    }
+    root, _distributions = _install_owned_distribution_fakes(
+        tmp_path,
+        monkeypatch,
+        files_by_distribution=files_by_distribution,
+    )
+    (root / "vllm" / "libalias.so").unlink()
+    (root / "vllm" / "libalias.so").symlink_to("libreal.so.1")
+    unrelated = root / "unrelated" / "broken.so"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"unowned")
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def ldd(argv, **kwargs):
+        calls.append((argv, kwargs))
+        soname = Path(argv[1]).name
+        stdout = f"libc.so.6 => /lib/{soname}/libc.so.6 (0x1234)\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(sentinel_worker.subprocess, "run", ldd)
+
+    evidence = sentinel_worker._native_shared_object_resolution(
+        ("vllm", "triton", "torch", "bitsandbytes")
+    )
+
+    ordering = [
+        (item["distribution"], item["member"], item["path"])
+        for item in evidence
+    ]
+    assert ordering == sorted(ordering)
+    assert {item["distribution"] for item in evidence} == set(
+        files_by_distribution
+    )
+    assert len(evidence) == len(calls) == 5
+    assert all(str(unrelated) != call[0][1] for call in calls)
+    alias = next(item for item in evidence if item["member"] == "vllm/libalias.so")
+    assert alias["is_symlink"] is True
+    assert alias["resolved_path"] == str(root / "vllm" / "libreal.so.1")
+    assert alias["soname_bindings"] == [
+        {
+            "resolved_path": "/lib/libalias.so/libc.so.6",
+            "soname": "libc.so.6",
+        }
+    ]
+    assert all(call[1]["env"]["LC_ALL"] == "C" for call in calls)
+    assert all(call[1]["encoding"] == "utf-8" for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "returncode", "expected"),
+    (
+        (
+            "libmissing.so => not found\n",
+            "",
+            0,
+            '"resolved_path":null,"soname":"libmissing.so"',
+        ),
+        ("", "not a dynamic executable\n", 1, "not a dynamic executable"),
+    ),
+)
+def test_native_shared_object_resolution_fails_closed_with_owned_ldd_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    stderr: str,
+    returncode: int,
+    expected: str,
+):
+    files = {
+        distribution: (f"{distribution}/lib{distribution}.so",)
+        for distribution in _owned_distribution_versions()
+    }
+    _install_owned_distribution_fakes(
+        tmp_path,
+        monkeypatch,
+        files_by_distribution=files,
+    )
+    monkeypatch.setattr(
+        sentinel_worker.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv,
+            returncode,
+            stdout=stdout,
+            stderr=stderr,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="owned native shared-object audit failed") as exc:
+        sentinel_worker._native_shared_object_resolution()
+
+    assert expected in str(exc.value)
+    assert '"distribution":"bitsandbytes"' in str(exc.value)
+    assert '"member":"bitsandbytes/libbitsandbytes.so"' in str(exc.value)
+
+
+@pytest.mark.parametrize("member", ("../escape.so", "/absolute/escape.so"))
+def test_native_shared_object_resolution_rejects_unsafe_owned_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+):
+    root = tmp_path / "site-packages"
+    root.mkdir()
+    distribution = _FakeOwnedDistribution(root, files=(member,), version="1")
+    monkeypatch.setattr(
+        sentinel_worker.importlib.metadata,
+        "distribution",
+        lambda _name: distribution,
+    )
+
+    with pytest.raises(RuntimeError, match="unsafe shared-object member"):
+        sentinel_worker._native_shared_object_resolution(("owned",))
+
+
+def test_native_shared_object_resolution_rejects_mislocated_and_escaping_symlinks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "site-packages"
+    root.mkdir()
+    member = "owned/libowned.so"
+    misplaced = root / "other" / "libowned.so"
+    misplaced.parent.mkdir()
+    misplaced.write_bytes(b"misplaced")
+    distribution = _FakeOwnedDistribution(
+        root,
+        files=(member,),
+        version="1",
+        locations={member: misplaced},
+    )
+    monkeypatch.setattr(
+        sentinel_worker.importlib.metadata,
+        "distribution",
+        lambda _name: distribution,
+    )
+    with pytest.raises(RuntimeError, match="canonical member path"):
+        sentinel_worker._native_shared_object_resolution(("owned",))
+
+    outside = tmp_path / "outside.so"
+    outside.write_bytes(b"outside")
+    owned = root / member
+    owned.parent.mkdir()
+    owned.symlink_to(outside)
+    distribution = _FakeOwnedDistribution(root, files=(member,), version="1")
+    with pytest.raises(RuntimeError, match="escapes its distribution root"):
+        sentinel_worker._native_shared_object_resolution(("owned",))
+
+
+def test_native_shared_object_resolution_rejects_located_path_before_normalizing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "site-packages"
+    member = "owned/libowned.so"
+    owned = root / member
+    owned.parent.mkdir(parents=True)
+    owned.write_bytes(b"owned")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+    malicious_location = root / "link" / ".." / member
+    distribution = _FakeOwnedDistribution(
+        root,
+        files=(member,),
+        version="1",
+        locations={member: malicious_location},
+    )
+    monkeypatch.setattr(
+        sentinel_worker.importlib.metadata,
+        "distribution",
+        lambda _name: distribution,
+    )
+
+    with pytest.raises(RuntimeError, match="canonical absolute path"):
+        sentinel_worker._native_shared_object_resolution(("owned",))
+
+    actual_root = tmp_path / "actual-site-packages"
+    linked_root = tmp_path / "linked-site-packages"
+    linked_member = actual_root / member
+    linked_member.parent.mkdir(parents=True)
+    linked_member.write_bytes(b"owned-through-linked-root")
+    linked_root.symlink_to(actual_root, target_is_directory=True)
+    distribution = _FakeOwnedDistribution(
+        linked_root,
+        files=(member,),
+        version="1",
+    )
+    with pytest.raises(RuntimeError, match="symlink ancestor"):
+        sentinel_worker._native_shared_object_resolution(("owned",))
+
+    intermediate_root = tmp_path / "intermediate-site-packages"
+    real_package = intermediate_root / "real-owned"
+    real_package.mkdir(parents=True)
+    (real_package / "libowned.so").write_bytes(b"owned-through-linked-package")
+    (intermediate_root / "owned").symlink_to(
+        real_package,
+        target_is_directory=True,
+    )
+    distribution = _FakeOwnedDistribution(
+        intermediate_root,
+        files=(member,),
+        version="1",
+    )
+    with pytest.raises(RuntimeError, match="symlink ancestor"):
+        sentinel_worker._native_shared_object_resolution(("owned",))
+
+
+@pytest.mark.parametrize("qualification_path", ("capacity", "throughput", "matched"))
+def test_all_pre_rope_qualification_paths_accept_the_exact_second_layout_bind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qualification_path: str,
+) -> None:
+    import document_kv_cache._benchmark_datasets as benchmark_datasets
+    import document_kv_cache.benchmarks as benchmarks
+    import document_kv_cache.transformers_generator as transformers_generator
+
+    class SecondBindObserved(RuntimeError):
+        pass
+
+    generator = transformers_generator.TransformersKVChunkGenerator(
+        model=types.SimpleNamespace(
+            config=types.SimpleNamespace(
+                head_dim=128,
+                rope_theta=5_000_000.0,
+            )
+        ),
+        tokenizer=object(),
+        pre_rope=True,
+    )
+    original_bind_layout = generator.bind_layout
+    bound_layouts: list[object] = []
+
+    def observe_bind_layout(layout) -> None:
+        original_bind_layout(layout)
+        bound_layouts.append(layout)
+        if len(bound_layouts) == 2:
+            raise SecondBindObserved
+
+    generator.bind_layout = observe_bind_layout
+    monkeypatch.setattr(
+        transformers_generator,
+        "build_pre_rope_transformers_kv_chunk_generator",
+        lambda: generator,
+    )
+    monkeypatch.setattr(sentinel_worker, "_torch", lambda: object())
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_triton_e5m2_probe",
+        lambda _work_dir: object(),
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_weight_quantizer_attestation",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_bucket_dataset_paths",
+        lambda _input_bundle, _length: tuple(
+            Path(f"sample-{index}.jsonl") for index in range(4)
+        ),
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_selected_jsonl_record",
+        lambda path: {
+            "dataset": "hotpotqa",
+            "example_id": path.stem,
+        },
+    )
+    monkeypatch.setattr(sentinel_worker, "_write_jsonl", lambda *_args: None)
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_configure_transformers_generator",
+        lambda *, pre_rope: None,
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_generator_token_ids",
+        lambda _generator, _text: [1],
+    )
+    monkeypatch.setattr(
+        benchmark_datasets,
+        "_example_from_record",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        benchmarks,
+        "benchmark_cache_prefix_segments",
+        lambda _example: tuple((f"chunk-{index}", "text") for index in range(4)),
+    )
+
+    common = {
+        "plan_record": {},
+        "planned_job": {},
+        "input_bundle": tmp_path / "input-bundle",
+        "work_dir": tmp_path,
+    }
+    with pytest.raises(SecondBindObserved):
+        if qualification_path == "capacity":
+            sentinel_worker._model_capacity_measurements(
+                **common,
+                gpu_memory_utilization=0.75,
+                input_context_tokens=8_192,
+                max_model_len=32_768,
+            )
+        elif qualification_path == "throughput":
+            sentinel_worker._throughput_sentinel(**common)
+        else:
+            sentinel_worker._matched_token_sentinel(**common)
+    assert len(bound_layouts) == 2
+    assert bound_layouts[0] == bound_layouts[1]
+    assert bound_layouts[0] is not bound_layouts[1]
+    final_layout = bound_layouts[1]
+    assert final_layout.model_id == "Qwen/Qwen3-4B-Instruct-2507"
+    assert final_layout.pre_rope is True
+    assert final_layout.shares_kv_storage is False
+    assert final_layout.storage_layout.value == "separate_key_value"
+
+
+def test_pre_rope_qualification_layout_is_final_separate_kv_before_first_bind(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    layout = object()
+    layout_calls: list[tuple[str, dict[str, Any]]] = []
+    bind_calls: list[object] = []
+
+    def layout_for_model(model_id, **kwargs):
+        layout_calls.append((model_id, kwargs))
+        return layout
+
+    class Generator:
+        def bind_layout(self, value):
+            bind_calls.append(value)
+
+    import document_kv_cache.model_profiles as model_profiles
+    import document_kv_cache.transformers_generator as transformers_generator
+
+    monkeypatch.setattr(model_profiles, "layout_for_model", layout_for_model)
+    monkeypatch.setattr(
+        transformers_generator,
+        "build_pre_rope_transformers_kv_chunk_generator",
+        Generator,
+    )
+
+    observed_layout, observed_generator = (
+        sentinel_worker._pre_rope_handoff_layout_and_generator()
+    )
+
+    assert observed_layout is layout
+    assert isinstance(observed_generator, Generator)
+    assert bind_calls == [layout]
+    assert layout_calls == [
+        (
+            "Qwen/Qwen3-4B-Instruct-2507",
+            {
+                "block_size": 16,
+                "dtype": "fp8_e5m2",
+                "lora_id": "base",
+                "pre_rope": True,
+                "rope_rotary_dim": 128,
+                "rope_theta": 5_000_000.0,
+                "shares_kv_storage": False,
+            },
+        )
+    ]
 
 
 def _execute(

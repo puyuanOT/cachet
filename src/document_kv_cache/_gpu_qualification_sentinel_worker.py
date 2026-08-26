@@ -17,6 +17,7 @@ import math
 import os
 import platform
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -25,7 +26,7 @@ import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 from document_kv_cache.gpu_qualification import (
@@ -89,6 +90,14 @@ _PATCH_MEMBER_SHA256: Final = {
 _CONNECTOR_BASE_RELATIVE_PATH: Final = (
     "vllm/distributed/kv_transfer/kv_connector/v1/base.py"
 )
+_NATIVE_SHARED_OBJECT_DISTRIBUTIONS: Final = (
+    "bitsandbytes",
+    "torch",
+    "triton",
+    "vllm",
+)
+_NATIVE_SHARED_OBJECT_NAME_RE: Final = re.compile(r".+\.so(?:\..+)?\Z")
+_NATIVE_LDD_MAX_STREAM_BYTES: Final = 256 * 1024
 _EXPECTED_SENTINELS: Final = frozenset(
     {
         "forced_triton_runtime_handoff",
@@ -504,9 +513,9 @@ def _runtime_handoff_sentinel(
     pip_check_ok = _pip_check_ok()
     if not pip_check_ok:
         raise RuntimeError("pip check failed in the isolated runtime")
-    native_count, unresolved_count = _native_shared_object_resolution()
-    if unresolved_count:
-        raise RuntimeError("the isolated runtime has unresolved native objects")
+    native_evidence = _native_shared_object_resolution()
+    native_count = len(native_evidence)
+    unresolved_count = 0
     libcudart_majors = _libcudart_major_versions()
     if libcudart_majors != [12]:
         raise RuntimeError(f"unexpected libcudart majors: {libcudart_majors!r}")
@@ -546,6 +555,7 @@ def _runtime_handoff_sentinel(
         "model_id": runtime_contract["model_id"],
         "model_revision": runtime_contract["model_revision"],
         "native_shared_object_count": native_count,
+        "native_shared_object_evidence": list(native_evidence),
         "pip_check_ok": pip_check_ok,
         "python_version": python_version,
         "query_dtype": "bfloat16",
@@ -787,37 +797,358 @@ def _pip_check_ok() -> bool:
     return completed.returncode == 0
 
 
-def _native_shared_object_resolution() -> tuple[int, int]:
-    roots = {
-        Path(str(importlib.metadata.distribution(name).locate_file("")))
-        for name in ("vllm", "torch", "bitsandbytes", "triton")
-    }
-    objects = sorted(
-        {
-            path.resolve()
-            for root in roots
-            for pattern in ("*.so", "*.so.*")
-            for path in root.rglob(pattern)
-            if path.is_file() and not path.is_symlink()
+def _native_shared_object_resolution(
+    distribution_names: Sequence[str] = _NATIVE_SHARED_OBJECT_DISTRIBUTIONS,
+) -> tuple[dict[str, Any], ...]:
+    """Audit only shared objects owned by the requested distributions.
+
+    ``Distribution.locate_file("")`` is commonly the shared ``site-packages``
+    root.  Recursing from it therefore audits unrelated packages.  The wheel
+    member inventory is the ownership authority; each candidate is located
+    individually and its final target must remain within that same inventory.
+    """
+
+    names = _canonical_native_distribution_names(distribution_names)
+    owned_objects: list[dict[str, Any]] = []
+    observed_paths: dict[str, str] = {}
+    for distribution_name in names:
+        distribution = importlib.metadata.distribution(distribution_name)
+        distribution_version = str(distribution.version)
+        if (
+            not distribution_version
+            or distribution_version.strip() != distribution_version
+            or any(ord(character) < 32 for character in distribution_version)
+        ):
+            raise RuntimeError(
+                f"native distribution {distribution_name!r} has an invalid version"
+            )
+        raw_files = distribution.files
+        if raw_files is None:
+            raise RuntimeError(
+                f"native distribution {distribution_name!r} has no owned file inventory"
+            )
+        members: dict[str, PurePosixPath] = {}
+        for raw_member in raw_files:
+            member = _native_shared_object_member(
+                str(raw_member), distribution_name=distribution_name
+            )
+            if member is None:
+                continue
+            member_text = member.as_posix()
+            if member_text in members:
+                raise RuntimeError(
+                    f"native distribution {distribution_name!r} repeats member "
+                    f"{member_text!r}"
+                )
+            members[member_text] = member
+        if not members:
+            raise RuntimeError(
+                f"native distribution {distribution_name!r} owns no shared objects"
+            )
+
+        root_path = _canonical_native_located_path(
+            distribution.locate_file(""),
+            label=f"native distribution {distribution_name!r} root",
+        )
+        _require_no_native_symlink_ancestors(
+            root_path,
+            label=f"native distribution {distribution_name!r} root",
+            include_leaf=True,
+        )
+        try:
+            resolved_root = root_path.resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"native distribution {distribution_name!r} root is unavailable"
+            ) from exc
+        if not resolved_root.is_dir():
+            raise RuntimeError(
+                f"native distribution {distribution_name!r} root is not a directory"
+            )
+
+        distribution_objects: list[dict[str, Any]] = []
+        for member_text, member in sorted(members.items()):
+            located_path = _canonical_native_located_path(
+                distribution.locate_file(member),
+                label=(
+                    f"native distribution {distribution_name!r} member "
+                    f"{member_text!r} located path"
+                ),
+            )
+            expected_path = root_path.joinpath(*member.parts)
+            if located_path != expected_path:
+                raise RuntimeError(
+                    f"native distribution {distribution_name!r} member "
+                    f"{member_text!r} locates outside its canonical member path: "
+                    f"{located_path}"
+                )
+            _require_no_native_symlink_ancestors(
+                located_path,
+                label=(
+                    f"native distribution {distribution_name!r} member "
+                    f"{member_text!r}"
+                ),
+                include_leaf=False,
+            )
+            try:
+                member_status = located_path.lstat()
+                resolved_path = located_path.resolve(strict=True)
+                resolved_status = resolved_path.stat()
+            except OSError as exc:
+                raise RuntimeError(
+                    f"native distribution {distribution_name!r} member "
+                    f"{member_text!r} is unavailable at {located_path}"
+                ) from exc
+            is_symlink = stat.S_ISLNK(member_status.st_mode)
+            if not is_symlink and not stat.S_ISREG(member_status.st_mode):
+                raise RuntimeError(
+                    f"native distribution {distribution_name!r} member "
+                    f"{member_text!r} is not a regular file"
+                )
+            if not stat.S_ISREG(resolved_status.st_mode):
+                raise RuntimeError(
+                    f"native distribution {distribution_name!r} member "
+                    f"{member_text!r} does not resolve to a regular file"
+                )
+            if not resolved_path.is_relative_to(resolved_root):
+                raise RuntimeError(
+                    f"native distribution {distribution_name!r} member "
+                    f"{member_text!r} escapes its distribution root: {resolved_path}"
+                )
+            path_text = str(located_path)
+            previous_owner = observed_paths.setdefault(path_text, distribution_name)
+            if previous_owner != distribution_name:
+                raise RuntimeError(
+                    f"native shared object path {path_text!r} has multiple owners: "
+                    f"{previous_owner!r}, {distribution_name!r}"
+                )
+            distribution_objects.append(
+                {
+                    "distribution": distribution_name,
+                    "distribution_version": distribution_version,
+                    "is_symlink": is_symlink,
+                    "member": member_text,
+                    "path": path_text,
+                    "resolved_path": str(resolved_path),
+                }
+            )
+
+        regular_targets = {
+            item["resolved_path"]
+            for item in distribution_objects
+            if item["is_symlink"] is False
         }
+        for item in distribution_objects:
+            if item["is_symlink"] is True and item["resolved_path"] not in regular_targets:
+                raise RuntimeError(
+                    f"native distribution {distribution_name!r} symlink member "
+                    f"{item['member']!r} targets an unowned object: "
+                    f"{item['resolved_path']}"
+                )
+        owned_objects.extend(distribution_objects)
+
+    if not owned_objects:
+        raise RuntimeError("no owned native runtime shared objects were found")
+
+    ldd_environment = dict(os.environ)
+    ldd_environment.update({"LANG": "C", "LC_ALL": "C"})
+    evidence: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for owned in sorted(
+        owned_objects,
+        key=lambda item: (item["distribution"], item["member"], item["path"]),
+    ):
+        try:
+            completed = subprocess.run(
+                ["ldd", str(owned["path"])],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                timeout=30,
+                env=ldd_environment,
+            )
+        except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+            raise RuntimeError(
+                "ldd could not audit owned native shared object "
+                f"{owned['distribution']}:{owned['member']} at {owned['path']}"
+            ) from exc
+        try:
+            bindings = _ldd_soname_bindings(completed.stdout)
+        except ValueError as exc:
+            raise RuntimeError(
+                "ldd returned an unrecognized binding for owned native shared object "
+                f"{owned['distribution']}:{owned['member']} at {owned['path']}"
+            ) from exc
+        stdout_bytes = completed.stdout.encode("utf-8")
+        stderr_bytes = completed.stderr.encode("utf-8")
+        if (
+            len(stdout_bytes) > _NATIVE_LDD_MAX_STREAM_BYTES
+            or len(stderr_bytes) > _NATIVE_LDD_MAX_STREAM_BYTES
+        ):
+            raise RuntimeError(
+                "ldd output exceeded the evidence bound for owned native shared "
+                f"object {owned['distribution']}:{owned['member']}"
+            )
+        record = {
+            **owned,
+            "ldd_returncode": completed.returncode,
+            "ldd_stderr": completed.stderr,
+            "ldd_stderr_lines": sorted(
+                line.strip()
+                for line in completed.stderr.splitlines()
+                if line.strip()
+            ),
+            "ldd_stderr_sha256": sha256(stderr_bytes).hexdigest(),
+            "ldd_stderr_utf8_bytes": len(stderr_bytes),
+            "ldd_stdout": completed.stdout,
+            "ldd_stdout_lines": sorted(
+                line.strip()
+                for line in completed.stdout.splitlines()
+                if line.strip()
+            ),
+            "ldd_stdout_sha256": sha256(stdout_bytes).hexdigest(),
+            "ldd_stdout_utf8_bytes": len(stdout_bytes),
+            "soname_bindings": bindings,
+        }
+        evidence.append(record)
+        if (
+            completed.returncode != 0
+            or bool(completed.stderr)
+            or any(binding["resolved_path"] is None for binding in bindings)
+        ):
+            failures.append(record)
+    if failures:
+        raise RuntimeError(
+            "owned native shared-object audit failed: "
+            + json.dumps(
+                {"failures": failures},
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    return tuple(evidence)
+
+
+def _canonical_native_distribution_names(
+    distribution_names: Sequence[str],
+) -> tuple[str, ...]:
+    if isinstance(distribution_names, (str, bytes, bytearray)) or not isinstance(
+        distribution_names, Sequence
+    ):
+        raise TypeError("distribution_names must be a sequence")
+    names: list[str] = []
+    for value in distribution_names:
+        if (
+            not isinstance(value, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", value) is None
+        ):
+            raise ValueError("native distribution names must be canonical")
+        names.append(value)
+    if not names:
+        raise ValueError("at least one native distribution is required")
+    if len(set(names)) != len(names):
+        raise ValueError("native distribution names must be unique")
+    return tuple(sorted(names))
+
+
+def _native_shared_object_member(
+    value: str,
+    *,
+    distribution_name: str,
+) -> PurePosixPath | None:
+    member = PurePosixPath(value)
+    if _NATIVE_SHARED_OBJECT_NAME_RE.fullmatch(member.name) is None:
+        return None
+    if (
+        not value
+        or value != member.as_posix()
+        or member.is_absolute()
+        or "\\" in value
+        or any(part in {"", ".", ".."} for part in member.parts)
+    ):
+        raise RuntimeError(
+            f"native distribution {distribution_name!r} has unsafe shared-object "
+            f"member {value!r}"
+        )
+    return member
+
+
+def _canonical_native_located_path(value: Any, *, label: str) -> Path:
+    try:
+        path_text = os.fspath(value)
+    except TypeError as exc:
+        raise RuntimeError(f"{label} is not path-like") from exc
+    if not isinstance(path_text, str):
+        raise RuntimeError(f"{label} must be a text path")
+    path = PurePosixPath(path_text)
+    if (
+        not path_text
+        or not path.is_absolute()
+        or path_text.startswith("//")
+        or path.as_posix() != path_text
+        or "\\" in path_text
+        or any(part in {"", ".", ".."} for part in path.parts[1:])
+        or any(ord(character) < 32 for character in path_text)
+    ):
+        raise RuntimeError(f"{label} must be a canonical absolute path")
+    return Path(path_text)
+
+
+def _require_no_native_symlink_ancestors(
+    path: Path,
+    *,
+    label: str,
+    include_leaf: bool,
+) -> None:
+    candidate = path if include_leaf else path.parent
+    while True:
+        try:
+            status = candidate.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"{label} ancestor is unavailable: {candidate}") from exc
+        if stat.S_ISLNK(status.st_mode):
+            raise RuntimeError(f"{label} has a symlink ancestor: {candidate}")
+        parent = candidate.parent
+        if parent == candidate:
+            return
+        candidate = parent
+
+
+def _ldd_soname_bindings(stdout: str) -> list[dict[str, str | None]]:
+    bindings: list[dict[str, str | None]] = []
+    observed_sonames: set[str] = set()
+    for raw_line in stdout.splitlines():
+        stripped = raw_line.strip()
+        if "=>" not in stripped:
+            continue
+        parts = stripped.split("=>")
+        if len(parts) != 2:
+            raise ValueError("ldd binding line repeats the binding separator")
+        soname = parts[0].strip()
+        resolution = parts[1].strip()
+        if (
+            not soname
+            or any(character.isspace() for character in soname)
+            or soname in observed_sonames
+        ):
+            raise ValueError("ldd binding SONAME is invalid or repeated")
+        observed_sonames.add(soname)
+        if resolution == "not found":
+            resolved_path: str | None = None
+        else:
+            match = re.fullmatch(r"(?P<path>/.*?)(?:\s+\(0x[0-9a-fA-F]+\))?", resolution)
+            if match is None:
+                raise ValueError("ldd binding resolution is not an absolute path")
+            resolved_path = match.group("path")
+            if not resolved_path or resolved_path.strip() != resolved_path:
+                raise ValueError("ldd binding path is invalid")
+        bindings.append({"resolved_path": resolved_path, "soname": soname})
+    return sorted(
+        bindings,
+        key=lambda item: (item["soname"], item["resolved_path"] or ""),
     )
-    if not objects:
-        raise RuntimeError("no native runtime shared objects were found")
-    unresolved = 0
-    for path in objects:
-        completed = subprocess.run(
-            ["ldd", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        # Some extension objects are static/non-dynamic; ldd returns 1 for
-        # those, which is not an unresolved dependency.  Only concrete
-        # ``=> not found`` bindings count as unresolved.
-        unresolved += sum(
-            1 for line in completed.stdout.splitlines() if "=> not found" in line
-        )
-    return len(objects), unresolved
 
 
 def _libcudart_major_versions() -> list[int]:
@@ -1009,6 +1340,33 @@ class _NvidiaMemorySampler:
             self.observation_count += 1
 
 
+def _pre_rope_handoff_layout_and_generator() -> tuple[Any, Any]:
+    """Build one pre-RoPE generator already bound to its final KV layout."""
+
+    from document_kv_cache.model_profiles import (
+        QWEN3_4B_ROPE_ROTARY_DIM,
+        QWEN3_4B_ROPE_THETA,
+        layout_for_model,
+    )
+    from document_kv_cache.transformers_generator import (
+        build_pre_rope_transformers_kv_chunk_generator,
+    )
+
+    layout = layout_for_model(
+        GPU_QUALIFICATION_MODEL_ID,
+        dtype="fp8_e5m2",
+        block_size=16,
+        lora_id="base",
+        pre_rope=True,
+        rope_theta=QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+        shares_kv_storage=False,
+    )
+    generator = build_pre_rope_transformers_kv_chunk_generator()
+    generator.bind_layout(layout)
+    return layout, generator
+
+
 def _gmu_sentinel(
     *,
     plan_record: Mapping[str, Any],
@@ -1089,28 +1447,10 @@ def _model_capacity_measurements(
         generate_benchmark_handoff_bundles,
     )
     from document_kv_cache.benchmarks import DEFAULT_V1_PROMPT_TEMPLATE_VERSION
-    from document_kv_cache.model_profiles import (
-        QWEN3_4B_ROPE_ROTARY_DIM,
-        QWEN3_4B_ROPE_THETA,
-        layout_for_model,
-    )
     from document_kv_cache.models import CacheGenerationMethod
-    from document_kv_cache.transformers_generator import (
-        build_pre_rope_transformers_kv_chunk_generator,
-    )
     from document_kv_cache.vllm_smoke import release_handoff_generation_resources
 
-    layout = layout_for_model(
-        GPU_QUALIFICATION_MODEL_ID,
-        dtype="fp8_e5m2",
-        block_size=16,
-        lora_id="base",
-        pre_rope=True,
-        rope_theta=QWEN3_4B_ROPE_THETA,
-        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
-    )
-    generator = build_pre_rope_transformers_kv_chunk_generator()
-    generator.bind_layout(layout)
+    layout, generator = _pre_rope_handoff_layout_and_generator()
     handoff_dir = work_dir / "capacity-handoffs"
     bundle = generate_benchmark_handoff_bundles(
         selected_path,
@@ -1540,28 +1880,10 @@ def _throughput_sentinel(
         DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
         benchmark_cache_prefix_segments,
     )
-    from document_kv_cache.model_profiles import (
-        QWEN3_4B_ROPE_ROTARY_DIM,
-        QWEN3_4B_ROPE_THETA,
-        layout_for_model,
-    )
     from document_kv_cache.models import CacheGenerationMethod
     from document_kv_cache.storage import local_path
-    from document_kv_cache.transformers_generator import (
-        build_pre_rope_transformers_kv_chunk_generator,
-    )
 
-    layout = layout_for_model(
-        GPU_QUALIFICATION_MODEL_ID,
-        dtype="fp8_e5m2",
-        block_size=16,
-        lora_id="base",
-        pre_rope=True,
-        rope_theta=QWEN3_4B_ROPE_THETA,
-        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
-    )
-    generator = build_pre_rope_transformers_kv_chunk_generator()
-    generator.bind_layout(layout)
+    layout, generator = _pre_rope_handoff_layout_and_generator()
     weight_attestation = _weight_quantizer_attestation()
     bucket_records: list[dict[str, Any]] = []
     sample_records: list[dict[str, Any]] = []
@@ -1858,28 +2180,10 @@ def _matched_token_sentinel(
         generate_benchmark_handoff_bundles,
     )
     from document_kv_cache.benchmarks import DEFAULT_V1_PROMPT_TEMPLATE_VERSION
-    from document_kv_cache.model_profiles import (
-        QWEN3_4B_ROPE_ROTARY_DIM,
-        QWEN3_4B_ROPE_THETA,
-        layout_for_model,
-    )
     from document_kv_cache.models import CacheGenerationMethod
-    from document_kv_cache.transformers_generator import (
-        build_pre_rope_transformers_kv_chunk_generator,
-    )
     from document_kv_cache.vllm_smoke import release_handoff_generation_resources
 
-    layout = layout_for_model(
-        GPU_QUALIFICATION_MODEL_ID,
-        dtype="fp8_e5m2",
-        block_size=16,
-        lora_id="base",
-        pre_rope=True,
-        rope_theta=QWEN3_4B_ROPE_THETA,
-        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
-    )
-    generator = build_pre_rope_transformers_kv_chunk_generator()
-    generator.bind_layout(layout)
+    layout, generator = _pre_rope_handoff_layout_and_generator()
     handoff_dir = work_dir / "matched-handoffs"
     bundle = generate_benchmark_handoff_bundles(
         selected_path,

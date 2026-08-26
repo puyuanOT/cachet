@@ -142,6 +142,11 @@ _FORCED_TRITON_KERNEL_NAMES: Final = (
     "triton_reshape_and_cache_flash",
     "triton_unified_attention",
 )
+_NATIVE_SHARED_OBJECT_DISTRIBUTIONS: Final = frozenset(
+    {"bitsandbytes", "torch", "triton", "vllm"}
+)
+_NATIVE_SHARED_OBJECT_NAME_RE: Final = re.compile(r".+\.so(?:\..+)?\Z")
+_NATIVE_LDD_MAX_STREAM_BYTES: Final = 256 * 1024
 
 _SHA256_HEX_LENGTH = 64
 _HARDWARE = (
@@ -1725,6 +1730,7 @@ def _validate_runtime_handoff_measurements(
             "model_id",
             "model_revision",
             "native_shared_object_count",
+            "native_shared_object_evidence",
             "pip_check_ok",
             "python_version",
             "query_dtype",
@@ -1798,8 +1804,15 @@ def _validate_runtime_handoff_measurements(
     _require_positive_int(
         value.get("triton_kernel_launch_count"), "triton_kernel_launch_count"
     )
-    _require_positive_int(
+    native_shared_object_count = _positive_int(
         value.get("native_shared_object_count"), "native_shared_object_count"
+    )
+    _validate_native_shared_object_evidence(
+        _sequence(
+            value.get("native_shared_object_evidence"),
+            "native_shared_object_evidence",
+        ),
+        expected_count=native_shared_object_count,
     )
     software_path = value.get("e5m2_software_path_exercised")
     if not isinstance(software_path, bool):
@@ -1818,6 +1831,248 @@ def _validate_runtime_handoff_measurements(
             "runtime_lock_attestation",
         )
     )
+
+
+def _validate_native_shared_object_evidence(
+    value: Sequence[Any],
+    *,
+    expected_count: int,
+) -> None:
+    if len(value) != expected_count:
+        raise ValueError(
+            "native shared-object evidence count differs from "
+            "native_shared_object_count"
+        )
+    expected_record_keys = frozenset(
+        {
+            "distribution",
+            "distribution_version",
+            "is_symlink",
+            "ldd_returncode",
+            "ldd_stderr",
+            "ldd_stderr_lines",
+            "ldd_stderr_sha256",
+            "ldd_stderr_utf8_bytes",
+            "ldd_stdout",
+            "ldd_stdout_lines",
+            "ldd_stdout_sha256",
+            "ldd_stdout_utf8_bytes",
+            "member",
+            "path",
+            "resolved_path",
+            "soname_bindings",
+        }
+    )
+    expected_empty_sha256 = sha256(b"").hexdigest()
+    owners: set[str] = set()
+    ordering: list[tuple[str, str, str]] = []
+    object_paths: list[tuple[str, str, str, bool]] = []
+    path_owners: dict[str, str] = {}
+    distribution_roots: dict[str, str] = {}
+    for index, raw_record in enumerate(value):
+        label = f"native shared-object evidence {index}"
+        record = _mapping(raw_record, label)
+        _require_exact_keys(record, expected_record_keys, label)
+        distribution = record.get("distribution")
+        if distribution not in _NATIVE_SHARED_OBJECT_DISTRIBUTIONS:
+            raise ValueError(f"{label} distribution is not audited")
+        assert isinstance(distribution, str)
+        owners.add(distribution)
+        expected_version = (
+            GPU_QUALIFICATION_VLLM_VERSION
+            if distribution == "vllm"
+            else _RUNTIME_CORE_VERSIONS[distribution]
+        )
+        if record.get("distribution_version") != expected_version:
+            raise ValueError(f"{label} distribution_version differs")
+        member = _canonical_native_member(record.get("member"), f"{label}.member")
+        member_path = PurePosixPath(member)
+        path = _canonical_native_path(record.get("path"), f"{label}.path")
+        path_object = PurePosixPath(path)
+        if (
+            len(path_object.parts) <= len(member_path.parts)
+            or path_object.parts[-len(member_path.parts) :] != member_path.parts
+        ):
+            raise ValueError(f"{label} path does not end with its owned member")
+        distribution_root = PurePosixPath(
+            *path_object.parts[: -len(member_path.parts)]
+        )
+        root_text = distribution_root.as_posix()
+        previous_root = distribution_roots.setdefault(distribution, root_text)
+        if previous_root != root_text:
+            raise ValueError(f"{label} distribution has multiple owned roots")
+        resolved_path = _canonical_native_path(
+            record.get("resolved_path"), f"{label}.resolved_path"
+        )
+        resolved_object = PurePosixPath(resolved_path)
+        if not resolved_object.is_relative_to(distribution_root):
+            raise ValueError(f"{label} resolved_path escapes its distribution root")
+        is_symlink = record.get("is_symlink")
+        if type(is_symlink) is not bool:
+            raise ValueError(f"{label} is_symlink must be boolean")
+        assert isinstance(is_symlink, bool)
+        if not is_symlink and resolved_path != path:
+            raise ValueError(f"{label} non-symlink path and resolved_path differ")
+        if type(record.get("ldd_returncode")) is not int or record.get(
+            "ldd_returncode"
+        ) != 0:
+            raise ValueError(f"{label} ldd_returncode must be integer zero")
+        for stream_name in ("stdout", "stderr"):
+            stream_field = f"ldd_{stream_name}"
+            digest_field = f"ldd_{stream_name}_sha256"
+            bytes_field = f"ldd_{stream_name}_utf8_bytes"
+            lines_field = f"ldd_{stream_name}_lines"
+            stream = record.get(stream_field)
+            if not isinstance(stream, str):
+                raise ValueError(f"{label} {stream_field} must be a string")
+            encoded_stream = stream.encode("utf-8")
+            if len(encoded_stream) > _NATIVE_LDD_MAX_STREAM_BYTES:
+                raise ValueError(f"{label} {stream_field} exceeds the evidence bound")
+            if record.get(digest_field) != sha256(encoded_stream).hexdigest():
+                raise ValueError(f"{label} {stream_field} digest differs")
+            byte_count = record.get(bytes_field)
+            if type(byte_count) is not int or byte_count != len(encoded_stream):
+                raise ValueError(f"{label} {stream_field} byte count differs")
+            lines = _sequence(record.get(lines_field), f"{label}.{lines_field}")
+            normalized_lines: list[str] = []
+            for line in lines:
+                if (
+                    not isinstance(line, str)
+                    or not line
+                    or line.strip() != line
+                    or any(ord(character) < 32 for character in line)
+                ):
+                    raise ValueError(f"{label} {lines_field} contains an invalid line")
+                normalized_lines.append(line)
+            expected_lines = sorted(
+                line.strip() for line in stream.splitlines() if line.strip()
+            )
+            if normalized_lines != expected_lines:
+                raise ValueError(f"{label} {lines_field} differs from {stream_field}")
+        if (
+            record.get("ldd_stderr") != ""
+            or record.get("ldd_stderr_utf8_bytes") != 0
+            or record.get("ldd_stderr_sha256") != expected_empty_sha256
+            or record.get("ldd_stderr_lines") != []
+        ):
+            raise ValueError(f"{label} ldd stderr is not empty")
+        parsed_bindings = _native_ldd_soname_bindings(
+            cast(str, record.get("ldd_stdout")),
+            label=label,
+        )
+        raw_bindings = _sequence(
+            record.get("soname_bindings"), f"{label}.soname_bindings"
+        )
+        bindings: list[tuple[str, str]] = []
+        for binding_index, raw_binding in enumerate(raw_bindings):
+            binding_label = f"{label}.soname_bindings {binding_index}"
+            binding = _mapping(raw_binding, binding_label)
+            _require_exact_keys(
+                binding,
+                frozenset({"resolved_path", "soname"}),
+                binding_label,
+            )
+            soname = binding.get("soname")
+            if (
+                not isinstance(soname, str)
+                or not soname
+                or any(character.isspace() for character in soname)
+            ):
+                raise ValueError(f"{binding_label} SONAME is invalid")
+            resolved_binding = _canonical_native_path(
+                binding.get("resolved_path"), f"{binding_label}.resolved_path"
+            )
+            bindings.append((soname, resolved_binding))
+        if bindings != sorted(bindings) or len(set(bindings)) != len(bindings):
+            raise ValueError(f"{label} soname_bindings are not canonical and unique")
+        if bindings != parsed_bindings:
+            raise ValueError(f"{label} soname_bindings differ from ldd_stdout")
+        previous_owner = path_owners.setdefault(path, distribution)
+        if previous_owner != distribution:
+            raise ValueError(f"{label} path is claimed by multiple distributions")
+        ordering.append((distribution, member, path))
+        object_paths.append((distribution, path, resolved_path, is_symlink))
+    if owners != _NATIVE_SHARED_OBJECT_DISTRIBUTIONS:
+        raise ValueError("native shared-object evidence owner closure differs")
+    if ordering != sorted(ordering) or len(set(ordering)) != len(ordering):
+        raise ValueError("native shared-object evidence is not canonical and unique")
+    regular_paths_by_owner: dict[str, set[str]] = {}
+    for distribution, path, _resolved_path, is_symlink in object_paths:
+        if not is_symlink:
+            regular_paths_by_owner.setdefault(distribution, set()).add(path)
+    for distribution, _path, resolved_path, is_symlink in object_paths:
+        if is_symlink and resolved_path not in regular_paths_by_owner.get(
+            distribution, set()
+        ):
+            raise ValueError(
+                "native shared-object symlink target is not owned by its distribution"
+            )
+
+
+def _canonical_native_member(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    member = PurePosixPath(value)
+    if (
+        not value
+        or value != member.as_posix()
+        or member.is_absolute()
+        or "\\" in value
+        or any(part in {"", ".", ".."} for part in member.parts)
+        or _NATIVE_SHARED_OBJECT_NAME_RE.fullmatch(member.name) is None
+    ):
+        raise ValueError(f"{label} must be a canonical shared-object member")
+    return value
+
+
+def _canonical_native_path(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    path = PurePosixPath(value)
+    if (
+        not value
+        or not path.is_absolute()
+        or value.startswith("//")
+        or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts[1:])
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ValueError(f"{label} must be a canonical absolute path")
+    return value
+
+
+def _native_ldd_soname_bindings(stdout: str, *, label: str) -> list[tuple[str, str]]:
+    bindings: list[tuple[str, str]] = []
+    observed_sonames: set[str] = set()
+    for raw_line in stdout.splitlines():
+        stripped = raw_line.strip()
+        if "=>" not in stripped:
+            continue
+        parts = stripped.split("=>")
+        if len(parts) != 2:
+            raise ValueError(f"{label} ldd_stdout repeats a binding separator")
+        soname = parts[0].strip()
+        resolution = parts[1].strip()
+        if (
+            not soname
+            or any(character.isspace() for character in soname)
+            or soname in observed_sonames
+        ):
+            raise ValueError(f"{label} ldd_stdout SONAME is invalid or repeated")
+        observed_sonames.add(soname)
+        if resolution == "not found":
+            raise ValueError(f"{label} contains an unresolved ldd binding")
+        match = re.fullmatch(
+            r"(?P<path>/.*?)(?:\s+\(0x[0-9a-fA-F]+\))?",
+            resolution,
+        )
+        if match is None:
+            raise ValueError(f"{label} ldd_stdout binding is not an absolute path")
+        resolved_path = _canonical_native_path(
+            match.group("path"), f"{label} ldd_stdout binding path"
+        )
+        bindings.append((soname, resolved_path))
+    return sorted(bindings)
 
 
 def _validate_runtime_lock_attestation(value: Mapping[str, Any]) -> None:

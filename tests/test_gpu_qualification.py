@@ -140,7 +140,49 @@ def _seal(record: dict[str, Any]) -> None:
     ).hexdigest()
 
 
+def _native_shared_object_evidence() -> list[dict[str, Any]]:
+    root = "/runtime/lib/python3.11/site-packages"
+    owned_members = (
+        ("bitsandbytes", CORE_VERSIONS["bitsandbytes"], "bitsandbytes/libbitsandbytes.so"),
+        ("torch", CORE_VERSIONS["torch"], "torch/lib/libtorch.so.2"),
+        ("triton", CORE_VERSIONS["triton"], "triton/_C/libtriton.so"),
+        ("vllm", GPU_QUALIFICATION_VLLM_VERSION, "vllm/_C.abi3.so"),
+    )
+    evidence: list[dict[str, Any]] = []
+    for distribution, version, member in owned_members:
+        resolved_binding = f"/lib/{distribution}/libc.so.6"
+        stdout = f"libc.so.6 => {resolved_binding} (0x00000001)\n"
+        stdout_bytes = stdout.encode("utf-8")
+        evidence.append(
+            {
+                "distribution": distribution,
+                "distribution_version": version,
+                "is_symlink": False,
+                "ldd_returncode": 0,
+                "ldd_stderr": "",
+                "ldd_stderr_lines": [],
+                "ldd_stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                "ldd_stderr_utf8_bytes": 0,
+                "ldd_stdout": stdout,
+                "ldd_stdout_lines": [stdout.strip()],
+                "ldd_stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+                "ldd_stdout_utf8_bytes": len(stdout_bytes),
+                "member": member,
+                "path": f"{root}/{member}",
+                "resolved_path": f"{root}/{member}",
+                "soname_bindings": [
+                    {
+                        "resolved_path": resolved_binding,
+                        "soname": "libc.so.6",
+                    }
+                ],
+            }
+        )
+    return evidence
+
+
 def _runtime_measurements(*, software_path: bool) -> dict[str, Any]:
+    native_shared_objects = _native_shared_object_evidence()
     return {
         "attention_backend_observed": "TRITON_ATTN",
         "attention_backend_requested": "TRITON_ATTN",
@@ -168,7 +210,8 @@ def _runtime_measurements(*, software_path: bool) -> dict[str, Any]:
         "libcudart_so_13_present": False,
         "model_id": "Qwen/Qwen3-4B-Instruct-2507",
         "model_revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
-        "native_shared_object_count": 23,
+        "native_shared_object_count": len(native_shared_objects),
+        "native_shared_object_evidence": native_shared_objects,
         "pip_check_ok": True,
         "python_version": "3.11.11",
         "query_dtype": "bfloat16",
@@ -1812,6 +1855,65 @@ def test_semantic_sentinels_reject_resealed_failures(job_suffix, mutation, messa
         and item["job_id"].endswith(job_suffix)
     )
     mutation(job["measurements"])
+    _reseal_evidence(evidence)
+
+    with pytest.raises(ValueError, match=message):
+        validate_gpu_qualification_evidence_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=CAMPAIGN_ID,
+            expected_artifact_pins=PINS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("member", "path does not end with its owned member"),
+        ("resolved", "non-symlink path and resolved_path differ"),
+        ("stdout-digest", "ldd_stdout digest differs"),
+        ("stdout-bytes", "ldd_stdout byte count differs"),
+        ("bindings", "soname_bindings differ from ldd_stdout"),
+        ("double-slash", "canonical absolute path"),
+        ("unowned-symlink", "symlink target is not owned"),
+        ("second-root", "distribution has multiple owned roots"),
+    ),
+)
+def test_runtime_native_evidence_rejects_resealed_internal_contradictions(
+    mutation: str,
+    message: str,
+) -> None:
+    plan, evidence = _valid_evidence()
+    runtime_job = next(
+        job
+        for job in evidence["cloud_gpu_evidence"]["jobs"]
+        if job["job_id"].endswith("forced-triton-runtime-handoff")
+    )
+    record = runtime_job["measurements"]["native_shared_object_evidence"][0]
+    if mutation == "member":
+        record["member"] = "bitsandbytes/libdifferent.so"
+    elif mutation == "resolved":
+        record["resolved_path"] = f"{record['path']}.different"
+    elif mutation == "stdout-digest":
+        record["ldd_stdout_sha256"] = "f" * 64
+    elif mutation == "stdout-bytes":
+        record["ldd_stdout_utf8_bytes"] += 1
+    elif mutation == "bindings":
+        record["soname_bindings"] = []
+    elif mutation == "double-slash":
+        record["path"] = f"/{record['path']}"
+    elif mutation == "unowned-symlink":
+        record["is_symlink"] = True
+        record["resolved_path"] = f"{record['path']}.unowned"
+    else:
+        second_record = deepcopy(record)
+        second_record["member"] = "bitsandbytes/libzz.so"
+        second_record["path"] = "/other/site-packages/bitsandbytes/libzz.so"
+        second_record["resolved_path"] = second_record["path"]
+        runtime_job["measurements"]["native_shared_object_evidence"].insert(
+            1, second_record
+        )
+        runtime_job["measurements"]["native_shared_object_count"] += 1
     _reseal_evidence(evidence)
 
     with pytest.raises(ValueError, match=message):
