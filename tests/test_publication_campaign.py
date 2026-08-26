@@ -1,5 +1,7 @@
+import hashlib
 import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +22,6 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_MAX_GPU_HOURS_AT_GATE,
     PUBLICATION_CAMPAIGN_LEDGER_ID,
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-    PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_PRE_BOOTSTRAP_FAILURE_LEDGER_PREFIX,
@@ -76,9 +77,9 @@ def test_publication_campaign_is_the_frozen_115_job_design():
     assert record["campaign_ledger_id"] == CAMPAIGN_LEDGER_ID
     assert record["campaign_ledger_path_sha256"] == CAMPAIGN_LEDGER_PATH_SHA256
     assert record["campaign_ledger_prefix"] == CAMPAIGN_LEDGER_PREFIX.to_record()
-    assert record["campaign_ledger_prefix"]["reservation_count"] == 222
-    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 84
-    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 222
+    assert record["campaign_ledger_prefix"]["reservation_count"] == 236
+    assert record["campaign_ledger_prefix"]["submission_receipt_count"] == 98
+    assert record["campaign_ledger_prefix"]["terminal_actual_count"] == 236
     assert record["closed_record_sha256"] == PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
     assert record["campaign_opening_terminal_gpu_hours"] == (
         PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -184,7 +185,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
                 PUBLICATION_CAMPAIGN_TOTAL_GENERATION_MAX_GPU_HOURS_AT_GATE
             ),
             "non_generation_gpu_hours_available_after_opening_balance_and_headroom": (
-                pytest.approx(253.72434642857138)
+                pytest.approx(250.2645542063492)
             ),
             "scope": [
                 "latency_q8_handoffs",
@@ -230,7 +231,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             },
             "launch_policy": "terminal_actual_and_hard_headroom_gated",
         },
-        "opening_terminal_gpu_hours": pytest.approx(67.93033611111115),
+        "opening_terminal_gpu_hours": pytest.approx(71.39012833333337),
         "total_latency_jobs": 115,
         "unreserved_headroom_hours": 124.0,
     }
@@ -593,7 +594,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "reconciled_accounted_gpu_hours": 67.93033611111115,
             "reconciled_active_reserved_gpu_hours": 0.0,
             "reconciled_ledger_file_sha256": (
-                PUBLICATION_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
+                publication_campaign.PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_LEDGER_FILE_SHA256
             ),
             "reconciled_remaining_gpu_hours": 956.0696638888888,
             "reconciled_terminal_actual_gpu_hours": 67.93033611111115,
@@ -623,6 +624,166 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
             "terminal_prefix_sha256": (
                 "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
+            ),
+            "terminal_result_state_counts": {"FAILED": 14},
+            "verification_source": "direct_runs_get_and_runs_get_output",
+        },
+        "prefix_before_mixed_sentinel_and_result_validation_failure_gpu_qualification": (
+            publication_campaign.PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
+        ),
+        "mixed_sentinel_and_result_validation_failure_gpu_qualification": {
+            "actual_cluster_duration_seconds": 12_455.252,
+            "actual_gpu_hours": 3.459792222222222,
+            "batch_marker_closed_record_sha256": (
+                "249aeba5bed1f0283db74a612998cb6941713e0ed8844bfa800e56886bb29389"
+            ),
+            "batch_marker_file_sha256": (
+                "b4f2cb8ea2c1f637c31b3745217670622657845f3a893ea2e7a5f78025c125d8"
+            ),
+            "data_security_mode": "SINGLE_USER",
+            "evidence_tree_byte_count": 2_094_892,
+            "evidence_tree_file_count": 29,
+            "evidence_tree_sha256": (
+                "7455fa1e30356bb79ccb75a8dbe24df32f33a365141505e0270eb13c7f39b71d"
+            ),
+            "failed_before_run_creation": False,
+            "failure_categories": {
+                "auto_backend_flashinfer_array_array_type_error_engine_initialization": {
+                    "job_count": 2,
+                    "job_ids": list(
+                        publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_FLASHINFER_ARRAY_ARRAY_TYPE_ERROR_JOB_IDS
+                    ),
+                },
+                "forced_runtime_handoff_unresolved_native_object": {
+                    "job_count": 2,
+                    "job_ids": list(
+                        publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_UNRESOLVED_NATIVE_OBJECT_JOB_IDS
+                    ),
+                },
+                "post_measurement_vllm_version_contract_mismatch": {
+                    "job_count": 2,
+                    "job_ids": list(
+                        publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VERSION_CONTRACT_MISMATCH_JOB_IDS
+                    ),
+                },
+                "sentinel_layout_conflict": {
+                    "job_count": 8,
+                    "job_ids": list(
+                        publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_SENTINEL_LAYOUT_CONFLICT_JOB_IDS
+                    ),
+                },
+            },
+            "failure_class": "mixed_sentinel_and_result_validation",
+            "failure_reason": (
+                publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_REASON
+            ),
+            "ledger_lineage": {
+                "batch_reserved_prefix": (
+                    publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_BATCH_RESERVED_LEDGER_PREFIX.to_record()
+                ),
+                "campaign_predecessor_prefix": (
+                    publication_campaign.PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
+                ),
+                "receipt_predecessor_prefix": (
+                    publication_campaign.PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_RECONCILIATION_PREDECESSOR_LEDGER_PREFIX.to_record()
+                ),
+                "terminal_prefix": CAMPAIGN_LEDGER_PREFIX.to_record(),
+            },
+            "logs_truncated_false_job_count": 14,
+            "phase_lease_closed_record_sha256": (
+                "92add29ae13ccafb848a5075a24fb99410309f244fc842bd7883907d24a217f2"
+            ),
+            "phase_lease_file_sha256": (
+                "ea9f9ec3c415001ef0cf65e9d3673950f7a49d7a2733eb76bf2668bdf7d80344"
+            ),
+            "plan_file_sha256": (
+                "e19e9b173ad8e2705d11cfbd637aa3702a98e37d827e7d1489460c1462c5a649"
+            ),
+            "plan_sha256": (
+                "694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830"
+            ),
+            "predecessor_campaign_closed_record_sha256": (
+                "5f90b531b30ac6f4b29e0151d688a005b0377b205ca39645376d7d43aef5e305"
+            ),
+            "predecessor_campaign_file_byte_count": 66_635,
+            "predecessor_campaign_file_sha256": (
+                "eb306f9a8be50730bfef81121c2a83ebec7e50e89386addb7f77ce6001bcd85f"
+            ),
+            "predecessor_campaign_opening_ledger_file_sha256": (
+                "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
+            ),
+            "predecessor_campaign_opening_ledger_prefix": (
+                publication_campaign.PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
+            ),
+            "predecessor_campaign_opening_terminal_gpu_hours": (67.93033611111115),
+            "predicted_terminal_prefix_sha256": (
+                "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
+            ),
+            "raw_error_sha256_by_job": dict(
+                publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_SHA256_BY_JOB
+            ),
+            "raw_error_utf8_bytes_by_job": dict(
+                publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_UTF8_BYTES_BY_JOB
+            ),
+            "receipt_predecessor_accounted_gpu_hours": 123.93033611111115,
+            "receipt_predecessor_active_reserved_gpu_hours": 56.0,
+            "receipt_predecessor_ledger_file_sha256": (
+                "1ea82ff83621d97448cf79138061d933a211ca2d7b619d13cc27c6357d1831be"
+            ),
+            "receipt_predecessor_ledger_byte_count": 213_024,
+            "receipt_predecessor_remaining_gpu_hours": 900.0696638888888,
+            "receipt_predecessor_terminal_actual_gpu_hours": 67.93033611111115,
+            "reconciled_accounted_gpu_hours": 71.39012833333337,
+            "reconciled_active_reserved_gpu_hours": 0.0,
+            "reconciled_ledger_file_sha256": (
+                "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d"
+            ),
+            "reconciled_ledger_byte_count": 220_426,
+            "reconciled_remaining_gpu_hours": 952.6098716666667,
+            "reconciled_terminal_actual_gpu_hours": 71.39012833333337,
+            "reconciliation_manifest_closed_record_sha256": (
+                "13ad4eabd10bde1b5c7e0aa7b9721dd3bd8fbe57f6c20204093749df8d84954f"
+            ),
+            "reconciliation_manifest_file_sha256": (
+                "a6e0c985d64b0072776dd1247094600d81b885cfe4a3fb0f6418e8b811134304"
+            ),
+            "reservation_count_delta": 14,
+            "reviewed_runner_sha256": (
+                "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+            ),
+            "run_creation_count": 14,
+            "runs_get_output_keys": [
+                "error",
+                "error_trace",
+                "logs",
+                "logs_truncated",
+                "metadata",
+            ],
+            "single_user_name": "pliu@opentable.com",
+            "submission_receipt_count_delta": 14,
+            "submit_receipt_tree_byte_count": 22_468,
+            "submit_receipt_tree_file_count": 16,
+            "submit_receipt_tree_sha256": (
+                "81817e833e6878ff5bfd45fff2a94ffafb341d7acecc6e4f7212d268646f8f72"
+            ),
+            "task_attempt_number_counts": {"0": 14},
+            "task_intervals_by_job": {
+                job_id: {
+                    "duration_seconds": (task_end - task_start) / 1_000.0,
+                    "task_end_time_epoch_milliseconds": task_end,
+                    "task_start_time_epoch_milliseconds": task_start,
+                }
+                for job_id, task_start, task_end in (
+                    publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TASK_INTERVAL_EPOCH_MILLISECONDS_BY_JOB
+                )
+            },
+            "task_life_cycle_state_counts": {"TERMINATED": 14},
+            "task_repair_history_entry_count": 0,
+            "task_result_state_counts": {"FAILED": 14},
+            "terminal_actual_count_delta": 14,
+            "terminal_life_cycle_state_counts": {"INTERNAL_ERROR": 14},
+            "terminal_prefix_sha256": (
+                "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
             ),
             "terminal_result_state_counts": {"FAILED": 14},
             "verification_source": "direct_runs_get_and_runs_get_output",
@@ -734,6 +895,52 @@ def test_publication_campaign_rejects_protocol_and_digest_tampering():
     with pytest.raises(ValueError, match="closed schema"):
         validate_publication_campaign_plan_record(tampered)
 
+    resealed_tampers = []
+    tampered = deepcopy(record)
+    mixed = tampered["analysis"]["opening_ledger_provenance"][
+        "mixed_sentinel_and_result_validation_failure_gpu_qualification"
+    ]
+    mixed["failure_reason"] += "."
+    resealed_tampers.append(tampered)
+    tampered = deepcopy(record)
+    mixed = tampered["analysis"]["opening_ledger_provenance"][
+        "mixed_sentinel_and_result_validation_failure_gpu_qualification"
+    ]
+    mixed["failure_categories"]["sentinel_layout_conflict"]["job_count"] = 7
+    resealed_tampers.append(tampered)
+    tampered = deepcopy(record)
+    mixed = tampered["analysis"]["opening_ledger_provenance"][
+        "mixed_sentinel_and_result_validation_failure_gpu_qualification"
+    ]
+    mixed["task_intervals_by_job"]["aws-g6-l4-packed-page-roundtrip"][
+        "duration_seconds"
+    ] += 0.001
+    resealed_tampers.append(tampered)
+    tampered = deepcopy(record)
+    mixed = tampered["analysis"]["opening_ledger_provenance"][
+        "mixed_sentinel_and_result_validation_failure_gpu_qualification"
+    ]
+    mixed["raw_error_sha256_by_job"]["aws-g6-l4-packed-page-roundtrip"] = "0" * 64
+    resealed_tampers.append(tampered)
+    tampered = deepcopy(record)
+    mixed = tampered["analysis"]["opening_ledger_provenance"][
+        "mixed_sentinel_and_result_validation_failure_gpu_qualification"
+    ]
+    mixed["ledger_lineage"]["receipt_predecessor_prefix"]["prefix_sha256"] = "0" * 64
+    resealed_tampers.append(tampered)
+    tampered = deepcopy(record)
+    mixed = tampered["analysis"]["opening_ledger_provenance"][
+        "mixed_sentinel_and_result_validation_failure_gpu_qualification"
+    ]
+    mixed["reconciled_ledger_byte_count"] -= 1
+    resealed_tampers.append(tampered)
+    for tampered in resealed_tampers:
+        tampered["closed_record_sha256"] = publication_campaign._closed_record_sha256(
+            tampered
+        )
+        with pytest.raises(ValueError, match="does not match the frozen plan"):
+            validate_publication_campaign_plan_record(tampered)
+
     empty_same_id_prefix = DatabricksLedgerPrefix(
         ledger_id=CAMPAIGN_LEDGER_ID,
         cap_cluster_hours=1024.0,
@@ -762,6 +969,207 @@ def test_publication_campaign_rejects_protocol_and_digest_tampering():
                 PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
             ),
         )
+
+
+def test_publication_campaign_preserves_predecessor_and_aligns_v2_authority(tmp_path):
+    plan = build_publication_campaign_plan(
+        PUBLICATION_CAMPAIGN_ID,
+        campaign_ledger_id=CAMPAIGN_LEDGER_ID,
+        campaign_ledger_path_sha256=CAMPAIGN_LEDGER_PATH_SHA256,
+        campaign_ledger_prefix=CAMPAIGN_LEDGER_PREFIX,
+        campaign_opening_terminal_gpu_hours=(
+            PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+        ),
+    )
+    record = publication_campaign_plan_to_record(plan)
+    canonical = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    assert len(canonical) == 80_378
+    assert hashlib.sha256(canonical).hexdigest() == (
+        "353b8b3e77eca5347901232709a40c45a0f996be4fc6f25ed55511d38457dc85"
+    )
+    assert (
+        publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TASK_INTERVAL_EPOCH_MILLISECONDS_BY_JOB
+        == (
+            ("aws-g5-a10g-16k-c4-capacity", 1_787_700_619_005, 1_787_701_516_877),
+            (
+                "aws-g5-a10g-auto-backend-diagnostic",
+                1_787_700_622_410,
+                1_787_701_609_067,
+            ),
+            (
+                "aws-g5-a10g-forced-triton-runtime-handoff",
+                1_787_700_613_630,
+                1_787_701_451_067,
+            ),
+            (
+                "aws-g5-a10g-matched-token-logit",
+                1_787_700_615_401,
+                1_787_701_432_589,
+            ),
+            (
+                "aws-g5-a10g-packed-page-roundtrip",
+                1_787_700_614_516,
+                1_787_701_414_420,
+            ),
+            ("aws-g6-l4-32k-c4-gmu-70", 1_787_700_616_341, 1_787_701_527_877),
+            ("aws-g6-l4-32k-c4-gmu-75", 1_787_700_617_186, 1_787_701_410_333),
+            ("aws-g6-l4-32k-c4-gmu-80", 1_787_700_618_058, 1_787_701_558_032),
+            (
+                "aws-g6-l4-auto-backend-diagnostic",
+                1_787_700_621_546,
+                1_787_701_688_304,
+            ),
+            (
+                "aws-g6-l4-forced-triton-runtime-handoff",
+                1_787_700_610_584,
+                1_787_701_416_680,
+            ),
+            (
+                "aws-g6-l4-generation-throughput",
+                1_787_700_619_833,
+                1_787_701_528_065,
+            ),
+            (
+                "aws-g6-l4-matched-token-logit",
+                1_787_700_612_663,
+                1_787_701_411_469,
+            ),
+            (
+                "aws-g6-l4-packed-page-roundtrip",
+                1_787_700_611_665,
+                1_787_701_390_579,
+            ),
+            (
+                "aws-g6e-l40s-generation-throughput",
+                1_787_700_620_668,
+                1_787_701_733_399,
+            ),
+        )
+    )
+
+    first_output = tmp_path / "a" / "publication-campaign.json"
+    second_output = tmp_path / "b" / "publication-campaign.json"
+    publication_campaign.write_publication_campaign_plan_json(plan, first_output)
+    publication_campaign.write_publication_campaign_plan_json(plan, second_output)
+    assert first_output.read_bytes() == second_output.read_bytes() == canonical
+    dangling = tmp_path / "dangling.json"
+    dangling.symlink_to(tmp_path / "absent.json")
+    with pytest.raises(FileExistsError, match="already exists"):
+        publication_campaign.write_publication_campaign_plan_json(plan, dangling)
+    assert dangling.is_symlink()
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    with pytest.raises(ValueError, match="contains a symlink"):
+        publication_campaign.write_publication_campaign_plan_json(
+            plan, linked_parent / "campaign.json"
+        )
+
+    repository_root = Path(__file__).resolve().parents[1]
+    predecessor_path = repository_root / (
+        "databricks-runs/vllm-0271-publication-prep/"
+        "publication-campaign-plan-sha256-"
+        "eb306f9a8be50730bfef81121c2a83ebec7e50e89386addb7f77ce6001bcd85f.json"
+    )
+    predecessor_stat = predecessor_path.stat()
+    predecessor_bytes = predecessor_path.read_bytes()
+    assert len(predecessor_bytes) == 66_635
+    assert hashlib.sha256(predecessor_bytes).hexdigest() == (
+        "eb306f9a8be50730bfef81121c2a83ebec7e50e89386addb7f77ce6001bcd85f"
+    )
+    predecessor = json.loads(predecessor_bytes)
+    assert predecessor["closed_record_sha256"] == (
+        "5f90b531b30ac6f4b29e0151d688a005b0377b205ca39645376d7d43aef5e305"
+    )
+    predecessor_provenance = predecessor["analysis"]["opening_ledger_provenance"]
+    current_provenance = record["analysis"]["opening_ledger_provenance"]
+    predecessor_history = {
+        key: value
+        for key, value in predecessor_provenance.items()
+        if key != "retained_opening_prefix"
+    }
+    current_history = {
+        key: value
+        for key, value in current_provenance.items()
+        if key
+        not in {
+            "mixed_sentinel_and_result_validation_failure_gpu_qualification",
+            "prefix_before_mixed_sentinel_and_result_validation_failure_gpu_qualification",
+            "retained_opening_prefix",
+        }
+    }
+    assert current_history == predecessor_history
+    assert predecessor_path.read_bytes() == predecessor_bytes
+    assert predecessor_path.stat() == predecessor_stat
+
+    from document_kv_cache.gpu_qualification_v2 import (
+        GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+        GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
+    )
+
+    assert (
+        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX
+        == GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    )
+    assert (
+        PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+        == GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+    )
+    for public_name in (
+        "PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_SHA256_BY_JOB",
+        "PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_SUBMIT_RECEIPT_TREE_SHA256",
+        "PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_FILE_SHA256",
+    ):
+        assert public_name in publication_campaign.__all__
+
+
+def test_publication_campaign_mixed_failure_source_authority_fails_closed(
+    monkeypatch,
+):
+    source_tampers = (
+        (
+            "PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PHASE_LEASE_FILE_SHA256",
+            "g" * 64,
+        ),
+        (
+            "PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_SUBMIT_RECEIPT_TREE_FILE_COUNT",
+            15,
+        ),
+        (
+            "PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_VERSION_CONTRACT_MISMATCH_JOB_IDS",
+            ("aws-g5-a10g-packed-page-roundtrip",),
+        ),
+        (
+            "PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ACTUAL_CLUSTER_DURATION_SECONDS",
+            12_455.253,
+        ),
+        (
+            "PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TASK_INTERVAL_EPOCH_MILLISECONDS_BY_JOB",
+            publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TASK_INTERVAL_EPOCH_MILLISECONDS_BY_JOB[
+                :-1
+            ],
+        ),
+        ("PUBLICATION_CAMPAIGN_OPENING_LEDGER_BYTE_COUNT", 220_425),
+    )
+    for name, value in source_tampers:
+        with monkeypatch.context() as context:
+            context.setattr(publication_campaign, name, value)
+            with pytest.raises(
+                RuntimeError,
+                match="mixed sentinel and result validation failure source closure drift",
+            ):
+                publication_campaign_plan_to_record(
+                    build_publication_campaign_plan(
+                        PUBLICATION_CAMPAIGN_ID,
+                        campaign_ledger_id=CAMPAIGN_LEDGER_ID,
+                        campaign_ledger_path_sha256=CAMPAIGN_LEDGER_PATH_SHA256,
+                        campaign_ledger_prefix=CAMPAIGN_LEDGER_PREFIX,
+                        campaign_opening_terminal_gpu_hours=(
+                            PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+                        ),
+                    )
+                )
 
 
 def test_publication_campaign_cli_writes_once(tmp_path, monkeypatch):

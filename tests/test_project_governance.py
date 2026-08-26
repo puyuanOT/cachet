@@ -1321,8 +1321,9 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     assert "N/A (runner not implemented)" in score_table
     for method in ("KV&nbsp;Packet", "CacheBlend", "InfoFlow&nbsp;KV"):
         assert method in root_readme
-    assert "67.930336 reconciled GPU-hours" in root_readme
-    assert "exact 222/84/222 post-migration append-only prefix" in root_readme
+    assert "71.390128 reconciled GPU-hours" in root_readme
+    assert "exact 236/98/236 post-migration append-only prefix" in root_readme
+    assert "zero active reservations" in root_readme
     assert (
         "No benchmark result evidence is currently published here." in appendix_readme
     )
@@ -1355,13 +1356,13 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "phases use hard cap/headroom admission"
     ) in compact_ledger_doc
     assert (
-        "retained opening is now the exact 208-reservation, 70-receipt, "
-        "208-terminal prefix"
+        "retained opening is now the exact 236-reservation, 98-receipt, "
+        "236-terminal prefix"
     ) in compact_ledger_doc
     assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
     assert (
-        "intermediate 138/0/138, 152/14/152, 166/28/166, 180/42/180, and "
-        "194/56/194 prefixes" in compact_ledger_doc
+        "intermediate 138/0/138, 152/14/152, 166/28/166, 180/42/180, "
+        "194/56/194, 208/70/208, and 222/84/222 prefixes" in compact_ledger_doc
     )
     assert "analysis.opening_ledger_provenance" in compact_ledger_doc
     assert (
@@ -1571,6 +1572,20 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     assert (
         "reconciled opening balance is therefore 67.930336 GPU-hours"
     ) in compact_ledger_doc
+    assert (
+        "The retained opening balance is now 71.390128 GPU-hours, with zero active "
+        "reservations and 952.609872 hours remaining"
+    ) in compact_ledger_doc
+    for provenance_sha256 in (
+        "694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830",
+        "7455fa1e30356bb79ccb75a8dbe24df32f33a365141505e0270eb13c7f39b71d",
+        "81817e833e6878ff5bfd45fff2a94ffafb341d7acecc6e4f7212d268646f8f72",
+        "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7",
+        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d",
+        "2d35875107c709d71e6f558d2a029afb53ee371d851e83a18fe0d194f6fc0e0c",
+        "353b8b3e77eca5347901232709a40c45a0f996be4fc6f25ed55511d38457dc85",
+    ):
+        assert provenance_sha256 in compact_ledger_doc
 
     subindex_expectations = {
         "databricks": "No Databricks benchmark result is currently published",

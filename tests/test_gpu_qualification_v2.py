@@ -37,6 +37,8 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
+    PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
 )
 
 
@@ -77,10 +79,10 @@ EXPECTED_JOB_IDS = (
     "aws-g5-a10g-auto-backend-diagnostic",
 )
 EXPECTED_PLAN_SHA256 = (
-    "85a693d591739871bb19527bf061028c7a6886014ea60d0c6f533b0273bf2a24"
+    "ee3633398b77e9181e7dfa21bdb867c64f8c82bedf2ffd4c0ce8508646b31479"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
-    "2023096adf5c35c120e7a28d3f176a4574e3dd8c1d9c810e2b6c3cdf3f2bb508"
+    "9cbd020655cd389d020d3b3528dbb6f3f1473cf971a93887b2b6d83e10d50493"
 )
 EXPECTED_VLLM_MEMBER_SHA256 = {
     "vllm/model_executor/layers/attention/attention.py": (
@@ -311,7 +313,9 @@ def test_v2_plan_rejects_rebased_opening_authority() -> None:
             campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
             campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
             campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-            campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+            campaign_ledger_prefix=(
+                PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_LEDGER_PREFIX
+            ),
             campaign_opening_terminal_gpu_hours=(
                 GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
             ),
@@ -325,14 +329,14 @@ def test_v2_plan_rejects_rebased_opening_authority() -> None:
             campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
             campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
             campaign_opening_terminal_gpu_hours=(
-                PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+                PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
             ),
             artifact_pins=_pins(),
         )
 
     forged = _valid_plan()
     forged["campaign_ledger_prefix"] = (
-        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
+        PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
     )
     forged["closed_record_sha256"] = qualification_v2._closed_record_sha256(  # noqa: SLF001
         forged

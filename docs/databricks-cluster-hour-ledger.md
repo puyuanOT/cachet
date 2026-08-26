@@ -196,10 +196,10 @@ divergent branches. Every later phase must extend the immediately prior
 authorized prefix and acquire one atomic whole-wave lease before its first
 submission.
 
-The retained opening is now the exact 208-reservation, 70-receipt,
-208-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
+The retained opening is now the exact 236-reservation, 98-receipt,
+236-terminal prefix. It preserves the earlier 124/0/124 history, the 14/0/14
 pre-run rejection, and the intermediate 138/0/138, 152/14/152, 166/28/166,
-180/42/180, and 194/56/194 prefixes. The rejected plan SHA-256,
+180/42/180, 194/56/194, 208/70/208, and 222/84/222 prefixes. The rejected plan SHA-256,
 rejection-evidence file SHA-256, HTTP 400 status, 18,292-byte observed
 parameters JSON versus the 10,000-byte server limit, and zero observed active
 runs remain bound in `analysis.opening_ledger_provenance`.
@@ -337,6 +337,55 @@ remain immutable provenance. The reconciled opening balance is therefore
 67.930336 GPU-hours, with zero active reservations and 956.069664 hours
 remaining under the 1,024-hour aggregate cap.
 
+The eighth 14-job `SINGLE_USER` batch is retained as the mixed sentinel and
+result-validation failure provenance hop. Plan
+`694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830`
+is stored in the exact file
+`e19e9b173ad8e2705d11cfbd637aa3702a98e37d827e7d1489460c1462c5a649`
+and used reviewed runner
+`ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc`.
+All fourteen parent runs reached `INTERNAL_ERROR`/`FAILED`; their sole
+attempt-zero tasks reached `TERMINATED`/`FAILED` without repairs. The exact
+failure split is two post-measurement vLLM version-contract mismatches, two
+forced-runtime-handoff unresolved-native-object failures, eight sentinel
+layout-conflict failures, and two auto-backend FlashInfer `array.array`
+TypeError engine-initialization failures. Every raw error SHA-256 and UTF-8 byte
+count is source-pinned, and all four job sets are disjoint and exhaustive.
+
+The five-key `runs/get-output` records all have `logs_truncated=false`. Their
+sealed evidence tree contains exactly 29 regular files and 2,094,892 bytes with
+SHA-256
+`7455fa1e30356bb79ccb75a8dbe24df32f33a365141505e0270eb13c7f39b71d`.
+It closes in manifest
+`13ad4eabd10bde1b5c7e0aa7b9721dd3bd8fbe57f6c20204093749df8d84954f`,
+whose exact file SHA-256 is
+`a6e0c985d64b0072776dd1247094600d81b885cfe4a3fb0f6418e8b811134304`.
+The submit closure separately binds 16 files and 22,468 bytes with tree SHA-256
+`81817e833e6878ff5bfd45fff2a94ffafb341d7acecc6e4f7212d268646f8f72`,
+including phase lease `ea9f9ec3c415001ef0cf65e9d3673950f7a49d7a2733eb76bf2668bdf7d80344`
+and batch marker `b4f2cb8ea2c1f637c31b3745217670622657845f3a893ea2e7a5f78025c125d8`.
+The exact ledger lineage is 222/84/222
+`22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a`,
+236/84/222
+`92cf13248ab854e5e1c789d94ac60c20fa77c2a9bf67c83d326ef0bef5603de4`,
+236/98/222
+`7c83650851e5b169adb85961226745d3082fecc9ae9c007ee84606f7b1329b07`,
+then 236/98/236
+`07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7`.
+The 12,455.252 terminal cluster-seconds add 3.459792222222222 GPU-hours.
+The canonical ledger file SHA-256 is
+`784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d`.
+The predecessor campaign remains immutable at file SHA-256
+`eb306f9a8be50730bfef81121c2a83ebec7e50e89386addb7f77ce6001bcd85f`
+and closed record
+`5f90b531b30ac6f4b29e0151d688a005b0377b205ca39645376d7d43aef5e305`.
+The refreshed campaign closes as
+`2d35875107c709d71e6f558d2a029afb53ee371d851e83a18fe0d194f6fc0e0c`
+in canonical file
+`353b8b3e77eca5347901232709a40c45a0f996be4fc6f25ed55511d38457dc85`.
+The retained opening balance is now 71.390128 GPU-hours, with zero active
+reservations and 952.609872 hours remaining under the 1,024-hour aggregate cap.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local
@@ -424,8 +473,8 @@ every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
 hard cap/headroom admission. The three generation workloads contain 72,871,510
 cache-prefix tokens; at the required 35 effective
 tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
-retained ledger opens the reset with 67.930336 terminal GPU-hours, leaving only
-253.724346 hours inside the protected 900-hour envelope for qualification,
+retained ledger opens the reset with 71.390128 terminal GPU-hours, leaving only
+250.264554 hours inside the protected 900-hour envelope for qualification,
 timed latency, and full-score consumers at that generation threshold.
 
 The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);
