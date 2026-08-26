@@ -8,6 +8,7 @@ import subprocess
 import sys
 import types
 import zlib
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from dataclasses import replace
 from pathlib import Path
@@ -2235,6 +2236,24 @@ def _reviewed_logged_run_output() -> dict[str, Any]:
     }
 
 
+def _failed_capture_error_digest_maps(
+    plan: Mapping[str, Any],
+    payloads: list[dict[str, Any]],
+    outputs: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, str], dict[str, int]]:
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    sha256_by_job: dict[str, str] = {}
+    utf8_bytes_by_job: dict[str, int] = {}
+    for index, contract in enumerate(contracts):
+        job_id = str(contract["job_id"])
+        error = outputs[str(80_000 + index)]["error"]
+        assert isinstance(error, str)
+        encoded = error.encode("utf-8")
+        sha256_by_job[job_id] = hashlib.sha256(encoded).hexdigest()
+        utf8_bytes_by_job[job_id] = len(encoded)
+    return sha256_by_job, utf8_bytes_by_job
+
+
 def test_failed_run_output_schema_accepts_historical_and_logged_shapes():
     logged = _reviewed_logged_run_output()
     qualification_job._validate_failed_run_output_schema(logged)
@@ -2552,6 +2571,400 @@ def test_v2_failed_capture_accepts_reversed_per_job_expected_errors(
     } == expected_errors
 
 
+def test_v2_failed_capture_accepts_digest_pins_and_exact_leading_runtime_html(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan,
+        payloads,
+        ledger_path,
+        submit_root,
+        preflight_path,
+        runs,
+        outputs,
+    ) = _failed_v2_capture_fixture(tmp_path, monkeypatch)
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    raw_errors: dict[str, str] = {}
+    for index, contract in enumerate(contracts):
+        job_id = str(contract["job_id"])
+        detail = "café " if index == 0 else ""
+        plain_error = (
+            f"RuntimeError: GPU sentinel {job_id!r} {detail}worker exited "
+            "with status 1"
+        )
+        raw_error = plain_error.replace(
+            "RuntimeError",
+            "<span class='ansi-red-fg'>RuntimeError</span>",
+            1,
+        )
+        output = outputs[str(80_000 + index)]
+        output["error"] = raw_error
+        output["error_trace"] = (
+            "Traceback (most recent call last):\n"
+            f"\x1b[31m{plain_error}\x1b[0m\n"
+        )
+        raw_errors[job_id] = raw_error
+    expected_sha256, expected_utf8_bytes = _failed_capture_error_digest_maps(
+        plan,
+        payloads,
+        outputs,
+    )
+
+    parent_get_calls: list[str] = []
+    output_get_calls: list[str] = []
+
+    def get_run(
+        _config: DatabricksWorkspaceConfig,
+        run_id: str,
+    ) -> dict[str, Any]:
+        parent_get_calls.append(run_id)
+        return runs[run_id]
+
+    def get_output(
+        _config: DatabricksWorkspaceConfig,
+        run_id: str,
+    ) -> dict[str, Any]:
+        output_get_calls.append(run_id)
+        return outputs[run_id]
+
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run",
+        get_run,
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run_output",
+        get_output,
+    )
+    evidence_root = tmp_path / "failed-attempt-v2-by-job-digest"
+    ledger_before = ledger_path.read_bytes()
+    ledger_stat_before = ledger_path.stat()
+
+    manifest = qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job_digest(
+        DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_root,
+        local_preflight_evidence_path=preflight_path,
+        evidence_root=evidence_root,
+        failure_reason="reviewed bounded-worker failures",
+        expected_error_sha256_by_job=dict(reversed(expected_sha256.items())),
+        expected_error_utf8_bytes_by_job=dict(
+            reversed(expected_utf8_bytes.items())
+        ),
+    )
+
+    assert ledger_path.read_bytes() == ledger_before
+    ledger_stat_after = ledger_path.stat()
+    assert (
+        ledger_stat_after.st_ino,
+        ledger_stat_after.st_mode,
+        ledger_stat_after.st_mtime_ns,
+        ledger_stat_after.st_size,
+    ) == (
+        ledger_stat_before.st_ino,
+        ledger_stat_before.st_mode,
+        ledger_stat_before.st_mtime_ns,
+        ledger_stat_before.st_size,
+    )
+    assert parent_get_calls == list(runs)
+    assert output_get_calls == list(outputs)
+    assert len(set(parent_get_calls)) == 14
+    assert len(set(output_get_calls)) == 14
+    assert len(list(evidence_root.iterdir())) == 29
+    assert not list(tmp_path.glob(".failed-attempt-v2-by-job-digest.staging-*"))
+    assert {
+        str(entry["job_id"]): str(entry["run_output_error"])
+        for entry in manifest["entries"]
+    } == raw_errors
+    assert {
+        str(entry["job_id"]): str(entry["run_output_error_sha256"])
+        for entry in manifest["entries"]
+    } == expected_sha256
+
+
+def test_v2_failed_capture_digest_maps_reject_before_get_or_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan,
+        payloads,
+        ledger_path,
+        submit_root,
+        preflight_path,
+        _runs,
+        outputs,
+    ) = _failed_v2_capture_fixture(tmp_path, monkeypatch)
+    expected_sha256, expected_utf8_bytes = _failed_capture_error_digest_maps(
+        plan,
+        payloads,
+        outputs,
+    )
+    job_ids = tuple(expected_sha256)
+    missing_sha256 = dict(expected_sha256)
+    missing_sha256.pop(job_ids[-1])
+    missing_bytes = dict(expected_utf8_bytes)
+    missing_bytes.pop(job_ids[-1])
+    extra_sha256 = {**expected_sha256, "unexpected-job": "0" * 64}
+    invalid_sha256 = {**expected_sha256, job_ids[0]: "A" * 64}
+    bool_bytes = {**expected_utf8_bytes, job_ids[0]: True}
+    zero_bytes = {**expected_utf8_bytes, job_ids[0]: 0}
+    non_mapping_sha256: Any = []
+    non_mapping_bytes: Any = []
+    bool_sha256_key: Any = {**expected_sha256, True: "0" * 64}
+    bool_bytes_key: Any = {**expected_utf8_bytes, True: 1}
+    cases: tuple[tuple[Any, Any, type[Exception], str], ...] = (
+        (missing_sha256, expected_utf8_bytes, ValueError, "exact planned job IDs"),
+        (expected_sha256, missing_bytes, ValueError, "exact planned job IDs"),
+        (extra_sha256, expected_utf8_bytes, ValueError, "exact planned job IDs"),
+        (invalid_sha256, expected_utf8_bytes, ValueError, "lowercase SHA-256"),
+        (expected_sha256, bool_bytes, ValueError, "positive integer"),
+        (expected_sha256, zero_bytes, ValueError, "positive integer"),
+        (non_mapping_sha256, expected_utf8_bytes, TypeError, "must be a mapping"),
+        (expected_sha256, non_mapping_bytes, TypeError, "must be a mapping"),
+        (bool_sha256_key, expected_utf8_bytes, ValueError, "job ID"),
+        (expected_sha256, bool_bytes_key, ValueError, "job ID"),
+    )
+    get_calls: list[str] = []
+
+    def unexpected_get(_config: DatabricksWorkspaceConfig, run_id: str) -> Any:
+        get_calls.append(run_id)
+        raise AssertionError("invalid digest expectations reached a package-owned GET")
+
+    monkeypatch.setattr(qualification_job, "get_databricks_run", unexpected_get)
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run_output",
+        unexpected_get,
+    )
+    ledger_before = ledger_path.read_bytes()
+    ledger_stat_before = ledger_path.stat()
+
+    for index, (sha256_map, byte_map, error_type, message) in enumerate(cases):
+        evidence_root = tmp_path / f"invalid-digest-capture-{index}"
+        with pytest.raises(error_type, match=message):
+            qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job_digest(
+                DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+                plan_record=plan,
+                submit_payloads=payloads,
+                ledger_path=ledger_path,
+                submit_receipt_root=submit_root,
+                local_preflight_evidence_path=preflight_path,
+                evidence_root=evidence_root,
+                failure_reason="reviewed digest-pinned failures",
+                expected_error_sha256_by_job=sha256_map,
+                expected_error_utf8_bytes_by_job=byte_map,
+            )
+        assert not evidence_root.exists()
+        assert not list(tmp_path.glob(f".{evidence_root.name}.staging-*"))
+
+    assert get_calls == []
+    assert ledger_path.read_bytes() == ledger_before
+    ledger_stat_after = ledger_path.stat()
+    assert (
+        ledger_stat_after.st_ino,
+        ledger_stat_after.st_mode,
+        ledger_stat_after.st_mtime_ns,
+        ledger_stat_after.st_size,
+    ) == (
+        ledger_stat_before.st_ino,
+        ledger_stat_before.st_mode,
+        ledger_stat_before.st_mtime_ns,
+        ledger_stat_before.st_size,
+    )
+
+
+@pytest.mark.parametrize("mutation", ["sha256", "utf8-bytes", "invalid-utf8"])
+def test_v2_failed_capture_digest_mismatch_never_publishes_or_mutates_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+):
+    (
+        plan,
+        payloads,
+        ledger_path,
+        submit_root,
+        preflight_path,
+        runs,
+        outputs,
+    ) = _failed_v2_capture_fixture(tmp_path, monkeypatch)
+    expected_sha256, expected_utf8_bytes = _failed_capture_error_digest_maps(
+        plan,
+        payloads,
+        outputs,
+    )
+    first_job_id = next(iter(expected_sha256))
+    if mutation == "sha256":
+        expected_sha256[first_job_id] = "0" * 64
+        message = "SHA-256 differs"
+    elif mutation == "utf8-bytes":
+        expected_utf8_bytes[first_job_id] += 1
+        message = "UTF-8 byte length differs"
+    else:
+        outputs["80000"]["error"] = "invalid-surrogate-\ud800"
+        message = "must be valid UTF-8"
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run",
+        lambda _config, run_id: runs[run_id],
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run_output",
+        lambda _config, run_id: outputs[run_id],
+    )
+    evidence_root = tmp_path / f"failed-digest-{mutation}"
+    ledger_before = ledger_path.read_bytes()
+    ledger_stat_before = ledger_path.stat()
+
+    with pytest.raises(ValueError, match=message):
+        qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job_digest(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=submit_root,
+            local_preflight_evidence_path=preflight_path,
+            evidence_root=evidence_root,
+            failure_reason="reviewed digest mismatch",
+            expected_error_sha256_by_job=expected_sha256,
+            expected_error_utf8_bytes_by_job=expected_utf8_bytes,
+        )
+
+    ledger_stat_after = ledger_path.stat()
+    assert ledger_path.read_bytes() == ledger_before
+    assert (
+        ledger_stat_after.st_ino,
+        ledger_stat_after.st_mode,
+        ledger_stat_after.st_mtime_ns,
+        ledger_stat_after.st_size,
+    ) == (
+        ledger_stat_before.st_ino,
+        ledger_stat_before.st_mode,
+        ledger_stat_before.st_mtime_ns,
+        ledger_stat_before.st_size,
+    )
+    assert not evidence_root.exists()
+    assert not list(tmp_path.glob(f".{evidence_root.name}.staging-*"))
+
+
+@pytest.mark.parametrize(
+    ("raw_error", "error_trace"),
+    [
+        (
+            "<span class='ansi-blue-fg'>RuntimeError</span>: worker failed",
+            "RuntimeError: worker failed\n",
+        ),
+        (
+            "prefix <span class='ansi-red-fg'>RuntimeError</span>: worker failed",
+            "prefix RuntimeError: worker failed\n",
+        ),
+        (
+            "RuntimeError: worker failed",
+            (
+                "Traceback (most recent call last):\n"
+                "<span class='ansi-red-fg'>RuntimeError</span>: worker failed\n"
+            ),
+        ),
+        (
+            '<span class="ansi-red-fg">RuntimeError</span>: worker failed',
+            "RuntimeError: worker failed\n",
+        ),
+        (
+            "<strong class='ansi-red-fg'>RuntimeError</strong>: worker failed",
+            "RuntimeError: worker failed\n",
+        ),
+        (
+            "<span class='ansi-red-fg'>RuntimeError</span>: <b>worker failed</b>",
+            "RuntimeError: worker failed\n",
+        ),
+        (
+            "<span class='ansi-red-fg'>RuntimeError</span>: worker failed",
+            "RuntimeError: a different failure\n",
+        ),
+    ],
+    ids=(
+        "wrong-class",
+        "mid-string-error-tag",
+        "interior-trace-tag",
+        "double-quoted-tag",
+        "wrong-tag",
+        "extra-html",
+        "trace-mismatch",
+    ),
+)
+def test_v2_failed_capture_rejects_unreviewed_html_and_trace_relations_without_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_error: str,
+    error_trace: str,
+):
+    (
+        plan,
+        payloads,
+        ledger_path,
+        submit_root,
+        preflight_path,
+        runs,
+        outputs,
+    ) = _failed_v2_capture_fixture(tmp_path, monkeypatch)
+    outputs["80000"]["error"] = raw_error
+    outputs["80000"]["error_trace"] = error_trace
+    expected_sha256, expected_utf8_bytes = _failed_capture_error_digest_maps(
+        plan,
+        payloads,
+        outputs,
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run",
+        lambda _config, run_id: runs[run_id],
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run_output",
+        lambda _config, run_id: outputs[run_id],
+    )
+    evidence_root = tmp_path / "rejected-trace-relation"
+    ledger_before = ledger_path.read_bytes()
+    ledger_stat_before = ledger_path.stat()
+
+    with pytest.raises(ValueError, match="trace does not contain"):
+        qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job_digest(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=submit_root,
+            local_preflight_evidence_path=preflight_path,
+            evidence_root=evidence_root,
+            failure_reason="reviewed trace relation",
+            expected_error_sha256_by_job=expected_sha256,
+            expected_error_utf8_bytes_by_job=expected_utf8_bytes,
+        )
+
+    ledger_stat_after = ledger_path.stat()
+    assert ledger_path.read_bytes() == ledger_before
+    assert (
+        ledger_stat_after.st_ino,
+        ledger_stat_after.st_mode,
+        ledger_stat_after.st_mtime_ns,
+        ledger_stat_after.st_size,
+    ) == (
+        ledger_stat_before.st_ino,
+        ledger_stat_before.st_mode,
+        ledger_stat_before.st_mtime_ns,
+        ledger_stat_before.st_size,
+    )
+    assert not evidence_root.exists()
+    assert not list(tmp_path.glob(".rejected-trace-relation.staging-*"))
+
+
 def test_v2_failed_capture_rejects_invalid_per_job_errors_before_get_or_publish(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2626,6 +3039,9 @@ def test_v2_failure_capture_boundary_has_no_caller_supplied_transport():
     per_job_parameters = inspect.signature(
         qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job
     ).parameters
+    digest_parameters = inspect.signature(
+        qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job_digest
+    ).parameters
 
     assert "opener" not in legacy_parameters
     assert "expected_error" in legacy_parameters
@@ -2633,6 +3049,15 @@ def test_v2_failure_capture_boundary_has_no_caller_supplied_transport():
     assert "opener" not in per_job_parameters
     assert "expected_errors_by_job" in per_job_parameters
     assert "expected_error" not in per_job_parameters
+    assert "opener" not in digest_parameters
+    assert "expected_error_sha256_by_job" in digest_parameters
+    assert "expected_error_utf8_bytes_by_job" in digest_parameters
+    assert "expected_error" not in digest_parameters
+    assert "expected_errors_by_job" not in digest_parameters
+    assert (
+        "capture_gpu_qualification_failed_attempt_evidence_v2_by_job_digest"
+        in qualification_job.__all__
+    )
 
 
 def test_v2_legacy_capture_delegates_one_error_to_every_planned_job(
@@ -4055,15 +4480,59 @@ def _runtime_observation_and_worker_subprocess_failure_replay_fixture(
     plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
     payloads = json.loads((plan_root / "submit-payloads.json").read_text())
     manifest = json.loads((evidence_root / "reconciliation-manifest.json").read_text())
+    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
+    retained_stat_before = _RETAINED_LEDGER_PATH.stat()
+    assert hashlib.sha256(retained_bytes).hexdigest() == (
+        "1ea82ff83621d97448cf79138061d933a211ca2d7b619d13cc27c6357d1831be"
+    )
     retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
     assert (
         len(retained.reservations),
         len(retained.submission_receipts),
         len(retained.terminal_actuals),
-    ) == (222, 84, 222)
-    historical = replace(
+    ) == (236, 98, 222)
+    assert retained.active_reserved_task_count == 14
+    assert retained.active_reserved_cluster_hours == 56.0
+    assert retained.terminal_actual_cluster_hours == 67.93033611111115
+    assert retained.accounted_cluster_hours == 123.93033611111115
+    assert retained.remaining_cluster_hours == 900.0696638888888
+    assert databricks_ledger_prefix(retained).prefix_sha256 == (
+        "7c83650851e5b169adb85961226745d3082fecc9ae9c007ee84606f7b1329b07"
+    )
+    closed = replace(
         retained,
-        terminal_actuals=retained.terminal_actuals[:208],
+        reservations=retained.reservations[:222],
+        submission_receipts=retained.submission_receipts[:84],
+        terminal_actuals=retained.terminal_actuals[:222],
+    )
+    assert (
+        len(closed.reservations),
+        len(closed.submission_receipts),
+        len(closed.terminal_actuals),
+    ) == (222, 84, 222)
+    assert closed.active_reserved_task_count == 0
+    assert closed.active_reserved_cluster_hours == 0.0
+    assert closed.terminal_actual_cluster_hours == 67.93033611111115
+    assert closed.accounted_cluster_hours == 67.93033611111115
+    assert closed.remaining_cluster_hours == 956.0696638888888
+    assert databricks_ledger_prefix(closed).prefix_sha256 == (
+        "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
+    )
+    closed_bytes = (
+        json.dumps(
+            databricks_cluster_hour_ledger_to_record(closed),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    assert len(closed_bytes) == 202_986
+    assert hashlib.sha256(closed_bytes).hexdigest() == (
+        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
+    )
+    historical = replace(
+        closed,
+        terminal_actuals=closed.terminal_actuals[:208],
     )
     assert (
         len(historical.reservations),
@@ -4072,9 +4541,9 @@ def _runtime_observation_and_worker_subprocess_failure_replay_fixture(
     ) == (222, 84, 208)
     assert historical.active_reserved_task_count == 14
     assert historical.active_reserved_cluster_hours == 56.0
-    assert historical.terminal_actual_cluster_hours == pytest.approx(
-        64.48303638888892
-    )
+    assert historical.terminal_actual_cluster_hours == 64.48303638888892
+    assert historical.accounted_cluster_hours == 120.48303638888892
+    assert historical.remaining_cluster_hours == 903.5169636111111
     assert databricks_ledger_prefix(historical).prefix_sha256 == (
         "835c73c5ee8db08cfbdad857f41350b0168eed1c4605493bc7ed9093e17df99d"
     )
@@ -4082,6 +4551,19 @@ def _runtime_observation_and_worker_subprocess_failure_replay_fixture(
     resource_ledger._atomic_write_ledger(ledger_path, historical)
     assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
         "4d4db848de2e4c45d85341f517e093e205670877905e6f5299315c9c39d18bbe"
+    )
+    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
+    retained_stat_after = _RETAINED_LEDGER_PATH.stat()
+    assert (
+        retained_stat_after.st_ino,
+        retained_stat_after.st_mode,
+        retained_stat_after.st_mtime_ns,
+        retained_stat_after.st_size,
+    ) == (
+        retained_stat_before.st_ino,
+        retained_stat_before.st_mode,
+        retained_stat_before.st_mtime_ns,
+        retained_stat_before.st_size,
     )
     monkeypatch.setattr(
         qualification_job,

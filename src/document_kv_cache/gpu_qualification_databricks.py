@@ -560,6 +560,9 @@ _FAILED_RUN_OUTPUT_LEGACY_KEYS: Final = frozenset(
 _FAILED_RUN_OUTPUT_LOGGED_KEYS: Final = frozenset(
     {*_FAILED_RUN_OUTPUT_LEGACY_KEYS, "logs", "logs_truncated"}
 )
+_DATABRICKS_ANSI_RUNTIME_ERROR_HTML_PREFIX: Final = (
+    "<span class='ansi-red-fg'>RuntimeError</span>"
+)
 _QUALIFICATION_SUBMISSION_REJECTION_KEYS: Final = frozenset(
     {
         "attempt_ids",
@@ -1931,6 +1934,73 @@ def _validated_failed_capture_expected_errors_by_job(
     return {job_id: observed[job_id] for job_id in planned_job_ids}
 
 
+@dataclass(frozen=True, slots=True)
+class _LiteralFailedCaptureErrorExpectation:
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DigestFailedCaptureErrorExpectation:
+    error_sha256: str
+    error_utf8_bytes: int
+
+
+_FailedCaptureErrorExpectation = (
+    _LiteralFailedCaptureErrorExpectation | _DigestFailedCaptureErrorExpectation
+)
+
+
+def _validated_failed_capture_error_digest_expectations(
+    expected_error_sha256_by_job: Mapping[str, str],
+    expected_error_utf8_bytes_by_job: Mapping[str, int],
+    *,
+    contracts: Sequence[Mapping[str, Any]],
+) -> dict[str, _DigestFailedCaptureErrorExpectation]:
+    expected_sha256 = _validated_reviewed_error_sha256_by_job(
+        expected_error_sha256_by_job,
+        contracts=contracts,
+    )
+    expected_utf8_bytes = _validated_reviewed_error_utf8_bytes_by_job(
+        expected_error_utf8_bytes_by_job,
+        contracts=contracts,
+    )
+    return {
+        job_id: _DigestFailedCaptureErrorExpectation(
+            error_sha256=expected_sha256[job_id],
+            error_utf8_bytes=expected_utf8_bytes[job_id],
+        )
+        for job_id in expected_sha256
+    }
+
+
+def _failed_capture_expected_error(
+    run_output: Mapping[str, Any],
+    *,
+    expectation: _FailedCaptureErrorExpectation,
+) -> str:
+    error = _non_empty_string(run_output.get("error"), "runs/get-output error")
+    if isinstance(expectation, _LiteralFailedCaptureErrorExpectation):
+        if error != expectation.error:
+            raise ValueError(
+                "failed runs/get-output error differs from the reviewed cause"
+            )
+        return expectation.error
+    try:
+        encoded_error = error.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("runs/get-output error must be valid UTF-8") from exc
+    if sha256(encoded_error).hexdigest() != expectation.error_sha256:
+        raise ValueError(
+            "failed runs/get-output error SHA-256 differs from the reviewed digest"
+        )
+    if len(encoded_error) != expectation.error_utf8_bytes:
+        raise ValueError(
+            "failed runs/get-output error UTF-8 byte length differs from the "
+            "reviewed length"
+        )
+    return error
+
+
 def capture_gpu_qualification_failed_attempt_evidence_v2(
     config: DatabricksWorkspaceConfig,
     *,
@@ -1997,6 +2067,83 @@ def capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
         expected_errors_by_job,
         contracts=contracts,
     )
+    expectations: dict[str, _FailedCaptureErrorExpectation] = {
+        job_id: _LiteralFailedCaptureErrorExpectation(error=error)
+        for job_id, error in expected_errors.items()
+    }
+    return _capture_validated_gpu_qualification_failed_attempt_evidence_v2(
+        config,
+        plan=plan,
+        contracts=contracts,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        evidence_root=evidence_root,
+        failure_reason=reason,
+        error_expectations=expectations,
+    )
+
+
+def capture_gpu_qualification_failed_attempt_evidence_v2_by_job_digest(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    evidence_root: str | Path,
+    failure_reason: str,
+    expected_error_sha256_by_job: Mapping[str, str],
+    expected_error_utf8_bytes_by_job: Mapping[str, int],
+) -> dict[str, Any]:
+    """Capture one failed batch using exact reviewed error digests per job.
+
+    Both maps must cover the exact planned job set before any package-owned GET.
+    The fetched raw error remains the manifest authority only after its SHA-256
+    and UTF-8 byte length both match the reviewed pins.  This compact mode is
+    otherwise identical to the literal-error capture path and does not accept
+    a caller-supplied transport.
+    """
+
+    reason = _non_empty_string(failure_reason, "failure_reason")
+    plan, _pins = _validated_historical_qualification_plan_and_pins(plan_record)
+    contracts = _validated_qualification_payloads(plan, submit_payloads)
+    expectations = _validated_failed_capture_error_digest_expectations(
+        expected_error_sha256_by_job,
+        expected_error_utf8_bytes_by_job,
+        contracts=contracts,
+    )
+    return _capture_validated_gpu_qualification_failed_attempt_evidence_v2(
+        config,
+        plan=plan,
+        contracts=contracts,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        evidence_root=evidence_root,
+        failure_reason=reason,
+        error_expectations=expectations,
+    )
+
+
+def _capture_validated_gpu_qualification_failed_attempt_evidence_v2(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan: Mapping[str, Any],
+    contracts: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    evidence_root: str | Path,
+    failure_reason: str,
+    error_expectations: Mapping[str, _FailedCaptureErrorExpectation],
+) -> dict[str, Any]:
+    """Capture an already-validated failed batch without mutating its ledger."""
+
+    planned_job_ids = tuple(str(contract["job_id"]) for contract in contracts)
+    if tuple(error_expectations) != planned_job_ids:
+        raise ValueError("failed capture error expectation order differs")
     output_root = _validated_fresh_controller_evidence_root(evidence_root)
     local_preflight_binding = _non_authorizing_local_preflight_binding(
         local_preflight_evidence_path,
@@ -2043,12 +2190,16 @@ def capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
         )
         task_run_id = str(base_entry["task_run_id"])
         run_output = get_databricks_run_output(config, task_run_id)
+        expected_error = _failed_capture_expected_error(
+            run_output,
+            expectation=error_expectations[str(contract["job_id"])],
+        )
         entry = _failed_attempt_reconciliation_v2_entry(
             run_output,
             run=run,
             base_entry=base_entry,
             contract=contract,
-            expected_error=expected_errors[str(contract["job_id"])],
+            expected_error=expected_error,
             evidence_file_sha256=_canonical_record_file_sha256(run_output),
         )
         parent_runs.append(run)
@@ -2072,7 +2223,7 @@ def capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
             "terminal_prefix": terminal_prefix.to_record(),
         },
         "plan_sha256": plan["closed_record_sha256"],
-        "reason": reason,
+        "reason": failure_reason,
         "record_type": (
             GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_RECORD_TYPE
         ),
@@ -2086,7 +2237,7 @@ def capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
         plan=plan,
         batch_authorization=batch_authorization,
         expected_entries=entries,
-        expected_reason=reason,
+        expected_reason=failure_reason,
         expected_terminal_prefix=terminal_prefix,
     )
     _publish_failed_attempt_evidence_atomic(
@@ -4134,8 +4285,9 @@ def _failed_attempt_reconciliation_v2_entry(
     error_trace = run_output.get("error_trace")
     if not isinstance(error_trace, str) or not error_trace:
         raise ValueError("runs/get-output error_trace must be a non-empty string")
-    normalized_trace = re.sub(r"\x1b\[[0-9;]*m", "", error_trace)
-    if error not in normalized_trace:
+    normalized_error = _normalized_failed_run_exception_text(error)
+    normalized_trace = _normalized_failed_run_exception_text(error_trace)
+    if normalized_error not in normalized_trace:
         raise ValueError("runs/get-output trace does not contain the reviewed error")
     metadata = _required_mapping(run_output.get("metadata"), "run-output metadata")
     parent_run_id = _databricks_run_id(
@@ -4238,6 +4390,18 @@ def _failed_attempt_reconciliation_v2_entry(
         }
     )
     return entry
+
+
+def _normalized_failed_run_exception_text(value: str) -> str:
+    """Normalize only reviewed Databricks exception-color projections."""
+
+    normalized = re.sub(r"\x1b\[[0-9;]*m", "", value)
+    if normalized.startswith(_DATABRICKS_ANSI_RUNTIME_ERROR_HTML_PREFIX):
+        normalized = (
+            "RuntimeError"
+            + normalized[len(_DATABRICKS_ANSI_RUNTIME_ERROR_HTML_PREFIX) :]
+        )
+    return normalized
 
 
 def _validate_failed_run_output_schema(run_output: Mapping[str, Any]) -> None:
@@ -6526,6 +6690,7 @@ __all__ = [
     "GPUQualificationSentinelRunner",
     "capture_gpu_qualification_failed_attempt_evidence_v2",
     "capture_gpu_qualification_failed_attempt_evidence_v2_by_job",
+    "capture_gpu_qualification_failed_attempt_evidence_v2_by_job_digest",
     "collect_gpu_qualification_evidence",
     "execute_gpu_qualification_job",
     "gpu_qualification_reservation_attempt_id",
