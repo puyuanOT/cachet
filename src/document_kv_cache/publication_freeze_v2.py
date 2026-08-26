@@ -33,6 +33,15 @@ from document_kv_cache.flashinfer_wheel_repack import (
     FLASHINFER_SOURCE_WHEEL_SHA256,
     FLASHINFER_SOURCE_WHEEL_SIZE,
 )
+from document_kv_cache.full_score_execution import (
+    FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS,
+    FULL_SCORE_PUBLICATION_INVENTORY_SHA256,
+    FULL_SCORE_PUBLICATION_ITEM_COUNT,
+    FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS,
+    FULL_SCORE_PUBLICATION_SHARD_COUNT,
+    FULL_SCORE_PUBLICATION_SHARD_PLAN_SHA256,
+    full_score_inventory_from_record,
+)
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
     canonical_gpu_qualification_json,
@@ -56,6 +65,7 @@ from document_kv_cache.gpu_qualification_v2 import (
     validate_gpu_qualification_plan_v2_record,
     validate_local_preflight_evidence_v2_record,
 )
+from document_kv_cache.publication_inputs import validate_full_score_shard_plan
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_ID,
     validate_publication_campaign_plan_record,
@@ -91,6 +101,15 @@ GPU_QUALIFICATION_LOCAL_CHECK_V2_RECORD_TYPE: Final = (
     "cachet.gpu_qualification.local_check_evidence.v2"
 )
 GPU_QUALIFICATION_LOCAL_CHECK_V2_SCHEMA_VERSION: Final = 2
+
+_PUBLICATION_FULL_SCORE_INVENTORY_FILE_SHA256: Final = (
+    "4935d3d318b32349c660015b37cf5c554d38673f2b0d37df7e745c6032dae470"
+)
+_PUBLICATION_FULL_SCORE_INVENTORY_FILE_SIZE: Final = 75_273_245
+_PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SHA256: Final = (
+    "42ec0c1580fcbba7feabfa0426e935aebff9dd5d5dd14706f5163ee70abbbef1"
+)
+_PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SIZE: Final = 80_028_701
 
 _SOURCE_FILE_ROLES: Final = (
     "cachet_package_wheel",
@@ -1850,14 +1869,18 @@ def _validate_reference_paths(
         freeze_v1.PUBLICATION_FREEZE_RUNTIME_LOCK_INPUT_SHA256
     ):
         raise ValueError("v2 runtime lock input differs")
-    validate_publication_campaign_plan_record(
-        freeze_v1._read_canonical_json(  # noqa: SLF001
-            paths["campaign_plan"], pretty=True, label="campaign plan"
-        )
+    campaign_record = freeze_v1._read_canonical_json(  # noqa: SLF001
+        paths["campaign_plan"], pretty=True, label="campaign plan"
     )
+    validate_publication_campaign_plan_record(campaign_record)
     freeze_v1._validate_publication_latency_handoff_reference(  # noqa: SLF001
         paths["latency_handoff_plan"],
         repository_root=repository_root,
+    )
+    _validate_publication_full_score_references(
+        inventory_path=paths["full_score_inventory"],
+        shard_plan_path=paths["full_score_shard_plan"],
+        campaign_record=campaign_record,
     )
     validate_vllm_flashinfer_runtime_artifact_closure(
         source_lock=paths["runtime_source_lock"],
@@ -1869,6 +1892,120 @@ def _validate_reference_paths(
         flashinfer_manifest=paths["patched_flashinfer_manifest"],
         closure_manifest=paths["runtime_closure_manifest"],
     )
+
+
+def _validate_publication_full_score_references(
+    *,
+    inventory_path: Path,
+    shard_plan_path: Path,
+    campaign_record: Mapping[str, Any],
+) -> None:
+    inventory_file = freeze_v1._regular_file(  # noqa: SLF001
+        inventory_path, "full-score inventory"
+    )
+    shard_plan_file = freeze_v1._regular_file(  # noqa: SLF001
+        shard_plan_path, "full-score shard plan"
+    )
+    if (
+        inventory_file.stat().st_size != _PUBLICATION_FULL_SCORE_INVENTORY_FILE_SIZE
+        or freeze_v1._file_sha256(inventory_file)  # noqa: SLF001
+        != _PUBLICATION_FULL_SCORE_INVENTORY_FILE_SHA256
+    ):
+        raise ValueError("publication full-score inventory file differs")
+    if (
+        shard_plan_file.stat().st_size != _PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SIZE
+        or freeze_v1._file_sha256(shard_plan_file)  # noqa: SLF001
+        != _PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SHA256
+    ):
+        raise ValueError("publication full-score shard-plan file differs")
+
+    inventory_record = _read_exact_canonical_full_score_record(
+        inventory_file, "full-score inventory"
+    )
+    shard_plan_record = _read_exact_canonical_full_score_record(
+        shard_plan_file, "full-score shard plan"
+    )
+    inventory = full_score_inventory_from_record(inventory_record)
+    validate_full_score_shard_plan(shard_plan_record, inventory=inventory)
+
+    budget = _required_mapping(campaign_record, "budget")
+    full_score_budget = _required_mapping(budget, "full_score_execution")
+    full_score_program = _required_mapping(campaign_record, "full_score_program")
+    expected_budget = {
+        "cache_prefix_generation_tokens": (FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS),
+        "example_count": FULL_SCORE_PUBLICATION_ITEM_COUNT,
+        "inventory_sha256": FULL_SCORE_PUBLICATION_INVENTORY_SHA256,
+        "natural_prompt_inference_tokens": (
+            FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS
+        ),
+        "shard_count": FULL_SCORE_PUBLICATION_SHARD_COUNT,
+        "shard_plan_sha256": FULL_SCORE_PUBLICATION_SHARD_PLAN_SHA256,
+    }
+    for field_name, expected in expected_budget.items():
+        if full_score_budget.get(field_name) != expected:
+            raise ValueError(f"campaign full-score {field_name} authority differs")
+    if inventory.inventory_sha256 != FULL_SCORE_PUBLICATION_INVENTORY_SHA256:
+        raise ValueError("publication full-score inventory closure differs")
+    if shard_plan_record.get("closed_record_sha256") != (
+        FULL_SCORE_PUBLICATION_SHARD_PLAN_SHA256
+    ):
+        raise ValueError("publication full-score shard-plan closure differs")
+    if shard_plan_record.get("inventory_sha256") != inventory.inventory_sha256:
+        raise ValueError("publication full-score shard plan binds another inventory")
+    if len(inventory.items) != FULL_SCORE_PUBLICATION_ITEM_COUNT:
+        raise ValueError("publication full-score inventory item count differs")
+    datasets = full_score_program.get("datasets")
+    if not isinstance(datasets, list) or tuple(datasets) != tuple(
+        source.dataset for source in inventory.sources
+    ):
+        raise ValueError("publication full-score dataset order differs")
+    if inventory.max_natural_prompt_tokens != full_score_program.get(
+        "max_natural_prompt_tokens"
+    ):
+        raise ValueError("publication full-score input-length policy differs")
+    shards = shard_plan_record.get("shards")
+    if (
+        not isinstance(shards, list)
+        or len(shards) != FULL_SCORE_PUBLICATION_SHARD_COUNT
+    ):
+        raise ValueError("publication full-score shard count differs")
+    coverage = _required_mapping(shard_plan_record, "coverage")
+    expected_coverage = {
+        "cache_prefix_generation_tokens": (FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS),
+        "identity_count": FULL_SCORE_PUBLICATION_ITEM_COUNT,
+        "natural_prompt_inference_tokens": (
+            FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS
+        ),
+    }
+    for field_name, expected in expected_coverage.items():
+        if coverage.get(field_name) != expected:
+            raise ValueError(f"publication full-score coverage {field_name} differs")
+    if sum(item.cache_prefix_tokens for item in inventory.items) != (
+        FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS
+    ):
+        raise ValueError("publication full-score cache-prefix total differs")
+    if sum(item.natural_prompt_tokens for item in inventory.items) != (
+        FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS
+    ):
+        raise ValueError("publication full-score natural-prompt total differs")
+
+
+def _read_exact_canonical_full_score_record(
+    path: Path,
+    label: str,
+) -> dict[str, Any]:
+    content = path.read_bytes()
+    if not content.endswith(b"\n") or content.endswith(b"\n\n"):
+        raise ValueError(f"{label} must be one newline-terminated JSON value")
+    try:
+        value = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must contain an object")
+    if content != freeze_v1._canonical_json_bytes(value, pretty=True):  # noqa: SLF001
+        raise ValueError(f"{label} is not canonical JSON")
+    return cast(dict[str, Any], value)
 
 
 def _v2_runtime_identity() -> dict[str, Any]:

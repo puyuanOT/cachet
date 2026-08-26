@@ -15,8 +15,10 @@ import pytest
 
 import document_kv_cache.gpu_qualification as qualification_v1
 import document_kv_cache.gpu_qualification_v2 as qualification_v2
+import document_kv_cache.publication_inputs as full_score_inputs
 import document_kv_cache.publication_freeze as freeze_v1
 import document_kv_cache.publication_freeze_v2 as freeze_v2
+from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.flashinfer_wheel_repack import (
     FLASHINFER_PATCHED_WHEEL_SHA256,
 )
@@ -43,6 +45,11 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_ID,
     PUBLICATION_CAMPAIGN_LEDGER_ID,
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+)
+from document_kv_cache.publication_inputs import (
+    build_full_score_shard_plan,
+    full_score_inventory_to_record,
+    load_full_score_inventory,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
@@ -443,15 +450,18 @@ def test_source_builder_reference_failure_leaves_no_artifact_root(
     repository = tmp_path / "repository"
     repository.mkdir()
     output = tmp_path / "must-not-exist"
-    unused = repository / "unused"
+    reference_paths = {}
+    for field_name in freeze_v2.PublicationSourceClosureInputsV2.__dataclass_fields__:
+        if field_name in {"repository_root", "artifact_output_root"}:
+            continue
+        path = repository / "references" / field_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{field_name}\n", encoding="utf-8")
+        reference_paths[field_name] = path
     inputs = freeze_v2.PublicationSourceClosureInputsV2(
         repository_root=repository,
         artifact_output_root=output,
-        **{
-            field_name: unused
-            for field_name in freeze_v2.PublicationSourceClosureInputsV2.__dataclass_fields__
-            if field_name not in {"repository_root", "artifact_output_root"}
-        },
+        **reference_paths,
     )
     monkeypatch.setattr(
         freeze_v1,
@@ -468,18 +478,252 @@ def test_source_builder_reference_failure_leaves_no_artifact_root(
         freeze_v1, "_require_freeze_build_system", lambda _root: None
     )
 
-    def reject(*_args: object, **_kwargs: object) -> None:
-        raise ValueError("reviewed runtime reference differs")
+    original_file_sha256 = freeze_v1._file_sha256  # noqa: SLF001
 
-    monkeypatch.setattr(freeze_v2, "_validate_source_references", reject)
+    def pinned_file_sha256(path: Path) -> str:
+        if path.name == "runtime_source_lock":
+            return freeze_v2.VLLM_RUNTIME_LOCK_SHA256
+        if path.name == "runtime_lock_input":
+            return freeze_v1.PUBLICATION_FREEZE_RUNTIME_LOCK_INPUT_SHA256
+        return original_file_sha256(path)
+
+    monkeypatch.setattr(freeze_v1, "_file_sha256", pinned_file_sha256)
+    monkeypatch.setattr(
+        freeze_v1,
+        "_read_canonical_json",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "validate_publication_campaign_plan_record",
+        lambda _record: None,
+    )
+    monkeypatch.setattr(
+        freeze_v1,
+        "_validate_publication_latency_handoff_reference",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def reject_full_score(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("full-score semantic closure differs")
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "_validate_publication_full_score_references",
+        reject_full_score,
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "validate_vllm_flashinfer_runtime_artifact_closure",
+        lambda **_kwargs: pytest.fail("runtime validation ran after full-score rejection"),
+    )
     monkeypatch.setattr(
         freeze_v1,
         "_build_package_twice",
         lambda *_args, **_kwargs: pytest.fail("build ran after reference rejection"),
     )
-    with pytest.raises(ValueError, match="runtime reference differs"):
+    with pytest.raises(ValueError, match="full-score semantic closure differs"):
         freeze_v2.build_publication_source_closure_v2(inputs)
     assert not output.exists()
+
+
+class _FullScoreCharacterTokenizer:
+    def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        assert add_special_tokens is False
+        return [ord(character) for character in text]
+
+
+def _full_score_source_record(dataset: str) -> dict[str, Any]:
+    answer = f"answer-{dataset}"
+    return {
+        "dataset": dataset,
+        "documents": [
+            {
+                "document_id": f"document-{dataset}",
+                "text": f"natural source for {dataset}",
+                "title": f"title-{dataset}",
+            }
+        ],
+        "example_id": f"{dataset}-0",
+        "expected_answer": answer,
+        "query": f"question-{dataset}?",
+        "references": [answer],
+    }
+
+
+def _portable_full_score_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, dict[str, Any], dict[str, Any]]:
+    source_root = tmp_path / "full-score-sources"
+    source_root.mkdir()
+    source_paths = {}
+    for dataset in SUPPORTED_V1_DATASETS:
+        path = source_root / f"{dataset}.jsonl"
+        path.write_text(
+            json.dumps(_full_score_source_record(dataset)) + "\n",
+            encoding="utf-8",
+        )
+        source_paths[dataset] = path
+    inventory = load_full_score_inventory(
+        source_paths,
+        tokenizer=_FullScoreCharacterTokenizer(),
+    )
+    inventory_record = full_score_inventory_to_record(inventory)
+    shard_plan_record = build_full_score_shard_plan(
+        inventory,
+        plan_id="full-score-v2-source-closure-test",
+        max_workers=16,
+        target_cache_prefix_tokens_per_shard=1,
+    )
+    inventory_path = tmp_path / "full-score-inventory.json"
+    shard_plan_path = tmp_path / "full-score-shard-plan.json"
+    inventory_path.write_bytes(
+        freeze_v1._canonical_json_bytes(inventory_record, pretty=True)  # noqa: SLF001
+    )
+    shard_plan_path.write_bytes(
+        freeze_v1._canonical_json_bytes(shard_plan_record, pretty=True)  # noqa: SLF001
+    )
+    cache_prefix_tokens = sum(item.cache_prefix_tokens for item in inventory.items)
+    natural_prompt_tokens = sum(item.natural_prompt_tokens for item in inventory.items)
+    authority = {
+        "inventory_sha256": inventory.inventory_sha256,
+        "item_count": len(inventory.items),
+        "shard_plan_sha256": shard_plan_record["closed_record_sha256"],
+        "shard_count": len(shard_plan_record["shards"]),
+        "cache_prefix_tokens": cache_prefix_tokens,
+        "natural_prompt_tokens": natural_prompt_tokens,
+    }
+    for name, value in {
+        "_PUBLICATION_FULL_SCORE_INVENTORY_FILE_SHA256": hashlib.sha256(
+            inventory_path.read_bytes()
+        ).hexdigest(),
+        "_PUBLICATION_FULL_SCORE_INVENTORY_FILE_SIZE": inventory_path.stat().st_size,
+        "_PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SHA256": hashlib.sha256(
+            shard_plan_path.read_bytes()
+        ).hexdigest(),
+        "_PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SIZE": (
+            shard_plan_path.stat().st_size
+        ),
+        "FULL_SCORE_PUBLICATION_INVENTORY_SHA256": inventory.inventory_sha256,
+        "FULL_SCORE_PUBLICATION_ITEM_COUNT": len(inventory.items),
+        "FULL_SCORE_PUBLICATION_SHARD_PLAN_SHA256": shard_plan_record[
+            "closed_record_sha256"
+        ],
+        "FULL_SCORE_PUBLICATION_SHARD_COUNT": len(shard_plan_record["shards"]),
+        "FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS": cache_prefix_tokens,
+        "FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS": natural_prompt_tokens,
+    }.items():
+        monkeypatch.setattr(freeze_v2, name, value)
+    campaign_record = {
+        "budget": {
+            "full_score_execution": {
+                "cache_prefix_generation_tokens": cache_prefix_tokens,
+                "example_count": len(inventory.items),
+                "inventory_sha256": inventory.inventory_sha256,
+                "natural_prompt_inference_tokens": natural_prompt_tokens,
+                "shard_count": len(shard_plan_record["shards"]),
+                "shard_plan_sha256": shard_plan_record["closed_record_sha256"],
+            }
+        },
+        "full_score_program": {
+            "datasets": list(SUPPORTED_V1_DATASETS),
+            "max_natural_prompt_tokens": inventory.max_natural_prompt_tokens,
+        },
+    }
+    return inventory_path, shard_plan_path, campaign_record, authority
+
+
+def test_v2_full_score_references_require_complete_semantic_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inventory, shard_plan, campaign, authority = _portable_full_score_references(
+        tmp_path, monkeypatch
+    )
+
+    freeze_v2._validate_publication_full_score_references(
+        inventory_path=inventory,
+        shard_plan_path=shard_plan,
+        campaign_record=campaign,
+    )
+    assert authority == {
+        "inventory_sha256": freeze_v2.FULL_SCORE_PUBLICATION_INVENTORY_SHA256,
+        "item_count": freeze_v2.FULL_SCORE_PUBLICATION_ITEM_COUNT,
+        "shard_plan_sha256": freeze_v2.FULL_SCORE_PUBLICATION_SHARD_PLAN_SHA256,
+        "shard_count": freeze_v2.FULL_SCORE_PUBLICATION_SHARD_COUNT,
+        "cache_prefix_tokens": (freeze_v2.FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS),
+        "natural_prompt_tokens": (
+            freeze_v2.FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS
+        ),
+    }
+
+
+def test_v2_full_score_references_reject_cross_swap_and_resealed_tamper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inventory, shard_plan, campaign, _authority = _portable_full_score_references(
+        tmp_path, monkeypatch
+    )
+
+    with pytest.raises(ValueError, match="inventory file differs"):
+        freeze_v2._validate_publication_full_score_references(
+            inventory_path=shard_plan,
+            shard_plan_path=inventory,
+            campaign_record=campaign,
+        )
+
+    canonical_shard_plan = shard_plan.read_bytes()
+    noncanonical_shard_plan = (
+        json.dumps(
+            json.loads(canonical_shard_plan),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    shard_plan.write_bytes(noncanonical_shard_plan)
+    monkeypatch.setattr(
+        freeze_v2,
+        "_PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SHA256",
+        hashlib.sha256(noncanonical_shard_plan).hexdigest(),
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "_PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SIZE",
+        len(noncanonical_shard_plan),
+    )
+    with pytest.raises(ValueError, match="shard plan is not canonical JSON"):
+        freeze_v2._validate_publication_full_score_references(
+            inventory_path=inventory,
+            shard_plan_path=shard_plan,
+            campaign_record=campaign,
+        )
+
+    tampered = json.loads(canonical_shard_plan)
+    tampered["coverage"]["identity_count"] += 1
+    tampered["closed_record_sha256"] = full_score_inputs._closed_record_sha256(tampered)
+    shard_plan.write_bytes(
+        freeze_v1._canonical_json_bytes(tampered, pretty=True)  # noqa: SLF001
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "_PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SHA256",
+        hashlib.sha256(shard_plan.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        freeze_v2,
+        "_PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SIZE",
+        shard_plan.stat().st_size,
+    )
+    with pytest.raises(ValueError, match="does not match complete inventory"):
+        freeze_v2._validate_publication_full_score_references(
+            inventory_path=inventory,
+            shard_plan_path=shard_plan,
+            campaign_record=campaign,
+        )
 
 
 def _touch(path: Path, content: bytes | None = None) -> Path:
