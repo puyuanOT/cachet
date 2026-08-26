@@ -31,6 +31,8 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
     GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION,
     GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION,
+    GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+    GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
     GPUQualificationArtifactPinsV2,
     build_gpu_qualification_plan_v2,
     gpu_qualification_v2_runtime_closure,
@@ -41,8 +43,6 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_ID,
     PUBLICATION_CAMPAIGN_LEDGER_ID,
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-    PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
-    PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
@@ -102,9 +102,9 @@ def _plan() -> dict[str, Any]:
         campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
         campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
         campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-        campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+        campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
         campaign_opening_terminal_gpu_hours=(
-            PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
         ),
         artifact_pins=_pins(),
     )

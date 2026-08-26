@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 import json
+import math
 import re
 from types import MappingProxyType
 from typing import Any, Final, cast
@@ -54,6 +56,10 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SIZE,
 )
+from document_kv_cache.publication_campaign import (
+    PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
+)
 
 
 GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE: Final = (
@@ -64,6 +70,9 @@ GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE: Final = (
 )
 GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_runtime_verification.v2"
+)
+GPU_QUALIFICATION_V2_LOCAL_PREFLIGHT_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_local_preflight_evidence.v2"
 )
 GPU_QUALIFICATION_V2_SCHEMA_VERSION: Final = 2
 GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION: Final = "0.2.0"
@@ -93,6 +102,15 @@ GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT: Final = 197
 GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION: Final = (
     "tuple[tuple[int, int, array.array[int]]]"
 )
+GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX: Final = DatabricksLedgerPrefix(
+    ledger_id=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.ledger_id,
+    cap_cluster_hours=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.cap_cluster_hours,
+    reservation_count=236,
+    submission_receipt_count=98,
+    terminal_actual_count=236,
+    prefix_sha256=("07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"),
+)
+GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 71.39012833333337
 
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_KEYS: Final = frozenset(
@@ -249,6 +267,20 @@ _RUNTIME_VERIFICATION_KEYS: Final = frozenset(
         "schema_version",
     }
 )
+_LOCAL_PREFLIGHT_KEYS: Final = frozenset(
+    {
+        "checks",
+        "closed_record_sha256",
+        "completed_at_utc",
+        "plan_sha256",
+        "record_type",
+        "schema_version",
+        "scope",
+    }
+)
+_LOCAL_PREFLIGHT_CHECK_KEYS: Final = frozenset(
+    {"check_id", "evidence_sha256", "status"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,14 +354,37 @@ def build_gpu_qualification_plan_v2(
 
     if not isinstance(artifact_pins, GPUQualificationArtifactPinsV2):
         raise TypeError("artifact_pins must be GPUQualificationArtifactPinsV2")
+    if not isinstance(campaign_ledger_prefix, DatabricksLedgerPrefix):
+        raise TypeError("campaign_ledger_prefix must be a DatabricksLedgerPrefix")
+    if (
+        isinstance(campaign_opening_terminal_gpu_hours, bool)
+        or not isinstance(campaign_opening_terminal_gpu_hours, (int, float))
+        or not math.isfinite(float(campaign_opening_terminal_gpu_hours))
+        or float(campaign_opening_terminal_gpu_hours) < 0
+    ):
+        raise ValueError(
+            "campaign_opening_terminal_gpu_hours must be finite/nonnegative"
+        )
+    if campaign_ledger_prefix != GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX:
+        raise ValueError("v2 campaign ledger prefix differs from reviewed authority")
+    if float(campaign_opening_terminal_gpu_hours) != (
+        GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+    ):
+        raise ValueError("v2 campaign opening balance differs from reviewed authority")
     record: dict[str, Any] = build_gpu_qualification_plan(
         campaign_id=campaign_id,
         campaign_record_sha256=campaign_record_sha256,
         campaign_ledger_id=campaign_ledger_id,
         campaign_ledger_path_sha256=campaign_ledger_path_sha256,
-        campaign_ledger_prefix=campaign_ledger_prefix,
-        campaign_opening_terminal_gpu_hours=campaign_opening_terminal_gpu_hours,
+        campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+        campaign_opening_terminal_gpu_hours=(
+            PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+        ),
         artifact_pins=artifact_pins.v1_projection(),
+    )
+    record["campaign_ledger_prefix"] = campaign_ledger_prefix.to_record()
+    record["campaign_opening_terminal_gpu_hours"] = float(
+        campaign_opening_terminal_gpu_hours
     )
     record["record_type"] = GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE
     record["schema_version"] = GPU_QUALIFICATION_V2_SCHEMA_VERSION
@@ -344,6 +399,101 @@ def build_gpu_qualification_plan_v2(
     record["runtime_contract"] = runtime_contract
     record["closed_record_sha256"] = _closed_record_sha256(record)
     return record
+
+
+def build_local_preflight_evidence_v2(
+    *,
+    plan_sha256: str,
+    completed_at_utc: str,
+    check_evidence_sha256: Mapping[str, str],
+) -> dict[str, Any]:
+    """Seal the exact eight-check local-only v2 preflight evidence."""
+
+    plan_digest = _required_sha256(plan_sha256, "plan_sha256")
+    qualification_v1._parse_utc_timestamp(  # noqa: SLF001
+        completed_at_utc,
+        field_name="completed_at_utc",
+    )
+    if tuple(check_evidence_sha256) != GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS:
+        raise ValueError(
+            "v2 local preflight evidence lacks canonical eight-check coverage"
+        )
+    checks: list[dict[str, str]] = []
+    for check_id in GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS:
+        checks.append(
+            {
+                "check_id": check_id,
+                "evidence_sha256": _required_sha256(
+                    check_evidence_sha256[check_id],
+                    f"{check_id}.evidence_sha256",
+                ),
+                "status": "passed",
+            }
+        )
+    record: dict[str, Any] = {
+        "checks": checks,
+        "closed_record_sha256": "",
+        "completed_at_utc": completed_at_utc,
+        "plan_sha256": plan_digest,
+        "record_type": GPU_QUALIFICATION_V2_LOCAL_PREFLIGHT_RECORD_TYPE,
+        "schema_version": GPU_QUALIFICATION_V2_SCHEMA_VERSION,
+        "scope": "local_preflight_only_no_cloud_success_credit_v2",
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
+def validate_local_preflight_evidence_v2_record(
+    record: Mapping[str, Any],
+    *,
+    plan_sha256: str,
+) -> datetime:
+    """Validate the sealed v2 preflight and return its completion time."""
+
+    normalized = _mapping_copy(record, "v2 local preflight evidence")
+    _require_exact_keys(
+        normalized,
+        _LOCAL_PREFLIGHT_KEYS,
+        "v2 local preflight evidence",
+    )
+    _require_closed_record_digest(normalized, "v2 local preflight evidence")
+    if normalized.get("record_type") != (
+        GPU_QUALIFICATION_V2_LOCAL_PREFLIGHT_RECORD_TYPE
+    ):
+        raise ValueError("unexpected v2 local preflight record_type")
+    if (
+        type(normalized.get("schema_version")) is not int
+        or normalized.get("schema_version") != GPU_QUALIFICATION_V2_SCHEMA_VERSION
+    ):
+        raise ValueError("unexpected v2 local preflight schema_version")
+    if normalized.get("scope") != ("local_preflight_only_no_cloud_success_credit_v2"):
+        raise ValueError("v2 local preflight scope cannot grant cloud credit")
+    if normalized.get("plan_sha256") != _required_sha256(plan_sha256, "plan_sha256"):
+        raise ValueError("v2 local preflight plan SHA-256 differs")
+    checks = normalized.get("checks")
+    if not isinstance(checks, list) or len(checks) != len(
+        GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS
+    ):
+        raise ValueError("v2 local preflight lacks exact eight-check coverage")
+    for expected_id, raw_check in zip(
+        GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS, checks, strict=True
+    ):
+        check = _mapping_copy(raw_check, f"v2 local check {expected_id}")
+        _require_exact_keys(
+            check,
+            _LOCAL_PREFLIGHT_CHECK_KEYS,
+            f"v2 local check {expected_id}",
+        )
+        if check.get("check_id") != expected_id or check.get("status") != "passed":
+            raise ValueError(f"v2 local check {expected_id} is not canonical")
+        _required_sha256(
+            check.get("evidence_sha256"),
+            f"{expected_id}.evidence_sha256",
+        )
+    return qualification_v1._parse_utc_timestamp(  # noqa: SLF001
+        normalized.get("completed_at_utc"),
+        field_name="completed_at_utc",
+    )
 
 
 def validate_gpu_qualification_plan_v2_record(
@@ -824,6 +974,9 @@ __all__ = [
     "GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT",
     "GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS",
+    "GPU_QUALIFICATION_V2_LOCAL_PREFLIGHT_RECORD_TYPE",
+    "GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX",
+    "GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS",
     "GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_SCHEMA_VERSION",
@@ -833,10 +986,12 @@ __all__ = [
     "build_gpu_job_result_v2",
     "build_gpu_qualification_plan_v2",
     "build_gpu_runtime_verification_v2",
+    "build_local_preflight_evidence_v2",
     "gpu_qualification_v2_runtime_closure",
     "pins_from_gpu_qualification_plan_v2",
     "validate_gpu_job_result_v2_record",
     "validate_gpu_qualification_plan_v2_record",
     "validate_gpu_qualification_v2_runtime_attestation",
     "validate_gpu_runtime_verification_v2_record",
+    "validate_local_preflight_evidence_v2_record",
 ]

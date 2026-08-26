@@ -69,6 +69,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "publication_campaign",
         "publication_bf16_handoff_generation",
         "publication_freeze",
+        "publication_freeze_v2",
         "publication_handoff_artifacts",
         "publication_handoff_closure_coordinator",
         "publication_inputs",

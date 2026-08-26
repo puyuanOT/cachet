@@ -12,16 +12,35 @@ import argparse
 import base64
 import binascii
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import shutil
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 import zlib
 
-from document_kv_cache.databricks_runs import bind_databricks_run_idempotency_token
+from document_kv_cache.databricks_resource_ledger import (
+    DatabricksClusterHourLedger,
+    DatabricksRunAttemptReservationRequest,
+    canonical_databricks_submit_payload_snapshot,
+    databricks_ledger_prefix_at_counts,
+    databricks_ledger_prefix_from_record,
+    databricks_ledger_path_sha256,
+    read_databricks_cluster_hour_ledger_json,
+    replay_databricks_run_attempt_batch_authorization_json,
+    record_databricks_run_submission_receipt_json,
+    require_databricks_ledger_prefix,
+    require_databricks_publication_batch_admission,
+    reserve_databricks_run_attempt_batch_authorized_json,
+)
+from document_kv_cache.databricks_runs import (
+    DatabricksWorkspaceConfig,
+    bind_databricks_run_idempotency_token,
+    resume_pre_reserved_databricks_run,
+    submit_pre_reserved_databricks_run,
+)
 import document_kv_cache.gpu_qualification_databricks as databricks_v1
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_MAX_CLOUD_JOBS,
@@ -35,6 +54,7 @@ from document_kv_cache.gpu_qualification_v2 import (
     pins_from_gpu_qualification_plan_v2,
     validate_gpu_job_result_v2_record,
     validate_gpu_qualification_plan_v2_record,
+    validate_local_preflight_evidence_v2_record,
 )
 
 
@@ -52,6 +72,33 @@ _PLAN_ZLIB_LEVEL: Final = 9
 _PLAN_MAX_CANONICAL_BYTES: Final = 64 * 1024
 _PLAN_MAX_ENCODED_CHARS: Final = GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
 _DATABRICKS_RUN_ID_TEMPLATE: Final = "{{job.run_id}}"
+
+GPU_QUALIFICATION_V2_SUBMIT_RECEIPT_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_submit_receipt.v2"
+)
+GPU_QUALIFICATION_V2_PHASE_LEASE_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_qualification_phase_lease.v2"
+)
+GPU_QUALIFICATION_V2_BATCH_MARKER_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_qualification_batch_reserved.v2"
+)
+GPU_QUALIFICATION_V2_POST_INTENT_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_qualification_post_intent.v2"
+)
+_V2_PHASE_LEASE_FILENAME: Final = "phase-lease-v2.json"
+_V2_BATCH_MARKER_FILENAME: Final = "batch-reserved-v2.json"
+_V2_PREFLIGHT_PATH_DOMAIN: Final = (
+    "cachet.gpu_qualification_v2.local_preflight.absolute_path.v1"
+)
+_V2_PREFLIGHT_BINDING_KEYS: Final = frozenset(
+    {
+        "completed_at_utc",
+        "file_sha256",
+        "path_sha256",
+        "record_sha256",
+        "submit_payloads_sha256",
+    }
+)
 
 GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT: Final = """from __future__ import annotations
 
@@ -1126,6 +1173,897 @@ def _builtin_sentinel_runner_v2(
     )
 
 
+def submit_gpu_qualification_jobs_v2(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan_record: Mapping[str, Any],
+    single_user_name: str,
+    artifact_uris: Mapping[str, str],
+    output_root: str,
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+) -> tuple[dict[str, Any], ...]:
+    """Reserve and submit the package-rendered fourteen-job v2 batch."""
+
+    plan, pins, payloads, contracts = _validated_controller_contract_v2(
+        plan_record=plan_record,
+        single_user_name=single_user_name,
+        artifact_uris=artifact_uris,
+        output_root=output_root,
+    )
+    preflight_binding, completed_at = _validated_local_preflight_binding_v2(
+        local_preflight_evidence_path,
+        plan=plan,
+        submit_payloads=payloads,
+        config=config,
+        require_fresh_workspace=True,
+    )
+    boundary = _utc_now()
+    databricks_v1._require_local_preflight_before_submission(
+        completed_at,
+        submission_boundary=boundary,
+    )
+    initial = read_databricks_cluster_hour_ledger_json(ledger_path)
+    predecessor = _require_v2_ledger_predecessor(
+        initial,
+        plan=plan,
+        ledger_path=ledger_path,
+        contracts=contracts,
+        label="v2 qualification launch",
+    )
+    requests = _batch_requests_v2(plan, contracts)
+
+    def validate_batch(
+        live: DatabricksClusterHourLedger,
+        reservations: tuple[Any, ...],
+        snapshots: tuple[Mapping[str, Any], ...],
+    ) -> None:
+        _require_v2_ledger_predecessor(
+            live,
+            plan=plan,
+            ledger_path=ledger_path,
+            contracts=contracts,
+            label="v2 qualification batch reservation",
+        )
+        if len(reservations) != len(contracts) or len(snapshots) != len(contracts):
+            raise ValueError("v2 batch is not the exact fourteen jobs")
+        for contract, reservation, snapshot in zip(
+            contracts, reservations, snapshots, strict=True
+        ):
+            if (
+                reservation.attempt_id != contract["reservation_attempt_id"]
+                or reservation.submit_payload_sha256
+                != contract["submit_payload_sha256"]
+                or canonical_gpu_qualification_json(snapshot)
+                != canonical_gpu_qualification_json(
+                    databricks_v1._required_mapping(
+                        contract.get("payload"), "v2 payload"
+                    )
+                )
+            ):
+                raise ValueError("v2 reservation changed a payload")
+
+    receipt_root = databricks_v1._create_fresh_controller_evidence_root(
+        submit_receipt_root
+    )
+    lease = _phase_lease_record_v2(
+        plan=plan,
+        pins=pins,
+        ledger_path_sha256=_required_sha256_v2(
+            plan.get("campaign_ledger_path_sha256"),
+            "campaign_ledger_path_sha256",
+        ),
+        predecessor_prefix=predecessor,
+        contracts=contracts,
+        local_preflight_binding=preflight_binding,
+    )
+    lease_path = receipt_root / _V2_PHASE_LEASE_FILENAME
+    databricks_v1._write_canonical_exclusive(lease, lease_path)
+    try:
+        _ledger, authorization = (
+            reserve_databricks_run_attempt_batch_authorized_json(
+                ledger_path,
+                requests,
+                expected_predecessor_prefix=predecessor,
+                batch_validator=validate_batch,
+            )
+        )
+    except BaseException:
+        if lease_path.is_file() and not lease_path.is_symlink():
+            lease_path.unlink()
+            databricks_v1._fsync_directory(receipt_root)
+        if receipt_root.is_dir() and not any(receipt_root.iterdir()):
+            receipt_root.rmdir()
+            databricks_v1._fsync_directory(receipt_root.parent)
+        raise
+    marker = _batch_marker_record_v2(
+        plan=plan,
+        lease_record=lease,
+        batch_authorization=authorization,
+    )
+    marker_path = receipt_root / _V2_BATCH_MARKER_FILENAME
+    databricks_v1._write_canonical_exclusive(marker, marker_path)
+    receipts: list[dict[str, Any]] = []
+    for contract in contracts:
+        payload = databricks_v1._required_mapping(
+            contract.get("payload"), "v2 payload"
+        )
+        attempt_id = str(contract["reservation_attempt_id"])
+        intent_path = receipt_root / f"{contract['job_id']}.post-intent-v2"
+        intent = _post_intent_record_v2(
+            contract=contract,
+            batch_authorization=authorization,
+            phase_batch_record_sha256=str(marker["closed_record_sha256"]),
+        )
+        databricks_v1._write_canonical_exclusive(intent, intent_path)
+        response = submit_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=authorization,
+        )
+        ledger = record_databricks_run_submission_receipt_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            submit_response=response,
+        )
+        receipt = _submit_receipt_record_v2(
+            plan=plan,
+            contract=contract,
+            ledger=ledger,
+            phase_batch_record_sha256=str(marker["closed_record_sha256"]),
+        )
+        databricks_v1._write_canonical_exclusive(
+            receipt, receipt_root / f"{contract['job_id']}.json"
+        )
+        intent_path.unlink()
+        databricks_v1._fsync_directory(receipt_root)
+        receipts.append(receipt)
+    expected_names = {
+        _V2_PHASE_LEASE_FILENAME,
+        _V2_BATCH_MARKER_FILENAME,
+        *(f"{contract['job_id']}.json" for contract in contracts),
+    }
+    if {item.name for item in receipt_root.iterdir()} != expected_names:
+        raise ValueError("submitted v2 receipt directory is not closed")
+    return tuple(receipts)
+
+
+def resume_gpu_qualification_job_submissions_v2(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan_record: Mapping[str, Any],
+    single_user_name: str,
+    artifact_uris: Mapping[str, str],
+    output_root: str,
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+) -> tuple[dict[str, Any], ...]:
+    """Resume only the durable package-rendered v2 submission batch."""
+
+    plan, _pins, payloads, contracts = _validated_controller_contract_v2(
+        plan_record=plan_record,
+        single_user_name=single_user_name,
+        artifact_uris=artifact_uris,
+        output_root=output_root,
+    )
+    preflight_binding, completed_at = _validated_local_preflight_binding_v2(
+        local_preflight_evidence_path,
+        plan=plan,
+        submit_payloads=payloads,
+        config=config,
+        require_fresh_workspace=False,
+    )
+    databricks_v1._require_local_preflight_before_submission(
+        completed_at,
+        submission_boundary=_utc_now(),
+    )
+    authorization, marker = _replay_batch_marker_v2(
+        plan=plan,
+        contracts=contracts,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_binding=preflight_binding,
+    )
+    root = databricks_v1._validated_existing_controller_evidence_root(
+        submit_receipt_root,
+        "v2 submit_receipt_root",
+    )
+    marker_sha256 = str(marker["closed_record_sha256"])
+    receipts: list[dict[str, Any]] = []
+    for contract in contracts:
+        job_id = str(contract["job_id"])
+        attempt_id = str(contract["reservation_attempt_id"])
+        payload = databricks_v1._required_mapping(
+            contract.get("payload"), "v2 payload"
+        )
+        receipt_path = root / f"{job_id}.json"
+        intent_path = root / f"{job_id}.post-intent-v2"
+        if receipt_path.exists() or receipt_path.is_symlink():
+            ledger = read_databricks_cluster_hour_ledger_json(
+                ledger_path
+            )
+            receipt = databricks_v1._read_canonical_json_object_file(
+                receipt_path,
+                f"v2 submit receipt {job_id}",
+            )
+            _validate_submit_receipt_v2(
+                receipt,
+                contract=contract,
+                plan=plan,
+                ledger=ledger,
+                phase_batch_record_sha256=marker_sha256,
+            )
+            if intent_path.is_file() and not intent_path.is_symlink():
+                intent_path.unlink()
+                databricks_v1._fsync_directory(root)
+            receipts.append(receipt)
+            continue
+        expected_intent = _post_intent_record_v2(
+            contract=contract,
+            batch_authorization=authorization,
+            phase_batch_record_sha256=marker_sha256,
+        )
+        if intent_path.exists() or intent_path.is_symlink():
+            observed_intent = databricks_v1._read_canonical_json_object_file(
+                intent_path,
+                f"v2 post intent {job_id}",
+            )
+            if canonical_gpu_qualification_json(
+                observed_intent
+            ) != canonical_gpu_qualification_json(expected_intent):
+                raise ValueError(f"v2 post intent {job_id!r} drift")
+        else:
+            databricks_v1._write_canonical_exclusive(
+                expected_intent, intent_path
+            )
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=authorization,
+        )
+        ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+        receipt = _submit_receipt_record_v2(
+            plan=plan,
+            contract=contract,
+            ledger=ledger,
+            phase_batch_record_sha256=marker_sha256,
+        )
+        try:
+            databricks_v1._write_canonical_exclusive(receipt, receipt_path)
+        except FileExistsError:
+            observed_receipt = databricks_v1._read_canonical_json_object_file(
+                receipt_path,
+                f"v2 submit receipt {job_id}",
+            )
+            _validate_submit_receipt_v2(
+                observed_receipt,
+                contract=contract,
+                plan=plan,
+                ledger=ledger,
+                phase_batch_record_sha256=marker_sha256,
+            )
+            receipt = observed_receipt
+        if intent_path.is_file() and not intent_path.is_symlink():
+            intent_path.unlink()
+            databricks_v1._fsync_directory(root)
+        receipts.append(receipt)
+    expected_names = {
+        _V2_PHASE_LEASE_FILENAME,
+        _V2_BATCH_MARKER_FILENAME,
+        *(f"{contract['job_id']}.json" for contract in contracts),
+    }
+    if {item.name for item in root.iterdir()} != expected_names:
+        raise ValueError("resumed v2 receipt directory is not closed")
+    return tuple(receipts)
+
+
+def _validated_controller_contract_v2(
+    *,
+    plan_record: Mapping[str, Any],
+    single_user_name: str,
+    artifact_uris: Mapping[str, str],
+    output_root: str,
+) -> tuple[
+    dict[str, Any],
+    GPUQualificationArtifactPinsV2,
+    tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
+]:
+    plan, pins = _validated_plan_and_pins_v2(plan_record)
+    payloads = render_gpu_qualification_submit_payloads_v2(
+        plan,
+        single_user_name=single_user_name,
+        artifact_uris=artifact_uris,
+        output_root=output_root,
+    )
+    contracts: list[dict[str, Any]] = []
+    jobs = databricks_v1._planned_jobs(plan)
+    for job, payload in zip(jobs, payloads, strict=True):
+        job_id = databricks_v1._safe_id(job.get("job_id"), "v2 job_id")
+        task = databricks_v1._required_mapping(
+            cast(list[Mapping[str, Any]], payload["tasks"])[0],
+            "v2 task",
+        )
+        python_task = databricks_v1._required_mapping(
+            task.get("spark_python_task"), "v2 spark_python_task"
+        )
+        parameters = python_task.get("parameters")
+        if not isinstance(parameters, list) or any(
+            not isinstance(item, str) for item in parameters
+        ):
+            raise ValueError("v2 rendered parameters are invalid")
+        output_json = databricks_v1._one_parameter(
+            parameters, "--output-json"
+        )
+        attempt_id = databricks_v1.gpu_qualification_reservation_attempt_id(
+            str(plan["closed_record_sha256"]), job_id
+        )
+        snapshot, canonical_payload = (
+            canonical_databricks_submit_payload_snapshot(payload)
+        )
+        contracts.append(
+            {
+                "job_id": job_id,
+                "output_json": output_json,
+                "payload": snapshot,
+                "reservation_attempt_id": attempt_id,
+                "submit_payload_sha256": sha256(canonical_payload).hexdigest(),
+                "task_key": str(task["task_key"]),
+            }
+        )
+    if len(contracts) != 14:
+        raise ValueError("v2 controller contract lacks fourteen jobs")
+    return plan, pins, payloads, tuple(contracts)
+
+
+def _validated_local_preflight_binding_v2(
+    path: str | Path,
+    *,
+    plan: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    config: DatabricksWorkspaceConfig,
+    require_fresh_workspace: bool,
+) -> tuple[dict[str, str], datetime]:
+    preflight_path = databricks_v1._validated_existing_regular_file(
+        path, "v2 local_preflight_evidence_path"
+    )
+    record = databricks_v1._read_canonical_json_object_file(
+        preflight_path,
+        "v2 local preflight evidence",
+    )
+    plan_sha256 = _required_sha256_v2(
+        plan.get("closed_record_sha256"), "plan.closed_record_sha256"
+    )
+    completed_at = validate_local_preflight_evidence_v2_record(
+        record,
+        plan_sha256=plan_sha256,
+    )
+    from document_kv_cache.publication_freeze_v2 import (
+        validate_gpu_qualification_local_preflight_bundle_v2,
+    )
+
+    authoritative = validate_gpu_qualification_local_preflight_bundle_v2(
+        preflight_path,
+        plan_record=plan,
+        submit_payloads=submit_payloads,
+        workspace_config=config,
+        require_fresh_workspace=require_fresh_workspace,
+    )
+    if authoritative != record:
+        raise ValueError("live v2 preflight bundle record differs")
+    payload_bytes = canonical_gpu_qualification_json(
+        {"payloads": list(submit_payloads)}
+    ).encode("utf-8")
+    return (
+        {
+            "completed_at_utc": _required_string_v2(
+                record.get("completed_at_utc"), "completed_at_utc"
+            ),
+            "file_sha256": databricks_v1._file_sha256(preflight_path),
+            "path_sha256": sha256(
+                canonical_gpu_qualification_json(
+                    {
+                        "domain": _V2_PREFLIGHT_PATH_DOMAIN,
+                        "path": str(preflight_path),
+                    }
+                ).encode("utf-8")
+            ).hexdigest(),
+            "record_sha256": _required_sha256_v2(
+                record.get("closed_record_sha256"),
+                "v2 preflight closed_record_sha256",
+            ),
+            "submit_payloads_sha256": sha256(payload_bytes).hexdigest(),
+        },
+        completed_at,
+    )
+
+
+def _require_v2_ledger_predecessor(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    plan: Mapping[str, Any],
+    ledger_path: str | Path,
+    contracts: Sequence[Mapping[str, Any]],
+    label: str,
+) -> Any:
+    if databricks_ledger_path_sha256(ledger_path) != plan.get(
+        "campaign_ledger_path_sha256"
+    ):
+        raise ValueError("v2 ledger path differs from the plan")
+    if ledger.ledger_id != plan.get("campaign_ledger_id"):
+        raise ValueError("v2 ledger ID differs from the plan")
+    predecessor = databricks_ledger_prefix_from_record(
+        databricks_v1._required_mapping(
+            plan.get("campaign_ledger_prefix"), "campaign_ledger_prefix"
+        )
+    )
+    require_databricks_ledger_prefix(ledger, predecessor)
+    if ledger.terminal_actual_cluster_hours != plan.get(
+        "campaign_opening_terminal_gpu_hours"
+    ):
+        raise ValueError("v2 ledger opening terminal balance drift")
+    databricks_v1._require_qualification_ledger_admission(
+        ledger,
+        proposed_task_count=len(contracts),
+        proposed_reserved_cluster_hours=(
+            len(contracts)
+            * databricks_v1.GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS
+            / 3600.0
+        ),
+        label=label,
+    )
+    return predecessor
+
+
+def _batch_requests_v2(
+    plan: Mapping[str, Any],
+    contracts: Sequence[Mapping[str, Any]],
+) -> tuple[Any, ...]:
+    return tuple(
+        DatabricksRunAttemptReservationRequest(
+            attempt_id=str(contract["reservation_attempt_id"]),
+            workload_id=(
+                f"gpuq-v2/{plan['closed_record_sha256'][:16]}/"
+                f"{contract['job_id']}"
+            ),
+            submit_payload=databricks_v1._required_mapping(
+                contract.get("payload"), "v2 payload"
+            ),
+        )
+        for contract in contracts
+    )
+
+
+def _phase_lease_record_v2(
+    *,
+    plan: Mapping[str, Any],
+    pins: GPUQualificationArtifactPinsV2,
+    ledger_path_sha256: str,
+    predecessor_prefix: Any,
+    contracts: Sequence[Mapping[str, Any]],
+    local_preflight_binding: Mapping[str, str],
+) -> dict[str, Any]:
+    if frozenset(local_preflight_binding) != _V2_PREFLIGHT_BINDING_KEYS:
+        raise ValueError("v2 local preflight binding has an open schema")
+    record: dict[str, Any] = {
+        "artifact_sha256": pins.to_record(),
+        "attempt_ids": [str(item["reservation_attempt_id"]) for item in contracts],
+        "closed_record_sha256": "",
+        "ledger_path_sha256": ledger_path_sha256,
+        "local_preflight": dict(local_preflight_binding),
+        "plan_sha256": plan["closed_record_sha256"],
+        "predecessor_prefix": predecessor_prefix.to_record(),
+        "record_type": GPU_QUALIFICATION_V2_PHASE_LEASE_RECORD_TYPE,
+        "schema_version": 2,
+        "submit_payload_sha256": [
+            str(item["submit_payload_sha256"]) for item in contracts
+        ],
+    }
+    _seal_controller_record_v2(record)
+    return record
+
+
+def _batch_marker_record_v2(
+    *,
+    plan: Mapping[str, Any],
+    lease_record: Mapping[str, Any],
+    batch_authorization: Any,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "attempt_ids": list(batch_authorization.attempt_ids),
+        "batch_prefix": batch_authorization.batch_prefix.to_record(),
+        "closed_record_sha256": "",
+        "ledger_path_sha256": batch_authorization.ledger_path_sha256,
+        "phase_lease_record_sha256": lease_record["closed_record_sha256"],
+        "plan_sha256": plan["closed_record_sha256"],
+        "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
+        "record_type": GPU_QUALIFICATION_V2_BATCH_MARKER_RECORD_TYPE,
+        "schema_version": 2,
+        "submit_payload_sha256": list(
+            batch_authorization.submit_payload_sha256s
+        ),
+    }
+    _seal_controller_record_v2(record)
+    return record
+
+
+def _post_intent_record_v2(
+    *,
+    contract: Mapping[str, Any],
+    batch_authorization: Any,
+    phase_batch_record_sha256: str,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "attempt_id": contract["reservation_attempt_id"],
+        "batch_prefix": batch_authorization.batch_prefix.to_record(),
+        "closed_record_sha256": "",
+        "job_id": contract["job_id"],
+        "phase_batch_record_sha256": phase_batch_record_sha256,
+        "record_type": GPU_QUALIFICATION_V2_POST_INTENT_RECORD_TYPE,
+        "schema_version": 2,
+        "state": "post_may_be_ambiguous_if_no_ledger_receipt",
+        "submit_payload_sha256": contract["submit_payload_sha256"],
+    }
+    _seal_controller_record_v2(record)
+    return record
+
+
+def _submit_receipt_record_v2(
+    *,
+    plan: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    ledger: DatabricksClusterHourLedger,
+    phase_batch_record_sha256: str,
+) -> dict[str, Any]:
+    attempt_id = str(contract["reservation_attempt_id"])
+    ledger_receipts = [
+        item for item in ledger.submission_receipts if item.attempt_id == attempt_id
+    ]
+    if len(ledger_receipts) != 1:
+        raise ValueError("v2 ledger lacks one exact submission receipt")
+    ledger_receipt = ledger_receipts[0]
+    record: dict[str, Any] = {
+        "authorization_scope": (
+            "submission_identity_only_requires_direct_terminal_collection_v2"
+        ),
+        "closed_record_sha256": "",
+        "cloud_run_id": ledger_receipt.run_id,
+        "job_id": contract["job_id"],
+        "ledger_id": ledger.ledger_id,
+        "output_json": contract["output_json"],
+        "phase_batch_record_sha256": phase_batch_record_sha256,
+        "plan_sha256": plan["closed_record_sha256"],
+        "record_type": GPU_QUALIFICATION_V2_SUBMIT_RECEIPT_RECORD_TYPE,
+        "reservation_attempt_id": attempt_id,
+        "schema_version": 2,
+        "submit_payload_sha256": contract["submit_payload_sha256"],
+        "submit_response_sha256": ledger_receipt.submit_response_sha256,
+        "task_key": contract["task_key"],
+    }
+    _seal_controller_record_v2(record)
+    return record
+
+
+def _validate_submit_receipt_v2(
+    receipt: Mapping[str, Any],
+    *,
+    contract: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    ledger: DatabricksClusterHourLedger,
+    phase_batch_record_sha256: str,
+) -> None:
+    if receipt.get("record_type") != GPU_QUALIFICATION_V2_SUBMIT_RECEIPT_RECORD_TYPE:
+        raise ValueError("v2 submit receipt record type differs")
+    if type(receipt.get("schema_version")) is not int or receipt.get(
+        "schema_version"
+    ) != 2:
+        raise ValueError("v2 submit receipt schema version differs")
+    _require_controller_record_seal_v2(receipt, "v2 submit receipt")
+    expected = _submit_receipt_record_v2(
+        plan=plan,
+        contract=contract,
+        ledger=ledger,
+        phase_batch_record_sha256=phase_batch_record_sha256,
+    )
+    if canonical_gpu_qualification_json(receipt) != canonical_gpu_qualification_json(
+        expected
+    ):
+        raise ValueError("v2 submit receipt differs from ledger authority")
+
+
+def _replay_batch_marker_v2(
+    *,
+    plan: Mapping[str, Any],
+    contracts: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_binding: Mapping[str, str],
+) -> tuple[Any, dict[str, Any]]:
+    root = databricks_v1._validated_existing_controller_evidence_root(
+        submit_receipt_root,
+        "v2 submit_receipt_root",
+    )
+    lease = databricks_v1._read_canonical_json_object_file(
+        root / _V2_PHASE_LEASE_FILENAME,
+        "v2 qualification phase lease",
+    )
+    pins = pins_from_gpu_qualification_plan_v2(plan)
+    expected_predecessor = databricks_ledger_prefix_from_record(
+        databricks_v1._required_mapping(
+            plan.get("campaign_ledger_prefix"), "campaign_ledger_prefix"
+        )
+    )
+    expected_lease = _phase_lease_record_v2(
+        plan=plan,
+        pins=pins,
+        ledger_path_sha256=_required_sha256_v2(
+            plan.get("campaign_ledger_path_sha256"),
+            "campaign_ledger_path_sha256",
+        ),
+        predecessor_prefix=expected_predecessor,
+        contracts=contracts,
+        local_preflight_binding=local_preflight_binding,
+    )
+    if canonical_gpu_qualification_json(lease) != canonical_gpu_qualification_json(
+        expected_lease
+    ):
+        raise ValueError("v2 phase lease differs from the frozen batch")
+    _require_controller_record_seal_v2(lease, "v2 phase lease")
+    if databricks_ledger_path_sha256(ledger_path) != plan.get(
+        "campaign_ledger_path_sha256"
+    ):
+        raise ValueError("v2 replay ledger path differs from the plan")
+    live = read_databricks_cluster_hour_ledger_json(ledger_path)
+    if live.ledger_id != plan.get("campaign_ledger_id"):
+        raise ValueError("v2 replay ledger ID differs from the plan")
+    predecessor_ledger = DatabricksClusterHourLedger(
+        ledger_id=live.ledger_id,
+        cap_cluster_hours=live.cap_cluster_hours,
+        reservations=live.reservations[: expected_predecessor.reservation_count],
+        submission_receipts=live.submission_receipts[
+            : expected_predecessor.submission_receipt_count
+        ],
+        terminal_actuals=live.terminal_actuals[
+            : expected_predecessor.terminal_actual_count
+        ],
+    )
+    if databricks_ledger_prefix_at_counts(
+        predecessor_ledger,
+        reservation_count=len(predecessor_ledger.reservations),
+        submission_receipt_count=len(predecessor_ledger.submission_receipts),
+        terminal_actual_count=len(predecessor_ledger.terminal_actuals),
+    ) != expected_predecessor:
+        raise ValueError("v2 phase predecessor history drift")
+    if predecessor_ledger.terminal_actual_cluster_hours != plan.get(
+        "campaign_opening_terminal_gpu_hours"
+    ):
+        raise ValueError("v2 replay opening terminal balance drift")
+    databricks_v1._require_qualification_ledger_admission(
+        predecessor_ledger,
+        proposed_task_count=len(contracts),
+        proposed_reserved_cluster_hours=(
+            len(contracts)
+            * databricks_v1.GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS
+            / 3600.0
+        ),
+        label="v2 durable batch replay",
+    )
+    requests = _batch_requests_v2(plan, contracts)
+    if (
+        len(live.reservations) == expected_predecessor.reservation_count
+        and len(live.submission_receipts)
+        == expected_predecessor.submission_receipt_count
+        and len(live.terminal_actuals) == expected_predecessor.terminal_actual_count
+    ):
+        if {item.name for item in root.iterdir()} != {_V2_PHASE_LEASE_FILENAME}:
+            raise ValueError("v2 lease-only resume root has unexpected evidence")
+        _reserved_ledger, authorization = (
+            reserve_databricks_run_attempt_batch_authorized_json(
+                ledger_path,
+                requests,
+                expected_predecessor_prefix=expected_predecessor,
+            )
+        )
+    else:
+        if (
+            len(live.reservations)
+            != expected_predecessor.reservation_count + len(contracts)
+            or not (
+                expected_predecessor.submission_receipt_count
+                <= len(live.submission_receipts)
+                <= expected_predecessor.submission_receipt_count + len(contracts)
+            )
+            or len(live.terminal_actuals)
+            != expected_predecessor.terminal_actual_count
+        ):
+            raise ValueError("v2 replay ledger is not a canonical batch prefix")
+        authorization = (
+            replay_databricks_run_attempt_batch_authorization_json(
+                ledger_path,
+                requests,
+                expected_predecessor_prefix=expected_predecessor,
+            )
+        )
+    live = read_databricks_cluster_hour_ledger_json(ledger_path)
+    receipt_start = expected_predecessor.submission_receipt_count
+    receipt_suffix = live.submission_receipts[receipt_start:]
+    receipt_count = len(receipt_suffix)
+    if tuple(item.attempt_id for item in receipt_suffix) != (
+        authorization.attempt_ids[:receipt_count]
+    ):
+        raise ValueError("v2 replay receipt suffix is not the canonical batch prefix")
+    if tuple(item.submit_payload_sha256 for item in receipt_suffix) != (
+        authorization.submit_payload_sha256s[:receipt_count]
+    ):
+        raise ValueError("v2 replay receipt suffix payload digest drift")
+    require_databricks_publication_batch_admission(
+        live,
+        authorization,
+    )
+    expected_marker = _batch_marker_record_v2(
+        plan=plan,
+        lease_record=lease,
+        batch_authorization=authorization,
+    )
+    marker = _validated_resume_evidence_prefix_v2(
+        root=root,
+        plan=plan,
+        contracts=contracts,
+        ledger=live,
+        receipt_count=receipt_count,
+        batch_authorization=authorization,
+        expected_marker=expected_marker,
+    )
+    if marker is None:
+        marker_path = root / _V2_BATCH_MARKER_FILENAME
+        databricks_v1._write_canonical_exclusive(expected_marker, marker_path)
+        marker = expected_marker
+    return authorization, marker
+
+
+def _validated_resume_evidence_prefix_v2(
+    *,
+    root: Path,
+    plan: Mapping[str, Any],
+    contracts: Sequence[Mapping[str, Any]],
+    ledger: DatabricksClusterHourLedger,
+    receipt_count: int,
+    batch_authorization: Any,
+    expected_marker: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    entries = tuple(root.iterdir())
+    if any(item.is_symlink() or not item.is_file() for item in entries):
+        raise ValueError("v2 resume evidence must contain only regular files")
+    names = {item.name for item in entries}
+    receipt_names = tuple(f"{contract['job_id']}.json" for contract in contracts)
+    intent_names = tuple(
+        f"{contract['job_id']}.post-intent-v2" for contract in contracts
+    )
+    allowed_names = {
+        _V2_PHASE_LEASE_FILENAME,
+        _V2_BATCH_MARKER_FILENAME,
+        *receipt_names,
+        *intent_names,
+    }
+    if names - allowed_names:
+        raise ValueError("v2 resume evidence contains an unexpected file")
+    receipt_indices = tuple(
+        index for index, name in enumerate(receipt_names) if name in names
+    )
+    controller_receipt_count = len(receipt_indices)
+    if receipt_indices != tuple(range(controller_receipt_count)):
+        raise ValueError("v2 resume receipts are not a canonical job prefix")
+    allowed_receipt_counts = {receipt_count}
+    if receipt_count > 0:
+        allowed_receipt_counts.add(receipt_count - 1)
+    if controller_receipt_count not in allowed_receipt_counts:
+        raise ValueError("v2 controller receipts differ from the ledger prefix")
+    intent_indices = tuple(
+        index for index, name in enumerate(intent_names) if name in names
+    )
+    marker_path = root / _V2_BATCH_MARKER_FILENAME
+    if _V2_BATCH_MARKER_FILENAME not in names:
+        if names != {_V2_PHASE_LEASE_FILENAME} or receipt_count != 0:
+            raise ValueError("v2 batch marker is absent outside lease-only recovery")
+        return None
+    marker = databricks_v1._read_canonical_json_object_file(
+        marker_path,
+        "v2 qualification batch marker",
+    )
+    if canonical_gpu_qualification_json(marker) != canonical_gpu_qualification_json(
+        expected_marker
+    ):
+        raise ValueError("v2 batch marker differs from the ledger batch")
+    _require_controller_record_seal_v2(marker, "v2 batch marker")
+    allowed_intent_indices: set[tuple[int, ...]]
+    if controller_receipt_count == receipt_count - 1:
+        allowed_intent_indices = {(controller_receipt_count,)}
+    else:
+        allowed_intent_indices = {()}
+        if receipt_count < len(contracts):
+            allowed_intent_indices.add((receipt_count,))
+        if receipt_count > 0:
+            allowed_intent_indices.add((receipt_count - 1,))
+    if intent_indices not in allowed_intent_indices:
+        raise ValueError("v2 resume intent is not the canonical durable crash point")
+    marker_sha256 = str(marker["closed_record_sha256"])
+    for index in receipt_indices:
+        receipt = databricks_v1._read_canonical_json_object_file(
+            root / receipt_names[index],
+            f"v2 submit receipt {contracts[index]['job_id']}",
+        )
+        _validate_submit_receipt_v2(
+            receipt,
+            contract=contracts[index],
+            plan=plan,
+            ledger=ledger,
+            phase_batch_record_sha256=marker_sha256,
+        )
+    for index in intent_indices:
+        intent = databricks_v1._read_canonical_json_object_file(
+            root / intent_names[index],
+            f"v2 post intent {contracts[index]['job_id']}",
+        )
+        expected_intent = _post_intent_record_v2(
+            contract=contracts[index],
+            batch_authorization=batch_authorization,
+            phase_batch_record_sha256=marker_sha256,
+        )
+        if canonical_gpu_qualification_json(intent) != canonical_gpu_qualification_json(
+            expected_intent
+        ):
+            raise ValueError("v2 post intent differs from the batch authority")
+    return marker
+
+
+def _controller_record_digest_v2(record: Mapping[str, Any]) -> str:
+    payload = dict(record)
+    payload["closed_record_sha256"] = ""
+    return sha256(canonical_gpu_qualification_json(payload).encode("utf-8")).hexdigest()
+
+
+def _seal_controller_record_v2(record: dict[str, Any]) -> None:
+    if record.get("closed_record_sha256") != "":
+        raise ValueError("v2 controller record must begin with an empty seal")
+    record["closed_record_sha256"] = _controller_record_digest_v2(record)
+
+
+def _require_controller_record_seal_v2(
+    record: Mapping[str, Any],
+    label: str,
+) -> None:
+    observed = _required_sha256_v2(
+        record.get("closed_record_sha256"),
+        f"{label}.closed_record_sha256",
+    )
+    if observed != _controller_record_digest_v2(record):
+        raise ValueError(f"{label} seal differs")
+
+
+def _required_sha256_v2(value: Any, label: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise ValueError(f"{label} must be a lowercase SHA-256")
+    return value
+
+
+def _required_string_v2(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value or value.strip() != value:
+        raise ValueError(f"{label} must be a canonical nonempty string")
+    return value
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.attempt_number != 0 or args.retry_count != 0:
@@ -1163,10 +2101,16 @@ __all__ = [
     "GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES",
     "GPU_QUALIFICATION_V2_LOCAL_WORK_ROOT",
     "GPU_QUALIFICATION_V2_OUTPUT_FILENAME",
+    "GPU_QUALIFICATION_V2_BATCH_MARKER_RECORD_TYPE",
+    "GPU_QUALIFICATION_V2_PHASE_LEASE_RECORD_TYPE",
+    "GPU_QUALIFICATION_V2_POST_INTENT_RECORD_TYPE",
+    "GPU_QUALIFICATION_V2_SUBMIT_RECEIPT_RECORD_TYPE",
     "GPUQualificationSentinelRunnerV2",
     "execute_gpu_qualification_job_v2",
     "main",
     "render_gpu_qualification_submit_payloads_v2",
+    "resume_gpu_qualification_job_submissions_v2",
+    "submit_gpu_qualification_jobs_v2",
     "validate_gpu_qualification_submit_payloads_v2",
     "write_gpu_qualification_bootstrap_runner_v2",
 ]

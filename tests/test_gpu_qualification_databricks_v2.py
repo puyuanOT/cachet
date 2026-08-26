@@ -28,6 +28,8 @@ from document_kv_cache.gpu_qualification import (
 from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
     GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION,
+    GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+    GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
     GPUQualificationArtifactPinsV2,
     build_gpu_qualification_plan_v2,
     build_gpu_runtime_verification_v2,
@@ -70,9 +72,9 @@ def _plan() -> dict[str, Any]:
         campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
         campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
         campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-        campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+        campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
         campaign_opening_terminal_gpu_hours=(
-            PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
         ),
         artifact_pins=_pins(),
     )
@@ -148,16 +150,16 @@ def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 17524
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "2d8154da36bd81fb074ff89cc2282709e60e10cfdcbb3826f326cdffd0d5e104"
+        "b3ee3a244aa7efe518b368f0e2b9634f30130cc47cc093bd9619e0da30f3c26c"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15392
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 121683
+    assert len(payload_bytes) == 121627
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "72acdaa6c234ab408099cb91c1f14a6e4e60b0d47832b2ad4c16bc437536f6ba"
+        "1f8d53f5e9015ceaf04825afa4564d0720a1eabe0105d3ecef96f50b8ca20ae2"
     )
 
 
@@ -188,8 +190,8 @@ def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> 
             task["spark_python_task"]["python_file"]
             == (_artifact_uris()["runner_sha256"])
         )
-    assert min(sizes) == 7607
-    assert max(sizes) == 7679
+    assert min(sizes) == 7603
+    assert max(sizes) == 7675
     assert (
         max(sizes) < databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
     )
@@ -383,9 +385,9 @@ def _bootstrap_case(
         campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
         campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
         campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-        campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+        campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
         campaign_opening_terminal_gpu_hours=(
-            PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
         ),
         artifact_pins=pins,
     )

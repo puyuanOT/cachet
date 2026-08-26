@@ -7,10 +7,13 @@ from typing import Any
 import pytest
 
 import document_kv_cache.gpu_qualification as qualification_v1
+import document_kv_cache.gpu_qualification_v2 as qualification_v2
 from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
     GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT,
     GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+    GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
     GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
     GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE,
     GPU_QUALIFICATION_V2_SCHEMA_VERSION,
@@ -74,10 +77,10 @@ EXPECTED_JOB_IDS = (
     "aws-g5-a10g-auto-backend-diagnostic",
 )
 EXPECTED_PLAN_SHA256 = (
-    "1d76c56355f4b5326e426edfddd153868bb26b2dc929f042593ce383d4a64668"
+    "85a693d591739871bb19527bf061028c7a6886014ea60d0c6f533b0273bf2a24"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
-    "a74571253a11e8ad13b28c87ed3f926b47a219e356403759d633f88f30eea8e4"
+    "2023096adf5c35c120e7a28d3f176a4574e3dd8c1d9c810e2b6c3cdf3f2bb508"
 )
 EXPECTED_VLLM_MEMBER_SHA256 = {
     "vllm/model_executor/layers/attention/attention.py": (
@@ -158,9 +161,9 @@ def _valid_plan() -> dict[str, Any]:
         campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
         campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
         campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-        campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+        campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
         campaign_opening_terminal_gpu_hours=(
-            PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
         ),
         artifact_pins=_pins(),
     )
@@ -299,6 +302,47 @@ def test_v2_plan_is_deterministic_and_closes_exactly_fourteen_jobs() -> None:
         expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
         expected_artifact_pins=_pins(),
     )
+
+
+def test_v2_plan_rejects_rebased_opening_authority() -> None:
+    with pytest.raises(ValueError, match="ledger prefix differs"):
+        build_gpu_qualification_plan_v2(
+            campaign_id=PUBLICATION_CAMPAIGN_ID,
+            campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+            campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+            campaign_opening_terminal_gpu_hours=(
+                GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+            ),
+            artifact_pins=_pins(),
+        )
+    with pytest.raises(ValueError, match="opening balance differs"):
+        build_gpu_qualification_plan_v2(
+            campaign_id=PUBLICATION_CAMPAIGN_ID,
+            campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+            campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+            campaign_opening_terminal_gpu_hours=(
+                PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            ),
+            artifact_pins=_pins(),
+        )
+
+    forged = _valid_plan()
+    forged["campaign_ledger_prefix"] = (
+        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.to_record()
+    )
+    forged["closed_record_sha256"] = qualification_v2._closed_record_sha256(  # noqa: SLF001
+        forged
+    )
+    with pytest.raises(ValueError, match="ledger prefix differs"):
+        validate_gpu_qualification_plan_v2_record(
+            forged,
+            expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+            expected_artifact_pins=_pins(),
+        )
 
 
 def test_v1_and_v2_plans_are_cross_rejected() -> None:

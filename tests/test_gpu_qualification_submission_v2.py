@@ -1,0 +1,898 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import dataclass, replace
+import hashlib
+import inspect
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import document_kv_cache.databricks_resource_ledger as ledger_api
+import document_kv_cache.databricks_runs as runs_api
+import document_kv_cache.gpu_qualification as qualification_v1
+import document_kv_cache.gpu_qualification_databricks as databricks_v1
+import document_kv_cache.gpu_qualification_databricks_v2 as databricks_v2
+import document_kv_cache.gpu_qualification_v2 as qualification_v2
+import document_kv_cache.publication_freeze_v2 as freeze_v2
+from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+)
+from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+    GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+    canonical_gpu_qualification_json,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
+    GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS,
+    GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+    GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
+    GPUQualificationArtifactPinsV2,
+    build_gpu_qualification_plan_v2,
+    build_local_preflight_evidence_v2,
+)
+from document_kv_cache.publication_campaign import (
+    PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+    PUBLICATION_CAMPAIGN_ID,
+    PUBLICATION_CAMPAIGN_LEDGER_ID,
+    PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+    PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
+
+
+_RETAINED_LEDGER_PATH = (
+    Path(__file__).parents[1]
+    / "databricks-runs"
+    / "vllm-0271-publication-prep"
+    / "cluster-hours.json"
+)
+_SINGLE_USER_NAME = "v2-controller@example.com"
+_OUTPUT_ROOT = "dbfs:/Volumes/catalog/schema/volume/gpuq-v2-results"
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _pins() -> GPUQualificationArtifactPinsV2:
+    return GPUQualificationArtifactPinsV2(
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        package_wheel_sha256=_digest("v2-package-wheel"),
+        cachet_source_tree_sha256=_digest("v2-source-closure"),
+        runner_sha256=databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256,
+        input_bundle_sha256=GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+    )
+
+
+def _plan() -> dict[str, Any]:
+    return build_gpu_qualification_plan_v2(
+        campaign_id=PUBLICATION_CAMPAIGN_ID,
+        campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+        campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+        campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+        campaign_opening_terminal_gpu_hours=(
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+        ),
+        artifact_pins=_pins(),
+    )
+
+
+def _artifact_uris() -> dict[str, str]:
+    return {
+        key: f"dbfs:/Volumes/catalog/schema/volume/{index:02d}-{key}/artifact"
+        for index, key in enumerate(GPU_QUALIFICATION_V2_ARTIFACT_KEYS)
+    }
+
+
+def _write_preflight(plan: Mapping[str, Any], path: Path) -> Path:
+    record = build_local_preflight_evidence_v2(
+        plan_sha256=str(plan["closed_record_sha256"]),
+        completed_at_utc="2020-01-01T00:00:00Z",
+        check_evidence_sha256={
+            check_id: _digest(f"preflight:{check_id}")
+            for check_id in GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS
+        },
+    )
+    path.write_text(
+        canonical_gpu_qualification_json(record) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_ledger(path: Path, ledger: ledger_api.DatabricksClusterHourLedger) -> None:
+    path.write_text(
+        json.dumps(
+            ledger_api.databricks_cluster_hour_ledger_to_record(ledger),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _copy_opening_ledger(
+    destination: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retained = ledger_api.read_databricks_cluster_hour_ledger_json(
+        _RETAINED_LEDGER_PATH
+    )
+    assert ledger_api.databricks_ledger_prefix(retained) == (
+        GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    )
+    destination.write_bytes(_RETAINED_LEDGER_PATH.read_bytes())
+
+    def frozen_path_sha256(_path: str | Path) -> str:
+        return PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256
+
+    # These modules intentionally retain imported aliases to the path-binding
+    # primitive.  Bind all package-owned call sites to the production identity
+    # while exercising an isolated copy of the retained ledger.
+    monkeypatch.setattr(
+        databricks_v1,
+        "databricks_ledger_path_sha256",
+        frozen_path_sha256,
+    )
+    monkeypatch.setattr(
+        databricks_v2,
+        "databricks_ledger_path_sha256",
+        frozen_path_sha256,
+    )
+    monkeypatch.setattr(
+        ledger_api,
+        "databricks_ledger_path_sha256",
+        frozen_path_sha256,
+    )
+    monkeypatch.setattr(
+        runs_api,
+        "databricks_ledger_path_sha256",
+        frozen_path_sha256,
+    )
+
+
+def _install_preflight_stub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[bool]:
+    freshness: list[bool] = []
+
+    def validate(
+        path: str | Path,
+        *,
+        plan_record: Mapping[str, Any],
+        submit_payloads: tuple[dict[str, Any], ...],
+        workspace_config: DatabricksWorkspaceConfig,
+        require_fresh_workspace: bool,
+    ) -> dict[str, Any]:
+        assert plan_record["record_type"].endswith(".v2")
+        assert len(submit_payloads) == 14
+        assert isinstance(workspace_config, DatabricksWorkspaceConfig)
+        freshness.append(require_fresh_workspace)
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "validate_gpu_qualification_local_preflight_bundle_v2",
+        validate,
+    )
+    return freshness
+
+
+class _PackageOwnedCloud:
+    def __init__(
+        self,
+        *,
+        config: DatabricksWorkspaceConfig,
+        plan: Mapping[str, Any],
+    ) -> None:
+        self.config = config
+        self.attempt_ids = tuple(
+            databricks_v1.gpu_qualification_reservation_attempt_id(
+                str(plan["closed_record_sha256"]),
+                str(job["job_id"]),
+            )
+            for job in plan["cloud_qualification"]["jobs"]
+        )
+        self.post_attempt_ids: list[str] = []
+        self.resume_attempt_ids: list[str] = []
+        self.post_payloads: list[dict[str, Any]] = []
+
+    def _run_id(self, attempt_id: str) -> int:
+        return 900_000 + self.attempt_ids.index(attempt_id)
+
+    def submit(
+        self,
+        config: DatabricksWorkspaceConfig,
+        payload: Mapping[str, Any],
+        *,
+        ledger_path: str | Path,
+        attempt_id: str,
+        batch_authorization: Any,
+    ) -> dict[str, Any]:
+        assert config is self.config
+        assert attempt_id in batch_authorization.attempt_ids
+        assert batch_authorization.attempt_ids == self.attempt_ids
+        self.post_attempt_ids.append(attempt_id)
+        self.post_payloads.append(deepcopy(dict(payload)))
+        response = {"run_id": self._run_id(attempt_id)}
+        ledger_api.record_databricks_run_submission_receipt_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            submit_response=response,
+        )
+        return response
+
+    def resume(
+        self,
+        config: DatabricksWorkspaceConfig,
+        payload: Mapping[str, Any],
+        *,
+        ledger_path: str | Path,
+        attempt_id: str,
+        batch_authorization: Any,
+    ) -> dict[str, Any]:
+        self.resume_attempt_ids.append(attempt_id)
+        ledger = ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path)
+        existing = next(
+            (
+                receipt
+                for receipt in ledger.submission_receipts
+                if receipt.attempt_id == attempt_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return {"run_id": existing.run_id}
+        return self.submit(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=batch_authorization,
+        )
+
+
+@dataclass(slots=True)
+class _Case:
+    config: DatabricksWorkspaceConfig
+    plan: dict[str, Any]
+    artifact_uris: dict[str, str]
+    ledger_path: Path
+    receipt_root: Path
+    preflight_path: Path
+    preflight_freshness: list[bool]
+    cloud: _PackageOwnedCloud
+
+    def call_kwargs(self) -> dict[str, Any]:
+        return {
+            "plan_record": self.plan,
+            "single_user_name": _SINGLE_USER_NAME,
+            "artifact_uris": self.artifact_uris,
+            "output_root": _OUTPUT_ROOT,
+            "ledger_path": self.ledger_path,
+            "submit_receipt_root": self.receipt_root,
+            "local_preflight_evidence_path": self.preflight_path,
+        }
+
+
+def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Case:
+    ledger_path = tmp_path / "cluster-hours.json"
+    _copy_opening_ledger(ledger_path, monkeypatch)
+    plan = _plan()
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example",
+        "secret-token",
+    )
+    cloud = _PackageOwnedCloud(config=config, plan=plan)
+    monkeypatch.setattr(
+        databricks_v2,
+        "submit_pre_reserved_databricks_run",
+        cloud.submit,
+    )
+    monkeypatch.setattr(
+        databricks_v2,
+        "resume_pre_reserved_databricks_run",
+        cloud.resume,
+    )
+    return _Case(
+        config=config,
+        plan=plan,
+        artifact_uris=_artifact_uris(),
+        ledger_path=ledger_path,
+        receipt_root=tmp_path / "submit-receipts-v2",
+        preflight_path=_write_preflight(plan, tmp_path / "preflight-v2.json"),
+        preflight_freshness=_install_preflight_stub(monkeypatch),
+        cloud=cloud,
+    )
+
+
+def _json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return value
+
+
+def _root_bytes(root: Path) -> dict[str, bytes]:
+    return {path.name: path.read_bytes() for path in sorted(root.iterdir())}
+
+
+def _root_snapshot(root: Path) -> tuple[Any, ...]:
+    root_stat = root.stat()
+    entries: list[Any] = []
+    for path in sorted(root.iterdir()):
+        observed = path.lstat()
+        payload: str | bytes
+        if path.is_symlink():
+            payload = str(path.readlink())
+        else:
+            payload = path.read_bytes()
+        entries.append(
+            (
+                path.name,
+                observed.st_mode,
+                observed.st_size,
+                observed.st_mtime_ns,
+                observed.st_ctime_ns,
+                payload,
+            )
+        )
+    return (
+        root_stat.st_ino,
+        root_stat.st_mode,
+        root_stat.st_size,
+        root_stat.st_mtime_ns,
+        root_stat.st_ctime_ns,
+        tuple(entries),
+    )
+
+
+def _stable_stat(path: Path) -> tuple[int, int, int, int, int]:
+    observed = path.stat()
+    return (
+        observed.st_ino,
+        observed.st_mode,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _assert_v2_seal(record: Mapping[str, Any]) -> None:
+    assert record["closed_record_sha256"] == (
+        databricks_v2._controller_record_digest_v2(record)
+    )
+    with pytest.raises(ValueError, match="closed_record_sha256 mismatch"):
+        databricks_v1._require_closed_record_digest(record, "v2 record")
+
+
+def _planned_job_ids(plan: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(str(job["job_id"]) for job in plan["cloud_qualification"]["jobs"])
+
+
+def test_v2_submit_and_resume_signatures_own_payload_transport_and_clock() -> None:
+    expected = (
+        "config",
+        "plan_record",
+        "single_user_name",
+        "artifact_uris",
+        "output_root",
+        "ledger_path",
+        "submit_receipt_root",
+        "local_preflight_evidence_path",
+    )
+    for function in (
+        databricks_v2.submit_gpu_qualification_jobs_v2,
+        databricks_v2.resume_gpu_qualification_job_submissions_v2,
+    ):
+        signature = inspect.signature(function)
+        assert tuple(signature.parameters) == expected
+        assert signature.parameters["config"].kind is (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD
+        )
+        assert all(
+            signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+            for name in expected[1:]
+        )
+        assert not {"submit_payloads", "opener", "now"}.intersection(
+            signature.parameters
+        )
+
+
+def test_fresh_v2_submit_reserves_and_receipts_exact_fourteen_with_v2_seals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    expected_payloads = databricks_v2.render_gpu_qualification_submit_payloads_v2(
+        case.plan,
+        single_user_name=_SINGLE_USER_NAME,
+        artifact_uris=case.artifact_uris,
+        output_root=_OUTPUT_ROOT,
+    )
+
+    receipts = databricks_v2.submit_gpu_qualification_jobs_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+
+    job_ids = _planned_job_ids(case.plan)
+    expected_names = {
+        "phase-lease-v2.json",
+        "batch-reserved-v2.json",
+        *(f"{job_id}.json" for job_id in job_ids),
+    }
+    assert len(receipts) == len(expected_payloads) == 14
+    assert case.preflight_freshness == [True]
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+    assert case.cloud.post_payloads == list(expected_payloads)
+    assert {path.name for path in case.receipt_root.iterdir()} == expected_names
+
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    assert len(ledger.reservations) == opening.reservation_count + 14
+    assert len(ledger.submission_receipts) == opening.submission_receipt_count + 14
+    assert len(ledger.terminal_actuals) == opening.terminal_actual_count
+    assert tuple(
+        item.attempt_id for item in ledger.reservations[opening.reservation_count :]
+    ) == case.cloud.attempt_ids
+    assert tuple(
+        item.workload_id for item in ledger.reservations[opening.reservation_count :]
+    ) == tuple(
+        f"gpuq-v2/{case.plan['closed_record_sha256'][:16]}/{job_id}"
+        for job_id in job_ids
+    )
+    assert tuple(
+        item.attempt_id
+        for item in ledger.submission_receipts[opening.submission_receipt_count :]
+    ) == case.cloud.attempt_ids
+
+    lease = _json(case.receipt_root / "phase-lease-v2.json")
+    marker = _json(case.receipt_root / "batch-reserved-v2.json")
+    assert lease["record_type"] == (
+        databricks_v2.GPU_QUALIFICATION_V2_PHASE_LEASE_RECORD_TYPE
+    )
+    assert marker["record_type"] == (
+        databricks_v2.GPU_QUALIFICATION_V2_BATCH_MARKER_RECORD_TYPE
+    )
+    assert lease["schema_version"] == marker["schema_version"] == 2
+    assert tuple(lease["artifact_sha256"]) == GPU_QUALIFICATION_V2_ARTIFACT_KEYS
+    assert lease["artifact_sha256"] == _pins().to_record()
+    assert lease["attempt_ids"] == list(case.cloud.attempt_ids)
+    assert len(lease["submit_payload_sha256"]) == 14
+    assert marker["phase_lease_record_sha256"] == lease["closed_record_sha256"]
+    expected_payload_closure = hashlib.sha256(
+        canonical_gpu_qualification_json(
+            {"payloads": list(expected_payloads)}
+        ).encode("utf-8")
+    ).hexdigest()
+    assert lease["local_preflight"]["submit_payloads_sha256"] == (
+        expected_payload_closure
+    )
+    _assert_v2_seal(lease)
+    _assert_v2_seal(marker)
+    for receipt, job_id in zip(receipts, job_ids, strict=True):
+        assert receipt == _json(case.receipt_root / f"{job_id}.json")
+        assert receipt["record_type"] == (
+            databricks_v2.GPU_QUALIFICATION_V2_SUBMIT_RECEIPT_RECORD_TYPE
+        )
+        assert receipt["schema_version"] == 2
+        assert "submitted_at_utc" not in receipt
+        _assert_v2_seal(receipt)
+
+
+def test_resume_recovers_exact_lease_only_crash_and_reserves_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    ledger_before = case.ledger_path.read_bytes()
+    original_writer = databricks_v1._write_canonical_exclusive
+
+    def crash_after_lease(record: Mapping[str, Any], path: str | Path) -> None:
+        original_writer(record, path)
+        if Path(path).name == "phase-lease-v2.json":
+            raise RuntimeError("simulated hard stop after the v2 lease")
+
+    monkeypatch.setattr(
+        databricks_v1,
+        "_write_canonical_exclusive",
+        crash_after_lease,
+    )
+    with pytest.raises(RuntimeError, match="hard stop after the v2 lease"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert {path.name for path in case.receipt_root.iterdir()} == {
+        "phase-lease-v2.json"
+    }
+    assert case.cloud.post_attempt_ids == []
+
+    monkeypatch.setattr(
+        databricks_v1,
+        "_write_canonical_exclusive",
+        original_writer,
+    )
+    receipts = databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    assert len(receipts) == 14
+    assert len(ledger.reservations) == opening.reservation_count + 14
+    assert len(ledger.submission_receipts) == opening.submission_receipt_count + 14
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+    assert case.cloud.resume_attempt_ids == list(case.cloud.attempt_ids)
+    assert case.preflight_freshness == [True, False]
+
+
+def _interrupt_after_sixth_ledger_receipt(
+    case: _Case,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
+    original_recorder = databricks_v2.record_databricks_run_submission_receipt_json
+    calls = 0
+
+    def interrupt(
+        ledger_path: str | Path,
+        *,
+        attempt_id: str,
+        submit_response: Mapping[str, Any],
+    ) -> ledger_api.DatabricksClusterHourLedger:
+        nonlocal calls
+        calls += 1
+        if calls == 6:
+            raise RuntimeError("simulated stop after five controller receipts")
+        return original_recorder(
+            ledger_path,
+            attempt_id=attempt_id,
+            submit_response=submit_response,
+        )
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "record_databricks_run_submission_receipt_json",
+        interrupt,
+    )
+    with pytest.raises(RuntimeError, match="five controller receipts"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    monkeypatch.setattr(
+        databricks_v2,
+        "record_databricks_run_submission_receipt_json",
+        original_recorder,
+    )
+    assert calls == 6
+    return original_recorder
+
+
+def test_resume_after_five_posts_is_canonical_and_second_resume_is_byte_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    _interrupt_after_sixth_ledger_receipt(case, monkeypatch)
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    interrupted = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    job_ids = _planned_job_ids(case.plan)
+    assert len(interrupted.reservations) == opening.reservation_count + 14
+    assert len(interrupted.submission_receipts) == opening.submission_receipt_count + 6
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids[:6])
+    assert {path.name for path in case.receipt_root.iterdir()} == {
+        "phase-lease-v2.json",
+        "batch-reserved-v2.json",
+        *(f"{job_id}.json" for job_id in job_ids[:5]),
+        f"{job_ids[5]}.post-intent-v2",
+    }
+    intent = _json(case.receipt_root / f"{job_ids[5]}.post-intent-v2")
+    assert intent["record_type"] == (
+        databricks_v2.GPU_QUALIFICATION_V2_POST_INTENT_RECORD_TYPE
+    )
+    assert intent["schema_version"] == 2
+    _assert_v2_seal(intent)
+
+    receipts = databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+    assert len(receipts) == 14
+    assert case.cloud.resume_attempt_ids == list(case.cloud.attempt_ids[5:])
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+    assert len(set(case.cloud.post_attempt_ids)) == 14
+    final = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(final.submission_receipts) == opening.submission_receipt_count + 14
+
+    ledger_bytes = case.ledger_path.read_bytes()
+    ledger_stat = _stable_stat(case.ledger_path)
+    root_bytes = _root_bytes(case.receipt_root)
+    root_stats = {
+        path.name: _stable_stat(path) for path in case.receipt_root.iterdir()
+    }
+    resume_calls_before = list(case.cloud.resume_attempt_ids)
+
+    def forbidden_resume(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        pytest.fail("a completed v2 phase must not invoke cloud submission")
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "resume_pre_reserved_databricks_run",
+        forbidden_resume,
+    )
+    replayed = databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+    assert replayed == receipts
+    assert case.cloud.resume_attempt_ids == resume_calls_before
+    assert case.ledger_path.read_bytes() == ledger_bytes
+    assert _stable_stat(case.ledger_path) == ledger_stat
+    assert _root_bytes(case.receipt_root) == root_bytes
+    assert {
+        path.name: _stable_stat(path) for path in case.receipt_root.iterdir()
+    } == root_stats
+    assert case.preflight_freshness == [True, False, False]
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["path", "prefix", "plan", "preflight", "cross-v1-plan"],
+)
+def test_v2_authority_tamper_rejects_without_ledger_receipt_or_cloud_write(
+    tamper: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    plan: Mapping[str, Any] = case.plan
+    if tamper == "path":
+        monkeypatch.setattr(
+            databricks_v2,
+            "databricks_ledger_path_sha256",
+            lambda _path: "f" * 64,
+        )
+    elif tamper == "prefix":
+        ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+        _write_ledger(
+            case.ledger_path,
+            replace(ledger, terminal_actuals=ledger.terminal_actuals[:-1]),
+        )
+    elif tamper == "plan":
+        changed = deepcopy(case.plan)
+        changed["cloud_qualification"]["max_retries"] = 1
+        changed["closed_record_sha256"] = qualification_v2._closed_record_sha256(
+            changed
+        )
+        plan = changed
+    elif tamper == "preflight":
+        changed = _json(case.preflight_path)
+        changed["plan_sha256"] = "f" * 64
+        changed["closed_record_sha256"] = qualification_v2._closed_record_sha256(
+            changed
+        )
+        case.preflight_path.write_text(
+            canonical_gpu_qualification_json(changed) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        plan = qualification_v1.build_gpu_qualification_plan(
+            campaign_id=PUBLICATION_CAMPAIGN_ID,
+            campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+            campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+            campaign_opening_terminal_gpu_hours=(
+                PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            ),
+            artifact_pins=_pins().v1_projection(),
+        )
+
+    ledger_before = case.ledger_path.read_bytes()
+    with pytest.raises((TypeError, ValueError)):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **{**case.call_kwargs(), "plan_record": plan},
+        )
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert case.cloud.post_attempt_ids == []
+    assert not case.receipt_root.exists()
+
+
+def test_resume_cross_v1_phase_record_rejects_without_any_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    original_writer = databricks_v1._write_canonical_exclusive
+
+    def crash_after_lease(record: Mapping[str, Any], path: str | Path) -> None:
+        original_writer(record, path)
+        if Path(path).name == "phase-lease-v2.json":
+            raise RuntimeError("lease-only fixture")
+
+    monkeypatch.setattr(
+        databricks_v1,
+        "_write_canonical_exclusive",
+        crash_after_lease,
+    )
+    with pytest.raises(RuntimeError, match="lease-only fixture"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    monkeypatch.setattr(
+        databricks_v1,
+        "_write_canonical_exclusive",
+        original_writer,
+    )
+    lease_path = case.receipt_root / "phase-lease-v2.json"
+    lease = _json(lease_path)
+    lease["record_type"] = databricks_v1._QUALIFICATION_PHASE_LEASE_RECORD_TYPE
+    databricks_v1._seal_record(lease)
+    lease_path.write_text(
+        canonical_gpu_qualification_json(lease) + "\n",
+        encoding="utf-8",
+    )
+    ledger_before = case.ledger_path.read_bytes()
+    root_before = _root_bytes(case.receipt_root)
+
+    with pytest.raises(ValueError, match="phase lease differs"):
+        databricks_v2.resume_gpu_qualification_job_submissions_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _root_bytes(case.receipt_root) == root_before
+    assert case.cloud.post_attempt_ids == []
+    assert case.cloud.resume_attempt_ids == []
+
+
+def test_resume_rejects_noncanonical_batch_receipt_prefix_without_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resequenced post-batch receipt slice must never be normalized by resume."""
+
+    case = _case(tmp_path, monkeypatch)
+    _interrupt_after_sixth_ledger_receipt(case, monkeypatch)
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    receipt_start = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.submission_receipt_count
+    receipts = list(ledger.submission_receipts)
+    receipts[receipt_start], receipts[receipt_start + 1] = (
+        receipts[receipt_start + 1],
+        receipts[receipt_start],
+    )
+    _write_ledger(
+        case.ledger_path,
+        replace(ledger, submission_receipts=tuple(receipts)),
+    )
+    ledger_before = case.ledger_path.read_bytes()
+    root_before = _root_bytes(case.receipt_root)
+
+    def forbidden_resume(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        pytest.fail("noncanonical ledger receipt order reached cloud recovery")
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "resume_pre_reserved_databricks_run",
+        forbidden_resume,
+    )
+    with pytest.raises(ValueError, match="receipt"):
+        databricks_v2.resume_gpu_qualification_job_submissions_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _root_bytes(case.receipt_root) == root_before
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "extra",
+        "future-receipt",
+        "missing-prefix-receipt",
+        "missing-marker",
+        "multiple-intents",
+        "wrong-receipt-semantics",
+        "wrong-intent-index",
+        "wrong-intent-semantics",
+        "symlink",
+    ),
+)
+def test_resume_rejects_noncanonical_partial_root_before_any_write(
+    tamper: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    _interrupt_after_sixth_ledger_receipt(case, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    current_intent = case.receipt_root / f"{job_ids[5]}.post-intent-v2"
+    if tamper == "extra":
+        (case.receipt_root / "unexpected.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+    elif tamper == "future-receipt":
+        (case.receipt_root / f"{job_ids[8]}.json").write_bytes(
+            (case.receipt_root / f"{job_ids[0]}.json").read_bytes()
+        )
+    elif tamper == "missing-prefix-receipt":
+        (case.receipt_root / f"{job_ids[2]}.json").unlink()
+    elif tamper == "missing-marker":
+        (case.receipt_root / "batch-reserved-v2.json").unlink()
+    elif tamper == "multiple-intents":
+        (case.receipt_root / f"{job_ids[6]}.post-intent-v2").write_bytes(
+            current_intent.read_bytes()
+        )
+    elif tamper == "wrong-receipt-semantics":
+        receipt_path = case.receipt_root / f"{job_ids[0]}.json"
+        receipt = _json(receipt_path)
+        receipt["output_json"] = "dbfs:/Volumes/forged/output.json"
+        receipt["closed_record_sha256"] = ""
+        databricks_v2._seal_controller_record_v2(receipt)
+        receipt_path.write_text(
+            canonical_gpu_qualification_json(receipt) + "\n",
+            encoding="utf-8",
+        )
+    elif tamper == "wrong-intent-index":
+        current_intent.rename(
+            case.receipt_root / f"{job_ids[7]}.post-intent-v2"
+        )
+    elif tamper == "wrong-intent-semantics":
+        intent = _json(current_intent)
+        intent["state"] = "forged-but-resealed"
+        intent["closed_record_sha256"] = ""
+        databricks_v2._seal_controller_record_v2(intent)
+        current_intent.write_text(
+            canonical_gpu_qualification_json(intent) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        (case.receipt_root / "unexpected-link").symlink_to(
+            "phase-lease-v2.json"
+        )
+
+    ledger_before = case.ledger_path.read_bytes()
+    ledger_stat = _stable_stat(case.ledger_path)
+    root_before = _root_snapshot(case.receipt_root)
+    post_calls = list(case.cloud.post_attempt_ids)
+    resume_calls = list(case.cloud.resume_attempt_ids)
+
+    def forbidden_resume(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        pytest.fail("noncanonical v2 evidence reached cloud recovery")
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "resume_pre_reserved_databricks_run",
+        forbidden_resume,
+    )
+    with pytest.raises(ValueError):
+        databricks_v2.resume_gpu_qualification_job_submissions_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _stable_stat(case.ledger_path) == ledger_stat
+    assert _root_snapshot(case.receipt_root) == root_before
+    assert case.cloud.post_attempt_ids == post_calls
+    assert case.cloud.resume_attempt_ids == resume_calls

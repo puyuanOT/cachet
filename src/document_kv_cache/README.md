@@ -196,6 +196,9 @@ return as a production dependency.
   bounded outputs, and timestamps; submit, resume, collect, and launch replay
   each rerun those checks locally before any ledger, evidence-root, or
   Databricks HTTP effect.
+- `publication_freeze_v2.py` independently closes the eight-artifact patched-
+  FlashInfer source/runtime authority and runs its exact eight-check,
+  authenticated qualification preflight without reinterpreting v1 evidence.
 - `publication_handoff_artifacts.py` closes portable generated-KV bundles and
   stages their verified contents onto node-local storage without regenerating
   artifacts inside timed serving jobs.
