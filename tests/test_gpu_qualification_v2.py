@@ -79,10 +79,10 @@ EXPECTED_JOB_IDS = (
     "aws-g5-a10g-auto-backend-diagnostic",
 )
 EXPECTED_PLAN_SHA256 = (
-    "ee3633398b77e9181e7dfa21bdb867c64f8c82bedf2ffd4c0ce8508646b31479"
+    "c29d0d1c7391ff7aaf6490a7e44b9fbbfa9922e0e2b6c15bd66d3c4c7d1bbfe6"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
-    "9cbd020655cd389d020d3b3528dbb6f3f1473cf971a93887b2b6d83e10d50493"
+    "8b504af3a90b5e20a738403ba59fa1c05b8391d339539e81751eadd26c897415"
 )
 EXPECTED_VLLM_MEMBER_SHA256 = {
     "vllm/model_executor/layers/attention/attention.py": (

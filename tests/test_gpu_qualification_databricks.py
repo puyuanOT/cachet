@@ -225,26 +225,44 @@ def _current_live_and_prior_receipt_ledgers() -> tuple[
 ]:
     live_bytes = _RETAINED_LEDGER_PATH.read_bytes()
     live_stat = _RETAINED_LEDGER_PATH.stat()
-    assert len(live_bytes) == 220_426
+    assert len(live_bytes) == 237_908
     assert hashlib.sha256(live_bytes).hexdigest() == (
-        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d"
+        "627f1da7f9182aca4386b1d2ca96d80634576ec0444e8aa80ed855c452457a14"
     )
     live = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
     assert (
         len(live.reservations),
         len(live.submission_receipts),
         len(live.terminal_actuals),
-    ) == (236, 98, 236)
+    ) == (250, 112, 250)
     assert live.active_reserved_task_count == 0
     assert live.active_reserved_cluster_hours == 0
-    assert live.terminal_actual_cluster_hours == 71.39012833333337
-    assert live.accounted_cluster_hours == 71.39012833333337
-    assert live.remaining_cluster_hours == 952.6098716666667
+    assert live.terminal_actual_cluster_hours == 73.51006833333338
+    assert live.accounted_cluster_hours == 73.51006833333338
+    assert live.remaining_cluster_hours == 950.4899316666666
     assert databricks_ledger_prefix(live).prefix_sha256 == (
+        "3cb391f58c022cbe08acb2423cef874b8d3496a053fc7a68c3a69e00fcec0bac"
+    )
+
+    historical_opening = replace(
+        live,
+        reservations=live.reservations[:236],
+        submission_receipts=live.submission_receipts[:98],
+        terminal_actuals=live.terminal_actuals[:236],
+    )
+    historical_bytes = _canonical_ledger_bytes(historical_opening)
+    assert len(historical_bytes) == 220_426
+    assert hashlib.sha256(historical_bytes).hexdigest() == (
+        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d"
+    )
+    assert databricks_ledger_prefix(historical_opening).prefix_sha256 == (
         "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
     )
 
-    prior_receipt = replace(live, terminal_actuals=live.terminal_actuals[:222])
+    prior_receipt = replace(
+        historical_opening,
+        terminal_actuals=historical_opening.terminal_actuals[:222],
+    )
     prior_bytes = _canonical_ledger_bytes(prior_receipt)
     assert len(prior_bytes) == 213_024
     assert hashlib.sha256(prior_bytes).hexdigest() == (

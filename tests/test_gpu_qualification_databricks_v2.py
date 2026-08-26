@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import types
 from typing import Any
 
@@ -146,21 +147,21 @@ def _payloads() -> tuple[dict[str, Any], ...]:
 
 def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256 == (
-        "bb72afee845f85a9c4069931a98f1b4136be13edc88da4d44b994334612c85ea"
+        "a90174a693f1d77d31746611d0f68542c82fe109ff83fbfe896f1b98039b8812"
     )
-    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 17524
+    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 22240
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "48347f4329386d6f676450a047d41908cf7efec134af64fab964338f275d2de3"
+        "48943881882808518ac595bd9640d573f0b9336f20b149c5577ad20de441b531"
     )
-    assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15392
+    assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15393
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
     assert len(payload_bytes) == 121627
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "d97d2ff506c3cc185dff9402e652bc294c67e4be30375106209f52b2714be3ea"
+        "b1683a6fe936d84a4104748dda59338ec9e56110c001d23610af2382ae5a3914"
     )
 
 
@@ -433,11 +434,62 @@ def _bootstrap_case(
     return namespace, argv, paths
 
 
+def _valid_runner_handoff(
+    namespace: dict[str, Any],
+    argv: list[str],
+    *,
+    cluster_id: str = "Cluster-ID_Exact.Case",
+    sources: tuple[str, ...] = (
+        "DATABRICKS_CLUSTER_ID",
+        "spark.databricks.clusterUsageTags.clusterId",
+    ),
+) -> str:
+    return namespace["_sealed_handoff"](
+        argv,
+        cluster_id=cluster_id,
+        sources=sources,
+        runner_sha256=databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256,
+    )
+
+
+def _reseal_handoff(record: dict[str, Any]) -> str:
+    record["closed_record_sha256"] = ""
+    record["closed_record_sha256"] = hashlib.sha256(
+        databricks_v2._canonical_bootstrap_json_v2(record).encode("utf-8")
+    ).hexdigest()
+    return databricks_v2._canonical_bootstrap_json_v2(record)
+
+
+def _set_sanitized_child_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PYTHONNOUSERSITE", "1")
+    monkeypatch.setenv("PYTHONSAFEPATH", "1")
+
+
+def test_v2_bootstrap_runner_and_emitted_child_stub_compile_exactly() -> None:
+    namespace: dict[str, Any] = {"__name__": "bootstrap_compile_test"}
+    runner_code = compile(
+        databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT.encode("utf-8"),
+        "gpu-qualification-v2-bootstrap.py",
+        "exec",
+    )
+    exec(runner_code, namespace)
+    compile(namespace["_CHILD_STUB"], "gpu-qualification-v2-child.py", "exec")
+    assert namespace["_CHILD_STUB"].index("os.environ.pop") < namespace[
+        "_CHILD_STUB"
+    ].index("from document_kv_cache")
+
+
 def test_v2_bootstrap_validates_transport_and_snapshots_package_before_install(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     namespace, argv, paths = _bootstrap_case(tmp_path)
+    namespace["_spark_cluster_id"] = lambda: None
+    base_env = {"DATABRICKS_CLUSTER_ID": "Cluster-ID_Exact.Case"}
     source_index = next(
         index
         for index, value in enumerate(argv)
@@ -458,7 +510,10 @@ def test_v2_bootstrap_validates_transport_and_snapshots_package_before_install(
         return types.SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", run)
-    assert namespace["_bootstrap"](argv) == argv
+    remaining, handoff, subprocess_env = namespace["_bootstrap"](argv, base_env)
+    assert remaining == argv
+    assert json.loads(handoff)["cluster_id"] == "Cluster-ID_Exact.Case"
+    assert subprocess_env["DATABRICKS_CLUSTER_ID"] == "Cluster-ID_Exact.Case"
     assert len(calls) == 1
     assert calls[0][1:4] == ["-P", "-m", "pip"]
     assert "--no-deps" in calls[0]
@@ -467,10 +522,21 @@ def test_v2_bootstrap_validates_transport_and_snapshots_package_before_install(
     ]
     assert not Path(calls[0][-1]).exists()
 
+    namespace["_spark_cluster_id"] = lambda: "Cluster-ID_Exact.Case"
+    remaining, spark_only_handoff, spark_only_env = namespace["_bootstrap"](
+        argv, {}
+    )
+    assert remaining == argv
+    assert json.loads(spark_only_handoff)["sources"] == [
+        "spark.databricks.clusterUsageTags.clusterId"
+    ]
+    assert "DATABRICKS_CLUSTER_ID" not in spark_only_env
+    assert len(calls) == 2
+
     paths["cachet_source_tree_sha256"].write_bytes(b"tampered")
     with pytest.raises(ValueError, match="cachet_source_tree_sha256 SHA-256 mismatch"):
-        namespace["_bootstrap"](argv)
-    assert len(calls) == 1
+        namespace["_bootstrap"](argv, base_env)
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -492,6 +558,7 @@ def test_v2_bootstrap_rejects_transport_tamper_before_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     namespace, argv, paths = _bootstrap_case(tmp_path)
+    namespace["_spark_cluster_id"] = lambda: None
     tampered = list(argv)
     if mutation == "missing":
         tampered = tampered[:-1]
@@ -529,8 +596,374 @@ def test_v2_bootstrap_rejects_transport_tamper_before_install(
         lambda command, **_kwargs: calls.append(command),
     )
     with pytest.raises(ValueError):
-        namespace["_bootstrap"](tampered)
+        namespace["_bootstrap"](
+            tampered,
+            {"DATABRICKS_CLUSTER_ID": "Cluster-ID_Exact.Case"},
+        )
     assert calls == []
+
+
+def test_v2_bootstrap_handoff_uses_one_snapshot_and_isolates_private_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace, argv, _paths = _bootstrap_case(tmp_path)
+    cluster_id = "Cluster-ID_Exact.Case"
+    base_env = {
+        "DATABRICKS_CLUSTER_ID": cluster_id,
+        "DB_CLUSTER_ID": cluster_id,
+        "KEEP_FROM_BASE": "original",
+        "PIP_INDEX_URL": "https://example.invalid/simple",
+        "PYTHONPATH": "/tmp/untrusted",
+    }
+    spark_calls: list[str] = []
+
+    def spark_cluster_id() -> str:
+        spark_calls.append("spark")
+        monkeypatch.setenv("DATABRICKS_CLUSTER_ID", "mutated-after-snapshot")
+        monkeypatch.setenv("KEEP_FROM_BASE", "mutated-after-snapshot")
+        return cluster_id
+
+    namespace["_spark_cluster_id"] = spark_cluster_id
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(command: list[str], **kwargs: Any) -> types.SimpleNamespace:
+        calls.append((list(command), dict(kwargs)))
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert namespace["_run"](argv, base_env) == 0
+    assert spark_calls == ["spark"]
+    assert len(calls) == 2
+    pip_command, pip_kwargs = calls[0]
+    child_command, child_kwargs = calls[1]
+    assert pip_command[1:4] == ["-P", "-m", "pip"]
+    assert child_command[1:3] == ["-P", "-c"]
+    assert child_command[3].index("os.environ.pop") < child_command[3].index(
+        "from document_kv_cache"
+    )
+    private_name = namespace["_HANDOFF_ENV"]
+    pip_env = pip_kwargs["env"]
+    child_env = child_kwargs["env"]
+    assert private_name not in pip_env
+    raw_handoff = child_env[private_name]
+    assert {key: value for key, value in child_env.items() if key != private_name} == (
+        pip_env
+    )
+    assert pip_env["DATABRICKS_CLUSTER_ID"] == cluster_id
+    assert pip_env["KEEP_FROM_BASE"] == "original"
+    assert "PIP_INDEX_URL" not in pip_env
+    assert "PYTHONPATH" not in pip_env
+    assert pip_env["PIP_CONFIG_FILE"] == os.devnull
+    handoff = json.loads(raw_handoff)
+    assert handoff["cluster_id"] == cluster_id
+    assert handoff["sources"] == [
+        "DATABRICKS_CLUSTER_ID",
+        "DB_CLUSTER_ID",
+        "spark.databricks.clusterUsageTags.clusterId",
+    ]
+    assert handoff["spark_checked"] is True
+    assert handoff["runner_sha256"] == (
+        databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256
+    )
+    assert handoff["argv_sha256"] == hashlib.sha256(
+        namespace["_canonical_json"](argv).encode("utf-8")
+    ).hexdigest()
+    assert len(raw_handoff.encode("utf-8")) <= namespace["_HANDOFF_MAX_BYTES"]
+    with pytest.raises(ValueError, match="handoff exceeds its size cap"):
+        namespace["_sealed_handoff"](
+            argv,
+            cluster_id="x" * (namespace["_HANDOFF_MAX_BYTES"] + 1),
+            sources=("DATABRICKS_CLUSTER_ID",),
+            runner_sha256=(
+                databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256
+            ),
+        )
+    assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT.count(
+        "dict(os.environ)"
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "inherited-private-empty",
+        "inherited-private-sealed",
+        "missing",
+        "environment-conflict",
+        "spark-conflict",
+        "spark-failure",
+        "invalid-environment",
+        "invalid-spark",
+        "self-tamper",
+    ],
+)
+def test_v2_bootstrap_cluster_identity_fails_before_subprocess(
+    case: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace, argv, paths = _bootstrap_case(tmp_path)
+    cluster_id = "Cluster-ID_Exact.Case"
+    base_env: dict[str, str] = {"DATABRICKS_CLUSTER_ID": cluster_id}
+    spark_calls: list[str] = []
+
+    def spark_value(value: object) -> object:
+        spark_calls.append("spark")
+        return value
+
+    namespace["_spark_cluster_id"] = lambda: spark_value(None)
+    if case == "inherited-private-empty":
+        base_env[namespace["_HANDOFF_ENV"]] = ""
+    elif case == "inherited-private-sealed":
+        base_env[namespace["_HANDOFF_ENV"]] = _valid_runner_handoff(
+            namespace, argv
+        )
+    elif case == "missing":
+        base_env = {}
+    elif case == "environment-conflict":
+        base_env["DB_CLUSTER_ID"] = "different-cluster"
+    elif case == "spark-conflict":
+        namespace["_spark_cluster_id"] = lambda: spark_value("different-cluster")
+    elif case == "spark-failure":
+
+        def fail_spark() -> object:
+            spark_calls.append("spark")
+            raise RuntimeError("forced Spark failure")
+
+        namespace["_spark_cluster_id"] = fail_spark
+    elif case == "invalid-environment":
+        base_env = {"DB_CLUSTER_ID": " invalid"}
+    elif case == "invalid-spark":
+        base_env = {}
+        namespace["_spark_cluster_id"] = lambda: spark_value(True)
+    elif case == "self-tamper":
+        paths["runner_sha256"].write_bytes(
+            paths["runner_sha256"].read_bytes() + b"\n# tampered\n"
+        )
+    subprocess_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess_calls.append(list(command)),
+    )
+
+    with pytest.raises((ValueError, RuntimeError)):
+        namespace["_bootstrap"](argv, base_env)
+    assert subprocess_calls == []
+    if case.startswith("inherited-private"):
+        assert spark_calls == []
+
+
+def test_v2_private_handoff_cross_codec_consumes_without_spark(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace, argv, _paths = _bootstrap_case(tmp_path)
+    cluster_id = "Cluster-ID_Exact.Case"
+    raw_handoff = _valid_runner_handoff(namespace, argv, cluster_id=cluster_id)
+    private_name = databricks_v2._V2_BOOTSTRAP_HANDOFF_ENV
+    for name in (*databricks_v2._V2_CLUSTER_ID_ENV_NAMES, private_name):
+        monkeypatch.delenv(name, raising=False)
+    _set_sanitized_child_environment(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_CLUSTER_ID", cluster_id)
+    monkeypatch.setenv(private_name, raw_handoff)
+    monkeypatch.setattr(sys, "argv", ["gpu-qualification-bootstrap-v2.py", *argv])
+    observed: list[dict[str, Any]] = []
+
+    def execute(**kwargs: Any) -> None:
+        assert private_name not in os.environ
+        observed.append(kwargs)
+
+    def unexpected_spark() -> str:
+        raise AssertionError("private v2 handoff must not call the v1 Spark resolver")
+
+    monkeypatch.setattr(databricks_v2, "execute_gpu_qualification_job_v2", execute)
+    monkeypatch.setattr(databricks_v1, "_cloud_cluster_id", unexpected_spark)
+
+    with pytest.raises(SystemExit) as completed:
+        exec(namespace["_CHILD_STUB"], {"__name__": "__main__"})
+    assert completed.value.code == 0
+    assert private_name not in os.environ
+    assert len(observed) == 1
+    assert observed[0]["cloud_cluster_id"] == cluster_id
+
+    public_calls: list[str] = []
+
+    def public_cluster_id() -> str:
+        public_calls.append("public")
+        return "public-cluster"
+
+    monkeypatch.setattr(databricks_v1, "_cloud_cluster_id", public_cluster_id)
+    assert databricks_v2.main(argv) == 0
+    assert public_calls == ["public"]
+    assert observed[-1]["cloud_cluster_id"] == "public-cluster"
+    assert tuple(inspect.signature(databricks_v2.main).parameters) == ("argv",)
+    assert "_main_from_bootstrap_handoff_v2" not in databricks_v2.__all__
+    assert databricks_v1.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256 == (
+        "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+    )
+
+
+@pytest.mark.parametrize("outcome", ["success", "malformed", "executor-failure"])
+def test_v2_private_handoff_direct_environment_is_always_consumed(
+    outcome: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace, argv, _paths = _bootstrap_case(tmp_path)
+    cluster_id = "Cluster-ID_Exact.Case"
+    private_name = databricks_v2._V2_BOOTSTRAP_HANDOFF_ENV
+    for name in (*databricks_v2._V2_CLUSTER_ID_ENV_NAMES, private_name):
+        monkeypatch.delenv(name, raising=False)
+    _set_sanitized_child_environment(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_CLUSTER_ID", cluster_id)
+    monkeypatch.setenv(
+        private_name,
+        "{" if outcome == "malformed" else _valid_runner_handoff(namespace, argv),
+    )
+    execute_calls: list[dict[str, Any]] = []
+
+    def execute(**kwargs: Any) -> None:
+        assert private_name not in os.environ
+        execute_calls.append(kwargs)
+        if outcome == "executor-failure":
+            raise RuntimeError("forced executor failure")
+
+    monkeypatch.setattr(databricks_v2, "execute_gpu_qualification_job_v2", execute)
+    monkeypatch.setattr(
+        databricks_v1,
+        "_cloud_cluster_id",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("private v2 handoff must not call Spark")
+        ),
+    )
+
+    if outcome == "success":
+        assert databricks_v2._main_from_bootstrap_handoff_v2(argv=argv) == 0
+        assert len(execute_calls) == 1
+    else:
+        with pytest.raises((ValueError, RuntimeError)):
+            databricks_v2._main_from_bootstrap_handoff_v2(argv=argv)
+        assert len(execute_calls) == (1 if outcome == "executor-failure" else 0)
+    assert private_name not in os.environ
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "noncanonical",
+        "duplicate-key",
+        "extra-key-resealed",
+        "bad-seal",
+        "argv-binding-resealed",
+        "runner-binding-resealed",
+        "cluster-binding-resealed",
+        "source-order-resealed",
+        "source-duplicate-resealed",
+        "source-unknown-resealed",
+        "spark-type-resealed",
+        "environment-added",
+        "environment-conflict",
+        "child-pythonpath",
+        "child-safety-flag",
+        "conflicting-inputs",
+        "argv-missing",
+        "argv-reordered-resealed",
+    ],
+)
+def test_v2_private_handoff_rejects_strict_or_resealed_tamper(
+    mutation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace, argv, _paths = _bootstrap_case(tmp_path)
+    cluster_id = "Cluster-ID_Exact.Case"
+    raw_handoff: object = _valid_runner_handoff(
+        namespace, argv, cluster_id=cluster_id
+    )
+    record = json.loads(str(raw_handoff))
+    candidate_argv = list(argv)
+    private_name = databricks_v2._V2_BOOTSTRAP_HANDOFF_ENV
+    for name in (*databricks_v2._V2_CLUSTER_ID_ENV_NAMES, private_name):
+        monkeypatch.delenv(name, raising=False)
+    _set_sanitized_child_environment(monkeypatch)
+    monkeypatch.setenv("DATABRICKS_CLUSTER_ID", cluster_id)
+    if mutation == "missing":
+        raw_handoff = None
+    elif mutation == "noncanonical":
+        raw_handoff = str(raw_handoff) + "\n"
+    elif mutation == "duplicate-key":
+        field = f'"argv_sha256":"{record["argv_sha256"]}"'
+        raw_handoff = str(raw_handoff).replace(field, f"{field},{field}", 1)
+    elif mutation == "extra-key-resealed":
+        record["extra"] = True
+        raw_handoff = _reseal_handoff(record)
+    elif mutation == "bad-seal":
+        record["closed_record_sha256"] = "0" * 64
+        raw_handoff = databricks_v2._canonical_bootstrap_json_v2(record)
+    elif mutation == "argv-binding-resealed":
+        record["argv_sha256"] = "0" * 64
+        raw_handoff = _reseal_handoff(record)
+    elif mutation == "runner-binding-resealed":
+        record["runner_sha256"] = "0" * 64
+        raw_handoff = _reseal_handoff(record)
+    elif mutation == "cluster-binding-resealed":
+        record["cluster_id"] = "different-cluster"
+        raw_handoff = _reseal_handoff(record)
+    elif mutation == "source-order-resealed":
+        record["sources"] = list(reversed(record["sources"]))
+        raw_handoff = _reseal_handoff(record)
+    elif mutation == "source-duplicate-resealed":
+        record["sources"].insert(0, "DATABRICKS_CLUSTER_ID")
+        raw_handoff = _reseal_handoff(record)
+    elif mutation == "source-unknown-resealed":
+        record["sources"].insert(1, "UNKNOWN_CLUSTER_SOURCE")
+        raw_handoff = _reseal_handoff(record)
+    elif mutation == "spark-type-resealed":
+        record["spark_checked"] = 1
+        raw_handoff = _reseal_handoff(record)
+    elif mutation == "environment-added":
+        monkeypatch.setenv("DB_CLUSTER_ID", cluster_id)
+    elif mutation == "environment-conflict":
+        monkeypatch.setenv("DATABRICKS_CLUSTER_ID", "different-cluster")
+    elif mutation == "child-pythonpath":
+        monkeypatch.setenv("PYTHONPATH", "/tmp/untrusted")
+    elif mutation == "child-safety-flag":
+        monkeypatch.setenv("PYTHONNOUSERSITE", "0")
+    elif mutation == "conflicting-inputs":
+        monkeypatch.setenv(private_name, str(raw_handoff))
+    elif mutation == "argv-missing":
+        candidate_argv.pop()
+    elif mutation == "argv-reordered-resealed":
+        candidate_argv[:4] = candidate_argv[2:4] + candidate_argv[:2]
+        record["argv_sha256"] = hashlib.sha256(
+            databricks_v2._canonical_bootstrap_json_v2(candidate_argv).encode("utf-8")
+        ).hexdigest()
+        raw_handoff = _reseal_handoff(record)
+    execute_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        databricks_v2,
+        "execute_gpu_qualification_job_v2",
+        lambda **kwargs: execute_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        databricks_v1,
+        "_cloud_cluster_id",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("private v2 handoff must not call Spark")
+        ),
+    )
+
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        databricks_v2._main_from_bootstrap_handoff_v2(
+            raw_handoff,
+            candidate_argv,
+        )
+    assert private_name not in os.environ
+    assert execute_calls == []
 
 
 def test_v2_bootstrap_writer_is_exclusive_and_transport_signature_is_narrow(

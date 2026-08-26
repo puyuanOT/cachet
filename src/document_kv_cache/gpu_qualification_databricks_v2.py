@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 from typing import Any, Final, Protocol, cast
 import zlib
 
@@ -72,6 +73,59 @@ _PLAN_ZLIB_LEVEL: Final = 9
 _PLAN_MAX_CANONICAL_BYTES: Final = 64 * 1024
 _PLAN_MAX_ENCODED_CHARS: Final = GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
 _DATABRICKS_RUN_ID_TEMPLATE: Final = "{{job.run_id}}"
+_V2_BOOTSTRAP_HANDOFF_ENV: Final = (
+    "_CACHET_GPU_QUALIFICATION_V2_BOOTSTRAP_HANDOFF"
+)
+_V2_BOOTSTRAP_HANDOFF_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_qualification_bootstrap_handoff.v2"
+)
+_V2_BOOTSTRAP_HANDOFF_SCHEMA_VERSION: Final = 2
+_V2_BOOTSTRAP_HANDOFF_MAX_BYTES: Final = 4096
+_V2_BOOTSTRAP_HANDOFF_MISSING: Final = object()
+_V2_CHILD_REQUIRED_ENV: Final = {
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONSAFEPATH": "1",
+}
+_V2_CHILD_FORBIDDEN_ENV: Final = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+)
+_V2_CLUSTER_ID_MAX_UTF8_BYTES: Final = 256
+_V2_CLUSTER_ID_ENV_NAMES: Final = (
+    "DATABRICKS_CLUSTER_ID",
+    "DB_CLUSTER_ID",
+)
+_V2_CLUSTER_ID_SPARK_CONF_KEY: Final = (
+    "spark.databricks.clusterUsageTags.clusterId"
+)
+_V2_CLUSTER_ID_SOURCE_ORDER: Final = (
+    *_V2_CLUSTER_ID_ENV_NAMES,
+    _V2_CLUSTER_ID_SPARK_CONF_KEY,
+)
+_V2_BOOTSTRAP_SINGLETON_OPTIONS: Final = (
+    "--plan-record-zlib-base64",
+    "--expected-plan-sha256",
+    "--job-id",
+    "--reservation-attempt-id",
+    "--cloud-run-id",
+    "--attempt-number",
+    "--retry-count",
+    "--output-json",
+    "--work-dir",
+)
+_V2_BOOTSTRAP_HANDOFF_KEYS: Final = frozenset(
+    {
+        "argv_sha256",
+        "closed_record_sha256",
+        "cluster_id",
+        "record_type",
+        "runner_sha256",
+        "schema_version",
+        "sources",
+        "spark_checked",
+    }
+)
 
 GPU_QUALIFICATION_V2_SUBMIT_RECEIPT_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_submit_receipt.v2"
@@ -146,6 +200,19 @@ _PLAN_JOB_COUNT = 14
 _LOCAL_WORK_ROOT = "/local_disk0/cachet-vllm-0271-qualification-v2"
 _OUTPUT_FILENAME = "gpu-job-result.json"
 _MAX_PACKAGE_WHEEL_BYTES = 256 * 1024 * 1024
+_HANDOFF_ENV = "_CACHET_GPU_QUALIFICATION_V2_BOOTSTRAP_HANDOFF"
+_HANDOFF_RECORD_TYPE = (
+    "cachet.vllm_0271_gpu_qualification_bootstrap_handoff.v2"
+)
+_HANDOFF_SCHEMA_VERSION = 2
+_HANDOFF_MAX_BYTES = 4096
+_CLUSTER_ID_MAX_UTF8_BYTES = 256
+_CLUSTER_ID_ENV_NAMES = (
+    "DATABRICKS_CLUSTER_ID",
+    "DB_CLUSTER_ID",
+)
+_CLUSTER_ID_SPARK_CONF_KEY = "spark.databricks.clusterUsageTags.clusterId"
+_CLUSTER_ID_SOURCE_ORDER = (*_CLUSTER_ID_ENV_NAMES, _CLUSTER_ID_SPARK_CONF_KEY)
 _FIXED_PINS = {
     "input_bundle_sha256": "7ff6cf6a1553c0e844853d21de9780c75211f1be8304754da72e9cbebbd164ec",
     "patched_flashinfer_wheel_sha256": "04e032c70234e8769f5ab7e787231c339a5b5230fca5f5b0b80f1a2a0ccad6ec",
@@ -492,8 +559,107 @@ def _sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def _pip_subprocess_environment() -> dict[str, str]:
-    env = dict(os.environ)
+def _validated_cluster_id(value: object, *, source: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"Databricks cluster identity from {source} is not a string")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            f"Databricks cluster identity from {source} is not valid UTF-8"
+        ) from exc
+    if (
+        not value
+        or value.strip() != value
+        or len(encoded) > _CLUSTER_ID_MAX_UTF8_BYTES
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError(
+            f"Databricks cluster identity from {source} is not canonical"
+        )
+    return value
+
+
+def _spark_cluster_id() -> object | None:
+    try:
+        from pyspark import SparkContext
+    except Exception as exc:
+        raise RuntimeError(
+            "Databricks cluster identity Spark runtime is unavailable"
+        ) from exc
+    try:
+        spark_conf = SparkContext.getOrCreate().getConf()
+        return spark_conf.get(_CLUSTER_ID_SPARK_CONF_KEY, None)
+    except Exception as exc:
+        raise RuntimeError(
+            "Databricks cluster identity Spark runtime lookup failed"
+        ) from exc
+
+
+def _resolve_cluster_id(
+    base_env: dict[str, str],
+) -> tuple[str, tuple[str, ...]]:
+    candidates = []
+    for name in _CLUSTER_ID_ENV_NAMES:
+        if name in base_env:
+            candidates.append(
+                (name, _validated_cluster_id(base_env[name], source=name))
+            )
+    spark_value = _spark_cluster_id()
+    if spark_value is not None:
+        candidates.append(
+            (
+                _CLUSTER_ID_SPARK_CONF_KEY,
+                _validated_cluster_id(
+                    spark_value,
+                    source=_CLUSTER_ID_SPARK_CONF_KEY,
+                ),
+            )
+        )
+    if not candidates:
+        raise RuntimeError("Databricks cluster identity is unavailable at runtime")
+    values = {value for _source, value in candidates}
+    if len(values) != 1:
+        raise RuntimeError("Databricks cluster identity sources are ambiguous")
+    return candidates[0][1], tuple(source for source, _value in candidates)
+
+
+def _argv_sha256(argv: list[str]) -> str:
+    return hashlib.sha256(_canonical_json(argv).encode("utf-8")).hexdigest()
+
+
+def _sealed_handoff(
+    argv: list[str],
+    *,
+    cluster_id: str,
+    sources: tuple[str, ...],
+    runner_sha256: str,
+) -> str:
+    if not sources or tuple(
+        source for source in _CLUSTER_ID_SOURCE_ORDER if source in sources
+    ) != sources:
+        raise ValueError("Databricks cluster identity source ordering differs")
+    record = {
+        "argv_sha256": _argv_sha256(argv),
+        "closed_record_sha256": "",
+        "cluster_id": cluster_id,
+        "record_type": _HANDOFF_RECORD_TYPE,
+        "runner_sha256": _required_sha256(runner_sha256, "runner handoff"),
+        "schema_version": _HANDOFF_SCHEMA_VERSION,
+        "sources": list(sources),
+        "spark_checked": True,
+    }
+    record["closed_record_sha256"] = hashlib.sha256(
+        _canonical_json(record).encode("utf-8")
+    ).hexdigest()
+    sealed = _canonical_json(record)
+    if len(sealed.encode("utf-8")) > _HANDOFF_MAX_BYTES:
+        raise ValueError("GPU qualification v2 bootstrap handoff exceeds its size cap")
+    return sealed
+
+
+def _subprocess_environment(base_env: dict[str, str]) -> dict[str, str]:
+    env = dict(base_env)
     for variable_name in tuple(env):
         if variable_name.upper().startswith("PIP_"):
             env.pop(variable_name)
@@ -511,7 +677,11 @@ def _pip_subprocess_environment() -> dict[str, str]:
     return env
 
 
-def _bootstrap(argv: list[str]) -> list[str]:
+def _bootstrap(
+    argv: list[str], base_env: dict[str, str]
+) -> tuple[list[str], str, dict[str, str]]:
+    if _HANDOFF_ENV in base_env:
+        raise ValueError("inherited GPU qualification v2 bootstrap handoff is forbidden")
     _values, paths, pins = _validate_transport(argv)
     input_bundle = paths["input_bundle_sha256"]
     if not os.path.isdir(input_bundle) or os.path.islink(input_bundle):
@@ -523,8 +693,17 @@ def _bootstrap(argv: list[str]) -> list[str]:
         if _sha256(path) != pins[key]:
             raise ValueError(f"v2 artifact {key} SHA-256 mismatch")
     runner_path = os.path.realpath(sys._getframe().f_code.co_filename)
-    if _sha256(runner_path) != pins["runner_sha256"]:
+    observed_runner_sha256 = _sha256(runner_path)
+    if observed_runner_sha256 != pins["runner_sha256"]:
         raise ValueError("GPU qualification v2 bootstrap runner SHA-256 mismatch")
+    cluster_id, sources = _resolve_cluster_id(base_env)
+    handoff = _sealed_handoff(
+        argv,
+        cluster_id=cluster_id,
+        sources=sources,
+        runner_sha256=observed_runner_sha256,
+    )
+    subprocess_env = _subprocess_environment(base_env)
     stage, package_snapshot = _snapshot_package_wheel(
         paths["package_wheel_sha256"], pins["package_wheel_sha256"]
     )
@@ -545,15 +724,24 @@ def _bootstrap(argv: list[str]) -> list[str]:
             ],
             check=True,
             cwd=stage,
-            env=_pip_subprocess_environment(),
+            env=dict(subprocess_env),
         )
     finally:
         shutil.rmtree(stage)
-    return argv
+    return argv, handoff, subprocess_env
 
 
-if __name__ == "__main__":
-    remaining = _bootstrap(sys.argv[1:])
+_CHILD_STUB = (
+    "import os\\n"
+    f"_cachet_handoff = os.environ.pop({_HANDOFF_ENV!r}, None)\\n"
+    "from document_kv_cache.gpu_qualification_databricks_v2 import "
+    "_main_from_bootstrap_handoff_v2\\n"
+    "raise SystemExit(_main_from_bootstrap_handoff_v2(_cachet_handoff))"
+)
+
+
+def _run(argv: list[str], base_env: dict[str, str]) -> int:
+    remaining, handoff, subprocess_env = _bootstrap(argv, base_env)
     safe_cwd = tempfile.mkdtemp(
         prefix="cachet-gpuq-v2-main-", dir=_local_staging_parent()
     )
@@ -564,15 +752,19 @@ if __name__ == "__main__":
                 sys.executable,
                 "-P",
                 "-c",
-                "from document_kv_cache.gpu_qualification_databricks_v2 import main; raise SystemExit(main())",
+                _CHILD_STUB,
                 *remaining,
             ],
             cwd=safe_cwd,
-            env=_pip_subprocess_environment(),
+            env={**subprocess_env, _HANDOFF_ENV: handoff},
         )
     finally:
         shutil.rmtree(safe_cwd)
-    raise SystemExit(completed.returncode)
+    return completed.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run(sys.argv[1:], dict(os.environ)))
 """
 GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256: Final = sha256(
     GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT.encode("utf-8")
@@ -2061,11 +2253,196 @@ def _required_string_v2(value: Any, label: str) -> str:
     return value
 
 
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
+def _canonical_bootstrap_json_v2(value: object) -> str:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _bootstrap_object_without_duplicate_keys_v2(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("v2 bootstrap handoff contains a duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _reject_bootstrap_json_constant_v2(value: str) -> object:
+    raise ValueError(f"v2 bootstrap handoff contains invalid JSON constant {value!r}")
+
+
+def _exact_bootstrap_argv_v2(
+    argv: Sequence[str],
+) -> tuple[tuple[str, ...], str]:
+    if isinstance(argv, (str, bytes, bytearray)) or not isinstance(argv, Sequence):
+        raise TypeError("v2 bootstrap argv must be a sequence")
+    normalized = tuple(argv)
+    if any(type(value) is not str for value in normalized):
+        raise TypeError("v2 bootstrap argv values must be exact strings")
+    if len(normalized) != (
+        2 * len(_V2_BOOTSTRAP_SINGLETON_OPTIONS)
+        + 4 * len(GPU_QUALIFICATION_V2_ARTIFACT_KEYS)
+    ):
+        raise ValueError("v2 bootstrap requires the exact 50-value argv closure")
+    index = 0
+    for option_name in _V2_BOOTSTRAP_SINGLETON_OPTIONS:
+        if normalized[index] != option_name or not normalized[index + 1]:
+            raise ValueError("v2 bootstrap singleton argv ordering differs")
+        index += 2
+    runner_pin = ""
+    uris: list[str] = []
+    for expected_key in GPU_QUALIFICATION_V2_ARTIFACT_KEYS:
+        if normalized[index] != "--artifact-uri":
+            raise ValueError("v2 bootstrap artifact URI argv ordering differs")
+        uri_key, separator, uri = normalized[index + 1].partition("=")
+        if not separator or uri_key != expected_key or not uri:
+            raise ValueError("v2 bootstrap artifact URI argv closure differs")
+        uris.append(uri)
+        if normalized[index + 2] != "--artifact-sha256":
+            raise ValueError("v2 bootstrap artifact SHA-256 argv ordering differs")
+        pin_key, separator, pin = normalized[index + 3].partition("=")
+        if not separator or pin_key != expected_key:
+            raise ValueError("v2 bootstrap artifact SHA-256 argv closure differs")
+        pin = _required_sha256_v2(pin, f"artifact_sha256.{expected_key}")
+        if expected_key == "runner_sha256":
+            runner_pin = pin
+        index += 4
+    if index != len(normalized) or len(set(uris)) != len(uris) or not runner_pin:
+        raise ValueError("v2 bootstrap argv closure differs")
+    return normalized, runner_pin
+
+
+def _bootstrap_argv_sha256_v2(argv: Sequence[str]) -> str:
+    normalized, _runner_pin = _exact_bootstrap_argv_v2(argv)
+    return sha256(
+        _canonical_bootstrap_json_v2(list(normalized)).encode("utf-8")
+    ).hexdigest()
+
+
+def _require_sanitized_child_environment_v2(
+    environment: Mapping[str, str],
+) -> None:
+    if any(name in environment for name in _V2_CHILD_FORBIDDEN_ENV):
+        raise RuntimeError("v2 bootstrap child inherited an unsafe Python path")
+    if any(
+        environment.get(name) != expected
+        for name, expected in _V2_CHILD_REQUIRED_ENV.items()
+    ):
+        raise RuntimeError("v2 bootstrap child lacks its exact Python safety flags")
+
+
+def _decode_bootstrap_handoff_v2(
+    raw_handoff: object,
+    *,
+    argv: Sequence[str],
+    environment: Mapping[str, str],
+) -> str:
+    _require_sanitized_child_environment_v2(environment)
+    if type(raw_handoff) is not str or not raw_handoff:
+        raise ValueError("v2 bootstrap handoff must be one nonempty string")
+    try:
+        encoded_handoff = raw_handoff.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("v2 bootstrap handoff is not valid UTF-8") from exc
+    if len(encoded_handoff) > _V2_BOOTSTRAP_HANDOFF_MAX_BYTES:
+        raise ValueError("v2 bootstrap handoff exceeds its size cap")
+    try:
+        decoded = json.loads(
+            raw_handoff,
+            object_pairs_hook=_bootstrap_object_without_duplicate_keys_v2,
+            parse_constant=_reject_bootstrap_json_constant_v2,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("v2 bootstrap handoff is not strict JSON") from exc
+    if type(decoded) is not dict or _canonical_bootstrap_json_v2(decoded) != raw_handoff:
+        raise ValueError("v2 bootstrap handoff is not one canonical JSON object")
+    if set(decoded) != _V2_BOOTSTRAP_HANDOFF_KEYS:
+        raise ValueError("v2 bootstrap handoff does not use its exact schema")
+    if decoded.get("record_type") != _V2_BOOTSTRAP_HANDOFF_RECORD_TYPE:
+        raise ValueError("v2 bootstrap handoff record type differs")
+    schema_version = decoded.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != _V2_BOOTSTRAP_HANDOFF_SCHEMA_VERSION
+    ):
+        raise ValueError("v2 bootstrap handoff schema version differs")
+    if decoded.get("spark_checked") is not True:
+        raise ValueError("v2 bootstrap handoff did not check Spark")
+    cluster_id = databricks_v1._validated_cloud_cluster_id(
+        decoded.get("cluster_id"),
+        source="v2 bootstrap handoff",
+    )
+    argv_sha256 = _required_sha256_v2(
+        decoded.get("argv_sha256"), "v2 bootstrap handoff argv_sha256"
+    )
+    runner_sha256 = _required_sha256_v2(
+        decoded.get("runner_sha256"), "v2 bootstrap handoff runner_sha256"
+    )
+    observed_seal = _required_sha256_v2(
+        decoded.get("closed_record_sha256"),
+        "v2 bootstrap handoff closed_record_sha256",
+    )
+    open_record = dict(decoded)
+    open_record["closed_record_sha256"] = ""
+    expected_seal = sha256(
+        _canonical_bootstrap_json_v2(open_record).encode("utf-8")
+    ).hexdigest()
+    if observed_seal != expected_seal:
+        raise ValueError("v2 bootstrap handoff seal differs")
+    normalized_argv, runner_pin = _exact_bootstrap_argv_v2(argv)
+    expected_argv_sha256 = sha256(
+        _canonical_bootstrap_json_v2(list(normalized_argv)).encode("utf-8")
+    ).hexdigest()
+    if argv_sha256 != expected_argv_sha256:
+        raise ValueError("v2 bootstrap handoff argv binding differs")
+    if not (
+        runner_sha256
+        == runner_pin
+        == GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256
+    ):
+        raise ValueError("v2 bootstrap handoff runner binding differs")
+    raw_sources = decoded.get("sources")
+    if type(raw_sources) is not list or any(
+        type(source) is not str for source in raw_sources
+    ):
+        raise ValueError("v2 bootstrap handoff sources must be exact strings")
+    sources = tuple(raw_sources)
+    if (
+        not sources
+        or len(set(sources)) != len(sources)
+        or tuple(
+            source for source in _V2_CLUSTER_ID_SOURCE_ORDER if source in sources
+        )
+        != sources
+    ):
+        raise ValueError("v2 bootstrap handoff source ordering differs")
+    observed_env_sources = tuple(
+        name for name in _V2_CLUSTER_ID_ENV_NAMES if name in environment
+    )
+    recorded_env_sources = tuple(
+        source for source in sources if source in _V2_CLUSTER_ID_ENV_NAMES
+    )
+    if observed_env_sources != recorded_env_sources:
+        raise ValueError("v2 bootstrap handoff environment sources differ")
+    for source in observed_env_sources:
+        observed_cluster_id = databricks_v1._validated_cloud_cluster_id(
+            environment[source], source=source
+        )
+        if observed_cluster_id != cluster_id:
+            raise RuntimeError("Databricks cluster identity sources are ambiguous")
+    return cluster_id
+
+
+def _validated_main_inputs_v2(
+    argv: Sequence[str] | None,
+) -> tuple[argparse.Namespace, dict[str, Any], dict[str, str], dict[str, str]]:
     args = _parse_args(argv)
     if args.attempt_number != 0 or args.retry_count != 0:
         raise ValueError("GPU qualification v2 jobs must execute on attempt zero")
@@ -2079,6 +2456,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     artifact_sha256 = databricks_v1._parse_key_value_args(
         args.artifact_sha256, option_name="--artifact-sha256"
     )
+    return args, plan, artifact_uris, artifact_sha256
+
+
+def _execute_main_inputs_v2(
+    args: argparse.Namespace,
+    plan: Mapping[str, Any],
+    artifact_uris: Mapping[str, str],
+    artifact_sha256: Mapping[str, str],
+    *,
+    cloud_cluster_id: str,
+) -> int:
     execute_gpu_qualification_job_v2(
         plan_record=plan,
         expected_plan_sha256=args.expected_plan_sha256,
@@ -2089,10 +2477,61 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_json=args.output_json,
         work_dir=args.work_dir,
         cloud_run_id=args.cloud_run_id,
-        cloud_cluster_id=databricks_v1._cloud_cluster_id(),
+        cloud_cluster_id=cloud_cluster_id,
         sentinel_runner=_builtin_sentinel_runner_v2,
     )
     return 0
+
+
+def _main_from_bootstrap_handoff_v2(
+    raw_handoff: object = _V2_BOOTSTRAP_HANDOFF_MISSING,
+    argv: Sequence[str] | None = None,
+) -> int:
+    environment_handoff = os.environ.pop(
+        _V2_BOOTSTRAP_HANDOFF_ENV,
+        _V2_BOOTSTRAP_HANDOFF_MISSING,
+    )
+    if (
+        raw_handoff is not _V2_BOOTSTRAP_HANDOFF_MISSING
+        and environment_handoff is not _V2_BOOTSTRAP_HANDOFF_MISSING
+    ):
+        raise RuntimeError("v2 bootstrap handoff has conflicting input sources")
+    resolved_handoff = (
+        environment_handoff
+        if raw_handoff is _V2_BOOTSTRAP_HANDOFF_MISSING
+        else raw_handoff
+    )
+    resolved_argv: Sequence[str] = sys.argv[1:] if argv is None else argv
+    cluster_id = _decode_bootstrap_handoff_v2(
+        resolved_handoff,
+        argv=resolved_argv,
+        environment=dict(os.environ),
+    )
+    args, plan, artifact_uris, artifact_sha256 = _validated_main_inputs_v2(
+        resolved_argv
+    )
+    return _execute_main_inputs_v2(
+        args,
+        plan,
+        artifact_uris,
+        artifact_sha256,
+        cloud_cluster_id=cluster_id,
+    )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args, plan, artifact_uris, artifact_sha256 = _validated_main_inputs_v2(argv)
+    return _execute_main_inputs_v2(
+        args,
+        plan,
+        artifact_uris,
+        artifact_sha256,
+        cloud_cluster_id=databricks_v1._cloud_cluster_id(),
+    )
 
 
 __all__ = [
