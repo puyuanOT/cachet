@@ -225,23 +225,23 @@ def _current_live_and_prior_receipt_ledgers() -> tuple[
 ]:
     live_bytes = _RETAINED_LEDGER_PATH.read_bytes()
     live_stat = _RETAINED_LEDGER_PATH.stat()
-    assert len(live_bytes) == 255_392
+    assert len(live_bytes) == 256_696
     assert hashlib.sha256(live_bytes).hexdigest() == (
-        "1d67eb0e94fa070049b215b789eb5f5d2617b958562ed302d9127f70c00690db"
+        "65c02ffb7975898aee3fcfd77c4c46d07d5864452cef21bb3988f60e8e93c3bc"
     )
     live = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
     assert (
         len(live.reservations),
         len(live.submission_receipts),
         len(live.terminal_actuals),
-    ) == (264, 126, 264)
+    ) == (265, 127, 265)
     assert live.active_reserved_task_count == 0
     assert live.active_reserved_cluster_hours == 0
-    assert live.terminal_actual_cluster_hours == 77.30916277777781
-    assert live.accounted_cluster_hours == 77.30916277777781
-    assert live.remaining_cluster_hours == 946.6908372222222
+    assert live.terminal_actual_cluster_hours == 77.50443361111115
+    assert live.accounted_cluster_hours == 77.50443361111115
+    assert live.remaining_cluster_hours == 946.4955663888888
     assert databricks_ledger_prefix(live).prefix_sha256 == (
-        "6314f9ddd5204f5072eac3084269cc854e950b7a0e0adb1572b4a0773071b563"
+        "e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"
     )
 
     historical_opening = replace(

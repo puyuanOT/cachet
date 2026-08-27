@@ -497,6 +497,76 @@ def test_standalone_verifier_pip_check_is_exact_bounded_binary_subprocess(
     ]
 
 
+def test_standalone_verifier_strips_private_pip_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("_PIP_USE_IMPORTLIB_METADATA", "0")
+    monkeypatch.setenv("_pip_standalone_cert", "/attacker/ca.pem")
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+
+    def run(
+        _arguments: list[str], **kwargs: Any
+    ) -> runtime_v2._BoundedBinarySubprocessResult:
+        calls.append(dict(kwargs))
+        return _bounded_process_result()
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    monkeypatch.setattr(runtime_v2, "_file_sha256", lambda _path: "0" * 64)
+    with pytest.raises(RuntimeError, match="base lock SHA-256 differs"):
+        runtime_v2.verify_gpu_qualification_v2_runtime_installation(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+    assert len(calls) == 1
+    environment = calls[0]["environment"]
+    assert {
+        key: value
+        for key, value in environment.items()
+        if key.upper().startswith(("PIP_", "_PIP_"))
+    } == {
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+    }
+    assert environment["PYTHONSAFEPATH"] == "1"
+
+
+def test_standalone_verifier_rejects_private_pip_warning_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warning = (
+        b"DEPRECATION: Using the pkg_resources metadata backend is deprecated. "
+        b"A possible replacement is to unset _PIP_USE_IMPORTLIB_METADATA.\n"
+    )
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(stderr=warning),
+    )
+
+    with pytest.raises(RuntimeError, match="pip check output differs") as raised:
+        runtime_v2.verify_gpu_qualification_v2_runtime_installation(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+    assert "pkg_resources" not in str(raised.value)
+    assert "_PIP_USE_IMPORTLIB_METADATA" not in str(raised.value)
+
+
 @pytest.mark.parametrize(
     ("stdout", "stderr"),
     [

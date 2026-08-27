@@ -564,6 +564,35 @@ def test_install_document_kv_package_uses_no_deps(monkeypatch, tmp_path):
     )
 
 
+def test_pip_environment_removes_internal_pip_authority():
+    environment = public_vllm_smoke._pip_subprocess_environment(
+        {
+            "PIP_INDEX_URL": "https://attacker.invalid/simple",
+            "_PIP_USE_IMPORTLIB_METADATA": "0",
+            "_pip_standalone_cert": "/attacker/ca.pem",
+            "PYTHONHOME": "/attacker/python-home",
+            "PYTHONPATH": "/attacker/python-path",
+            "VIRTUAL_ENV": "/attacker/venv",
+            "UNRELATED_SETTING": "preserved",
+        }
+    )
+
+    assert {
+        key: value
+        for key, value in environment.items()
+        if key.upper().startswith(("PIP_", "_PIP_"))
+    } == {
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+    }
+    assert all(
+        variable not in environment
+        for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+    )
+    assert environment["UNRELATED_SETTING"] == "preserved"
+
+
 def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path):
     calls = []
     python = tmp_path / "venv" / "bin" / "python"

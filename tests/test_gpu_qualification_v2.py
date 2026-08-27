@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 
@@ -10,6 +11,8 @@ import document_kv_cache.gpu_qualification as qualification_v1
 import document_kv_cache.gpu_qualification_v2 as qualification_v2
 from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
+    GPU_QUALIFICATION_V2_CLOUD_EVIDENCE_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
     GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT,
     GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE,
     GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
@@ -17,15 +20,20 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
     GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE,
     GPU_QUALIFICATION_V2_SCHEMA_VERSION,
+    GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE,
     GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT,
     GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT,
     GPUQualificationArtifactPinsV2,
+    _build_governed_cloud_gpu_evidence_v2,
+    _build_governed_gpu_qualification_evidence_v2,
     build_gpu_job_result_v2,
     build_gpu_qualification_plan_v2,
     build_gpu_runtime_verification_v2,
+    build_local_preflight_evidence_v2,
     gpu_qualification_v2_runtime_closure,
     pins_from_gpu_qualification_plan_v2,
     validate_gpu_qualification_plan_v2_record,
+    validate_gpu_qualification_evidence_v2_record,
     validate_gpu_qualification_v2_runtime_attestation,
     validate_gpu_job_result_v2_record,
     validate_gpu_runtime_verification_v2_record,
@@ -79,10 +87,10 @@ EXPECTED_JOB_IDS = (
     "aws-g5-a10g-auto-backend-diagnostic",
 )
 EXPECTED_PLAN_SHA256 = (
-    "292cd7c9e1c4e648acaf98249f2aa507f969b90e8568a3aa3ecef4413692fc4d"
+    "a5e82b7b2834d96f29796347ad6eaff12ab330fb1ccd33e6707e6ba81dcc31a2"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
-    "36256329fd9e14bc9889c8162eaefa944149c32226bf7bc52b9f3dab7a146f17"
+    "6c1d7c56583c36215110d6b5080b15dc88b7deeb8c78975815a62906303692aa"
 )
 EXPECTED_VLLM_MEMBER_SHA256 = {
     "vllm/model_executor/layers/attention/attention.py": (
@@ -251,6 +259,122 @@ def _valid_runtime_verification() -> tuple[dict[str, Any], dict[str, Any], str]:
     return plan, record, job_id
 
 
+def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[str, Any]:
+    duration_seconds = 60.0
+    record: dict[str, Any] = {
+        "authorization_source": "direct_databricks_runs_get",
+        "closed_record_sha256": "",
+        "cloud_cluster_id": result["cloud_cluster_id"],
+        "cloud_run_id": result["cloud_run_id"],
+        "collected_at_utc": "2026-08-25T01:02:00Z",
+        "control_plane_status_sha256": sha256(
+            f"control-plane-{index}".encode()
+        ).hexdigest(),
+        "driver_node_type_id": "test-node-type",
+        "end_time_ms": 1_777_000_120_000,
+        "job_id": result["job_id"],
+        "ledger_actual_cluster_duration_seconds": duration_seconds,
+        "ledger_id": GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.ledger_id,
+        "ledger_terminal_actual_sha256": sha256(
+            f"terminal-{index}".encode()
+        ).hexdigest(),
+        "life_cycle_state": "TERMINATED",
+        "node_type_id": "test-node-type",
+        "output_json": result["output_json"],
+        "phase_batch_record_sha256": sha256(f"batch-{index}".encode()).hexdigest(),
+        "phase_terminal_prefix": (
+            GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.to_record()
+        ),
+        "plan_sha256": result["plan_sha256"],
+        "record_type": GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE,
+        "reservation_attempt_id": result["reservation_attempt_id"],
+        "result_file_sha256": sha256(
+            (qualification_v1.canonical_gpu_qualification_json(result) + "\n").encode()
+        ).hexdigest(),
+        "result_record_sha256": result["closed_record_sha256"],
+        "result_state": "SUCCESS",
+        "run_name": f"test-run-{index}",
+        "schema_version": GPU_QUALIFICATION_V2_SCHEMA_VERSION,
+        "start_time_ms": 1_777_000_000_000,
+        "submit_payload_sha256": sha256(f"submit-{index}".encode()).hexdigest(),
+        "task_attempt_number": 0,
+        "task_end_time_ms": 1_777_000_090_000,
+        "task_key": result["task_key"],
+        "task_life_cycle_state": "TERMINATED",
+        "task_max_retries": 0,
+        "task_result_state": "SUCCESS",
+        "task_run_id": str(20_000 + index),
+        "task_start_time_ms": 1_777_000_030_000,
+    }
+    _seal_v2(record)
+    return record
+
+
+def _valid_aggregate_evidence_v2() -> tuple[dict[str, Any], dict[str, Any]]:
+    plan = _valid_plan()
+    plan_sha256 = plan["closed_record_sha256"]
+    local = build_local_preflight_evidence_v2(
+        plan_sha256=plan_sha256,
+        completed_at_utc="2026-08-25T00:00:00Z",
+        check_evidence_sha256={
+            check_id: sha256(check_id.encode()).hexdigest()
+            for check_id in plan["local_preflight"]["check_ids"]
+        },
+    )
+    jobs: list[dict[str, Any]] = []
+    terminal_receipts: list[dict[str, Any]] = []
+    for index, job in enumerate(plan["cloud_qualification"]["jobs"]):
+        job_id = job["job_id"]
+        verification = build_gpu_runtime_verification_v2(
+            plan_sha256=plan_sha256,
+            job_id=job_id,
+            artifact_sha256=_pins().to_record(),
+            attestation=_valid_attestation(),
+        )
+        measurements: dict[str, Any] = {}
+        if job["sentinel"] == "forced_triton_runtime_handoff":
+            measurements["runtime_lock_attestation"] = _valid_attestation()
+        result = build_gpu_job_result_v2(
+            plan_record=plan,
+            job_id=job_id,
+            reservation_attempt_id=qualification_v1._expected_reservation_attempt_id(
+                plan_sha256, job_id
+            ),
+            task_key=qualification_v1._expected_task_key(job_id),
+            output_json=(
+                "dbfs:/Volumes/catalog/schema/volume/output/"
+                f"{plan_sha256}/{job_id}/gpu-job-result.json"
+            ),
+            cloud_run_id=str(10_000 + index),
+            cloud_cluster_id=f"cluster-{index}",
+            started_at_utc="2026-08-25T01:00:00Z",
+            finished_at_utc="2026-08-25T01:01:00Z",
+            nvidia_driver_version="580.65.06",
+            observed_gpu=job["gpu"],
+            observed_gpu_compute_capability=job["compute_capability"],
+            observed_vllm_version="0.27.1+cu129",
+            observed_torch_cuda_version="12.9",
+            observed_artifact_sha256=_pins().to_record(),
+            runtime_verification=verification,
+            measurements=measurements,
+        )
+        jobs.append(result)
+        terminal_receipts.append(_valid_terminal_receipt_v2(result, index=index))
+    cloud = _build_governed_cloud_gpu_evidence_v2(
+        plan_sha256=plan_sha256,
+        jobs=jobs,
+        terminal_receipts=terminal_receipts,
+        selected_gpu_memory_utilization=0.75,
+    )
+    evidence = _build_governed_gpu_qualification_evidence_v2(
+        campaign_id=PUBLICATION_CAMPAIGN_ID,
+        plan_sha256=plan_sha256,
+        local_preflight_evidence=local,
+        cloud_gpu_evidence=cloud,
+    )
+    return plan, evidence
+
+
 def test_v2_artifact_pins_have_exact_keys_order_and_authority_hashes() -> None:
     pins = _pins()
 
@@ -304,6 +428,16 @@ def test_v2_plan_is_deterministic_and_closes_exactly_fourteen_jobs() -> None:
         expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
         expected_artifact_pins=_pins(),
     )
+
+
+def test_v2_opening_authority_includes_the_reconciled_diagnostic() -> None:
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.reservation_count == 265
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.submission_receipt_count == 127
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.terminal_actual_count == 265
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.prefix_sha256 == (
+        "e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"
+    )
+    assert GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS == 77.50443361111115
 
 
 def test_v2_plan_rejects_rebased_opening_authority() -> None:
@@ -666,4 +800,122 @@ def test_v2_forced_handoff_result_requires_one_identical_runtime_attestation(
             result(alternate),
             plan_record=plan,
             expected_artifact_pins=pins,
+        )
+
+
+def test_v2_aggregate_validates_native_records_before_behavior_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, evidence = _valid_aggregate_evidence_v2()
+    cloud = evidence["cloud_gpu_evidence"]
+    assert evidence["record_type"] == GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE
+    assert cloud["record_type"] == GPU_QUALIFICATION_V2_CLOUD_EVIDENCE_RECORD_TYPE
+    assert all(
+        receipt["record_type"] == GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE
+        for receipt in cloud["terminal_receipts"]
+    )
+
+    expected_selection = qualification_v1.GPUQualificationSelection(
+        attention_backend="TRITON_ATTN",
+        gpu_memory_utilization=0.75,
+        generation_hardware_id="aws-g6e-l40s",
+        generation_databricks_node_type_id="g6e.4xlarge",
+        generation_artifacts_sha256="d" * 64,
+        generation_prefix_tokens_per_second=35.0,
+        plan_sha256=plan["closed_record_sha256"],
+    )
+
+    def validate_projected_cloud(
+        record: dict[str, Any],
+        *,
+        plan_record: dict[str, Any],
+        plan_sha256: str,
+        expected_artifact_pins: qualification_v1.GPUQualificationArtifactPins,
+        runtime_attestation_validator: Any,
+    ) -> tuple[qualification_v1.GPUQualificationSelection, datetime]:
+        assert plan_record is plan
+        assert plan_sha256 == plan["closed_record_sha256"]
+        assert expected_artifact_pins == _pins().v1_projection()
+        assert runtime_attestation_validator is (
+            validate_gpu_qualification_v2_runtime_attestation
+        )
+        assert record["record_type"] == (
+            qualification_v1.GPU_QUALIFICATION_CLOUD_EVIDENCE_RECORD_TYPE
+        )
+        assert (
+            record["schema_version"]
+            == qualification_v1.GPU_QUALIFICATION_SCHEMA_VERSION
+        )
+        assert record["scope"] == "governed_cloud_gpu_terminal_evidence"
+        for result, receipt in zip(
+            record["jobs"], record["terminal_receipts"], strict=True
+        ):
+            assert result["record_type"] == (
+                qualification_v1.GPU_QUALIFICATION_JOB_RESULT_RECORD_TYPE
+            )
+            assert "runtime_verification" not in result
+            assert result["artifact_sha256"] == _pins().v1_projection().to_record()
+            assert receipt["record_type"] == (
+                qualification_v1.GPU_QUALIFICATION_TERMINAL_RECEIPT_RECORD_TYPE
+            )
+            assert receipt["result_record_sha256"] == result["closed_record_sha256"]
+            assert (
+                receipt["result_file_sha256"]
+                == sha256(
+                    (
+                        qualification_v1.canonical_gpu_qualification_json(result) + "\n"
+                    ).encode()
+                ).hexdigest()
+            )
+        return expected_selection, datetime(2026, 8, 25, 1, tzinfo=UTC)
+
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_cloud_gpu_evidence",
+        validate_projected_cloud,
+    )
+    selection = validate_gpu_qualification_evidence_v2_record(
+        evidence,
+        plan_record=plan,
+        expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+        expected_artifact_pins=_pins(),
+    )
+    assert selection == expected_selection
+
+
+@pytest.mark.parametrize("malformation", ["job_record_type", "receipt_record_type"])
+def test_v2_aggregate_rejects_native_type_confusion_before_v1_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    malformation: str,
+) -> None:
+    plan, evidence = _valid_aggregate_evidence_v2()
+    cloud = evidence["cloud_gpu_evidence"]
+    if malformation == "job_record_type":
+        target = cloud["jobs"][-1]
+        target["record_type"] = (
+            qualification_v1.GPU_QUALIFICATION_JOB_RESULT_RECORD_TYPE
+        )
+    else:
+        target = cloud["terminal_receipts"][-1]
+        target["record_type"] = (
+            qualification_v1.GPU_QUALIFICATION_TERMINAL_RECEIPT_RECORD_TYPE
+        )
+    _seal_v2(target)
+    _seal_v2(cloud)
+    _seal_v2(evidence)
+
+    def reject_projection(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("v1 projection ran before every native v2 record validated")
+
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_cloud_gpu_evidence",
+        reject_projection,
+    )
+    with pytest.raises(ValueError, match="record_type"):
+        validate_gpu_qualification_evidence_v2_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+            expected_artifact_pins=_pins(),
         )

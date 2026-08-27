@@ -1290,7 +1290,12 @@ def _validate_cloud_gpu_evidence(
     plan_record: Mapping[str, Any],
     plan_sha256: str,
     expected_artifact_pins: GPUQualificationArtifactPins,
+    runtime_attestation_validator: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> tuple[GPUQualificationSelection, datetime]:
+    if runtime_attestation_validator is None:
+        runtime_attestation_validator = _validate_runtime_lock_attestation
+    if not callable(runtime_attestation_validator):
+        raise TypeError("runtime_attestation_validator must be callable")
     _require_exact_keys(record, _CLOUD_EVIDENCE_KEYS, "cloud GPU evidence")
     _require_closed_record_digest(record, "cloud GPU evidence")
     if record.get("record_type") != GPU_QUALIFICATION_CLOUD_EVIDENCE_RECORD_TYPE:
@@ -1405,8 +1410,10 @@ def _validate_cloud_gpu_evidence(
         )
         sentinel = planned_job["sentinel"]
         if sentinel == "forced_triton_runtime_handoff":
-            _validate_runtime_handoff_measurements(
-                measurements, hardware_id=planned_job["hardware_id"]
+            _validate_runtime_handoff_measurements_with_attestation(
+                measurements,
+                hardware_id=planned_job["hardware_id"],
+                attestation_validator=runtime_attestation_validator,
             )
         elif sentinel == "packed_page_raw_byte_roundtrip":
             _validate_packed_roundtrip_measurements(measurements)

@@ -4644,7 +4644,7 @@ def _pip_subprocess_environment(
 
     environment = dict(os.environ if environ is None else environ)
     for variable_name in tuple(environment):
-        if variable_name.upper().startswith("PIP_"):
+        if variable_name.upper().startswith(("PIP_", "_PIP_")):
             environment.pop(variable_name)
     for ambient_path_variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         environment.pop(ambient_path_variable, None)

@@ -7,7 +7,7 @@ adds a directly installed, source-pinned FlashInfer wheel.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -65,8 +65,17 @@ from document_kv_cache.publication_campaign import (
 GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_qualification_plan.v2"
 )
+GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_qualification_evidence.v2"
+)
+GPU_QUALIFICATION_V2_CLOUD_EVIDENCE_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_cloud_gpu_evidence.v2"
+)
 GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_job_result.v2"
+)
+GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_terminal_receipt.v2"
 )
 GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_runtime_verification.v2"
@@ -105,12 +114,12 @@ GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION: Final = (
 GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX: Final = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.ledger_id,
     cap_cluster_hours=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.cap_cluster_hours,
-    reservation_count=264,
-    submission_receipt_count=126,
-    terminal_actual_count=264,
-    prefix_sha256=("6314f9ddd5204f5072eac3084269cc854e950b7a0e0adb1572b4a0773071b563"),
+    reservation_count=265,
+    submission_receipt_count=127,
+    terminal_actual_count=265,
+    prefix_sha256=("e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"),
 )
-GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 77.30916277777781
+GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 77.50443361111115
 
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_KEYS: Final = frozenset(
@@ -128,6 +137,36 @@ _PLAN_KEYS: Final = frozenset(
         "runtime_contract",
         "schema_version",
         "unsupported_methods",
+    }
+)
+_EVIDENCE_KEYS: Final = frozenset(
+    {
+        "campaign_id",
+        "closed_record_sha256",
+        "cloud_gpu_evidence",
+        "local_preflight_evidence",
+        "plan_sha256",
+        "qualification_status",
+        "record_type",
+        "schema_version",
+    }
+)
+_CLOUD_EVIDENCE_KEYS: Final = frozenset(
+    {
+        "all_planned_jobs_succeeded",
+        "authorization_source",
+        "auto_backend_diagnostics_only",
+        "closed_record_sha256",
+        "job_count",
+        "jobs",
+        "max_parallel_jobs_observed",
+        "plan_sha256",
+        "publication_attention_backend",
+        "record_type",
+        "schema_version",
+        "scope",
+        "selected_gpu_memory_utilization",
+        "terminal_receipts",
     }
 )
 _JOB_RESULT_KEYS: Final = frozenset(
@@ -158,6 +197,45 @@ _JOB_RESULT_KEYS: Final = frozenset(
         "task_key",
         "torch_cuda_version",
         "vllm_version",
+    }
+)
+_TERMINAL_RECEIPT_KEYS: Final = frozenset(
+    {
+        "authorization_source",
+        "closed_record_sha256",
+        "cloud_cluster_id",
+        "cloud_run_id",
+        "collected_at_utc",
+        "control_plane_status_sha256",
+        "driver_node_type_id",
+        "end_time_ms",
+        "job_id",
+        "ledger_actual_cluster_duration_seconds",
+        "ledger_id",
+        "ledger_terminal_actual_sha256",
+        "life_cycle_state",
+        "node_type_id",
+        "output_json",
+        "phase_batch_record_sha256",
+        "phase_terminal_prefix",
+        "plan_sha256",
+        "record_type",
+        "reservation_attempt_id",
+        "result_file_sha256",
+        "result_record_sha256",
+        "result_state",
+        "run_name",
+        "schema_version",
+        "start_time_ms",
+        "submit_payload_sha256",
+        "task_attempt_number",
+        "task_end_time_ms",
+        "task_key",
+        "task_life_cycle_state",
+        "task_max_retries",
+        "task_result_state",
+        "task_run_id",
+        "task_start_time_ms",
     }
 )
 _VLLM_PATCH_MEMBER_SHA256: Final = MappingProxyType(
@@ -683,6 +761,30 @@ def validate_gpu_job_result_v2_record(
 ) -> None:
     """Validate a v2 result while reusing only v1 sentinel behavior checks."""
 
+    normalized, job, measurements, _runtime_verification = (
+        _validate_gpu_job_result_v2_original(
+            record,
+            plan_record=plan_record,
+            expected_artifact_pins=expected_artifact_pins,
+        )
+    )
+    _validate_gpu_job_result_v2_behavior(
+        normalized,
+        job=job,
+        measurements=measurements,
+        plan_record=plan_record,
+        expected_artifact_pins=expected_artifact_pins,
+    )
+
+
+def _validate_gpu_job_result_v2_original(
+    record: Mapping[str, Any],
+    *,
+    plan_record: Mapping[str, Any],
+    expected_artifact_pins: GPUQualificationArtifactPinsV2,
+) -> tuple[dict[str, Any], Mapping[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validate the native v2 envelope before any compatibility projection."""
+
     _validate_bound_plan_v2(plan_record, expected_artifact_pins)
     normalized = _mapping_copy(record, "GPU job result v2")
     _require_exact_keys(normalized, _JOB_RESULT_KEYS, "GPU job result v2")
@@ -714,17 +816,56 @@ def validate_gpu_job_result_v2_record(
         expected_job_id=job_id,
         expected_artifact_pins=expected_artifact_pins,
     )
+    measurements = _mapping_copy(normalized.get("measurements"), "measurements")
+    job = qualification_v1._plan_job(plan_record, job_id)  # noqa: SLF001
+    if job.get("sentinel") == "forced_triton_runtime_handoff":
+        measured_attestation = _mapping_copy(
+            measurements.get("runtime_lock_attestation"),
+            "measurements.runtime_lock_attestation",
+        )
+        validate_gpu_qualification_v2_runtime_attestation(measured_attestation)
+        verified_attestation = _mapping_copy(
+            runtime_verification.get("attestation"),
+            "runtime_verification.attestation",
+        )
+        if canonical_gpu_qualification_json(measured_attestation) != (
+            canonical_gpu_qualification_json(verified_attestation)
+        ):
+            raise ValueError("v2 runtime attestations differ within the job result")
+    return normalized, job, measurements, runtime_verification
+
+
+def _project_gpu_job_result_v2_to_v1(
+    normalized: Mapping[str, Any],
+    *,
+    expected_artifact_pins: GPUQualificationArtifactPinsV2,
+) -> dict[str, Any]:
+    """Create an ephemeral v1 record after its v2 source was validated."""
+
     projected = dict(normalized)
     projected.pop("runtime_verification")
     projected["artifact_sha256"] = expected_artifact_pins.v1_projection().to_record()
     projected["record_type"] = qualification_v1.GPU_QUALIFICATION_JOB_RESULT_RECORD_TYPE
     projected["schema_version"] = qualification_v1.GPU_QUALIFICATION_SCHEMA_VERSION
-    measurements = _mapping_copy(projected.get("measurements"), "measurements")
-    job = qualification_v1._plan_job(  # noqa: SLF001
-        plan_record, job_id
-    )
     projected["closed_record_sha256"] = qualification_v1._closed_record_sha256(  # noqa: SLF001
         projected
+    )
+    return projected
+
+
+def _validate_gpu_job_result_v2_behavior(
+    normalized: Mapping[str, Any],
+    *,
+    job: Mapping[str, Any],
+    measurements: Mapping[str, Any],
+    plan_record: Mapping[str, Any],
+    expected_artifact_pins: GPUQualificationArtifactPinsV2,
+) -> None:
+    """Reuse v1 behavior gates on an ephemeral projection of valid v2 data."""
+
+    projected = _project_gpu_job_result_v2_to_v1(
+        normalized,
+        expected_artifact_pins=expected_artifact_pins,
     )
     qualification_v1._validate_job_result_common(  # noqa: SLF001
         projected,
@@ -739,18 +880,6 @@ def validate_gpu_job_result_v2_record(
             hardware_id=str(job["hardware_id"]),
             attestation_validator=(validate_gpu_qualification_v2_runtime_attestation),
         )
-        measured_attestation = _mapping_copy(
-            measurements.get("runtime_lock_attestation"),
-            "measurements.runtime_lock_attestation",
-        )
-        verified_attestation = _mapping_copy(
-            runtime_verification.get("attestation"),
-            "runtime_verification.attestation",
-        )
-        if canonical_gpu_qualification_json(measured_attestation) != (
-            canonical_gpu_qualification_json(verified_attestation)
-        ):
-            raise ValueError("v2 runtime attestations differ within the job result")
     elif sentinel == "packed_page_raw_byte_roundtrip":
         qualification_v1._validate_packed_roundtrip_measurements(  # noqa: SLF001
             measurements
@@ -780,6 +909,295 @@ def validate_gpu_job_result_v2_record(
         )
     else:
         raise ValueError(f"unsupported v2 sentinel: {sentinel!r}")
+
+
+def _build_governed_cloud_gpu_evidence_v2(
+    *,
+    plan_sha256: str,
+    jobs: Sequence[Mapping[str, Any]],
+    terminal_receipts: Sequence[Mapping[str, Any]],
+    selected_gpu_memory_utilization: float,
+) -> dict[str, Any]:
+    """Seal collector-owned v2 cloud evidence from native v2 records."""
+
+    plan_digest = _required_sha256(plan_sha256, "plan_sha256")
+    job_records = [dict(job) for job in jobs]
+    receipt_records = [dict(receipt) for receipt in terminal_receipts]
+    record: dict[str, Any] = {
+        "all_planned_jobs_succeeded": True,
+        "authorization_source": "direct_databricks_runs_get",
+        "auto_backend_diagnostics_only": True,
+        "closed_record_sha256": "",
+        "job_count": len(job_records),
+        "jobs": job_records,
+        "max_parallel_jobs_observed": qualification_v1._max_parallel_jobs(  # noqa: SLF001
+            job_records
+        ),
+        "plan_sha256": plan_digest,
+        "publication_attention_backend": (
+            qualification_v1.GPU_QUALIFICATION_PUBLICATION_BACKEND
+        ),
+        "record_type": GPU_QUALIFICATION_V2_CLOUD_EVIDENCE_RECORD_TYPE,
+        "schema_version": GPU_QUALIFICATION_V2_SCHEMA_VERSION,
+        "scope": "governed_cloud_gpu_terminal_evidence_v2",
+        "selected_gpu_memory_utilization": selected_gpu_memory_utilization,
+        "terminal_receipts": receipt_records,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
+def _build_governed_gpu_qualification_evidence_v2(
+    *,
+    campaign_id: str,
+    plan_sha256: str,
+    local_preflight_evidence: Mapping[str, Any],
+    cloud_gpu_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal the collector-only v2 qualification evidence envelope."""
+
+    normalized_campaign_id = _required_string(campaign_id, "campaign_id")
+    plan_digest = _required_sha256(plan_sha256, "plan_sha256")
+    cloud = _mapping_copy(cloud_gpu_evidence, "cloud_gpu_evidence")
+    if (
+        cloud.get("record_type") != GPU_QUALIFICATION_V2_CLOUD_EVIDENCE_RECORD_TYPE
+        or cloud.get("authorization_source") != "direct_databricks_runs_get"
+        or cloud.get("scope") != "governed_cloud_gpu_terminal_evidence_v2"
+    ):
+        raise ValueError("collector-governed v2 cloud evidence is required")
+    local = _mapping_copy(local_preflight_evidence, "local_preflight_evidence")
+    if local.get("record_type") != GPU_QUALIFICATION_V2_LOCAL_PREFLIGHT_RECORD_TYPE:
+        raise ValueError("v2 local preflight evidence is required")
+    record: dict[str, Any] = {
+        "campaign_id": normalized_campaign_id,
+        "closed_record_sha256": "",
+        "cloud_gpu_evidence": cloud,
+        "local_preflight_evidence": local,
+        "plan_sha256": plan_digest,
+        "qualification_status": "passed",
+        "record_type": GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+        "schema_version": GPU_QUALIFICATION_V2_SCHEMA_VERSION,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
+def validate_gpu_qualification_evidence_v2_record(
+    record: Mapping[str, Any],
+    *,
+    plan_record: Mapping[str, Any],
+    expected_campaign_id: str,
+    expected_artifact_pins: GPUQualificationArtifactPinsV2,
+) -> qualification_v1.GPUQualificationSelection:
+    """Validate complete native-v2 evidence and return the qualified selection."""
+
+    validate_gpu_qualification_plan_v2_record(
+        plan_record,
+        expected_campaign_id=expected_campaign_id,
+        expected_artifact_pins=expected_artifact_pins,
+    )
+    normalized = _mapping_copy(record, "GPU qualification evidence v2")
+    _require_exact_keys(normalized, _EVIDENCE_KEYS, "GPU qualification evidence v2")
+    _require_closed_record_digest(normalized, "GPU qualification evidence v2")
+    if normalized.get("record_type") != GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE:
+        raise ValueError("unexpected GPU qualification evidence v2 record_type")
+    if (
+        type(normalized.get("schema_version")) is not int
+        or normalized.get("schema_version") != GPU_QUALIFICATION_V2_SCHEMA_VERSION
+    ):
+        raise ValueError("unexpected GPU qualification evidence v2 schema_version")
+    if normalized.get("qualification_status") != "passed":
+        raise ValueError("GPU qualification evidence v2 must declare passed")
+    if normalized.get("campaign_id") != _required_string(
+        expected_campaign_id, "expected_campaign_id"
+    ):
+        raise ValueError("GPU qualification evidence v2 campaign_id mismatch")
+    plan_sha256 = _required_sha256(
+        plan_record.get("closed_record_sha256"), "plan_record.closed_record_sha256"
+    )
+    if normalized.get("plan_sha256") != plan_sha256:
+        raise ValueError("GPU qualification evidence v2 plan_sha256 mismatch")
+    local = _mapping_copy(
+        normalized.get("local_preflight_evidence"), "local_preflight_evidence"
+    )
+    local_completed = validate_local_preflight_evidence_v2_record(
+        local,
+        plan_sha256=plan_sha256,
+    )
+    cloud = _mapping_copy(normalized.get("cloud_gpu_evidence"), "cloud_gpu_evidence")
+    selection, first_cloud_start = _validate_cloud_gpu_evidence_v2(
+        cloud,
+        plan_record=plan_record,
+        plan_sha256=plan_sha256,
+        expected_artifact_pins=expected_artifact_pins,
+    )
+    if local_completed >= first_cloud_start:
+        raise ValueError("v2 local preflight must complete before cloud GPU execution")
+    return selection
+
+
+def _validate_cloud_gpu_evidence_v2(
+    record: Mapping[str, Any],
+    *,
+    plan_record: Mapping[str, Any],
+    plan_sha256: str,
+    expected_artifact_pins: GPUQualificationArtifactPinsV2,
+) -> tuple[qualification_v1.GPUQualificationSelection, datetime]:
+    """Validate all native records, then reuse v1 aggregate behavior gates."""
+
+    normalized = _mapping_copy(record, "cloud GPU evidence v2")
+    _require_exact_keys(normalized, _CLOUD_EVIDENCE_KEYS, "cloud GPU evidence v2")
+    _require_closed_record_digest(normalized, "cloud GPU evidence v2")
+    exact_values: dict[str, Any] = {
+        "all_planned_jobs_succeeded": True,
+        "authorization_source": "direct_databricks_runs_get",
+        "auto_backend_diagnostics_only": True,
+        "plan_sha256": plan_sha256,
+        "publication_attention_backend": (
+            qualification_v1.GPU_QUALIFICATION_PUBLICATION_BACKEND
+        ),
+        "record_type": GPU_QUALIFICATION_V2_CLOUD_EVIDENCE_RECORD_TYPE,
+        "schema_version": GPU_QUALIFICATION_V2_SCHEMA_VERSION,
+        "scope": "governed_cloud_gpu_terminal_evidence_v2",
+    }
+    for field_name, expected in exact_values.items():
+        if type(normalized.get(field_name)) is not type(expected) or (
+            normalized.get(field_name) != expected
+        ):
+            raise ValueError(f"cloud GPU evidence v2 {field_name} differs")
+
+    plan_jobs = tuple(qualification_v1._plan_jobs(plan_record))  # noqa: SLF001
+    jobs = _record_sequence(normalized.get("jobs"), "cloud GPU jobs v2")
+    terminal_receipts = _record_sequence(
+        normalized.get("terminal_receipts"), "cloud GPU terminal receipts v2"
+    )
+    if (
+        type(normalized.get("job_count")) is not int
+        or normalized.get("job_count") != len(plan_jobs)
+        or len(jobs) != len(plan_jobs)
+        or len(terminal_receipts) != len(plan_jobs)
+    ):
+        raise ValueError("cloud GPU evidence v2 must contain every planned job")
+    if len(jobs) > qualification_v1.GPU_QUALIFICATION_MAX_CLOUD_JOBS:
+        raise ValueError("cloud GPU evidence v2 exceeds the frozen job cap")
+
+    validated_jobs: list[dict[str, Any]] = []
+    for planned_job, raw_result in zip(plan_jobs, jobs, strict=True):
+        result, result_job, _measurements, _verification = (
+            _validate_gpu_job_result_v2_original(
+                raw_result,
+                plan_record=plan_record,
+                expected_artifact_pins=expected_artifact_pins,
+            )
+        )
+        if result.get("job_id") != planned_job.get("job_id") or (
+            result_job.get("job_id") != planned_job.get("job_id")
+        ):
+            raise ValueError("cloud GPU evidence v2 jobs are not in plan order")
+        validated_jobs.append(result)
+
+    validated_receipts: list[dict[str, Any]] = []
+    for planned_job, result, raw_receipt in zip(
+        plan_jobs, validated_jobs, terminal_receipts, strict=True
+    ):
+        validated_receipts.append(
+            _validate_terminal_receipt_v2_original(
+                raw_receipt,
+                result=result,
+                planned_job=planned_job,
+                plan_record=plan_record,
+            )
+        )
+
+    projected_jobs = [
+        _project_gpu_job_result_v2_to_v1(
+            result,
+            expected_artifact_pins=expected_artifact_pins,
+        )
+        for result in validated_jobs
+    ]
+    projected_receipts = [
+        _project_terminal_receipt_v2_to_v1(receipt, projected_result=result)
+        for receipt, result in zip(validated_receipts, projected_jobs, strict=True)
+    ]
+    projected_cloud = dict(normalized)
+    projected_cloud["jobs"] = projected_jobs
+    projected_cloud["record_type"] = (
+        qualification_v1.GPU_QUALIFICATION_CLOUD_EVIDENCE_RECORD_TYPE
+    )
+    projected_cloud["schema_version"] = (
+        qualification_v1.GPU_QUALIFICATION_SCHEMA_VERSION
+    )
+    projected_cloud["scope"] = "governed_cloud_gpu_terminal_evidence"
+    projected_cloud["terminal_receipts"] = projected_receipts
+    projected_cloud["closed_record_sha256"] = qualification_v1._closed_record_sha256(  # noqa: SLF001
+        projected_cloud
+    )
+    return qualification_v1._validate_cloud_gpu_evidence(  # noqa: SLF001
+        projected_cloud,
+        plan_record=plan_record,
+        plan_sha256=plan_sha256,
+        expected_artifact_pins=expected_artifact_pins.v1_projection(),
+        runtime_attestation_validator=(
+            validate_gpu_qualification_v2_runtime_attestation
+        ),
+    )
+
+
+def _validate_terminal_receipt_v2_original(
+    receipt: Mapping[str, Any],
+    *,
+    result: Mapping[str, Any],
+    planned_job: Mapping[str, Any],
+    plan_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate fields changed by the v2 receipt family before projection."""
+
+    normalized = _mapping_copy(
+        receipt, f"terminal receipt v2 {planned_job.get('job_id')}"
+    )
+    _require_exact_keys(normalized, _TERMINAL_RECEIPT_KEYS, "terminal receipt v2")
+    _require_closed_record_digest(normalized, "terminal receipt v2")
+    exact_values: dict[str, Any] = {
+        "job_id": planned_job.get("job_id"),
+        "plan_sha256": plan_record.get("closed_record_sha256"),
+        "record_type": GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE,
+        "result_record_sha256": result.get("closed_record_sha256"),
+        "schema_version": GPU_QUALIFICATION_V2_SCHEMA_VERSION,
+    }
+    for field_name, expected in exact_values.items():
+        if type(normalized.get(field_name)) is not type(expected) or (
+            normalized.get(field_name) != expected
+        ):
+            raise ValueError(f"terminal receipt v2 {field_name} differs")
+    expected_result_file_sha256 = sha256(
+        (canonical_gpu_qualification_json(result) + "\n").encode("utf-8")
+    ).hexdigest()
+    if normalized.get("result_file_sha256") != expected_result_file_sha256:
+        raise ValueError("terminal receipt v2 result_file_sha256 differs")
+    return normalized
+
+
+def _project_terminal_receipt_v2_to_v1(
+    receipt: Mapping[str, Any],
+    *,
+    projected_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Create an ephemeral v1 receipt for an already-validated v2 receipt."""
+
+    projected = dict(receipt)
+    projected["record_type"] = (
+        qualification_v1.GPU_QUALIFICATION_TERMINAL_RECEIPT_RECORD_TYPE
+    )
+    projected["result_record_sha256"] = projected_result["closed_record_sha256"]
+    projected["result_file_sha256"] = sha256(
+        (canonical_gpu_qualification_json(projected_result) + "\n").encode("utf-8")
+    ).hexdigest()
+    projected["schema_version"] = qualification_v1.GPU_QUALIFICATION_SCHEMA_VERSION
+    projected["closed_record_sha256"] = qualification_v1._closed_record_sha256(  # noqa: SLF001
+        projected
+    )
+    return projected
 
 
 def pins_from_gpu_qualification_plan_v2(
@@ -954,6 +1372,14 @@ def _required_string(value: Any, field_name: str) -> str:
     return value
 
 
+def _record_sequence(value: Any, label: str) -> tuple[dict[str, Any], ...]:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise ValueError(f"{label} must be an array")
+    return tuple(
+        _mapping_copy(item, f"{label}[{index}]") for index, item in enumerate(value)
+    )
+
+
 def _mapping_copy(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{label} must be an object")
@@ -970,6 +1396,8 @@ def _require_exact_keys(
 __all__ = [
     "GPU_QUALIFICATION_V2_ARTIFACT_KEYS",
     "GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION",
+    "GPU_QUALIFICATION_V2_CLOUD_EVIDENCE_RECORD_TYPE",
+    "GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION",
     "GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT",
     "GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE",
@@ -980,6 +1408,7 @@ __all__ = [
     "GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_SCHEMA_VERSION",
+    "GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT",
     "GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT",
     "GPUQualificationArtifactPinsV2",
@@ -990,6 +1419,7 @@ __all__ = [
     "gpu_qualification_v2_runtime_closure",
     "pins_from_gpu_qualification_plan_v2",
     "validate_gpu_job_result_v2_record",
+    "validate_gpu_qualification_evidence_v2_record",
     "validate_gpu_qualification_plan_v2_record",
     "validate_gpu_qualification_v2_runtime_attestation",
     "validate_gpu_runtime_verification_v2_record",

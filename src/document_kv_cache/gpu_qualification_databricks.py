@@ -1042,6 +1042,36 @@ class GPUQualificationLaunchAuthorization:
         )
 
 
+def _issue_gpu_qualification_launch_authorization(
+    *,
+    selection: GPUQualificationSelection,
+    plan_sha256: str,
+    evidence_closed_record_sha256: str,
+    evidence_file_sha256: str,
+    ledger_id: str,
+    ledger_path_sha256: str,
+    predecessor_prefix: DatabricksLedgerPrefix,
+    producer_batch_prefix: DatabricksLedgerPrefix,
+    ledger_prefix: DatabricksLedgerPrefix,
+    causal_closure_sha256: str,
+) -> GPUQualificationLaunchAuthorization:
+    """Issue the version-neutral capability without exposing its issuer token."""
+
+    return GPUQualificationLaunchAuthorization(
+        selection=selection,
+        plan_sha256=plan_sha256,
+        evidence_closed_record_sha256=evidence_closed_record_sha256,
+        evidence_file_sha256=evidence_file_sha256,
+        ledger_id=ledger_id,
+        ledger_path_sha256=ledger_path_sha256,
+        predecessor_prefix=predecessor_prefix,
+        producer_batch_prefix=producer_batch_prefix,
+        ledger_prefix=ledger_prefix,
+        causal_closure_sha256=causal_closure_sha256,
+        _issuer=_LAUNCH_AUTHORIZATION_ISSUER,
+    )
+
+
 class GPUQualificationSentinelRunner(Protocol):
     """Internal callable that performs one frozen GPU sentinel."""
 
@@ -4611,7 +4641,7 @@ def replay_gpu_qualification_launch_authorization(
             receipt["closed_record_sha256"] for receipt in terminal_receipts
         ],
     }
-    return GPUQualificationLaunchAuthorization(
+    return _issue_gpu_qualification_launch_authorization(
         selection=selection,
         plan_sha256=str(plan["closed_record_sha256"]),
         evidence_closed_record_sha256=str(evidence["closed_record_sha256"]),
@@ -4622,7 +4652,6 @@ def replay_gpu_qualification_launch_authorization(
         producer_batch_prefix=batch_authorization.batch_prefix,
         ledger_prefix=ledger_prefix,
         causal_closure_sha256=_canonical_json_sha256(causal_closure),
-        _issuer=_LAUNCH_AUTHORIZATION_ISSUER,
     )
 
 

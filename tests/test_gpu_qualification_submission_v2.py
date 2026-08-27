@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 import hashlib
 import inspect
 import json
@@ -382,6 +383,149 @@ def _assert_v2_seal(record: Mapping[str, Any]) -> None:
 
 def _planned_job_ids(plan: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(str(job["job_id"]) for job in plan["cloud_qualification"]["jobs"])
+
+
+def _completed_submission_with_terminal_fixtures(
+    case: _Case,
+) -> tuple[
+    tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+]:
+    databricks_v2.submit_gpu_qualification_jobs_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+    _validated_plan, _validated_pins, payloads, contracts = (
+        databricks_v2._validated_controller_contract_v2(
+            plan_record=case.plan,
+            single_user_name=_SINGLE_USER_NAME,
+            artifact_uris=case.artifact_uris,
+            output_root=_OUTPUT_ROOT,
+        )
+    )
+    runs: dict[str, dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = {}
+    for index, (planned_job, payload, contract) in enumerate(
+        zip(
+            case.plan["cloud_qualification"]["jobs"],
+            payloads,
+            contracts,
+            strict=True,
+        )
+    ):
+        run_id = str(case.cloud._run_id(str(contract["reservation_attempt_id"])))
+        run_start = 1_787_533_140_000 + index * 10_000
+        task_start = run_start + 1_000
+        task_end = task_start + 5_000
+        task = payload["tasks"][0]
+        cluster_id = f"cluster-{run_id}"
+        runs[run_id] = {
+            "end_time": task_end + 1_000,
+            "run_id": int(run_id),
+            "run_name": payload["run_name"],
+            "run_type": "SUBMIT_RUN",
+            "start_time": run_start,
+            "state": {
+                "life_cycle_state": "TERMINATED",
+                "result_state": "SUCCESS",
+            },
+            "tasks": [
+                {
+                    "attempt_number": 0,
+                    "cluster_instance": {"cluster_id": cluster_id},
+                    "end_time": task_end,
+                    "new_cluster": task["new_cluster"],
+                    "run_id": 990_000 + index,
+                    "start_time": task_start,
+                    "state": {
+                        "life_cycle_state": "TERMINATED",
+                        "result_state": "SUCCESS",
+                    },
+                    "task_key": task["task_key"],
+                }
+            ],
+        }
+        results[str(contract["output_json"])] = {
+            "closed_record_sha256": _digest(f"result:{contract['job_id']}"),
+            "cloud_cluster_id": cluster_id,
+            "cloud_run_id": run_id,
+            "job_id": contract["job_id"],
+            "measurements": (
+                {
+                    "candidate_qualified": True,
+                    "gpu_memory_utilization": 0.70,
+                }
+                if str(planned_job["job_id"]).startswith(
+                    "aws-g6-l4-32k-c4-gmu-"
+                )
+                else {}
+            ),
+            "output_json": contract["output_json"],
+            "reservation_attempt_id": contract["reservation_attempt_id"],
+            "task_key": contract["task_key"],
+        }
+    return payloads, contracts, runs, results
+
+
+def _collector_kwargs(case: _Case, evidence_root: Path) -> dict[str, Any]:
+    return {
+        **case.call_kwargs(),
+        "evidence_root": evidence_root,
+    }
+
+
+def _install_minimal_governed_evidence_stubs(
+    case: _Case,
+    results: Mapping[str, dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> qualification_v1.GPUQualificationSelection:
+    monkeypatch.setattr(
+        databricks_v1,
+        "_read_gpu_qualification_result",
+        lambda _config, output_json, *, label: deepcopy(results[output_json]),
+    )
+    monkeypatch.setattr(
+        databricks_v2,
+        "validate_gpu_job_result_v2_record",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        databricks_v2,
+        "_build_governed_cloud_gpu_evidence_v2",
+        lambda **kwargs: {
+            "terminal_receipts": list(kwargs["terminal_receipts"]),
+        },
+    )
+
+    def build_evidence(**kwargs: Any) -> dict[str, Any]:
+        record = {"closed_record_sha256": "", **kwargs}
+        record["closed_record_sha256"] = qualification_v2._closed_record_sha256(
+            record
+        )
+        return record
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "_build_governed_gpu_qualification_evidence_v2",
+        build_evidence,
+    )
+    selection = qualification_v1.GPUQualificationSelection(
+        attention_backend="TRITON_ATTN",
+        gpu_memory_utilization=0.70,
+        generation_hardware_id="aws-g6e-l40s",
+        generation_databricks_node_type_id="g6e.8xlarge",
+        generation_artifacts_sha256=_digest("v2-generation-artifacts"),
+        generation_prefix_tokens_per_second=40.0,
+        plan_sha256=str(case.plan["closed_record_sha256"]),
+    )
+    monkeypatch.setattr(
+        databricks_v2,
+        "validate_gpu_qualification_evidence_v2_record",
+        lambda *_args, **_kwargs: selection,
+    )
+    return selection
 
 
 def test_v2_submit_and_resume_signatures_own_payload_transport_and_clock() -> None:
@@ -896,3 +1040,238 @@ def test_resume_rejects_noncanonical_partial_root_before_any_write(
     assert _root_snapshot(case.receipt_root) == root_before
     assert case.cloud.post_attempt_ids == post_calls
     assert case.cloud.resume_attempt_ids == resume_calls
+
+
+def test_v2_collector_reconciles_all_terminals_before_control_plane_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    _payloads, contracts, runs, _results = (
+        _completed_submission_with_terminal_fixtures(case)
+    )
+    first_run_id = str(case.cloud._run_id(case.cloud.attempt_ids[0]))
+    runs[first_run_id]["run_name"] = "forged-first-run-name"
+    observed_gets: list[str] = []
+
+    def get_run(
+        config: DatabricksWorkspaceConfig,
+        run_id: str,
+    ) -> dict[str, Any]:
+        assert config is case.config
+        observed_gets.append(run_id)
+        return deepcopy(runs[run_id])
+
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", get_run)
+    evidence_root = tmp_path / "qualification-evidence-v2"
+
+    with pytest.raises(ValueError, match="run_name differs"):
+        databricks_v2.collect_gpu_qualification_evidence_v2(
+            case.config,
+            **_collector_kwargs(case, evidence_root),
+        )
+
+    assert observed_gets == [
+        str(case.cloud._run_id(attempt_id))
+        for attempt_id in case.cloud.attempt_ids
+    ]
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    assert len(ledger.terminal_actuals) == opening.terminal_actual_count + 14
+    assert tuple(
+        actual.attempt_id
+        for actual in ledger.terminal_actuals[opening.terminal_actual_count :]
+    ) == tuple(contract["reservation_attempt_id"] for contract in contracts)
+    assert ledger.active_reserved_cluster_hours == 0.0
+    assert not evidence_root.exists()
+    assert not list(tmp_path.glob(".qualification-evidence-v2.staging-*"))
+
+
+def test_v2_collector_resumes_canonical_partial_terminal_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    _payloads, contracts, runs, results = (
+        _completed_submission_with_terminal_fixtures(case)
+    )
+    second_run_id = str(case.cloud._run_id(case.cloud.attempt_ids[1]))
+    terminal_second_run = deepcopy(runs[second_run_id])
+    runs[second_run_id]["state"] = {
+        "life_cycle_state": "RUNNING",
+        "result_state": None,
+    }
+    monkeypatch.setattr(
+        databricks_v2,
+        "get_databricks_run",
+        lambda config, run_id: deepcopy(runs[run_id]),
+    )
+    selection = _install_minimal_governed_evidence_stubs(
+        case,
+        results,
+        monkeypatch,
+    )
+    evidence_root = tmp_path / "qualification-evidence-v2"
+
+    with pytest.raises(ValueError, match="runs/get response is not terminal"):
+        databricks_v2.collect_gpu_qualification_evidence_v2(
+            case.config,
+            **_collector_kwargs(case, evidence_root),
+        )
+
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    partial = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    partial_suffix = partial.terminal_actuals[opening.terminal_actual_count :]
+    assert tuple(actual.attempt_id for actual in partial_suffix) == (
+        contracts[0]["reservation_attempt_id"],
+    )
+    assert partial.active_reserved_cluster_hours > 0.0
+    assert not evidence_root.exists()
+
+    runs[second_run_id] = terminal_second_run
+    evidence, authorization = databricks_v2.collect_gpu_qualification_evidence_v2(
+        case.config,
+        **_collector_kwargs(case, evidence_root),
+        now=lambda: datetime(2026, 8, 26, 12, 30, tzinfo=UTC),
+    )
+
+    completed = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    completed_suffix = completed.terminal_actuals[opening.terminal_actual_count :]
+    assert tuple(actual.attempt_id for actual in completed_suffix) == tuple(
+        contract["reservation_attempt_id"] for contract in contracts
+    )
+    assert len(completed_suffix) == 14
+    assert completed.active_reserved_cluster_hours == 0.0
+    assert authorization.selection == selection
+    assert _json(
+        evidence_root / databricks_v2.GPU_QUALIFICATION_V2_EVIDENCE_FILENAME
+    ) == evidence
+    assert len(list(evidence_root.glob("*.terminal-receipt-v2.json"))) == 14
+
+
+def test_v2_collector_atomically_publishes_exact14_and_replay_is_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    _payloads, _contracts, runs, results = (
+        _completed_submission_with_terminal_fixtures(case)
+    )
+    monkeypatch.setattr(
+        databricks_v2,
+        "get_databricks_run",
+        lambda config, run_id: deepcopy(runs[run_id]),
+    )
+    selection = _install_minimal_governed_evidence_stubs(
+        case,
+        results,
+        monkeypatch,
+    )
+    evidence_root = tmp_path / "qualification-evidence-v2"
+
+    evidence, authorization = databricks_v2.collect_gpu_qualification_evidence_v2(
+        case.config,
+        **_collector_kwargs(case, evidence_root),
+        now=lambda: datetime(2026, 8, 26, 12, 0, tzinfo=UTC),
+    )
+
+    job_ids = _planned_job_ids(case.plan)
+    assert {path.name for path in evidence_root.iterdir()} == {
+        databricks_v2.GPU_QUALIFICATION_V2_EVIDENCE_FILENAME,
+        *(
+            f"{job_id}.terminal-receipt-v2.json"
+            for job_id in job_ids
+        ),
+    }
+    assert len(list(evidence_root.glob("*.terminal-receipt-v2.json"))) == 14
+    assert _json(
+        evidence_root / databricks_v2.GPU_QUALIFICATION_V2_EVIDENCE_FILENAME
+    ) == evidence
+    assert isinstance(
+        authorization,
+        databricks_v1.GPUQualificationLaunchAuthorization,
+    )
+    assert authorization.selection == selection
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert ledger.active_reserved_cluster_hours == 0.0
+    assert len(ledger.terminal_actuals) == (
+        GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.terminal_actual_count + 14
+    )
+    assert not list(tmp_path.glob(".qualification-evidence-v2.staging-*"))
+
+    ledger_before = case.ledger_path.read_bytes()
+    ledger_stat = _stable_stat(case.ledger_path)
+    evidence_before = _root_snapshot(evidence_root)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("durable v2 replay performed a cloud or reconciliation write")
+
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", forbidden)
+    monkeypatch.setattr(
+        databricks_v2,
+        "record_databricks_verified_run_terminal_actual_json",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        databricks_v1,
+        "_read_gpu_qualification_result",
+        forbidden,
+    )
+    replayed = databricks_v2.replay_gpu_qualification_launch_authorization_v2(
+        config=case.config,
+        **_collector_kwargs(case, evidence_root),
+        expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+        expected_artifact_pins=_pins(),
+    )
+
+    assert replayed == authorization
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _stable_stat(case.ledger_path) == ledger_stat
+    assert _root_snapshot(evidence_root) == evidence_before
+
+
+def test_v2_replay_rejects_partial_terminal_closure_without_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    _payloads, _contracts, runs, results = (
+        _completed_submission_with_terminal_fixtures(case)
+    )
+    monkeypatch.setattr(
+        databricks_v2,
+        "get_databricks_run",
+        lambda config, run_id: deepcopy(runs[run_id]),
+    )
+    _install_minimal_governed_evidence_stubs(case, results, monkeypatch)
+    evidence_root = tmp_path / "qualification-evidence-v2"
+    databricks_v2.collect_gpu_qualification_evidence_v2(
+        case.config,
+        **_collector_kwargs(case, evidence_root),
+    )
+    missing = evidence_root / (
+        f"{_planned_job_ids(case.plan)[-1]}.terminal-receipt-v2.json"
+    )
+    missing.unlink()
+    ledger_before = case.ledger_path.read_bytes()
+    surviving_root = _root_snapshot(evidence_root)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("partial v2 replay reached cloud or reconciliation")
+
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", forbidden)
+    monkeypatch.setattr(
+        databricks_v2,
+        "record_databricks_verified_run_terminal_actual_json",
+        forbidden,
+    )
+    with pytest.raises(ValueError, match="exact terminal closure"):
+        databricks_v2.replay_gpu_qualification_launch_authorization_v2(
+            config=case.config,
+            **_collector_kwargs(case, evidence_root),
+            expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+            expected_artifact_pins=_pins(),
+        )
+
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _root_snapshot(evidence_root) == surviving_root
