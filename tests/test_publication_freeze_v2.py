@@ -1247,6 +1247,16 @@ def test_preflight_writes_exact_eight_children_and_parent_file_seals(
             "cachet.gpu_qualification.local_check_evidence.v2"
         )
         assert child["schema_version"] == 2
+    mypy = json.loads((output / "mypy.json").read_text(encoding="utf-8"))
+    assert mypy["command"][1:] == [
+        "--strict",
+        "--no-incremental",
+        "--cache-dir",
+        "/dev/null",
+        "--config-file",
+        "pyproject.toml",
+        *freeze_v2._V2_STATIC_ANALYSIS_TARGETS,
+    ]
 
 
 def test_preflight_rejects_resealed_semantic_child_tamper(
@@ -1254,6 +1264,36 @@ def test_preflight_rejects_resealed_semantic_child_tamper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evidence, output, plan = _run_synthetic_preflight(tmp_path, monkeypatch)
+    mypy_path = output / "mypy.json"
+    original_mypy_bytes = mypy_path.read_bytes()
+    evidence_path = output / "local-preflight-evidence.json"
+    original_evidence_bytes = evidence_path.read_bytes()
+    mypy = json.loads(original_mypy_bytes)
+    del mypy["command"][3:5]
+    mypy_path.write_bytes(
+        freeze_v1._canonical_json_bytes(mypy, pretty=False)  # noqa: SLF001
+    )
+    resealed_mypy = build_local_preflight_evidence_v2(
+        plan_sha256=plan["closed_record_sha256"],
+        completed_at_utc=evidence["completed_at_utc"],
+        check_evidence_sha256={
+            check_id: hashlib.sha256(
+                (output / f"{check_id}.json").read_bytes()
+            ).hexdigest()
+            for check_id in GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS
+        },
+    )
+    evidence_path.write_bytes(
+        freeze_v1._canonical_json_bytes(resealed_mypy, pretty=False)  # noqa: SLF001
+    )
+    with pytest.raises(ValueError, match="mypy.*command differs"):
+        freeze_v2._validate_preflight_bundle_structural(
+            evidence_path,
+            plan=plan,
+        )
+    mypy_path.write_bytes(original_mypy_bytes)
+    evidence_path.write_bytes(original_evidence_bytes)
+
     child_path = output / "runtime_artifact_closure.json"
     child = json.loads(child_path.read_text(encoding="utf-8"))
     child["result"]["validated"] = False

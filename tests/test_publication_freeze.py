@@ -715,10 +715,15 @@ def test_preflight_runner_derives_hashes_and_detects_sidecar_tamper(
     assert ruff["command"][-len(freeze._STATIC_ANALYSIS_TARGETS) :] == list(
         freeze._STATIC_ANALYSIS_TARGETS
     )
-    assert mypy["command"][1:2] == ["--strict"]
-    assert mypy["command"][-len(freeze._STATIC_ANALYSIS_TARGETS) :] == list(
-        freeze._STATIC_ANALYSIS_TARGETS
-    )
+    assert mypy["command"][1:] == [
+        "--strict",
+        "--no-incremental",
+        "--cache-dir",
+        "/dev/null",
+        "--config-file",
+        "pyproject.toml",
+        *freeze._MYPY_TARGETS,
+    ]
     assert ruff["environment"] == freeze._preflight_environment(
         inputs.repository_root
     )
@@ -765,15 +770,18 @@ def test_preflight_bundle_rejects_resealed_semantic_tamper(
         command_runner=_fake_runner,
         now=_clock(),
     )
-    ruff_path = output / "ruff.json"
-    ruff = json.loads(ruff_path.read_text(encoding="utf-8"))
-    ruff["result"]["target_paths"] = ["."]
-    ruff_path.write_text(
-        json.dumps(ruff, sort_keys=True, separators=(",", ":")) + "\n",
+    mypy_path = output / "mypy.json"
+    original_mypy_bytes = mypy_path.read_bytes()
+    evidence_path = output / "local-preflight-evidence.json"
+    original_evidence_bytes = evidence_path.read_bytes()
+    mypy = json.loads(mypy_path.read_text(encoding="utf-8"))
+    del mypy["command"][3:5]
+    mypy_path.write_text(
+        json.dumps(mypy, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
     old_evidence = json.loads(
-        (output / "local-preflight-evidence.json").read_text(encoding="utf-8")
+        evidence_path.read_text(encoding="utf-8")
     )
     resealed = build_local_preflight_evidence(
         plan_sha256=plan["closed_record_sha256"],
@@ -785,14 +793,45 @@ def test_preflight_bundle_rejects_resealed_semantic_tamper(
             for check_id in freeze._LOCAL_CHECK_IDS
         },
     )
-    (output / "local-preflight-evidence.json").write_text(
+    evidence_path.write_text(
         canonical_gpu_qualification_json(resealed) + "\n",
         encoding="utf-8",
     )
 
+    with pytest.raises(ValueError, match="mypy.*command differs"):
+        freeze.validate_gpu_qualification_local_preflight_bundle(
+            evidence_path,
+            plan_record=plan,
+            submit_payloads=_bound_submit_payloads(inputs),
+            workspace_config=_WORKSPACE_CONFIG,
+        )
+    mypy_path.write_bytes(original_mypy_bytes)
+    evidence_path.write_bytes(original_evidence_bytes)
+
+    ruff_path = output / "ruff.json"
+    ruff = json.loads(ruff_path.read_text(encoding="utf-8"))
+    ruff["result"]["target_paths"] = ["."]
+    ruff_path.write_text(
+        json.dumps(ruff, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    resealed_ruff = build_local_preflight_evidence(
+        plan_sha256=plan["closed_record_sha256"],
+        completed_at_utc=old_evidence["completed_at_utc"],
+        check_evidence_sha256={
+            check_id: hashlib.sha256(
+                (output / f"{check_id}.json").read_bytes()
+            ).hexdigest()
+            for check_id in freeze._LOCAL_CHECK_IDS
+        },
+    )
+    evidence_path.write_text(
+        canonical_gpu_qualification_json(resealed_ruff) + "\n",
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="ruff.*result differs"):
         freeze.validate_gpu_qualification_local_preflight_bundle(
-            output / "local-preflight-evidence.json",
+            evidence_path,
             plan_record=plan,
             submit_payloads=_bound_submit_payloads(inputs),
             workspace_config=_WORKSPACE_CONFIG,
@@ -957,6 +996,7 @@ def test_preflight_and_git_subprocesses_ignore_hostile_ambient_environment(
     )
     monkeypatch.setenv("PYTEST_PLUGINS", "attacker_plugin")
     monkeypatch.setenv("MYPYPATH", str(tmp_path / "attacker-mypy"))
+    monkeypatch.setenv("MYPY_CACHE_DIR", str(tmp_path / "attacker-mypy-cache"))
     monkeypatch.setenv("RUFF_CONFIG", str(tmp_path / "attacker-ruff.toml"))
     monkeypatch.setenv("GIT_DIR", str(tmp_path / "attacker-git-dir"))
     monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
@@ -966,6 +1006,7 @@ def test_preflight_and_git_subprocesses_ignore_hostile_ambient_environment(
     assert environment["PYTEST_PLUGINS"] == ""
     assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
     assert environment["MYPYPATH"] == ""
+    assert "MYPY_CACHE_DIR" not in environment
     assert "RUFF_CONFIG" not in environment
     assert "GIT_DIR" not in freeze._git_environment()
     assert freeze._build_environment(1_777_777_777)["PIP_INDEX_URL"] == (

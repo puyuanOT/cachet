@@ -2382,6 +2382,8 @@ def _command_check_specs(
                 str(inputs.mypy_executable),
                 "--strict",
                 "--no-incremental",
+                "--cache-dir",
+                "/dev/null",
                 "--config-file",
                 "pyproject.toml",
                 *_MYPY_TARGETS,
