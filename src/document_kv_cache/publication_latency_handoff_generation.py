@@ -108,10 +108,21 @@ from document_kv_cache.model_profiles import (
 )
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
+    GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
     GPUQualificationArtifactPins,
     GPUQualificationSelection,
     canonical_gpu_qualification_json,
     validate_gpu_qualification_evidence_record,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+    GPUQualificationArtifactPinsV2,
+    validate_gpu_qualification_evidence_v2_record,
+    validate_gpu_qualification_plan_v2_record,
+)
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
@@ -132,7 +143,10 @@ from document_kv_cache.publication_campaign import (
 )
 from document_kv_cache.serving_env import (
     TRANSFORMERS_CONSTRAINT,
-    VLLM_RUNTIME_LOCK_SHA256,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.publication_handoff_artifacts import (
     close_publication_latency_handoff_bundle,
@@ -164,10 +178,14 @@ PUBLICATION_LATENCY_HANDOFF_PLAN_RECORD_TYPE = (
     "cachet.publication_latency_handoff_generation_plan.v1"
 )
 PUBLICATION_LATENCY_HANDOFF_PLAN_SCHEMA_VERSION = 1
-PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE = (
+_PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE_V1 = (
     "cachet.publication_latency_handoff_generation_execution.v1"
 )
-PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION = 1
+_PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION_V1 = 1
+PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE = (
+    "cachet.publication_latency_handoff_generation_execution.v2"
+)
+PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION = 2
 PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME = (
     "publication-latency-handoff-generation.execution.json"
 )
@@ -182,19 +200,35 @@ PUBLICATION_LATENCY_HANDOFF_TASK_COUNT = (
     * PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET
     * len(PUBLICATION_CAMPAIGN_CONTEXT_TOKENS)
 )
-PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE = (
+_PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE_V1 = (
     "cachet.publication_latency_handoff_worker_payload.v1"
 )
-PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_SCHEMA_VERSION = 1
-PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE = (
+_PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_SCHEMA_VERSION_V1 = 1
+PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE = (
+    "cachet.publication_latency_handoff_worker_payload.v2"
+)
+PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_SCHEMA_VERSION = 2
+_PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE_V1 = (
     "cachet.publication_latency_handoff_worker_result.v1"
 )
-PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION = 1
-PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_RECORD_TYPE = (
+_PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION_V1 = 1
+PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE = (
+    "cachet.publication_latency_handoff_worker_result.v2"
+)
+PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION = 2
+_PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_RECORD_TYPE_V1 = (
     "cachet.publication_latency_handoff_databricks_execution.v1"
 )
-PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION = 1
+_PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION_V1 = 1
+PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_RECORD_TYPE = (
+    "cachet.publication_latency_handoff_databricks_execution.v2"
+)
+PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION = 2
 PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY = "databricks-attestations"
+PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_RECORD_TYPE = (
+    "cachet.publication_latency_generator_hardware_qualification.v2"
+)
+PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_SCHEMA_VERSION = 2
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_HARDWARE_TARGET = "aws-g6e-l40s"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID = "g6e.4xlarge"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_GPU_MODEL = "NVIDIA L40S"
@@ -219,8 +253,12 @@ import hashlib
 import hmac
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
+
+
+_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 300.0
 
 
 def _cluster_path(uri: str) -> str:
@@ -249,7 +287,7 @@ def _verified_path(uri: str, expected: str, label: str) -> str:
 def _pip_subprocess_environment() -> dict[str, str]:
     env = dict(os.environ)
     for variable_name in tuple(env):
-        if variable_name.upper().startswith("PIP_"):
+        if variable_name.upper().startswith(("PIP_", "_PIP_")):
             env.pop(variable_name)
     for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         env.pop(variable_name, None)
@@ -259,9 +297,95 @@ def _pip_subprocess_environment() -> dict[str, str]:
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
         }
     )
     return env
+
+
+def _direct_reference(distribution: str, path: str, expected: str) -> str:
+    return distribution + " @ " + Path(path).resolve().as_uri() + "#sha256=" + expected
+
+
+def _runtime_marker(args: argparse.Namespace) -> str:
+    record = {
+        "domain": "cachet.publication.latency_handoff.runtime.v2",
+        "package_wheel_sha256": args.package_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": args.patched_flashinfer_wheel_sha256,
+        "patched_vllm_wheel_sha256": args.patched_vllm_wheel_sha256,
+        "runtime_closure_manifest_sha256": args.runtime_closure_manifest_sha256,
+        "runtime_lock_sha256": args.runtime_lock_sha256,
+    }
+    return hashlib.sha256(
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _verify_locked_runtime(
+    *,
+    venv_python: str,
+    runtime_lock: str,
+    patched_vllm_wheel: str,
+    patched_flashinfer_wheel: str,
+    runtime_closure_manifest: str,
+    package_wheel: str,
+    package_wheel_sha256: str,
+    environment: dict[str, str],
+) -> None:
+    verifier = (
+        "import json,sys; from document_kv_cache._gpu_qualification_sentinels_v2 "
+        "import verify_gpu_qualification_v2_runtime_installation as verify; "
+        "print(json.dumps(verify(runtime_lock=sys.argv[1],vllm_uri=sys.argv[2],"
+        "flashinfer_uri=sys.argv[3],runtime_closure_manifest=sys.argv[4],"
+        "package_uri=sys.argv[5],package_sha256=sys.argv[6]),sort_keys=True,"
+        "separators=(',',':')))"
+    )
+    completed = subprocess.run(
+        [
+            venv_python,
+            "-c",
+            verifier,
+            runtime_lock,
+            Path(patched_vllm_wheel).resolve().as_uri(),
+            Path(patched_flashinfer_wheel).resolve().as_uri(),
+            runtime_closure_manifest,
+            Path(package_wheel).resolve().as_uri(),
+            package_wheel_sha256,
+        ],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("v2 locked runtime verifier process failed")
+    if completed.stderr != "":
+        raise RuntimeError("v2 locked runtime verifier emitted stderr")
+    try:
+        attestation = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError("v2 locked runtime verifier emitted invalid JSON") from None
+    if not isinstance(attestation, dict):
+        raise RuntimeError("v2 locked runtime verifier did not emit an object")
+    canonical_stdout = (
+        json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\\n"
+    )
+    if completed.stdout != canonical_stdout:
+        raise RuntimeError("v2 locked runtime verifier output is not canonical")
+    from document_kv_cache.gpu_qualification_v2 import (
+        validate_gpu_qualification_v2_runtime_attestation,
+    )
+
+    validate_gpu_qualification_v2_runtime_attestation(attestation)
+    expected_direct_urls = {
+        "flashinfer_direct_url": Path(patched_flashinfer_wheel).resolve().as_uri(),
+        "vllm_direct_url": Path(patched_vllm_wheel).resolve().as_uri(),
+    }
+    if any(
+        attestation.get(field_name) != expected
+        for field_name, expected in expected_direct_urls.items()
+    ):
+        raise RuntimeError("v2 locked runtime verifier artifact origin drift")
 
 
 def _bootstrap(argv: list[str]) -> None:
@@ -273,6 +397,10 @@ def _bootstrap(argv: list[str]) -> None:
     parser.add_argument("--runtime-lock-sha256", required=True)
     parser.add_argument("--patched-vllm-wheel-uri", required=True)
     parser.add_argument("--patched-vllm-wheel-sha256", required=True)
+    parser.add_argument("--patched-flashinfer-wheel-uri", required=True)
+    parser.add_argument("--patched-flashinfer-wheel-sha256", required=True)
+    parser.add_argument("--runtime-closure-manifest-uri", required=True)
+    parser.add_argument("--runtime-closure-manifest-sha256", required=True)
     parser.add_argument("--runtime-venv-dir", required=True)
     args, remaining = parser.parse_known_args(argv)
     if not hmac.compare_digest(_sha256(__file__), args.runner_sha256):
@@ -283,19 +411,40 @@ def _bootstrap(argv: list[str]) -> None:
     runtime_lock = _verified_path(
         args.runtime_lock_uri, args.runtime_lock_sha256, "runtime lock"
     )
-    patched_wheel = _verified_path(
+    patched_vllm_wheel = _verified_path(
         args.patched_vllm_wheel_uri,
         args.patched_vllm_wheel_sha256,
         "patched vLLM wheel",
+    )
+    patched_flashinfer_wheel = _verified_path(
+        args.patched_flashinfer_wheel_uri,
+        args.patched_flashinfer_wheel_sha256,
+        "patched FlashInfer wheel",
+    )
+    runtime_closure_manifest = _verified_path(
+        args.runtime_closure_manifest_uri,
+        args.runtime_closure_manifest_sha256,
+        "runtime closure manifest",
     )
     venv_dir = os.path.abspath(args.runtime_venv_dir)
     if not venv_dir.startswith("/local_disk0/"):
         raise ValueError("runtime venv must be rooted under /local_disk0")
     marker = os.environ.get("CACHET_LATENCY_HANDOFF_LOCKED_RUNTIME")
+    expected_marker = _runtime_marker(args)
     venv_python = os.path.join(venv_dir, "bin", "python")
-    if marker == args.runtime_lock_sha256:
+    if marker == expected_marker:
         if os.path.realpath(sys.executable) != os.path.realpath(venv_python):
             raise RuntimeError("locked-runtime marker is set outside the bound venv")
+        _verify_locked_runtime(
+            venv_python=venv_python,
+            runtime_lock=runtime_lock,
+            patched_vllm_wheel=patched_vllm_wheel,
+            patched_flashinfer_wheel=patched_flashinfer_wheel,
+            runtime_closure_manifest=runtime_closure_manifest,
+            package_wheel=package_wheel,
+            package_wheel_sha256=args.package_wheel_sha256,
+            environment=_pip_subprocess_environment(),
+        )
         from document_kv_cache.publication_latency_handoff_generation import main
 
         raise SystemExit(main(remaining))
@@ -318,32 +467,52 @@ def _bootstrap(argv: list[str]) -> None:
         env=pip_environment,
     )
     subprocess.check_call(
-        [*pip, "install", "--no-deps", patched_wheel],
+        [
+            *pip,
+            "install",
+            "--no-deps",
+            _direct_reference(
+                "vllm", patched_vllm_wheel, args.patched_vllm_wheel_sha256
+            ),
+        ],
         env=pip_environment,
     )
     subprocess.check_call(
-        [*pip, "install", "--no-deps", package_wheel],
+        [
+            *pip,
+            "install",
+            "--no-deps",
+            _direct_reference(
+                "flashinfer-python",
+                patched_flashinfer_wheel,
+                args.patched_flashinfer_wheel_sha256,
+            ),
+        ],
         env=pip_environment,
     )
-    subprocess.check_call([*pip, "check"], env=pip_environment)
-    expected_spec = (
-        "vllm @ file://" + os.path.abspath(patched_wheel)
-        + "#sha256=" + args.patched_vllm_wheel_sha256
-    )
-    verifier = (
-        "import json,sys; from document_kv_cache.serving_env import "
-        "verify_installed_vllm_runtime_lock as verify; "
-        "print(json.dumps(verify(sys.argv[1]), sort_keys=True))"
-    )
-    verified = subprocess.check_output(
-        [venv_python, "-c", verifier, expected_spec],
-        text=True,
+    subprocess.check_call(
+        [
+            *pip,
+            "install",
+            "--no-deps",
+            _direct_reference(
+                "cachet-kv", package_wheel, args.package_wheel_sha256
+            ),
+        ],
         env=pip_environment,
     )
-    if json.loads(verified).get("ok") is not True:
-        raise RuntimeError("locked runtime verifier did not attest success")
+    _verify_locked_runtime(
+        venv_python=venv_python,
+        runtime_lock=runtime_lock,
+        patched_vllm_wheel=patched_vllm_wheel,
+        patched_flashinfer_wheel=patched_flashinfer_wheel,
+        runtime_closure_manifest=runtime_closure_manifest,
+        package_wheel=package_wheel,
+        package_wheel_sha256=args.package_wheel_sha256,
+        environment=pip_environment,
+    )
     env = dict(pip_environment)
-    env["CACHET_LATENCY_HANDOFF_LOCKED_RUNTIME"] = args.runtime_lock_sha256
+    env["CACHET_LATENCY_HANDOFF_LOCKED_RUNTIME"] = expected_marker
     os.execve(
         venv_python,
         [
@@ -364,6 +533,7 @@ PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256 = sha256(
 ).hexdigest()
 
 _PLAN_ORDER_DOMAIN = "cachet.publication.latency_handoff.lpt.v1"
+_Q8_PHASE_LEASE_RECORD_TYPE = "cachet.publication_q8_handoff_phase_lease.v2"
 _SHA256_LENGTH = 64
 _SUBMISSION_AUTHORIZATION_ISSUER = object()
 _SERVING_AUTHORIZATION_ISSUER = object()
@@ -489,7 +659,7 @@ class PublicationLatencyHandoffExecutionConfig:
 
 @dataclass(frozen=True, slots=True)
 class PublicationLatencyGeneratorHardwareQualification:
-    """Canonical sealed GPU-qualifier result plus immutable file bindings."""
+    """Historical v1 qualifier binding retained only for record replay."""
 
     evidence_record: Mapping[str, Any]
     plan_record: Mapping[str, Any]
@@ -542,6 +712,75 @@ class PublicationLatencyGeneratorHardwareQualification:
 
 
 @dataclass(frozen=True, slots=True)
+class PublicationLatencyGeneratorHardwareQualificationV2:
+    """Native-v2 qualifier result required by every Q8 launch boundary."""
+
+    evidence_record: Mapping[str, Any]
+    plan_record: Mapping[str, Any]
+    expected_campaign_id: str
+    expected_artifact_pins: GPUQualificationArtifactPinsV2
+    evidence_uri: str
+    evidence_file_sha256: str
+    plan_uri: str
+    plan_file_sha256: str
+    selection: GPUQualificationSelection = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.expected_campaign_id, str) or not (
+            self.expected_campaign_id
+        ):
+            raise ValueError("expected_campaign_id must be non-empty")
+        if not isinstance(
+            self.expected_artifact_pins, GPUQualificationArtifactPinsV2
+        ):
+            raise TypeError("expected_artifact_pins must be native v2")
+        if hmac.compare_digest(
+            self.expected_artifact_pins.runner_sha256,
+            PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256,
+        ):
+            raise ValueError(
+                "qualification runner and Q8 handoff runner must be distinct"
+            )
+        for field_name in ("evidence_uri", "plan_uri"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field_name} must be non-empty")
+        for field_name in ("evidence_file_sha256", "plan_file_sha256"):
+            _require_sha256(getattr(self, field_name), field_name=field_name)
+        if self.evidence_record.get("record_type") != (
+            GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE
+        ):
+            raise ValueError("Q8 launch requires native-v2 qualification evidence")
+        if self.plan_record.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE:
+            raise ValueError("Q8 launch requires a native-v2 qualification plan")
+        selection = validate_gpu_qualification_evidence_v2_record(
+            self.evidence_record,
+            plan_record=self.plan_record,
+            expected_campaign_id=self.expected_campaign_id,
+            expected_artifact_pins=self.expected_artifact_pins,
+        )
+        if selection.generation_hardware_id != (
+            PUBLICATION_LATENCY_HANDOFF_GENERATOR_HARDWARE_TARGET
+        ):
+            raise ValueError("canonical GPU qualifier did not select L40S")
+        if selection.generation_databricks_node_type_id != (
+            PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID
+        ):
+            raise ValueError("canonical GPU qualifier did not select g6e.4xlarge")
+        if selection.generation_prefix_tokens_per_second < (
+            PUBLICATION_CAMPAIGN_MIN_GENERATION_TOKENS_PER_SECOND
+        ):
+            raise ValueError("canonical L40S qualification is below 35 tokens/s")
+        object.__setattr__(
+            self, "evidence_record", MappingProxyType(dict(self.evidence_record))
+        )
+        object.__setattr__(
+            self, "plan_record", MappingProxyType(dict(self.plan_record))
+        )
+        object.__setattr__(self, "selection", selection)
+
+
+@dataclass(frozen=True, slots=True)
 class DatabricksPublicationLatencyHandoffJobConfig:
     """Bootstrap and one-task job settings for sixteen independent producers."""
 
@@ -553,6 +792,11 @@ class DatabricksPublicationLatencyHandoffJobConfig:
     runtime_lock_sha256: str
     patched_vllm_wheel_uri: str
     patched_vllm_wheel_sha256: str
+    patched_flashinfer_wheel_uri: str
+    patched_flashinfer_wheel_sha256: str
+    runtime_closure_manifest_uri: str
+    runtime_closure_manifest_sha256: str
+    cachet_source_tree_sha256: str
     runner_sha256: str = PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256
     runtime_venv_dir_template: str = (
         "/local_disk0/cachet-latency-handoff-runtime-{worker_index}"
@@ -576,6 +820,8 @@ class DatabricksPublicationLatencyHandoffJobConfig:
             "package_wheel_uri",
             "runtime_lock_uri",
             "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
             "runtime_venv_dir_template",
             "run_name",
             "spark_version",
@@ -596,12 +842,24 @@ class DatabricksPublicationLatencyHandoffJobConfig:
             "package_wheel_sha256",
             "runtime_lock_sha256",
             "patched_vllm_wheel_sha256",
+            "patched_flashinfer_wheel_sha256",
+            "runtime_closure_manifest_sha256",
+            "cachet_source_tree_sha256",
         ):
             _require_sha256(getattr(self, field_name), field_name=field_name)
         if self.runner_sha256 != PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256:
             raise ValueError("latency handoff runner hash drift")
-        if self.runtime_lock_sha256 != VLLM_RUNTIME_LOCK_SHA256:
-            raise ValueError("latency handoff runtime lock hash drift")
+        expected_runtime_artifacts = {
+            "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+            "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "runtime_closure_manifest_sha256": (
+                RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+            ),
+        }
+        for field_name, expected in expected_runtime_artifacts.items():
+            if getattr(self, field_name) != expected:
+                raise ValueError(f"latency handoff {field_name} drift")
         if self.node_type_id != PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID:
             raise ValueError("publication handoff producers require g6e.4xlarge")
         if self.task_key_prefix != "latency_handoff_worker":
@@ -682,6 +940,9 @@ class PublicationLatencyHandoffSubmissionAuthorization:
     batch_marker_file_sha256: str
     batch_marker_closed_record_sha256: str
     durable_output_root: str
+    job_config_sha256: str
+    runner_python_file: str
+    runner_sha256: str
 
     def __init__(
         self,
@@ -689,6 +950,9 @@ class PublicationLatencyHandoffSubmissionAuthorization:
         batch_authorization: DatabricksBatchReservationAuthorization,
         phase_lease_root: str | Path,
         durable_output_root: str,
+        job_config_sha256: str,
+        runner_python_file: str,
+        runner_sha256: str,
         _issuer: object,
     ) -> None:
         if _issuer is not _SUBMISSION_AUTHORIZATION_ISSUER:
@@ -701,10 +965,23 @@ class PublicationLatencyHandoffSubmissionAuthorization:
             raise TypeError("batch_authorization has the wrong type")
         root = Path(phase_lease_root).expanduser().absolute()
         output_root = _normalized_q8_durable_output_root(durable_output_root)
+        reviewed_runner = _validated_q8_runner_python_file(runner_python_file)
+        reviewed_job_config_sha256 = _require_sha256(
+            job_config_sha256,
+            field_name="job_config_sha256",
+        )
+        if not hmac.compare_digest(
+            _require_sha256(runner_sha256, field_name="runner_sha256"),
+            PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256,
+        ):
+            raise ValueError("Q8 submission authority runner hash drift")
         lease, marker = _validate_q8_submission_phase_files(
             root,
             batch_authorization,
             durable_output_root=output_root,
+            job_config_sha256=reviewed_job_config_sha256,
+            runner_python_file=reviewed_runner,
+            runner_sha256=runner_sha256,
         )
         root = root.resolve(strict=True)
         object.__setattr__(self, "batch_authorization", batch_authorization)
@@ -735,6 +1012,9 @@ class PublicationLatencyHandoffSubmissionAuthorization:
             _required_string(marker, "closed_record_sha256"),
         )
         object.__setattr__(self, "durable_output_root", output_root)
+        object.__setattr__(self, "job_config_sha256", reviewed_job_config_sha256)
+        object.__setattr__(self, "runner_python_file", reviewed_runner)
+        object.__setattr__(self, "runner_sha256", runner_sha256)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -1056,7 +1336,7 @@ def build_publication_latency_handoff_worker_payloads(
     durable_output_root: str,
     local_work_root_template: str,
     config: PublicationLatencyHandoffExecutionConfig,
-    hardware_qualification: PublicationLatencyGeneratorHardwareQualification,
+    hardware_qualification: PublicationLatencyGeneratorHardwareQualificationV2,
 ) -> tuple[dict[str, Any], ...]:
     """Bind every exact-token shard to one independent one-GPU producer."""
 
@@ -1087,12 +1367,14 @@ def build_publication_latency_handoff_worker_payloads(
         raise TypeError("config must be a PublicationLatencyHandoffExecutionConfig")
     if not isinstance(
         hardware_qualification,
-        PublicationLatencyGeneratorHardwareQualification,
+        PublicationLatencyGeneratorHardwareQualificationV2,
     ):
-        raise TypeError("hardware_qualification has the wrong type")
+        raise TypeError("hardware_qualification must be native v2")
     plan_closed = _required_string(record, "closed_record_sha256")
     input_bundle = _required_string(record, "input_bundle_sha256")
-    qualification = _hardware_qualification_record(hardware_qualification)
+    qualification = publication_latency_generator_hardware_qualification_v2_record(
+        hardware_qualification
+    )
     payloads: list[dict[str, Any]] = []
     for worker in workers:
         worker_index = _required_int(worker, "worker_index")
@@ -1178,14 +1460,38 @@ def validate_publication_latency_handoff_worker_payload(
 ) -> None:
     """Reject a payload unless it is the exact binding for its plan worker."""
 
-    if payload.get("record_type") != (
-        PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE
-    ):
-        raise ValueError("latency handoff worker payload record_type is invalid")
-    if payload.get("schema_version") != (
-        PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_SCHEMA_VERSION
-    ):
-        raise ValueError("latency handoff worker payload schema_version is invalid")
+    _require_exact_mapping_keys(
+        payload,
+        {
+            "assignment",
+            "closed_record_sha256",
+            "durable_output_root",
+            "execution_contract",
+            "generator_hardware_qualification",
+            "input_bundle_sha256",
+            "local_work_root",
+            "output_binding",
+            "plan",
+            "prepared_inputs",
+            "record_type",
+            "schema_version",
+            "worker_id",
+            "worker_index",
+        },
+        label="latency handoff worker payload",
+    )
+    version = (payload.get("record_type"), payload.get("schema_version"))
+    if version not in {
+        (
+            PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE,
+            PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_SCHEMA_VERSION,
+        ),
+        (
+            _PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE_V1,
+            _PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_SCHEMA_VERSION_V1,
+        ),
+    }:
+        raise ValueError("latency handoff worker payload schema is invalid")
     if payload.get("closed_record_sha256") != _closed_record_sha256(payload):
         raise ValueError("latency handoff worker payload closure is invalid")
     _validate_closed_plan_envelope(plan)
@@ -1222,10 +1528,26 @@ def validate_publication_latency_handoff_worker_payload(
     if dict(assignment) != expected_assignment:
         raise ValueError("worker payload assignment drift")
     _execution_config_from_record(_required_mapping(payload, "execution_contract"))
-    _validate_hardware_qualification_record(
+    qualification = _required_mapping(payload, "generator_hardware_qualification")
+    _validate_hardware_qualification_record(qualification)
+    if version[1] == PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_SCHEMA_VERSION:
+        _require_v2_hardware_qualification_record(qualification)
+    elif qualification.get("record_type") is not None:
+        raise ValueError("legacy worker payload cannot contain a v2 qualification")
+    _validate_worker_output_binding(payload, worker=worker)
+
+
+def _require_v2_worker_payload_envelope(payload: Mapping[str, Any]) -> None:
+    if (
+        payload.get("record_type")
+        != PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE
+        or payload.get("schema_version")
+        != PUBLICATION_LATENCY_HANDOFF_WORKER_PAYLOAD_SCHEMA_VERSION
+    ):
+        raise ValueError("Q8 launch requires a native-v2 worker payload")
+    _require_v2_hardware_qualification_record(
         _required_mapping(payload, "generator_hardware_qualification")
     )
-    _validate_worker_output_binding(payload, worker=worker)
 
 
 def write_publication_latency_handoff_worker_payloads(
@@ -1241,6 +1563,7 @@ def write_publication_latency_handoff_worker_payloads(
     destination.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     for expected_index, payload in enumerate(values):
+        _require_v2_worker_payload_envelope(payload)
         if _required_int(payload, "worker_index") != expected_index:
             raise ValueError("worker payload order must be contiguous")
         if payload.get("closed_record_sha256") != _closed_record_sha256(payload):
@@ -1278,6 +1601,7 @@ def build_databricks_publication_latency_handoff_worker_submit_payloads(
     durable_roots: set[str] = set()
     qualification_closures: set[str] = set()
     for expected_index, payload in enumerate(payloads):
+        _require_v2_worker_payload_envelope(payload)
         worker_index = _required_int(payload, "worker_index")
         if worker_index != expected_index:
             raise ValueError("worker payloads must be ordered 0..15")
@@ -1310,8 +1634,15 @@ def build_databricks_publication_latency_handoff_worker_submit_payloads(
             "expected_artifact_pins",
         )
         expected_qualified_artifacts = {
+            "cachet_source_tree_sha256": config.cachet_source_tree_sha256,
             "package_wheel_sha256": config.package_wheel_sha256,
+            "patched_flashinfer_wheel_sha256": (
+                config.patched_flashinfer_wheel_sha256
+            ),
             "patched_vllm_wheel_sha256": config.patched_vllm_wheel_sha256,
+            "runtime_closure_manifest_sha256": (
+                config.runtime_closure_manifest_sha256
+            ),
             "runtime_lock_sha256": config.runtime_lock_sha256,
             "input_bundle_sha256": payload.get("input_bundle_sha256"),
         }
@@ -1357,6 +1688,14 @@ def build_databricks_publication_latency_handoff_worker_submit_payloads(
                     config.patched_vllm_wheel_uri,
                     "--patched-vllm-wheel-sha256",
                     config.patched_vllm_wheel_sha256,
+                    "--patched-flashinfer-wheel-uri",
+                    config.patched_flashinfer_wheel_uri,
+                    "--patched-flashinfer-wheel-sha256",
+                    config.patched_flashinfer_wheel_sha256,
+                    "--runtime-closure-manifest-uri",
+                    config.runtime_closure_manifest_uri,
+                    "--runtime-closure-manifest-sha256",
+                    config.runtime_closure_manifest_sha256,
                     "--runtime-venv-dir",
                     runtime_venv,
                     "run-worker",
@@ -1374,16 +1713,22 @@ def build_databricks_publication_latency_handoff_worker_submit_payloads(
             payload,
             worker_index=worker_index,
         )
-        submit_payloads.append(
-            bind_databricks_run_idempotency_token(
-                {
-                    "run_name": f"{config.run_name}-worker-{worker_index:02d}",
-                    "timeout_seconds": config.run_timeout_seconds,
-                    "tasks": [task],
-                },
-                attempt_id=attempt_id,
-            )
+        submit_payload = bind_databricks_run_idempotency_token(
+            {
+                "run_name": f"{config.run_name}-worker-{worker_index:02d}",
+                "timeout_seconds": config.run_timeout_seconds,
+                "tasks": [task],
+            },
+            attempt_id=attempt_id,
         )
+        _validate_worker_payload_submit_binding(
+            submit_payload,
+            worker_payload=payload,
+            worker_index=worker_index,
+            expected_worker_payload_file_sha256=expected_payload_file_sha256,
+            job_config=config,
+        )
+        submit_payloads.append(submit_payload)
     if len(durable_roots) != 1:
         raise ValueError("all producers must share exactly one durable root")
     if len(qualification_closures) != 1:
@@ -1452,14 +1797,18 @@ def reserve_publication_latency_handoff_worker_attempt_json(
     worker_payload: Mapping[str, Any],
     worker_index: int,
     attempt_id: str,
+    job_config: DatabricksPublicationLatencyHandoffJobConfig,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
 ) -> DatabricksClusterHourLedger:
     """Authorize and reserve one five-hour task under the campaign caps."""
 
+    if not isinstance(job_config, DatabricksPublicationLatencyHandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
     _validate_producer_worker_index(worker_index)
     _validate_single_producer_submit_payload(
         submit_payload,
         worker_index=worker_index,
+        expected_runner_python_file=job_config.runner_python_file,
     )
     worker_payload_file_sha256 = _worker_payload_file_sha256(worker_payload)
     _require_authorized_worker_payload(
@@ -1473,6 +1822,7 @@ def reserve_publication_latency_handoff_worker_attempt_json(
         worker_payload=worker_payload,
         worker_index=worker_index,
         expected_worker_payload_file_sha256=worker_payload_file_sha256,
+        job_config=job_config,
     )
     path = Path(ledger_path)
     _require_matching_qualification_ledger(
@@ -1495,6 +1845,7 @@ def reserve_publication_latency_handoff_worker_attempt_json(
             worker_index=worker_index,
             qualification_launch_authorization=qualification_launch_authorization,
             expected_worker_payload_file_sha256=worker_payload_file_sha256,
+            job_config=job_config,
         ),
     )
 
@@ -1507,15 +1858,19 @@ def reserve_and_submit_publication_latency_handoff_worker(
     worker_payload: Mapping[str, Any],
     worker_index: int,
     attempt_id: str,
+    job_config: DatabricksPublicationLatencyHandoffJobConfig,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     opener: DatabricksURLOpener | None = None,
 ) -> dict[str, Any]:
     """Authorize, reserve, then submit the exact same canonical payload bytes."""
 
+    if not isinstance(job_config, DatabricksPublicationLatencyHandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
     _validate_producer_worker_index(worker_index)
     _validate_single_producer_submit_payload(
         submit_payload,
         worker_index=worker_index,
+        expected_runner_python_file=job_config.runner_python_file,
     )
     worker_payload_file_sha256 = _worker_payload_file_sha256(worker_payload)
     _require_authorized_worker_payload(
@@ -1529,6 +1884,7 @@ def reserve_and_submit_publication_latency_handoff_worker(
         worker_payload=worker_payload,
         worker_index=worker_index,
         expected_worker_payload_file_sha256=worker_payload_file_sha256,
+        job_config=job_config,
     )
     path = Path(ledger_path)
     _require_matching_qualification_ledger(
@@ -1550,6 +1906,7 @@ def reserve_and_submit_publication_latency_handoff_worker(
             worker_index=worker_index,
             qualification_launch_authorization=qualification_launch_authorization,
             expected_worker_payload_file_sha256=worker_payload_file_sha256,
+            job_config=job_config,
         ),
         opener=opener,
     )
@@ -1562,6 +1919,94 @@ def reserve_and_submit_publication_latency_handoff_worker(
     return response
 
 
+def _q8_worker_wave_batch_validator(
+    *,
+    ledger_path: str | Path,
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
+    predecessor: DatabricksLedgerPrefix,
+    worker_indexes: tuple[int, ...],
+    workers: tuple[Mapping[str, Any], ...],
+    attempts: tuple[str, ...],
+    payload_digests: tuple[str, ...],
+    job_config: DatabricksPublicationLatencyHandoffJobConfig,
+) -> Callable[
+    [
+        DatabricksClusterHourLedger,
+        tuple[DatabricksClusterHourReservation, ...],
+        tuple[Mapping[str, Any], ...],
+    ],
+    None,
+]:
+    """Return the identical atomic-admission check for reserve and recovery."""
+
+    def validate_batch(
+        batch_live: DatabricksClusterHourLedger,
+        reservations: tuple[DatabricksClusterHourReservation, ...],
+        snapshots: tuple[Mapping[str, Any], ...],
+    ) -> None:
+        if databricks_ledger_path_sha256(ledger_path) != (
+            qualification_launch_authorization.ledger_path_sha256
+        ):
+            raise ValueError("Q8 batch ledger path binding drift")
+        require_databricks_ledger_prefix(batch_live, predecessor)
+        if len(reservations) != len(worker_indexes) or len(snapshots) != len(
+            worker_indexes
+        ):
+            raise ValueError("Q8 batch must contain exactly sixteen producers")
+        for index, reservation, snapshot, worker_payload in zip(
+            worker_indexes,
+            reservations,
+            snapshots,
+            workers,
+            strict=True,
+        ):
+            expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
+            _validate_single_producer_submit_payload(
+                snapshot,
+                worker_index=index,
+                expected_runner_python_file=job_config.runner_python_file,
+            )
+            _validate_worker_payload_submit_binding(
+                snapshot,
+                worker_payload=worker_payload,
+                worker_index=index,
+                expected_worker_payload_file_sha256=expected_worker_sha256,
+                job_config=job_config,
+            )
+            require_databricks_run_idempotency_token(
+                snapshot,
+                attempt_id=attempts[index],
+            )
+            if (
+                reservation.attempt_id != attempts[index]
+                or reservation.submit_payload_sha256 != payload_digests[index]
+                or reservation.reserved_cluster_hours != 5.0
+            ):
+                raise ValueError("Q8 batch reservation member drift")
+        proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
+        proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
+        if batch_live.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
+            raise ValueError("Q8 generation requires the 1024-hour ledger")
+        if (
+            batch_live.active_reserved_task_count + proposed_tasks
+            > PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS
+        ):
+            raise ValueError("Q8 wave exceeds the global 16-job concurrency cap")
+        if (
+            batch_live.active_reserved_cluster_hours + proposed_hours
+            > MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS
+        ):
+            raise ValueError("Q8 wave exceeds the active 900-hour cap")
+        if (
+            batch_live.accounted_cluster_hours + proposed_hours
+            > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            - PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
+        ):
+            raise ValueError("Q8 wave consumes the 124-hour headroom")
+
+    return validate_batch
+
+
 def reserve_and_submit_publication_latency_handoff_worker_wave(
     workspace: DatabricksWorkspaceConfig,
     submit_payloads: Sequence[Mapping[str, Any]],
@@ -1570,6 +2015,7 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
     worker_payloads: Sequence[Mapping[str, Any]],
     attempt_ids_by_worker: Mapping[int, str],
     phase_lease_root: str | Path,
+    job_config: DatabricksPublicationLatencyHandoffJobConfig,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     opener: DatabricksURLOpener | None = None,
 ) -> tuple[
@@ -1578,6 +2024,8 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
 ]:
     """Atomically admit all sixteen Q8 producers before the first POST."""
 
+    if not isinstance(job_config, DatabricksPublicationLatencyHandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
     submissions = tuple(submit_payloads)
     workers = tuple(worker_payloads)
     worker_indexes = tuple(range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS))
@@ -1612,7 +2060,11 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
         strict=True,
     ):
         expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
-        _validate_single_producer_submit_payload(submit_payload, worker_index=index)
+        _validate_single_producer_submit_payload(
+            submit_payload,
+            worker_index=index,
+            expected_runner_python_file=job_config.runner_python_file,
+        )
         _require_authorized_worker_payload(
             worker_payload,
             qualification_launch_authorization,
@@ -1624,6 +2076,7 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
             worker_payload=worker_payload,
             worker_index=index,
             expected_worker_payload_file_sha256=expected_worker_sha256,
+            job_config=job_config,
         )
         require_databricks_run_idempotency_token(
             submit_payload,
@@ -1646,9 +2099,12 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
         "attempt_ids": list(attempts),
         "closed_record_sha256": "",
         "durable_output_root": durable_output_root,
+        "job_config_sha256": _q8_job_config_sha256(job_config),
         "ledger_path_sha256": qualification_launch_authorization.ledger_path_sha256,
         "predecessor_prefix": predecessor.to_record(),
-        "record_type": "cachet.publication_q8_handoff_phase_lease.v1",
+        "record_type": _Q8_PHASE_LEASE_RECORD_TYPE,
+        "runner_python_file": job_config.runner_python_file,
+        "runner_sha256": job_config.runner_sha256,
         "submit_payload_sha256": payload_digests,
     }
     lease_record["closed_record_sha256"] = _closed_record_sha256(lease_record)
@@ -1656,73 +2112,24 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
     _sync_file(lease_root / "phase-lease.json")
     _sync_directory(lease_root)
 
-    def validate_batch(
-        batch_live: DatabricksClusterHourLedger,
-        reservations: tuple[DatabricksClusterHourReservation, ...],
-        snapshots: tuple[Mapping[str, Any], ...],
-    ) -> None:
-        if databricks_ledger_path_sha256(ledger_path) != (
-            qualification_launch_authorization.ledger_path_sha256
-        ):
-            raise ValueError("Q8 batch ledger path binding drift")
-        require_databricks_ledger_prefix(batch_live, predecessor)
-        if len(reservations) != len(worker_indexes) or len(snapshots) != len(
-            worker_indexes
-        ):
-            raise ValueError("Q8 batch must contain exactly sixteen producers")
-        for index, reservation, snapshot, worker_payload in zip(
-            worker_indexes,
-            reservations,
-            snapshots,
-            workers,
-            strict=True,
-        ):
-            expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
-            _validate_single_producer_submit_payload(snapshot, worker_index=index)
-            _validate_worker_payload_submit_binding(
-                snapshot,
-                worker_payload=worker_payload,
-                worker_index=index,
-                expected_worker_payload_file_sha256=expected_worker_sha256,
-            )
-            require_databricks_run_idempotency_token(
-                snapshot,
-                attempt_id=attempts[index],
-            )
-            if (
-                reservation.attempt_id != attempts[index]
-                or reservation.submit_payload_sha256 != payload_digests[index]
-                or reservation.reserved_cluster_hours != 5.0
-            ):
-                raise ValueError("Q8 batch reservation member drift")
-        proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
-        proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
-        if batch_live.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-            raise ValueError("Q8 generation requires the 1024-hour ledger")
-        if (
-            batch_live.active_reserved_task_count + proposed_tasks
-            > PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS
-        ):
-            raise ValueError("Q8 wave exceeds the global 16-job concurrency cap")
-        if (
-            batch_live.active_reserved_cluster_hours + proposed_hours
-            > MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS
-        ):
-            raise ValueError("Q8 wave exceeds the active 900-hour cap")
-        if (
-            batch_live.accounted_cluster_hours + proposed_hours
-            > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-            - PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
-        ):
-            raise ValueError("Q8 wave consumes the 124-hour headroom")
-
     try:
         _batch_ledger, batch_authorization = (
             reserve_databricks_run_attempt_batch_authorized_json(
                 ledger_path,
                 tuple(requests),
                 expected_predecessor_prefix=predecessor,
-                batch_validator=validate_batch,
+                batch_validator=_q8_worker_wave_batch_validator(
+                    ledger_path=ledger_path,
+                    qualification_launch_authorization=(
+                        qualification_launch_authorization
+                    ),
+                    predecessor=predecessor,
+                    worker_indexes=worker_indexes,
+                    workers=workers,
+                    attempts=attempts,
+                    payload_digests=tuple(payload_digests),
+                    job_config=job_config,
+                ),
             )
         )
     except BaseException:
@@ -1747,10 +2154,20 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
         batch_authorization,
         lease_root,
         durable_output_root=durable_output_root,
+        job_config=job_config,
     )
 
     responses: list[dict[str, Any]] = []
     for index, submit_payload in zip(worker_indexes, submissions, strict=True):
+        _validate_worker_payload_submit_binding(
+            submit_payload,
+            worker_payload=workers[index],
+            worker_index=index,
+            expected_worker_payload_file_sha256=_worker_payload_file_sha256(
+                workers[index]
+            ),
+            job_config=job_config,
+        )
         intent_path = lease_root / f"worker-{index:02d}.post-intent.json"
         intent = {
             "attempt_id": attempts[index],
@@ -1764,6 +2181,19 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
         _write_canonical_json_exclusive(intent, intent_path)
         _sync_file(intent_path)
         _sync_directory(lease_root)
+        _validate_worker_payload_submit_binding(
+            submit_payload,
+            worker_payload=workers[index],
+            worker_index=index,
+            expected_worker_payload_file_sha256=_worker_payload_file_sha256(
+                workers[index]
+            ),
+            job_config=job_config,
+        )
+        require_databricks_run_idempotency_token(
+            submit_payload,
+            attempt_id=attempts[index],
+        )
         response = submit_pre_reserved_databricks_run(
             workspace,
             submit_payload,
@@ -1807,6 +2237,7 @@ def resume_publication_latency_handoff_worker_wave(
     worker_payloads: Sequence[Mapping[str, Any]],
     attempt_ids_by_worker: Mapping[int, str],
     phase_lease_root: str | Path,
+    job_config: DatabricksPublicationLatencyHandoffJobConfig,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     opener: DatabricksURLOpener | None = None,
 ) -> tuple[
@@ -1815,6 +2246,8 @@ def resume_publication_latency_handoff_worker_wave(
 ]:
     """Resume the exact Q8 producer wave from its durable phase lease."""
 
+    if not isinstance(job_config, DatabricksPublicationLatencyHandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
     submissions = tuple(submit_payloads)
     workers = tuple(worker_payloads)
     indexes = tuple(range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS))
@@ -1843,7 +2276,11 @@ def resume_publication_latency_handoff_worker_wave(
         indexes, submissions, workers, strict=True
     ):
         worker_sha256 = _worker_payload_file_sha256(worker_payload)
-        _validate_single_producer_submit_payload(submit_payload, worker_index=index)
+        _validate_single_producer_submit_payload(
+            submit_payload,
+            worker_index=index,
+            expected_runner_python_file=job_config.runner_python_file,
+        )
         _require_authorized_worker_payload(
             worker_payload,
             qualification_launch_authorization,
@@ -1855,6 +2292,7 @@ def resume_publication_latency_handoff_worker_wave(
             worker_payload=worker_payload,
             worker_index=index,
             expected_worker_payload_file_sha256=worker_sha256,
+            job_config=job_config,
         )
         require_databricks_run_idempotency_token(
             submit_payload, attempt_id=attempts[index]
@@ -1880,9 +2318,12 @@ def resume_publication_latency_handoff_worker_wave(
         "attempt_ids": list(attempts),
         "closed_record_sha256": "",
         "durable_output_root": durable_output_root,
+        "job_config_sha256": _q8_job_config_sha256(job_config),
         "ledger_path_sha256": qualification_launch_authorization.ledger_path_sha256,
         "predecessor_prefix": predecessor.to_record(),
-        "record_type": "cachet.publication_q8_handoff_phase_lease.v1",
+        "record_type": _Q8_PHASE_LEASE_RECORD_TYPE,
+        "runner_python_file": job_config.runner_python_file,
+        "runner_sha256": job_config.runner_sha256,
         "submit_payload_sha256": payload_digests,
     }
     expected_lease["closed_record_sha256"] = _closed_record_sha256(expected_lease)
@@ -1891,10 +2332,41 @@ def resume_publication_latency_handoff_worker_wave(
         != expected_lease
     ):
         raise ValueError("Q8 phase lease differs from the frozen wave")
-    batch_authorization = replay_databricks_run_attempt_batch_authorization_json(
-        ledger_path,
-        tuple(requests),
+    if databricks_ledger_prefix(live) == predecessor:
+        _batch_ledger, batch_authorization = (
+            reserve_databricks_run_attempt_batch_authorized_json(
+                ledger_path,
+                tuple(requests),
+                expected_predecessor_prefix=predecessor,
+                batch_validator=_q8_worker_wave_batch_validator(
+                    ledger_path=ledger_path,
+                    qualification_launch_authorization=(
+                        qualification_launch_authorization
+                    ),
+                    predecessor=predecessor,
+                    worker_indexes=indexes,
+                    workers=workers,
+                    attempts=attempts,
+                    payload_digests=tuple(payload_digests),
+                    job_config=job_config,
+                ),
+            )
+        )
+        live = _require_matching_qualification_ledger(
+            ledger_path,
+            qualification_launch_authorization,
+        )
+    else:
+        batch_authorization = replay_databricks_run_attempt_batch_authorization_json(
+            ledger_path,
+            tuple(requests),
+            expected_predecessor_prefix=predecessor,
+        )
+    require_databricks_batch_reservation_authorization(
+        batch_authorization,
         expected_predecessor_prefix=predecessor,
+        expected_attempt_ids=attempts,
+        expected_submit_payload_sha256s=payload_digests,
     )
     require_databricks_publication_batch_admission(live, batch_authorization)
     expected_batch: dict[str, Any] = {
@@ -1915,9 +2387,19 @@ def resume_publication_latency_handoff_worker_wave(
         batch_authorization,
         lease_root,
         durable_output_root=durable_output_root,
+        job_config=job_config,
     )
     responses: list[dict[str, Any]] = []
     for index, submit_payload in zip(indexes, submissions, strict=True):
+        _validate_worker_payload_submit_binding(
+            submit_payload,
+            worker_payload=workers[index],
+            worker_index=index,
+            expected_worker_payload_file_sha256=_worker_payload_file_sha256(
+                workers[index]
+            ),
+            job_config=job_config,
+        )
         intent_path = lease_root / f"worker-{index:02d}.post-intent.json"
         receipt_path = lease_root / f"worker-{index:02d}.receipt.json"
         expected_intent: dict[str, Any] = {
@@ -1941,6 +2423,19 @@ def resume_publication_latency_handoff_worker_wave(
             _write_canonical_json_exclusive(expected_intent, intent_path)
             _sync_file(intent_path)
             _sync_directory(lease_root)
+        _validate_worker_payload_submit_binding(
+            submit_payload,
+            worker_payload=workers[index],
+            worker_index=index,
+            expected_worker_payload_file_sha256=_worker_payload_file_sha256(
+                workers[index]
+            ),
+            job_config=job_config,
+        )
+        require_databricks_run_idempotency_token(
+            submit_payload,
+            attempt_id=attempts[index],
+        )
         response = resume_pre_reserved_databricks_run(
             workspace,
             submit_payload,
@@ -2004,6 +2499,9 @@ def require_publication_latency_handoff_submission_authorization(
         authorization.phase_lease_root,
         authorization.batch_authorization,
         durable_output_root=authorization.durable_output_root,
+        job_config_sha256=authorization.job_config_sha256,
+        runner_python_file=authorization.runner_python_file,
+        runner_sha256=authorization.runner_sha256,
     )
     observed = (
         _q8_phase_lease_root_sha256(authorization.phase_lease_root),
@@ -2029,11 +2527,15 @@ def _issue_q8_submission_authorization(
     phase_lease_root: Path,
     *,
     durable_output_root: str,
+    job_config: DatabricksPublicationLatencyHandoffJobConfig,
 ) -> PublicationLatencyHandoffSubmissionAuthorization:
     return PublicationLatencyHandoffSubmissionAuthorization(
         batch_authorization=batch_authorization,
         phase_lease_root=phase_lease_root,
         durable_output_root=durable_output_root,
+        job_config_sha256=_q8_job_config_sha256(job_config),
+        runner_python_file=job_config.runner_python_file,
+        runner_sha256=job_config.runner_sha256,
         _issuer=_SUBMISSION_AUTHORIZATION_ISSUER,
     )
 
@@ -2043,9 +2545,21 @@ def _validate_q8_submission_phase_files(
     batch_authorization: DatabricksBatchReservationAuthorization,
     *,
     durable_output_root: str,
+    job_config_sha256: str,
+    runner_python_file: str,
+    runner_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(batch_authorization, DatabricksBatchReservationAuthorization):
         raise TypeError("Q8 phase batch authorization has the wrong type")
+    reviewed_runner_sha256 = _require_sha256(
+        runner_sha256,
+        field_name="runner_sha256",
+    )
+    if not hmac.compare_digest(
+        reviewed_runner_sha256,
+        PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256,
+    ):
+        raise ValueError("Q8 phase lease runner hash drift")
     root = Path(phase_lease_root).expanduser().absolute()
     _reject_q8_symlink_ancestors(root, "Q8 phase lease")
     if not root.is_dir() or root.is_symlink():
@@ -2059,9 +2573,17 @@ def _validate_q8_submission_phase_files(
         "durable_output_root": _normalized_q8_durable_output_root(
             durable_output_root
         ),
+        "job_config_sha256": _require_sha256(
+            job_config_sha256,
+            field_name="job_config_sha256",
+        ),
         "ledger_path_sha256": batch_authorization.ledger_path_sha256,
         "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
-        "record_type": "cachet.publication_q8_handoff_phase_lease.v1",
+        "record_type": _Q8_PHASE_LEASE_RECORD_TYPE,
+        "runner_python_file": _validated_q8_runner_python_file(
+            runner_python_file
+        ),
+        "runner_sha256": reviewed_runner_sha256,
         "submit_payload_sha256": list(
             batch_authorization.submit_payload_sha256s
         ),
@@ -2124,6 +2646,7 @@ def _publication_latency_handoff_reservation_validator(
     worker_index: int,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     expected_worker_payload_file_sha256: str,
+    job_config: DatabricksPublicationLatencyHandoffJobConfig,
 ) -> Callable[[DatabricksClusterHourReservation, Mapping[str, Any]], None]:
     def validate_reservation(
         reservation: DatabricksClusterHourReservation,
@@ -2132,6 +2655,7 @@ def _publication_latency_handoff_reservation_validator(
         _validate_single_producer_submit_payload(
             snapshot,
             worker_index=worker_index,
+            expected_runner_python_file=job_config.runner_python_file,
         )
         _require_authorized_worker_payload(
             worker_payload,
@@ -2144,6 +2668,7 @@ def _publication_latency_handoff_reservation_validator(
             worker_payload=worker_payload,
             worker_index=worker_index,
             expected_worker_payload_file_sha256=expected_worker_payload_file_sha256,
+            job_config=job_config,
         )
         if reservation.reserved_cluster_hours != 5.0:
             raise ValueError("one latency handoff producer must reserve five GPU-hours")
@@ -2192,9 +2717,15 @@ def build_publication_latency_handoff_databricks_attestation(
     """Sanitize and close one direct attempt-0 ``runs/get`` response."""
 
     _validate_producer_worker_index(worker_index)
+    batch_reservation_authorization = (
+        require_publication_latency_handoff_submission_authorization(
+            submission_authorization
+        )
+    )
     _validate_single_producer_submit_payload(
         submit_payload,
         worker_index=worker_index,
+        expected_runner_python_file=submission_authorization.runner_python_file,
     )
     snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(
         submit_payload
@@ -2205,14 +2736,13 @@ def build_publication_latency_handoff_databricks_attestation(
     terminal_snapshot, canonical_terminal = (
         canonical_databricks_submit_payload_snapshot(terminal_run)
     )
-    _validate_single_producer_submit_payload(snapshot, worker_index=worker_index)
+    _validate_single_producer_submit_payload(
+        snapshot,
+        worker_index=worker_index,
+        expected_runner_python_file=submission_authorization.runner_python_file,
+    )
     submit_payload_sha256 = sha256(canonical_payload).hexdigest()
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    batch_reservation_authorization = (
-        require_publication_latency_handoff_submission_authorization(
-            submission_authorization
-        )
-    )
     if (
         batch_reservation_authorization.predecessor_prefix
         != qualification_launch_authorization.ledger_prefix
@@ -2275,6 +2805,21 @@ def build_publication_latency_handoff_databricks_attestation(
     )
     if len(raw_tasks) != 1:
         raise ValueError("publication producer run must contain exactly one task")
+    submitted_tasks = _mapping_sequence(
+        snapshot.get("tasks"),
+        field_name="submitted producer tasks",
+    )
+    submitted_python_task = _required_mapping(
+        submitted_tasks[0],
+        "spark_python_task",
+    )
+    observed_python_task = raw_tasks[0].get("spark_python_task")
+    if not isinstance(observed_python_task, Mapping) or dict(
+        observed_python_task
+    ) != dict(submitted_python_task):
+        raise ValueError(
+            "terminal producer spark_python_task differs from submitted task"
+        )
     attempt_number = _required_int(raw_tasks[0], "attempt_number")
     if attempt_number != 0:
         raise ValueError("publication producer must use Databricks attempt_number=0")
@@ -2361,6 +2906,7 @@ def build_publication_latency_handoff_databricks_attestation(
         field_name="attested worker result",
     )
     worker_result = _read_worker_result(result_path)
+    _require_v2_worker_result_envelope(worker_result)
     if worker_result.get("worker_index") != worker_index:
         raise ValueError("attested worker result belongs to another worker")
     record: dict[str, Any] = {
@@ -2420,6 +2966,7 @@ def write_publication_latency_handoff_databricks_attestation(
     """Persist one canonical cloud attestation and return its immutable binding."""
 
     _validate_publication_latency_handoff_databricks_attestation_record(record)
+    _require_v2_databricks_attestation_record(record)
     worker_index = _required_int(_required_mapping(record, "attempt"), "worker_index")
     destination = Path(path).expanduser().absolute()
     if destination.exists() or destination.is_symlink():
@@ -2483,6 +3030,10 @@ def read_publication_latency_handoff_databricks_attestation(
         field_name="attested worker result",
     )
     result = _read_worker_result(result_path)
+    if record.get("schema_version") == (
+        PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION
+    ):
+        _require_v2_worker_result_envelope(result)
     if result.get("worker_index") != binding.worker_index:
         raise ValueError("Databricks attestation worker-result identity drift")
     if result.get("closed_record_sha256") != worker_binding.get(
@@ -2493,6 +3044,16 @@ def read_publication_latency_handoff_databricks_attestation(
     ):
         raise ValueError("Databricks attestation worker-result file binding drift")
     return record
+
+
+def _require_v2_databricks_attestation_record(record: Mapping[str, Any]) -> None:
+    if (
+        record.get("record_type")
+        != PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION
+    ):
+        raise ValueError("Q8 launch closure requires native-v2 attestation evidence")
 
 
 def reconcile_publication_latency_handoff_worker_attempt_json(
@@ -2513,6 +3074,7 @@ def reconcile_publication_latency_handoff_worker_attempt_json(
         attestation,
         durable_output_root=durable_output_root,
     )
+    _require_v2_databricks_attestation_record(record)
     attempt = _required_mapping(record, "attempt")
     if attempt.get("attempt_id") != attempt_id:
         raise ValueError("Databricks attestation belongs to another attempt")
@@ -2790,6 +3352,7 @@ def run_publication_latency_handoff_worker(
         field_name="generation plan",
     )
     validate_publication_latency_handoff_worker_payload(payload, plan=plan)
+    _require_v2_worker_payload_envelope(payload)
     prepared_binding = _required_mapping(payload, "prepared_inputs")
     prepared_root = (
         Path(local_path(_required_string(prepared_binding, "uri")))
@@ -3855,9 +4418,13 @@ def _post_close_jsonl_objects(path: Path) -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
-def _hardware_qualification_record(
-    value: PublicationLatencyGeneratorHardwareQualification,
+def publication_latency_generator_hardware_qualification_v2_record(
+    value: PublicationLatencyGeneratorHardwareQualificationV2,
 ) -> dict[str, Any]:
+    """Serialize and validate the native-v2 Q8 hardware authority binding."""
+
+    if not isinstance(value, PublicationLatencyGeneratorHardwareQualificationV2):
+        raise TypeError("Q8 hardware qualification must be native v2")
     selection = value.selection
     record = {
         "evidence_closed_record_sha256": _required_string(
@@ -3878,13 +4445,112 @@ def _hardware_qualification_record(
         ),
         "plan_closed_record_sha256": selection.plan_sha256,
         "plan_file_sha256": value.plan_file_sha256,
+        "plan_record": dict(value.plan_record),
         "plan_uri": value.plan_uri,
+        "record_type": PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_RECORD_TYPE,
+        "schema_version": (
+            PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_SCHEMA_VERSION
+        ),
     }
     _validate_hardware_qualification_record(record)
     return record
 
 
 def _validate_hardware_qualification_record(record: Mapping[str, Any]) -> None:
+    if record.get("record_type") is None and record.get("schema_version") is None:
+        _validate_hardware_qualification_record_v1(record)
+        return
+    _require_v2_hardware_qualification_record(record)
+
+
+def _validate_hardware_qualification_record_v1(record: Mapping[str, Any]) -> None:
+    _require_exact_mapping_keys(
+        record,
+        {
+            "evidence_closed_record_sha256",
+            "evidence_file_sha256",
+            "evidence_uri",
+            "expected_artifact_pins",
+            "expected_campaign_id",
+            "generation_artifacts_sha256",
+            "generation_databricks_node_type_id",
+            "generation_hardware_id",
+            "generation_prefix_tokens_per_second",
+            "plan_closed_record_sha256",
+            "plan_file_sha256",
+            "plan_uri",
+        },
+        label="legacy GPU qualification binding",
+    )
+    _validate_hardware_qualification_record_common(record)
+    _gpu_qualification_artifact_pins_from_record(
+        _required_mapping(record, "expected_artifact_pins")
+    )
+
+
+def _require_v2_hardware_qualification_record(record: Mapping[str, Any]) -> None:
+    _require_exact_mapping_keys(
+        record,
+        {
+            "evidence_closed_record_sha256",
+            "evidence_file_sha256",
+            "evidence_uri",
+            "expected_artifact_pins",
+            "expected_campaign_id",
+            "generation_artifacts_sha256",
+            "generation_databricks_node_type_id",
+            "generation_hardware_id",
+            "generation_prefix_tokens_per_second",
+            "plan_closed_record_sha256",
+            "plan_file_sha256",
+            "plan_record",
+            "plan_uri",
+            "record_type",
+            "schema_version",
+        },
+        label="native-v2 GPU qualification binding",
+    )
+    if (
+        record.get("record_type")
+        != PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_SCHEMA_VERSION
+    ):
+        raise ValueError("native-v2 GPU qualification binding schema is invalid")
+    _validate_hardware_qualification_record_common(record)
+    pins = _gpu_qualification_artifact_pins_v2_from_record(
+        _required_mapping(record, "expected_artifact_pins")
+    )
+    if hmac.compare_digest(
+        pins.runner_sha256,
+        PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256,
+    ):
+        raise ValueError("qualification runner and Q8 handoff runner must be distinct")
+    plan = _required_mapping(record, "plan_record")
+    if plan.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE:
+        raise ValueError("Q8 binding requires a native-v2 qualification plan")
+    if plan.get("closed_record_sha256") != record.get(
+        "plan_closed_record_sha256"
+    ):
+        raise ValueError("Q8 qualification plan record closure binding drift")
+    validate_gpu_qualification_plan_v2_record(
+        plan,
+        expected_campaign_id=_required_string(record, "expected_campaign_id"),
+        expected_artifact_pins=pins,
+    )
+
+
+def validate_publication_latency_generator_hardware_qualification_v2_record(
+    record: Mapping[str, Any],
+) -> None:
+    """Validate a native-v2 Q8 hardware authority binding without projection."""
+
+    _require_v2_hardware_qualification_record(record)
+
+
+def _validate_hardware_qualification_record_common(
+    record: Mapping[str, Any],
+) -> None:
     for field_name in (
         "evidence_closed_record_sha256",
         "evidence_file_sha256",
@@ -3899,8 +4565,6 @@ def _validate_hardware_qualification_record(record: Mapping[str, Any]) -> None:
         "plan_uri",
     ):
         _required_string(record, field_name)
-    pins = _required_mapping(record, "expected_artifact_pins")
-    _gpu_qualification_artifact_pins_from_record(pins)
     if record.get("generation_hardware_id") != (
         PUBLICATION_LATENCY_HANDOFF_GENERATOR_HARDWARE_TARGET
     ):
@@ -3933,6 +4597,7 @@ def _require_authorized_worker_payload(
     """Join one worker record to a replay-issued qualification capability."""
 
     _validate_producer_worker_index(worker_index)
+    _require_v2_worker_payload_envelope(payload)
     if payload.get("closed_record_sha256") != _closed_record_sha256(payload):
         raise ValueError("worker payload closure is invalid")
     if _required_int(payload, "worker_index") != worker_index:
@@ -3955,7 +4620,7 @@ def _require_authorized_worker_payload(
         payload,
         "generator_hardware_qualification",
     )
-    _validate_hardware_qualification_record(qualification)
+    _require_v2_hardware_qualification_record(qualification)
     selection = require_gpu_qualification_launch_authorization(
         authorization,
         expected_plan_sha256=_required_string(
@@ -4029,18 +4694,78 @@ def _single_spark_python_parameter(
     return value
 
 
+def _validated_q8_runner_python_file(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ValueError("Q8 runner_python_file must be a canonical non-empty URI")
+    return value
+
+
+def _q8_job_config_record(
+    config: DatabricksPublicationLatencyHandoffJobConfig,
+) -> dict[str, Any]:
+    if not isinstance(config, DatabricksPublicationLatencyHandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
+    return {
+        "availability": config.availability,
+        "cachet_source_tree_sha256": config.cachet_source_tree_sha256,
+        "custom_tags": dict(config.custom_tags),
+        "data_security_mode": config.data_security_mode,
+        "node_type_id": config.node_type_id,
+        "package_wheel_sha256": config.package_wheel_sha256,
+        "package_wheel_uri": config.package_wheel_uri,
+        "patched_flashinfer_wheel_sha256": (
+            config.patched_flashinfer_wheel_sha256
+        ),
+        "patched_flashinfer_wheel_uri": config.patched_flashinfer_wheel_uri,
+        "patched_vllm_wheel_sha256": config.patched_vllm_wheel_sha256,
+        "patched_vllm_wheel_uri": config.patched_vllm_wheel_uri,
+        "run_name": config.run_name,
+        "run_timeout_seconds": config.run_timeout_seconds,
+        "runner_python_file": config.runner_python_file,
+        "runner_sha256": config.runner_sha256,
+        "runtime_closure_manifest_sha256": (
+            config.runtime_closure_manifest_sha256
+        ),
+        "runtime_closure_manifest_uri": config.runtime_closure_manifest_uri,
+        "runtime_lock_sha256": config.runtime_lock_sha256,
+        "runtime_lock_uri": config.runtime_lock_uri,
+        "runtime_venv_dir_template": config.runtime_venv_dir_template,
+        "single_user_name": config.single_user_name,
+        "spark_version": config.spark_version,
+        "task_key_prefix": config.task_key_prefix,
+        "task_max_retries": config.task_max_retries,
+        "worker_payload_uri_template": config.worker_payload_uri_template,
+        "zone_id": config.zone_id,
+    }
+
+
+def _q8_job_config_sha256(
+    config: DatabricksPublicationLatencyHandoffJobConfig,
+) -> str:
+    return _canonical_sha256(_q8_job_config_record(config))
+
+
 def _validate_worker_payload_submit_binding(
     submit_payload: Mapping[str, Any],
     *,
     worker_payload: Mapping[str, Any],
     worker_index: int,
     expected_worker_payload_file_sha256: str,
+    job_config: DatabricksPublicationLatencyHandoffJobConfig,
 ) -> None:
     """Bind the reserved cloud payload to the exact authorized worker bytes."""
 
+    if not isinstance(job_config, DatabricksPublicationLatencyHandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
     _validate_single_producer_submit_payload(
         submit_payload,
         worker_index=worker_index,
+        expected_runner_python_file=job_config.runner_python_file,
     )
     observed_worker_payload_sha256 = _worker_payload_file_sha256(worker_payload)
     expected_payload_sha256 = _require_sha256(
@@ -4057,34 +4782,98 @@ def _validate_worker_payload_submit_binding(
         "generator_hardware_qualification",
     )
     pins = _required_mapping(qualification, "expected_artifact_pins")
-    expected_parameters = {
-        "--expected-worker-payload-sha256": expected_payload_sha256,
-        "--package-wheel-sha256": _required_string(
-            pins,
-            "package_wheel_sha256",
+    expected_qualified_artifacts = {
+        "cachet_source_tree_sha256": job_config.cachet_source_tree_sha256,
+        "package_wheel_sha256": job_config.package_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": (
+            job_config.patched_flashinfer_wheel_sha256
         ),
-        "--patched-vllm-wheel-sha256": _required_string(
-            pins,
-            "patched_vllm_wheel_sha256",
+        "patched_vllm_wheel_sha256": job_config.patched_vllm_wheel_sha256,
+        "runtime_closure_manifest_sha256": (
+            job_config.runtime_closure_manifest_sha256
         ),
-        "--runtime-lock-sha256": _required_string(
-            pins,
-            "runtime_lock_sha256",
-        ),
+        "runtime_lock_sha256": job_config.runtime_lock_sha256,
     }
-    for flag, expected in expected_parameters.items():
-        _require_sha256(expected, field_name=flag)
-        if not hmac.compare_digest(
-            _single_spark_python_parameter(submit_payload, flag),
+    if any(
+        not hmac.compare_digest(
+            _required_string(pins, field_name),
             expected,
-        ):
-            raise ValueError(
-                f"producer parameter {flag} differs from the authorized worker payload"
-            )
+        )
+        for field_name, expected in expected_qualified_artifacts.items()
+    ):
+        raise ValueError("producer job config differs from qualified artifacts")
     if worker_payload.get("input_bundle_sha256") != pins.get("input_bundle_sha256"):
         raise ValueError(
             "worker input bundle differs from the qualified artifact binding"
         )
+    if set(submit_payload) != {
+        "idempotency_token",
+        "run_name",
+        "tasks",
+        "timeout_seconds",
+    }:
+        raise ValueError("producer submit payload keys differ from reviewed render")
+    tasks = cast(Sequence[Mapping[str, Any]], submit_payload["tasks"])
+    task = tasks[0]
+    if set(task) != {
+        "max_retries",
+        "new_cluster",
+        "spark_python_task",
+        "task_key",
+        "timeout_seconds",
+    }:
+        raise ValueError("producer task keys differ from reviewed render")
+    expected_run_name = f"{job_config.run_name}-worker-{worker_index:02d}"
+    if (
+        submit_payload.get("run_name") != expected_run_name
+        or submit_payload.get("timeout_seconds") != job_config.run_timeout_seconds
+        or task.get("task_key")
+        != f"{job_config.task_key_prefix}_{worker_index:02d}"
+        or task.get("timeout_seconds") != job_config.run_timeout_seconds
+        or task.get("max_retries") != job_config.task_max_retries
+        or task.get("new_cluster") != _build_l40s_single_node_cluster(job_config)
+    ):
+        raise ValueError("producer submit payload differs from reviewed job config")
+    spark_python_task = _required_mapping(task, "spark_python_task")
+    if set(spark_python_task) != {"parameters", "python_file"}:
+        raise ValueError("producer spark_python_task keys differ from reviewed render")
+    worker_label = f"{worker_index:02d}"
+    expected_parameters = [
+        "--runner-sha256",
+        job_config.runner_sha256,
+        "--package-wheel-uri",
+        job_config.package_wheel_uri,
+        "--package-wheel-sha256",
+        job_config.package_wheel_sha256,
+        "--runtime-lock-uri",
+        job_config.runtime_lock_uri,
+        "--runtime-lock-sha256",
+        job_config.runtime_lock_sha256,
+        "--patched-vllm-wheel-uri",
+        job_config.patched_vllm_wheel_uri,
+        "--patched-vllm-wheel-sha256",
+        job_config.patched_vllm_wheel_sha256,
+        "--patched-flashinfer-wheel-uri",
+        job_config.patched_flashinfer_wheel_uri,
+        "--patched-flashinfer-wheel-sha256",
+        job_config.patched_flashinfer_wheel_sha256,
+        "--runtime-closure-manifest-uri",
+        job_config.runtime_closure_manifest_uri,
+        "--runtime-closure-manifest-sha256",
+        job_config.runtime_closure_manifest_sha256,
+        "--runtime-venv-dir",
+        job_config.runtime_venv_dir_template.format(worker_index=worker_label),
+        "run-worker",
+        "--worker-payload-json",
+        job_config.worker_payload_uri_template.format(worker_index=worker_label),
+        "--expected-worker-payload-sha256",
+        expected_payload_sha256,
+    ]
+    if (
+        spark_python_task.get("python_file") != job_config.runner_python_file
+        or spark_python_task.get("parameters") != expected_parameters
+    ):
+        raise ValueError("producer spark_python_task differs from reviewed job config")
 
 
 def _execution_config_from_record(
@@ -4253,6 +5042,7 @@ def _validate_single_producer_submit_payload(
     payload: Mapping[str, Any],
     *,
     worker_index: int,
+    expected_runner_python_file: str,
 ) -> None:
     if payload.get("timeout_seconds") != (
         PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_TASK_TIMEOUT_SECONDS
@@ -4279,6 +5069,17 @@ def _validate_single_producer_submit_payload(
         raise ValueError("producer task must use one g6e.4xlarge L40S node")
     if cluster.get("num_workers") != 0:
         raise ValueError("producer task must use a single-node cluster")
+    spark_python_task = _required_mapping(task, "spark_python_task")
+    reviewed_runner = _validated_q8_runner_python_file(
+        expected_runner_python_file
+    )
+    if spark_python_task.get("python_file") != reviewed_runner:
+        raise ValueError("producer python_file differs from the reviewed Q8 runner")
+    if not hmac.compare_digest(
+        _single_spark_python_parameter(payload, "--runner-sha256"),
+        PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256,
+    ):
+        raise ValueError("producer runner SHA-256 differs from the reviewed Q8 runner")
 
 
 def _validate_publication_latency_handoff_terminal_status(
@@ -4369,14 +5170,18 @@ def _validate_publication_latency_handoff_databricks_attestation_record(
         },
         label="Databricks execution attestation",
     )
-    if record.get("record_type") != (
-        PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_RECORD_TYPE
-    ):
-        raise ValueError("Databricks execution attestation record_type is invalid")
-    if record.get("schema_version") != (
-        PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION
-    ):
-        raise ValueError("Databricks execution attestation schema_version is invalid")
+    version = (record.get("record_type"), record.get("schema_version"))
+    if version not in {
+        (
+            PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_RECORD_TYPE,
+            PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION,
+        ),
+        (
+            _PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_RECORD_TYPE_V1,
+            _PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION_V1,
+        ),
+    }:
+        raise ValueError("Databricks execution attestation schema is invalid")
     if record.get("closed_record_sha256") != _closed_record_sha256(record):
         raise ValueError("Databricks execution attestation closure is invalid")
 
@@ -4550,11 +5355,72 @@ def _read_bound_gpu_qualification_json(
 def _gpu_qualification_artifact_pins_from_record(
     record: Mapping[str, Any],
 ) -> GPUQualificationArtifactPins:
+    _require_exact_mapping_keys(
+        record,
+        {
+            "cachet_source_tree_sha256",
+            "input_bundle_sha256",
+            "package_wheel_sha256",
+            "patched_vllm_wheel_sha256",
+            "runner_sha256",
+            "runtime_lock_sha256",
+        },
+        label="legacy GPU qualification artifact pins",
+    )
     return GPUQualificationArtifactPins(
         runtime_lock_sha256=_required_string(record, "runtime_lock_sha256"),
         patched_vllm_wheel_sha256=_required_string(
             record,
             "patched_vllm_wheel_sha256",
+        ),
+        package_wheel_sha256=_required_string(record, "package_wheel_sha256"),
+        cachet_source_tree_sha256=_required_string(
+            record,
+            "cachet_source_tree_sha256",
+        ),
+        runner_sha256=_required_string(record, "runner_sha256"),
+        input_bundle_sha256=_required_string(record, "input_bundle_sha256"),
+    )
+
+
+def _gpu_qualification_artifact_pins_v2_from_record(
+    record: Mapping[str, Any],
+) -> GPUQualificationArtifactPinsV2:
+    return gpu_qualification_artifact_pins_v2_from_record(record)
+
+
+def gpu_qualification_artifact_pins_v2_from_record(
+    record: Mapping[str, Any],
+) -> GPUQualificationArtifactPinsV2:
+    """Parse the strict exact-eight native-v2 qualification artifact pins."""
+
+    _require_exact_mapping_keys(
+        record,
+        {
+            "cachet_source_tree_sha256",
+            "input_bundle_sha256",
+            "package_wheel_sha256",
+            "patched_flashinfer_wheel_sha256",
+            "patched_vllm_wheel_sha256",
+            "runner_sha256",
+            "runtime_closure_manifest_sha256",
+            "runtime_lock_sha256",
+        },
+        label="native-v2 GPU qualification artifact pins",
+    )
+    return GPUQualificationArtifactPinsV2(
+        runtime_lock_sha256=_required_string(record, "runtime_lock_sha256"),
+        patched_vllm_wheel_sha256=_required_string(
+            record,
+            "patched_vllm_wheel_sha256",
+        ),
+        patched_flashinfer_wheel_sha256=_required_string(
+            record,
+            "patched_flashinfer_wheel_sha256",
+        ),
+        runtime_closure_manifest_sha256=_required_string(
+            record,
+            "runtime_closure_manifest_sha256",
         ),
         package_wheel_sha256=_required_string(record, "package_wheel_sha256"),
         cachet_source_tree_sha256=_required_string(
@@ -4588,14 +5454,32 @@ def _verify_bound_hardware_qualification_file(
         ),
         field_name="GPU qualification plan",
     )
-    selection = validate_gpu_qualification_evidence_record(
-        evidence,
-        plan_record=plan,
-        expected_campaign_id=_required_string(binding, "expected_campaign_id"),
-        expected_artifact_pins=_gpu_qualification_artifact_pins_from_record(
-            _required_mapping(binding, "expected_artifact_pins")
-        ),
-    )
+    if binding.get("record_type") is None:
+        selection = validate_gpu_qualification_evidence_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=_required_string(binding, "expected_campaign_id"),
+            expected_artifact_pins=_gpu_qualification_artifact_pins_from_record(
+                _required_mapping(binding, "expected_artifact_pins")
+            ),
+        )
+    else:
+        if evidence.get("record_type") != GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE:
+            raise ValueError("Q8 launch requires native-v2 qualification evidence")
+        if plan.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE:
+            raise ValueError("Q8 launch requires a native-v2 qualification plan")
+        if dict(plan) != dict(_required_mapping(binding, "plan_record")):
+            raise ValueError("bound native-v2 qualification plan bytes drift")
+        selection = validate_gpu_qualification_evidence_v2_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=_required_string(binding, "expected_campaign_id"),
+            expected_artifact_pins=(
+                _gpu_qualification_artifact_pins_v2_from_record(
+                    _required_mapping(binding, "expected_artifact_pins")
+                )
+            ),
+        )
     expected = {
         "generation_artifacts_sha256": selection.generation_artifacts_sha256,
         "generation_databricks_node_type_id": (
@@ -4781,19 +5665,66 @@ def _read_worker_result(path: Path) -> dict[str, Any]:
     record = _json_object(content, field_name="worker result")
     if content != _canonical_json_bytes(record, pretty=True):
         raise ValueError("worker result is not canonical JSON")
-    if (
-        record.get("record_type")
-        != PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE
-    ):
-        raise ValueError("worker result record_type is invalid")
-    if (
-        record.get("schema_version")
-        != PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION
-    ):
-        raise ValueError("worker result schema_version is invalid")
+    _require_exact_mapping_keys(
+        record,
+        {
+            "accounting",
+            "bundle_files",
+            "bundle_files_sha256",
+            "closed_record_sha256",
+            "execution_contract",
+            "generator_hardware",
+            "input_bundle_sha256",
+            "partial_record_files",
+            "plan_closed_record_sha256",
+            "record_type",
+            "schema_version",
+            "task_ids",
+            "task_ids_sha256",
+            "worker_id",
+            "worker_index",
+        },
+        label="worker result",
+    )
+    version = (record.get("record_type"), record.get("schema_version"))
+    if version not in {
+        (
+            PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE,
+            PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION,
+        ),
+        (
+            _PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE_V1,
+            _PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION_V1,
+        ),
+    }:
+        raise ValueError("worker result schema is invalid")
     if record.get("closed_record_sha256") != _closed_record_sha256(record):
         raise ValueError("worker result closure is invalid")
+    qualification = _required_mapping(
+        _required_mapping(record, "generator_hardware"),
+        "qualification",
+    )
+    _validate_hardware_qualification_record(qualification)
+    if version[1] == PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION:
+        _require_v2_hardware_qualification_record(qualification)
+    elif qualification.get("record_type") is not None:
+        raise ValueError("legacy worker result cannot contain a v2 qualification")
     return record
+
+
+def _require_v2_worker_result_envelope(record: Mapping[str, Any]) -> None:
+    if (
+        record.get("record_type") != PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION
+    ):
+        raise ValueError("Q8 launch closure requires native-v2 worker results")
+    _require_v2_hardware_qualification_record(
+        _required_mapping(
+            _required_mapping(record, "generator_hardware"),
+            "qualification",
+        )
+    )
 
 
 def _validate_worker_result_and_load_batches(
@@ -4805,6 +5736,7 @@ def _validate_worker_result_and_load_batches(
     plan: Mapping[str, Any],
     config: PublicationLatencyHandoffExecutionConfig,
 ) -> tuple[_WorkerBatchResult, ...]:
+    _require_v2_worker_result_envelope(result)
     worker_index = _required_int(worker, "worker_index")
     if result.get("worker_index") != worker_index or result.get(
         "worker_id"
@@ -5302,13 +6234,42 @@ def validate_publication_latency_handoff_generation_execution_record(
 
     if not isinstance(record, Mapping):
         raise TypeError("record must be a mapping")
-    if record.get("record_type") != PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE:
-        raise ValueError("generation execution record_type is invalid")
-    if (
-        record.get("schema_version")
-        != PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION
+    version = (record.get("record_type"), record.get("schema_version"))
+    if version not in {
+        (
+            PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE,
+            PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION,
+        ),
+        (
+            _PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE_V1,
+            _PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION_V1,
+        ),
+    }:
+        raise ValueError("generation execution schema is invalid")
+    common_keys = {
+        "accounting",
+        "bundles",
+        "bundles_sha256",
+        "closed_record_sha256",
+        "coverage",
+        "execution_contract",
+        "execution_mode",
+        "input_bundle_sha256",
+        "plan_closed_record_sha256",
+        "record_type",
+        "schema_version",
+        "serving_reuse",
+        "workers",
+    }
+    if record.get("execution_mode") == (
+        PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED
     ):
-        raise ValueError("generation execution schema_version is invalid")
+        common_keys.update({"generator_hardware", "ledger_reconciliation"})
+    _require_exact_mapping_keys(
+        record,
+        common_keys,
+        label="generation execution record",
+    )
     if record.get("closed_record_sha256") != _closed_record_sha256(record):
         raise ValueError("generation execution closed_record_sha256 is invalid")
     root = Path(output_dir).expanduser().resolve()
@@ -5506,6 +6467,8 @@ def validate_publication_latency_handoff_generation_execution_record(
                 ),
                 durable_output_root=root,
             )
+            if version[1] == PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION:
+                _require_v2_databricks_attestation_record(attestation)
             attested_attempt = _required_mapping(attestation, "attempt")
             attested_cloud = _required_mapping(attestation, "cloud_execution")
             attested_worker_result = _required_mapping(attestation, "worker_result")
@@ -5547,6 +6510,8 @@ def validate_publication_latency_handoff_generation_execution_record(
             )
             expected_result_paths.add(result_path)
             worker_result = _read_worker_result(result_path)
+            if version[1] == PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION:
+                _require_v2_worker_result_envelope(worker_result)
             if worker_result.get("worker_index") != index:
                 raise ValueError("distributed worker result identity is invalid")
             if worker_result.get("closed_record_sha256") != worker_summary.get(
@@ -5797,6 +6762,15 @@ def validate_publication_latency_handoff_generation_execution_record(
         raise ValueError("serving reuse bindings diverge from closed bundles")
 
 
+def _require_v2_generation_execution_record(record: Mapping[str, Any]) -> None:
+    if (
+        record.get("record_type") != PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION
+    ):
+        raise ValueError("Q8 serving requires a native-v2 generation execution")
+
+
 def authorize_publication_latency_handoff_serving(
     workspace: DatabricksWorkspaceConfig,
     result: PublicationLatencyHandoffGenerationResult,
@@ -5817,6 +6791,7 @@ def authorize_publication_latency_handoff_serving(
     if not isinstance(result, PublicationLatencyHandoffGenerationResult):
         raise TypeError("result must be a PublicationLatencyHandoffGenerationResult")
     authenticated = read_publication_latency_handoff_generation_result(result.root)
+    _require_v2_generation_execution_record(authenticated.record)
     if (
         authenticated.execution_record_path.resolve()
         != result.execution_record_path.resolve()
@@ -5949,6 +6924,7 @@ def _resolve_authorized_publication_latency_handoff_result(
     result = read_publication_latency_handoff_generation_result(
         authorization.result_root
     )
+    _require_v2_generation_execution_record(result.record)
     reconciliation = _required_mapping(result.record, "ledger_reconciliation")
     direct_hashes = [
         _required_string(item, "control_plane_status_sha256")
@@ -6057,6 +7033,7 @@ def resolve_publication_latency_worker_handoff_bundle(
     result = read_publication_latency_handoff_generation_result(
         authenticated_result.root
     )
+    _require_v2_generation_execution_record(result.record)
     if (
         result.execution_record_path.resolve()
         != authenticated_result.execution_record_path.resolve()
@@ -7266,6 +8243,8 @@ __all__ = [
     "PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_LOCAL_TEST",
     "PUBLICATION_LATENCY_HANDOFF_EXECUTION_RECORD_TYPE",
     "PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION",
+    "PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_RECORD_TYPE",
+    "PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_SCHEMA_VERSION",
     "PUBLICATION_LATENCY_HANDOFF_PLAN_RECORD_TYPE",
     "PUBLICATION_LATENCY_HANDOFF_PLAN_SCHEMA_VERSION",
     "PUBLICATION_LATENCY_HANDOFF_RUNNER_FILENAME",
@@ -7279,6 +8258,7 @@ __all__ = [
     "DatabricksPublicationLatencyHandoffJobConfig",
     "PublicationLatencyGeneratorFactory",
     "PublicationLatencyGeneratorHardwareQualification",
+    "PublicationLatencyGeneratorHardwareQualificationV2",
     "PublicationLatencyHandoffExecutionConfig",
     "PublicationLatencyHandoffDatabricksAttestationBinding",
     "PublicationLatencyHandoffGenerationResult",
@@ -7293,6 +8273,8 @@ __all__ = [
     "build_databricks_publication_latency_handoff_worker_submit_payloads",
     "close_publication_latency_handoff_generation_from_workers",
     "execute_publication_latency_handoff_generation_plan_local_test_helper",
+    "gpu_qualification_artifact_pins_v2_from_record",
+    "publication_latency_generator_hardware_qualification_v2_record",
     "publication_latency_handoff_worker_attempt_id",
     "publication_latency_handoff_terminal_actual_gpu_seconds_from_ledger",
     "read_publication_latency_handoff_generation_plan",
@@ -7308,6 +8290,7 @@ __all__ = [
     "run_publication_latency_handoff_worker",
     "validate_publication_latency_handoff_generation_execution_record",
     "validate_publication_latency_handoff_generation_plan",
+    "validate_publication_latency_generator_hardware_qualification_v2_record",
     "validate_publication_latency_handoff_worker_payload",
     "write_publication_latency_handoff_generation_plan",
     "write_publication_latency_handoff_databricks_attestation",

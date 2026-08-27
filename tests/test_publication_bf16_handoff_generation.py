@@ -23,8 +23,14 @@ from document_kv_cache.databricks_resource_ledger import (
 from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
-    GPUQualificationArtifactPins,
+    GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+    GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
     GPUQualificationSelection,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+    GPUQualificationArtifactPinsV2,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
@@ -60,9 +66,15 @@ from document_kv_cache.publication_bf16_handoff_generation import (
 from document_kv_cache.publication_latency_handoff_generation import (
     PublicationLatencyHandoffGenerationResult,
     PublicationLatencyHandoffServingAuthorization,
-    PublicationLatencyGeneratorHardwareQualification,
+    PublicationLatencyGeneratorHardwareQualificationV2,
 )
-from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
 
 
 class CharacterTokenizer:
@@ -153,7 +165,7 @@ def _fake_prepared_inputs(tmp_path):
         output_dir=root,
         provenance_json_path=provenance,
         provenance_sha256=sha256(provenance.read_bytes()).hexdigest(),
-        bundle_sha256=sha256(b"verified-main-latency-bundle").hexdigest(),
+        bundle_sha256=GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
         files=tuple(files),
     )
 
@@ -181,20 +193,33 @@ def _qualification(monkeypatch, prepared):
     )
     monkeypatch.setattr(
         q8_generation,
-        "validate_gpu_qualification_evidence_record",
+        "validate_gpu_qualification_evidence_v2_record",
         lambda *args, **kwargs: selection,
     )
-    pins = GPUQualificationArtifactPins(
-        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
-        patched_vllm_wheel_sha256="2" * 64,
+    monkeypatch.setattr(
+        q8_generation,
+        "validate_gpu_qualification_plan_v2_record",
+        lambda *args, **kwargs: None,
+    )
+    pins = GPUQualificationArtifactPinsV2(
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256="3" * 64,
         cachet_source_tree_sha256="4" * 64,
         runner_sha256="5" * 64,
         input_bundle_sha256=prepared.bundle_sha256,
     )
-    return PublicationLatencyGeneratorHardwareQualification(
-        evidence_record={"closed_record_sha256": "6" * 64},
-        plan_record={"closed_record_sha256": "8" * 64},
+    return PublicationLatencyGeneratorHardwareQualificationV2(
+        evidence_record={
+            "closed_record_sha256": "6" * 64,
+            "record_type": GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+        },
+        plan_record={
+            "closed_record_sha256": "8" * 64,
+            "record_type": GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+        },
         expected_campaign_id="vllm-0271-publication-v1",
         expected_artifact_pins=pins,
         evidence_uri="dbfs:/qualification/evidence.json",
@@ -340,9 +365,13 @@ def _launch_material(prepared, monkeypatch, *, ledger_path):
         package_wheel_uri="dbfs:/cachet.whl",
         package_wheel_sha256="3" * 64,
         runtime_lock_uri="dbfs:/runtime.lock",
-        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_uri="dbfs:/vllm.whl",
-        patched_vllm_wheel_sha256="2" * 64,
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_uri="dbfs:/flashinfer.whl",
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_uri="dbfs:/runtime-closure.json",
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         source_revision="deadbeef" * 5,
         cachet_source_tree_sha256="4" * 64,
         single_user_name="publication@example.com",
@@ -380,6 +409,9 @@ def _terminal_run(submit_payload, worker_index, *, cluster_index=None):
                 "end_time": start + 1100,
                 "new_cluster": copy.deepcopy(submit_payload["tasks"][0]["new_cluster"]),
                 "run_id": 20_000 + worker_index,
+                "spark_python_task": copy.deepcopy(
+                    submit_payload["tasks"][0]["spark_python_task"]
+                ),
                 "start_time": start + 100,
                 "state": {
                     "life_cycle_state": "TERMINATED",
@@ -399,6 +431,8 @@ def test_plan_is_exact_16k_128_rows_and_resource_bound(prepared):
     )
     items = [item for worker in plan["workers"] for item in worker["items"]]
     assert len(items) == 128
+    assert plan["record_type"].endswith(".v2")
+    assert plan["schema_version"] == 2
     assert {item["context_tokens"] for item in items} == {16384}
     assert len(plan["workers"]) == PUBLICATION_BF16_HANDOFF_WORKER_COUNT == 16
     assert plan["coverage"]["input_token_slots"] == 4 * 32 * 16384
@@ -416,6 +450,100 @@ def test_plan_is_exact_16k_128_rows_and_resource_bound(prepared):
     assert estimate["reserved_gpu_hour_upper_bound"] == 80.0
     assert PUBLICATION_BF16_HANDOFF_TASK_TIMEOUT_SECONDS == 18_000
     assert PUBLICATION_BF16_HANDOFF_MAX_RESERVED_GPU_HOURS == 80.0
+
+
+def test_bf16_runner_inherits_native_v2_four_step_runtime_bootstrap() -> None:
+    script = generation.PUBLICATION_BF16_HANDOFF_RUNNER_SCRIPT
+    for flag in (
+        "--runtime-lock-sha256",
+        "--patched-vllm-wheel-sha256",
+        "--patched-flashinfer-wheel-sha256",
+        "--runtime-closure-manifest-sha256",
+    ):
+        assert flag in script
+    assert 'variable_name.upper().startswith(("PIP_", "_PIP_"))' in script
+    assert "verify_gpu_qualification_v2_runtime_installation" in script
+    install_markers = (
+        '"--require-hashes", "--only-binary", ":all:"',
+        '"vllm", patched_vllm_wheel',
+        '"flashinfer-python"',
+        '"cachet-kv", package_wheel',
+    )
+    positions = tuple(script.index(marker) for marker in install_markers)
+    assert positions == tuple(sorted(positions))
+
+
+def test_bf16_launch_rejects_v1_payload_and_exact8_pin_tamper(
+    prepared, monkeypatch, tmp_path
+) -> None:
+    plan, *_unused, payloads, _job = _launch_material(
+        prepared,
+        monkeypatch,
+        ledger_path=tmp_path / "ledger.json",
+    )
+    legacy = copy.deepcopy(payloads[0])
+    legacy["record_type"] = "cachet.publication_bf16_handoff_worker_payload.v1"
+    legacy["schema_version"] = 1
+    legacy["closed_record_sha256"] = generation._closed_record_sha256(legacy)
+    with pytest.raises(ValueError, match="native-v2 worker payload"):
+        generation.validate_publication_bf16_handoff_worker_payload(
+            legacy,
+            plan=plan,
+        )
+
+    for mutation in ("missing", "extra", "flashinfer"):
+        tampered = copy.deepcopy(payloads[0])
+        pins = tampered["generator_hardware_qualification"][
+            "expected_artifact_pins"
+        ]
+        if mutation == "missing":
+            pins.pop("runtime_closure_manifest_sha256")
+        elif mutation == "extra":
+            pins["downstream_runner_sha256"] = "1" * 64
+        else:
+            pins["patched_flashinfer_wheel_sha256"] = "1" * 64
+        tampered["closed_record_sha256"] = generation._closed_record_sha256(
+            tampered
+        )
+        with pytest.raises(ValueError):
+            generation.validate_publication_bf16_handoff_worker_payload(
+                tampered,
+                plan=plan,
+            )
+
+
+def test_bf16_qualification_runner_cannot_be_reused_as_downstream_runner(
+    prepared, monkeypatch, tmp_path
+) -> None:
+    (
+        _plan,
+        _config,
+        qualification,
+        authorization,
+        q8_authorization,
+        payloads,
+        job,
+    ) = _launch_material(
+        prepared,
+        monkeypatch,
+        ledger_path=tmp_path / "ledger.json",
+    )
+    assert qualification.expected_artifact_pins.runner_sha256 != job.runner_sha256
+    conflated = copy.deepcopy(payloads)
+    conflated[0]["generator_hardware_qualification"]["expected_artifact_pins"][
+        "runner_sha256"
+    ] = job.runner_sha256
+    conflated[0]["closed_record_sha256"] = generation._closed_record_sha256(
+        conflated[0]
+    )
+    with pytest.raises(ValueError, match="runner must remain distinct"):
+        build_databricks_publication_bf16_handoff_submit_payloads(
+            job,
+            conflated,
+            ledger_path=tmp_path / "ledger.json",
+            qualification_launch_authorization=authorization,
+            q8_handoff_remote_closure_authorization=q8_authorization,
+        )
 
 
 def test_submit_is_capability_gated_exact_16x_l40s_five_hours(
@@ -456,6 +584,7 @@ def test_submit_is_capability_gated_exact_16x_l40s_five_hours(
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="different-ledger-reserve",
+            job_config=job,
             qualification_launch_authorization=authorization,
             q8_handoff_remote_closure_authorization=q8_authorization,
         )
@@ -478,6 +607,7 @@ def test_submit_is_capability_gated_exact_16x_l40s_five_hours(
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="different-ledger-submit",
+            job_config=job,
             qualification_launch_authorization=authorization,
             q8_handoff_remote_closure_authorization=q8_authorization,
             opener=opener,
@@ -645,6 +775,7 @@ def test_single_worker_publication_route_is_nonauthorizing(
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="bf16-worker-00",
+            job_config=job,
             qualification_launch_authorization=authorization,
             q8_handoff_remote_closure_authorization=q8_authorization,
         )
@@ -739,6 +870,7 @@ def test_bf16_wave_resumes_lost_first_response_and_unclaimed_members(
             worker_payloads=payloads,
             attempt_ids_by_worker=attempts,
             phase_lease_root=phase_root,
+            job_config=job,
             qualification_launch_authorization=authorization,
             q8_handoff_remote_closure_authorization=q8_authorization,
             opener=lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -765,6 +897,7 @@ def test_bf16_wave_resumes_lost_first_response_and_unclaimed_members(
         worker_payloads=payloads,
         attempt_ids_by_worker=attempts,
         phase_lease_root=phase_root,
+        job_config=job,
         qualification_launch_authorization=authorization,
         q8_handoff_remote_closure_authorization=q8_authorization,
         opener=opener,
@@ -786,12 +919,216 @@ def test_bf16_wave_resumes_lost_first_response_and_unclaimed_members(
             worker_payloads=alternate_roots,
             attempt_ids_by_worker=attempts,
             phase_lease_root=phase_root,
+            job_config=job,
             qualification_launch_authorization=authorization,
             q8_handoff_remote_closure_authorization=q8_authorization,
             opener=lambda *_args, **_kwargs: pytest.fail(
                 "alternate BF16 output root must not POST"
             ),
         )
+
+
+@pytest.mark.parametrize("route", ["reserve", "resume"])
+@pytest.mark.parametrize("mutation", ["python_file", "runner_sha256"])
+def test_bf16_wave_rejects_post_render_runner_substitution_before_side_effects(
+    route, mutation, prepared, monkeypatch, tmp_path
+) -> None:
+    ledger_path = tmp_path / f"{route}-{mutation}-ledger.json"
+    (
+        _plan,
+        _config,
+        _qualification,
+        authorization,
+        q8_authorization,
+        payloads,
+        job,
+    ) = _launch_material(prepared, monkeypatch, ledger_path=ledger_path)
+    submissions = build_databricks_publication_bf16_handoff_submit_payloads(
+        job,
+        payloads,
+        ledger_path=ledger_path,
+        qualification_launch_authorization=authorization,
+        q8_handoff_remote_closure_authorization=q8_authorization,
+    )
+    attempts = {
+        index: publication_bf16_handoff_worker_attempt_id(
+            payloads[index], worker_index=index
+        )
+        for index in range(16)
+    }
+    phase_root = tmp_path / f"{route}-{mutation}-phase"
+    workspace = DatabricksWorkspaceConfig(
+        "https://example.cloud.databricks.com",
+        "test-token",
+    )
+    if route == "resume":
+        with pytest.raises(TimeoutError, match="initial lost response"):
+            reserve_and_submit_publication_bf16_handoff_worker_wave(
+                workspace,
+                submissions,
+                ledger_path=ledger_path,
+                worker_payloads=payloads,
+                attempt_ids_by_worker=attempts,
+                phase_lease_root=phase_root,
+                job_config=job,
+                qualification_launch_authorization=authorization,
+                q8_handoff_remote_closure_authorization=q8_authorization,
+                opener=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    TimeoutError("initial lost response")
+                ),
+            )
+        phase_record = json.loads((phase_root / "phase-lease.json").read_text())
+        assert phase_record["record_type"].endswith(".v2")
+        assert phase_record["job_config"] == job.to_record()
+
+    mutated = copy.deepcopy(submissions)
+    spark_task = mutated[0]["tasks"][0]["spark_python_task"]
+    if mutation == "python_file":
+        spark_task["python_file"] = "dbfs:/attacker/substituted-runner.py"
+        expected_error = "python_file"
+    else:
+        parameters = spark_task["parameters"]
+        parameters[parameters.index("--runner-sha256") + 1] = "0" * 64
+        expected_error = "runner SHA-256"
+    before = read_databricks_cluster_hour_ledger_json(ledger_path)
+    opener_called = False
+
+    def reject_cloud(*_args, **_kwargs):
+        nonlocal opener_called
+        opener_called = True
+        raise AssertionError("runner substitution reached Databricks")
+
+    operation = (
+        resume_publication_bf16_handoff_worker_wave
+        if route == "resume"
+        else reserve_and_submit_publication_bf16_handoff_worker_wave
+    )
+    with pytest.raises(ValueError, match=expected_error):
+        operation(
+            workspace,
+            mutated,
+            ledger_path=ledger_path,
+            worker_payloads=payloads,
+            attempt_ids_by_worker=attempts,
+            phase_lease_root=phase_root,
+            job_config=job,
+            qualification_launch_authorization=authorization,
+            q8_handoff_remote_closure_authorization=q8_authorization,
+            opener=reject_cloud,
+        )
+    assert read_databricks_cluster_hour_ledger_json(ledger_path) == before
+    assert opener_called is False
+    if route == "reserve":
+        assert not phase_root.exists()
+
+
+@pytest.mark.parametrize("route", ["reserve", "resume"])
+def test_bf16_wave_rechecks_runner_after_post_intent_before_cloud(
+    route, prepared, monkeypatch, tmp_path
+) -> None:
+    ledger_path = tmp_path / f"{route}-post-intent-ledger.json"
+    (
+        _plan,
+        _config,
+        _qualification,
+        authorization,
+        q8_authorization,
+        payloads,
+        job,
+    ) = _launch_material(prepared, monkeypatch, ledger_path=ledger_path)
+    submissions = build_databricks_publication_bf16_handoff_submit_payloads(
+        job,
+        payloads,
+        ledger_path=ledger_path,
+        qualification_launch_authorization=authorization,
+        q8_handoff_remote_closure_authorization=q8_authorization,
+    )
+    attempts = {
+        index: publication_bf16_handoff_worker_attempt_id(
+            payloads[index], worker_index=index
+        )
+        for index in range(16)
+    }
+    phase_root = tmp_path / f"{route}-post-intent-phase"
+    workspace = DatabricksWorkspaceConfig(
+        "https://example.cloud.databricks.com",
+        "test-token",
+    )
+    if route == "resume":
+        with pytest.raises(TimeoutError, match="initial lost response"):
+            reserve_and_submit_publication_bf16_handoff_worker_wave(
+                workspace,
+                submissions,
+                ledger_path=ledger_path,
+                worker_payloads=payloads,
+                attempt_ids_by_worker=attempts,
+                phase_lease_root=phase_root,
+                job_config=job,
+                qualification_launch_authorization=authorization,
+                q8_handoff_remote_closure_authorization=q8_authorization,
+                opener=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    TimeoutError("initial lost response")
+                ),
+            )
+
+    active_submissions = copy.deepcopy(submissions)
+    parameters = active_submissions[0]["tasks"][0]["spark_python_task"]["parameters"]
+    mutation_applied = False
+
+    def mutate_runner_sha256() -> None:
+        nonlocal mutation_applied
+        parameters[parameters.index("--runner-sha256") + 1] = "0" * 64
+        mutation_applied = True
+
+    if route == "reserve":
+        original_write = generation._write_json_exclusive
+
+        def write_then_mutate(value, path):
+            original_write(value, path)
+            if Path(path).name == "worker-00.post-intent.json":
+                mutate_runner_sha256()
+
+        monkeypatch.setattr(generation, "_write_json_exclusive", write_then_mutate)
+    else:
+        original_read = generation._read_canonical_json_file
+
+        def read_then_mutate(path, description):
+            value = original_read(path, description)
+            if Path(path).name == "worker-00.post-intent.json":
+                mutate_runner_sha256()
+            return value
+
+        monkeypatch.setattr(generation, "_read_canonical_json_file", read_then_mutate)
+
+    opener_called = False
+
+    def reject_cloud(*_args, **_kwargs):
+        nonlocal opener_called
+        opener_called = True
+        raise AssertionError("post-intent runner substitution reached Databricks")
+
+    operation = (
+        resume_publication_bf16_handoff_worker_wave
+        if route == "resume"
+        else reserve_and_submit_publication_bf16_handoff_worker_wave
+    )
+    with pytest.raises(ValueError, match="runner SHA-256"):
+        operation(
+            workspace,
+            active_submissions,
+            ledger_path=ledger_path,
+            worker_payloads=payloads,
+            attempt_ids_by_worker=attempts,
+            phase_lease_root=phase_root,
+            job_config=job,
+            qualification_launch_authorization=authorization,
+            q8_handoff_remote_closure_authorization=q8_authorization,
+            opener=reject_cloud,
+        )
+    assert mutation_applied is True
+    assert opener_called is False
+    assert (phase_root / "worker-00.post-intent.json").is_file()
+    assert not (phase_root / "worker-00.receipt.json").exists()
 
 
 def test_raw_local_manifest_or_generation_result_cannot_authorize_serving(tmp_path):
@@ -1372,6 +1709,7 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
             worker_payloads=payloads,
             attempt_ids_by_worker=attempts,
             phase_lease_root=tmp_path / "bf16-phase-lease",
+            job_config=job,
             qualification_launch_authorization=authorization,
             q8_handoff_remote_closure_authorization=q8_authorization,
             opener=opener,
@@ -1389,6 +1727,7 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
         worker_payloads=payloads,
         attempt_ids_by_worker=attempts,
         phase_lease_root=tmp_path / "bf16-phase-lease",
+        job_config=job,
         qualification_launch_authorization=authorization,
         q8_handoff_remote_closure_authorization=q8_authorization,
         opener=lambda *_args, **_kwargs: pytest.fail("completed wave must not POST"),
@@ -1403,6 +1742,11 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
         worker_result = {
             "closed_record_sha256": "",
             "execution_mode": PUBLICATION_BF16_HANDOFF_EXECUTION_MODE,
+            "generator_hardware": {
+                "qualification": copy.deepcopy(
+                    payloads[index]["generator_hardware_qualification"]
+                )
+            },
             "record_type": generation.PUBLICATION_BF16_HANDOFF_WORKER_RESULT_RECORD_TYPE,
             "schema_version": generation.PUBLICATION_BF16_HANDOFF_SCHEMA_VERSION,
             "worker_index": index,
@@ -1429,6 +1773,31 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
         host="https://example.cloud.databricks.com",
         token="test-token",
     )
+    original_terminal = terminals["10000"]
+    for mutation in ("python_file", "ordered_parameters"):
+        substituted_terminal = copy.deepcopy(original_terminal)
+        observed_python_task = substituted_terminal["tasks"][0][
+            "spark_python_task"
+        ]
+        if mutation == "python_file":
+            observed_python_task["python_file"] = "dbfs:/attacker.py"
+        else:
+            parameters = observed_python_task["parameters"]
+            parameters[0], parameters[1] = parameters[1], parameters[0]
+        terminals["10000"] = substituted_terminal
+        with pytest.raises(ValueError, match="spark_python_task differs"):
+            collect_publication_bf16_handoff_worker_attestation(
+                workspace,
+                submissions[0],
+                submit_responses[0],
+                ledger_path=ledger_path,
+                durable_output_root=durable_root,
+                worker_index=0,
+                attempt_id=attempts[0],
+                q8_handoff_remote_closure_authorization=q8_authorization,
+                submission_authorization=batch_authorization,
+            )
+    terminals["10000"] = original_terminal
     bindings = {}
     for index, submit_payload in enumerate(submissions):
         bindings[index] = collect_publication_bf16_handoff_worker_attestation(

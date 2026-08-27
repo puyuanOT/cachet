@@ -12,6 +12,9 @@ import pytest
 import cachet.full_score_execution as cachet_full_score
 import document_kv_cache.full_score_execution as full_score
 import document_kv_cache.full_score_remote_control as full_score_remote
+import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
+import document_kv_cache.runtime_artifact_closure as runtime_artifact_closure
+import document_kv_cache.flashinfer_wheel_repack as flashinfer_wheel_repack
 from document_kv_cache.benchmark_handoffs import (
     BenchmarkHandoffEntry,
     BenchmarkHandoffManifest,
@@ -40,15 +43,25 @@ from document_kv_cache.databricks_resource_ledger import (
 )
 from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
 from document_kv_cache.gpu_qualification import (
-    GPUQualificationArtifactPins,
     GPUQualificationSelection,
     canonical_gpu_qualification_json,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+    GPUQualificationArtifactPinsV2,
 )
 from document_kv_cache.publication_inputs import (
     build_full_score_shard_plan,
     load_full_score_inventory,
 )
-from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_PATCHED_WHEEL_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
 
 
 _VALIDATE_PUBLICATION_FULL_SCORE_INPUTS = (
@@ -133,6 +146,7 @@ def _terminal_run_record(submit_payload, *, run_id):
             {
                 "cluster_instance": {"cluster_id": f"cluster-{run_id}-{index}"},
                 "new_cluster": task["new_cluster"],
+                "spark_python_task": copy.deepcopy(task["spark_python_task"]),
                 "end_time": 2_500 + index,
                 "run_id": run_id * 100 + index + 1,
                 "start_time": 1_000 + index,
@@ -161,8 +175,104 @@ def _terminal_run_record(submit_payload, *, run_id):
 
 
 def _close(record):
+    if record.get("record_type") in {
+        full_score.FULL_SCORE_READY_SHARD_RECORD_TYPE,
+        full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE,
+    }:
+        record.setdefault("runtime_verification", _runtime_verification())
     record["closed_record_sha256"] = full_score._closed_record_sha256(record)
     return record
+
+
+def _runtime_attestation():
+    return {
+        "base_lock_distribution_count": (
+            runtime_artifact_closure.VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT
+        ),
+        "base_lock_hash_count": (
+            runtime_artifact_closure.VLLM_RUNTIME_BASE_LOCK_HASH_COUNT
+        ),
+        "base_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+        "cachet_package_version": "0.2.0",
+        "flashinfer_annotation": (
+            gpu_qualification_v2.GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION
+        ),
+        "flashinfer_direct_url": "file:///dbfs/runtime/patched-flashinfer.whl",
+        "flashinfer_import_ok": True,
+        "closure_bound_flashinfer_manifest_closed_record_sha256": (
+            flashinfer_wheel_repack.FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
+        ),
+        "closure_bound_flashinfer_manifest_file_sha256": (
+            flashinfer_wheel_repack.FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
+        ),
+        "closure_bound_vllm_manifest_file_sha256": (
+            runtime_artifact_closure.VLLM_PATCHED_MANIFEST_SHA256
+        ),
+        "flashinfer_member_sha256": (
+            flashinfer_wheel_repack.FLASHINFER_TARGET_PATCHED_SHA256
+        ),
+        "flashinfer_package_version": (
+            flashinfer_wheel_repack.FLASHINFER_PACKAGE_VERSION
+        ),
+        "flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "installed_distribution_count": (
+            gpu_qualification_v2.GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT
+        ),
+        "ok": True,
+        "packaged_base_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+        "pip_check_ok": True,
+        "runtime_closure_closed_record_sha256": (
+            runtime_artifact_closure.RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256
+        ),
+        "runtime_closure_file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "unexpected_distributions": [],
+        "vllm_direct_url": "file:///dbfs/runtime/patched-vllm.whl",
+        "vllm_member_sha256": dict(gpu_qualification_v2._VLLM_PATCH_MEMBER_SHA256),
+        "vllm_package_version": (gpu_qualification_v2.GPU_QUALIFICATION_VLLM_VERSION),
+        "vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
+        "with_flashinfer_distribution_count": (
+            gpu_qualification_v2.GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT
+        ),
+        "with_vllm_distribution_count": (
+            gpu_qualification_v2.GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT
+        ),
+    }
+
+
+def _runtime_verification():
+    package_sha256 = _digest("cachet-wheel")
+    artifacts = {
+        "package_wheel_sha256": package_sha256,
+        "package_wheel_uri": "dbfs:/runtime/cachet.whl",
+        "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "patched_flashinfer_wheel_uri": "dbfs:/runtime/patched-flashinfer.whl",
+        "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
+        "patched_vllm_wheel_uri": "dbfs:/runtime/patched-vllm.whl",
+        "runner_python_file": "dbfs:/runner/full-score.py",
+        "runner_sha256": full_score.FULL_SCORE_RUNNER_SHA256,
+        "runtime_closure_manifest_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "runtime_closure_manifest_uri": "dbfs:/runtime/closure.json",
+        "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+        "runtime_lock_uri": "dbfs:/runtime/runtime.lock",
+    }
+    artifacts["locked_runtime_identity_sha256"] = (
+        full_score._locked_runtime_identity_sha256(
+            runner_sha256=artifacts["runner_sha256"],
+            package_wheel_sha256=package_sha256,
+            runtime_lock_sha256=artifacts["runtime_lock_sha256"],
+            patched_vllm_wheel_sha256=artifacts["patched_vllm_wheel_sha256"],
+            patched_flashinfer_wheel_sha256=(
+                artifacts["patched_flashinfer_wheel_sha256"]
+            ),
+            runtime_closure_manifest_sha256=(
+                artifacts["runtime_closure_manifest_sha256"]
+            ),
+        )
+    )
+    return full_score._runtime_verification_binding(
+        _runtime_attestation(),
+        artifacts=artifacts,
+    )
 
 
 def _score_record(dataset, index):
@@ -219,7 +329,7 @@ def campaign(tmp_path, monkeypatch):
     assert [len(wave["shards"]) for wave in execution_plan["waves"]] == [16, 4]
 
     package_sha = _digest("cachet-wheel")
-    patched_sha = _digest("patched-vllm-wheel")
+    patched_sha = VLLM_PATCHED_WHEEL_SHA256
     selection = GPUQualificationSelection(
         attention_backend="TRITON_ATTN",
         gpu_memory_utilization=0.80,
@@ -231,7 +341,7 @@ def campaign(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         full_score,
-        "validate_gpu_qualification_evidence_record",
+        "validate_gpu_qualification_evidence_v2_record",
         lambda *args, **kwargs: selection,
     )
     monkeypatch.setattr(
@@ -281,13 +391,15 @@ def campaign(tmp_path, monkeypatch):
         "require_gpu_qualification_launch_authorization",
         require_test_launch_authorization,
     )
-    pins = GPUQualificationArtifactPins(
-        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+    pins = GPUQualificationArtifactPinsV2(
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=patched_sha,
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256=package_sha,
         cachet_source_tree_sha256=_digest("source-tree"),
-        runner_sha256=full_score.FULL_SCORE_RUNNER_SHA256,
-        input_bundle_sha256=_digest("qualification-inputs"),
+        runner_sha256=_digest("qualification-runner"),
+        input_bundle_sha256=GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
     )
     qualification_plan = {"closed_record_sha256": selection.plan_sha256}
     qualification_evidence = {"closed_record_sha256": _digest("qualification-evidence")}
@@ -305,13 +417,20 @@ def campaign(tmp_path, monkeypatch):
     )
     runtime = full_score.FullScoreRuntimeConfig(
         python_executable="/local_disk0/cachet-full-score-runtime/bin/python",
-        runtime_contract_uri="dbfs:/runtime/contract.json",
-        runtime_contract_sha256=_digest("runtime-contract"),
         runtime_lock_uri="dbfs:/runtime/runtime.lock",
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_uri="dbfs:/runtime/patched-vllm.whl",
         patched_vllm_wheel_sha256=patched_sha,
+        patched_flashinfer_wheel_uri="dbfs:/runtime/patched-flashinfer.whl",
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_uri="dbfs:/runtime/closure.json",
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         vllm_wheel_install_spec=(
             "vllm @ file:///dbfs/runtime/patched-vllm.whl#sha256=" + patched_sha
+        ),
+        flashinfer_wheel_install_spec=(
+            "flashinfer-python @ file:///dbfs/runtime/patched-flashinfer.whl"
+            f"#sha256={FLASHINFER_PATCHED_WHEEL_SHA256}"
         ),
         kv_transfer_config={
             "kv_connector": "DocumentKVConnector",
@@ -351,9 +470,13 @@ def campaign(tmp_path, monkeypatch):
         package_wheel_uri=bundle.package_wheel_uri,
         package_wheel_sha256=bundle.package_wheel_sha256,
         runtime_lock_uri=runtime.runtime_lock_uri,
-        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_uri=runtime.patched_vllm_wheel_uri,
         patched_vllm_wheel_sha256=runtime.patched_vllm_wheel_sha256,
+        patched_flashinfer_wheel_uri=runtime.patched_flashinfer_wheel_uri,
+        patched_flashinfer_wheel_sha256=runtime.patched_flashinfer_wheel_sha256,
+        runtime_closure_manifest_uri=runtime.runtime_closure_manifest_uri,
+        runtime_closure_manifest_sha256=runtime.runtime_closure_manifest_sha256,
         gpu_qualification=qualification,
         single_user_name="researcher@example.com",
     )
@@ -417,12 +540,18 @@ def _volume_campaign(campaign):
     volume = "dbfs:/Volumes/catalog/schema/volume"
     runtime = replace(
         campaign["bundle"].runtime,
-        runtime_contract_uri=f"{volume}/runtime/contract.json",
         runtime_lock_uri=f"{volume}/runtime/runtime.lock",
         patched_vllm_wheel_uri=f"{volume}/runtime/patched-vllm.whl",
+        patched_flashinfer_wheel_uri=f"{volume}/runtime/patched-flashinfer.whl",
+        runtime_closure_manifest_uri=f"{volume}/runtime/closure.json",
         vllm_wheel_install_spec=(
             "vllm @ file:///Volumes/catalog/schema/volume/runtime/"
             f"patched-vllm.whl#sha256={campaign['bundle'].runtime.patched_vllm_wheel_sha256}"
+        ),
+        flashinfer_wheel_install_spec=(
+            "flashinfer-python @ file:///Volumes/catalog/schema/volume/runtime/"
+            "patched-flashinfer.whl#sha256="
+            f"{campaign['bundle'].runtime.patched_flashinfer_wheel_sha256}"
         ),
     )
     qualification = replace(
@@ -458,6 +587,8 @@ def _volume_campaign(campaign):
         package_wheel_uri=bundle.package_wheel_uri,
         runtime_lock_uri=runtime.runtime_lock_uri,
         patched_vllm_wheel_uri=runtime.patched_vllm_wheel_uri,
+        patched_flashinfer_wheel_uri=runtime.patched_flashinfer_wheel_uri,
+        runtime_closure_manifest_uri=runtime.runtime_closure_manifest_uri,
         gpu_qualification=qualification,
     )
     worker_files = {}
@@ -1381,11 +1512,12 @@ def test_governed_ready_and_handoff_replay_bind_source_artifact_and_files(
             "relative_path": path.name,
         }
         resolved[evidence_name] = path
-    evidence = {
-        "preserved_files": preserved,
-        "ready_shard_sha256": ready["closed_record_sha256"],
-        "wave_index": 0,
-    }
+        evidence = {
+            "preserved_files": preserved,
+            "ready_shard_sha256": ready["closed_record_sha256"],
+            "runtime_verification": ready["runtime_verification"],
+            "wave_index": 0,
+        }
     full_score._validate_governed_ready_manifest_replay(
         ready,
         evidence=evidence,
@@ -1396,6 +1528,34 @@ def test_governed_ready_and_handoff_replay_bind_source_artifact_and_files(
         resolved_files=resolved,
         datasets=[dataset],
     )
+    resealed_ready = copy.deepcopy(ready)
+    resealed_runtime = resealed_ready["runtime_verification"]
+    resealed_runtime["attestation"]["vllm_direct_url"] = (
+        "file:///attacker/resealed-vllm.whl"
+    )
+    resealed_runtime["attestation_sha256"] = full_score._canonical_sha256(
+        resealed_runtime["attestation"]
+    )
+    resealed_runtime["file_sha256"] = sha256(
+        full_score._canonical_pretty_json_bytes(resealed_runtime["attestation"])
+    ).hexdigest()
+    _close(resealed_ready)
+    resealed_evidence = {
+        **evidence,
+        "ready_shard_sha256": resealed_ready["closed_record_sha256"],
+        "runtime_verification": resealed_runtime,
+    }
+    with pytest.raises(ValueError, match="vllm_direct_url differs"):
+        full_score._validate_governed_ready_manifest_replay(
+            resealed_ready,
+            evidence=resealed_evidence,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            shard=shard,
+            resolved_files=resolved,
+            datasets=[dataset],
+        )
     source_records, _examples = full_score._load_governed_ready_source_records(
         {dataset: input_path},
         shard=shard,
@@ -1893,6 +2053,7 @@ def test_governed_terminal_billing_and_wave_zero_reservation_are_file_bound(
             {
                 "cluster_instance": {"cluster_id": f"cluster-{index}"},
                 "new_cluster": task["new_cluster"],
+                "spark_python_task": copy.deepcopy(task["spark_python_task"]),
                 "end_time": 2_500 + index,
                 "run_id": 50_000 + index,
                 "start_time": 1_000 + index,
@@ -1924,6 +2085,25 @@ def test_governed_terminal_billing_and_wave_zero_reservation_are_file_bound(
         run_record=run_record,
     )
     run_path = campaign["tmp_path"] / "wave-000-producer-runs-get.json"
+    run_path.write_text(json.dumps(run_record), encoding="utf-8")
+    substituted_python_task = copy.deepcopy(run_record)
+    substituted_python_task["tasks"][0]["spark_python_task"]["python_file"] = (
+        "dbfs:/attacker/substituted-full-score-runner.py"
+    )
+    run_path.write_text(json.dumps(substituted_python_task), encoding="utf-8")
+    with pytest.raises(ValueError, match="spark_python_task binding drift"):
+        full_score.build_governed_full_score_phase_terminal_record(
+            campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            submit_payload_path=submit_path,
+            control_plane_run_path=run_path,
+            ledger_path=ledger_path,
+            submission_authorization=reserved[1],
+        )
     run_path.write_text(json.dumps(run_record), encoding="utf-8")
     duplicate_cluster_run = copy.deepcopy(run_record)
     duplicate_cluster_run["tasks"][1]["cluster_instance"]["cluster_id"] = (
@@ -3515,58 +3695,39 @@ def test_remote_cas_threads_wave0_into_wave1_render_reserve_and_replay(
     compact_files.update(campaign["worker_files"])
 
     wave_one_producers = _phase_payloads(campaign, 1, "producer")
-    reservation = full_score.full_score_wave_worst_case_gpu_hours(
-        wave_one_producers
-    )
-    diagnostic = full_score.build_full_score_live_p90_budget_admission(
-        campaign["execution_plan"],
-        list(local_blocks.values()),
-        next_wave_index=1,
-        ledger_terminal_actual_gpu_hours=(
-            historical_ledger.terminal_actual_cluster_hours
-        ),
-        ledger_active_reserved_gpu_hours=0.0,
-        next_wave_reserved_gpu_hours=reservation,
-    )
     attempt_id = "remote-wave-001-producer"
-    candidate = full_score._build_databricks_full_score_run_submit_payload(
-        campaign["job"],
-        wave_one_producers,
-        inventory=campaign["inventory"],
-        shard_plan=campaign["shard_plan"],
-        execution_plan=campaign["execution_plan"],
-        prior_wave_completion=completion,
-        remote_consumer_authorization=remote_authorization,
-        compact_artifact_resolver=compact_files.__getitem__,
-        budget_admission=diagnostic,
-        publication_authorizing=False,
-    )
-    candidate = full_score.bind_databricks_run_idempotency_token(
-        candidate,
-        attempt_id=attempt_id,
-    )
-    admission = full_score.build_governed_full_score_live_p90_budget_admission(
-        campaign["execution_plan"],
-        inventory=campaign["inventory"],
-        shard_plan=campaign["shard_plan"],
-        completed_block_paths=block_uris,
-        next_wave_index=1,
-        next_phase="producer",
-        attempt_id=attempt_id,
-        next_submit_payload=candidate,
-        ledger_path=ledger_path,
-        predecessor_authorization=predecessor_authorization,
-        remote_consumer_authorizations=[remote_authorization],
-        compact_artifact_resolver=compact_files.__getitem__,
-    )
     admission_uri = f"{durable_root}/control/wave-001-p90.json"
     admission_path = campaign["tmp_path"] / "remote-wave-001-p90.json"
-    admission_path.write_bytes(
-        full_score._canonical_pretty_json_bytes(admission)
-    )
-    compact_files[admission_uri] = admission_path
 
-    rendered = full_score.build_databricks_full_score_run_submit_payload(
+    def publish_admission(uri, content):
+        assert uri == admission_uri
+        admission_path.write_bytes(content)
+        compact_files[uri] = admission_path
+        return admission_path
+
+    rendered, admission = (
+        full_score.prepare_governed_full_score_live_p90_phase_submission(
+            admission_uri,
+            campaign["job"],
+            wave_one_producers,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            attempt_id=attempt_id,
+            completed_block_paths=block_uris,
+            prior_wave_completion=completion,
+            ledger_path=ledger_path,
+            predecessor_authorization=predecessor_authorization,
+            remote_consumer_authorizations=[remote_authorization],
+            compact_artifact_resolver=compact_files.__getitem__,
+            compact_artifact_publisher=publish_admission,
+        )
+    )
+    assert admission["next_submit_payload_sha256"]
+    assert rendered == full_score.build_databricks_full_score_run_submit_payload(
         campaign["job"],
         wave_one_producers,
         inventory=campaign["inventory"],
@@ -3583,7 +3744,6 @@ def test_remote_cas_threads_wave0_into_wave1_render_reserve_and_replay(
         ledger_path=ledger_path,
         predecessor_authorization=predecessor_authorization,
     )
-    assert rendered == candidate
     _updated, submission_authorization = (
         full_score.reserve_governed_full_score_phase_attempt(
             ledger_path,
@@ -3637,9 +3797,11 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
     remote_files = {
         uri: path.read_bytes() for uri, path in campaign["worker_files"].items()
     }
+    download_calls = []
 
     def download(_workspace, uri, *, max_bytes):
         assert _workspace is workspace
+        download_calls.append(uri)
         content = remote_files[uri]
         assert len(content) <= max_bytes
         return content
@@ -3707,6 +3869,27 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
         )
     )
     durable_root = campaign["bundle"].durable_output_root
+    before_malformed = len(download_calls)
+    with pytest.raises(ValueError, match="exactly one phase"):
+        full_score_remote.prepare_governed_full_score_remote_live_p90_phase_submission(
+            workspace,
+            cas=cas,
+            path=f"{durable_root}/control/malformed-p90.json",
+            config=campaign["job"],
+            worker_payloads=(),
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            attempt_id="malformed-p90",
+            completed_block_paths=[f"{durable_root}/control/missing.json"],
+            prior_wave_completion={},
+            ledger_path=ledger_path,
+            predecessor_authorization=object(),
+        )
+    assert len(download_calls) == before_malformed
 
     producer_attempt_id = "stock-mac-wave-000-producer"
     producer_submit = full_score.build_databricks_full_score_run_submit_payload(
@@ -3960,75 +4143,31 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
 
     wave_one_producers = _phase_payloads(campaign, 1, "producer")
     wave_one_attempt_id = "stock-mac-wave-001-producer"
-    reservation = full_score.full_score_wave_worst_case_gpu_hours(
-        wave_one_producers
-    )
-    live_ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    diagnostic = full_score.build_full_score_live_p90_budget_admission(
-        campaign["execution_plan"],
-        matched_blocks,
-        next_wave_index=1,
-        ledger_terminal_actual_gpu_hours=(
-            live_ledger.terminal_actual_cluster_hours
-        ),
-        ledger_active_reserved_gpu_hours=0.0,
-        next_wave_reserved_gpu_hours=reservation,
-    )
-    candidate = full_score._build_databricks_full_score_run_submit_payload(
-        campaign["job"],
-        wave_one_producers,
-        inventory=campaign["inventory"],
-        shard_plan=campaign["shard_plan"],
-        execution_plan=campaign["execution_plan"],
-        prior_wave_completion=wave_completion,
-        remote_consumer_authorization=evidence_authorization,
-        compact_artifact_resolver=cas.resolve,
-        budget_admission=diagnostic,
-        publication_authorizing=False,
-    )
-    candidate = full_score.bind_databricks_run_idempotency_token(
-        candidate,
-        attempt_id=wave_one_attempt_id,
-    )
     admission_uri = (
         f"{durable_root}/control/admission/wave-001-producer-p90.json"
     )
-    admission = (
-        full_score_remote.write_governed_full_score_remote_live_p90_budget_admission(
+    rendered, admission = (
+        full_score_remote.prepare_governed_full_score_remote_live_p90_phase_submission(
             workspace,
             cas=cas,
             path=admission_uri,
+            config=campaign["job"],
+            worker_payloads=wave_one_producers,
             execution_plan=campaign["execution_plan"],
             completed_block_paths=matched_block_uris,
             remote_consumer_authorizations=[evidence_authorization],
             inventory=campaign["inventory"],
             shard_plan=campaign["shard_plan"],
-            next_wave_index=1,
-            next_phase="producer",
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
             attempt_id=wave_one_attempt_id,
-            next_submit_payload=candidate,
+            prior_wave_completion=wave_completion,
             ledger_path=ledger_path,
             predecessor_authorization=consumer_authorization,
         )
     )
-    rendered = full_score.build_databricks_full_score_run_submit_payload(
-        campaign["job"],
-        wave_one_producers,
-        inventory=campaign["inventory"],
-        shard_plan=campaign["shard_plan"],
-        execution_plan=campaign["execution_plan"],
-        qualification_launch_authorization=campaign[
-            "qualification_launch_authorization"
-        ],
-        attempt_id=wave_one_attempt_id,
-        prior_wave_completion=wave_completion,
-        remote_consumer_authorizations=[evidence_authorization],
-        compact_artifact_resolver=cas.resolve,
-        budget_admission_path=admission_uri,
-        ledger_path=ledger_path,
-        predecessor_authorization=consumer_authorization,
-    )
-    assert rendered == candidate
+    assert admission["next_submit_payload_sha256"]
     _ledger, submission_authorization = (
         full_score.reserve_governed_full_score_phase_attempt(
             ledger_path,
@@ -4076,6 +4215,148 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
         *matched_block_uris,
     ):
         assert cas.resolve(uri).read_bytes() == remote_files[uri]
+
+    wave_one_run_id = 83_001
+    wave_one_opener = _RoutingDatabricksOpener(
+        submit_payload={"run_id": wave_one_run_id},
+        run_payload=_terminal_run_record(rendered, run_id=wave_one_run_id),
+    )
+    assert full_score.submit_governed_full_score_phase_attempt(
+        workspace,
+        rendered,
+        ledger_path=ledger_path,
+        submission_authorization=submission_authorization,
+        opener=wave_one_opener,
+    ) == {"run_id": wave_one_run_id}
+    wave_one_submit_uri = (
+        f"{durable_root}/control/phase/wave-001-producer-submit.json"
+    )
+    wave_one_run_uri = (
+        f"{durable_root}/control/phase/wave-001-producer-runs-get.json"
+    )
+    wave_one_terminal_uri = (
+        f"{durable_root}/control/phase/wave-001-producer-terminal.json"
+    )
+    remote_files[wave_one_submit_uri] = full_score._canonical_pretty_json_bytes(
+        rendered
+    )
+    wave_one_terminal, wave_one_producer_authorization = (
+        full_score_remote.collect_governed_full_score_remote_phase_attempt(
+            workspace,
+            cas=cas,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+            submission_authorization=submission_authorization,
+            submit_payload_uri=wave_one_submit_uri,
+            control_plane_run_uri=wave_one_run_uri,
+            terminal_record_uri=wave_one_terminal_uri,
+            opener=wave_one_opener,
+        )
+    )
+    wave_one_completion = _producer_completion(campaign, 1)
+    wave_one_completion_uri = (
+        f"{durable_root}/control/producer-ready/wave-001-completion.json"
+    )
+    wave_one_completion_bytes = full_score._canonical_pretty_json_bytes(
+        wave_one_completion
+    )
+    remote_files[wave_one_completion_uri] = wave_one_completion_bytes
+    wave_one_ready_authorization = full_score_remote.FullScoreRemoteTreeAuthorization(
+        action="producer_ready",
+        execution_plan_sha256=campaign["execution_plan"][
+            "closed_record_sha256"
+        ],
+        wave_index=1,
+        durable_output_root=durable_root,
+        request_sha256=_digest("stock-mac-wave-one-producer-request"),
+        result_uri=wave_one_completion_uri,
+        result_file_sha256=sha256(wave_one_completion_bytes).hexdigest(),
+        result_record_sha256=wave_one_completion["closed_record_sha256"],
+        result_record=wave_one_completion,
+        attestation_uri=(
+            f"{durable_root}/control/producer-ready/wave-001-attestation.json"
+        ),
+        attestation_file_sha256=_digest(
+            "stock-mac-wave-one-producer-attestation-file"
+        ),
+        attestation_record_sha256=_digest(
+            "stock-mac-wave-one-producer-attestation-record"
+        ),
+        coordinator_run_id="91002",
+        coordinator_run_record_sha256=_digest("stock-mac-wave-one-producer-run"),
+        controller_authorization_record_sha256=_digest(
+            "stock-mac-wave-one-producer-controller-authorization"
+        ),
+        runs_get_receipt_record_sha256=_digest(
+            "stock-mac-wave-one-producer-runs-get"
+        ),
+        phase_terminal_record_sha256=wave_one_terminal[
+            "closed_record_sha256"
+        ],
+        evidence_bindings=(),
+        _issuer=full_score_remote._REMOTE_AUTHORIZATION_ISSUER,
+    )
+    wave_one_consumers = _phase_payloads(campaign, 1, "consumer")
+    consumer_p90_uri = (
+        f"{durable_root}/control/admission/wave-001-consumer-p90.json"
+    )
+    before_missing_ready = len(download_calls)
+    with pytest.raises(ValueError, match="producer-ready authority"):
+        full_score_remote.prepare_governed_full_score_remote_live_p90_phase_submission(
+            workspace,
+            cas=cas,
+            path=consumer_p90_uri,
+            config=campaign["job"],
+            worker_payloads=wave_one_consumers,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            attempt_id="stock-mac-wave-001-consumer",
+            completed_block_paths=matched_block_uris,
+            prior_wave_completion=wave_completion,
+            ledger_path=ledger_path,
+            predecessor_authorization=wave_one_producer_authorization,
+            producer_phase_completion=wave_one_completion,
+            producer_phase_completion_uri=wave_one_completion_uri,
+            remote_consumer_authorizations=[evidence_authorization],
+        )
+    assert len(download_calls) == before_missing_ready
+    consumer_rendered, consumer_admission = (
+        full_score_remote.prepare_governed_full_score_remote_live_p90_phase_submission(
+            workspace,
+            cas=cas,
+            path=consumer_p90_uri,
+            config=campaign["job"],
+            worker_payloads=wave_one_consumers,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            attempt_id="stock-mac-wave-001-consumer",
+            completed_block_paths=matched_block_uris,
+            prior_wave_completion=wave_completion,
+            ledger_path=ledger_path,
+            predecessor_authorization=wave_one_producer_authorization,
+            producer_phase_completion=wave_one_completion,
+            producer_phase_completion_uri=wave_one_completion_uri,
+            remote_ready_authorization=wave_one_ready_authorization,
+            remote_consumer_authorizations=[evidence_authorization],
+        )
+    )
+    assert consumer_admission["next_phase"] == "consumer"
+    assert all(
+        task["task_key"].startswith(
+            f"{campaign['job'].task_key_prefix}_wave_001_consumer_"
+        )
+        for task in consumer_rendered["tasks"]
+    )
 
 
 def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
@@ -4336,7 +4617,10 @@ def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
         budget_admission_path=admission_path,
     )
     assert reserved[0].active_reserved_cluster_hours == 24.0
-    with pytest.raises(ValueError, match="zero-active live ledger"):
+    with pytest.raises(
+        ValueError,
+        match="live ledger changed while building the P90 admission",
+    ):
         full_score.reserve_governed_full_score_phase_attempt(
             live_ledger_path,
             rendered,
@@ -4519,16 +4803,14 @@ def test_consumer_recovery_finishes_a_partially_deleted_ready_tree(
     ready_dir.mkdir(parents=True)
     (ready_dir / "partially-remaining-q8.bin").write_bytes(b"partial")
     durable_dir = (
-        Path(payload["durable_output_root"])
-        / "evidence"
-        / "wave-000"
-        / shard_id
+        Path(payload["durable_output_root"]) / "evidence" / "wave-000" / shard_id
     )
     durable_dir.mkdir(parents=True)
     (durable_dir / "evidence.json").write_text("{}\n", encoding="utf-8")
     evidence = {
         "closed_record_sha256": _digest("committed-recovery-evidence"),
         "ready_shard_sha256": _digest("committed-recovery-ready"),
+        "runtime_verification": _runtime_verification(),
         "shard_id": shard_id,
         "wave_index": 0,
         "worker_index": payload["worker_index"],
@@ -4557,6 +4839,7 @@ def test_consumer_recovery_finishes_a_partially_deleted_ready_tree(
         inventory=campaign["inventory"],
         shard_plan=campaign["shard_plan"],
         execution_plan=campaign["execution_plan"],
+        runtime_verification=_runtime_verification(),
     )
     assert recovered == evidence
     assert not ready_dir.exists()
@@ -4577,19 +4860,20 @@ def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
     monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
     monkeypatch.setenv("pip_no_index", "1")
     monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setenv("_PIP_STANDALONE_CERT", "/attacker/cert.pem")
     monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
     monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
     monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
     environment = namespace["_pip_subprocess_environment"]()
-    assert {
-        key for key in environment if key.upper().startswith("PIP_")
-    } == {
+    assert {key for key in environment if key.upper().startswith("PIP_")} == {
         "PIP_CONFIG_FILE",
         "PIP_DISABLE_PIP_VERSION_CHECK",
         "PIP_NO_INPUT",
     }
     assert environment["PIP_CONFIG_FILE"] == os.devnull
     assert environment["PYTHONNOUSERSITE"] == "1"
+    assert environment["PYTHONSAFEPATH"] == "1"
+    assert "_PIP_STANDALONE_CERT" not in environment
     assert all(
         variable not in environment
         for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
@@ -4598,13 +4882,289 @@ def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
     assert '"--require-hashes"' in script
     assert '"--only-binary"' in script
     assert '"--extra-index-url"' not in script
-    assert script.count('"--no-deps"') == 2
-    assert script.index('"--no-deps", patched_wheel') < script.index(
-        '"--require-hashes"'
+    assert script.count('"--no-deps"') == 3
+    assert script.index('"--require-hashes"') < script.index('"--no-deps", vllm_spec')
+    assert script.index('"--no-deps", vllm_spec') < script.index(
+        '"--no-deps", flashinfer_spec'
     )
-    assert "Cachet direct URL SHA-256 does not match" in script
-    assert "pip, \"check\"" in script
+    assert script.index('"--no-deps", flashinfer_spec') < script.index(
+        '"--no-deps", package_spec'
+    )
+    assert '"venv", "--copies"' in script
+    assert "runtime-closure-manifest-sha256" in script
+    assert "patched-flashinfer-wheel-sha256" in script
+    assert 'pip, "check"' not in script
     assert "os.execve(" in script
+
+
+def test_native_v2_runtime_binding_rejects_attestation_and_artifact_drift():
+    binding = _runtime_verification()
+    full_score._validate_runtime_verification_binding(binding)
+
+    tampered_attestation = copy.deepcopy(binding)
+    tampered_attestation["attestation"]["pip_check_ok"] = False
+    with pytest.raises(ValueError, match="attestation pip_check_ok differs"):
+        full_score._validate_runtime_verification_binding(tampered_attestation)
+
+    tampered_artifact = copy.deepcopy(binding)
+    tampered_artifact["artifacts"]["package_wheel_sha256"] = _digest(
+        "unreviewed-package"
+    )
+    with pytest.raises(ValueError, match="artifact binding identity drift"):
+        full_score._validate_runtime_verification_binding(tampered_artifact)
+
+    resealed_origin = copy.deepcopy(binding)
+    resealed_origin["attestation"]["vllm_direct_url"] = (
+        "file:///attacker/resealed-vllm.whl"
+    )
+    resealed_origin["attestation_sha256"] = full_score._canonical_sha256(
+        resealed_origin["attestation"]
+    )
+    resealed_origin["file_sha256"] = sha256(
+        full_score._canonical_pretty_json_bytes(resealed_origin["attestation"])
+    ).hexdigest()
+    with pytest.raises(ValueError, match="vllm_direct_url differs"):
+        full_score._validate_runtime_verification_binding(resealed_origin)
+
+
+def _bounded_stream(raw, *, limit_exceeded=False):
+    return SimpleNamespace(
+        retained=raw,
+        byte_count=len(raw),
+        sha256=sha256(raw).hexdigest(),
+        limit_exceeded=limit_exceeded,
+    )
+
+
+def _bounded_verifier_result(
+    stdout,
+    *,
+    stderr=b"",
+    returncode=0,
+    timed_out=False,
+    output_limit_exceeded=False,
+):
+    return SimpleNamespace(
+        stdout=_bounded_stream(stdout),
+        stderr=_bounded_stream(stderr),
+        returncode=returncode,
+        timed_out=timed_out,
+        output_limit_exceeded=output_limit_exceeded,
+    )
+
+
+def test_runtime_verifier_requires_bounded_canonical_stdout_and_empty_stderr(
+    campaign,
+    monkeypatch,
+):
+    runtime = campaign["bundle"].runtime
+    bootstrap = campaign["payloads"][0]["bootstrap_artifacts"]
+    canonical = full_score._canonical_pretty_json_bytes(_runtime_attestation())
+    output_path = campaign["tmp_path"] / "native-v2-runtime-attestation.json"
+    bounded_call = {}
+
+    def successful_verifier(arguments, **kwargs):
+        bounded_call["count"] = bounded_call.get("count", 0) + 1
+        bounded_call["arguments"] = arguments
+        bounded_call.update(kwargs)
+        return _bounded_verifier_result(canonical)
+
+    monkeypatch.setattr(
+        full_score,
+        "_run_bounded_binary_subprocess",
+        successful_verifier,
+    )
+    binding = full_score._run_runtime_verifier(
+        runtime,
+        bootstrap,
+        output_path,
+        runner=full_score._subprocess_command_runner,
+    )
+    assert output_path.read_bytes() == canonical
+    assert binding["attestation"] == _runtime_attestation()
+    assert (
+        "verify_gpu_qualification_v2_runtime_installation"
+        in (bounded_call["arguments"][2])
+    )
+    assert bounded_call["timeout_seconds"] == (
+        full_score.FULL_SCORE_RUNTIME_VERIFIER_TIMEOUT_SECONDS
+    )
+    assert bounded_call["output_limit_bytes"] == (
+        full_score.FULL_SCORE_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES
+    )
+    repeated = full_score._run_runtime_verifier(
+        runtime,
+        bootstrap,
+        output_path,
+        runner=full_score._subprocess_command_runner,
+    )
+    assert repeated == binding
+    assert bounded_call["count"] == 2
+
+    output_path.unlink()
+    secret = b"must-not-leak"
+    monkeypatch.setattr(
+        full_score,
+        "_run_bounded_binary_subprocess",
+        lambda *args, **kwargs: _bounded_verifier_result(
+            canonical,
+            stderr=secret,
+        ),
+    )
+    with pytest.raises(RuntimeError, match="wrote to stderr") as error:
+        full_score._run_runtime_verifier(
+            runtime,
+            bootstrap,
+            output_path,
+            runner=full_score._subprocess_command_runner,
+        )
+    assert secret.decode() not in str(error.value)
+    assert not output_path.exists()
+
+    noncanonical = json.dumps(_runtime_attestation(), sort_keys=True).encode() + b"\n"
+    monkeypatch.setattr(
+        full_score,
+        "_run_bounded_binary_subprocess",
+        lambda *args, **kwargs: _bounded_verifier_result(noncanonical),
+    )
+    with pytest.raises(RuntimeError, match="output is not canonical"):
+        full_score._run_runtime_verifier(
+            runtime,
+            bootstrap,
+            output_path,
+            runner=full_score._subprocess_command_runner,
+        )
+
+    origin_drift = _runtime_attestation()
+    origin_drift["vllm_direct_url"] = "file:///attacker/substituted-vllm.whl"
+    monkeypatch.setattr(
+        full_score,
+        "_run_bounded_binary_subprocess",
+        lambda *args, **kwargs: _bounded_verifier_result(
+            full_score._canonical_pretty_json_bytes(origin_drift)
+        ),
+    )
+    with pytest.raises(ValueError, match="vllm_direct_url differs"):
+        full_score._run_runtime_verifier(
+            runtime,
+            bootstrap,
+            output_path,
+            runner=full_score._subprocess_command_runner,
+        )
+
+
+def test_injected_runtime_verifier_requires_canonical_full_attestation(
+    campaign,
+):
+    runtime = campaign["bundle"].runtime
+    bootstrap = campaign["payloads"][0]["bootstrap_artifacts"]
+    output_path = campaign["tmp_path"] / "injected-runtime-attestation.json"
+
+    def noncanonical_runner(*_args, **_kwargs):
+        output_path.write_text(
+            json.dumps(_runtime_attestation(), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(RuntimeError, match="is not canonical"):
+        full_score._run_runtime_verifier(
+            runtime,
+            bootstrap,
+            output_path,
+            runner=noncanonical_runner,
+        )
+
+
+def test_qualification_and_full_score_runners_are_independently_pinned(campaign):
+    qualification_runner = campaign[
+        "bundle"
+    ].gpu_qualification.artifact_pins.runner_sha256
+    assert qualification_runner != campaign["bundle"].runner_sha256
+    assert campaign["bundle"].runner_sha256 == full_score.FULL_SCORE_RUNNER_SHA256
+    full_score.validate_full_score_worker_payload(
+        campaign["payloads"][0],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+    )
+    conflated_pins = replace(
+        campaign["bundle"].gpu_qualification.artifact_pins,
+        runner_sha256=full_score.FULL_SCORE_RUNNER_SHA256,
+    )
+    conflated_qualification = replace(
+        campaign["bundle"].gpu_qualification,
+        artifact_pins=conflated_pins,
+    )
+    with pytest.raises(ValueError, match="runner identities must be distinct"):
+        replace(
+            campaign["bundle"],
+            gpu_qualification=conflated_qualification,
+        )
+    with pytest.raises(ValueError, match="runner identities must be distinct"):
+        replace(
+            campaign["job"],
+            gpu_qualification=conflated_qualification,
+        )
+
+    conflated_payload = copy.deepcopy(campaign["payloads"][0])
+    conflated_payload["gpu_qualification"]["artifact_pins"]["runner_sha256"] = (
+        full_score.FULL_SCORE_RUNNER_SHA256
+    )
+    _close(conflated_payload)
+    with pytest.raises(ValueError, match="runner identities must be distinct"):
+        full_score.validate_full_score_worker_payload(
+            conflated_payload,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+        )
+
+    substituted_payload = copy.deepcopy(campaign["payloads"][0])
+    bootstrap = substituted_payload["bootstrap_artifacts"]
+    bootstrap["package_wheel_uri"] = "dbfs:/attacker/substituted-cachet.whl"
+    bootstrap["package_wheel_sha256"] = _digest("substituted-cachet-wheel")
+    bootstrap["locked_runtime_identity_sha256"] = (
+        full_score._locked_runtime_identity_sha256(
+            runner_sha256=bootstrap["runner_sha256"],
+            package_wheel_sha256=bootstrap["package_wheel_sha256"],
+            runtime_lock_sha256=bootstrap["runtime_lock_sha256"],
+            patched_vllm_wheel_sha256=bootstrap["patched_vllm_wheel_sha256"],
+            patched_flashinfer_wheel_sha256=(
+                bootstrap["patched_flashinfer_wheel_sha256"]
+            ),
+            runtime_closure_manifest_sha256=(
+                bootstrap["runtime_closure_manifest_sha256"]
+            ),
+        )
+    )
+    _close(substituted_payload)
+    with pytest.raises(ValueError, match="package wheel differs"):
+        full_score.validate_full_score_worker_payload(
+            substituted_payload,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+        )
+
+
+def test_runtime_install_specs_bind_the_staged_wheel_uris(campaign):
+    runtime = campaign["bundle"].runtime
+    with pytest.raises(ValueError, match="vLLM install spec URI differs"):
+        replace(
+            runtime,
+            vllm_wheel_install_spec=(
+                "vllm @ file:///dbfs/attacker/substituted-vllm.whl#sha256="
+                f"{runtime.patched_vllm_wheel_sha256}"
+            ),
+        )
+    with pytest.raises(ValueError, match="FlashInfer install spec URI differs"):
+        replace(
+            runtime,
+            flashinfer_wheel_install_spec=(
+                "flashinfer-python @ file:///dbfs/attacker/substituted-flashinfer.whl"
+                f"#sha256={runtime.patched_flashinfer_wheel_sha256}"
+            ),
+        )
 
 
 def test_governed_paths_and_recursive_delete_reject_ancestor_symlinks(

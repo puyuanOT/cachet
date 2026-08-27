@@ -50,15 +50,25 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_JOBS,
     PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_TIMEOUT_SECONDS,
 )
-from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+)
+from document_kv_cache.gpu_qualification_databricks import (
+    GPUQualificationLaunchAuthorization,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_PATCHED_WHEEL_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
 
 
 FULL_SCORE_REMOTE_COORDINATOR_REQUEST_RECORD_TYPE: Final = (
-    "cachet.full_score_remote_coordinator_request.v2"
+    "cachet.full_score_remote_coordinator_request.v3"
 )
-FULL_SCORE_REMOTE_COORDINATOR_REQUEST_SCHEMA_VERSION: Final = 2
+FULL_SCORE_REMOTE_COORDINATOR_REQUEST_SCHEMA_VERSION: Final = 3
 FULL_SCORE_REMOTE_COORDINATOR_REQUEST_AUTHORIZATION_RECORD_TYPE: Final = (
-    "cachet.full_score_remote_coordinator_request_authorization.v2"
+    "cachet.full_score_remote_coordinator_request_authorization.v3"
 )
 FULL_SCORE_REMOTE_COORDINATOR_ATTESTATION_RECORD_TYPE: Final = (
     "cachet.full_score_remote_coordinator_attestation.v1"
@@ -1025,6 +1035,116 @@ def write_governed_full_score_remote_live_p90_budget_admission(
     )
 
 
+def prepare_governed_full_score_remote_live_p90_phase_submission(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    cas: FullScoreCompactArtifactCAS,
+    path: str,
+    config: full_score.DatabricksFullScoreJobConfig,
+    worker_payloads: Sequence[Mapping[str, Any]],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    execution_plan: Mapping[str, Any],
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
+    attempt_id: str,
+    completed_block_paths: Sequence[str],
+    prior_wave_completion: Mapping[str, Any],
+    ledger_path: str | Path,
+    predecessor_authorization: object,
+    producer_phase_completion: Mapping[str, Any] | None = None,
+    producer_phase_completion_uri: str | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    latency_execution_plan_record: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Download, gate, and re-render one nonzero phase through Files/CAS."""
+
+    payloads = tuple(worker_payloads)
+    for payload in payloads:
+        full_score.validate_full_score_worker_payload(
+            payload,
+            inventory=inventory,
+            shard_plan=shard_plan,
+            execution_plan=execution_plan,
+        )
+    wave_indices = {cast(int, payload.get("wave_index")) for payload in payloads}
+    phases = {cast(str, payload.get("role")) for payload in payloads}
+    if len(wave_indices) != 1 or len(phases) != 1:
+        raise ValueError("remote P90 preparation requires exactly one phase")
+    if wave_indices == {0}:
+        raise ValueError("wave zero does not use a live P90 admission")
+    phase = next(iter(phases))
+    if phase == "consumer" and remote_ready_authorization is None:
+        raise ValueError(
+            "remote consumer P90 preparation requires producer-ready authority"
+        )
+    compact_io = FullScoreRemoteCompactArtifactIO(workspace, cas)
+    output_uri = _volume_file_uri(path, "live P90 output URI")
+    block_uris = [
+        _volume_file_uri(item, f"completed_block_paths[{index}]")
+        for index, item in enumerate(completed_block_paths)
+    ]
+    if not block_uris or len(set(block_uris)) != len(block_uris):
+        raise ValueError("live P90 remote matched-block URI coverage drift")
+    if output_uri in set(block_uris):
+        raise ValueError("live P90 output collides with a matched block")
+    for block_uri in block_uris:
+        compact_io.download(block_uri)
+    worker_uris = [
+        _volume_file_uri(
+            full_score._full_score_worker_payload_uri(config, payload),
+            f"worker_payloads[{index}] URI",
+        )
+        for index, payload in enumerate(payloads)
+    ]
+    if not worker_uris or len(set(worker_uris)) != len(worker_uris):
+        raise ValueError("live P90 remote worker-payload URI coverage drift")
+    if output_uri in set(worker_uris) or set(block_uris) & set(worker_uris):
+        raise ValueError("live P90 compact input/output URI collision")
+    for worker_uri in worker_uris:
+        compact_io.download(worker_uri)
+    remote_authorizations = tuple(
+        ()
+        if remote_consumer_authorizations is None
+        else remote_consumer_authorizations
+    )
+    for authorization in remote_authorizations:
+        _download_remote_consumer_evidence_bindings(
+            compact_io,
+            authorization,
+            execution_plan=execution_plan,
+        )
+    if producer_phase_completion_uri is not None:
+        completion_uri = _volume_file_uri(
+            producer_phase_completion_uri,
+            "producer_phase_completion_uri",
+        )
+        if completion_uri in {output_uri, *block_uris, *worker_uris}:
+            raise ValueError("producer completion collides with a P90 compact URI")
+        compact_io.download(completion_uri)
+    return full_score.prepare_governed_full_score_live_p90_phase_submission(
+        output_uri,
+        config,
+        payloads,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        execution_plan=execution_plan,
+        qualification_launch_authorization=qualification_launch_authorization,
+        attempt_id=attempt_id,
+        completed_block_paths=block_uris,
+        prior_wave_completion=prior_wave_completion,
+        ledger_path=ledger_path,
+        predecessor_authorization=predecessor_authorization,
+        producer_phase_completion=producer_phase_completion,
+        producer_phase_completion_uri=producer_phase_completion_uri,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_authorizations,
+        compact_artifact_resolver=compact_io.resolve,
+        compact_artifact_publisher=compact_io.publish,
+        latency_execution_plan_record=latency_execution_plan_record,
+    )
+
+
 def _require_worker_package_binding(
     worker_payloads: Sequence[Mapping[str, Any]],
     *,
@@ -1054,6 +1174,10 @@ def _require_worker_package_binding(
             bootstrap.get("runner_sha256"),
             f"worker_payloads[{index}].runner_sha256",
         )
+        qualification_runner_sha = _require_sha256(
+            pins.get("runner_sha256"),
+            f"worker_payloads[{index}].qualification_runner_sha256",
+        )
         runtime_lock_sha = _require_sha256(
             bootstrap.get("runtime_lock_sha256"),
             f"worker_payloads[{index}].runtime_lock_sha256",
@@ -1062,26 +1186,43 @@ def _require_worker_package_binding(
             bootstrap.get("patched_vllm_wheel_sha256"),
             f"worker_payloads[{index}].patched_vllm_wheel_sha256",
         )
+        patched_flashinfer_sha = _require_sha256(
+            bootstrap.get("patched_flashinfer_wheel_sha256"),
+            f"worker_payloads[{index}].patched_flashinfer_wheel_sha256",
+        )
+        runtime_closure_sha = _require_sha256(
+            bootstrap.get("runtime_closure_manifest_sha256"),
+            f"worker_payloads[{index}].runtime_closure_manifest_sha256",
+        )
         locked_runtime_sha = _require_sha256(
             bootstrap.get("locked_runtime_identity_sha256"),
             f"worker_payloads[{index}].locked_runtime_identity_sha256",
         )
         if (
             runner_sha != full_score.FULL_SCORE_RUNNER_SHA256
-            or runtime_lock_sha != VLLM_RUNTIME_LOCK_SHA256
+            or qualification_runner_sha == runner_sha
+            or runtime_lock_sha != VLLM_RUNTIME_BASE_LOCK_SHA256
+            or patched_wheel_sha != VLLM_PATCHED_WHEEL_SHA256
+            or patched_flashinfer_sha != FLASHINFER_PATCHED_WHEEL_SHA256
+            or runtime_closure_sha != RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
             or locked_runtime_sha
             != full_score._locked_runtime_identity_sha256(
                 runner_sha256=runner_sha,
                 package_wheel_sha256=worker_sha,
                 runtime_lock_sha256=runtime_lock_sha,
                 patched_vllm_wheel_sha256=patched_wheel_sha,
+                patched_flashinfer_wheel_sha256=patched_flashinfer_sha,
+                runtime_closure_manifest_sha256=runtime_closure_sha,
             )
             or pins.get("package_wheel_sha256") != worker_sha
-            or pins.get("runner_sha256") != runner_sha
             or pins.get("runtime_lock_sha256") != runtime_lock_sha
             or pins.get("patched_vllm_wheel_sha256") != patched_wheel_sha
+            or pins.get("patched_flashinfer_wheel_sha256") != patched_flashinfer_sha
+            or pins.get("runtime_closure_manifest_sha256") != runtime_closure_sha
             or runtime.get("runtime_lock_sha256") != runtime_lock_sha
             or runtime.get("patched_vllm_wheel_sha256") != patched_wheel_sha
+            or runtime.get("patched_flashinfer_wheel_sha256") != patched_flashinfer_sha
+            or runtime.get("runtime_closure_manifest_sha256") != runtime_closure_sha
         ):
             raise ValueError(
                 "remote coordinator worker qualification/runtime package binding drift"
@@ -4095,6 +4236,16 @@ def _validate_successful_remote_coordinator_run(
         raise ValueError("remote coordinator run task coverage drift")
     task = _json_mapping(tasks[0], "remote coordinator run task")
     expected = _json_mapping(expected_tasks[0], "remote coordinator submit task")
+    observed_spark_task = _json_mapping(
+        _required_mapping(task, "spark_python_task"),
+        "remote coordinator run spark_python_task",
+    )
+    expected_spark_task = _json_mapping(
+        _required_mapping(expected, "spark_python_task"),
+        "remote coordinator submit spark_python_task",
+    )
+    if observed_spark_task != expected_spark_task:
+        raise ValueError("remote coordinator run spark_python_task binding drift")
     task_state = _required_mapping(task, "state")
     cluster = _required_mapping(expected, "new_cluster")
     attempt_number = task.get("attempt_number")
@@ -4465,6 +4616,7 @@ __all__ = [
     "collect_governed_full_score_remote_phase_attempt",
     "collect_full_score_remote_coordinator",
     "coordinator_main",
+    "prepare_governed_full_score_remote_live_p90_phase_submission",
     "render_full_score_remote_coordinator_submit_payload",
     "recover_full_score_remote_coordinator_submission",
     "replay_full_score_remote_coordinator_authorization",

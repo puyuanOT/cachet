@@ -114,14 +114,19 @@ def _request_case(*, action="producer_ready", wave_index=0, phase_lease_root=Non
     shard_plan = _closed_record("shard-plan")
     role = "producer" if action == "producer_ready" else "consumer"
     package_wheel_sha256 = _digest("package-wheel")
-    patched_wheel_sha256 = _digest("patched-vllm-wheel")
+    patched_wheel_sha256 = remote.full_score.VLLM_PATCHED_WHEEL_SHA256
+    patched_flashinfer_sha256 = remote.full_score.FLASHINFER_PATCHED_WHEEL_SHA256
+    runtime_closure_sha256 = remote.full_score.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
     runner_sha256 = remote.full_score.FULL_SCORE_RUNNER_SHA256
-    runtime_lock_sha256 = remote.full_score.VLLM_RUNTIME_LOCK_SHA256
+    qualification_runner_sha256 = _digest("qualification-runner")
+    runtime_lock_sha256 = remote.full_score.VLLM_RUNTIME_BASE_LOCK_SHA256
     locked_runtime_sha256 = remote.full_score._locked_runtime_identity_sha256(
         runner_sha256=runner_sha256,
         package_wheel_sha256=package_wheel_sha256,
         runtime_lock_sha256=runtime_lock_sha256,
         patched_vllm_wheel_sha256=patched_wheel_sha256,
+        patched_flashinfer_wheel_sha256=patched_flashinfer_sha256,
+        runtime_closure_manifest_sha256=runtime_closure_sha256,
     )
     payloads = [
         (
@@ -135,7 +140,18 @@ def _request_case(*, action="producer_ready", wave_index=0, phase_lease_root=Non
                         "dbfs:/Volumes/catalog/schema/volume/runtime/cachet.whl"
                     ),
                     "patched_vllm_wheel_sha256": patched_wheel_sha256,
+                    "patched_vllm_wheel_uri": (
+                        "dbfs:/Volumes/catalog/schema/volume/runtime/vllm.whl"
+                    ),
+                    "patched_flashinfer_wheel_sha256": patched_flashinfer_sha256,
+                    "patched_flashinfer_wheel_uri": (
+                        "dbfs:/Volumes/catalog/schema/volume/runtime/flashinfer.whl"
+                    ),
                     "runner_sha256": runner_sha256,
+                    "runtime_closure_manifest_sha256": runtime_closure_sha256,
+                    "runtime_closure_manifest_uri": (
+                        "dbfs:/Volumes/catalog/schema/volume/runtime/closure.json"
+                    ),
                     "runtime_lock_sha256": runtime_lock_sha256,
                 },
                 durable_output_root="dbfs:/Volumes/catalog/schema/volume/durable",
@@ -146,7 +162,9 @@ def _request_case(*, action="producer_ready", wave_index=0, phase_lease_root=Non
                     "artifact_pins": {
                         "package_wheel_sha256": package_wheel_sha256,
                         "patched_vllm_wheel_sha256": patched_wheel_sha256,
-                        "runner_sha256": runner_sha256,
+                        "patched_flashinfer_wheel_sha256": (patched_flashinfer_sha256),
+                        "runtime_closure_manifest_sha256": runtime_closure_sha256,
+                        "runner_sha256": qualification_runner_sha256,
                         "runtime_lock_sha256": runtime_lock_sha256,
                     }
                 },
@@ -156,6 +174,8 @@ def _request_case(*, action="producer_ready", wave_index=0, phase_lease_root=Non
                 role=role,
                 runtime={
                     "patched_vllm_wheel_sha256": patched_wheel_sha256,
+                    "patched_flashinfer_wheel_sha256": patched_flashinfer_sha256,
+                    "runtime_closure_manifest_sha256": runtime_closure_sha256,
                     "runtime_lock_sha256": runtime_lock_sha256,
                 },
                 shards=[{"shard_id": shard_id}],
@@ -448,6 +468,7 @@ def _successful_run(payload, run_id=701):
                 "cluster_instance": {"cluster_id": "0824-remote-cpu"},
                 "cluster_spec": {"new_cluster": copy.deepcopy(cluster)},
                 "run_id": run_id + 1,
+                "spark_python_task": copy.deepcopy(task["spark_python_task"]),
                 "state": {
                     "life_cycle_state": "TERMINATED",
                     "result_state": "SUCCESS",
@@ -788,12 +809,59 @@ def test_remote_request_rejects_cross_worker_package_drift():
             package_wheel_sha256=drift_sha,
             runtime_lock_sha256=bootstrap["runtime_lock_sha256"],
             patched_vllm_wheel_sha256=bootstrap["patched_vllm_wheel_sha256"],
+            patched_flashinfer_wheel_sha256=(
+                bootstrap["patched_flashinfer_wheel_sha256"]
+            ),
+            runtime_closure_manifest_sha256=(
+                bootstrap["runtime_closure_manifest_sha256"]
+            ),
         )
     )
     _close(drift_record)
 
     with pytest.raises(ValueError, match="differ from phase terminal"):
         _rebuild_request(case, worker_payloads=drifted)
+
+
+def test_remote_worker_runtime_closure_is_v2_and_runner_pins_are_separate():
+    case = _request_case()
+    records = [record for _uri, record in case.payloads]
+    remote._require_worker_package_binding(
+        records,
+        package_wheel_uri=("dbfs:/Volumes/catalog/schema/volume/runtime/cachet.whl"),
+        package_wheel_sha256=_digest("package-wheel"),
+    )
+    first = records[0]
+    assert (
+        first["gpu_qualification"]["artifact_pins"]["runner_sha256"]
+        != (first["bootstrap_artifacts"]["runner_sha256"])
+    )
+
+    conflated = copy.deepcopy(records)
+    conflated[0]["gpu_qualification"]["artifact_pins"]["runner_sha256"] = conflated[0][
+        "bootstrap_artifacts"
+    ]["runner_sha256"]
+    with pytest.raises(ValueError, match="qualification/runtime package binding drift"):
+        remote._require_worker_package_binding(
+            conflated,
+            package_wheel_uri=(
+                "dbfs:/Volumes/catalog/schema/volume/runtime/cachet.whl"
+            ),
+            package_wheel_sha256=_digest("package-wheel"),
+        )
+
+    tampered = copy.deepcopy(records)
+    tampered[0]["bootstrap_artifacts"]["runtime_closure_manifest_sha256"] = _digest(
+        "unreviewed-runtime-closure"
+    )
+    with pytest.raises(ValueError, match="qualification/runtime package binding drift"):
+        remote._require_worker_package_binding(
+            tampered,
+            package_wheel_uri=(
+                "dbfs:/Volumes/catalog/schema/volume/runtime/cachet.whl"
+            ),
+            package_wheel_sha256=_digest("package-wheel"),
+        )
 
 
 def test_remote_request_rejects_resealed_workers_not_bound_by_phase_terminal():
@@ -814,6 +882,12 @@ def test_remote_request_rejects_resealed_workers_not_bound_by_phase_terminal():
                 package_wheel_sha256=unreviewed_sha,
                 runtime_lock_sha256=bootstrap["runtime_lock_sha256"],
                 patched_vllm_wheel_sha256=bootstrap["patched_vllm_wheel_sha256"],
+                patched_flashinfer_wheel_sha256=(
+                    bootstrap["patched_flashinfer_wheel_sha256"]
+                ),
+                runtime_closure_manifest_sha256=(
+                    bootstrap["runtime_closure_manifest_sha256"]
+                ),
             )
         )
         _close(record)
@@ -1541,6 +1615,23 @@ def test_remote_run_requires_unrepaired_attempt_zero_and_bound_task_cluster_ids(
     mutated["tasks"][0].pop("cluster_spec")
     mutated["tasks"][0]["node_type_id"] = "c5d.4xlarge"
     with pytest.raises(ValueError, match="topology is missing"):
+        remote._validate_successful_remote_coordinator_run(
+            mutated, submit_payload=submit
+        )
+
+    mutated = copy.deepcopy(run)
+    mutated["tasks"][0]["spark_python_task"]["python_file"] = (
+        "dbfs:/Volumes/catalog/schema/volume/runtime/substituted-runner.py"
+    )
+    with pytest.raises(ValueError, match="spark_python_task binding drift"):
+        remote._validate_successful_remote_coordinator_run(
+            mutated, submit_payload=submit
+        )
+
+    mutated = copy.deepcopy(run)
+    parameters = mutated["tasks"][0]["spark_python_task"]["parameters"]
+    parameters[:4] = parameters[2:4] + parameters[:2]
+    with pytest.raises(ValueError, match="spark_python_task binding drift"):
         remote._validate_successful_remote_coordinator_run(
             mutated, submit_payload=submit
         )

@@ -7,6 +7,7 @@ from hashlib import sha256
 import pytest
 
 import document_kv_cache.gpu_qualification_databricks as qualification_job
+import document_kv_cache.gpu_qualification_v2 as qualification_v2
 import document_kv_cache.publication_latency_handoff_generation as generation
 from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
@@ -23,8 +24,18 @@ from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
 from document_kv_cache.models import KVCacheKey
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
+    GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+    GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
     GPUQualificationArtifactPins,
     GPUQualificationSelection,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+    GPUQualificationArtifactPinsV2,
+)
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
@@ -47,6 +58,7 @@ from document_kv_cache.publication_latency_handoff_generation import (
     PUBLICATION_LATENCY_HANDOFF_TASK_COUNT,
     DatabricksPublicationLatencyHandoffJobConfig,
     PublicationLatencyGeneratorHardwareQualification,
+    PublicationLatencyGeneratorHardwareQualificationV2,
     PublicationLatencyHandoffServingAuthorization,
     PublicationLatencyHandoffExecutionConfig,
     authorize_publication_latency_handoff_serving,
@@ -76,6 +88,10 @@ from document_kv_cache.publication_latency_handoff_generation import (
     write_publication_latency_handoff_worker_payloads,
     write_publication_latency_handoff_databricks_attestation,
     write_publication_latency_handoff_generation_plan,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
 
@@ -251,7 +267,7 @@ def fake_prepared_inputs(tmp_path):
         output_dir=root,
         provenance_json_path=provenance,
         provenance_sha256=sha256(provenance.read_bytes()).hexdigest(),
-        bundle_sha256=sha256(b"verified-main-latency-bundle").hexdigest(),
+        bundle_sha256=GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
         files=tuple(files),
     )
 
@@ -492,7 +508,9 @@ def test_generation_plan_binds_pinned_tokenizer(prepared):
     assert config.tokenizer_revision == MAIN_LATENCY_TOKENIZER_REVISION
 
 
-def test_production_config_pins_q8_nf4_double_quant_and_loader_source(monkeypatch):
+def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
+    monkeypatch, tmp_path
+):
     config = build_publication_latency_handoff_execution_config(
         vllm_bitsandbytes_loader_source_sha256=(
             GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256
@@ -524,6 +542,7 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(monkeypatc
     monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
     monkeypatch.setenv("pip_no_index", "1")
     monkeypatch.setenv("PIP_REQUIREMENT", "/attacker/requirements.txt")
+    monkeypatch.setenv("_PIP_STANDALONE_CERT", "/attacker/cert.pem")
     monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
     monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
     monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
@@ -536,6 +555,7 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(monkeypatc
         "PIP_NO_INPUT",
     }
     assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert not any(key.upper().startswith("_PIP_") for key in environment)
     assert environment["PYTHONNOUSERSITE"] == "1"
     assert all(
         variable not in environment
@@ -544,6 +564,103 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(monkeypatc
     assert '"--extra-index-url"' not in (
         generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
     )
+    install_script = generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT.split(
+        "pip = [venv_python, \"-m\", \"pip\"]",
+        maxsplit=1,
+    )[1]
+    install_positions = [
+        install_script.index('"--require-hashes"'),
+        install_script.index('"vllm"'),
+        install_script.index('"flashinfer-python"'),
+        install_script.index('"cachet-kv"'),
+        install_script.index("_verify_locked_runtime("),
+    ]
+    assert install_positions == sorted(install_positions)
+    assert "verify_gpu_qualification_v2_runtime_installation" in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
+    marker = namespace["_runtime_marker"](
+        type(
+            "Args",
+            (),
+            {
+                "package_wheel_sha256": "1" * 64,
+                "patched_flashinfer_wheel_sha256": "2" * 64,
+                "patched_vllm_wheel_sha256": "3" * 64,
+                "runtime_closure_manifest_sha256": "4" * 64,
+                "runtime_lock_sha256": "5" * 64,
+            },
+        )()
+    )
+    changed_marker = namespace["_runtime_marker"](
+        type(
+            "Args",
+            (),
+            {
+                "package_wheel_sha256": "1" * 64,
+                "patched_flashinfer_wheel_sha256": "9" * 64,
+                "patched_vllm_wheel_sha256": "3" * 64,
+                "runtime_closure_manifest_sha256": "4" * 64,
+                "runtime_lock_sha256": "5" * 64,
+            },
+        )()
+    )
+    assert marker != changed_marker
+
+    vllm_wheel = tmp_path / "vllm.whl"
+    flashinfer_wheel = tmp_path / "flashinfer.whl"
+    attestation = {
+        "flashinfer_direct_url": flashinfer_wheel.resolve().as_uri(),
+        "ok": True,
+        "vllm_direct_url": vllm_wheel.resolve().as_uri(),
+    }
+    output = {
+        "returncode": 0,
+        "stderr": "",
+        "stdout": json.dumps(
+            attestation, sort_keys=True, separators=(",", ":")
+        )
+        + "\n",
+    }
+    verifier_calls = []
+
+    def validate_attestation(value):
+        verifier_calls.append(dict(value))
+
+    def run_verifier(command, *, capture_output, text, env, timeout):
+        assert command[0] == "venv-python"
+        assert capture_output is True
+        assert text is True
+        assert env == {"SAFE": "1"}
+        assert timeout == 300.0
+        return type("Completed", (), output)()
+
+    monkeypatch.setattr(
+        qualification_v2,
+        "validate_gpu_qualification_v2_runtime_attestation",
+        validate_attestation,
+    )
+    monkeypatch.setattr(namespace["subprocess"], "run", run_verifier)
+    verify_kwargs = {
+        "venv_python": "venv-python",
+        "runtime_lock": str(tmp_path / "base.lock"),
+        "patched_vllm_wheel": str(vllm_wheel),
+        "patched_flashinfer_wheel": str(flashinfer_wheel),
+        "runtime_closure_manifest": str(tmp_path / "closure.json"),
+        "package_wheel": str(tmp_path / "cachet.whl"),
+        "package_wheel_sha256": "a" * 64,
+        "environment": {"SAFE": "1"},
+    }
+    namespace["_verify_locked_runtime"](**verify_kwargs)
+    assert verifier_calls == [attestation]
+
+    output["stderr"] = "unexpected\n"
+    with pytest.raises(RuntimeError, match="emitted stderr"):
+        namespace["_verify_locked_runtime"](**verify_kwargs)
+    output["stderr"] = ""
+    output["stdout"] = json.dumps(attestation, indent=2, sort_keys=True) + "\n"
+    with pytest.raises(RuntimeError, match="not canonical"):
+        namespace["_verify_locked_runtime"](**verify_kwargs)
 
 
 def fake_hardware_qualification(monkeypatch, prepared):
@@ -556,22 +673,40 @@ def fake_hardware_qualification(monkeypatch, prepared):
         generation_prefix_tokens_per_second=40.0,
         plan_sha256="8" * 64,
     )
-    monkeypatch.setattr(
-        generation,
-        "validate_gpu_qualification_evidence_record",
-        lambda *args, **kwargs: selection,
-    )
-    pins = GPUQualificationArtifactPins(
-        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
-        patched_vllm_wheel_sha256="2" * 64,
+    pins = GPUQualificationArtifactPinsV2(
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256="3" * 64,
         cachet_source_tree_sha256="4" * 64,
         runner_sha256="5" * 64,
         input_bundle_sha256=prepared.bundle_sha256,
     )
-    return PublicationLatencyGeneratorHardwareQualification(
-        evidence_record={"closed_record_sha256": "6" * 64},
-        plan_record={"closed_record_sha256": "8" * 64},
+
+    def validate_plan(*_args, expected_artifact_pins, **_kwargs):
+        if expected_artifact_pins != pins:
+            raise ValueError("native-v2 qualification artifact pins drift")
+
+    monkeypatch.setattr(
+        generation,
+        "validate_gpu_qualification_evidence_v2_record",
+        lambda *args, **kwargs: selection,
+    )
+    monkeypatch.setattr(
+        generation,
+        "validate_gpu_qualification_plan_v2_record",
+        validate_plan,
+    )
+    return PublicationLatencyGeneratorHardwareQualificationV2(
+        evidence_record={
+            "closed_record_sha256": "6" * 64,
+            "record_type": GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+        },
+        plan_record={
+            "closed_record_sha256": "8" * 64,
+            "record_type": GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+        },
         expected_campaign_id="vllm-0271-publication-v1",
         expected_artifact_pins=pins,
         evidence_uri="dbfs:/qualification/evidence.json",
@@ -661,12 +796,140 @@ def production_launch_material(prepared, monkeypatch):
         package_wheel_uri="dbfs:/cachet.whl",
         package_wheel_sha256="3" * 64,
         runtime_lock_uri="dbfs:/runtime.lock",
-        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_uri="dbfs:/vllm.whl",
-        patched_vllm_wheel_sha256="2" * 64,
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_uri="dbfs:/flashinfer.whl",
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_uri="dbfs:/runtime-closure.json",
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        cachet_source_tree_sha256="4" * 64,
         single_user_name="publication@example.com",
     )
     return plan, payloads, job_config, qualification, authorization
+
+
+def test_native_v2_payload_binding_is_strict_and_v1_is_nonlaunchable(
+    prepared, monkeypatch, tmp_path
+):
+    plan, payloads, job_config, qualification, _authorization = (
+        production_launch_material(prepared, monkeypatch)
+    )
+    payload = payloads[0]
+    assert payload["record_type"].endswith(".v2")
+    assert payload["schema_version"] == 2
+    qualification_record = payload["generator_hardware_qualification"]
+    assert qualification_record["record_type"] == (
+        generation.PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_RECORD_TYPE
+    )
+    assert tuple(qualification_record["expected_artifact_pins"]) == (
+        "cachet_source_tree_sha256",
+        "input_bundle_sha256",
+        "package_wheel_sha256",
+        "patched_flashinfer_wheel_sha256",
+        "patched_vllm_wheel_sha256",
+        "runner_sha256",
+        "runtime_closure_manifest_sha256",
+        "runtime_lock_sha256",
+    )
+    assert (
+        generation.gpu_qualification_artifact_pins_v2_from_record(
+            qualification_record["expected_artifact_pins"]
+        )
+        == qualification.expected_artifact_pins
+    )
+    generation.validate_publication_latency_generator_hardware_qualification_v2_record(
+        qualification_record
+    )
+    colliding_runner_binding = copy.deepcopy(qualification_record)
+    colliding_runner_binding["expected_artifact_pins"]["runner_sha256"] = (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256
+    )
+    with pytest.raises(ValueError, match="qualification runner.*must be distinct"):
+        generation.validate_publication_latency_generator_hardware_qualification_v2_record(
+            colliding_runner_binding
+        )
+    assert (
+        generation.publication_latency_generator_hardware_qualification_v2_record(
+            qualification
+        )
+        == qualification_record
+    )
+
+    legacy_payload = copy.deepcopy(payload)
+    legacy_payload["record_type"] = (
+        "cachet.publication_latency_handoff_worker_payload.v1"
+    )
+    legacy_payload["schema_version"] = 1
+    legacy_qualification = legacy_payload["generator_hardware_qualification"]
+    legacy_qualification.pop("record_type")
+    legacy_qualification.pop("schema_version")
+    legacy_qualification.pop("plan_record")
+    legacy_pins = legacy_qualification["expected_artifact_pins"]
+    legacy_pins.pop("patched_flashinfer_wheel_sha256")
+    legacy_pins.pop("runtime_closure_manifest_sha256")
+    legacy_payload["closed_record_sha256"] = generation._closed_record_sha256(
+        legacy_payload
+    )
+    validate_publication_latency_handoff_worker_payload(legacy_payload, plan=plan)
+
+    ledger_path = tmp_path / "native-v2-only-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path, ledger_id="gpu-qualification-test-ledger"
+    )
+    authorization = fake_launch_authorization(
+        qualification, ledger_path=ledger_path
+    )
+    legacy_payloads = list(payloads)
+    legacy_payloads[0] = legacy_payload
+    with pytest.raises(ValueError, match="native-v2 worker payload"):
+        build_databricks_publication_latency_handoff_worker_submit_payloads(
+            job_config,
+            legacy_payloads,
+            ledger_path=ledger_path,
+            qualification_launch_authorization=authorization,
+        )
+
+    monkeypatch.setattr(
+        generation,
+        "validate_gpu_qualification_evidence_record",
+        lambda *args, **kwargs: qualification.selection,
+    )
+    v1_qualification = PublicationLatencyGeneratorHardwareQualification(
+        evidence_record={"closed_record_sha256": "6" * 64},
+        plan_record={"closed_record_sha256": "8" * 64},
+        expected_campaign_id="vllm-0271-publication-v1",
+        expected_artifact_pins=GPUQualificationArtifactPins(
+            runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+            patched_vllm_wheel_sha256="2" * 64,
+            package_wheel_sha256="3" * 64,
+            cachet_source_tree_sha256="4" * 64,
+            runner_sha256="5" * 64,
+            input_bundle_sha256=prepared.bundle_sha256,
+        ),
+        evidence_uri="dbfs:/qualification/evidence-v1.json",
+        evidence_file_sha256="9" * 64,
+        plan_uri="dbfs:/qualification/plan-v1.json",
+        plan_file_sha256="a" * 64,
+    )
+    with pytest.raises(TypeError, match="native v2"):
+        build_publication_latency_handoff_worker_payloads(
+            plan,
+            plan_uri="dbfs:/plans/latency-handoff-plan.json",
+            plan_file_sha256="d" * 64,
+            prepared_input_uri="dbfs:/prepared/main-latency",
+            prepared_provenance_file_sha256="e" * 64,
+            prepared_provenance_closed_record_sha256="f" * 64,
+            durable_output_root=(
+                "dbfs:/Volumes/catalog/schema/volume/publication-latency-handoffs/"
+                f"{plan['closed_record_sha256']}"
+            ),
+            local_work_root_template="/local_disk0/worker-{worker_index}",
+            config=generation._execution_config_from_record(
+                payload["execution_contract"]
+            ),
+            hardware_qualification=v1_qualification,
+        )
 
 
 def successful_terminal_run(submit_payload, worker_index):
@@ -694,6 +957,9 @@ def successful_terminal_run(submit_payload, worker_index):
                 "end_time": task_end,
                 "new_cluster": copy.deepcopy(submit_payload["tasks"][0]["new_cluster"]),
                 "run_id": 20_000 + worker_index,
+                "spark_python_task": copy.deepcopy(
+                    submit_payload["tasks"][0]["spark_python_task"]
+                ),
                 "start_time": task_start,
                 "state": {
                     "life_cycle_state": "TERMINATED",
@@ -728,6 +994,47 @@ def test_production_submit_render_rejects_missing_wrong_or_forged_authority(
         wrong_ledger_path,
         ledger_id="different-qualification-ledger",
     )
+
+    rendered = build_databricks_publication_latency_handoff_worker_submit_payloads(
+        job_config,
+        payloads,
+        ledger_path=ledger_path,
+        qualification_launch_authorization=authorization,
+    )
+    parameters = rendered[0]["tasks"][0]["spark_python_task"]["parameters"]
+    assert parameters[parameters.index("--patched-flashinfer-wheel-sha256") + 1] == (
+        FLASHINFER_PATCHED_WHEEL_SHA256
+    )
+    assert parameters[parameters.index("--runtime-closure-manifest-sha256") + 1] == (
+        RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+    )
+    assert (
+        payloads[0]["generator_hardware_qualification"]["expected_artifact_pins"][
+            "runner_sha256"
+        ]
+        != job_config.runner_sha256
+    )
+
+    for pin_name in (
+        "cachet_source_tree_sha256",
+        "patched_flashinfer_wheel_sha256",
+        "runner_sha256",
+        "runtime_closure_manifest_sha256",
+    ):
+        tampered_payloads = copy.deepcopy(payloads)
+        tampered_payloads[0]["generator_hardware_qualification"][
+            "expected_artifact_pins"
+        ][pin_name] = "0" * 64
+        tampered_payloads[0]["closed_record_sha256"] = (
+            generation._closed_record_sha256(tampered_payloads[0])
+        )
+        with pytest.raises(ValueError, match="differ|drift"):
+            build_databricks_publication_latency_handoff_worker_submit_payloads(
+                job_config,
+                tampered_payloads,
+                ledger_path=ledger_path,
+                qualification_launch_authorization=authorization,
+            )
 
     with pytest.raises(TypeError, match="qualification_launch_authorization"):
         build_databricks_publication_latency_handoff_worker_submit_payloads(
@@ -827,6 +1134,48 @@ def test_reservation_and_submission_recheck_wrong_authority(
             qualification_launch_authorization=authorization,
         )
     )
+    for mutation in (
+        "python_file",
+        "runner_sha256",
+        "package_wheel_uri",
+        "runtime_venv_dir",
+        "worker_payload_uri",
+        "cluster",
+    ):
+        rebound = copy.deepcopy(submit_payloads[0])
+        task = rebound["tasks"][0]
+        parameters = task["spark_python_task"]["parameters"]
+        if mutation == "python_file":
+            task["spark_python_task"]["python_file"] = "dbfs:/attacker.py"
+            message = "python_file differs"
+        elif mutation == "cluster":
+            task["new_cluster"]["aws_attributes"]["zone_id"] = "us-west-2z"
+            message = "submit payload differs"
+        else:
+            flag = {
+                "package_wheel_uri": "--package-wheel-uri",
+                "runner_sha256": "--runner-sha256",
+                "runtime_venv_dir": "--runtime-venv-dir",
+                "worker_payload_uri": "--worker-payload-json",
+            }[mutation]
+            parameters[parameters.index(flag) + 1] = (
+                "0" * 64 if mutation == "runner_sha256" else "/attacker/value"
+            )
+            message = (
+                "runner SHA-256 differs"
+                if mutation == "runner_sha256"
+                else "spark_python_task differs"
+            )
+        with pytest.raises(ValueError, match=message):
+            reserve_publication_latency_handoff_worker_attempt_json(
+                ledger_path,
+                rebound,
+                worker_payload=payloads[0],
+                worker_index=0,
+                attempt_id=f"rebound-{mutation}",
+                job_config=job_config,
+                qualification_launch_authorization=authorization,
+            )
     wrong_evidence_authorization = fake_launch_authorization(
         qualification,
         evidence_file_sha256="1" * 64,
@@ -840,6 +1189,7 @@ def test_reservation_and_submission_recheck_wrong_authority(
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="different-ledger-reserve",
+            job_config=job_config,
             qualification_launch_authorization=authorization,
         )
 
@@ -861,6 +1211,7 @@ def test_reservation_and_submission_recheck_wrong_authority(
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="different-ledger-submit",
+            job_config=job_config,
             qualification_launch_authorization=authorization,
             opener=cross_ledger_opener,
         )
@@ -870,13 +1221,14 @@ def test_reservation_and_submission_recheck_wrong_authority(
     parameters = forged_submit_payload["tasks"][0]["spark_python_task"]["parameters"]
     package_hash_index = parameters.index("--package-wheel-sha256") + 1
     parameters[package_hash_index] = "0" * 64
-    with pytest.raises(ValueError, match="--package-wheel-sha256 differs"):
+    with pytest.raises(ValueError, match="spark_python_task differs"):
         reserve_publication_latency_handoff_worker_attempt_json(
             ledger_path,
             forged_submit_payload,
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="forged-artifact-reserve",
+            job_config=job_config,
             qualification_launch_authorization=authorization,
         )
 
@@ -887,6 +1239,7 @@ def test_reservation_and_submission_recheck_wrong_authority(
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="wrong-reserve",
+            job_config=job_config,
             qualification_launch_authorization=wrong_evidence_authorization,
         )
 
@@ -908,6 +1261,7 @@ def test_reservation_and_submission_recheck_wrong_authority(
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="wrong-submit",
+            job_config=job_config,
             qualification_launch_authorization=wrong_evidence_authorization,
             opener=opener,
         )
@@ -948,6 +1302,7 @@ def test_single_worker_publication_route_is_nonauthorizing(
             worker_payload=payloads[0],
             worker_index=0,
             attempt_id="toctou-reserve",
+            job_config=job_config,
             qualification_launch_authorization=authorization,
         )
     assert read_databricks_cluster_hour_ledger_json(ledger_path).reservations == ()
@@ -1034,6 +1389,26 @@ def test_q8_wave_resumes_lost_first_response_and_unclaimed_members(
         )
         for index in range(16)
     }
+    rebound_submissions = copy.deepcopy(submissions)
+    rebound_submissions[0]["tasks"][0]["spark_python_task"]["python_file"] = (
+        "dbfs:/attacker.py"
+    )
+    with pytest.raises(ValueError, match="python_file differs"):
+        reserve_and_submit_publication_latency_handoff_worker_wave(
+            DatabricksWorkspaceConfig("https://dbc.example", "token"),
+            rebound_submissions,
+            ledger_path=ledger_path,
+            worker_payloads=worker_payloads,
+            attempt_ids_by_worker=attempts,
+            phase_lease_root=tmp_path / "rebound-q8-phase",
+            job_config=job_config,
+            qualification_launch_authorization=authorization,
+            opener=lambda *_args, **_kwargs: pytest.fail(
+                "rebound Q8 runner must not POST"
+            ),
+        )
+    assert not (tmp_path / "rebound-q8-phase").exists()
+    assert read_databricks_cluster_hour_ledger_json(ledger_path).reservations == ()
     phase_root = tmp_path / "q8-resume-phase"
     with pytest.raises(TimeoutError, match="lost response"):
         reserve_and_submit_publication_latency_handoff_worker_wave(
@@ -1043,6 +1418,7 @@ def test_q8_wave_resumes_lost_first_response_and_unclaimed_members(
             worker_payloads=worker_payloads,
             attempt_ids_by_worker=attempts,
             phase_lease_root=phase_root,
+            job_config=job_config,
             qualification_launch_authorization=authorization,
             opener=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 TimeoutError("lost response")
@@ -1065,6 +1441,7 @@ def test_q8_wave_resumes_lost_first_response_and_unclaimed_members(
         worker_payloads=worker_payloads,
         attempt_ids_by_worker=attempts,
         phase_lease_root=phase_root,
+        job_config=job_config,
         qualification_launch_authorization=authorization,
         opener=opener,
     )
@@ -1073,6 +1450,9 @@ def test_q8_wave_resumes_lost_first_response_and_unclaimed_members(
     assert len(ledger.reservations) == len(ledger.submission_receipts) == 16
     assert (phase_root / "batch-reserved.json").is_file()
     assert batch.durable_output_root == worker_payloads[0]["durable_output_root"]
+    assert batch.job_config_sha256 == generation._q8_job_config_sha256(job_config)
+    assert batch.runner_python_file == job_config.runner_python_file
+    assert batch.runner_sha256 == job_config.runner_sha256
     alternate_roots = [copy.deepcopy(item) for item in worker_payloads]
     alternate_roots[0]["durable_output_root"] += "-alternate"
     with pytest.raises(ValueError, match="share one durable_output_root"):
@@ -1083,11 +1463,114 @@ def test_q8_wave_resumes_lost_first_response_and_unclaimed_members(
             worker_payloads=alternate_roots,
             attempt_ids_by_worker=attempts,
             phase_lease_root=phase_root,
+            job_config=job_config,
             qualification_launch_authorization=authorization,
             opener=lambda *_args, **_kwargs: pytest.fail(
                 "alternate Q8 output root must not POST"
             ),
         )
+
+
+def test_q8_wave_resumes_exact_lease_before_atomic_batch(
+    prepared, monkeypatch, tmp_path
+):
+    (
+        _plan,
+        worker_payloads,
+        job_config,
+        qualification,
+        _authorization,
+    ) = production_launch_material(prepared, monkeypatch)
+    ledger_path = tmp_path / "q8-lease-only-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path, ledger_id="gpu-qualification-test-ledger"
+    )
+    authorization = fake_launch_authorization(
+        qualification, ledger_path=ledger_path
+    )
+    submissions = build_databricks_publication_latency_handoff_worker_submit_payloads(
+        job_config,
+        worker_payloads,
+        ledger_path=ledger_path,
+        qualification_launch_authorization=authorization,
+    )
+    attempts = {
+        index: publication_latency_handoff_worker_attempt_id(
+            worker_payloads[index], worker_index=index
+        )
+        for index in range(16)
+    }
+    payload_digests = []
+    for submission in submissions:
+        _snapshot, canonical = generation.canonical_databricks_submit_payload_snapshot(
+            submission
+        )
+        payload_digests.append(sha256(canonical).hexdigest())
+    phase_root = tmp_path / "q8-lease-only-phase"
+    phase_root.mkdir()
+    lease = {
+        "attempt_ids": [attempts[index] for index in range(16)],
+        "closed_record_sha256": "",
+        "durable_output_root": worker_payloads[0]["durable_output_root"],
+        "job_config_sha256": generation._q8_job_config_sha256(job_config),
+        "ledger_path_sha256": authorization.ledger_path_sha256,
+        "predecessor_prefix": authorization.ledger_prefix.to_record(),
+        "record_type": generation._Q8_PHASE_LEASE_RECORD_TYPE,
+        "runner_python_file": job_config.runner_python_file,
+        "runner_sha256": job_config.runner_sha256,
+        "submit_payload_sha256": payload_digests,
+    }
+    lease["closed_record_sha256"] = generation._closed_record_sha256(lease)
+    (phase_root / "phase-lease.json").write_bytes(
+        generation._canonical_json_bytes(lease, pretty=True)
+    )
+    next_run_id = 90_000
+    post_count = 0
+
+    def opener(_request, *, timeout):
+        nonlocal next_run_id, post_count
+        assert timeout > 0
+        post_count += 1
+        response = JsonHTTPResponse({"run_id": next_run_id})
+        next_run_id += 1
+        return response
+
+    responses, submission_authorization = (
+        resume_publication_latency_handoff_worker_wave(
+            DatabricksWorkspaceConfig("https://dbc.example", "token"),
+            submissions,
+            ledger_path=ledger_path,
+            worker_payloads=worker_payloads,
+            attempt_ids_by_worker=attempts,
+            phase_lease_root=phase_root,
+            job_config=job_config,
+            qualification_launch_authorization=authorization,
+            opener=opener,
+        )
+    )
+    assert len(responses) == post_count == 16
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert len(ledger.reservations) == len(ledger.submission_receipts) == 16
+    assert ledger.active_reserved_cluster_hours == 80.0
+    assert (phase_root / "batch-reserved.json").is_file()
+    require_publication_latency_handoff_submission_authorization(
+        submission_authorization
+    )
+
+    replayed, _authorization = resume_publication_latency_handoff_worker_wave(
+        DatabricksWorkspaceConfig("https://dbc.example", "token"),
+        submissions,
+        ledger_path=ledger_path,
+        worker_payloads=worker_payloads,
+        attempt_ids_by_worker=attempts,
+        phase_lease_root=phase_root,
+        job_config=job_config,
+        qualification_launch_authorization=authorization,
+        opener=lambda *_args, **_kwargs: pytest.fail(
+            "completed lease recovery must not POST"
+        ),
+    )
+    assert len(replayed) == 16
 
 
 def test_distributed_workers_close_without_copy_and_render_independent_jobs(
@@ -1168,19 +1651,25 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
     launch_authorization = fake_launch_authorization(
         qualification, ledger_path=ledger_path
     )
+    job_config = DatabricksPublicationLatencyHandoffJobConfig(
+        runner_python_file="dbfs:/runner.py",
+        worker_payload_uri_template="dbfs:/payloads/worker-{worker_index}.json",
+        package_wheel_uri="dbfs:/cachet.whl",
+        package_wheel_sha256="3" * 64,
+        runtime_lock_uri="dbfs:/runtime.lock",
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
+        patched_vllm_wheel_uri="dbfs:/vllm.whl",
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_uri="dbfs:/flashinfer.whl",
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_uri="dbfs:/runtime-closure.json",
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        cachet_source_tree_sha256="4" * 64,
+        single_user_name="publication@example.com",
+    )
     databricks_payloads = (
         build_databricks_publication_latency_handoff_worker_submit_payloads(
-            DatabricksPublicationLatencyHandoffJobConfig(
-                runner_python_file="dbfs:/runner.py",
-                worker_payload_uri_template="dbfs:/payloads/worker-{worker_index}.json",
-                package_wheel_uri="dbfs:/cachet.whl",
-                package_wheel_sha256="3" * 64,
-                runtime_lock_uri="dbfs:/runtime.lock",
-                runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
-                patched_vllm_wheel_uri="dbfs:/vllm.whl",
-                patched_vllm_wheel_sha256="2" * 64,
-                single_user_name="publication@example.com",
-            ),
+            job_config,
             production_payloads,
             ledger_path=ledger_path,
             qualification_launch_authorization=launch_authorization,
@@ -1220,6 +1709,7 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
             worker_payloads=production_payloads,
             attempt_ids_by_worker=attempt_ids,
             phase_lease_root=tmp_path / "q8-phase-lease",
+            job_config=job_config,
             qualification_launch_authorization=launch_authorization,
             opener=opener,
         )
@@ -1233,6 +1723,7 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
         worker_payloads=production_payloads,
         attempt_ids_by_worker=attempt_ids,
         phase_lease_root=tmp_path / "q8-phase-lease",
+        job_config=job_config,
         qualification_launch_authorization=launch_authorization,
         opener=lambda *_args, **_kwargs: pytest.fail("completed wave must not POST"),
     )
@@ -1336,6 +1827,28 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
             qualification_launch_authorization=launch_authorization,
             submission_authorization=batch_authorization,
         )
+    for mutation in ("python_file", "ordered_parameters"):
+        substituted_task_run = copy.deepcopy(terminal_runs[0])
+        observed_python_task = substituted_task_run["tasks"][0][
+            "spark_python_task"
+        ]
+        if mutation == "python_file":
+            observed_python_task["python_file"] = "dbfs:/attacker.py"
+        else:
+            parameters = observed_python_task["parameters"]
+            parameters[0], parameters[1] = parameters[1], parameters[0]
+        with pytest.raises(ValueError, match="spark_python_task differs"):
+            build_publication_latency_handoff_databricks_attestation(
+                databricks_payloads[0],
+                submit_responses[0],
+                substituted_task_run,
+                ledger_path=ledger_path,
+                durable_output_root=durable_root,
+                worker_index=0,
+                attempt_id=attempt_ids[0],
+                qualification_launch_authorization=launch_authorization,
+                submission_authorization=batch_authorization,
+            )
     mutated_submit_response = dict(submit_responses[0])
     mutated_submit_response["number_in_job"] = 1
     with pytest.raises(ValueError, match="reservation/submission receipt"):

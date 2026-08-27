@@ -51,7 +51,20 @@ from document_kv_cache.databricks_runs import (
     upload_databricks_volume_file_bytes_exclusive,
 )
 from document_kv_cache.main_latency_inputs import load_main_latency_tokenizer
-from document_kv_cache.gpu_qualification import GPUQualificationArtifactPins
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256,
+    FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
+    FLASHINFER_PATCHED_MANIFEST_SIZE,
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+    FLASHINFER_PATCHED_WHEEL_SIZE,
+    FLASHINFER_SOURCE_WHEEL_SHA256,
+    FLASHINFER_SOURCE_WHEEL_SIZE,
+)
+from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+    GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+)
+from document_kv_cache.gpu_qualification_v2 import GPUQualificationArtifactPinsV2
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
     require_gpu_qualification_launch_authorization,
@@ -62,6 +75,21 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_HANDOFF_CLOSURE_CPU_JOBS,
     PUBLICATION_CAMPAIGN_HANDOFF_CLOSURE_CPU_TIMEOUT_SECONDS,
     PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
+    VLLM_PATCHED_MANIFEST_SHA256,
+    VLLM_PATCHED_MANIFEST_SIZE,
+    VLLM_PATCHED_WHEEL_SIZE,
+    VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT,
+    VLLM_RUNTIME_BASE_LOCK_HASH_COUNT,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SIZE,
+    VLLM_RUNTIME_SOURCE_LOCK_DISTRIBUTION_COUNT,
+    VLLM_RUNTIME_SOURCE_LOCK_HASH_COUNT,
+    VLLM_RUNTIME_SOURCE_LOCK_SIZE,
 )
 from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
 from document_kv_cache.storage import local_path
@@ -89,16 +117,23 @@ PUBLICATION_HANDOFF_CLOSURE_TIMEOUT_SECONDS: Final = (
 PUBLICATION_HANDOFF_CLOSURE_PARAMETER_BYTES_MAX: Final = 9_500
 PUBLICATION_HANDOFF_CLOSURE_REQUEST_BYTES_MAX: Final = 16 * 1024 * 1024
 PUBLICATION_HANDOFF_CLOSURE_RESULT_BYTES_MAX: Final = 16 * 1024 * 1024
+_PUBLICATION_SOURCE_CLOSURE_V2_RECORD_TYPE: Final = (
+    "cachet.publication_source_closure.v2"
+)
+_PUBLICATION_SOURCE_CLOSURE_V2_SCHEMA_VERSION: Final = 2
+PUBLICATION_HANDOFF_CLOSURE_CONFIG_RECORD_TYPE: Final = (
+    "cachet.publication_handoff_closure_coordinator_config.v2"
+)
 PUBLICATION_HANDOFF_CLOSURE_REQUEST_RECORD_TYPE: Final = (
-    "cachet.publication_handoff_closure_request.v1"
+    "cachet.publication_handoff_closure_request.v2"
 )
 PUBLICATION_HANDOFF_CLOSURE_RESULT_RECORD_TYPE: Final = (
-    "cachet.publication_handoff_closure_result.v1"
+    "cachet.publication_handoff_closure_result.v2"
 )
 PUBLICATION_HANDOFF_CLOSURE_RESERVATION_RECORD_TYPE: Final = (
-    "cachet.publication_handoff_closure_reservation.v1"
+    "cachet.publication_handoff_closure_reservation.v2"
 )
-PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION: Final = 1
+PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION: Final = 2
 PUBLICATION_HANDOFF_CLOSURE_RUNNER_FILENAME: Final = (
     "publication_handoff_closure_coordinator_runner.py"
 )
@@ -135,6 +170,10 @@ class PublicationHandoffClosureCoordinatorConfig:
     runtime_lock_sha256: str
     patched_vllm_wheel_uri: str
     patched_vllm_wheel_sha256: str
+    patched_flashinfer_wheel_uri: str
+    patched_flashinfer_wheel_sha256: str
+    runtime_closure_manifest_uri: str
+    runtime_closure_manifest_sha256: str
     source_closure_uri: str
     cachet_source_tree_sha256: str
     request_root_uri: str
@@ -154,6 +193,8 @@ class PublicationHandoffClosureCoordinatorConfig:
             "package_wheel_uri",
             "runtime_lock_uri",
             "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
             "source_closure_uri",
         ):
             _canonical_volume_file_uri(getattr(self, field_name), field_name)
@@ -162,14 +203,25 @@ class PublicationHandoffClosureCoordinatorConfig:
             "package_wheel_sha256",
             "runtime_lock_sha256",
             "patched_vllm_wheel_sha256",
+            "patched_flashinfer_wheel_sha256",
+            "runtime_closure_manifest_sha256",
             "cachet_source_tree_sha256",
             "runner_sha256",
         ):
             _require_sha256(getattr(self, field_name), field_name)
         if self.runner_sha256 != PUBLICATION_HANDOFF_CLOSURE_RUNNER_SHA256:
             raise ValueError("coordinator runner SHA-256 differs from package source")
-        if self.runtime_lock_sha256 != VLLM_RUNTIME_LOCK_SHA256:
-            raise ValueError("coordinator must use the frozen vLLM 0.27.1 runtime lock")
+        expected_runtime_artifacts = {
+            "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+            "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "runtime_closure_manifest_sha256": (
+                RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+            ),
+        }
+        for field_name, expected in expected_runtime_artifacts.items():
+            if getattr(self, field_name) != expected:
+                raise ValueError(f"handoff coordinator {field_name} differs")
         if _SOURCE_REVISION_RE.fullmatch(self.source_revision) is None:
             raise ValueError("source_revision must be one full lowercase Git SHA")
         if self.node_type_id != PUBLICATION_HANDOFF_CLOSURE_NODE_TYPE_ID:
@@ -209,12 +261,22 @@ class PublicationHandoffClosureCoordinatorConfig:
             "package_wheel_uri": self.package_wheel_uri,
             "patched_vllm_wheel_sha256": self.patched_vllm_wheel_sha256,
             "patched_vllm_wheel_uri": self.patched_vllm_wheel_uri,
+            "patched_flashinfer_wheel_sha256": (
+                self.patched_flashinfer_wheel_sha256
+            ),
+            "patched_flashinfer_wheel_uri": self.patched_flashinfer_wheel_uri,
+            "record_type": PUBLICATION_HANDOFF_CLOSURE_CONFIG_RECORD_TYPE,
             "request_root_uri": self.request_root_uri,
             "runner_python_file": self.runner_python_file,
             "runner_sha256": self.runner_sha256,
             "runtime_lock_sha256": self.runtime_lock_sha256,
             "runtime_lock_uri": self.runtime_lock_uri,
+            "runtime_closure_manifest_sha256": (
+                self.runtime_closure_manifest_sha256
+            ),
+            "runtime_closure_manifest_uri": self.runtime_closure_manifest_uri,
             "runtime_venv_dir": self.runtime_venv_dir,
+            "schema_version": PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION,
             "single_user_name": self.single_user_name,
             "source_closure_uri": self.source_closure_uri,
             "source_revision": self.source_revision,
@@ -256,7 +318,7 @@ class PublicationHandoffClosureRequestAuthorization:
         *,
         request: Mapping[str, Any],
         batch_evidence: Mapping[str, Any],
-        qualified_artifact_pins: GPUQualificationArtifactPins,
+        qualified_artifact_pins: GPUQualificationArtifactPinsV2,
         qualification_authorization_binding: Mapping[str, Any],
         controller_lease_root: str | Path,
         _issuer: object,
@@ -266,9 +328,14 @@ class PublicationHandoffClosureRequestAuthorization:
                 "handoff closure request authority requires the typed batch issuer"
             )
         _validate_closure_request(request)
-        if not isinstance(qualified_artifact_pins, GPUQualificationArtifactPins):
-            raise TypeError("qualified_artifact_pins has the wrong type")
+        if not isinstance(qualified_artifact_pins, GPUQualificationArtifactPinsV2):
+            raise TypeError("qualified_artifact_pins must be native v2")
         pins = qualified_artifact_pins.to_record()
+        request_pins = _q8.gpu_qualification_artifact_pins_v2_from_record(
+            _required_mapping(request, "qualified_artifact_pins")
+        ).to_record()
+        if pins != request_pins:
+            raise ValueError("closure request qualification artifact pins drift")
         coordinator = _required_mapping(request, "coordinator")
         expected_pins = {
             "cachet_source_tree_sha256": coordinator.get(
@@ -278,6 +345,12 @@ class PublicationHandoffClosureRequestAuthorization:
             "package_wheel_sha256": coordinator.get("package_wheel_sha256"),
             "patched_vllm_wheel_sha256": coordinator.get(
                 "patched_vllm_wheel_sha256"
+            ),
+            "patched_flashinfer_wheel_sha256": coordinator.get(
+                "patched_flashinfer_wheel_sha256"
+            ),
+            "runtime_closure_manifest_sha256": coordinator.get(
+                "runtime_closure_manifest_sha256"
             ),
             "runtime_lock_sha256": coordinator.get("runtime_lock_sha256"),
         }
@@ -290,7 +363,7 @@ class PublicationHandoffClosureRequestAuthorization:
         _require_no_symlink_ancestors(lease_root, include_leaf=True)
         lease_root_sha256 = _controller_path_sha256(
             lease_root,
-            domain="cachet.publication.handoff_closure.controller_lease.v1",
+            domain="cachet.publication.handoff_closure.controller_lease.v2",
         )
         singleton = _required_mapping(request, "controller_singleton")
         if singleton.get("controller_lease_root_sha256") != lease_root_sha256:
@@ -353,7 +426,7 @@ class PublicationHandoffClosureRequestAuthorization:
         authorization_sha256 = _canonical_sha256(
             {
                 "batch_evidence_sha256": batch_evidence_sha256,
-                "domain": "cachet.publication.handoff_closure.request_authority.v1",
+                "domain": "cachet.publication.handoff_closure.request_authority.v2",
                 "qualified_artifact_pins_sha256": (
                     qualified_artifact_pins_sha256
                 ),
@@ -592,7 +665,7 @@ def build_q8_handoff_closure_request(
         int, _q8.PublicationLatencyHandoffDatabricksAttestationBinding
     ],
     submission_authorization: _q8.PublicationLatencyHandoffSubmissionAuthorization,
-    hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualification,
+    hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualificationV2,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     expected_qualification_closed_record_sha256: str,
 ) -> PublicationHandoffClosureRequestAuthorization:
@@ -667,6 +740,7 @@ def build_q8_handoff_closure_request(
         plan_file_sha256=plan_file_sha256,
         plan_closed_record_sha256=_required_string(plan_record, "closed_record_sha256"),
         input_bundle_sha256=_required_string(plan_record, "input_bundle_sha256"),
+        qualified_artifact_pins=hardware_qualification.expected_artifact_pins,
         prepared_input_root_uri=prepared_input_root_uri,
         durable_output_root_uri=durable_output_root_uri,
         controller_singleton=singleton,
@@ -705,7 +779,7 @@ def build_bf16_handoff_closure_request(
         int, _bf16.PublicationBF16HandoffWorkerAuthorization
     ],
     submission_authorization: _bf16.PublicationBF16HandoffSubmissionAuthorization,
-    hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualification,
+    hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualificationV2,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     expected_qualification_closed_record_sha256: str,
 ) -> PublicationHandoffClosureRequestAuthorization:
@@ -781,6 +855,7 @@ def build_bf16_handoff_closure_request(
         plan_file_sha256=plan_file_sha256,
         plan_closed_record_sha256=_required_string(plan_record, "closed_record_sha256"),
         input_bundle_sha256=_required_string(plan_record, "input_bundle_sha256"),
+        qualified_artifact_pins=hardware_qualification.expected_artifact_pins,
         prepared_input_root_uri=prepared_input_root_uri,
         durable_output_root_uri=durable_output_root_uri,
         controller_singleton=singleton,
@@ -808,7 +883,7 @@ def _issue_closure_request_authorization(
     *,
     submission_authorization: object,
     batch_authorization: Any,
-    hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualification,
+    hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualificationV2,
     qualification_authorization_binding: Mapping[str, Any],
     controller_lease_root: Path,
     worker_evidence: Sequence[Mapping[str, Any]],
@@ -881,7 +956,7 @@ def _handoff_closure_singleton(
     )
     lease_sha256 = _controller_path_sha256(
         controller_lease_root,
-        domain="cachet.publication.handoff_closure.controller_lease.v1",
+        domain="cachet.publication.handoff_closure.controller_lease.v2",
     )
     identity = {
         "batch_identity_sha256": batch_identity_sha256,
@@ -894,7 +969,7 @@ def _handoff_closure_singleton(
         **identity,
         "identity_sha256": _canonical_sha256(
             {
-                "domain": "cachet.publication.handoff_closure.singleton.v1",
+                "domain": "cachet.publication.handoff_closure.singleton.v2",
                 **identity,
             }
         ),
@@ -980,7 +1055,7 @@ def _validate_handoff_closure_singleton(
     }
     expected_identity = _canonical_sha256(
         {
-            "domain": "cachet.publication.handoff_closure.singleton.v1",
+            "domain": "cachet.publication.handoff_closure.singleton.v2",
             **identity,
         }
     )
@@ -1085,7 +1160,7 @@ def _controller_path_sha256(path: str | Path, *, domain: str) -> str:
 
 def _require_matching_qualified_producer(
     coordinator_config: PublicationHandoffClosureCoordinatorConfig,
-    hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualification,
+    hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualificationV2,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     *,
     expected_input_bundle_sha256: str,
@@ -1093,12 +1168,20 @@ def _require_matching_qualified_producer(
 ) -> dict[str, Any]:
     if not isinstance(
         hardware_qualification,
-        _q8.PublicationLatencyGeneratorHardwareQualification,
+        _q8.PublicationLatencyGeneratorHardwareQualificationV2,
     ):
         raise TypeError(
             "handoff closure requires "
-            "PublicationLatencyGeneratorHardwareQualification"
+            "PublicationLatencyGeneratorHardwareQualificationV2"
         )
+    qualification_record = (
+        _q8.publication_latency_generator_hardware_qualification_v2_record(
+            hardware_qualification
+        )
+    )
+    _q8.validate_publication_latency_generator_hardware_qualification_v2_record(
+        qualification_record
+    )
     expected_qualification = _require_sha256(
         expected_qualification_closed_record_sha256,
         "expected_qualification_closed_record_sha256",
@@ -1130,12 +1213,22 @@ def _require_matching_qualified_producer(
         "patched_vllm_wheel_sha256": (
             coordinator_config.patched_vllm_wheel_sha256
         ),
+        "patched_flashinfer_wheel_sha256": (
+            coordinator_config.patched_flashinfer_wheel_sha256
+        ),
+        "runtime_closure_manifest_sha256": (
+            coordinator_config.runtime_closure_manifest_sha256
+        ),
         "runtime_lock_sha256": coordinator_config.runtime_lock_sha256,
     }
     if any(pins.to_record().get(name) != value for name, value in expected.items()):
         raise ValueError(
             "handoff coordinator package/source pins differ from qualified "
             "producer artifacts"
+        )
+    if pins.runner_sha256 == coordinator_config.runner_sha256:
+        raise ValueError(
+            "qualification runner must remain distinct from the closure runner"
         )
     binding = {
         "artifact_pins_sha256": _canonical_sha256(pins.to_record()),
@@ -1267,7 +1360,7 @@ def require_publication_handoff_closure_request_authorization(
     expected_authorization_sha256 = _canonical_sha256(
         {
             "batch_evidence_sha256": authorization.batch_evidence_sha256,
-            "domain": "cachet.publication.handoff_closure.request_authority.v1",
+            "domain": "cachet.publication.handoff_closure.request_authority.v2",
             "qualified_artifact_pins_sha256": (
                 authorization.qualified_artifact_pins_sha256
             ),
@@ -1293,7 +1386,7 @@ def require_publication_handoff_closure_request_authorization(
         or authorization.controller_lease_root_sha256
         != _controller_path_sha256(
             authorization.controller_lease_root,
-            domain="cachet.publication.handoff_closure.controller_lease.v1",
+            domain="cachet.publication.handoff_closure.controller_lease.v2",
         )
         or authorization.ledger_id != lineage.get("ledger_id")
         or authorization.ledger_path_sha256 != lineage.get("ledger_path_sha256")
@@ -1335,7 +1428,7 @@ def _render_publication_handoff_closure_submit_payload(
     tags = {
         **cast(dict[str, str], coordinator.get("custom_tags", {})),
         "ResourceClass": "SingleNode",
-        "campaign": "vllm-0271-publication-v1",
+        "campaign": "vllm-0271-publication-v2",
         "closure_stage": stage,
         "purpose": "cachet-vllm-0271-handoff-closure",
         "request_sha256": _required_string(request, "closed_record_sha256")[:32],
@@ -1355,6 +1448,14 @@ def _render_publication_handoff_closure_submit_payload(
         _required_string(coordinator, "patched_vllm_wheel_uri"),
         "--patched-vllm-wheel-sha256",
         _required_string(coordinator, "patched_vllm_wheel_sha256"),
+        "--patched-flashinfer-wheel-uri",
+        _required_string(coordinator, "patched_flashinfer_wheel_uri"),
+        "--patched-flashinfer-wheel-sha256",
+        _required_string(coordinator, "patched_flashinfer_wheel_sha256"),
+        "--runtime-closure-manifest-uri",
+        _required_string(coordinator, "runtime_closure_manifest_uri"),
+        "--runtime-closure-manifest-sha256",
+        _required_string(coordinator, "runtime_closure_manifest_sha256"),
         "--runtime-venv-dir",
         _required_string(coordinator, "runtime_venv_dir"),
         "run-coordinator",
@@ -1842,6 +1943,7 @@ def _build_closure_request(
     plan_file_sha256: str,
     plan_closed_record_sha256: str,
     input_bundle_sha256: str,
+    qualified_artifact_pins: GPUQualificationArtifactPinsV2,
     prepared_input_root_uri: str,
     durable_output_root_uri: str,
     controller_singleton: Mapping[str, Any],
@@ -1854,6 +1956,8 @@ def _build_closure_request(
     stage = _required_stage(stage)
     if not isinstance(coordinator_config, PublicationHandoffClosureCoordinatorConfig):
         raise TypeError("coordinator_config has the wrong type")
+    if not isinstance(qualified_artifact_pins, GPUQualificationArtifactPinsV2):
+        raise TypeError("qualified_artifact_pins must be native v2")
     plan_uri = _canonical_volume_file_uri(plan_uri, "plan_uri")
     prepared_uri = _canonical_volume_directory_uri(
         prepared_input_root_uri, "prepared_input_root_uri"
@@ -1931,6 +2035,7 @@ def _build_closure_request(
             "uri": plan_uri,
         },
         "prepared_input_root_uri": prepared_uri,
+        "qualified_artifact_pins": qualified_artifact_pins.to_record(),
         "record_type": PUBLICATION_HANDOFF_CLOSURE_REQUEST_RECORD_TYPE,
         "request_uri": request_uri,
         "result_uri": result_uri,
@@ -1986,6 +2091,31 @@ def _validate_closure_request(record: Mapping[str, Any]) -> None:
         raise ValueError("execution contract digest drift")
     coordinator = _required_mapping(record, "coordinator")
     coordinator_config = _coordinator_config_from_record(coordinator)
+    qualified_pins = _q8.gpu_qualification_artifact_pins_v2_from_record(
+        _required_mapping(record, "qualified_artifact_pins")
+    )
+    expected_qualified_pins = {
+        "cachet_source_tree_sha256": coordinator_config.cachet_source_tree_sha256,
+        "input_bundle_sha256": record.get("input_bundle_sha256"),
+        "package_wheel_sha256": coordinator_config.package_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": (
+            coordinator_config.patched_flashinfer_wheel_sha256
+        ),
+        "patched_vllm_wheel_sha256": coordinator_config.patched_vllm_wheel_sha256,
+        "runtime_closure_manifest_sha256": (
+            coordinator_config.runtime_closure_manifest_sha256
+        ),
+        "runtime_lock_sha256": coordinator_config.runtime_lock_sha256,
+    }
+    if any(
+        qualified_pins.to_record().get(name) != value
+        for name, value in expected_qualified_pins.items()
+    ):
+        raise ValueError("closure request differs from native-v2 qualification pins")
+    if qualified_pins.runner_sha256 == coordinator_config.runner_sha256:
+        raise ValueError(
+            "qualification runner must remain distinct from the closure runner"
+        )
     expected_request_root = _handoff_closure_request_root_uri(
         output_root, stage=stage
     )
@@ -2150,6 +2280,9 @@ def _build_compact_result(
             ),
             "input_bundle_sha256": _required_string(request, "input_bundle_sha256"),
             "plan": dict(_required_mapping(request, "plan")),
+            "qualified_artifact_pins": dict(
+                _required_mapping(request, "qualified_artifact_pins")
+            ),
             "qualification_closed_record_sha256": _required_string(
                 request, "expected_qualification_closed_record_sha256"
             ),
@@ -2204,6 +2337,9 @@ def _validate_closure_result(
         "execution_contract_sha256": request.get("execution_contract_sha256"),
         "input_bundle_sha256": request.get("input_bundle_sha256"),
         "plan": dict(_required_mapping(request, "plan")),
+        "qualified_artifact_pins": dict(
+            _required_mapping(request, "qualified_artifact_pins")
+        ),
         "qualification_closed_record_sha256": request.get(
             "expected_qualification_closed_record_sha256"
         ),
@@ -2494,6 +2630,22 @@ def _validate_coordinator_terminal_run(
         raise ValueError("coordinator run repair is forbidden")
     raw_tasks = _required_sequence(snapshot, "tasks")
     raw_task = _mapping(raw_tasks[0], "terminal task") if len(raw_tasks) == 1 else {}
+    submitted_tasks = _required_sequence(submit_payload, "tasks")
+    submitted_task = (
+        _mapping(submitted_tasks[0], "submitted task")
+        if len(submitted_tasks) == 1
+        else {}
+    )
+    observed_python_task = raw_task.get("spark_python_task")
+    submitted_python_task = submitted_task.get("spark_python_task")
+    if (
+        not isinstance(observed_python_task, Mapping)
+        or not isinstance(submitted_python_task, Mapping)
+        or dict(observed_python_task) != dict(submitted_python_task)
+    ):
+        raise ValueError(
+            "coordinator terminal spark_python_task differs from submitted task"
+        )
     attempt_number = raw_task.get("attempt_number")
     task_run_id = _required_run_id(raw_task.get("run_id"), "terminal task run_id")
     if (
@@ -2541,18 +2693,26 @@ def _verify_source_closure(coordinator: Mapping[str, Any]) -> None:
     normalized = dict(record)
     normalized["closed_record_sha256"] = ""
     if (
-        record.get("record_type") != "cachet.publication_source_closure.v1"
-        or record.get("schema_version") != 1
+        record.get("record_type") != _PUBLICATION_SOURCE_CLOSURE_V2_RECORD_TYPE
+        or record.get("schema_version")
+        != _PUBLICATION_SOURCE_CLOSURE_V2_SCHEMA_VERSION
         or record.get("closed_record_sha256") != _canonical_sha256(normalized)
         or _required_mapping(record, "git").get("commit")
         != coordinator.get("source_revision")
     ):
         raise ValueError("source closure identity drift")
     runtime = _required_mapping(record, "runtime")
-    if runtime.get("runtime_lock_sha256") != coordinator.get(
-        "runtime_lock_sha256"
-    ) or runtime.get("patched_vllm_wheel_sha256") != coordinator.get(
-        "patched_vllm_wheel_sha256"
+    if dict(runtime) != _native_v2_source_closure_runtime_identity():
+        raise ValueError("source closure runtime identity drift")
+    if (
+        _required_mapping(runtime, "base_lock").get("sha256")
+        != coordinator.get("runtime_lock_sha256")
+        or _required_mapping(runtime, "vllm").get("wheel_sha256")
+        != coordinator.get("patched_vllm_wheel_sha256")
+        or _required_mapping(runtime, "flashinfer").get("patched_wheel_sha256")
+        != coordinator.get("patched_flashinfer_wheel_sha256")
+        or _required_mapping(runtime, "runtime_closure").get("file_sha256")
+        != coordinator.get("runtime_closure_manifest_sha256")
     ):
         raise ValueError("source closure runtime pins drift")
     wheels = [
@@ -2564,6 +2724,46 @@ def _verify_source_closure(coordinator: Mapping[str, Any]) -> None:
         "package_wheel_sha256"
     ):
         raise ValueError("source closure package wheel pin drift")
+
+
+def _native_v2_source_closure_runtime_identity() -> dict[str, Any]:
+    return {
+        "base_lock": {
+            "byte_count": VLLM_RUNTIME_BASE_LOCK_SIZE,
+            "distribution_count": VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT,
+            "hash_count": VLLM_RUNTIME_BASE_LOCK_HASH_COUNT,
+            "sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+        },
+        "flashinfer": {
+            "manifest_closed_record_sha256": (
+                FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
+            ),
+            "manifest_file_byte_count": FLASHINFER_PATCHED_MANIFEST_SIZE,
+            "manifest_file_sha256": FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
+            "patched_wheel_byte_count": FLASHINFER_PATCHED_WHEEL_SIZE,
+            "patched_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "pristine_wheel_byte_count": FLASHINFER_SOURCE_WHEEL_SIZE,
+            "pristine_wheel_sha256": FLASHINFER_SOURCE_WHEEL_SHA256,
+        },
+        "input_bundle_sha256": GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+        "runtime_closure": {
+            "closed_record_sha256": RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
+            "file_byte_count": RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
+            "file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        },
+        "source_lock": {
+            "byte_count": VLLM_RUNTIME_SOURCE_LOCK_SIZE,
+            "distribution_count": VLLM_RUNTIME_SOURCE_LOCK_DISTRIBUTION_COUNT,
+            "hash_count": VLLM_RUNTIME_SOURCE_LOCK_HASH_COUNT,
+            "sha256": VLLM_RUNTIME_LOCK_SHA256,
+        },
+        "vllm": {
+            "manifest_file_byte_count": VLLM_PATCHED_MANIFEST_SIZE,
+            "manifest_file_sha256": VLLM_PATCHED_MANIFEST_SHA256,
+            "wheel_byte_count": VLLM_PATCHED_WHEEL_SIZE,
+            "wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        },
+    }
 
 
 def _revalidate_closed_tree(stage: str, root: Path) -> None:
@@ -2601,6 +2801,9 @@ def _reserve_closure_attempt(
         ),
         "qualified_artifact_pins_sha256": (
             authorization.qualified_artifact_pins_sha256
+        ),
+        "qualified_artifact_pins": dict(
+            _required_mapping(request, "qualified_artifact_pins")
         ),
         "qualification_authorization_binding_sha256": (
             authorization.qualification_authorization_binding_sha256
@@ -2666,6 +2869,8 @@ def _existing_local_reservation_root(
         != authorization.authorization_sha256
         or reservation.get("qualified_artifact_pins_sha256")
         != authorization.qualified_artifact_pins_sha256
+        or reservation.get("qualified_artifact_pins")
+        != request.get("qualified_artifact_pins")
         or reservation.get("qualification_authorization_binding_sha256")
         != authorization.qualification_authorization_binding_sha256
         or reservation.get("request_closed_record_sha256")
@@ -2688,7 +2893,7 @@ def _require_handoff_controller_lease_root(
     if root != authorization.controller_lease_root or (
         _controller_path_sha256(
             root,
-            domain="cachet.publication.handoff_closure.controller_lease.v1",
+            domain="cachet.publication.handoff_closure.controller_lease.v2",
         )
         != authorization.controller_lease_root_sha256
     ):
@@ -2701,7 +2906,7 @@ def _require_handoff_controller_lease_root(
 def _coordinator_config_from_record(
     record: Mapping[str, Any],
 ) -> PublicationHandoffClosureCoordinatorConfig:
-    return PublicationHandoffClosureCoordinatorConfig(
+    config = PublicationHandoffClosureCoordinatorConfig(
         runner_python_file=_required_string(record, "runner_python_file"),
         package_wheel_uri=_required_string(record, "package_wheel_uri"),
         package_wheel_sha256=_required_string(record, "package_wheel_sha256"),
@@ -2709,6 +2914,18 @@ def _coordinator_config_from_record(
         runtime_lock_sha256=_required_string(record, "runtime_lock_sha256"),
         patched_vllm_wheel_uri=_required_string(record, "patched_vllm_wheel_uri"),
         patched_vllm_wheel_sha256=_required_string(record, "patched_vllm_wheel_sha256"),
+        patched_flashinfer_wheel_uri=_required_string(
+            record, "patched_flashinfer_wheel_uri"
+        ),
+        patched_flashinfer_wheel_sha256=_required_string(
+            record, "patched_flashinfer_wheel_sha256"
+        ),
+        runtime_closure_manifest_uri=_required_string(
+            record, "runtime_closure_manifest_uri"
+        ),
+        runtime_closure_manifest_sha256=_required_string(
+            record, "runtime_closure_manifest_sha256"
+        ),
         source_closure_uri=_required_string(record, "source_closure_uri"),
         cachet_source_tree_sha256=_required_string(record, "cachet_source_tree_sha256"),
         request_root_uri=_required_string(record, "request_root_uri"),
@@ -2722,6 +2939,9 @@ def _coordinator_config_from_record(
         timeout_seconds=_required_int(record, "timeout_seconds"),
         custom_tags=dict(_required_mapping(record, "custom_tags")),
     )
+    if dict(record) != config.to_record():
+        raise ValueError("coordinator config record keys or normalization drift")
+    return config
 
 
 def _cluster_path(uri: str) -> Path:
@@ -3044,6 +3264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "PUBLICATION_HANDOFF_CLOSURE_BF16_STAGE",
+    "PUBLICATION_HANDOFF_CLOSURE_CONFIG_RECORD_TYPE",
     "PUBLICATION_HANDOFF_CLOSURE_NODE_TYPE_ID",
     "PUBLICATION_HANDOFF_CLOSURE_PARAMETER_BYTES_MAX",
     "PUBLICATION_HANDOFF_CLOSURE_Q8_STAGE",

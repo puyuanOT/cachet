@@ -115,10 +115,19 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_GENERATION_GPU,
     GPU_QUALIFICATION_GENERATION_HARDWARE_ID,
     GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND,
-    GPUQualificationArtifactPins,
     GPUQualificationSelection,
     canonical_gpu_qualification_json,
-    validate_gpu_qualification_evidence_record,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPUQualificationArtifactPinsV2,
+    validate_gpu_qualification_evidence_v2_record,
+    validate_gpu_qualification_v2_runtime_attestation,
+)
+from document_kv_cache._gpu_qualification_sentinels_v2 import (
+    _BoundedSubprocessStartFailure,
+    _BoundedSubprocessTransportFailure,
+    _bounded_stream_result_is_exact,
+    _run_bounded_binary_subprocess,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
@@ -157,7 +166,14 @@ from document_kv_cache.publication_latency_execution import (
     validate_publication_latency_collection_record,
 )
 from document_kv_cache.runtime_telemetry import RuntimeTelemetrySampler
-from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_PATCHED_WHEEL_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV,
     CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
@@ -178,10 +194,10 @@ from vllm_kv_injection.vllm_native_provider_constants import (
 )
 
 
-FULL_SCORE_WORKER_PAYLOAD_RECORD_TYPE = "cachet.full_score_worker_payload.v1"
-FULL_SCORE_WORKER_PAYLOAD_SCHEMA_VERSION = 1
-FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE = "cachet.full_score_shard_evidence.v1"
-FULL_SCORE_SHARD_EVIDENCE_SCHEMA_VERSION = 1
+FULL_SCORE_WORKER_PAYLOAD_RECORD_TYPE = "cachet.full_score_worker_payload.v2"
+FULL_SCORE_WORKER_PAYLOAD_SCHEMA_VERSION = 2
+FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE = "cachet.full_score_shard_evidence.v2"
+FULL_SCORE_SHARD_EVIDENCE_SCHEMA_VERSION = 2
 FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE = (
     "cachet.full_score_deletion_attestation.v1"
 )
@@ -190,8 +206,8 @@ FULL_SCORE_AGGREGATE_RECORD_TYPE = "cachet.full_score_aggregate.v1"
 FULL_SCORE_AGGREGATE_SCHEMA_VERSION = 1
 FULL_SCORE_EXECUTION_PLAN_RECORD_TYPE = "cachet.full_score_execution_plan.v1"
 FULL_SCORE_EXECUTION_PLAN_SCHEMA_VERSION = 1
-FULL_SCORE_READY_SHARD_RECORD_TYPE = "cachet.full_score_ready_shard.v1"
-FULL_SCORE_READY_SHARD_SCHEMA_VERSION = 1
+FULL_SCORE_READY_SHARD_RECORD_TYPE = "cachet.full_score_ready_shard.v2"
+FULL_SCORE_READY_SHARD_SCHEMA_VERSION = 2
 FULL_SCORE_WAVE_COMPLETION_RECORD_TYPE = "cachet.full_score_wave_completion.v1"
 FULL_SCORE_WAVE_COMPLETION_SCHEMA_VERSION = 1
 FULL_SCORE_PRODUCER_PHASE_COMPLETION_RECORD_TYPE = (
@@ -215,6 +231,8 @@ FULL_SCORE_METHODS = ("baseline_prefill", "vanilla_prefill")
 FULL_SCORE_MAX_TOKENS = 64
 FULL_SCORE_REQUEST_PARALLELISM = 4
 FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS = 21_600
+FULL_SCORE_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 300.0
+FULL_SCORE_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES = 1_048_576
 FULL_SCORE_TEMPERATURE = 0.0
 FULL_SCORE_PASSES_PER_METHOD = 1
 FULL_SCORE_MODEL_ID = MAIN_LATENCY_TOKENIZER_ID
@@ -305,13 +323,14 @@ FULL_SCORE_MIN_MAX_MODEL_LEN = (
     FULL_SCORE_MAX_NATURAL_PROMPT_TOKENS + FULL_SCORE_MAX_TOKENS
 )
 FULL_SCORE_VANILLA_ARM_ID = "document_kv_cache:vanilla_prefill"
-FULL_SCORE_RUNNER_SCRIPT = '''from __future__ import annotations
+FULL_SCORE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
 import hashlib
 import hmac
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -342,7 +361,7 @@ def _verified_path(uri: str, expected: str, label: str) -> str:
 def _pip_subprocess_environment() -> dict[str, str]:
     env = dict(os.environ)
     for variable_name in tuple(env):
-        if variable_name.upper().startswith("PIP_"):
+        if variable_name.upper().startswith(("PIP_", "_PIP_")):
             env.pop(variable_name)
     for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         env.pop(variable_name, None)
@@ -352,6 +371,7 @@ def _pip_subprocess_environment() -> dict[str, str]:
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
         }
     )
     return env
@@ -366,6 +386,10 @@ def _bootstrap(argv: list[str]) -> None:
     parser.add_argument("--runtime-lock-sha256", required=True)
     parser.add_argument("--patched-vllm-wheel-uri", required=True)
     parser.add_argument("--patched-vllm-wheel-sha256", required=True)
+    parser.add_argument("--patched-flashinfer-wheel-uri", required=True)
+    parser.add_argument("--patched-flashinfer-wheel-sha256", required=True)
+    parser.add_argument("--runtime-closure-manifest-uri", required=True)
+    parser.add_argument("--runtime-closure-manifest-sha256", required=True)
     parser.add_argument("--runtime-venv-dir", required=True)
     args, remaining = parser.parse_known_args(argv)
     _verified_path(__file__, args.runner_sha256, "full-score runner")
@@ -375,21 +399,33 @@ def _bootstrap(argv: list[str]) -> None:
     runtime_lock = _verified_path(
         args.runtime_lock_uri, args.runtime_lock_sha256, "runtime lock"
     )
-    patched_wheel = _verified_path(
+    patched_vllm_wheel = _verified_path(
         args.patched_vllm_wheel_uri,
         args.patched_vllm_wheel_sha256,
         "patched vLLM wheel",
+    )
+    patched_flashinfer_wheel = _verified_path(
+        args.patched_flashinfer_wheel_uri,
+        args.patched_flashinfer_wheel_sha256,
+        "patched FlashInfer wheel",
+    )
+    runtime_closure_manifest = _verified_path(
+        args.runtime_closure_manifest_uri,
+        args.runtime_closure_manifest_sha256,
+        "runtime closure manifest",
     )
     venv_dir = os.path.abspath(args.runtime_venv_dir)
     if not venv_dir.startswith("/local_disk0/"):
         raise ValueError("runtime venv must be rooted under /local_disk0")
     identity = hashlib.sha256(
         (
-            "cachet.full_score.locked_runtime.v1\\0"
+            "cachet.full_score.locked_runtime.v2\\0"
             + args.runner_sha256
             + args.package_wheel_sha256
             + args.runtime_lock_sha256
             + args.patched_vllm_wheel_sha256
+            + args.patched_flashinfer_wheel_sha256
+            + args.runtime_closure_manifest_sha256
         ).encode("ascii")
     ).hexdigest()
     marker = os.environ.get("CACHET_FULL_SCORE_LOCKED_RUNTIME")
@@ -404,7 +440,7 @@ def _bootstrap(argv: list[str]) -> None:
         raise FileExistsError("refusing to reuse an unverified full-score runtime")
     pip_environment = _pip_subprocess_environment()
     subprocess.check_call(
-        [sys.executable, "-m", "venv", venv_dir],
+        [sys.executable, "-m", "venv", "--copies", venv_dir],
         env=pip_environment,
     )
     pip_environment["VIRTUAL_ENV"] = venv_dir
@@ -415,56 +451,34 @@ def _bootstrap(argv: list[str]) -> None:
     )
     pip = [venv_python, "-m", "pip"]
     subprocess.check_call(
-        [*pip, "install", "--no-deps", patched_wheel],
-        env=pip_environment,
-    )
-    subprocess.check_call(
         [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", runtime_lock],
         env=pip_environment,
     )
-    subprocess.check_call(
-        [*pip, "install", "--no-deps", package_wheel],
-        env=pip_environment,
-    )
-    subprocess.check_call([*pip, "check"], env=pip_environment)
-    expected_spec = (
-        "vllm @ file://" + os.path.abspath(patched_wheel)
+    vllm_spec = (
+        "vllm @ " + pathlib.Path(patched_vllm_wheel).resolve().as_uri()
         + "#sha256=" + args.patched_vllm_wheel_sha256
     )
-    verifier = (
-        "import json,sys; from document_kv_cache.serving_env import "
-        "verify_installed_vllm_runtime_lock as verify; "
-        "print(json.dumps(verify(sys.argv[1]), sort_keys=True))"
+    flashinfer_spec = (
+        "flashinfer-python @ "
+        + pathlib.Path(patched_flashinfer_wheel).resolve().as_uri()
+        + "#sha256=" + args.patched_flashinfer_wheel_sha256
     )
-    verified = subprocess.check_output(
-        [venv_python, "-c", verifier, expected_spec],
-        text=True,
+    package_spec = (
+        "cachet-kv @ " + pathlib.Path(package_wheel).resolve().as_uri()
+        + "#sha256=" + args.package_wheel_sha256
+    )
+    subprocess.check_call(
+        [*pip, "install", "--no-deps", vllm_spec],
         env=pip_environment,
     )
-    if json.loads(verified).get("ok") is not True:
-        raise RuntimeError("locked runtime verifier did not attest success")
-    package_verifier = r"""import json,pathlib,sys
-from importlib import metadata
-wheel = pathlib.Path(sys.argv[1]).resolve()
-expected_hash = sys.argv[2]
-direct_text = metadata.distribution("cachet-kv").read_text("direct_url.json")
-if direct_text is None:
-    raise RuntimeError("Cachet installation is missing direct_url.json")
-direct = json.loads(direct_text)
-if direct.get("url") != wheel.as_uri():
-    raise RuntimeError("Cachet direct URL does not match the verified wheel")
-archive = direct.get("archive_info", {})
-observed = archive.get("hash") or archive.get("hashes", {}).get("sha256")
-if observed not in {expected_hash, "sha256=" + expected_hash}:
-    raise RuntimeError("Cachet direct URL SHA-256 does not match")
-print(json.dumps({"ok": True, "sha256": expected_hash}, sort_keys=True))"""
-    package_verified = subprocess.check_output(
-        [venv_python, "-c", package_verifier, package_wheel, args.package_wheel_sha256],
-        text=True,
+    subprocess.check_call(
+        [*pip, "install", "--no-deps", flashinfer_spec],
         env=pip_environment,
     )
-    if json.loads(package_verified).get("ok") is not True:
-        raise RuntimeError("Cachet wheel provenance verifier did not attest success")
+    subprocess.check_call(
+        [*pip, "install", "--no-deps", package_spec],
+        env=pip_environment,
+    )
     env = dict(pip_environment)
     env["CACHET_FULL_SCORE_LOCKED_RUNTIME"] = identity
     os.execve(
@@ -476,7 +490,7 @@ print(json.dumps({"ok": True, "sha256": expected_hash}, sort_keys=True))"""
 
 if __name__ == "__main__":
     _bootstrap(sys.argv[1:])
-'''
+"""
 FULL_SCORE_RUNNER_SHA256 = sha256(FULL_SCORE_RUNNER_SCRIPT.encode("utf-8")).hexdigest()
 
 _SHA256_LENGTH = 64
@@ -515,12 +529,16 @@ class FullScoreRuntimeConfig:
     """Exact runtime identity and vLLM launch settings for every worker."""
 
     python_executable: str
-    runtime_contract_uri: str
-    runtime_contract_sha256: str
     runtime_lock_uri: str
+    runtime_lock_sha256: str
     patched_vllm_wheel_uri: str
     patched_vllm_wheel_sha256: str
+    patched_flashinfer_wheel_uri: str
+    patched_flashinfer_wheel_sha256: str
+    runtime_closure_manifest_uri: str
+    runtime_closure_manifest_sha256: str
     vllm_wheel_install_spec: str
+    flashinfer_wheel_install_spec: str
     kv_transfer_config: Mapping[str, Any]
     model_id: str = FULL_SCORE_MODEL_ID
     served_model_name: str = FULL_SCORE_SERVED_MODEL_NAME
@@ -546,22 +564,29 @@ class FullScoreRuntimeConfig:
     def __post_init__(self) -> None:
         for field_name in (
             "python_executable",
-            "runtime_contract_uri",
             "runtime_lock_uri",
             "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
             "vllm_wheel_install_spec",
+            "flashinfer_wheel_install_spec",
             "generator_factory",
             "generator_version",
         ):
             _require_nonempty(getattr(self, field_name), field_name)
-        _require_sha256(
-            self.runtime_contract_sha256,
-            field_name="runtime_contract_sha256",
-        )
-        _require_sha256(
-            self.patched_vllm_wheel_sha256,
-            field_name="patched_vllm_wheel_sha256",
-        )
+        fixed_hashes = {
+            "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+            "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "runtime_closure_manifest_sha256": (RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
+        }
+        for field_name, expected in fixed_hashes.items():
+            observed = _require_sha256(
+                getattr(self, field_name),
+                field_name=field_name,
+            )
+            if observed != expected:
+                raise ValueError(f"{field_name} differs from native-v2 authority")
         if self.model_id != FULL_SCORE_MODEL_ID:
             raise ValueError("full-score model_id is frozen")
         if self.served_model_name != FULL_SCORE_SERVED_MODEL_NAME:
@@ -600,11 +625,14 @@ class FullScoreRuntimeConfig:
             "telemetry_interval_seconds",
         ):
             value = getattr(self, field_name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0
+            ):
                 raise ValueError(f"{field_name} must be positive")
-        if (
-            float(self.generator_timeout_seconds)
-            != float(FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS)
+        if float(self.generator_timeout_seconds) != float(
+            FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS
         ):
             raise ValueError("full-score generator timeout is frozen to six hours")
         transfer = _json_mapping(self.kv_transfer_config, "kv_transfer_config")
@@ -633,11 +661,33 @@ class FullScoreRuntimeConfig:
         if extra_config.get("document_kv.require_runtime_handshake") is not True:
             raise ValueError("full-score execution requires the runtime handshake")
         object.__setattr__(self, "kv_transfer_config", transfer)
-        _validate_vllm_install_spec(self.vllm_wheel_install_spec)
-        if not self.vllm_wheel_install_spec.endswith(
-            f"#sha256={self.patched_vllm_wheel_sha256}"
-        ):
-            raise ValueError("vLLM install spec and patched-wheel hash disagree")
+        _validate_hashed_install_spec(
+            self.vllm_wheel_install_spec,
+            project="vllm",
+            expected_sha256=self.patched_vllm_wheel_sha256,
+        )
+        _validate_hashed_install_spec(
+            self.flashinfer_wheel_install_spec,
+            project="flashinfer-python",
+            expected_sha256=self.patched_flashinfer_wheel_sha256,
+        )
+        install_origins = (
+            (
+                "vLLM",
+                self.vllm_wheel_install_spec,
+                self.patched_vllm_wheel_uri,
+            ),
+            (
+                "FlashInfer",
+                self.flashinfer_wheel_install_spec,
+                self.patched_flashinfer_wheel_uri,
+            ),
+        )
+        for label, install_spec, artifact_uri in install_origins:
+            if _install_spec_uri(install_spec) != (
+                _cluster_artifact_file_uri(artifact_uri)
+            ):
+                raise ValueError(f"{label} install spec URI differs from staged artifact")
 
 
 @dataclass(frozen=True, slots=True)
@@ -650,7 +700,7 @@ class FullScoreGPUQualificationConfig:
     evidence_file_sha256: str
     plan_record: Mapping[str, Any]
     evidence_record: Mapping[str, Any]
-    artifact_pins: GPUQualificationArtifactPins
+    artifact_pins: GPUQualificationArtifactPinsV2
 
     def __post_init__(self) -> None:
         for field_name in ("campaign_id", "plan_uri", "evidence_uri"):
@@ -661,8 +711,8 @@ class FullScoreGPUQualificationConfig:
             self.evidence_file_sha256,
             field_name="evidence_file_sha256",
         )
-        if not isinstance(self.artifact_pins, GPUQualificationArtifactPins):
-            raise TypeError("artifact_pins must be GPUQualificationArtifactPins")
+        if not isinstance(self.artifact_pins, GPUQualificationArtifactPinsV2):
+            raise TypeError("artifact_pins must be GPUQualificationArtifactPinsV2")
         plan = _json_mapping(self.plan_record, "GPU qualification plan")
         evidence = _json_mapping(self.evidence_record, "GPU qualification evidence")
         canonical_evidence = (
@@ -670,7 +720,7 @@ class FullScoreGPUQualificationConfig:
         ).encode("utf-8")
         if sha256(canonical_evidence).hexdigest() != self.evidence_file_sha256:
             raise ValueError("GPU qualification evidence raw file SHA-256 drift")
-        selection = validate_gpu_qualification_evidence_record(
+        selection = validate_gpu_qualification_evidence_v2_record(
             evidence,
             plan_record=plan,
             expected_campaign_id=self.campaign_id,
@@ -682,7 +732,7 @@ class FullScoreGPUQualificationConfig:
 
     @property
     def selection(self) -> GPUQualificationSelection:
-        return validate_gpu_qualification_evidence_record(
+        return validate_gpu_qualification_evidence_v2_record(
             self.evidence_record,
             plan_record=self.plan_record,
             expected_campaign_id=self.campaign_id,
@@ -745,9 +795,10 @@ class FullScoreWorkerBundleConfig:
                 _require_shared_dbfs_path(uri, f"source_jsonl_uris.{dataset}")
             _require_local_disk_path(self.ephemeral_root, "ephemeral_root")
             for field_name in (
-                "runtime_contract_uri",
                 "runtime_lock_uri",
                 "patched_vllm_wheel_uri",
+                "patched_flashinfer_wheel_uri",
+                "runtime_closure_manifest_uri",
             ):
                 _require_shared_dbfs_path(
                     getattr(self.runtime, field_name),
@@ -774,12 +825,18 @@ class FullScoreWorkerBundleConfig:
         pins = self.gpu_qualification.artifact_pins
         if (
             pins.package_wheel_sha256 != self.package_wheel_sha256
-            or pins.patched_vllm_wheel_sha256
-            != self.runtime.patched_vllm_wheel_sha256
-            or pins.runtime_lock_sha256 != VLLM_RUNTIME_LOCK_SHA256
-            or pins.runner_sha256 != self.runner_sha256
+            or pins.patched_vllm_wheel_sha256 != self.runtime.patched_vllm_wheel_sha256
+            or pins.patched_flashinfer_wheel_sha256
+            != self.runtime.patched_flashinfer_wheel_sha256
+            or pins.runtime_closure_manifest_sha256
+            != self.runtime.runtime_closure_manifest_sha256
+            or pins.runtime_lock_sha256 != self.runtime.runtime_lock_sha256
         ):
             raise ValueError("worker artifacts differ from GPU qualification pins")
+        if pins.runner_sha256 == self.runner_sha256:
+            raise ValueError(
+                "GPU qualification and full-score runner identities must be distinct"
+            )
         _require_sha256(self.runner_sha256, field_name="runner_sha256")
         if self.runner_sha256 != FULL_SCORE_RUNNER_SHA256:
             raise ValueError("runner_sha256 does not identify the frozen runner")
@@ -803,6 +860,10 @@ class DatabricksFullScoreJobConfig:
     runtime_lock_sha256: str
     patched_vllm_wheel_uri: str
     patched_vllm_wheel_sha256: str
+    patched_flashinfer_wheel_uri: str
+    patched_flashinfer_wheel_sha256: str
+    runtime_closure_manifest_uri: str
+    runtime_closure_manifest_sha256: str
     gpu_qualification: FullScoreGPUQualificationConfig
     runtime_venv_dir: str = "/local_disk0/cachet-full-score-runtime"
     run_name: str = "cachet-vllm-0271-full-score"
@@ -825,6 +886,8 @@ class DatabricksFullScoreJobConfig:
             "package_wheel_uri",
             "runtime_lock_uri",
             "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
             "runtime_venv_dir",
             "run_name",
             "task_key_prefix",
@@ -838,6 +901,8 @@ class DatabricksFullScoreJobConfig:
             "package_wheel_uri",
             "runtime_lock_uri",
             "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
         ):
             _require_shared_dbfs_path(getattr(self, field_name), field_name)
         _require_local_disk_path(self.runtime_venv_dir, "runtime_venv_dir")
@@ -850,8 +915,22 @@ class DatabricksFullScoreJobConfig:
             self.patched_vllm_wheel_sha256,
             field_name="patched_vllm_wheel_sha256",
         )
-        if self.runtime_lock_sha256 != VLLM_RUNTIME_LOCK_SHA256:
+        _require_sha256(
+            self.patched_flashinfer_wheel_sha256,
+            field_name="patched_flashinfer_wheel_sha256",
+        )
+        _require_sha256(
+            self.runtime_closure_manifest_sha256,
+            field_name="runtime_closure_manifest_sha256",
+        )
+        if self.runtime_lock_sha256 != VLLM_RUNTIME_BASE_LOCK_SHA256:
             raise ValueError("Databricks job runtime lock hash drift")
+        if self.patched_vllm_wheel_sha256 != VLLM_PATCHED_WHEEL_SHA256:
+            raise ValueError("Databricks job vLLM wheel hash drift")
+        if self.patched_flashinfer_wheel_sha256 != FLASHINFER_PATCHED_WHEEL_SHA256:
+            raise ValueError("Databricks job FlashInfer wheel hash drift")
+        if self.runtime_closure_manifest_sha256 != RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256:
+            raise ValueError("Databricks job runtime closure hash drift")
         if not isinstance(
             self.gpu_qualification,
             FullScoreGPUQualificationConfig,
@@ -862,12 +941,18 @@ class DatabricksFullScoreJobConfig:
         pins = self.gpu_qualification.artifact_pins
         if (
             pins.package_wheel_sha256 != self.package_wheel_sha256
-            or pins.patched_vllm_wheel_sha256
-            != self.patched_vllm_wheel_sha256
+            or pins.patched_vllm_wheel_sha256 != self.patched_vllm_wheel_sha256
+            or pins.patched_flashinfer_wheel_sha256
+            != self.patched_flashinfer_wheel_sha256
+            or pins.runtime_closure_manifest_sha256
+            != self.runtime_closure_manifest_sha256
             or pins.runtime_lock_sha256 != self.runtime_lock_sha256
-            or pins.runner_sha256 != self.runner_sha256
         ):
             raise ValueError("Databricks artifacts differ from GPU qualification pins")
+        if pins.runner_sha256 == self.runner_sha256:
+            raise ValueError(
+                "GPU qualification and full-score runner identities must be distinct"
+            )
         _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
         if self.run_timeout_seconds != FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS:
             raise ValueError("full-score Databricks timeout is frozen to six hours")
@@ -1274,9 +1359,15 @@ def build_full_score_worker_payloads(
                     "locked_runtime_identity_sha256": _locked_runtime_identity_sha256(
                         runner_sha256=config.runner_sha256,
                         package_wheel_sha256=config.package_wheel_sha256,
-                        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+                        runtime_lock_sha256=config.runtime.runtime_lock_sha256,
                         patched_vllm_wheel_sha256=(
                             config.runtime.patched_vllm_wheel_sha256
+                        ),
+                        patched_flashinfer_wheel_sha256=(
+                            config.runtime.patched_flashinfer_wheel_sha256
+                        ),
+                        runtime_closure_manifest_sha256=(
+                            config.runtime.runtime_closure_manifest_sha256
                         ),
                     ),
                     "package_wheel_sha256": config.package_wheel_sha256,
@@ -1285,9 +1376,21 @@ def build_full_score_worker_payloads(
                         config.runtime.patched_vllm_wheel_sha256
                     ),
                     "patched_vllm_wheel_uri": config.runtime.patched_vllm_wheel_uri,
+                    "patched_flashinfer_wheel_sha256": (
+                        config.runtime.patched_flashinfer_wheel_sha256
+                    ),
+                    "patched_flashinfer_wheel_uri": (
+                        config.runtime.patched_flashinfer_wheel_uri
+                    ),
                     "runner_python_file": config.runner_python_file,
                     "runner_sha256": config.runner_sha256,
-                    "runtime_lock_sha256": VLLM_RUNTIME_LOCK_SHA256,
+                    "runtime_closure_manifest_sha256": (
+                        config.runtime.runtime_closure_manifest_sha256
+                    ),
+                    "runtime_closure_manifest_uri": (
+                        config.runtime.runtime_closure_manifest_uri
+                    ),
+                    "runtime_lock_sha256": config.runtime.runtime_lock_sha256,
                     "runtime_lock_uri": config.runtime.runtime_lock_uri,
                 }
                 record: dict[str, Any] = {
@@ -1395,6 +1498,24 @@ def validate_full_score_worker_payload(
         bootstrap_binding,
         runtime=runtime,
     )
+    qualification_pins = GPUQualificationArtifactPinsV2(
+        **_json_mapping(
+            _required_mapping(qualification_binding, "artifact_pins"),
+            "GPU artifact pins",
+        )
+    )
+    if qualification_pins.package_wheel_sha256 != _required_string(
+        bootstrap_binding,
+        "package_wheel_sha256",
+    ):
+        raise ValueError("worker package wheel differs from GPU qualification pins")
+    if qualification_pins.runner_sha256 == _required_string(
+        bootstrap_binding,
+        "runner_sha256",
+    ):
+        raise ValueError(
+            "GPU qualification and full-score runner identities must be distinct"
+        )
     worker_index = record.get("worker_index")
     if type(worker_index) is not int or not 0 <= worker_index < FULL_SCORE_MAX_WORKERS:
         raise ValueError("worker_index is invalid")
@@ -1461,9 +1582,10 @@ def validate_full_score_worker_payload(
                 "worker source URI",
             )
         for field_name in (
-            "runtime_contract_uri",
             "runtime_lock_uri",
             "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
         ):
             _require_shared_dbfs_path(
                 _required_string(runtime_binding, field_name),
@@ -1474,6 +1596,8 @@ def validate_full_score_worker_payload(
             "package_wheel_uri",
             "runtime_lock_uri",
             "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
         ):
             _require_shared_dbfs_path(
                 _required_string(bootstrap_binding, field_name),
@@ -1528,6 +1652,7 @@ def render_full_score_worker_command_plan(
     """Render exact subprocess argv without touching files or launching GPUs."""
 
     runtime = _runtime_from_record(_required_mapping(worker_payload, "runtime"))
+    bootstrap = _required_mapping(worker_payload, "bootstrap_artifacts")
     worker_index = _required_int(worker_payload, "worker_index")
     wave_index = _required_int(worker_payload, "wave_index")
     role = _required_string(worker_payload, "role")
@@ -1592,7 +1717,14 @@ def render_full_score_worker_command_plan(
     return {
         "protocol": _full_score_protocol_record(),
         "role": role,
-        "runtime_verifier": _runtime_verifier_command(runtime),
+        "runtime_verifier": _runtime_verifier_command(
+            runtime,
+            package_wheel_uri=_required_string(bootstrap, "package_wheel_uri"),
+            package_wheel_sha256=_required_string(
+                bootstrap,
+                "package_wheel_sha256",
+            ),
+        ),
         "server": _vllm_server_command(runtime) if role == "consumer" else None,
         "shards": rendered_shards,
         "wave_index": wave_index,
@@ -1617,11 +1749,16 @@ def _build_databricks_full_score_run_submit_payload(
     qualification_launch_authorization: object | None = None,
     idempotency_attempt_id: str | None = None,
     publication_authorizing: bool,
+    allow_unadmitted_publication_candidate: bool = False,
 ) -> dict[str, Any]:
     """Render one exact, independently bounded publication phase submission."""
 
     if not isinstance(config, DatabricksFullScoreJobConfig):
         raise TypeError("config must be DatabricksFullScoreJobConfig")
+    if allow_unadmitted_publication_candidate and not publication_authorizing:
+        raise ValueError(
+            "only a publication-authorizing render may form an unadmitted candidate"
+        )
     payloads = tuple(worker_payloads)
     if not payloads:
         raise ValueError("Databricks full-score job requires worker payloads")
@@ -1700,18 +1837,24 @@ def _build_databricks_full_score_run_submit_payload(
             payloads,
             task_timeout_seconds=config.run_timeout_seconds,
         )
-        _validate_live_p90_budget_admission(
-            budget_admission,
-            execution_plan=execution_plan,
-            inventory=inventory,
-            shard_plan=shard_plan,
-            expected_execution_plan_sha256=execution_plan_sha256,
-            expected_next_wave_index=wave_index,
-            expected_next_phase=phase,
-            expected_next_wave_reserved_gpu_hours=expected_reservation,
-            require_publication=publication_authorizing,
-            compact_artifact_resolver=compact_artifact_resolver,
-        )
+        if allow_unadmitted_publication_candidate:
+            if budget_admission is not None:
+                raise ValueError(
+                    "an unadmitted candidate must not consume a P90 admission"
+                )
+        else:
+            _validate_live_p90_budget_admission(
+                budget_admission,
+                execution_plan=execution_plan,
+                inventory=inventory,
+                shard_plan=shard_plan,
+                expected_execution_plan_sha256=execution_plan_sha256,
+                expected_next_wave_index=wave_index,
+                expected_next_phase=phase,
+                expected_next_wave_reserved_gpu_hours=expected_reservation,
+                require_publication=publication_authorizing,
+                compact_artifact_resolver=compact_artifact_resolver,
+            )
         if publication_authorizing:
             _validate_prior_wave_completion(
                 prior_wave_completion,
@@ -1751,10 +1894,13 @@ def _build_databricks_full_score_run_submit_payload(
                 "producer_phase_completion_uri",
                 compact_artifact_resolver,
             )
-            if _json_object(
-                completion_file.read_bytes(),
-                "producer-phase completion file",
-            ) != producer_phase_completion:
+            if (
+                _json_object(
+                    completion_file.read_bytes(),
+                    "producer-phase completion file",
+                )
+                != producer_phase_completion
+            ):
                 raise ValueError("producer-phase completion URI/content binding drift")
             if publication_authorizing:
                 _validate_governed_producer_ready_phase(
@@ -1815,11 +1961,20 @@ def _build_databricks_full_score_run_submit_payload(
             "runtime_lock_uri": config.runtime_lock_uri,
             "patched_vllm_wheel_sha256": config.patched_vllm_wheel_sha256,
             "patched_vllm_wheel_uri": config.patched_vllm_wheel_uri,
+            "patched_flashinfer_wheel_sha256": (config.patched_flashinfer_wheel_sha256),
+            "patched_flashinfer_wheel_uri": config.patched_flashinfer_wheel_uri,
+            "runtime_closure_manifest_sha256": (config.runtime_closure_manifest_sha256),
+            "runtime_closure_manifest_uri": config.runtime_closure_manifest_uri,
             "python_executable": f"{config.runtime_venv_dir}/bin/python",
             "vllm_wheel_install_spec": (
                 "vllm @ file://"
                 f"{_databricks_worker_mount_path(config.patched_vllm_wheel_uri)}"
                 f"#sha256={config.patched_vllm_wheel_sha256}"
+            ),
+            "flashinfer_wheel_install_spec": (
+                "flashinfer-python @ file://"
+                f"{_databricks_worker_mount_path(config.patched_flashinfer_wheel_uri)}"
+                f"#sha256={config.patched_flashinfer_wheel_sha256}"
             ),
         }
         if any(
@@ -1833,13 +1988,23 @@ def _build_databricks_full_score_run_submit_payload(
                 package_wheel_sha256=config.package_wheel_sha256,
                 runtime_lock_sha256=config.runtime_lock_sha256,
                 patched_vllm_wheel_sha256=config.patched_vllm_wheel_sha256,
+                patched_flashinfer_wheel_sha256=(
+                    config.patched_flashinfer_wheel_sha256
+                ),
+                runtime_closure_manifest_sha256=(
+                    config.runtime_closure_manifest_sha256
+                ),
             ),
             "package_wheel_sha256": config.package_wheel_sha256,
             "package_wheel_uri": config.package_wheel_uri,
             "patched_vllm_wheel_sha256": config.patched_vllm_wheel_sha256,
             "patched_vllm_wheel_uri": config.patched_vllm_wheel_uri,
+            "patched_flashinfer_wheel_sha256": (config.patched_flashinfer_wheel_sha256),
+            "patched_flashinfer_wheel_uri": config.patched_flashinfer_wheel_uri,
             "runner_python_file": config.runner_python_file,
             "runner_sha256": config.runner_sha256,
+            "runtime_closure_manifest_sha256": (config.runtime_closure_manifest_sha256),
+            "runtime_closure_manifest_uri": config.runtime_closure_manifest_uri,
             "runtime_lock_sha256": config.runtime_lock_sha256,
             "runtime_lock_uri": config.runtime_lock_uri,
         }
@@ -1855,43 +2020,49 @@ def _build_databricks_full_score_run_submit_payload(
         ):
             raise ValueError("runtime GMU differs from sealed qualification")
         expected_sha256 = sha256(_canonical_pretty_json_bytes(payload)).hexdigest()
-        worker_uri = config.worker_payload_uri_template.format(
-            worker_index=f"wave-{wave_index:03d}-{role}-{worker_index:02d}"
-        )
+        worker_uri = _full_score_worker_payload_uri(config, payload)
         task_key = (
             f"{config.task_key_prefix}_wave_{wave_index:03d}_{role}_{worker_index:02d}"
         )
         task: dict[str, Any] = {
-                "max_retries": config.task_max_retries,
-                "new_cluster": _build_full_score_role_cluster(config, role=role),
-                "spark_python_task": {
-                    "parameters": [
-                        "--runner-sha256",
-                        config.runner_sha256,
-                        "--package-wheel-uri",
-                        config.package_wheel_uri,
-                        "--package-wheel-sha256",
-                        config.package_wheel_sha256,
-                        "--runtime-lock-uri",
-                        config.runtime_lock_uri,
-                        "--runtime-lock-sha256",
-                        config.runtime_lock_sha256,
-                        "--patched-vllm-wheel-uri",
-                        config.patched_vllm_wheel_uri,
-                        "--patched-vllm-wheel-sha256",
-                        config.patched_vllm_wheel_sha256,
-                        "--runtime-venv-dir",
-                        config.runtime_venv_dir,
-                        "run-worker",
-                        "--worker-payload-json",
-                        worker_uri,
-                        "--expected-worker-payload-sha256",
-                        expected_sha256,
-                    ],
-                    "python_file": config.runner_python_file,
-                },
-                "task_key": task_key,
-                "timeout_seconds": config.run_timeout_seconds,
+            "max_retries": config.task_max_retries,
+            "new_cluster": _build_full_score_role_cluster(config, role=role),
+            "spark_python_task": {
+                "parameters": [
+                    "--runner-sha256",
+                    config.runner_sha256,
+                    "--package-wheel-uri",
+                    config.package_wheel_uri,
+                    "--package-wheel-sha256",
+                    config.package_wheel_sha256,
+                    "--runtime-lock-uri",
+                    config.runtime_lock_uri,
+                    "--runtime-lock-sha256",
+                    config.runtime_lock_sha256,
+                    "--patched-vllm-wheel-uri",
+                    config.patched_vllm_wheel_uri,
+                    "--patched-vllm-wheel-sha256",
+                    config.patched_vllm_wheel_sha256,
+                    "--patched-flashinfer-wheel-uri",
+                    config.patched_flashinfer_wheel_uri,
+                    "--patched-flashinfer-wheel-sha256",
+                    config.patched_flashinfer_wheel_sha256,
+                    "--runtime-closure-manifest-uri",
+                    config.runtime_closure_manifest_uri,
+                    "--runtime-closure-manifest-sha256",
+                    config.runtime_closure_manifest_sha256,
+                    "--runtime-venv-dir",
+                    config.runtime_venv_dir,
+                    "run-worker",
+                    "--worker-payload-json",
+                    worker_uri,
+                    "--expected-worker-payload-sha256",
+                    expected_sha256,
+                ],
+                "python_file": config.runner_python_file,
+            },
+            "task_key": task_key,
+            "timeout_seconds": config.run_timeout_seconds,
         }
         if role == "consumer":
             parameters = cast(list[str], task["spark_python_task"]["parameters"])
@@ -1925,16 +2096,221 @@ def _build_databricks_full_score_run_submit_payload(
         )
     elif idempotency_attempt_id is not None:
         raise ValueError("local fixture preview cannot bind a publication token")
-    if publication_authorizing and wave_index > 0:
+    if (
+        publication_authorizing
+        and wave_index > 0
+        and not allow_unadmitted_publication_candidate
+    ):
         admission = cast(Mapping[str, Any], budget_admission)
         _snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(
             result
         )
-        if admission.get("next_submit_payload_sha256") != sha256(
-            canonical_payload
-        ).hexdigest():
+        if (
+            admission.get("next_submit_payload_sha256")
+            != sha256(canonical_payload).hexdigest()
+        ):
             raise ValueError("live P90 admission is not bound to the rendered payload")
     return result
+
+
+def _full_score_worker_payload_uri(
+    config: DatabricksFullScoreJobConfig,
+    worker_payload: Mapping[str, Any],
+) -> str:
+    worker_index = _required_int(worker_payload, "worker_index")
+    wave_index = _required_int(worker_payload, "wave_index")
+    role = _required_string(worker_payload, "role")
+    return config.worker_payload_uri_template.format(
+        worker_index=f"wave-{wave_index:03d}-{role}-{worker_index:02d}"
+    )
+
+
+def _build_governed_full_score_live_p90_submit_candidate(
+    config: DatabricksFullScoreJobConfig,
+    worker_payloads: Sequence[Mapping[str, Any]],
+    *,
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    execution_plan: Mapping[str, Any],
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
+    attempt_id: str,
+    prior_wave_completion: Mapping[str, Any],
+    ledger_path: str | Path,
+    predecessor_authorization: object,
+    producer_phase_completion: Mapping[str, Any] | None = None,
+    producer_phase_completion_uri: str | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    latency_execution_plan_record: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Render exact nonzero-wave bytes for a governed P90 gate to bind.
+
+    The returned mapping is deliberately not a launch authorization.  Governed
+    reserve, submit, and replay APIs still require an immutable P90 admission
+    built from these exact bytes and a subsequent publication render.
+    """
+
+    payloads = tuple(worker_payloads)
+    wave_indices = {
+        _required_int(payload, "wave_index") for payload in payloads
+    }
+    if wave_indices == {0}:
+        raise ValueError("wave zero does not use a live P90 submit candidate")
+    if len(wave_indices) != 1:
+        raise ValueError("one P90 candidate may contain exactly one wave")
+    wave_index = next(iter(wave_indices))
+    phase = _required_string(payloads[0], "role")
+    remote_by_wave = _remote_consumer_authorizations_by_wave(
+        ()
+        if remote_consumer_authorizations is None
+        else remote_consumer_authorizations,
+        execution_plan=execution_plan,
+    )
+    if remote_by_wave and set(remote_by_wave) != set(range(wave_index)):
+        raise ValueError(
+            "nonzero candidate requires every completed-wave remote authority"
+        )
+    opening_predecessor = _require_full_score_phase_predecessor_authorization(
+        predecessor_authorization,
+        execution_plan=execution_plan,
+        ledger_path=ledger_path,
+        wave_index=wave_index,
+        phase=phase,
+        latency_execution_plan_record=latency_execution_plan_record,
+    )
+    result = _build_databricks_full_score_run_submit_payload(
+        config,
+        payloads,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        execution_plan=execution_plan,
+        qualification_launch_authorization=qualification_launch_authorization,
+        prior_wave_completion=prior_wave_completion,
+        producer_phase_completion=producer_phase_completion,
+        producer_phase_completion_uri=producer_phase_completion_uri,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorization=remote_by_wave.get(wave_index - 1),
+        compact_artifact_resolver=compact_artifact_resolver,
+        budget_admission=None,
+        idempotency_attempt_id=attempt_id,
+        publication_authorizing=True,
+        allow_unadmitted_publication_candidate=True,
+    )
+    closing_predecessor = _require_full_score_phase_predecessor_authorization(
+        predecessor_authorization,
+        execution_plan=execution_plan,
+        ledger_path=ledger_path,
+        wave_index=wave_index,
+        phase=phase,
+        latency_execution_plan_record=latency_execution_plan_record,
+    )
+    if closing_predecessor != opening_predecessor:
+        raise ValueError("P90 candidate predecessor changed during rendering")
+    return result
+
+
+def prepare_governed_full_score_live_p90_phase_submission(
+    budget_admission_path: str | Path,
+    config: DatabricksFullScoreJobConfig,
+    worker_payloads: Sequence[Mapping[str, Any]],
+    *,
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    execution_plan: Mapping[str, Any],
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
+    attempt_id: str,
+    completed_block_paths: Sequence[str | Path],
+    prior_wave_completion: Mapping[str, Any],
+    ledger_path: str | Path,
+    predecessor_authorization: object,
+    producer_phase_completion: Mapping[str, Any] | None = None,
+    producer_phase_completion_uri: str | None = None,
+    remote_ready_authorization: object | None = None,
+    remote_consumer_authorizations: Sequence[object] | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    compact_artifact_publisher: FullScoreCompactArtifactPublisher | None = None,
+    latency_execution_plan_record: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Crash-safely prepare a nonzero phase's P90 gate and final submit bytes.
+
+    A deterministic launch-shaped candidate exists only inside this function.
+    The function publishes and rereads the gate, renders again through the
+    ordinary publication path, and returns ``(submit_payload, admission)`` only
+    when the admitted and final canonical bytes are identical.  Repeating the
+    call after a crash is safe because the gate writer accepts only identical
+    existing bytes.
+    """
+
+    payloads = tuple(worker_payloads)
+    roles = {_required_string(payload, "role") for payload in payloads}
+    wave_indices = {_required_int(payload, "wave_index") for payload in payloads}
+    if len(roles) != 1 or len(wave_indices) != 1:
+        raise ValueError("one P90 preparation requires exactly one phase")
+    if wave_indices == {0}:
+        raise ValueError("wave zero does not use a live P90 admission")
+    if (compact_artifact_resolver is None) != (
+        compact_artifact_publisher is None
+    ):
+        raise TypeError("P90 compact publication requires publisher and resolver")
+    candidate = _build_governed_full_score_live_p90_submit_candidate(
+        config,
+        payloads,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        execution_plan=execution_plan,
+        qualification_launch_authorization=qualification_launch_authorization,
+        attempt_id=attempt_id,
+        prior_wave_completion=prior_wave_completion,
+        ledger_path=ledger_path,
+        predecessor_authorization=predecessor_authorization,
+        producer_phase_completion=producer_phase_completion,
+        producer_phase_completion_uri=producer_phase_completion_uri,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
+        latency_execution_plan_record=latency_execution_plan_record,
+    )
+    admission = write_governed_full_score_live_p90_budget_admission(
+        budget_admission_path,
+        execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        completed_block_paths=completed_block_paths,
+        next_wave_index=next(iter(wave_indices)),
+        next_phase=next(iter(roles)),
+        attempt_id=attempt_id,
+        next_submit_payload=candidate,
+        ledger_path=ledger_path,
+        predecessor_authorization=predecessor_authorization,
+        latency_execution_plan_record=latency_execution_plan_record,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
+        compact_artifact_publisher=compact_artifact_publisher,
+    )
+    final_payload = build_databricks_full_score_run_submit_payload(
+        config,
+        payloads,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        execution_plan=execution_plan,
+        qualification_launch_authorization=qualification_launch_authorization,
+        attempt_id=attempt_id,
+        prior_wave_completion=prior_wave_completion,
+        producer_phase_completion=producer_phase_completion,
+        producer_phase_completion_uri=producer_phase_completion_uri,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
+        budget_admission_path=budget_admission_path,
+        ledger_path=ledger_path,
+        predecessor_authorization=predecessor_authorization,
+        latency_execution_plan_record=latency_execution_plan_record,
+    )
+    if final_payload != candidate:
+        raise ValueError("P90 preparation changed the exact submit payload")
+    return final_payload, admission
 
 
 def build_databricks_full_score_run_submit_payload(
@@ -2452,6 +2828,52 @@ def _full_score_ledger_prefix_state(
     return state
 
 
+def _validate_full_score_raw_task_configuration(
+    run_record: Mapping[str, Any],
+    submit_payload: Mapping[str, Any],
+) -> None:
+    """Bind each raw runs/get Python task to its submitted configuration."""
+
+    raw_submitted_tasks = submit_payload.get("tasks")
+    raw_observed_tasks = run_record.get("tasks")
+    if not isinstance(raw_submitted_tasks, list) or not isinstance(
+        raw_observed_tasks, list
+    ):
+        raise ValueError("Databricks raw terminal tasks must be arrays")
+    if len(raw_observed_tasks) != len(raw_submitted_tasks):
+        raise ValueError("Databricks raw terminal task coverage drift")
+
+    submitted_by_key: dict[str, dict[str, Any]] = {}
+    for raw_task in raw_submitted_tasks:
+        task = _json_mapping(raw_task, "submitted Databricks task")
+        task_key = _required_string(task, "task_key")
+        if task_key in submitted_by_key:
+            raise ValueError("submitted Databricks task coverage drift")
+        submitted_by_key[task_key] = _json_mapping(
+            _required_mapping(task, "spark_python_task"),
+            "submitted Databricks spark_python_task",
+        )
+
+    observed_keys: set[str] = set()
+    for raw_task in raw_observed_tasks:
+        task = _json_mapping(raw_task, "raw Databricks terminal task")
+        task_key = _required_string(task, "task_key")
+        expected = submitted_by_key.get(task_key)
+        if expected is None or task_key in observed_keys:
+            raise ValueError("Databricks raw terminal task coverage drift")
+        observed_keys.add(task_key)
+        observed = _json_mapping(
+            _required_mapping(task, "spark_python_task"),
+            "raw Databricks terminal spark_python_task",
+        )
+        if observed != expected:
+            raise ValueError(
+                "Databricks raw terminal spark_python_task binding drift"
+            )
+    if observed_keys != set(submitted_by_key):
+        raise ValueError("Databricks raw terminal task coverage drift")
+
+
 def build_governed_full_score_phase_terminal_record(
     execution_plan: Mapping[str, Any],
     *,
@@ -2504,6 +2926,7 @@ def build_governed_full_score_phase_terminal_record(
         phase=phase,
         compact_artifact_resolver=compact_artifact_resolver,
     )
+    _validate_full_score_raw_task_configuration(run_record, submit_payload)
     expected_node_type_id = (
         FULL_SCORE_PRODUCER_NODE_TYPE_ID
         if phase == "producer"
@@ -3934,6 +4357,8 @@ def build_governed_full_score_live_p90_budget_admission(
     ledger = read_databricks_cluster_hour_ledger_json(live_path)
     if not _require_latest_predecessor:
         ledger = _full_score_ledger_prefix_state(ledger, predecessor_prefix)
+    elif databricks_ledger_prefix(ledger) != predecessor_prefix:
+        raise ValueError("live ledger changed while building the P90 admission")
     if ledger.active_reserved_cluster_hours != 0:
         raise ValueError("live P90 admission requires a zero-active live ledger")
     if any(item.attempt_id == attempt_id for item in ledger.reservations):
@@ -6378,7 +6803,12 @@ def run_full_score_worker(
         / f"{_required_string(payload, 'role')}-{_required_int(payload, 'worker_index'):02d}"
         / "runtime-lock-verification.json"
     )
-    _run_runtime_verifier(runtime, runtime_verification_path, runner=runner)
+    runtime_verification = _run_runtime_verifier(
+        runtime,
+        bootstrap_artifacts,
+        runtime_verification_path,
+        runner=runner,
+    )
     role = _required_string(payload, "role")
     if role == "producer":
         if (
@@ -6399,6 +6829,7 @@ def run_full_score_worker(
             execution_plan=execution_record,
             source_records=source_records,
             runtime=runtime,
+            runtime_verification=runtime_verification,
         )
     if role == "consumer":
         completion_path = _require_nonempty(
@@ -6428,6 +6859,7 @@ def run_full_score_worker(
             execution_plan=execution_record,
             producer_completion=producer_completion,
             runtime=runtime,
+            runtime_verification=runtime_verification,
             runner=runner,
         )
     raise ValueError("worker role must be producer or consumer")
@@ -6552,6 +6984,7 @@ def _run_producer_worker(
     execution_plan: Mapping[str, Any],
     source_records: Mapping[tuple[str, str], Mapping[str, Any]],
     runtime: FullScoreRuntimeConfig,
+    runtime_verification: Mapping[str, Any],
 ) -> tuple[dict[str, Any], ...]:
     """Load the generator once and emit all assigned closed ready shards."""
 
@@ -6582,6 +7015,7 @@ def _run_producer_worker(
                     execution_plan=execution_plan,
                     source_records=source_records,
                     runtime=runtime,
+                    runtime_verification=runtime_verification,
                     generator=generator,
                     layout=layout,
                     producer_hardware=producer_hardware,
@@ -6608,6 +7042,7 @@ def _produce_ready_shard(
     execution_plan: Mapping[str, Any],
     source_records: Mapping[tuple[str, str], Mapping[str, Any]],
     runtime: FullScoreRuntimeConfig,
+    runtime_verification: Mapping[str, Any],
     generator: Any,
     layout: Any,
     producer_hardware: Mapping[str, Any],
@@ -6632,7 +7067,7 @@ def _produce_ready_shard(
         include_leaf=True,
     )
     if ready_dir.exists():
-        return _validate_ready_shard(
+        existing_ready = _validate_ready_shard(
             ready_dir,
             shard=shard,
             payload=payload,
@@ -6640,6 +7075,11 @@ def _produce_ready_shard(
             shard_plan=shard_plan,
             execution_plan=execution_plan,
         )
+        if existing_ready.get(
+            "runtime_verification"
+        ) != _validate_runtime_verification_binding(runtime_verification):
+            raise ValueError("existing ready-shard runtime verification drift")
+        return existing_ready
     if local_dir.exists():
         _delete_directory_tree_no_follow(
             local_dir,
@@ -6724,7 +7164,9 @@ def _produce_ready_shard(
         "ready_bytes": ready_bytes,
         "ready_bytes_upper_bound": upper_bound,
         "record_type": FULL_SCORE_READY_SHARD_RECORD_TYPE,
-        "runtime_contract_sha256": runtime.runtime_contract_sha256,
+        "runtime_verification": _validate_runtime_verification_binding(
+            runtime_verification
+        ),
         "schema_version": FULL_SCORE_READY_SHARD_SCHEMA_VERSION,
         "shard_id": shard_id,
         "shard_items_sha256": shard.get("items_sha256"),
@@ -6757,6 +7199,7 @@ def _run_consumer_worker(
     execution_plan: Mapping[str, Any],
     producer_completion: Mapping[str, Any],
     runtime: FullScoreRuntimeConfig,
+    runtime_verification: Mapping[str, Any],
     runner: FullScoreCommandRunner,
 ) -> tuple[dict[str, Any], ...]:
     """Boot vLLM once and consume all assigned ready shards sequentially."""
@@ -6770,6 +7213,7 @@ def _run_consumer_worker(
             inventory=inventory,
             shard_plan=shard_plan,
             execution_plan=execution_plan,
+            runtime_verification=runtime_verification,
         )
         if existing is None:
             pending_shards.append(shard)
@@ -6826,6 +7270,7 @@ def _run_consumer_worker(
                     execution_plan=execution_plan,
                     producer_completion=producer_completion,
                     runtime=runtime,
+                    runtime_verification=runtime_verification,
                     runner=runner,
                     server=server,
                     server_log=server_log,
@@ -6856,6 +7301,7 @@ def _consume_ready_shard(
     execution_plan: Mapping[str, Any],
     producer_completion: Mapping[str, Any],
     runtime: FullScoreRuntimeConfig,
+    runtime_verification: Mapping[str, Any],
     runner: FullScoreCommandRunner,
     server: subprocess.Popen[Any],
     server_log: Path,
@@ -6888,6 +7334,10 @@ def _consume_ready_shard(
         shard_plan=shard_plan,
         execution_plan=execution_plan,
     )
+    if ready.get("runtime_verification") != _validate_runtime_verification_binding(
+        runtime_verification
+    ):
+        raise ValueError("consumer runtime verification differs from ready shard")
     completion_ready = next(
         (
             item
@@ -7050,7 +7500,9 @@ def _consume_ready_shard(
         "preserved_files": preserved,
         "ready_shard_sha256": ready.get("closed_record_sha256"),
         "record_type": FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE,
-        "runtime_contract_sha256": runtime.runtime_contract_sha256,
+        "runtime_verification": _validate_runtime_verification_binding(
+            runtime_verification
+        ),
         "schema_version": FULL_SCORE_SHARD_EVIDENCE_SCHEMA_VERSION,
         "scorers": _scorer_contract_record(),
         "shard_id": shard_id,
@@ -7180,6 +7632,7 @@ def _recover_committed_consumer_shard(
     inventory: FullScoreInventory,
     shard_plan: Mapping[str, Any],
     execution_plan: Mapping[str, Any],
+    runtime_verification: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Finish or reuse a committed shard after task/process interruption."""
 
@@ -7208,6 +7661,10 @@ def _recover_committed_consumer_shard(
         execution_plan=execution_plan,
         require_deletion=False,
     )
+    if evidence.get("runtime_verification") != _validate_runtime_verification_binding(
+        runtime_verification
+    ):
+        raise ValueError("recovered shard runtime verification drift")
     ready_dir = _ready_shard_dir(payload, shard_id)
     _require_no_symlink_ancestors(
         ready_dir,
@@ -7699,56 +8156,301 @@ def _vllm_server_command(
     ]
 
 
-def _runtime_verifier_command(runtime: FullScoreRuntimeConfig) -> list[str]:
+def _install_spec_uri(value: str) -> str:
+    return value.split(" @ ", maxsplit=1)[1].split("#sha256=", maxsplit=1)[0]
+
+
+def _cluster_artifact_file_uri(value: str) -> str:
+    if value.startswith("dbfs:/Volumes/"):
+        path = Path("/Volumes") / value.removeprefix("dbfs:/Volumes/")
+    elif value.startswith("dbfs:/"):
+        path = Path("/dbfs") / value.removeprefix("dbfs:/").lstrip("/")
+    else:
+        path = Path(value)
+    return path.absolute().as_uri()
+
+
+def _runtime_verifier_command(
+    runtime: FullScoreRuntimeConfig,
+    *,
+    package_wheel_uri: str,
+    package_wheel_sha256: str,
+) -> list[str]:
     code = (
-        "import json,sys; from document_kv_cache.serving_env import "
-        "verify_installed_vllm_runtime_lock as verify; "
-        "print(json.dumps(verify(sys.argv[1]), sort_keys=True))"
+        "import json,sys; from "
+        "document_kv_cache._gpu_qualification_sentinels_v2 import "
+        "verify_gpu_qualification_v2_runtime_installation as verify; "
+        "record=verify(runtime_lock=sys.argv[1], vllm_uri=sys.argv[2], "
+        "flashinfer_uri=sys.argv[3], runtime_closure_manifest=sys.argv[4], "
+        "package_uri=sys.argv[5], package_sha256=sys.argv[6]); "
+        "sys.stdout.buffer.write((json.dumps(record, ensure_ascii=False, indent=2, "
+        "sort_keys=True)+'\\n').encode('utf-8'))"
     )
-    return [runtime.python_executable, "-c", code, runtime.vllm_wheel_install_spec]
+    package_path = _cluster_path(package_wheel_uri).absolute().as_uri()
+    return [
+        runtime.python_executable,
+        "-c",
+        code,
+        str(_cluster_path(runtime.runtime_lock_uri)),
+        _install_spec_uri(runtime.vllm_wheel_install_spec),
+        _install_spec_uri(runtime.flashinfer_wheel_install_spec),
+        str(_cluster_path(runtime.runtime_closure_manifest_uri)),
+        package_path,
+        package_wheel_sha256,
+    ]
+
+
+def _runtime_artifact_binding(
+    runtime: FullScoreRuntimeConfig,
+    bootstrap_artifacts: Mapping[str, Any],
+) -> dict[str, str]:
+    return {
+        "locked_runtime_identity_sha256": _required_string(
+            bootstrap_artifacts,
+            "locked_runtime_identity_sha256",
+        ),
+        "package_wheel_sha256": _required_string(
+            bootstrap_artifacts,
+            "package_wheel_sha256",
+        ),
+        "package_wheel_uri": _required_string(
+            bootstrap_artifacts,
+            "package_wheel_uri",
+        ),
+        "patched_flashinfer_wheel_sha256": runtime.patched_flashinfer_wheel_sha256,
+        "patched_flashinfer_wheel_uri": runtime.patched_flashinfer_wheel_uri,
+        "patched_vllm_wheel_sha256": runtime.patched_vllm_wheel_sha256,
+        "patched_vllm_wheel_uri": runtime.patched_vllm_wheel_uri,
+        "runner_python_file": _required_string(
+            bootstrap_artifacts,
+            "runner_python_file",
+        ),
+        "runner_sha256": _required_string(bootstrap_artifacts, "runner_sha256"),
+        "runtime_closure_manifest_sha256": runtime.runtime_closure_manifest_sha256,
+        "runtime_closure_manifest_uri": runtime.runtime_closure_manifest_uri,
+        "runtime_lock_sha256": runtime.runtime_lock_sha256,
+        "runtime_lock_uri": runtime.runtime_lock_uri,
+    }
+
+
+def _runtime_verification_binding(
+    record: Mapping[str, Any],
+    *,
+    artifacts: Mapping[str, Any],
+) -> dict[str, Any]:
+    attestation = _json_mapping(record, "runtime v2 attestation")
+    validate_gpu_qualification_v2_runtime_attestation(attestation)
+    artifact_binding = _json_mapping(artifacts, "runtime artifacts")
+    _validate_runtime_attestation_artifact_origins(
+        attestation,
+        artifacts=artifact_binding,
+    )
+    raw = _canonical_pretty_json_bytes(attestation)
+    return {
+        "artifacts": artifact_binding,
+        "attestation": attestation,
+        "attestation_sha256": _canonical_sha256(attestation),
+        "file_sha256": sha256(raw).hexdigest(),
+    }
+
+
+def _validate_runtime_attestation_origins(
+    record: Mapping[str, Any],
+    *,
+    runtime: FullScoreRuntimeConfig,
+) -> None:
+    expected = {
+        "flashinfer_direct_url": _install_spec_uri(
+            runtime.flashinfer_wheel_install_spec
+        ),
+        "vllm_direct_url": _install_spec_uri(runtime.vllm_wheel_install_spec),
+    }
+    for field_name, expected_uri in expected.items():
+        if record.get(field_name) != expected_uri:
+            raise ValueError(f"runtime attestation {field_name} differs")
+
+
+def _validate_runtime_attestation_artifact_origins(
+    record: Mapping[str, Any],
+    *,
+    artifacts: Mapping[str, Any],
+) -> None:
+    expected = {
+        "flashinfer_direct_url": _cluster_artifact_file_uri(
+            _required_string(artifacts, "patched_flashinfer_wheel_uri")
+        ),
+        "vllm_direct_url": _cluster_artifact_file_uri(
+            _required_string(artifacts, "patched_vllm_wheel_uri")
+        ),
+    }
+    for field_name, expected_uri in expected.items():
+        if record.get(field_name) != expected_uri:
+            raise ValueError(f"runtime attestation {field_name} differs")
+
+
+def _validate_runtime_verification_binding(value: Any) -> dict[str, Any]:
+    binding = _json_mapping(value, "runtime verification binding")
+    if set(binding) != {
+        "artifacts",
+        "attestation",
+        "attestation_sha256",
+        "file_sha256",
+    }:
+        raise ValueError("runtime verification binding keys drift")
+    artifacts = _json_mapping(
+        _required_mapping(binding, "artifacts"),
+        "runtime artifacts",
+    )
+    expected_artifact_sha256_keys = {
+        "locked_runtime_identity_sha256",
+        "package_wheel_sha256",
+        "patched_flashinfer_wheel_sha256",
+        "patched_vllm_wheel_sha256",
+        "runner_sha256",
+        "runtime_closure_manifest_sha256",
+        "runtime_lock_sha256",
+    }
+    expected_artifact_uri_keys = {
+        "package_wheel_uri",
+        "patched_flashinfer_wheel_uri",
+        "patched_vllm_wheel_uri",
+        "runner_python_file",
+        "runtime_closure_manifest_uri",
+        "runtime_lock_uri",
+    }
+    expected_artifact_keys = (
+        expected_artifact_sha256_keys | expected_artifact_uri_keys
+    )
+    if set(artifacts) != expected_artifact_keys:
+        raise ValueError("runtime artifact binding keys drift")
+    for field_name in expected_artifact_sha256_keys:
+        _require_sha256(artifacts.get(field_name), field_name=field_name)
+    for field_name in expected_artifact_uri_keys:
+        _required_string(artifacts, field_name)
+    if (
+        artifacts["runner_sha256"] != FULL_SCORE_RUNNER_SHA256
+        or artifacts["runtime_lock_sha256"] != VLLM_RUNTIME_BASE_LOCK_SHA256
+        or artifacts["patched_vllm_wheel_sha256"] != VLLM_PATCHED_WHEEL_SHA256
+        or artifacts["patched_flashinfer_wheel_sha256"]
+        != FLASHINFER_PATCHED_WHEEL_SHA256
+        or artifacts["runtime_closure_manifest_sha256"]
+        != RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+        or artifacts["locked_runtime_identity_sha256"]
+        != _locked_runtime_identity_sha256(
+            runner_sha256=artifacts["runner_sha256"],
+            package_wheel_sha256=artifacts["package_wheel_sha256"],
+            runtime_lock_sha256=artifacts["runtime_lock_sha256"],
+            patched_vllm_wheel_sha256=artifacts["patched_vllm_wheel_sha256"],
+            patched_flashinfer_wheel_sha256=(
+                artifacts["patched_flashinfer_wheel_sha256"]
+            ),
+            runtime_closure_manifest_sha256=(
+                artifacts["runtime_closure_manifest_sha256"]
+            ),
+        )
+    ):
+        raise ValueError("runtime artifact binding identity drift")
+    expected = _runtime_verification_binding(
+        _required_mapping(binding, "attestation"),
+        artifacts=artifacts,
+    )
+    if binding != expected:
+        raise ValueError("runtime verification binding closure drift")
+    return binding
 
 
 def _run_runtime_verifier(
     runtime: FullScoreRuntimeConfig,
+    bootstrap_artifacts: Mapping[str, Any],
     output_path: Path,
     *,
     runner: FullScoreCommandRunner,
-) -> None:
+) -> dict[str, Any]:
     _require_no_symlink_ancestors(
         output_path,
         label="runtime verifier output path",
         include_leaf=True,
     )
+    existing_raw: bytes | None = None
     if output_path.exists():
         _require_regular_file_no_follow(output_path, "runtime verifier output")
-        existing = _json_object(output_path.read_bytes(), "runtime verifier")
-        if (
-            existing.get("ok") is not True
-            or existing.get("runtime_lock_sha256") != VLLM_RUNTIME_LOCK_SHA256
-        ):
-            raise RuntimeError("existing runtime verifier evidence is invalid")
-        return
+        existing_raw = output_path.read_bytes()
+    command = _runtime_verifier_command(
+        runtime,
+        package_wheel_uri=_required_string(
+            bootstrap_artifacts,
+            "package_wheel_uri",
+        ),
+        package_wheel_sha256=_required_string(
+            bootstrap_artifacts,
+            "package_wheel_sha256",
+        ),
+    )
     # The production path needs stdout as an evidence file, so it uses subprocess
     # directly. Injected test runners still exercise the exact command rendering.
     if runner is not _subprocess_command_runner:
-        runner(_runtime_verifier_command(runtime), env=_worker_environment(runtime))
-        return
-    completed = subprocess.run(
-        _runtime_verifier_command(runtime),
-        env=_worker_environment(runtime),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+        runner(command, env=_worker_environment(runtime))
+        if not output_path.exists():
+            raise RuntimeError("injected runtime verifier did not publish attestation")
+        injected_raw = output_path.read_bytes()
+        injected_record = _json_object(injected_raw, "runtime verifier")
+        if injected_raw != _canonical_pretty_json_bytes(injected_record):
+            raise RuntimeError("injected runtime verifier evidence is not canonical")
+        binding = _runtime_verification_binding(
+            injected_record,
+            artifacts=_runtime_artifact_binding(runtime, bootstrap_artifacts),
+        )
+        _validate_runtime_attestation_origins(injected_record, runtime=runtime)
+        if existing_raw is not None and injected_raw != existing_raw:
+            raise RuntimeError(
+                "existing runtime verifier evidence differs from current verification"
+            )
+        if sha256(injected_raw).hexdigest() != binding["file_sha256"]:
+            raise RuntimeError("injected runtime verifier evidence digest drift")
+        return binding
+    try:
+        completed = _run_bounded_binary_subprocess(
+            command,
+            timeout_seconds=FULL_SCORE_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
+            output_limit_bytes=FULL_SCORE_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES,
+            environment=_worker_environment(runtime),
+            cwd=Path(runtime.python_executable).parent.parent,
+        )
+    except _BoundedSubprocessStartFailure:
+        raise RuntimeError("native-v2 runtime verifier could not start") from None
+    except _BoundedSubprocessTransportFailure:
+        raise RuntimeError("native-v2 runtime verifier transport failed") from None
+    if completed.timed_out:
+        raise RuntimeError("native-v2 runtime verifier timed out")
+    if completed.output_limit_exceeded:
+        raise RuntimeError("native-v2 runtime verifier output exceeded its bound")
+    if not _bounded_stream_result_is_exact(
+        completed.stdout
+    ) or not _bounded_stream_result_is_exact(completed.stderr):
+        raise RuntimeError("native-v2 runtime verifier transport differed")
     if completed.returncode != 0:
-        raise RuntimeError(f"vLLM runtime lock verifier failed: {completed.stderr[-4000:]}")
-    record = _json_object(completed.stdout.encode("utf-8"), "runtime verifier")
-    if record.get("ok") is not True:
-        raise RuntimeError("vLLM runtime lock verifier did not attest success")
-    if record.get("runtime_lock_sha256") != VLLM_RUNTIME_LOCK_SHA256:
-        raise RuntimeError("vLLM runtime-lock SHA-256 drift")
-    _exclusive_write_bytes(output_path, _canonical_pretty_json_bytes(record))
+        raise RuntimeError("native-v2 runtime verifier exited nonzero")
+    if completed.stderr.retained != b"" or completed.stderr.byte_count != 0:
+        raise RuntimeError("native-v2 runtime verifier wrote to stderr")
+    stdout_raw = completed.stdout.retained
+    record = _json_object(stdout_raw, "runtime verifier")
+    if stdout_raw != _canonical_pretty_json_bytes(record):
+        raise RuntimeError("native-v2 runtime verifier output is not canonical")
+    binding = _runtime_verification_binding(
+        record,
+        artifacts=_runtime_artifact_binding(runtime, bootstrap_artifacts),
+    )
+    _validate_runtime_attestation_origins(record, runtime=runtime)
+    if existing_raw is None:
+        _exclusive_write_bytes(output_path, stdout_raw)
+    elif existing_raw != stdout_raw:
+        raise RuntimeError(
+            "existing runtime verifier evidence differs from current verification"
+        )
+    closed_raw = output_path.read_bytes()
+    if closed_raw != stdout_raw or sha256(closed_raw).hexdigest() != binding["file_sha256"]:
+        raise RuntimeError("runtime verifier evidence durable write drift")
+    return binding
 
 
 def _worker_environment(runtime: FullScoreRuntimeConfig) -> dict[str, str]:
@@ -7837,14 +8539,8 @@ def _generator_artifact_contract_record(
 
 
 def _verify_runtime_contract(runtime: FullScoreRuntimeConfig) -> None:
-    path = _governed_existing_file(
-        runtime.runtime_contract_uri,
-        "runtime contract",
-    )
-    if sha256(path.read_bytes()).hexdigest() != runtime.runtime_contract_sha256:
-        raise ValueError("runtime contract SHA-256 drift")
     lock_path = _governed_existing_file(runtime.runtime_lock_uri, "runtime lock")
-    if sha256(lock_path.read_bytes()).hexdigest() != VLLM_RUNTIME_LOCK_SHA256:
+    if sha256(lock_path.read_bytes()).hexdigest() != runtime.runtime_lock_sha256:
         raise ValueError("runtime lock SHA-256 drift")
     wheel_path = _governed_existing_file(
         runtime.patched_vllm_wheel_uri,
@@ -7852,6 +8548,22 @@ def _verify_runtime_contract(runtime: FullScoreRuntimeConfig) -> None:
     )
     if sha256(wheel_path.read_bytes()).hexdigest() != runtime.patched_vllm_wheel_sha256:
         raise ValueError("patched vLLM wheel SHA-256 drift")
+    flashinfer_path = _governed_existing_file(
+        runtime.patched_flashinfer_wheel_uri,
+        "patched FlashInfer wheel",
+    )
+    if sha256(flashinfer_path.read_bytes()).hexdigest() != (
+        runtime.patched_flashinfer_wheel_sha256
+    ):
+        raise ValueError("patched FlashInfer wheel SHA-256 drift")
+    closure_path = _governed_existing_file(
+        runtime.runtime_closure_manifest_uri,
+        "runtime closure manifest",
+    )
+    if sha256(closure_path.read_bytes()).hexdigest() != (
+        runtime.runtime_closure_manifest_sha256
+    ):
+        raise ValueError("runtime closure manifest SHA-256 drift")
     with zipfile.ZipFile(wheel_path) as archive:
         try:
             loader_source = archive.read(FULL_SCORE_VLLM_BNB_LOADER_MEMBER)
@@ -7867,6 +8579,8 @@ def _locked_runtime_identity_sha256(
     package_wheel_sha256: str,
     runtime_lock_sha256: str,
     patched_vllm_wheel_sha256: str,
+    patched_flashinfer_wheel_sha256: str,
+    runtime_closure_manifest_sha256: str,
 ) -> str:
     digests = (
         _require_sha256(runner_sha256, field_name="runner_sha256"),
@@ -7876,11 +8590,17 @@ def _locked_runtime_identity_sha256(
             patched_vllm_wheel_sha256,
             field_name="patched_vllm_wheel_sha256",
         ),
+        _require_sha256(
+            patched_flashinfer_wheel_sha256,
+            field_name="patched_flashinfer_wheel_sha256",
+        ),
+        _require_sha256(
+            runtime_closure_manifest_sha256,
+            field_name="runtime_closure_manifest_sha256",
+        ),
     )
     return sha256(
-        ("cachet.full_score.locked_runtime.v1\0" + "".join(digests)).encode(
-            "ascii"
-        )
+        ("cachet.full_score.locked_runtime.v2\0" + "".join(digests)).encode("ascii")
     ).hexdigest()
 
 
@@ -7898,14 +8618,26 @@ def _validate_bootstrap_artifact_binding(
                 record,
                 "patched_vllm_wheel_sha256",
             ),
+            patched_flashinfer_wheel_sha256=_required_string(
+                record,
+                "patched_flashinfer_wheel_sha256",
+            ),
+            runtime_closure_manifest_sha256=_required_string(
+                record,
+                "runtime_closure_manifest_sha256",
+            ),
         ),
         "package_wheel_sha256": _required_string(record, "package_wheel_sha256"),
         "package_wheel_uri": _required_string(record, "package_wheel_uri"),
         "patched_vllm_wheel_sha256": runtime.patched_vllm_wheel_sha256,
         "patched_vllm_wheel_uri": runtime.patched_vllm_wheel_uri,
+        "patched_flashinfer_wheel_sha256": runtime.patched_flashinfer_wheel_sha256,
+        "patched_flashinfer_wheel_uri": runtime.patched_flashinfer_wheel_uri,
         "runner_python_file": _required_string(record, "runner_python_file"),
         "runner_sha256": FULL_SCORE_RUNNER_SHA256,
-        "runtime_lock_sha256": VLLM_RUNTIME_LOCK_SHA256,
+        "runtime_closure_manifest_sha256": runtime.runtime_closure_manifest_sha256,
+        "runtime_closure_manifest_uri": runtime.runtime_closure_manifest_uri,
+        "runtime_lock_sha256": runtime.runtime_lock_sha256,
         "runtime_lock_uri": runtime.runtime_lock_uri,
     }
     if dict(record) != expected:
@@ -8001,8 +8733,23 @@ def _validate_gpu_qualification_binding_shape(
         "plan_sha256",
     ):
         _require_sha256(record.get(field_name), field_name=field_name)
-    pins = _required_mapping(record, "artifact_pins")
-    GPUQualificationArtifactPins(**_json_mapping(pins, "GPU artifact pins"))
+    pins = GPUQualificationArtifactPinsV2(
+        **_json_mapping(
+            _required_mapping(record, "artifact_pins"),
+            "GPU artifact pins",
+        )
+    )
+    expected_runtime_pins = {
+        "runtime_lock_sha256": runtime.runtime_lock_sha256,
+        "patched_vllm_wheel_sha256": runtime.patched_vllm_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": (runtime.patched_flashinfer_wheel_sha256),
+        "runtime_closure_manifest_sha256": (runtime.runtime_closure_manifest_sha256),
+    }
+    if any(
+        getattr(pins, field_name) != expected
+        for field_name, expected in expected_runtime_pins.items()
+    ):
+        raise ValueError("GPU qualification v2 runtime closure pin drift")
     selection = _required_mapping(record, "selection")
     if selection.get("attention_backend") != FULL_SCORE_ATTENTION_BACKEND:
         raise ValueError("GPU qualification attention backend drift")
@@ -8052,10 +8799,10 @@ def _verify_bound_gpu_qualification(
         "evidence_closed_record_sha256"
     ):
         raise ValueError("GPU qualification evidence closure drift")
-    pins = GPUQualificationArtifactPins(
+    pins = GPUQualificationArtifactPinsV2(
         **_json_mapping(record.get("artifact_pins"), "GPU artifact pins")
     )
-    selection = validate_gpu_qualification_evidence_record(
+    selection = validate_gpu_qualification_evidence_v2_record(
         evidence,
         plan_record=plan,
         expected_campaign_id=_required_string(record, "campaign_id"),
@@ -8134,10 +8881,12 @@ def _runtime_record(runtime: FullScoreRuntimeConfig) -> dict[str, Any]:
         "python_executable": runtime.python_executable,
         "patched_vllm_wheel_sha256": runtime.patched_vllm_wheel_sha256,
         "patched_vllm_wheel_uri": runtime.patched_vllm_wheel_uri,
+        "patched_flashinfer_wheel_sha256": runtime.patched_flashinfer_wheel_sha256,
+        "patched_flashinfer_wheel_uri": runtime.patched_flashinfer_wheel_uri,
         "request_timeout_seconds": runtime.request_timeout_seconds,
-        "runtime_contract_sha256": runtime.runtime_contract_sha256,
-        "runtime_contract_uri": runtime.runtime_contract_uri,
-        "runtime_lock_sha256": VLLM_RUNTIME_LOCK_SHA256,
+        "runtime_closure_manifest_sha256": runtime.runtime_closure_manifest_sha256,
+        "runtime_closure_manifest_uri": runtime.runtime_closure_manifest_uri,
+        "runtime_lock_sha256": runtime.runtime_lock_sha256,
         "runtime_lock_uri": runtime.runtime_lock_uri,
         "served_model_name": runtime.served_model_name,
         "server_host": runtime.server_host,
@@ -8148,6 +8897,7 @@ def _runtime_record(runtime: FullScoreRuntimeConfig) -> dict[str, Any]:
         "tokenizer_revision": runtime.tokenizer_revision,
         "trust_remote_code": False,
         "vllm_wheel_install_spec": runtime.vllm_wheel_install_spec,
+        "flashinfer_wheel_install_spec": runtime.flashinfer_wheel_install_spec,
     }
 
 
@@ -8158,21 +8908,33 @@ def _runtime_from_record(record: Mapping[str, Any]) -> FullScoreRuntimeConfig:
         "kv_cache_dtype": FULL_SCORE_KV_DTYPE,
         "model_dtype": FULL_SCORE_MODEL_DTYPE,
         "model_quantization": FULL_SCORE_MODEL_QUANTIZATION,
-        "runtime_lock_sha256": VLLM_RUNTIME_LOCK_SHA256,
+        "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
         "trust_remote_code": False,
     }
     if any(record.get(key) != value for key, value in expected_fixed.items()):
         raise ValueError("full-score runtime fixed settings drift")
     return FullScoreRuntimeConfig(
         python_executable=_required_string(record, "python_executable"),
-        runtime_contract_uri=_required_string(record, "runtime_contract_uri"),
-        runtime_contract_sha256=_required_string(record, "runtime_contract_sha256"),
         runtime_lock_uri=_required_string(record, "runtime_lock_uri"),
+        runtime_lock_sha256=_required_string(record, "runtime_lock_sha256"),
         patched_vllm_wheel_uri=_required_string(record, "patched_vllm_wheel_uri"),
-        patched_vllm_wheel_sha256=_required_string(
-            record, "patched_vllm_wheel_sha256"
+        patched_vllm_wheel_sha256=_required_string(record, "patched_vllm_wheel_sha256"),
+        patched_flashinfer_wheel_uri=_required_string(
+            record, "patched_flashinfer_wheel_uri"
+        ),
+        patched_flashinfer_wheel_sha256=_required_string(
+            record, "patched_flashinfer_wheel_sha256"
+        ),
+        runtime_closure_manifest_uri=_required_string(
+            record, "runtime_closure_manifest_uri"
+        ),
+        runtime_closure_manifest_sha256=_required_string(
+            record, "runtime_closure_manifest_sha256"
         ),
         vllm_wheel_install_spec=_required_string(record, "vllm_wheel_install_spec"),
+        flashinfer_wheel_install_spec=_required_string(
+            record, "flashinfer_wheel_install_spec"
+        ),
         kv_transfer_config=_required_mapping(record, "kv_transfer_config"),
         model_id=_required_string(record, "model_id"),
         served_model_name=_required_string(record, "served_model_name"),
@@ -9367,6 +10129,15 @@ def _validate_ready_shard(
         _generator_artifact_contract_record(runtime)
     ):
         raise ValueError("ready-shard generator artifact-contract drift")
+    runtime_verification = _validate_runtime_verification_binding(
+        record.get("runtime_verification")
+    )
+    expected_artifacts = _runtime_artifact_binding(
+        runtime,
+        _required_mapping(payload, "bootstrap_artifacts"),
+    )
+    if runtime_verification.get("artifacts") != expected_artifacts:
+        raise ValueError("ready-shard runtime artifact binding drift")
     producer_hardware = _required_mapping(record, "producer_hardware")
     expected_hardware = {
         "compute_capability": "8.9",
@@ -9513,6 +10284,7 @@ def _validate_shard_evidence_record(
         raise ValueError("shard evidence plan drift")
     if record.get("scorers") != _scorer_contract_record():
         raise ValueError("shard evidence scorer/parser drift")
+    _validate_runtime_verification_binding(record.get("runtime_verification"))
     scope = record.get("authorization_scope")
     if scope not in {
         FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE,
@@ -9523,7 +10295,6 @@ def _validate_shard_evidence_record(
         for field_name in (
             "execution_plan_sha256",
             "ready_shard_sha256",
-            "runtime_contract_sha256",
             "shard_items_sha256",
         ):
             _require_sha256(record.get(field_name), field_name=field_name)
@@ -9613,6 +10384,14 @@ def _validate_governed_ready_manifest_replay(
         raise ValueError("governed ready-shard identity drift")
     if record.get("closed_record_sha256") != evidence.get("ready_shard_sha256"):
         raise ValueError("governed ready-shard evidence binding drift")
+    ready_runtime = _validate_runtime_verification_binding(
+        record.get("runtime_verification")
+    )
+    evidence_runtime = _validate_runtime_verification_binding(
+        evidence.get("runtime_verification")
+    )
+    if ready_runtime != evidence_runtime:
+        raise ValueError("governed ready/evidence runtime verification drift")
     if record.get("lifecycle") != ["generate_q8_kv", "commit_ready_shard"]:
         raise ValueError("governed ready-shard lifecycle drift")
     expected_contract = {
@@ -10279,11 +11058,20 @@ def _segment_ids_sha256(segments: Sequence[Sequence[int]]) -> str:
     return digest.hexdigest()
 
 
-def _validate_vllm_install_spec(value: str) -> None:
-    if not value.startswith("vllm @ ") or "#sha256=" not in value:
-        raise ValueError("vllm_wheel_install_spec must be a hashed PEP 508 reference")
+def _validate_hashed_install_spec(
+    value: str,
+    *,
+    project: str,
+    expected_sha256: str,
+) -> None:
+    if not value.startswith(f"{project} @ file://") or "#sha256=" not in value:
+        raise ValueError(
+            f"{project} install spec must be a hashed local PEP 508 reference"
+        )
     digest = value.rsplit("#sha256=", maxsplit=1)[-1]
-    _require_sha256(digest, field_name="vllm_wheel_install_spec SHA-256")
+    _require_sha256(digest, field_name=f"{project} install spec SHA-256")
+    if digest != expected_sha256:
+        raise ValueError(f"{project} install spec SHA-256 drift")
 
 
 def _json_mapping(value: Any, label: str) -> dict[str, Any]:
@@ -10885,9 +11673,10 @@ def _validated_full_score_phase_submit_payload(
         )
         worker_payload_raw = worker_payload_file.read_bytes()
         worker_payload_file_sha256 = sha256(worker_payload_raw).hexdigest()
-        if worker_payload_file_sha256 != parameter_bindings[
-            "expected_worker_payload_sha256"
-        ]:
+        if (
+            worker_payload_file_sha256
+            != parameter_bindings["expected_worker_payload_sha256"]
+        ):
             raise ValueError("full-score worker payload file SHA-256 drift")
         worker_payload = _json_object(
             worker_payload_raw,
@@ -10953,12 +11742,28 @@ def _validated_full_score_phase_submit_payload(
                 bootstrap,
                 "patched_vllm_wheel_uri",
             ),
+            "patched_flashinfer_wheel_sha256": _required_string(
+                bootstrap,
+                "patched_flashinfer_wheel_sha256",
+            ),
+            "patched_flashinfer_wheel_uri": _required_string(
+                bootstrap,
+                "patched_flashinfer_wheel_uri",
+            ),
             "runner_sha256": _required_string(bootstrap, "runner_sha256"),
             "runtime_lock_sha256": _required_string(
                 bootstrap,
                 "runtime_lock_sha256",
             ),
             "runtime_lock_uri": _required_string(bootstrap, "runtime_lock_uri"),
+            "runtime_closure_manifest_sha256": _required_string(
+                bootstrap,
+                "runtime_closure_manifest_sha256",
+            ),
+            "runtime_closure_manifest_uri": _required_string(
+                bootstrap,
+                "runtime_closure_manifest_uri",
+            ),
         }
         if any(
             parameter_bindings.get(key) != value
@@ -10969,7 +11774,7 @@ def _validated_full_score_phase_submit_payload(
             python_file != bootstrap.get("runner_python_file")
             or parameter_bindings["runner_sha256"] != FULL_SCORE_RUNNER_SHA256
             or parameter_bindings["runtime_lock_sha256"]
-            != VLLM_RUNTIME_LOCK_SHA256
+            != VLLM_RUNTIME_BASE_LOCK_SHA256
             or runtime.get("python_executable")
             != f"{parameter_bindings['runtime_venv_dir']}/bin/python"
         ):
@@ -10988,9 +11793,10 @@ def _validated_full_score_phase_submit_payload(
                 completion_file.read_bytes(),
                 "producer-phase completion task input",
             )
-            if (
-                completion_record.get("closed_record_sha256") != completion_sha256
-                or completion_sha256 != _closed_record_sha256(completion_record)
+            if completion_record.get(
+                "closed_record_sha256"
+            ) != completion_sha256 or completion_sha256 != _closed_record_sha256(
+                completion_record
             ):
                 raise ValueError("consumer task producer-completion binding drift")
             consumer_completion_bindings.append(
@@ -11134,6 +11940,22 @@ def _full_score_task_parameter_bindings(
         "patched_vllm_wheel_sha256": option(
             "--patched-vllm-wheel-sha256",
             "patched_vllm_wheel_sha256",
+        ),
+        "patched_flashinfer_wheel_uri": option(
+            "--patched-flashinfer-wheel-uri",
+            "patched_flashinfer_wheel_uri",
+        ),
+        "patched_flashinfer_wheel_sha256": option(
+            "--patched-flashinfer-wheel-sha256",
+            "patched_flashinfer_wheel_sha256",
+        ),
+        "runtime_closure_manifest_uri": option(
+            "--runtime-closure-manifest-uri",
+            "runtime_closure_manifest_uri",
+        ),
+        "runtime_closure_manifest_sha256": option(
+            "--runtime-closure-manifest-sha256",
+            "runtime_closure_manifest_sha256",
         ),
         "runtime_venv_dir": option("--runtime-venv-dir", "runtime_venv_dir"),
     }
@@ -11321,6 +12143,7 @@ __all__ = [
     "load_governed_full_score_phase_terminal_record",
     "load_governed_full_score_shard_evidence",
     "preview_local_fixture_databricks_full_score_run_submit_payload",
+    "prepare_governed_full_score_live_p90_phase_submission",
     "render_full_score_worker_command_plan",
     "recover_governed_full_score_phase_attempt",
     "recover_governed_full_score_phase_reservation",

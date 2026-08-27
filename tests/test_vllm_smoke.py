@@ -15,6 +15,7 @@ import weakref
 import pytest
 
 import document_kv_cache.vllm_smoke as public_vllm_smoke
+import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
 from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.canary_orchestration import (
     representative_canary_matrix,
@@ -31,6 +32,14 @@ from document_kv_cache.serving_env import (
     VLLM_WHEEL_SHA256,
     VLLM_WHEEL_URL,
     vllm_runtime_lock_path,
+)
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_PATCHED_WHEEL_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
@@ -63,6 +72,7 @@ from document_kv_cache.vllm_smoke import (
     VLLM_PATCHED_WHEEL_URI_ENV,
     VLLM_PACKAGE_VERSION,
     VLLM_VERSION,
+    VLLMNativeRuntimeBundleV2,
     VLLMPreparedHandoffGenerationConfig,
     VLLMSmokeBenchmarkConfig,
     benchmark_dataset_paths,
@@ -83,6 +93,7 @@ from document_kv_cache.vllm_smoke import (
     document_kv_package_install_spec,
     verify_vllm_runtime_patch_closure,
     install_document_kv_package,
+    install_native_v2_runtime,
     install_vllm,
     kv_transfer_config_json,
     parse_args,
@@ -130,6 +141,22 @@ from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_REVISION = "a" * 40
 REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
+NATIVE_RUNTIME_PACKAGE_SHA256 = "9" * 64
+
+
+def native_runtime_v2(root: Path) -> VLLMNativeRuntimeBundleV2:
+    return VLLMNativeRuntimeBundleV2(
+        runtime_lock_uri=str(root / "runtime.lock"),
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
+        patched_vllm_wheel_uri=str(root / "vllm.whl"),
+        patched_vllm_wheel_sha256=VLLM_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_uri=str(root / "flashinfer.whl"),
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_uri=str(root / "runtime-closure.json"),
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        package_wheel_uri=str(root / "cachet.whl"),
+        package_wheel_sha256=NATIVE_RUNTIME_PACKAGE_SHA256,
+    )
 
 
 def test_publication_options_are_appended_to_preserve_positional_config_api():
@@ -206,6 +233,7 @@ def test_publication_options_are_appended_to_preserve_positional_config_api():
         "temperature",
         "generation_seed",
         "payload_cache_prime_target_count",
+        "native_runtime_v2",
     ]
 
     assert field_names == [*legacy_fields, *publication_fields]
@@ -520,6 +548,83 @@ def test_document_kv_package_install_spec_falls_back_to_source_checkout(
     assert document_kv_package_install_spec(config) == str(REPO_ROOT)
 
 
+def test_native_runtime_v2_is_exact_and_publication_requires_it(tmp_path):
+    bundle = native_runtime_v2(tmp_path / "runtime")
+
+    assert VLLMNativeRuntimeBundleV2.from_record(bundle.to_record()) == bundle
+    assert set(bundle.to_record()) == {
+        "package_wheel_sha256",
+        "package_wheel_uri",
+        "patched_flashinfer_wheel_sha256",
+        "patched_flashinfer_wheel_uri",
+        "patched_vllm_wheel_sha256",
+        "patched_vllm_wheel_uri",
+        "runtime_closure_manifest_sha256",
+        "runtime_closure_manifest_uri",
+        "runtime_lock_sha256",
+        "runtime_lock_uri",
+    }
+    with pytest.raises(ValueError, match="native-v2 runtime bundle keys differ"):
+        VLLMNativeRuntimeBundleV2.from_record(
+            {**bundle.to_record(), "unexpected": "value"}
+        )
+    wrong = bundle.to_record()
+    wrong["patched_flashinfer_wheel_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="patched_flashinfer_wheel_sha256"):
+        VLLMNativeRuntimeBundleV2.from_record(wrong)
+
+    with pytest.raises(ValueError, match="require a complete native_runtime_v2"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="publication-missing-runtime",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            model_revision=MODEL_REVISION,
+            tokenizer_revision=MODEL_REVISION,
+            benchmark_evidence_policy="publication",
+        )
+    with pytest.raises(ValueError, match="package_install_spec must match"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="publication-conflicting-package",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            model_revision=MODEL_REVISION,
+            tokenizer_revision=MODEL_REVISION,
+            benchmark_evidence_policy="publication",
+            package_install_spec=str(tmp_path / "other.whl"),
+            native_runtime_v2=bundle,
+        )
+
+
+def test_native_runtime_v2_maps_volume_uri_and_owns_package_spec(tmp_path):
+    record = native_runtime_v2(tmp_path / "runtime").to_record()
+    record["package_wheel_uri"] = "dbfs:/Volumes/catalog/schema/cachet.whl"
+    bundle = VLLMNativeRuntimeBundleV2.from_record(record)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="native-runtime-paths",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        native_runtime_v2=bundle,
+    )
+
+    assert bundle.local_path("package_wheel") == Path(
+        "/Volumes/catalog/schema/cachet.whl"
+    )
+    assert document_kv_package_install_spec(config) == (
+        "/Volumes/catalog/schema/cachet.whl"
+    )
+    metadata = build_metadata(config)
+    assert metadata["native_runtime_v2"] == bundle.to_record()
+    assert metadata["vllm_patched_wheel_uri"] == bundle.patched_vllm_wheel_uri
+    assert metadata["vllm_patched_wheel_sha256"] == VLLM_PATCHED_WHEEL_SHA256
+    assert metadata["vllm_runtime_lock"] == {
+        "uri": bundle.runtime_lock_uri,
+        "sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+        "platform": "CPython 3.11 / Linux x86_64 / glibc 2.35",
+        "runtime_contract": "native-v2",
+    }
+    assert metadata["dependency_index_urls"] == []
+
+
 def test_install_document_kv_package_uses_no_deps(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
@@ -671,6 +776,179 @@ def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path)
         "lmcache==0.3.10",
     ]
     assert calls[0][1]["PIP_CONFIG_FILE"] == os.devnull
+
+
+def test_install_native_v2_runtime_uses_exact_local_sequence_and_attestation(
+    monkeypatch, tmp_path
+):
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    bundle = native_runtime_v2(artifact_root)
+    expected_by_path = {}
+    for artifact in public_vllm_smoke._NATIVE_RUNTIME_V2_ARTIFACT_NAMES:
+        path = bundle.local_path(artifact)
+        path.write_bytes(artifact.encode("utf-8"))
+        expected_by_path[path] = getattr(bundle, f"{artifact}_sha256")
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="native-runtime-install",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        native_runtime_v2=bundle,
+    )
+    config.venv_dir.mkdir(parents=True)
+    calls = []
+    hash_calls = []
+
+    def file_sha256(path):
+        hash_calls.append(path)
+        return expected_by_path[path]
+
+    def fake_run(argv, **kwargs):
+        calls.append((list(argv), dict(kwargs)))
+        if argv[-1] == "check":
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="No broken requirements found.\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(argv, 0)
+
+    verifier_calls = []
+
+    def final_verifier(python, **kwargs):
+        verifier_calls.append((python, kwargs))
+        return {"ok": True, "attestation": "native-v2"}
+
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("_PIP_USE_IMPORTLIB_METADATA", "0")
+    monkeypatch.setattr(public_vllm_smoke, "_file_sha256", file_sha256)
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "_run_native_v2_final_runtime_verifier",
+        final_verifier,
+    )
+
+    attestation = install_native_v2_runtime(config)
+
+    python = str(config.venv_python)
+    lock = bundle.local_path("runtime_lock").resolve()
+    vllm = bundle.local_path("patched_vllm_wheel").resolve()
+    flashinfer = bundle.local_path("patched_flashinfer_wheel").resolve()
+    package = bundle.local_path("package_wheel").resolve()
+    assert [argv for argv, _kwargs in calls] == [
+        [
+            python,
+            "-m",
+            "pip",
+            "install",
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            "--requirement",
+            str(lock),
+        ],
+        [
+            python,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            f"vllm @ {vllm.as_uri()}#sha256={VLLM_PATCHED_WHEEL_SHA256}",
+        ],
+        [
+            python,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "flashinfer-python @ "
+            f"{flashinfer.as_uri()}#sha256={FLASHINFER_PATCHED_WHEEL_SHA256}",
+        ],
+        [
+            python,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            f"cachet-kv @ {package.as_uri()}#sha256={NATIVE_RUNTIME_PACKAGE_SHA256}",
+        ],
+        [python, "-m", "pip", "check"],
+    ]
+    assert len(hash_calls) == 10
+    assert attestation == {"ok": True, "attestation": "native-v2"}
+    assert len(verifier_calls) == 1
+    assert verifier_calls[0][0] == config.venv_python
+    for _argv, kwargs in calls:
+        environment = kwargs["env"]
+        assert environment["PYTHONSAFEPATH"] == "1"
+        assert {
+            key
+            for key in environment
+            if key.upper().startswith(("PIP_", "_PIP_"))
+        } == {
+            "PIP_CONFIG_FILE",
+            "PIP_DISABLE_PIP_VERSION_CHECK",
+            "PIP_NO_INPUT",
+        }
+        assert kwargs["cwd"] == config.venv_dir
+
+
+def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
+    monkeypatch, tmp_path
+):
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    bundle = native_runtime_v2(artifact_root)
+    paths = {}
+    for artifact in public_vllm_smoke._NATIVE_RUNTIME_V2_ARTIFACT_NAMES:
+        path = bundle.local_path(artifact)
+        path.write_bytes(artifact.encode("utf-8"))
+        paths[artifact] = path.resolve()
+    record = {
+        "flashinfer_direct_url": paths["patched_flashinfer_wheel"].as_uri(),
+        "ok": True,
+        "vllm_direct_url": paths["patched_vllm_wheel"].as_uri(),
+    }
+    stdout = json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n"
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((list(argv), dict(kwargs)))
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    validated = []
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        gpu_qualification_v2,
+        "validate_gpu_qualification_v2_runtime_attestation",
+        lambda value: validated.append(value),
+    )
+
+    observed = public_vllm_smoke._run_native_v2_final_runtime_verifier(
+        tmp_path / "venv" / "bin" / "python",
+        paths=paths,
+        bundle=bundle,
+        environment={"PYTHONSAFEPATH": "1"},
+        cwd=tmp_path,
+    )
+
+    assert observed == record
+    assert validated == [record]
+    argv, kwargs = calls[0]
+    assert argv[:2] == [str(tmp_path / "venv" / "bin" / "python"), "-c"]
+    assert argv[-6:] == [
+        str(paths["runtime_lock"]),
+        paths["patched_vllm_wheel"].as_uri(),
+        paths["patched_flashinfer_wheel"].as_uri(),
+        str(paths["runtime_closure_manifest"]),
+        paths["package_wheel"].as_uri(),
+        NATIVE_RUNTIME_PACKAGE_SHA256,
+    ]
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    assert kwargs["env"] == {"PYTHONSAFEPATH": "1"}
 
 
 def test_create_venv_fallback_is_hash_pinned_and_dependency_free(monkeypatch, tmp_path):
@@ -1590,6 +1868,11 @@ def test_vllm_locked_campaign_pins_triton_attention(
         model_revision=MODEL_REVISION,
         tokenizer_revision=MODEL_REVISION,
         benchmark_evidence_policy=benchmark_evidence_policy,
+        native_runtime_v2=(
+            native_runtime_v2(tmp_path / "runtime")
+            if benchmark_evidence_policy == "publication"
+            else None
+        ),
     )
 
     assert config.attention_backend == "TRITON_ATTN"
@@ -1706,7 +1989,7 @@ def _publication_dataset_specs(tmp_path):
 
 
 def _publication_baseline_config_kwargs(tmp_path, *, policy="publication"):
-    return {
+    kwargs = {
         "benchmark_id": "publication-baseline",
         "output_dir": tmp_path / "out",
         "local_root": tmp_path / "local",
@@ -1716,6 +1999,9 @@ def _publication_baseline_config_kwargs(tmp_path, *, policy="publication"):
         "benchmark_arms": ("baseline_prefill",),
         "dataset_specs": _publication_dataset_specs(tmp_path / "inputs"),
     }
+    if policy == "publication":
+        kwargs["native_runtime_v2"] = native_runtime_v2(tmp_path / "runtime")
+    return kwargs
 
 
 @pytest.mark.parametrize("policy", ["canary", "publication"])
@@ -1922,6 +2208,7 @@ def test_publication_vanilla_stages_closed_handoffs_and_persists_attestation(
             execution_closed_record_sha256
         ),
         publication_handoff_local_nvme_dir=local_stage,
+        native_runtime_v2=native_runtime_v2(tmp_path / "runtime"),
     )
 
     result = prepare_publication_latency_inputs(config, original_paths)
@@ -4598,6 +4885,8 @@ def test_parse_args_wires_publication_schedule_and_reusable_handoff_paths(tmp_pa
             MODEL_REVISION,
             "--benchmark-evidence-policy",
             "publication",
+            "--native-runtime-v2-json",
+            json.dumps(native_runtime_v2(tmp_path / "runtime").to_record()),
             "--benchmark-arm",
             CACHE_REUSE_ARM,
             "--publication-latency-schedule-json",
@@ -4911,6 +5200,75 @@ def test_server_base_url_uses_client_host_not_bind_host(tmp_path):
     assert config.server_base_url == "http://127.0.0.1:8123"
     assert build_metadata(config)["server_bind_host"] == "0.0.0.0"
     assert build_metadata(config)["server_client_host"] == "127.0.0.1"
+
+
+def test_run_vllm_smoke_uses_native_runtime_without_legacy_install(
+    monkeypatch, tmp_path
+):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="native-runtime-dispatch",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        native_runtime_v2=native_runtime_v2(tmp_path / "runtime"),
+    )
+    events = []
+    attestation = {"ok": True, "runtime": "native-v2"}
+
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "create_venv",
+        lambda path: events.append(("create", path)),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "install_native_v2_runtime",
+        lambda cfg: events.append(("native", cfg)) or attestation,
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "install_vllm",
+        lambda _python: pytest.fail("legacy vLLM install must be unreachable"),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "install_document_kv_package",
+        lambda *_args: pytest.fail("legacy Cachet install must be unreachable"),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "verify_vllm_runtime_lock_installation",
+        lambda _python: pytest.fail("legacy runtime verifier must be unreachable"),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke, "verify_vllm_runtime_patch_closure", lambda _cfg: []
+    )
+    monkeypatch.setattr(public_vllm_smoke, "installed_versions", lambda _python: {})
+    monkeypatch.setattr(
+        public_vllm_smoke, "installed_package_freeze", lambda _python: []
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "probe_vllm_import",
+        lambda *_args, **_kwargs: None,
+    )
+
+    class StopAfterRuntime(Exception):
+        pass
+
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "benchmark_dataset_paths",
+        lambda _cfg: (_ for _ in ()).throw(StopAfterRuntime),
+    )
+
+    with pytest.raises(StopAfterRuntime):
+        run_vllm_smoke_benchmark(config)
+
+    assert events == [("create", config.venv_dir), ("native", config)]
+    metadata = json.loads(config.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["native_runtime_v2_attestation"] == attestation
+    assert metadata["vllm_runtime_lock_verification"] == attestation
+    assert metadata["strict_runtime_closure"] is True
 
 
 class _FakeServer:

@@ -98,9 +98,17 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_MODEL_REVISION,
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
     GPU_QUALIFICATION_PUBLICATION_BACKEND,
-    GPUQualificationArtifactPins,
     GPUQualificationSelection,
-    validate_gpu_qualification_evidence_record,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
+    GPUQualificationArtifactPinsV2,
+    validate_gpu_qualification_evidence_v2_record,
+    validate_gpu_qualification_plan_v2_record,
+    validate_gpu_qualification_v2_runtime_attestation,
+)
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
@@ -166,44 +174,48 @@ from document_kv_cache.publication_latency_handoff_generation import (
 from document_kv_cache.serving_env import (
     VLLM_PATCHED_WHEEL_SHA256_ENV,
     VLLM_PATCHED_WHEEL_URI_ENV,
-    VLLM_RUNTIME_LOCK_SHA256,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.vllm_smoke import (
+    VLLMNativeRuntimeBundleV2,
     VLLMSmokeBenchmarkConfig,
     run_vllm_smoke_benchmark,
 )
 
 
 PUBLICATION_LATENCY_EXECUTION_PLAN_RECORD_TYPE: Final = (
-    "cachet.publication_latency_execution_plan.v1"
+    "cachet.publication_latency_execution_plan.v2"
 )
-PUBLICATION_LATENCY_JOB_RECORD_TYPE: Final = "cachet.publication_latency_job.v1"
+PUBLICATION_LATENCY_JOB_RECORD_TYPE: Final = "cachet.publication_latency_job.v2"
 PUBLICATION_LATENCY_JOB_RESULT_RECORD_TYPE: Final = (
-    "cachet.publication_latency_job_result.v1"
+    "cachet.publication_latency_job_result.v2"
 )
 PUBLICATION_LATENCY_SUBMISSION_RECORD_TYPE: Final = (
-    "cachet.publication_latency_wave_submission.v1"
+    "cachet.publication_latency_wave_submission.v2"
 )
 PUBLICATION_LATENCY_TERMINAL_RECEIPT_RECORD_TYPE: Final = (
-    "cachet.publication_latency_terminal_receipt.v1"
+    "cachet.publication_latency_terminal_receipt.v2"
 )
 PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE: Final = (
-    "cachet.publication_latency_collection.v1"
+    "cachet.publication_latency_collection.v2"
 )
 PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE: Final = (
-    "cachet.publication_latency_estimation_summary.v1"
+    "cachet.publication_latency_estimation_summary.v2"
 )
-PUBLICATION_LATENCY_SCHEMA_VERSION: Final = 1
+PUBLICATION_LATENCY_SCHEMA_VERSION: Final = 2
 PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_RECORD_TYPE: Final = (
-    "cachet.publication_latency_source_closure_request.v1"
+    "cachet.publication_latency_source_closure_request.v2"
 )
 PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_AUTHORIZATION_RECORD_TYPE: Final = (
-    "cachet.publication_latency_source_closure_request_authorization.v1"
+    "cachet.publication_latency_source_closure_request_authorization.v2"
 )
 PUBLICATION_LATENCY_SOURCE_CLOSURE_RESULT_RECORD_TYPE: Final = (
-    "cachet.publication_latency_source_closure_result.v1"
+    "cachet.publication_latency_source_closure_result.v2"
 )
-PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION: Final = 1
+PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION: Final = 2
 PUBLICATION_LATENCY_SOURCE_CLOSURE_NODE_TYPE_ID: Final = "c5d.4xlarge"
 PUBLICATION_LATENCY_SOURCE_CLOSURE_SPARK_VERSION: Final = (
     "15.4.x-cpu-ml-scala2.12"
@@ -287,6 +299,7 @@ import os
 import runpy
 import subprocess
 import sys
+from pathlib import Path
 
 
 def _cluster_path(uri: str) -> str:
@@ -320,7 +333,7 @@ def _verified(uri: str, expected: str, label: str) -> str:
 def _pip_subprocess_environment() -> dict[str, str]:
     env = dict(os.environ)
     for variable_name in tuple(env):
-        if variable_name.upper().startswith("PIP_"):
+        if variable_name.upper().startswith(("PIP_", "_PIP_")):
             env.pop(variable_name)
     for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         env.pop(variable_name, None)
@@ -330,6 +343,7 @@ def _pip_subprocess_environment() -> dict[str, str]:
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
         }
     )
     return env
@@ -347,13 +361,23 @@ def main() -> None:
     parser.add_argument("--task-run-id", required=True)
     args = parser.parse_args()
     _verified(args.runner_uri, args.runner_sha256, "publication latency runner")
+    _verified(__file__, args.runner_sha256, "executing publication latency runner")
     wheel = _verified(
         args.package_wheel_uri,
         args.package_wheel_sha256,
         "Cachet package wheel",
     )
     subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", wheel],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "--force-reinstall",
+            "cachet-kv @ " + Path(wheel).resolve().as_uri()
+            + "#sha256=" + args.package_wheel_sha256,
+        ],
         env=_pip_subprocess_environment(),
     )
     sys.argv = [
@@ -386,6 +410,10 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+
+_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 300.0
 
 
 def _volume_path(uri: str) -> str:
@@ -413,7 +441,7 @@ def _verified(uri: str, expected: str, label: str) -> str:
 def _pip_subprocess_environment() -> dict[str, str]:
     env = dict(os.environ)
     for variable_name in tuple(env):
-        if variable_name.upper().startswith("PIP_"):
+        if variable_name.upper().startswith(("PIP_", "_PIP_")):
             env.pop(variable_name)
     for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         env.pop(variable_name, None)
@@ -423,9 +451,96 @@ def _pip_subprocess_environment() -> dict[str, str]:
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
         }
     )
     return env
+
+
+def _direct_reference(distribution: str, path: str, expected: str) -> str:
+    return distribution + " @ " + Path(path).resolve().as_uri() + "#sha256=" + expected
+
+
+def _runtime_marker(args: argparse.Namespace) -> str:
+    record = {
+        "domain": "cachet.publication.latency_source_closure.runtime.v2",
+        "package_wheel_sha256": args.package_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": args.patched_flashinfer_wheel_sha256,
+        "patched_vllm_wheel_sha256": args.patched_vllm_wheel_sha256,
+        "runtime_closure_manifest_sha256": args.runtime_closure_manifest_sha256,
+        "runtime_lock_sha256": args.runtime_lock_sha256,
+    }
+    return hashlib.sha256(
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _verify_locked_runtime(
+    *,
+    venv_python: str,
+    runtime_lock: str,
+    patched_vllm_wheel: str,
+    patched_flashinfer_wheel: str,
+    runtime_closure_manifest: str,
+    package_wheel: str,
+    package_wheel_sha256: str,
+    environment: dict[str, str],
+) -> dict[str, object]:
+    verifier = (
+        "import json,sys; from document_kv_cache._gpu_qualification_sentinels_v2 "
+        "import verify_gpu_qualification_v2_runtime_installation as verify; "
+        "print(json.dumps(verify(runtime_lock=sys.argv[1],vllm_uri=sys.argv[2],"
+        "flashinfer_uri=sys.argv[3],runtime_closure_manifest=sys.argv[4],"
+        "package_uri=sys.argv[5],package_sha256=sys.argv[6]),sort_keys=True,"
+        "separators=(',',':')))"
+    )
+    completed = subprocess.run(
+        [
+            venv_python,
+            "-c",
+            verifier,
+            runtime_lock,
+            Path(patched_vllm_wheel).resolve().as_uri(),
+            Path(patched_flashinfer_wheel).resolve().as_uri(),
+            runtime_closure_manifest,
+            Path(package_wheel).resolve().as_uri(),
+            package_wheel_sha256,
+        ],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("source-closure native-v2 verifier process failed")
+    if completed.stderr != "":
+        raise RuntimeError("source-closure native-v2 verifier wrote stderr")
+    try:
+        verified = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("source-closure native-v2 verifier output is invalid") from exc
+    if not isinstance(verified, dict):
+        raise RuntimeError("source-closure native-v2 verifier did not emit an object")
+    canonical = (
+        json.dumps(verified, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    if completed.stdout != canonical:
+        raise RuntimeError("source-closure native-v2 verifier output is not canonical")
+    from document_kv_cache.gpu_qualification_v2 import (
+        validate_gpu_qualification_v2_runtime_attestation,
+    )
+
+    validate_gpu_qualification_v2_runtime_attestation(verified)
+    expected_direct_urls = {
+        "flashinfer_direct_url": Path(patched_flashinfer_wheel).resolve().as_uri(),
+        "vllm_direct_url": Path(patched_vllm_wheel).resolve().as_uri(),
+    }
+    if any(
+        verified.get(field_name) != expected
+        for field_name, expected in expected_direct_urls.items()
+    ):
+        raise RuntimeError("source-closure native-v2 verifier artifact origin drift")
+    return verified
 
 
 def main() -> None:
@@ -437,6 +552,10 @@ def main() -> None:
     parser.add_argument("--runtime-lock-sha256", required=True)
     parser.add_argument("--patched-vllm-wheel-uri", required=True)
     parser.add_argument("--patched-vllm-wheel-sha256", required=True)
+    parser.add_argument("--patched-flashinfer-wheel-uri", required=True)
+    parser.add_argument("--patched-flashinfer-wheel-sha256", required=True)
+    parser.add_argument("--runtime-closure-manifest-uri", required=True)
+    parser.add_argument("--runtime-closure-manifest-sha256", required=True)
     parser.add_argument("--runtime-venv-dir", required=True)
     parser.add_argument("--request-uri", required=True)
     parser.add_argument("--request-file-sha256", required=True)
@@ -455,10 +574,20 @@ def main() -> None:
         args.runtime_lock_sha256,
         "source-closure runtime lock",
     )
-    patched_wheel = _verified(
+    patched_vllm_wheel = _verified(
         args.patched_vllm_wheel_uri,
         args.patched_vllm_wheel_sha256,
         "source-closure patched vLLM wheel",
+    )
+    patched_flashinfer_wheel = _verified(
+        args.patched_flashinfer_wheel_uri,
+        args.patched_flashinfer_wheel_sha256,
+        "source-closure patched FlashInfer wheel",
+    )
+    runtime_closure_manifest = _verified(
+        args.runtime_closure_manifest_uri,
+        args.runtime_closure_manifest_sha256,
+        "source-closure runtime closure manifest",
     )
     request = _verified(
         args.request_uri,
@@ -472,7 +601,7 @@ def main() -> None:
         raise FileExistsError("refusing to reuse an unverified source-closure runtime")
     pip_environment = _pip_subprocess_environment()
     subprocess.check_call(
-        [sys.executable, "-m", "venv", venv_dir],
+        [sys.executable, "-m", "venv", "--copies", venv_dir],
         env=pip_environment,
     )
     venv_python = os.path.join(venv_dir, "bin", "python")
@@ -488,33 +617,65 @@ def main() -> None:
         env=pip_environment,
     )
     subprocess.check_call(
-        [*pip, "install", "--no-deps", patched_wheel],
+        [
+            *pip,
+            "install",
+            "--no-deps",
+            _direct_reference(
+                "vllm", patched_vllm_wheel, args.patched_vllm_wheel_sha256
+            ),
+        ],
         env=pip_environment,
     )
     subprocess.check_call(
-        [*pip, "install", "--no-deps", package_wheel],
+        [
+            *pip,
+            "install",
+            "--no-deps",
+            _direct_reference(
+                "flashinfer-python",
+                patched_flashinfer_wheel,
+                args.patched_flashinfer_wheel_sha256,
+            ),
+        ],
         env=pip_environment,
     )
-    subprocess.check_call([*pip, "check"], env=pip_environment)
-    expected_spec = (
-        "vllm @ file://" + os.path.abspath(patched_wheel)
-        + "#sha256=" + args.patched_vllm_wheel_sha256
+    subprocess.check_call(
+        [
+            *pip,
+            "install",
+            "--no-deps",
+            _direct_reference(
+                "cachet-kv", package_wheel, args.package_wheel_sha256
+            ),
+        ],
+        env=pip_environment,
     )
-    verifier = (
-        "import json,sys; from document_kv_cache.serving_env import "
-        "verify_installed_vllm_runtime_lock as verify; "
-        "print(json.dumps(verify(sys.argv[1]), sort_keys=True))"
-    )
-    verified = subprocess.check_output(
-        [venv_python, "-c", verifier, expected_spec],
+    pip_check = subprocess.run(
+        [*pip, "check"],
+        check=True,
+        capture_output=True,
         text=True,
         env=pip_environment,
     )
-    if json.loads(verified).get("ok") is not True:
-        raise RuntimeError("source-closure locked runtime verification failed")
+    if pip_check.stdout != "No broken requirements found.\n" or pip_check.stderr != "":
+        raise RuntimeError("source-closure native-v2 pip check output differs")
+    runtime_attestation = _verify_locked_runtime(
+        venv_python=venv_python,
+        runtime_lock=runtime_lock,
+        patched_vllm_wheel=patched_vllm_wheel,
+        patched_flashinfer_wheel=patched_flashinfer_wheel,
+        runtime_closure_manifest=runtime_closure_manifest,
+        package_wheel=package_wheel,
+        package_wheel_sha256=args.package_wheel_sha256,
+        environment=pip_environment,
+    )
     env = dict(pip_environment)
     env["CACHET_LATENCY_SOURCE_CLOSURE_LOCKED_RUNTIME"] = (
-        args.runtime_lock_sha256
+        _runtime_marker(args)
+    )
+    env["CACHET_LATENCY_SOURCE_CLOSURE_RUNTIME_ATTESTATION"] = json.dumps(
+        runtime_attestation, sort_keys=True, separators=(",", ":")
     )
     os.execve(
         venv_python,
@@ -561,6 +722,10 @@ class PublicationLatencySourceClosureCoordinatorConfig:
     runtime_lock_sha256: str
     patched_vllm_wheel_uri: str
     patched_vllm_wheel_sha256: str
+    patched_flashinfer_wheel_uri: str
+    patched_flashinfer_wheel_sha256: str
+    runtime_closure_manifest_uri: str
+    runtime_closure_manifest_sha256: str
     request_root_uri: str
     result_root_uri: str
     single_user_name: str
@@ -578,6 +743,14 @@ class PublicationLatencySourceClosureCoordinatorConfig:
             ("package_wheel_uri", "source-closure package wheel URI"),
             ("runtime_lock_uri", "source-closure runtime lock URI"),
             ("patched_vllm_wheel_uri", "source-closure patched vLLM wheel URI"),
+            (
+                "patched_flashinfer_wheel_uri",
+                "source-closure patched FlashInfer wheel URI",
+            ),
+            (
+                "runtime_closure_manifest_uri",
+                "source-closure runtime closure manifest URI",
+            ),
             ("request_root_uri", "source-closure request root URI"),
             ("result_root_uri", "source-closure result root URI"),
         ):
@@ -590,8 +763,21 @@ class PublicationLatencySourceClosureCoordinatorConfig:
             "package_wheel_sha256",
             "runtime_lock_sha256",
             "patched_vllm_wheel_sha256",
+            "patched_flashinfer_wheel_sha256",
+            "runtime_closure_manifest_sha256",
         ):
             _require_sha256_value(getattr(self, field_name), field_name)
+        fixed_runtime = {
+            "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+            "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "runtime_closure_manifest_sha256": (
+                RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+            ),
+        }
+        for field_name, expected in fixed_runtime.items():
+            if getattr(self, field_name) != expected:
+                raise ValueError(f"source-closure {field_name} authority drift")
         if self.runner_sha256 != PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SHA256:
             raise ValueError("source-closure runner SHA-256 drift")
         if self.node_type_id != PUBLICATION_LATENCY_SOURCE_CLOSURE_NODE_TYPE_ID:
@@ -632,10 +818,18 @@ class PublicationLatencySourceClosureCoordinatorConfig:
             "package_wheel_uri": self.package_wheel_uri,
             "patched_vllm_wheel_sha256": self.patched_vllm_wheel_sha256,
             "patched_vllm_wheel_uri": self.patched_vllm_wheel_uri,
+            "patched_flashinfer_wheel_sha256": (
+                self.patched_flashinfer_wheel_sha256
+            ),
+            "patched_flashinfer_wheel_uri": self.patched_flashinfer_wheel_uri,
             "request_root_uri": self.request_root_uri,
             "result_root_uri": self.result_root_uri,
             "runtime_lock_sha256": self.runtime_lock_sha256,
             "runtime_lock_uri": self.runtime_lock_uri,
+            "runtime_closure_manifest_sha256": (
+                self.runtime_closure_manifest_sha256
+            ),
+            "runtime_closure_manifest_uri": self.runtime_closure_manifest_uri,
             "runtime_venv_dir": self.runtime_venv_dir,
             "runner_python_file": self.runner_python_file,
             "runner_sha256": self.runner_sha256,
@@ -643,6 +837,40 @@ class PublicationLatencySourceClosureCoordinatorConfig:
             "spark_version": self.spark_version,
             "timeout_seconds": self.timeout_seconds,
         }
+
+
+def _source_closure_native_runtime_v2(
+    config: PublicationLatencySourceClosureCoordinatorConfig,
+) -> VLLMNativeRuntimeBundleV2:
+    return VLLMNativeRuntimeBundleV2(
+        runtime_lock_uri=config.runtime_lock_uri,
+        runtime_lock_sha256=config.runtime_lock_sha256,
+        patched_vllm_wheel_uri=config.patched_vllm_wheel_uri,
+        patched_vllm_wheel_sha256=config.patched_vllm_wheel_sha256,
+        patched_flashinfer_wheel_uri=config.patched_flashinfer_wheel_uri,
+        patched_flashinfer_wheel_sha256=config.patched_flashinfer_wheel_sha256,
+        runtime_closure_manifest_uri=config.runtime_closure_manifest_uri,
+        runtime_closure_manifest_sha256=config.runtime_closure_manifest_sha256,
+        package_wheel_uri=config.package_wheel_uri,
+        package_wheel_sha256=config.package_wheel_sha256,
+    )
+
+
+def _source_closure_runtime_attestation_record(
+    config: PublicationLatencySourceClosureCoordinatorConfig,
+    verification: Mapping[str, Any],
+) -> dict[str, Any]:
+    bundle = _source_closure_native_runtime_v2(config)
+    _validate_native_runtime_v2_attestation_binding(verification, bundle=bundle)
+    artifacts = bundle.to_record()
+    record = {
+        "artifacts": artifacts,
+        "artifacts_sha256": _canonical_sha256(artifacts),
+        "runner_sha256": config.runner_sha256,
+        "verification": dict(verification),
+    }
+    record["runtime_identity_sha256"] = _canonical_sha256(record)
+    return record
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -960,6 +1188,8 @@ def _final_artifact_roles() -> tuple[str, ...]:
         "runner",
         "package_wheel",
         "patched_vllm_wheel",
+        "patched_flashinfer_wheel",
+        "runtime_closure_manifest",
         "runtime_lock",
         "campaign_plan",
         "qualification_plan",
@@ -986,6 +1216,50 @@ def _final_artifact_roles() -> tuple[str, ...]:
     return tuple(roles)
 
 
+def _gpu_qualification_artifact_pins_v2_from_record(
+    value: Mapping[str, Any],
+) -> GPUQualificationArtifactPinsV2:
+    _require_exact_keys(
+        value,
+        set(GPU_QUALIFICATION_V2_ARTIFACT_KEYS),
+        "native-v2 GPU qualification artifact pins",
+    )
+    return GPUQualificationArtifactPinsV2(**dict(value))
+
+
+def _require_native_v2_final_runtime_artifacts(
+    final_artifacts: PublicationLatencyFinalArtifactPins,
+    pins: GPUQualificationArtifactPinsV2,
+) -> None:
+    if not isinstance(final_artifacts, PublicationLatencyFinalArtifactPins):
+        raise TypeError("final_artifacts has the wrong type")
+    if not isinstance(pins, GPUQualificationArtifactPinsV2):
+        raise TypeError("qualification artifact pins must be native v2")
+    _require_distinct_qualification_runner(pins)
+    expected = {
+        "package_wheel": pins.package_wheel_sha256,
+        "patched_vllm_wheel": pins.patched_vllm_wheel_sha256,
+        "patched_flashinfer_wheel": pins.patched_flashinfer_wheel_sha256,
+        "runtime_closure_manifest": pins.runtime_closure_manifest_sha256,
+        "runtime_lock": pins.runtime_lock_sha256,
+    }
+    for role, expected_sha256 in expected.items():
+        if final_artifacts.file(role).sha256 != expected_sha256:
+            raise ValueError(f"final {role} differs from native-v2 qualification")
+
+
+def _require_distinct_qualification_runner(
+    pins: GPUQualificationArtifactPinsV2,
+) -> None:
+    if pins.runner_sha256 in {
+        PUBLICATION_LATENCY_RUNNER_SHA256,
+        PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SHA256,
+    }:
+        raise ValueError(
+            "GPU qualification and publication latency runner identities must be distinct"
+        )
+
+
 def build_publication_latency_source_closure_request(
     *,
     attempt_id: str | None = None,
@@ -995,7 +1269,7 @@ def build_publication_latency_source_closure_request(
     storage_schedule_records: Mapping[int, Mapping[str, Any]],
     qualification_plan_record: Mapping[str, Any],
     qualification_evidence_record: Mapping[str, Any],
-    qualification_artifact_pins: GPUQualificationArtifactPins,
+    qualification_artifact_pins: GPUQualificationArtifactPinsV2,
     handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
     bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
     storage_inputs_record: Mapping[str, Any],
@@ -1008,31 +1282,17 @@ def build_publication_latency_source_closure_request(
         coordinator_config, PublicationLatencySourceClosureCoordinatorConfig
     ):
         raise TypeError("coordinator_config has the wrong type")
-    if not isinstance(qualification_artifact_pins, GPUQualificationArtifactPins):
-        raise TypeError("qualification_artifact_pins has the wrong type")
+    if not isinstance(qualification_artifact_pins, GPUQualificationArtifactPinsV2):
+        raise TypeError("qualification_artifact_pins must be native v2")
     if not isinstance(final_artifacts, PublicationLatencyFinalArtifactPins):
         raise TypeError("final_artifacts has the wrong type")
     if final_artifacts.file("runner").sha256 != PUBLICATION_LATENCY_RUNNER_SHA256:
         raise ValueError("source closure requires the reviewed latency runner")
-    if final_artifacts.file("package_wheel").sha256 != (
-        qualification_artifact_pins.package_wheel_sha256
-    ):
-        raise ValueError("source-closure package wheel differs from qualification")
-    if (
-        final_artifacts.file("patched_vllm_wheel").sha256
-        != qualification_artifact_pins.patched_vllm_wheel_sha256
-        or final_artifacts.file("patched_vllm_wheel").sha256
-        != GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
-    ):
-        raise ValueError("source-closure patched vLLM wheel differs from qualification")
-    if (
-        final_artifacts.file("runtime_lock").sha256
-        != qualification_artifact_pins.runtime_lock_sha256
-        or final_artifacts.file("runtime_lock").sha256 != VLLM_RUNTIME_LOCK_SHA256
-    ):
-        raise ValueError("source-closure runtime lock differs from qualification")
+    _require_native_v2_final_runtime_artifacts(
+        final_artifacts, qualification_artifact_pins
+    )
     validate_publication_campaign_plan_record(campaign_plan_record)
-    selection = validate_gpu_qualification_evidence_record(
+    selection = validate_gpu_qualification_evidence_v2_record(
         qualification_evidence_record,
         plan_record=qualification_plan_record,
         expected_campaign_id=_required_string(campaign_plan_record, "campaign_id"),
@@ -1057,6 +1317,18 @@ def build_publication_latency_source_closure_request(
         or not _same_durable_file_location(
             coordinator_config.patched_vllm_wheel_uri,
             final_artifacts.file("patched_vllm_wheel").uri,
+        )
+        or coordinator_config.patched_flashinfer_wheel_sha256
+        != final_artifacts.file("patched_flashinfer_wheel").sha256
+        or not _same_durable_file_location(
+            coordinator_config.patched_flashinfer_wheel_uri,
+            final_artifacts.file("patched_flashinfer_wheel").uri,
+        )
+        or coordinator_config.runtime_closure_manifest_sha256
+        != final_artifacts.file("runtime_closure_manifest").sha256
+        or not _same_durable_file_location(
+            coordinator_config.runtime_closure_manifest_uri,
+            final_artifacts.file("runtime_closure_manifest").uri,
         )
     ):
         raise ValueError("source coordinator locked runtime differs from final artifacts")
@@ -1161,7 +1433,7 @@ def build_publication_latency_source_closure_request(
     singleton_identity_sha256 = _canonical_sha256(
         {
             "artifacts": final_artifacts.to_record(),
-            "domain": "cachet.publication.latency_source_closure.singleton.v1",
+            "domain": "cachet.publication.latency_source_closure.singleton.v2",
             "expected_semantic": expected_semantic,
             "handoff_closures": handoff_closures,
             "ledger_lineage": {
@@ -1298,29 +1570,18 @@ def validate_publication_latency_source_closure_request(
         or result_uri != _join_durable_uri(expected_result_root, "result.json")
     ):
         raise ValueError("source-closure control URI/root singleton drift")
-    pins = GPUQualificationArtifactPins(
-        **dict(_mapping(record, "qualification_artifact_pins"))
+    pins = _gpu_qualification_artifact_pins_v2_from_record(
+        _mapping(record, "qualification_artifact_pins")
     )
+    _require_distinct_qualification_runner(pins)
     if record.get("input_bundle_sha256") != pins.input_bundle_sha256:
         raise ValueError("source-closure input bundle pin drift")
     final_artifacts = _final_artifacts_from_record(
         _mapping(record, "final_artifacts")
     )
-    if (
-        final_artifacts.file("runner").sha256
-        != PUBLICATION_LATENCY_RUNNER_SHA256
-        or final_artifacts.file("package_wheel").sha256
-        != pins.package_wheel_sha256
-        or final_artifacts.file("patched_vllm_wheel").sha256
-        != pins.patched_vllm_wheel_sha256
-        or final_artifacts.file("patched_vllm_wheel").sha256
-        != GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
-        or final_artifacts.file("runtime_lock").sha256
-        != pins.runtime_lock_sha256
-        or final_artifacts.file("runtime_lock").sha256
-        != VLLM_RUNTIME_LOCK_SHA256
-    ):
-        raise ValueError("source-closure reviewed runtime artifact pin drift")
+    if final_artifacts.file("runner").sha256 != PUBLICATION_LATENCY_RUNNER_SHA256:
+        raise ValueError("source-closure reviewed runner artifact pin drift")
+    _require_native_v2_final_runtime_artifacts(final_artifacts, pins)
     if (
         config.package_wheel_sha256 != final_artifacts.file("package_wheel").sha256
         or not _same_durable_file_location(
@@ -1340,6 +1601,18 @@ def validate_publication_latency_source_closure_request(
         or not _same_durable_file_location(
             config.patched_vllm_wheel_uri,
             final_artifacts.file("patched_vllm_wheel").uri,
+        )
+        or config.patched_flashinfer_wheel_sha256
+        != final_artifacts.file("patched_flashinfer_wheel").sha256
+        or not _same_durable_file_location(
+            config.patched_flashinfer_wheel_uri,
+            final_artifacts.file("patched_flashinfer_wheel").uri,
+        )
+        or config.runtime_closure_manifest_sha256
+        != final_artifacts.file("runtime_closure_manifest").sha256
+        or not _same_durable_file_location(
+            config.runtime_closure_manifest_uri,
+            final_artifacts.file("runtime_closure_manifest").uri,
         )
     ):
         raise ValueError("source-closure coordinator locked-runtime binding drift")
@@ -1581,6 +1854,7 @@ def validate_publication_latency_source_closure_result(
             "coordinator",
             "record_type",
             "request_closed_record_sha256",
+            "runtime_attestation",
             "schema_version",
             "semantic",
         },
@@ -1603,6 +1877,13 @@ def validate_publication_latency_source_closure_result(
     coordinator = _mapping(record, "coordinator")
     _require_exact_keys(coordinator, {"run_id"}, "source-closure result coordinator")
     _databricks_id(coordinator.get("run_id"), "source-closure coordinator run ID")
+    runtime_attestation = _mapping(record, "runtime_attestation")
+    expected_runtime_attestation = _source_closure_runtime_attestation_record(
+        _source_closure_config_from_record(_mapping(request, "coordinator")),
+        _mapping(runtime_attestation, "verification"),
+    )
+    if dict(runtime_attestation) != expected_runtime_attestation:
+        raise ValueError("source-closure native-v2 runtime attestation drift")
     expected_files = [
         item
         for item in _mapping_sequence(_mapping(request, "final_artifacts"), "files")
@@ -1996,6 +2277,8 @@ def _source_closure_config_from_record(
             "node_type_id",
             "package_wheel_sha256",
             "package_wheel_uri",
+            "patched_flashinfer_wheel_sha256",
+            "patched_flashinfer_wheel_uri",
             "patched_vllm_wheel_sha256",
             "patched_vllm_wheel_uri",
             "request_root_uri",
@@ -2004,6 +2287,8 @@ def _source_closure_config_from_record(
             "runner_sha256",
             "runtime_lock_sha256",
             "runtime_lock_uri",
+            "runtime_closure_manifest_sha256",
+            "runtime_closure_manifest_uri",
             "runtime_venv_dir",
             "single_user_name",
             "spark_version",
@@ -2023,6 +2308,18 @@ def _source_closure_config_from_record(
         ),
         patched_vllm_wheel_sha256=_required_sha256(
             record, "patched_vllm_wheel_sha256"
+        ),
+        patched_flashinfer_wheel_uri=_required_string(
+            record, "patched_flashinfer_wheel_uri"
+        ),
+        patched_flashinfer_wheel_sha256=_required_sha256(
+            record, "patched_flashinfer_wheel_sha256"
+        ),
+        runtime_closure_manifest_uri=_required_string(
+            record, "runtime_closure_manifest_uri"
+        ),
+        runtime_closure_manifest_sha256=_required_sha256(
+            record, "runtime_closure_manifest_sha256"
         ),
         request_root_uri=_required_string(record, "request_root_uri"),
         result_root_uri=_required_string(record, "result_root_uri"),
@@ -2106,6 +2403,14 @@ def _render_publication_latency_source_closure_submit_payload_from_request(
         config.patched_vllm_wheel_uri,
         "--patched-vllm-wheel-sha256",
         config.patched_vllm_wheel_sha256,
+        "--patched-flashinfer-wheel-uri",
+        config.patched_flashinfer_wheel_uri,
+        "--patched-flashinfer-wheel-sha256",
+        config.patched_flashinfer_wheel_sha256,
+        "--runtime-closure-manifest-uri",
+        config.runtime_closure_manifest_uri,
+        "--runtime-closure-manifest-sha256",
+        config.runtime_closure_manifest_sha256,
         "--runtime-venv-dir",
         config.runtime_venv_dir,
         "--request-uri",
@@ -2187,6 +2492,28 @@ def run_publication_latency_source_closure_coordinator(
     ):
         raise ValueError("source-closure request closed digest drift")
     run_id = _databricks_id(coordinator_run_id, "source coordinator run ID")
+    raw_runtime_attestation = os.environ.pop(
+        "CACHET_LATENCY_SOURCE_CLOSURE_RUNTIME_ATTESTATION", None
+    )
+    if not isinstance(raw_runtime_attestation, str) or not raw_runtime_attestation:
+        raise RuntimeError("source-closure native-v2 runtime attestation is missing")
+    try:
+        runtime_verification = json.loads(raw_runtime_attestation)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "source-closure native-v2 runtime attestation is invalid"
+        ) from exc
+    if (
+        not isinstance(runtime_verification, dict)
+        or raw_runtime_attestation != _canonical_json(runtime_verification)
+    ):
+        raise RuntimeError(
+            "source-closure native-v2 runtime attestation is not canonical"
+        )
+    runtime_attestation = _source_closure_runtime_attestation_record(
+        _source_closure_config_from_record(_mapping(request, "coordinator")),
+        runtime_verification,
+    )
     final_artifacts = _final_artifacts_from_record(
         _mapping(request, "final_artifacts")
     )
@@ -2236,10 +2563,10 @@ def run_publication_latency_source_closure_coordinator(
         for binding in _mapping_sequence(bindings, "storage_schedules")
     }
     validate_publication_campaign_plan_record(campaign)
-    pins = GPUQualificationArtifactPins(
-        **dict(_mapping(request, "qualification_artifact_pins"))
+    pins = _gpu_qualification_artifact_pins_v2_from_record(
+        _mapping(request, "qualification_artifact_pins")
     )
-    selection = validate_gpu_qualification_evidence_record(
+    selection = validate_gpu_qualification_evidence_v2_record(
         qualification_evidence,
         plan_record=qualification_plan,
         expected_campaign_id=_required_string(campaign, "campaign_id"),
@@ -2292,6 +2619,7 @@ def run_publication_latency_source_closure_coordinator(
         "coordinator": {"run_id": run_id},
         "record_type": PUBLICATION_LATENCY_SOURCE_CLOSURE_RESULT_RECORD_TYPE,
         "request_closed_record_sha256": request["closed_record_sha256"],
+        "runtime_attestation": runtime_attestation,
         "schema_version": PUBLICATION_LATENCY_SOURCE_CLOSURE_SCHEMA_VERSION,
         "semantic": observed_semantic,
     }
@@ -2712,7 +3040,7 @@ def require_publication_latency_source_closure_authorization(
     authorization: object,
     *,
     expected_final_artifacts: PublicationLatencyFinalArtifactPins,
-    expected_qualification_artifact_pins: GPUQualificationArtifactPins,
+    expected_qualification_artifact_pins: GPUQualificationArtifactPinsV2,
     expected_semantic: Mapping[str, Any],
     expected_predecessor_prefix: DatabricksLedgerPrefix,
     expected_q8_handoff_authorization: PublicationHandoffRemoteClosureAuthorization,
@@ -2727,15 +3055,15 @@ def require_publication_latency_source_closure_authorization(
     if not isinstance(expected_final_artifacts, PublicationLatencyFinalArtifactPins):
         raise TypeError("expected_final_artifacts has the wrong type")
     if not isinstance(
-        expected_qualification_artifact_pins, GPUQualificationArtifactPins
+        expected_qualification_artifact_pins, GPUQualificationArtifactPinsV2
     ):
-        raise TypeError("expected_qualification_artifact_pins has the wrong type")
+        raise TypeError("expected qualification artifact pins must be native v2")
     validate_publication_latency_source_closure_result(
         authorization.result_record, request=authorization.request_record
     )
     request = authorization.request_record
-    request_pins = GPUQualificationArtifactPins(
-        **dict(_mapping(request, "qualification_artifact_pins"))
+    request_pins = _gpu_qualification_artifact_pins_v2_from_record(
+        _mapping(request, "qualification_artifact_pins")
     )
     if request_pins != expected_qualification_artifact_pins:
         raise ValueError("publication latency source-closure qualification pin drift")
@@ -2796,7 +3124,7 @@ def build_publication_latency_execution_plan(
     storage_schedule_records: Mapping[int, Mapping[str, Any]],
     qualification_plan_record: Mapping[str, Any],
     qualification_evidence_record: Mapping[str, Any],
-    qualification_artifact_pins: GPUQualificationArtifactPins,
+    qualification_artifact_pins: GPUQualificationArtifactPinsV2,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
     bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
@@ -2822,30 +3150,17 @@ def build_publication_latency_execution_plan(
     campaign_ledger_prefix = databricks_ledger_prefix_from_record(
         _mapping(campaign_plan_record, "campaign_ledger_prefix")
     )
-    if not isinstance(qualification_artifact_pins, GPUQualificationArtifactPins):
-        raise TypeError("qualification_artifact_pins has the wrong type")
+    if not isinstance(qualification_artifact_pins, GPUQualificationArtifactPinsV2):
+        raise TypeError("qualification_artifact_pins must be native v2")
     if not isinstance(final_artifacts, PublicationLatencyFinalArtifactPins):
         raise TypeError("final_artifacts has the wrong type")
     if final_artifacts.file("runner").sha256 != PUBLICATION_LATENCY_RUNNER_SHA256:
         raise ValueError("final runner does not match the reviewed latency runner")
-    if final_artifacts.file("package_wheel").sha256 != (
-        qualification_artifact_pins.package_wheel_sha256
-    ):
-        raise ValueError("package wheel differs from GPU qualification")
-    if final_artifacts.file("patched_vllm_wheel").sha256 != (
-        qualification_artifact_pins.patched_vllm_wheel_sha256
-    ) or final_artifacts.file("patched_vllm_wheel").sha256 != (
-        GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
-    ):
-        raise ValueError("patched vLLM wheel differs from qualification")
-    if (
-        final_artifacts.file("runtime_lock").sha256
-        != (qualification_artifact_pins.runtime_lock_sha256)
-        or final_artifacts.file("runtime_lock").sha256 != VLLM_RUNTIME_LOCK_SHA256
-    ):
-        raise ValueError("runtime lock differs from qualification")
+    _require_native_v2_final_runtime_artifacts(
+        final_artifacts, qualification_artifact_pins
+    )
 
-    evidence_selection = validate_gpu_qualification_evidence_record(
+    evidence_selection = validate_gpu_qualification_evidence_v2_record(
         qualification_evidence_record,
         plan_record=qualification_plan_record,
         expected_campaign_id=campaign_id,
@@ -3123,6 +3438,7 @@ def build_publication_latency_execution_plan(
                 "closed_record_sha256",
             ),
         },
+        "plan_record": dict(qualification_plan_record),
         "selection": _selection_record(selection),
     }
     handoff_binding = {
@@ -3330,6 +3646,11 @@ def validate_publication_latency_execution_plan_record(
         raise ValueError("publication latency campaign binding drift")
     final_artifacts = _final_artifacts_from_record(_mapping(sources, "final_artifacts"))
     qualification = _mapping(sources, "qualification")
+    _require_exact_keys(
+        qualification,
+        {"artifact_pins", "authorization", "evidence", "plan", "plan_record", "selection"},
+        "native-v2 GPU qualification source binding",
+    )
     authorization_binding = _mapping(qualification, "authorization")
     _require_exact_keys(
         authorization_binding,
@@ -3352,17 +3673,20 @@ def validate_publication_latency_execution_plan_record(
     )
     if qualification_prefix.ledger_id != campaign_ledger_id:
         raise ValueError("GPU qualification prefix uses a different campaign ledger")
-    pins = GPUQualificationArtifactPins(
-        **dict(_mapping(qualification, "artifact_pins"))
+    pins = _gpu_qualification_artifact_pins_v2_from_record(
+        _mapping(qualification, "artifact_pins")
     )
-    if final_artifacts.file("package_wheel").sha256 != pins.package_wheel_sha256:
-        raise ValueError("execution package wheel pin differs from qualification")
-    if final_artifacts.file("patched_vllm_wheel").sha256 != (
-        pins.patched_vllm_wheel_sha256
-    ):
-        raise ValueError("execution patched wheel pin differs from qualification")
-    if final_artifacts.file("runtime_lock").sha256 != pins.runtime_lock_sha256:
-        raise ValueError("execution runtime lock pin differs from qualification")
+    embedded_qualification_plan = _mapping(qualification, "plan_record")
+    validate_gpu_qualification_plan_v2_record(
+        embedded_qualification_plan,
+        expected_campaign_id=campaign_id,
+        expected_artifact_pins=pins,
+    )
+    if embedded_qualification_plan.get("closed_record_sha256") != _mapping(
+        qualification, "plan"
+    ).get("closed_record_sha256"):
+        raise ValueError("embedded native-v2 qualification plan binding drift")
+    _require_native_v2_final_runtime_artifacts(final_artifacts, pins)
     selection = _mapping(qualification, "selection")
     selected_gmu = _finite_positive_number(
         selection.get("gpu_memory_utilization"),
@@ -4012,7 +4336,7 @@ def _source_closure_singleton_identity_from_request(
     return _canonical_sha256(
         {
             "artifacts": dict(_mapping(request, "final_artifacts")),
-            "domain": "cachet.publication.latency_source_closure.singleton.v1",
+            "domain": "cachet.publication.latency_source_closure.singleton.v2",
             "expected_semantic": dict(_mapping(request, "expected_semantic")),
             "handoff_closures": dict(_mapping(request, "handoff_closures")),
             "ledger_lineage": dict(_mapping(request, "ledger_lineage")),
@@ -4052,7 +4376,7 @@ def publication_latency_source_closure_control_roots(
             "bf16_output_root_uri": _databricks_volume_uri(
                 bf16_output_root_uri, "BF16 output root"
             ),
-            "domain": "cachet.publication.latency_source_closure.control_root.v1",
+            "domain": "cachet.publication.latency_source_closure.control_root.v2",
             "q8_output_root_uri": _databricks_volume_uri(
                 q8_output_root_uri, "Q8 output root"
             ),
@@ -4089,7 +4413,7 @@ def _require_handoff_closure_runtime_pins(
     authorization: PublicationHandoffRemoteClosureAuthorization,
     *,
     expected_final_artifacts: PublicationLatencyFinalArtifactPins,
-    expected_qualification_artifact_pins: GPUQualificationArtifactPins,
+    expected_qualification_artifact_pins: GPUQualificationArtifactPinsV2,
 ) -> None:
     if not isinstance(authorization, PublicationHandoffRemoteClosureAuthorization):
         raise TypeError("handoff runtime closure authorization has the wrong type")
@@ -4120,6 +4444,14 @@ def _require_handoff_closure_runtime_pins(
             "patched_vllm_wheel_uri",
             "patched_vllm_wheel_sha256",
         ),
+        "patched_flashinfer_wheel": (
+            "patched_flashinfer_wheel_uri",
+            "patched_flashinfer_wheel_sha256",
+        ),
+        "runtime_closure_manifest": (
+            "runtime_closure_manifest_uri",
+            "runtime_closure_manifest_sha256",
+        ),
         "runtime_lock": ("runtime_lock_uri", "runtime_lock_sha256"),
     }
     for role, (uri_name, digest_name) in expected_files.items():
@@ -4142,6 +4474,10 @@ def _require_handoff_closure_runtime_pins(
         != expected_qualification_artifact_pins.package_wheel_sha256
         or coordinator.get("patched_vllm_wheel_sha256")
         != expected_qualification_artifact_pins.patched_vllm_wheel_sha256
+        or coordinator.get("patched_flashinfer_wheel_sha256")
+        != expected_qualification_artifact_pins.patched_flashinfer_wheel_sha256
+        or coordinator.get("runtime_closure_manifest_sha256")
+        != expected_qualification_artifact_pins.runtime_closure_manifest_sha256
         or coordinator.get("runtime_lock_sha256")
         != expected_qualification_artifact_pins.runtime_lock_sha256
     ):
@@ -4628,6 +4964,8 @@ def _render_publication_latency_job_record(
                 "runner",
                 "package_wheel",
                 "patched_vllm_wheel",
+                "patched_flashinfer_wheel",
+                "runtime_closure_manifest",
                 "runtime_lock",
             )
         ],
@@ -4646,6 +4984,9 @@ def _render_publication_latency_job_record(
                 PUBLICATION_LATENCY_RESULT_FILENAME,
             ),
         },
+        "qualification_artifact_pins": dict(
+            _mapping(qualification, "artifact_pins")
+        ),
         "record_type": PUBLICATION_LATENCY_JOB_RECORD_TYPE,
         "request_order": {
             "closed_record_sha256": _required_sha256(
@@ -4702,6 +5043,7 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
             "input_files",
             "job_id",
             "output",
+            "qualification_artifact_pins",
             "record_type",
             "request_order",
             "reservation_attempt_id",
@@ -4736,16 +5078,42 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
         "runner",
         "package_wheel",
         "patched_vllm_wheel",
+        "patched_flashinfer_wheel",
+        "runtime_closure_manifest",
         "runtime_lock",
     ):
         raise ValueError("publication latency runtime artifact closure is incomplete")
     if artifacts[0].get("sha256") != PUBLICATION_LATENCY_RUNNER_SHA256:
         raise ValueError("publication latency runner hash drift")
-    if artifacts[2].get("sha256") != GPU_QUALIFICATION_PATCHED_WHEEL_SHA256:
-        raise ValueError("publication latency patched wheel hash drift")
-    if artifacts[3].get("sha256") != VLLM_RUNTIME_LOCK_SHA256:
-        raise ValueError("publication latency runtime lock hash drift")
-    _required_sha256(record, "source_tree_sha256")
+    expected_runtime_hashes = {
+        "patched_vllm_wheel": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        "patched_flashinfer_wheel": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "runtime_closure_manifest": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "runtime_lock": VLLM_RUNTIME_BASE_LOCK_SHA256,
+    }
+    artifacts_by_role = {item.get("role"): item for item in artifacts}
+    for role, expected_sha256 in expected_runtime_hashes.items():
+        if artifacts_by_role[role].get("sha256") != expected_sha256:
+            raise ValueError(f"publication latency {role} hash drift")
+    pins = _gpu_qualification_artifact_pins_v2_from_record(
+        _mapping(record, "qualification_artifact_pins")
+    )
+    expected_artifact_pins = {
+        "package_wheel": pins.package_wheel_sha256,
+        "patched_vllm_wheel": pins.patched_vllm_wheel_sha256,
+        "patched_flashinfer_wheel": pins.patched_flashinfer_wheel_sha256,
+        "runtime_closure_manifest": pins.runtime_closure_manifest_sha256,
+        "runtime_lock": pins.runtime_lock_sha256,
+    }
+    if any(
+        artifacts_by_role[role].get("sha256") != expected_sha256
+        for role, expected_sha256 in expected_artifact_pins.items()
+    ):
+        raise ValueError("publication latency runtime differs from qualification")
+    if _required_sha256(record, "source_tree_sha256") != (
+        pins.cachet_source_tree_sha256
+    ):
+        raise ValueError("publication latency source tree differs from qualification")
     inputs = _mapping_sequence(record, "input_files")
     if tuple(item.get("dataset") for item in inputs) != tuple(SUPPORTED_V1_DATASETS):
         raise ValueError("publication latency input files are incomplete")
@@ -4753,6 +5121,8 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
         _durable_uri(_required_string(item, "uri"), "job artifact URI")
         _required_sha256(item, "sha256")
     request_order = _mapping(record, "request_order")
+    if request_order.get("input_bundle_sha256") != pins.input_bundle_sha256:
+        raise ValueError("publication latency input differs from qualification")
     if request_order.get("deployment_block") != cell.get("deployment_block"):
         raise ValueError("publication latency schedule block drift")
     for field_name in (
@@ -5358,7 +5728,14 @@ def submit_publication_latency_launch_wave(
     _write_canonical_json_exclusive(lease_root / "batch-reserved.json", batch_record)
 
     submitted: list[dict[str, Any]] = []
-    for job_id, _job, payload, attempt_id, payload_sha256, _timeout in jobs:
+    for (
+        job_id,
+        job_record,
+        submit_payload,
+        attempt_id,
+        payload_sha256,
+        _timeout,
+    ) in jobs:
         intent = {
             "attempt_id": attempt_id,
             "batch_prefix": batch_authorization.batch_prefix.to_record(),
@@ -5370,9 +5747,10 @@ def submit_publication_latency_launch_wave(
         intent["closed_record_sha256"] = _closed_record_sha256(intent)
         intent_path = lease_root / f"{job_id}.post-intent.json"
         _write_canonical_json_exclusive(intent_path, intent)
+        _validate_submit_payload(submit_payload, job_record=job_record)
         response = submit_pre_reserved_databricks_run(
             config,
-            payload,
+            submit_payload,
             ledger_path=ledger_file,
             attempt_id=attempt_id,
             batch_authorization=batch_authorization,
@@ -5554,7 +5932,7 @@ def resume_publication_latency_launch_wave(
     else:
         _write_canonical_json_exclusive(batch_path, expected_batch)
     submitted: list[dict[str, Any]] = []
-    for job_id, _job, payload, attempt_id, payload_sha256 in jobs:
+    for job_id, job, payload, attempt_id, payload_sha256 in jobs:
         intent_path = lease_root / f"{job_id}.post-intent.json"
         receipt_path = lease_root / f"{job_id}.receipt.json"
         expected_intent: dict[str, Any] = {
@@ -5576,6 +5954,7 @@ def resume_publication_latency_launch_wave(
                 raise ValueError("latency post intent drift")
         elif not receipt_path.exists():
             _write_canonical_json_exclusive(intent_path, expected_intent)
+        _validate_submit_payload(payload, job_record=job)
         response = resume_pre_reserved_databricks_run(
             config,
             payload,
@@ -7462,10 +7841,22 @@ def _validate_submit_payload(
     timeout_seconds = _required_int(runtime, "run_timeout_seconds")
     if payload.get("timeout_seconds") != timeout_seconds:
         raise ValueError("publication latency run timeout drift")
+    if payload.get("run_name") != (
+        f"cachet-publication-latency-{_required_string(job_record, 'job_id')}"
+    ):
+        raise ValueError("publication latency run name drift")
     tasks = payload.get("tasks")
     if not isinstance(tasks, list) or len(tasks) != 1:
         raise ValueError("publication latency requires exactly one isolated task")
     task = _mapping_value(tasks[0], "publication latency task")
+    if set(task) != {
+        "max_retries",
+        "new_cluster",
+        "spark_python_task",
+        "task_key",
+        "timeout_seconds",
+    }:
+        raise ValueError("publication latency task schema is open")
     if (
         task.get("max_retries") != 0
         or task.get("timeout_seconds") != timeout_seconds
@@ -7488,19 +7879,59 @@ def _validate_submit_payload(
     }:
         raise ValueError("publication latency cluster availability/zone drift")
     python_task = _mapping(task, "spark_python_task")
+    if set(python_task) != {"parameters", "python_file"}:
+        raise ValueError("publication latency Python task schema is open")
+    artifacts_by_role = {
+        _required_string(item, "role"): item
+        for item in _mapping_sequence(job_record, "artifact_files")
+    }
+    runner = artifacts_by_role["runner"]
+    package_wheel = artifacts_by_role["package_wheel"]
+    runner_uri = _required_string(runner, "uri")
+    if python_task.get("python_file") != runner_uri:
+        raise ValueError("publication latency runner python_file drift")
+    expected_spark_environment = {
+        VLLM_PATCHED_WHEEL_SHA256_ENV: _required_sha256(
+            artifacts_by_role["patched_vllm_wheel"],
+            "sha256",
+        ),
+        VLLM_PATCHED_WHEEL_URI_ENV: _required_string(
+            artifacts_by_role["patched_vllm_wheel"],
+            "uri",
+        ),
+        "DOCUMENT_KV_EVICT_PAGE_CACHE": (
+            "0"
+            if _mapping(job_record, "cell").get("setting_id") == "storage-ram"
+            else "1"
+        ),
+    }
+    if _mapping(cluster, "spark_env_vars") != expected_spark_environment:
+        raise ValueError("publication latency Spark environment drift")
     parameters = python_task.get("parameters")
     if not isinstance(parameters, list) or any(
         not isinstance(item, str) for item in parameters
     ):
         raise ValueError("publication latency runner parameters are invalid")
-    if _one_parameter(parameters, "--cloud-run-id") != (
-        _DATABRICKS_JOB_RUN_ID_TEMPLATE
-    ) or _one_parameter(parameters, "--task-run-id") != (
-        _DATABRICKS_TASK_RUN_ID_TEMPLATE
-    ):
-        raise ValueError("publication latency cloud identity templates drift")
-    if _one_parameter(parameters, "--job-record-json") != _canonical_json(job_record):
-        raise ValueError("publication latency job record parameter drift")
+    expected_parameters = [
+        "--job-record-json",
+        _canonical_json(job_record),
+        "--expected-job-sha256",
+        _required_sha256(job_record, "closed_record_sha256"),
+        "--runner-uri",
+        runner_uri,
+        "--runner-sha256",
+        _required_sha256(runner, "sha256"),
+        "--package-wheel-uri",
+        _required_string(package_wheel, "uri"),
+        "--package-wheel-sha256",
+        _required_sha256(package_wheel, "sha256"),
+        "--cloud-run-id",
+        _DATABRICKS_JOB_RUN_ID_TEMPLATE,
+        "--task-run-id",
+        _DATABRICKS_TASK_RUN_ID_TEMPLATE,
+    ]
+    if parameters != expected_parameters:
+        raise ValueError("publication latency runner parameter binding drift")
 
 
 def validate_publication_latency_execution_sources(
@@ -7516,8 +7947,8 @@ def validate_publication_latency_execution_sources(
     sources = _mapping(execution_plan_record, "sources")
     qualification = _mapping(sources, "qualification")
     qualification_evidence = _mapping(qualification, "evidence")
-    pins = GPUQualificationArtifactPins(
-        **dict(_mapping(qualification, "artifact_pins"))
+    pins = _gpu_qualification_artifact_pins_v2_from_record(
+        _mapping(qualification, "artifact_pins")
     )
     handoff = _mapping(sources, "handoff_generation")
     execution = _mapping(handoff, "execution")
@@ -7674,6 +8105,59 @@ def validate_publication_latency_execution_sources(
         raise ValueError("source closure does not extend BF16 in phase order")
 
 
+def _native_runtime_v2_from_job_record(
+    job_record: Mapping[str, Any],
+) -> VLLMNativeRuntimeBundleV2:
+    artifact_files = {
+        _required_string(item, "role"): item
+        for item in _mapping_sequence(job_record, "artifact_files")
+    }
+    return VLLMNativeRuntimeBundleV2(
+        runtime_lock_uri=_required_string(artifact_files["runtime_lock"], "uri"),
+        runtime_lock_sha256=_required_sha256(
+            artifact_files["runtime_lock"], "sha256"
+        ),
+        patched_vllm_wheel_uri=_required_string(
+            artifact_files["patched_vllm_wheel"], "uri"
+        ),
+        patched_vllm_wheel_sha256=_required_sha256(
+            artifact_files["patched_vllm_wheel"], "sha256"
+        ),
+        patched_flashinfer_wheel_uri=_required_string(
+            artifact_files["patched_flashinfer_wheel"], "uri"
+        ),
+        patched_flashinfer_wheel_sha256=_required_sha256(
+            artifact_files["patched_flashinfer_wheel"], "sha256"
+        ),
+        runtime_closure_manifest_uri=_required_string(
+            artifact_files["runtime_closure_manifest"], "uri"
+        ),
+        runtime_closure_manifest_sha256=_required_sha256(
+            artifact_files["runtime_closure_manifest"], "sha256"
+        ),
+        package_wheel_uri=_required_string(artifact_files["package_wheel"], "uri"),
+        package_wheel_sha256=_required_sha256(
+            artifact_files["package_wheel"], "sha256"
+        ),
+    )
+
+
+def _validate_native_runtime_v2_attestation_binding(
+    value: Mapping[str, Any],
+    *,
+    bundle: VLLMNativeRuntimeBundleV2,
+) -> None:
+    validate_gpu_qualification_v2_runtime_attestation(value)
+    expected_urls = {
+        "vllm_direct_url": bundle.local_path("patched_vllm_wheel").resolve().as_uri(),
+        "flashinfer_direct_url": (
+            bundle.local_path("patched_flashinfer_wheel").resolve().as_uri()
+        ),
+    }
+    if any(value.get(name) != expected for name, expected in expected_urls.items()):
+        raise ValueError("native-v2 runtime attestation artifact origin drift")
+
+
 def publication_latency_vllm_config(
     job_record: Mapping[str, Any],
 ) -> VLLMSmokeBenchmarkConfig:
@@ -7717,6 +8201,7 @@ def publication_latency_vllm_config(
         _required_string(item, "role"): item
         for item in _mapping_sequence(job_record, "artifact_files")
     }
+    native_runtime_v2 = _native_runtime_v2_from_job_record(job_record)
     provenance = {
         "cache_state": _required_string(
             _mapping(job_record, "cache_telemetry_policy"), "host_cache_state"
@@ -7759,7 +8244,7 @@ def publication_latency_vllm_config(
             }
         ),
         "runtime_kv_dtype": runtime_kv_dtype,
-        "runtime_version": VLLM_RUNTIME_LOCK_SHA256,
+        "runtime_version": VLLM_RUNTIME_BASE_LOCK_SHA256,
         "pipeline_parallel_size": 1,
         "serving_platform": "databricks",
         "storage_identity": _required_string(
@@ -7881,6 +8366,8 @@ def publication_latency_vllm_config(
         hardware_target=_required_string(runtime, "hardware_target"),
         dataset_specs=input_specs,
         allow_dataset_subset=False,
+        package_install_spec=native_runtime_v2.package_wheel_uri,
+        native_runtime_v2=native_runtime_v2,
         runtime_identity=identity,
         publication_latency_schedule_path=_cluster_path(
             _required_string(request_order, "schedule_uri")
@@ -8068,6 +8555,16 @@ def seal_publication_latency_job_result(
         }
         for role, path in artifact_paths
     ]
+    native_runtime_v2 = config.native_runtime_v2
+    if native_runtime_v2 is None:  # pragma: no cover - production config enforces it.
+        raise RuntimeError("publication latency requires native-v2 runtime artifacts")
+    native_runtime_attestation = _mapping(
+        metadata, "native_runtime_v2_attestation"
+    )
+    _validate_native_runtime_v2_attestation_binding(
+        native_runtime_attestation,
+        bundle=native_runtime_v2,
+    )
     result: dict[str, Any] = {
         "benchmark_record": benchmark,
         "cache_telemetry": cache_summary,
@@ -8083,22 +8580,8 @@ def seal_publication_latency_job_result(
             "metadata_sha256": next(
                 item["sha256"] for item in files if item["role"] == "metadata"
             ),
-            "patched_vllm_wheel_sha256": _required_sha256(
-                next(
-                    item
-                    for item in _mapping_sequence(job_record, "artifact_files")
-                    if item.get("role") == "patched_vllm_wheel"
-                ),
-                "sha256",
-            ),
-            "runtime_lock_sha256": _required_sha256(
-                next(
-                    item
-                    for item in _mapping_sequence(job_record, "artifact_files")
-                    if item.get("role") == "runtime_lock"
-                ),
-                "sha256",
-            ),
+            "native_runtime_v2": native_runtime_v2.to_record(),
+            "native_runtime_v2_attestation": dict(native_runtime_attestation),
             "strict_runtime_closure": True,
             "vllm_version": PUBLICATION_CAMPAIGN_ENGINE_VERSION,
         },
@@ -8214,16 +8697,31 @@ def validate_publication_latency_job_result_record(
                 _cluster_path(uri), digest, f"result file {item.get('role')}"
             )
     runtime = _mapping(record, "runtime_attestation")
-    if runtime != {
-        "metadata_sha256": next(
-            item["sha256"] for item in files if item["role"] == "metadata"
-        ),
-        "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        "runtime_lock_sha256": VLLM_RUNTIME_LOCK_SHA256,
-        "strict_runtime_closure": True,
-        "vllm_version": PUBLICATION_CAMPAIGN_ENGINE_VERSION,
-    }:
+    _require_exact_keys(
+        runtime,
+        {
+            "metadata_sha256",
+            "native_runtime_v2",
+            "native_runtime_v2_attestation",
+            "strict_runtime_closure",
+            "vllm_version",
+        },
+        "publication latency native-v2 runtime attestation",
+    )
+    native_runtime_v2 = _native_runtime_v2_from_job_record(expected_job_record)
+    if (
+        runtime.get("metadata_sha256")
+        != next(item["sha256"] for item in files if item["role"] == "metadata")
+        or dict(_mapping(runtime, "native_runtime_v2"))
+        != native_runtime_v2.to_record()
+        or runtime.get("strict_runtime_closure") is not True
+        or runtime.get("vllm_version") != PUBLICATION_CAMPAIGN_ENGINE_VERSION
+    ):
         raise ValueError("publication latency result runtime attestation drift")
+    _validate_native_runtime_v2_attestation_binding(
+        _mapping(runtime, "native_runtime_v2_attestation"),
+        bundle=native_runtime_v2,
+    )
     cache = _mapping(record, "cache_telemetry")
     _validate_cache_telemetry_summary(cache, job_record=expected_job_record)
     if _mapping(expected_job_record, "cell").get("setting_id") == "storage-ram":
@@ -8398,6 +8896,7 @@ def _validate_publication_latency_runtime_metadata(
     job_record: Mapping[str, Any],
 ) -> None:
     runtime = _mapping(job_record, "runtime")
+    native_runtime_v2 = _native_runtime_v2_from_job_record(job_record)
     expected = {
         "attention_backend": runtime.get("attention_backend"),
         "gpu_memory_utilization": runtime.get("gpu_memory_utilization"),
@@ -8428,11 +8927,32 @@ def _validate_publication_latency_runtime_metadata(
     for field_name, value in expected.items():
         if metadata.get(field_name) != value:
             raise ValueError(f"vLLM metadata {field_name} drift")
-    if metadata.get("strict_runtime_closure") is not True:
+    if (
+        metadata.get("strict_runtime_closure") is not True
+        or metadata.get("vllm_runtime_lock_verification_scope") != "final-runtime"
+    ):
         raise ValueError("vLLM metadata does not attest strict runtime closure")
-    lock = metadata.get("vllm_runtime_lock_verification")
-    if not isinstance(lock, Mapping) or lock.get("ok") is not True:
-        raise ValueError("vLLM runtime lock verification did not pass")
+    if dict(_mapping(metadata, "native_runtime_v2")) != (
+        native_runtime_v2.to_record()
+    ):
+        raise ValueError("vLLM metadata native-v2 runtime bundle drift")
+    native_attestation = _mapping(metadata, "native_runtime_v2_attestation")
+    _validate_native_runtime_v2_attestation_binding(
+        native_attestation,
+        bundle=native_runtime_v2,
+    )
+    if dict(_mapping(metadata, "vllm_runtime_lock_verification")) != dict(
+        native_attestation
+    ):
+        raise ValueError("vLLM native-v2 runtime verification binding drift")
+    runtime_lock = _mapping(metadata, "vllm_runtime_lock")
+    if runtime_lock != {
+        "platform": "CPython 3.11 / Linux x86_64 / glibc 2.35",
+        "runtime_contract": "native-v2",
+        "sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+        "uri": native_runtime_v2.runtime_lock_uri,
+    }:
+        raise ValueError("vLLM metadata native-v2 runtime lock drift")
     patches = metadata.get("vllm_runtime_patch_closure")
     if (
         not isinstance(patches, list)
@@ -8862,7 +9382,9 @@ def _require_latency_launch_authorization(
         != _required_string(bf16_binding, "source_root_uri")
     ):
         raise ValueError("BF16 handoff serving authorization binding drift")
-    typed_artifact_pins = GPUQualificationArtifactPins(**dict(artifact_pins))
+    typed_artifact_pins = _gpu_qualification_artifact_pins_v2_from_record(
+        artifact_pins
+    )
     authenticated_source = require_publication_latency_source_closure_authorization(
         source_closure_authorization,
         expected_final_artifacts=final_artifacts,
@@ -8968,6 +9490,12 @@ def _validate_latency_control_plane_run(
     cluster_instance = _mapping(task, "cluster_instance")
     cluster_id = _required_string(cluster_instance, "cluster_id")
     submitted_task = _mapping_value(submit_payload["tasks"][0], "submitted task")
+    submitted_python_task = _mapping(submitted_task, "spark_python_task")
+    observed_python_task = task.get("spark_python_task")
+    if not isinstance(observed_python_task, Mapping) or dict(
+        observed_python_task
+    ) != dict(submitted_python_task):
+        raise ValueError("latency runs/get Python task drift")
     submitted_cluster = _mapping(submitted_task, "new_cluster")
     observed_cluster_value = task.get("new_cluster")
     if not isinstance(observed_cluster_value, Mapping):

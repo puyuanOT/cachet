@@ -91,10 +91,15 @@ from document_kv_cache.engine_protocol import (
 )
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
-    GPUQualificationArtifactPins,
+    GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
     GPUQualificationSelection,
     canonical_gpu_qualification_json,
-    validate_gpu_qualification_evidence_record,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+    GPUQualificationArtifactPinsV2,
+    validate_gpu_qualification_evidence_v2_record,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
@@ -116,6 +121,9 @@ from document_kv_cache.model_profiles import (
     QWEN3_4B_ROPE_ROTARY_DIM,
     QWEN3_4B_ROPE_THETA,
     layout_for_model,
+)
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
 )
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.publication_campaign import (
@@ -140,12 +148,18 @@ from document_kv_cache.publication_latency_handoff_generation import (
     PUBLICATION_LATENCY_HANDOFF_GENERATOR_QUANTIZATION,
     PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT,
     PUBLICATION_LATENCY_HANDOFF_TRANSFORMERS_VERSION,
-    PublicationLatencyGeneratorHardwareQualification,
+    PublicationLatencyGeneratorHardwareQualificationV2,
+    gpu_qualification_artifact_pins_v2_from_record,
+    publication_latency_generator_hardware_qualification_v2_record,
+    validate_publication_latency_generator_hardware_qualification_v2_record,
     _post_close_jsonl_objects,
     _post_close_rebased_generated_row,
     _post_close_regular_file_inventory,
 )
-from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
 from document_kv_cache.storage import local_path
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV,
@@ -180,21 +194,21 @@ PUBLICATION_BF16_HANDOFF_MAX_RESERVED_GPU_HOURS: Final = (
 PUBLICATION_BF16_HANDOFF_DTYPE: Final = "bfloat16"
 PUBLICATION_BF16_HANDOFF_ARM_ID: Final = "vanilla"
 PUBLICATION_BF16_HANDOFF_PLAN_RECORD_TYPE: Final = (
-    "cachet.publication_bf16_handoff_generation_plan.v1"
+    "cachet.publication_bf16_handoff_generation_plan.v2"
 )
 PUBLICATION_BF16_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE: Final = (
-    "cachet.publication_bf16_handoff_worker_payload.v1"
+    "cachet.publication_bf16_handoff_worker_payload.v2"
 )
 PUBLICATION_BF16_HANDOFF_WORKER_RESULT_RECORD_TYPE: Final = (
-    "cachet.publication_bf16_handoff_worker_result.v1"
+    "cachet.publication_bf16_handoff_worker_result.v2"
 )
 PUBLICATION_BF16_HANDOFF_ATTESTATION_RECORD_TYPE: Final = (
-    "cachet.publication_bf16_handoff_databricks_execution.v1"
+    "cachet.publication_bf16_handoff_databricks_execution.v2"
 )
 PUBLICATION_BF16_HANDOFF_EXECUTION_RECORD_TYPE: Final = (
-    "cachet.publication_bf16_handoff_generation_execution.v1"
+    "cachet.publication_bf16_handoff_generation_execution.v2"
 )
-PUBLICATION_BF16_HANDOFF_SCHEMA_VERSION: Final = 1
+PUBLICATION_BF16_HANDOFF_SCHEMA_VERSION: Final = 2
 PUBLICATION_BF16_HANDOFF_EXECUTION_MODE: Final = "distributed_16x_l40s_qualified"
 PUBLICATION_BF16_HANDOFF_EXECUTION_FILENAME: Final = (
     "publication-bf16-handoff-generation.execution.json"
@@ -224,6 +238,9 @@ _SHA256_LENGTH = 64
 _SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 _SUBMISSION_AUTHORIZATION_ISSUER = object()
 _WORKER_AUTHORIZATION_ISSUER = object()
+_BF16_PHASE_LEASE_RECORD_TYPE: Final = (
+    "cachet.publication_bf16_handoff_phase_lease.v2"
+)
 _SERVING_AUTHORIZATION_ISSUER = object()
 _REMOTE_CLOSURE_LEDGER_ISSUER = object()
 _POST_CLOSE_REPLAY_ISSUER = object()
@@ -365,6 +382,10 @@ class DatabricksPublicationBF16HandoffJobConfig:
     runtime_lock_sha256: str
     patched_vllm_wheel_uri: str
     patched_vllm_wheel_sha256: str
+    patched_flashinfer_wheel_uri: str
+    patched_flashinfer_wheel_sha256: str
+    runtime_closure_manifest_uri: str
+    runtime_closure_manifest_sha256: str
     source_revision: str
     cachet_source_tree_sha256: str
     runner_sha256: str = PUBLICATION_BF16_HANDOFF_RUNNER_SHA256
@@ -386,6 +407,8 @@ class DatabricksPublicationBF16HandoffJobConfig:
             "package_wheel_uri",
             "runtime_lock_uri",
             "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
             "runtime_venv_dir_template",
             "run_name",
             "spark_version",
@@ -396,6 +419,8 @@ class DatabricksPublicationBF16HandoffJobConfig:
             "package_wheel_sha256",
             "runtime_lock_sha256",
             "patched_vllm_wheel_sha256",
+            "patched_flashinfer_wheel_sha256",
+            "runtime_closure_manifest_sha256",
             "cachet_source_tree_sha256",
             "runner_sha256",
         ):
@@ -407,8 +432,17 @@ class DatabricksPublicationBF16HandoffJobConfig:
             raise ValueError("worker URI and venv templates require {worker_index}")
         if self.runner_sha256 != PUBLICATION_BF16_HANDOFF_RUNNER_SHA256:
             raise ValueError("BF16 runner hash differs from reviewed source")
-        if self.runtime_lock_sha256 != VLLM_RUNTIME_LOCK_SHA256:
-            raise ValueError("runtime lock differs from the frozen publication lock")
+        expected_runtime_artifacts = {
+            "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+            "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "runtime_closure_manifest_sha256": (
+                RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+            ),
+        }
+        for field_name, expected in expected_runtime_artifacts.items():
+            if getattr(self, field_name) != expected:
+                raise ValueError(f"BF16 {field_name} differs from native v2")
         if self.run_timeout_seconds != PUBLICATION_BF16_HANDOFF_TASK_TIMEOUT_SECONDS:
             raise ValueError("BF16 producer timeout must equal five hours")
         if self.task_max_retries != 0:
@@ -417,6 +451,39 @@ class DatabricksPublicationBF16HandoffJobConfig:
             raise ValueError("BF16 producers require g6e.4xlarge L40S")
         if self.data_security_mode == "SINGLE_USER" and not self.single_user_name:
             raise ValueError("SINGLE_USER requires single_user_name")
+
+    def to_record(self) -> dict[str, Any]:
+        """Return the exact renderer configuration bound into phase authority."""
+
+        return {
+            "cachet_source_tree_sha256": self.cachet_source_tree_sha256,
+            "data_security_mode": self.data_security_mode,
+            "node_type_id": self.node_type_id,
+            "package_wheel_sha256": self.package_wheel_sha256,
+            "package_wheel_uri": self.package_wheel_uri,
+            "patched_flashinfer_wheel_sha256": (
+                self.patched_flashinfer_wheel_sha256
+            ),
+            "patched_flashinfer_wheel_uri": self.patched_flashinfer_wheel_uri,
+            "patched_vllm_wheel_sha256": self.patched_vllm_wheel_sha256,
+            "patched_vllm_wheel_uri": self.patched_vllm_wheel_uri,
+            "run_name": self.run_name,
+            "run_timeout_seconds": self.run_timeout_seconds,
+            "runner_python_file": self.runner_python_file,
+            "runner_sha256": self.runner_sha256,
+            "runtime_closure_manifest_sha256": (
+                self.runtime_closure_manifest_sha256
+            ),
+            "runtime_closure_manifest_uri": self.runtime_closure_manifest_uri,
+            "runtime_lock_sha256": self.runtime_lock_sha256,
+            "runtime_lock_uri": self.runtime_lock_uri,
+            "runtime_venv_dir_template": self.runtime_venv_dir_template,
+            "single_user_name": self.single_user_name,
+            "source_revision": self.source_revision,
+            "spark_version": self.spark_version,
+            "task_max_retries": self.task_max_retries,
+            "worker_payload_uri_template": self.worker_payload_uri_template,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,6 +513,8 @@ class PublicationBF16HandoffSubmissionAuthorization:
     batch_marker_closed_record_sha256: str
     q8_remote_closure_binding_sha256: str
     _q8_remote_closure_binding_canonical_bytes: bytes
+    job_config_sha256: str
+    _job_config_canonical_bytes: bytes
     durable_output_root: str
 
     def __init__(
@@ -455,6 +524,7 @@ class PublicationBF16HandoffSubmissionAuthorization:
         phase_lease_root: str | Path,
         q8_remote_closure_binding: Mapping[str, Any],
         durable_output_root: str,
+        job_config: DatabricksPublicationBF16HandoffJobConfig,
         _issuer: object,
     ) -> None:
         if _issuer is not _SUBMISSION_AUTHORIZATION_ISSUER:
@@ -465,17 +535,21 @@ class PublicationBF16HandoffSubmissionAuthorization:
             batch_authorization, DatabricksBatchReservationAuthorization
         ):
             raise TypeError("batch_authorization has the wrong type")
+        if not isinstance(job_config, DatabricksPublicationBF16HandoffJobConfig):
+            raise TypeError("job_config has the wrong type")
         root = Path(phase_lease_root).expanduser().absolute()
         binding = _json_object(
             _canonical_json_bytes(q8_remote_closure_binding, pretty=False),
             field_name="Q8 remote closure binding",
         )
         output_root = _normalized_bf16_durable_output_root(durable_output_root)
+        job_config_record = job_config.to_record()
         lease, marker = _validate_bf16_submission_phase_files(
             root,
             batch_authorization,
             q8_remote_closure_binding=binding,
             durable_output_root=output_root,
+            job_config_binding=job_config_record,
         )
         root = root.resolve(strict=True)
         object.__setattr__(self, "batch_authorization", batch_authorization)
@@ -515,6 +589,16 @@ class PublicationBF16HandoffSubmissionAuthorization:
             "_q8_remote_closure_binding_canonical_bytes",
             _canonical_json_bytes(binding, pretty=False),
         )
+        object.__setattr__(
+            self,
+            "job_config_sha256",
+            _canonical_sha256(job_config_record),
+        )
+        object.__setattr__(
+            self,
+            "_job_config_canonical_bytes",
+            _canonical_json_bytes(job_config_record, pretty=False),
+        )
         object.__setattr__(self, "durable_output_root", output_root)
 
     @property
@@ -523,6 +607,15 @@ class PublicationBF16HandoffSubmissionAuthorization:
             _json_object(
                 self._q8_remote_closure_binding_canonical_bytes,
                 field_name="authorized Q8 remote closure binding",
+            )
+        )
+
+    @property
+    def job_config_binding(self) -> Mapping[str, Any]:
+        return MappingProxyType(
+            _json_object(
+                self._job_config_canonical_bytes,
+                field_name="authorized BF16 job config binding",
             )
         )
 
@@ -854,7 +947,7 @@ def build_publication_bf16_handoff_worker_payloads(
     local_work_root_template: str,
     source_revision: str,
     config: PublicationBF16HandoffExecutionConfig,
-    hardware_qualification: PublicationLatencyGeneratorHardwareQualification,
+    hardware_qualification: PublicationLatencyGeneratorHardwareQualificationV2,
 ) -> tuple[dict[str, Any], ...]:
     """Build record-only worker inputs; this function grants no launch authority."""
 
@@ -881,9 +974,9 @@ def build_publication_bf16_handoff_worker_payloads(
     if not isinstance(config, PublicationBF16HandoffExecutionConfig):
         raise TypeError("config has the wrong type")
     if not isinstance(
-        hardware_qualification, PublicationLatencyGeneratorHardwareQualification
+        hardware_qualification, PublicationLatencyGeneratorHardwareQualificationV2
     ):
-        raise TypeError("hardware_qualification has the wrong type")
+        raise TypeError("hardware_qualification must be native v2")
     qualification = _hardware_qualification_record(hardware_qualification)
     workers = _mapping_sequence(plan.get("workers"), "workers")
     payloads: list[dict[str, Any]] = []
@@ -948,6 +1041,7 @@ def build_publication_bf16_handoff_worker_payloads(
             field_name="local_work_root",
         )
         payload["closed_record_sha256"] = _closed_record_sha256(payload)
+        _require_v2_worker_payload_envelope(payload)
         payloads.append(payload)
     if (
         len(payloads) != PUBLICATION_BF16_HANDOFF_WORKER_COUNT
@@ -962,14 +1056,7 @@ def validate_publication_bf16_handoff_worker_payload(
     payload: Mapping[str, Any], *, plan: Mapping[str, Any]
 ) -> None:
     _validate_plan_envelope(plan)
-    if (
-        payload.get("record_type")
-        != (PUBLICATION_BF16_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE)
-        or payload.get("schema_version") != PUBLICATION_BF16_HANDOFF_SCHEMA_VERSION
-    ):
-        raise ValueError("BF16 worker payload envelope is invalid")
-    if payload.get("closed_record_sha256") != _closed_record_sha256(payload):
-        raise ValueError("BF16 worker payload closure is invalid")
+    _require_v2_worker_payload_envelope(payload)
     plan_binding = _required_mapping(payload, "plan")
     if plan_binding.get("closed_record_sha256") != plan.get(
         "closed_record_sha256"
@@ -1021,6 +1108,26 @@ def validate_publication_bf16_handoff_worker_payload(
         raise ValueError("BF16 worker output binding drift")
 
 
+def _require_v2_worker_payload_envelope(payload: Mapping[str, Any]) -> None:
+    if (
+        payload.get("record_type")
+        != PUBLICATION_BF16_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE
+        or payload.get("schema_version") != PUBLICATION_BF16_HANDOFF_SCHEMA_VERSION
+    ):
+        raise ValueError("BF16 launch requires a native-v2 worker payload")
+    if payload.get("closed_record_sha256") != _closed_record_sha256(payload):
+        raise ValueError("BF16 worker payload closure is invalid")
+    qualification = _required_mapping(payload, "generator_hardware_qualification")
+    pins = _qualification_pins(qualification)
+    source = _required_mapping(payload, "source")
+    if (
+        payload.get("input_bundle_sha256") != pins.input_bundle_sha256
+        or source.get("cachet_source_tree_sha256")
+        != pins.cachet_source_tree_sha256
+    ):
+        raise ValueError("BF16 worker differs from native-v2 qualification pins")
+
+
 def write_publication_bf16_handoff_worker_payloads(
     payloads: Sequence[Mapping[str, Any]], output_dir: str | Path
 ) -> tuple[Path, ...]:
@@ -1032,6 +1139,7 @@ def write_publication_bf16_handoff_worker_payloads(
     root.mkdir(parents=True)
     paths: list[Path] = []
     for index, payload in enumerate(values):
+        _require_v2_worker_payload_envelope(payload)
         if _required_int(payload, "worker_index") != index:
             raise ValueError("BF16 payload order must be contiguous")
         path = root / f"bf16-handoff-worker-{index:02d}.json"
@@ -1084,45 +1192,18 @@ def build_databricks_publication_bf16_handoff_submit_payloads(
                 "BF16 durable output root is not plan-bound DBFS/UC storage"
             )
         roots.add(root)
-        worker_label = f"{index:02d}"
-        worker_uri = config.worker_payload_uri_template.format(
-            worker_index=worker_label
-        )
-        runtime_venv = config.runtime_venv_dir_template.format(
-            worker_index=worker_label
-        )
-        _validate_local_nvme_worker_root(
-            runtime_venv,
-            worker_index=index,
-            field_name="runtime_venv_dir",
-        )
         task = {
             "max_retries": 0,
             "new_cluster": _l40s_cluster(config),
             "spark_python_task": {
-                "parameters": [
-                    "--runner-sha256",
-                    config.runner_sha256,
-                    "--package-wheel-uri",
-                    config.package_wheel_uri,
-                    "--package-wheel-sha256",
-                    config.package_wheel_sha256,
-                    "--runtime-lock-uri",
-                    config.runtime_lock_uri,
-                    "--runtime-lock-sha256",
-                    config.runtime_lock_sha256,
-                    "--patched-vllm-wheel-uri",
-                    config.patched_vllm_wheel_uri,
-                    "--patched-vllm-wheel-sha256",
-                    config.patched_vllm_wheel_sha256,
-                    "--runtime-venv-dir",
-                    runtime_venv,
-                    "run-worker",
-                    "--worker-payload-json",
-                    worker_uri,
-                    "--expected-worker-payload-sha256",
-                    _worker_payload_file_sha256(payload),
-                ],
+                "parameters": list(
+                    _bf16_worker_spark_parameters(
+                        config,
+                        worker_payload=payload,
+                        worker_index_value=index,
+                        expected_worker_sha256=_worker_payload_file_sha256(payload),
+                    )
+                ),
                 "python_file": config.runner_python_file,
             },
             "task_key": f"bf16_handoff_worker_{index:02d}",
@@ -1348,6 +1429,7 @@ def reserve_publication_bf16_handoff_worker_attempt_json(
     worker_payload: Mapping[str, Any],
     worker_index: int,
     attempt_id: str,
+    job_config: DatabricksPublicationBF16HandoffJobConfig,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
 ) -> DatabricksClusterHourLedger:
@@ -1357,6 +1439,7 @@ def reserve_publication_bf16_handoff_worker_attempt_json(
     expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
     _validate_launch_binding(
         submit_payload,
+        job_config=job_config,
         worker_payload=worker_payload,
         worker_index_value=worker_index,
         authorization=qualification_launch_authorization,
@@ -1383,6 +1466,7 @@ def reserve_publication_bf16_handoff_worker_attempt_json(
         workload_id=f"publication-bf16-handoff-worker-{worker_index:02d}",
         reservation_validator=_reservation_validator(
             path,
+            job_config=job_config,
             worker_payload=worker_payload,
             worker_index_value=worker_index,
             authorization=qualification_launch_authorization,
@@ -1400,6 +1484,7 @@ def reserve_and_submit_publication_bf16_handoff_worker(
     worker_payload: Mapping[str, Any],
     worker_index: int,
     attempt_id: str,
+    job_config: DatabricksPublicationBF16HandoffJobConfig,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     opener: DatabricksURLOpener | None = None,
@@ -1410,6 +1495,7 @@ def reserve_and_submit_publication_bf16_handoff_worker(
     expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
     _validate_launch_binding(
         submit_payload,
+        job_config=job_config,
         worker_payload=worker_payload,
         worker_index_value=worker_index,
         authorization=qualification_launch_authorization,
@@ -1437,6 +1523,7 @@ def reserve_and_submit_publication_bf16_handoff_worker(
         workload_id=f"publication-bf16-handoff-worker-{worker_index:02d}",
         reservation_validator=_reservation_validator(
             path,
+            job_config=job_config,
             worker_payload=worker_payload,
             worker_index_value=worker_index,
             authorization=qualification_launch_authorization,
@@ -1455,6 +1542,7 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
     worker_payloads: Sequence[Mapping[str, Any]],
     attempt_ids_by_worker: Mapping[int, str],
     phase_lease_root: str | Path,
+    job_config: DatabricksPublicationBF16HandoffJobConfig,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     opener: DatabricksURLOpener | None = None,
@@ -1464,6 +1552,8 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
 ]:
     """Atomically admit all sixteen BF16 producers before the first POST."""
 
+    if not isinstance(job_config, DatabricksPublicationBF16HandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
     _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     submissions = tuple(submit_payloads)
     workers = tuple(worker_payloads)
@@ -1502,6 +1592,7 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
         expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
         _validate_launch_binding(
             submit_payload,
+            job_config=job_config,
             worker_payload=worker_payload,
             worker_index_value=index,
             authorization=qualification_launch_authorization,
@@ -1536,7 +1627,8 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
         "ledger_path_sha256": q8_remote_binding["ledger_path_sha256"],
         "predecessor_prefix": predecessor.to_record(),
         "q8_remote_closure": q8_remote_binding,
-        "record_type": "cachet.publication_bf16_handoff_phase_lease.v1",
+        "job_config": job_config.to_record(),
+        "record_type": _BF16_PHASE_LEASE_RECORD_TYPE,
         "submit_payload_sha256": payload_digests,
     }
     lease["closed_record_sha256"] = _closed_record_sha256(lease)
@@ -1561,6 +1653,7 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
             expected_worker_sha256 = _worker_payload_file_sha256(worker_payload)
             _validate_launch_binding(
                 snapshot,
+                job_config=job_config,
                 worker_payload=worker_payload,
                 worker_index_value=index,
                 authorization=qualification_launch_authorization,
@@ -1634,10 +1727,19 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
         lease_root,
         q8_remote_closure_binding=q8_remote_binding,
         durable_output_root=durable_output_root,
+        job_config=job_config,
     )
 
     responses: list[dict[str, Any]] = []
     for index, submit_payload in zip(indexes, submissions, strict=True):
+        _validate_launch_binding(
+            submit_payload,
+            job_config=job_config,
+            worker_payload=workers[index],
+            worker_index_value=index,
+            authorization=qualification_launch_authorization,
+            expected_worker_sha256=_worker_payload_file_sha256(workers[index]),
+        )
         intent_path = lease_root / f"worker-{index:02d}.post-intent.json"
         intent = {
             "attempt_id": attempts[index],
@@ -1650,6 +1752,18 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
         intent["closed_record_sha256"] = _closed_record_sha256(intent)
         _write_json_exclusive(intent, intent_path)
         _sync_directory(lease_root)
+        _validate_launch_binding(
+            submit_payload,
+            job_config=job_config,
+            worker_payload=workers[index],
+            worker_index_value=index,
+            authorization=qualification_launch_authorization,
+            expected_worker_sha256=_worker_payload_file_sha256(workers[index]),
+        )
+        require_databricks_run_idempotency_token(
+            submit_payload,
+            attempt_id=attempts[index],
+        )
         response = submit_pre_reserved_databricks_run(
             workspace,
             submit_payload,
@@ -1690,6 +1804,7 @@ def resume_publication_bf16_handoff_worker_wave(
     worker_payloads: Sequence[Mapping[str, Any]],
     attempt_ids_by_worker: Mapping[int, str],
     phase_lease_root: str | Path,
+    job_config: DatabricksPublicationBF16HandoffJobConfig,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     q8_handoff_remote_closure_authorization: PublicationHandoffRemoteClosureAuthorization,
     opener: DatabricksURLOpener | None = None,
@@ -1699,6 +1814,8 @@ def resume_publication_bf16_handoff_worker_wave(
 ]:
     """Resume the exact BF16 producer wave from its durable phase lease."""
 
+    if not isinstance(job_config, DatabricksPublicationBF16HandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
     _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     submissions = tuple(submit_payloads)
     workers = tuple(worker_payloads)
@@ -1740,6 +1857,7 @@ def resume_publication_bf16_handoff_worker_wave(
         worker_sha256 = _worker_payload_file_sha256(worker_payload)
         _validate_launch_binding(
             submit_payload,
+            job_config=job_config,
             worker_payload=worker_payload,
             worker_index_value=index,
             authorization=qualification_launch_authorization,
@@ -1769,7 +1887,8 @@ def resume_publication_bf16_handoff_worker_wave(
         "ledger_path_sha256": q8_remote_binding["ledger_path_sha256"],
         "predecessor_prefix": predecessor.to_record(),
         "q8_remote_closure": q8_remote_binding,
-        "record_type": "cachet.publication_bf16_handoff_phase_lease.v1",
+        "job_config": job_config.to_record(),
+        "record_type": _BF16_PHASE_LEASE_RECORD_TYPE,
         "submit_payload_sha256": payload_digests,
     }
     expected_lease["closed_record_sha256"] = _closed_record_sha256(expected_lease)
@@ -1802,9 +1921,18 @@ def resume_publication_bf16_handoff_worker_wave(
         lease_root,
         q8_remote_closure_binding=q8_remote_binding,
         durable_output_root=durable_output_root,
+        job_config=job_config,
     )
     responses: list[dict[str, Any]] = []
     for index, submit_payload in zip(indexes, submissions, strict=True):
+        _validate_launch_binding(
+            submit_payload,
+            job_config=job_config,
+            worker_payload=workers[index],
+            worker_index_value=index,
+            authorization=qualification_launch_authorization,
+            expected_worker_sha256=_worker_payload_file_sha256(workers[index]),
+        )
         intent_path = lease_root / f"worker-{index:02d}.post-intent.json"
         receipt_path = lease_root / f"worker-{index:02d}.receipt.json"
         expected_intent: dict[str, Any] = {
@@ -1827,6 +1955,18 @@ def resume_publication_bf16_handoff_worker_wave(
         elif not receipt_path.exists():
             _write_json_exclusive(expected_intent, intent_path)
             _sync_directory(lease_root)
+        _validate_launch_binding(
+            submit_payload,
+            job_config=job_config,
+            worker_payload=workers[index],
+            worker_index_value=index,
+            authorization=qualification_launch_authorization,
+            expected_worker_sha256=_worker_payload_file_sha256(workers[index]),
+        )
+        require_databricks_run_idempotency_token(
+            submit_payload,
+            attempt_id=attempts[index],
+        )
         response = resume_pre_reserved_databricks_run(
             workspace,
             submit_payload,
@@ -1888,6 +2028,7 @@ def require_publication_bf16_handoff_submission_authorization(
         authorization.batch_authorization,
         q8_remote_closure_binding=authorization.q8_remote_closure_binding,
         durable_output_root=authorization.durable_output_root,
+        job_config_binding=authorization.job_config_binding,
     )
     observed = (
         _bf16_phase_lease_root_sha256(authorization.phase_lease_root),
@@ -1896,6 +2037,7 @@ def require_publication_bf16_handoff_submission_authorization(
         _file_sha256(authorization.phase_lease_root / "batch-reserved.json"),
         _required_string(marker, "closed_record_sha256"),
         _canonical_sha256(_required_mapping(lease, "q8_remote_closure")),
+        _canonical_sha256(_required_mapping(lease, "job_config")),
     )
     expected = (
         authorization.phase_lease_root_sha256,
@@ -1904,6 +2046,7 @@ def require_publication_bf16_handoff_submission_authorization(
         authorization.batch_marker_file_sha256,
         authorization.batch_marker_closed_record_sha256,
         authorization.q8_remote_closure_binding_sha256,
+        authorization.job_config_sha256,
     )
     if observed != expected:
         raise ValueError("BF16 durable phase authorization evidence drift")
@@ -1916,12 +2059,14 @@ def _issue_bf16_submission_authorization(
     *,
     q8_remote_closure_binding: Mapping[str, Any],
     durable_output_root: str,
+    job_config: DatabricksPublicationBF16HandoffJobConfig,
 ) -> PublicationBF16HandoffSubmissionAuthorization:
     return PublicationBF16HandoffSubmissionAuthorization(
         batch_authorization=batch_authorization,
         phase_lease_root=phase_lease_root,
         q8_remote_closure_binding=q8_remote_closure_binding,
         durable_output_root=durable_output_root,
+        job_config=job_config,
         _issuer=_SUBMISSION_AUTHORIZATION_ISSUER,
     )
 
@@ -1932,6 +2077,7 @@ def _validate_bf16_submission_phase_files(
     *,
     q8_remote_closure_binding: Mapping[str, Any],
     durable_output_root: str,
+    job_config_binding: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(batch_authorization, DatabricksBatchReservationAuthorization):
         raise TypeError("BF16 phase batch authorization has the wrong type")
@@ -1949,7 +2095,8 @@ def _validate_bf16_submission_phase_files(
         "ledger_path_sha256": batch_authorization.ledger_path_sha256,
         "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
         "q8_remote_closure": dict(q8_remote_closure_binding),
-        "record_type": "cachet.publication_bf16_handoff_phase_lease.v1",
+        "job_config": dict(job_config_binding),
+        "record_type": _BF16_PHASE_LEASE_RECORD_TYPE,
         "submit_payload_sha256": list(
             batch_authorization.submit_payload_sha256s
         ),
@@ -2150,78 +2297,25 @@ def _validate_plan_envelope(record: Mapping[str, Any]) -> None:
 
 
 def _hardware_qualification_record(
-    value: PublicationLatencyGeneratorHardwareQualification,
+    value: PublicationLatencyGeneratorHardwareQualificationV2,
 ) -> dict[str, Any]:
-    selection = value.selection
-    record = {
-        "evidence_closed_record_sha256": _required_string(
-            value.evidence_record,
-            "closed_record_sha256",
-        ),
-        "evidence_file_sha256": value.evidence_file_sha256,
-        "evidence_uri": value.evidence_uri,
-        "expected_artifact_pins": value.expected_artifact_pins.to_record(),
-        "expected_campaign_id": value.expected_campaign_id,
-        "generation_artifacts_sha256": selection.generation_artifacts_sha256,
-        "generation_databricks_node_type_id": (
-            selection.generation_databricks_node_type_id
-        ),
-        "generation_hardware_id": selection.generation_hardware_id,
-        "generation_prefix_tokens_per_second": (
-            selection.generation_prefix_tokens_per_second
-        ),
-        "plan_closed_record_sha256": selection.plan_sha256,
-        "plan_file_sha256": value.plan_file_sha256,
-        "plan_uri": value.plan_uri,
-    }
-    _validate_qualification_record(record)
-    return record
+    return publication_latency_generator_hardware_qualification_v2_record(value)
 
 
-def _qualification_pins(record: Mapping[str, Any]) -> GPUQualificationArtifactPins:
-    pins = _required_mapping(record, "expected_artifact_pins")
-    return GPUQualificationArtifactPins(
-        runtime_lock_sha256=_required_string(pins, "runtime_lock_sha256"),
-        patched_vllm_wheel_sha256=_required_string(
-            pins,
-            "patched_vllm_wheel_sha256",
-        ),
-        package_wheel_sha256=_required_string(pins, "package_wheel_sha256"),
-        cachet_source_tree_sha256=_required_string(
-            pins,
-            "cachet_source_tree_sha256",
-        ),
-        runner_sha256=_required_string(pins, "runner_sha256"),
-        input_bundle_sha256=_required_string(pins, "input_bundle_sha256"),
+def _qualification_pins(record: Mapping[str, Any]) -> GPUQualificationArtifactPinsV2:
+    validate_publication_latency_generator_hardware_qualification_v2_record(record)
+    pins = gpu_qualification_artifact_pins_v2_from_record(
+        _required_mapping(record, "expected_artifact_pins")
     )
+    if pins.runner_sha256 == PUBLICATION_BF16_HANDOFF_RUNNER_SHA256:
+        raise ValueError(
+            "qualification runner must remain distinct from the BF16 runner"
+        )
+    return pins
 
 
 def _validate_qualification_record(record: Mapping[str, Any]) -> None:
-    for name in (
-        "evidence_closed_record_sha256",
-        "evidence_file_sha256",
-        "generation_artifacts_sha256",
-        "plan_closed_record_sha256",
-        "plan_file_sha256",
-    ):
-        _require_sha256(_required_string(record, name), name)
-    for name in ("evidence_uri", "expected_campaign_id", "plan_uri"):
-        _nonempty_string(_required_string(record, name), name)
-    _qualification_pins(record)
-    if record.get("generation_hardware_id") != (
-        PUBLICATION_LATENCY_HANDOFF_GENERATOR_HARDWARE_TARGET
-    ) or record.get("generation_databricks_node_type_id") != (
-        PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID
-    ):
-        raise ValueError("BF16 producer qualification must select one L40S")
-    if (
-        _required_positive_number(
-            record,
-            "generation_prefix_tokens_per_second",
-        )
-        < PUBLICATION_CAMPAIGN_MIN_GENERATION_TOKENS_PER_SECOND
-    ):
-        raise ValueError("BF16 producer qualification is below 35 tokens/s")
+    validate_publication_latency_generator_hardware_qualification_v2_record(record)
 
 
 def _require_authorized_worker_payload(
@@ -2232,13 +2326,7 @@ def _require_authorized_worker_payload(
     expected_worker_sha256: str | None = None,
 ) -> GPUQualificationSelection:
     _worker_index(worker_index_value)
-    if (
-        payload.get("record_type")
-        != PUBLICATION_BF16_HANDOFF_WORKER_PAYLOAD_RECORD_TYPE
-        or payload.get("schema_version") != PUBLICATION_BF16_HANDOFF_SCHEMA_VERSION
-        or payload.get("closed_record_sha256") != _closed_record_sha256(payload)
-    ):
-        raise ValueError("BF16 worker payload closure is invalid")
+    _require_v2_worker_payload_envelope(payload)
     if _required_int(payload, "worker_index") != worker_index_value:
         raise ValueError("BF16 worker payload identity differs")
     _validate_local_nvme_worker_root(
@@ -2325,17 +2413,31 @@ def _validate_job_artifact_binding(
     expected = {
         "package_wheel_sha256": config.package_wheel_sha256,
         "patched_vllm_wheel_sha256": config.patched_vllm_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": (
+            config.patched_flashinfer_wheel_sha256
+        ),
+        "runtime_closure_manifest_sha256": (
+            config.runtime_closure_manifest_sha256
+        ),
         "runtime_lock_sha256": config.runtime_lock_sha256,
         "cachet_source_tree_sha256": config.cachet_source_tree_sha256,
     }
     observed = {
         "package_wheel_sha256": pins.package_wheel_sha256,
         "patched_vllm_wheel_sha256": pins.patched_vllm_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": pins.patched_flashinfer_wheel_sha256,
+        "runtime_closure_manifest_sha256": (
+            pins.runtime_closure_manifest_sha256
+        ),
         "runtime_lock_sha256": pins.runtime_lock_sha256,
         "cachet_source_tree_sha256": pins.cachet_source_tree_sha256,
     }
     if expected != observed:
         raise ValueError("BF16 job artifacts differ from GPU qualification")
+    if pins.runner_sha256 == config.runner_sha256:
+        raise ValueError(
+            "qualification runner must remain distinct from the BF16 runner"
+        )
     if source.get("source_revision") != config.source_revision:
         raise ValueError("BF16 job source revision differs from worker payload")
 
@@ -2386,7 +2488,64 @@ def _l40s_cluster(config: DatabricksPublicationBF16HandoffJobConfig) -> dict[str
     return cluster
 
 
-def _spark_parameter(payload: Mapping[str, Any], flag: str) -> str:
+def _bf16_worker_spark_parameters(
+    config: DatabricksPublicationBF16HandoffJobConfig,
+    *,
+    worker_payload: Mapping[str, Any],
+    worker_index_value: int,
+    expected_worker_sha256: str,
+) -> tuple[str, ...]:
+    if not isinstance(config, DatabricksPublicationBF16HandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
+    _worker_index(worker_index_value)
+    if _required_int(worker_payload, "worker_index") != worker_index_value:
+        raise ValueError("BF16 worker payload differs from renderer worker index")
+    worker_label = f"{worker_index_value:02d}"
+    runtime_venv = config.runtime_venv_dir_template.format(
+        worker_index=worker_label
+    )
+    _validate_local_nvme_worker_root(
+        runtime_venv,
+        worker_index=worker_index_value,
+        field_name="runtime_venv_dir",
+    )
+    worker_uri = config.worker_payload_uri_template.format(
+        worker_index=worker_label
+    )
+    return (
+        "--runner-sha256",
+        config.runner_sha256,
+        "--package-wheel-uri",
+        config.package_wheel_uri,
+        "--package-wheel-sha256",
+        config.package_wheel_sha256,
+        "--runtime-lock-uri",
+        config.runtime_lock_uri,
+        "--runtime-lock-sha256",
+        config.runtime_lock_sha256,
+        "--patched-vllm-wheel-uri",
+        config.patched_vllm_wheel_uri,
+        "--patched-vllm-wheel-sha256",
+        config.patched_vllm_wheel_sha256,
+        "--patched-flashinfer-wheel-uri",
+        config.patched_flashinfer_wheel_uri,
+        "--patched-flashinfer-wheel-sha256",
+        config.patched_flashinfer_wheel_sha256,
+        "--runtime-closure-manifest-uri",
+        config.runtime_closure_manifest_uri,
+        "--runtime-closure-manifest-sha256",
+        config.runtime_closure_manifest_sha256,
+        "--runtime-venv-dir",
+        runtime_venv,
+        "run-worker",
+        "--worker-payload-json",
+        worker_uri,
+        "--expected-worker-payload-sha256",
+        _require_sha256(expected_worker_sha256, "expected_worker_sha256"),
+    )
+
+
+def _spark_parameters(payload: Mapping[str, Any]) -> tuple[str, ...]:
     task = _mapping_sequence(payload.get("tasks"), "tasks")
     if len(task) != 1:
         raise ValueError("BF16 submit payload must contain one task")
@@ -2397,6 +2556,11 @@ def _spark_parameter(payload: Mapping[str, Any], flag: str) -> str:
         or any(not isinstance(item, str) for item in parameters)
     ):
         raise ValueError("BF16 spark parameters are invalid")
+    return tuple(cast(Sequence[str], parameters))
+
+
+def _spark_parameter(payload: Mapping[str, Any], flag: str) -> str:
+    parameters = _spark_parameters(payload)
     positions = [index for index, item in enumerate(parameters) if item == flag]
     if len(positions) != 1 or positions[0] + 1 >= len(parameters):
         raise ValueError(f"BF16 spark parameters require exactly one {flag}")
@@ -2436,11 +2600,14 @@ def _validate_submit_payload(
 def _validate_launch_binding(
     submit_payload: Mapping[str, Any],
     *,
+    job_config: DatabricksPublicationBF16HandoffJobConfig,
     worker_payload: Mapping[str, Any],
     worker_index_value: int,
     authorization: GPUQualificationLaunchAuthorization,
     expected_worker_sha256: str,
 ) -> None:
+    if not isinstance(job_config, DatabricksPublicationBF16HandoffJobConfig):
+        raise TypeError("job_config has the wrong type")
     _validate_submit_payload(submit_payload, worker_index_value=worker_index_value)
     _require_authorized_worker_payload(
         worker_payload,
@@ -2452,21 +2619,38 @@ def _validate_launch_binding(
         worker_payload,
         "generator_hardware_qualification",
     )
-    pins = _qualification_pins(qualification)
-    expected_parameters = {
-        "--expected-worker-payload-sha256": expected_worker_sha256,
-        "--package-wheel-sha256": pins.package_wheel_sha256,
-        "--patched-vllm-wheel-sha256": pins.patched_vllm_wheel_sha256,
-        "--runtime-lock-sha256": pins.runtime_lock_sha256,
-    }
-    for flag, expected in expected_parameters.items():
-        if not hmac.compare_digest(_spark_parameter(submit_payload, flag), expected):
-            raise ValueError(f"BF16 submit parameter {flag} differs from authority")
+    _qualification_pins(qualification)
+    _validate_job_artifact_binding(job_config, worker_payload)
+    tasks = _mapping_sequence(submit_payload.get("tasks"), "tasks")
+    task = tasks[0]
+    spark_python_task = _required_mapping(task, "spark_python_task")
+    if spark_python_task.get("python_file") != job_config.runner_python_file:
+        raise ValueError("BF16 submit python_file differs from the typed job config")
+    if not hmac.compare_digest(
+        _spark_parameter(submit_payload, "--runner-sha256"),
+        job_config.runner_sha256,
+    ):
+        raise ValueError("BF16 submit runner SHA-256 differs from the typed job config")
+    expected_parameters = _bf16_worker_spark_parameters(
+        job_config,
+        worker_payload=worker_payload,
+        worker_index_value=worker_index_value,
+        expected_worker_sha256=expected_worker_sha256,
+    )
+    if _spark_parameters(submit_payload) != expected_parameters:
+        raise ValueError("BF16 submit bootstrap parameters differ from typed job config")
+    if dict(_required_mapping(task, "new_cluster")) != _l40s_cluster(job_config):
+        raise ValueError("BF16 submit cluster differs from the typed job config")
+    if submit_payload.get("run_name") != (
+        f"{job_config.run_name}-worker-{worker_index_value:02d}"
+    ):
+        raise ValueError("BF16 submit run_name differs from the typed job config")
 
 
 def _reservation_validator(
     ledger_path: Path,
     *,
+    job_config: DatabricksPublicationBF16HandoffJobConfig,
     worker_payload: Mapping[str, Any],
     worker_index_value: int,
     authorization: GPUQualificationLaunchAuthorization,
@@ -2479,6 +2663,7 @@ def _reservation_validator(
     ) -> None:
         _validate_launch_binding(
             snapshot,
+            job_config=job_config,
             worker_payload=worker_payload,
             worker_index_value=worker_index_value,
             authorization=authorization,
@@ -2701,7 +2886,13 @@ def _verify_bound_hardware_qualification_file(binding: Mapping[str, Any]) -> Non
         ),
         field_name="GPU qualification plan",
     )
-    selection = validate_gpu_qualification_evidence_record(
+    if evidence.get("record_type") != GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE:
+        raise ValueError("BF16 worker requires native-v2 qualification evidence")
+    if plan.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE:
+        raise ValueError("BF16 worker requires a native-v2 qualification plan")
+    if dict(plan) != dict(_required_mapping(binding, "plan_record")):
+        raise ValueError("BF16 worker qualification plan record binding drift")
+    selection = validate_gpu_qualification_evidence_v2_record(
         evidence,
         plan_record=plan,
         expected_campaign_id=_required_string(binding, "expected_campaign_id"),
@@ -3235,6 +3426,12 @@ def _read_worker_result(path: Path) -> dict[str, Any]:
         or record.get("closed_record_sha256") != _closed_record_sha256(record)
     ):
         raise ValueError("BF16 worker result envelope is invalid")
+    _validate_qualification_record(
+        _required_mapping(
+            _required_mapping(record, "generator_hardware"),
+            "qualification",
+        )
+    )
     return record
 
 
@@ -3421,7 +3618,19 @@ def _build_databricks_attestation(
     if original_attempt_run_id != parent_run_id:
         raise ValueError("BF16 terminal response is not the original attempt")
     raw_tasks = _mapping_sequence(terminal_snapshot.get("tasks"), "terminal tasks")
-    if len(raw_tasks) != 1 or _required_int(raw_tasks[0], "attempt_number") != 0:
+    if len(raw_tasks) != 1:
+        raise ValueError("BF16 producer must finish exactly one task")
+    submitted_tasks = _mapping_sequence(snapshot.get("tasks"), "submitted tasks")
+    submitted_python_task = _required_mapping(
+        submitted_tasks[0],
+        "spark_python_task",
+    )
+    observed_python_task = raw_tasks[0].get("spark_python_task")
+    if not isinstance(observed_python_task, Mapping) or dict(
+        observed_python_task
+    ) != dict(submitted_python_task):
+        raise ValueError("BF16 terminal spark_python_task differs from submitted task")
+    if _required_int(raw_tasks[0], "attempt_number") != 0:
         raise ValueError("BF16 producer must finish its only task on attempt zero")
     repairs_raw = terminal_snapshot.get("repair_history")
     repairs = (

@@ -19,17 +19,29 @@ from document_kv_cache.databricks_resource_ledger import (
     databricks_ledger_prefix,
 )
 from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+)
 from document_kv_cache.gpu_qualification import (
-    GPUQualificationArtifactPins,
+    GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+    GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
     GPUQualificationSelection,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+    GPUQualificationArtifactPinsV2,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
 )
 from document_kv_cache.publication_latency_handoff_generation import (
-    PublicationLatencyGeneratorHardwareQualification,
+    PublicationLatencyGeneratorHardwareQualificationV2,
 )
-from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
 
 
 VOLUME_ROOT = "dbfs:/Volumes/catalog/schema/volume"
@@ -51,9 +63,15 @@ def _config(
         package_wheel_uri=f"{VOLUME_ROOT}/inputs/cachet.whl",
         package_wheel_sha256=_digest("package-wheel"),
         runtime_lock_uri=f"{VOLUME_ROOT}/inputs/runtime.lock",
-        runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_uri=f"{VOLUME_ROOT}/inputs/vllm.whl",
-        patched_vllm_wheel_sha256=_digest("patched-vllm"),
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_uri=f"{VOLUME_ROOT}/inputs/flashinfer.whl",
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_uri=(
+            f"{VOLUME_ROOT}/inputs/runtime-closure.json"
+        ),
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         source_closure_uri=f"{VOLUME_ROOT}/inputs/cachet-source-closure.json",
         cachet_source_tree_sha256=_digest("source-closure-file"),
         request_root_uri=(
@@ -65,6 +83,26 @@ def _config(
         ),
         source_revision="a" * 40,
         single_user_name="publication@example.com",
+    )
+
+
+def _qualified_pins(
+    config: coordinator.PublicationHandoffClosureCoordinatorConfig,
+    *,
+    input_bundle_sha256: str = GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+    runner_sha256: str | None = None,
+) -> GPUQualificationArtifactPinsV2:
+    return GPUQualificationArtifactPinsV2(
+        runtime_lock_sha256=config.runtime_lock_sha256,
+        patched_vllm_wheel_sha256=config.patched_vllm_wheel_sha256,
+        patched_flashinfer_wheel_sha256=config.patched_flashinfer_wheel_sha256,
+        runtime_closure_manifest_sha256=(
+            config.runtime_closure_manifest_sha256
+        ),
+        package_wheel_sha256=config.package_wheel_sha256,
+        cachet_source_tree_sha256=config.cachet_source_tree_sha256,
+        runner_sha256=runner_sha256 or _digest("qualified-producer-runner"),
+        input_bundle_sha256=input_bundle_sha256,
     )
 
 
@@ -117,7 +155,7 @@ def _request(*, stage: str = "q8", large: bool = False) -> dict[str, Any]:
         "batch_identity_sha256": coordinator._closure_batch_identity_sha256(batch),
         "controller_lease_root_sha256": coordinator._controller_path_sha256(
             controller_lease_root,
-            domain="cachet.publication.handoff_closure.controller_lease.v1",
+            domain="cachet.publication.handoff_closure.controller_lease.v2",
         ),
         "durable_output_root_uri": output_root_uri,
         "phase_evidence": phase_evidence,
@@ -125,7 +163,7 @@ def _request(*, stage: str = "q8", large: bool = False) -> dict[str, Any]:
     }
     singleton["identity_sha256"] = coordinator._canonical_sha256(
         {
-            "domain": "cachet.publication.handoff_closure.singleton.v1",
+            "domain": "cachet.publication.handoff_closure.singleton.v2",
             **singleton,
         }
     )
@@ -138,7 +176,7 @@ def _request(*, stage: str = "q8", large: bool = False) -> dict[str, Any]:
         "execution_contract": execution_contract,
         "execution_contract_sha256": coordinator._canonical_sha256(execution_contract),
         "expected_qualification_closed_record_sha256": _digest("qualification"),
-        "input_bundle_sha256": _digest("input-bundle"),
+        "input_bundle_sha256": GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
         "ledger_lineage": {
             "ledger_id": ledger.ledger_id,
             "ledger_path_sha256": _digest("controller-ledger-path"),
@@ -157,6 +195,7 @@ def _request(*, stage: str = "q8", large: bool = False) -> dict[str, Any]:
             "uri": f"{VOLUME_ROOT}/plans/{stage}-plan.json",
         },
         "prepared_input_root_uri": f"{VOLUME_ROOT}/prepared/main-latency",
+        "qualified_artifact_pins": _qualified_pins(config).to_record(),
         "record_type": coordinator.PUBLICATION_HANDOFF_CLOSURE_REQUEST_RECORD_TYPE,
         "request_uri": (
             f"{config.request_root_uri}/request.json"
@@ -184,13 +223,13 @@ def _rebind_request_controller_lease(
     singleton["controller_lease_root_sha256"] = (
         coordinator._controller_path_sha256(
             root,
-            domain="cachet.publication.handoff_closure.controller_lease.v1",
+            domain="cachet.publication.handoff_closure.controller_lease.v2",
         )
     )
     identity = {key: value for key, value in singleton.items() if key != "identity_sha256"}
     singleton["identity_sha256"] = coordinator._canonical_sha256(
         {
-            "domain": "cachet.publication.handoff_closure.singleton.v1",
+            "domain": "cachet.publication.handoff_closure.singleton.v2",
             **identity,
         }
     )
@@ -213,17 +252,8 @@ def _authorize_request(
     _rebind_request_controller_lease(request, lease_root)
     evidence = copy.deepcopy(request["worker_evidence"])
     lineage = request["ledger_lineage"]
-    qualified_pins = GPUQualificationArtifactPins(
-        runtime_lock_sha256=request["coordinator"]["runtime_lock_sha256"],
-        patched_vllm_wheel_sha256=request["coordinator"][
-            "patched_vllm_wheel_sha256"
-        ],
-        package_wheel_sha256=request["coordinator"]["package_wheel_sha256"],
-        cachet_source_tree_sha256=request["coordinator"][
-            "cachet_source_tree_sha256"
-        ],
-        runner_sha256=_digest("qualified-producer-runner"),
-        input_bundle_sha256=request["input_bundle_sha256"],
+    qualified_pins = coordinator._q8.gpu_qualification_artifact_pins_v2_from_record(
+        request["qualified_artifact_pins"]
     )
     qualification_plan_sha256 = _digest("qualification-plan-closed")
     return coordinator.PublicationHandoffClosureRequestAuthorization(
@@ -286,7 +316,7 @@ def _hardware_qualification(
     config: coordinator.PublicationHandoffClosureCoordinatorConfig,
     *,
     input_bundle_sha256: str,
-) -> PublicationLatencyGeneratorHardwareQualification:
+) -> PublicationLatencyGeneratorHardwareQualificationV2:
     selection = GPUQualificationSelection(
         attention_backend="TRITON_ATTN",
         gpu_memory_utilization=0.75,
@@ -298,19 +328,26 @@ def _hardware_qualification(
     )
     monkeypatch.setattr(
         coordinator._q8,
-        "validate_gpu_qualification_evidence_record",
+        "validate_gpu_qualification_evidence_v2_record",
         lambda *_args, **_kwargs: selection,
     )
-    return PublicationLatencyGeneratorHardwareQualification(
-        evidence_record={"closed_record_sha256": _digest("qualification")},
-        plan_record={"closed_record_sha256": selection.plan_sha256},
+    monkeypatch.setattr(
+        coordinator._q8,
+        "validate_gpu_qualification_plan_v2_record",
+        lambda *_args, **_kwargs: None,
+    )
+    return PublicationLatencyGeneratorHardwareQualificationV2(
+        evidence_record={
+            "closed_record_sha256": _digest("qualification"),
+            "record_type": GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
+        },
+        plan_record={
+            "closed_record_sha256": selection.plan_sha256,
+            "record_type": GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+        },
         expected_campaign_id="vllm-0271-publication-v1",
-        expected_artifact_pins=GPUQualificationArtifactPins(
-            runtime_lock_sha256=config.runtime_lock_sha256,
-            patched_vllm_wheel_sha256=config.patched_vllm_wheel_sha256,
-            package_wheel_sha256=config.package_wheel_sha256,
-            cachet_source_tree_sha256=config.cachet_source_tree_sha256,
-            runner_sha256=_digest("qualified-producer-runner"),
+        expected_artifact_pins=_qualified_pins(
+            config,
             input_bundle_sha256=input_bundle_sha256,
         ),
         evidence_uri="dbfs:/qualification/evidence.json",
@@ -321,7 +358,7 @@ def _hardware_qualification(
 
 
 def _qualification_launch_authorization(
-    hardware_qualification: PublicationLatencyGeneratorHardwareQualification,
+    hardware_qualification: PublicationLatencyGeneratorHardwareQualificationV2,
 ) -> GPUQualificationLaunchAuthorization:
     ledger = DatabricksClusterHourLedger(ledger_id="qualification-ledger")
     prefix = databricks_ledger_prefix(ledger)
@@ -474,7 +511,11 @@ def _result(request: dict[str, Any], *, run_id: str = "12345") -> dict[str, Any]
             if stage == "q8"
             else coordinator._bf16.PUBLICATION_BF16_HANDOFF_EXECUTION_RECORD_TYPE
         ),
-        "schema_version": 1,
+        "schema_version": (
+            coordinator._q8.PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION
+            if stage == "q8"
+            else coordinator._bf16.PUBLICATION_BF16_HANDOFF_SCHEMA_VERSION
+        ),
         "serving_reuse": {},
         "workers": [{"worker_index": index} for index in range(16)],
     }
@@ -524,6 +565,9 @@ def _result(request: dict[str, Any], *, run_id: str = "12345") -> dict[str, Any]
             "execution_contract_sha256": request["execution_contract_sha256"],
             "input_bundle_sha256": request["input_bundle_sha256"],
             "plan": copy.deepcopy(request["plan"]),
+            "qualified_artifact_pins": copy.deepcopy(
+                request["qualified_artifact_pins"]
+            ),
             "qualification_closed_record_sha256": request[
                 "expected_qualification_closed_record_sha256"
             ],
@@ -549,6 +593,63 @@ def test_volume_uris_use_the_uc_volume_mount_not_dbfs() -> None:
     )
 
 
+def test_source_closure_requires_native_v2_runtime_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config()
+    runtime = coordinator._native_v2_source_closure_runtime_identity()
+    record: dict[str, Any] = {
+        "closed_record_sha256": "",
+        "files": [
+            {
+                "role": "cachet_package_wheel",
+                "sha256": config.package_wheel_sha256,
+            }
+        ],
+        "git": {"commit": config.source_revision},
+        "record_type": "cachet.publication_source_closure.v2",
+        "runtime": runtime,
+        "schema_version": 2,
+    }
+    record["closed_record_sha256"] = coordinator._closed_record_sha256(record)
+    source_path = tmp_path / "source-closure.json"
+    source_bytes = coordinator._canonical_json_bytes(record, pretty=True)
+    source_path.write_bytes(source_bytes)
+    bound = replace(
+        config,
+        cachet_source_tree_sha256=sha256(source_bytes).hexdigest(),
+    )
+    monkeypatch.setattr(coordinator, "_cluster_path", lambda _uri: source_path)
+    coordinator._verify_source_closure(bound.to_record())
+
+    tampered_runtime = copy.deepcopy(record)
+    tampered_runtime["runtime"]["base_lock"]["byte_count"] -= 1
+    tampered_runtime["closed_record_sha256"] = coordinator._closed_record_sha256(
+        tampered_runtime
+    )
+    tampered_bytes = coordinator._canonical_json_bytes(tampered_runtime, pretty=True)
+    source_path.write_bytes(tampered_bytes)
+    tampered_bound = replace(
+        config,
+        cachet_source_tree_sha256=sha256(tampered_bytes).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="runtime identity drift"):
+        coordinator._verify_source_closure(tampered_bound.to_record())
+
+    legacy = copy.deepcopy(record)
+    legacy["record_type"] = "cachet.publication_source_closure.v1"
+    legacy["schema_version"] = 1
+    legacy["closed_record_sha256"] = coordinator._closed_record_sha256(legacy)
+    legacy_bytes = coordinator._canonical_json_bytes(legacy, pretty=True)
+    source_path.write_bytes(legacy_bytes)
+    legacy_bound = replace(
+        config,
+        cachet_source_tree_sha256=sha256(legacy_bytes).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="source closure identity drift"):
+        coordinator._verify_source_closure(legacy_bound.to_record())
+
+
 def _terminal(payload: dict[str, Any], *, succeeded: bool = True) -> dict[str, Any]:
     result_state = "SUCCESS" if succeeded else "FAILED"
     return {
@@ -567,6 +668,9 @@ def _terminal(payload: dict[str, Any], *, succeeded: bool = True) -> dict[str, A
                 "end_time": 1_001_900,
                 "new_cluster": copy.deepcopy(payload["tasks"][0]["new_cluster"]),
                 "run_id": 22345,
+                "spark_python_task": copy.deepcopy(
+                    payload["tasks"][0]["spark_python_task"]
+                ),
                 "start_time": 1_000_100,
                 "state": {
                     "life_cycle_state": "TERMINATED",
@@ -628,6 +732,23 @@ def test_renderer_uses_one_cpu_task_and_a_bounded_request_pointer() -> None:
     assert cluster["node_type_id"] == "c5d.4xlarge"
     assert cluster["driver_node_type_id"] == "c5d.4xlarge"
     assert cluster["num_workers"] == 0
+    assert "spark.databricks.cluster.profile" in cluster["spark_conf"]
+    assert "spark.master" in cluster["spark_conf"]
+    for flag, field_name in (
+        ("--runtime-lock-sha256", "runtime_lock_sha256"),
+        ("--patched-vllm-wheel-sha256", "patched_vllm_wheel_sha256"),
+        (
+            "--patched-flashinfer-wheel-sha256",
+            "patched_flashinfer_wheel_sha256",
+        ),
+        (
+            "--runtime-closure-manifest-sha256",
+            "runtime_closure_manifest_sha256",
+        ),
+    ):
+        assert parameters[parameters.index(flag) + 1] == request["coordinator"][
+            field_name
+        ]
     assert "--request-json-b64" not in parameters
     assert parameters[parameters.index("--request-uri") + 1] == request["request_uri"]
     assert (
@@ -644,6 +765,61 @@ def test_renderer_uses_one_cpu_task_and_a_bounded_request_pointer() -> None:
             coordinator.collect_publication_handoff_closure
         ).parameters
     )
+
+
+def test_closure_runner_inherits_native_v2_four_step_cpu_runtime() -> None:
+    script = coordinator.PUBLICATION_HANDOFF_CLOSURE_RUNNER_SCRIPT
+    assert "CACHET_HANDOFF_CLOSURE_LOCKED_RUNTIME" in script
+    assert 'variable_name.upper().startswith(("PIP_", "_PIP_"))' in script
+    assert "verify_gpu_qualification_v2_runtime_installation" in script
+    install_markers = (
+        '"--require-hashes", "--only-binary", ":all:"',
+        '"vllm", patched_vllm_wheel',
+        '"flashinfer-python"',
+        '"cachet-kv", package_wheel',
+    )
+    positions = tuple(script.index(marker) for marker in install_markers)
+    assert positions == tuple(sorted(positions))
+
+
+def test_closure_request_rejects_v1_exact8_tamper_and_runner_conflation() -> None:
+    request = _request()
+    assert request["record_type"].endswith(".v2")
+    assert request["schema_version"] == 2
+    assert request["coordinator"]["record_type"].endswith(".v2")
+    assert request["coordinator"]["schema_version"] == 2
+
+    legacy = copy.deepcopy(request)
+    legacy["record_type"] = "cachet.publication_handoff_closure_request.v1"
+    legacy["schema_version"] = 1
+    legacy["closed_record_sha256"] = coordinator._closed_record_sha256(legacy)
+    with pytest.raises(ValueError, match="request envelope"):
+        coordinator._validate_closure_request(legacy)
+
+    for mutation in ("missing", "extra", "flashinfer"):
+        tampered = copy.deepcopy(request)
+        pins = tampered["qualified_artifact_pins"]
+        if mutation == "missing":
+            pins.pop("runtime_closure_manifest_sha256")
+        elif mutation == "extra":
+            pins["downstream_runner_sha256"] = _digest("extra")
+        else:
+            pins["patched_flashinfer_wheel_sha256"] = _digest("tampered-fi")
+        tampered["closed_record_sha256"] = coordinator._closed_record_sha256(
+            tampered
+        )
+        with pytest.raises(ValueError):
+            coordinator._validate_closure_request(tampered)
+
+    conflated = copy.deepcopy(request)
+    conflated["qualified_artifact_pins"]["runner_sha256"] = conflated[
+        "coordinator"
+    ]["runner_sha256"]
+    conflated["closed_record_sha256"] = coordinator._closed_record_sha256(
+        conflated
+    )
+    with pytest.raises(ValueError, match="runner must remain distinct"):
+        coordinator._validate_closure_request(conflated)
 
 
 def test_controller_cli_rejects_raw_request_as_launch_authority(
@@ -668,6 +844,9 @@ def test_raw_or_resealed_package_request_cannot_authorize_launch(
         f"{VOLUME_ROOT}/inputs/malicious-cachet.whl"
     )
     malicious["coordinator"]["package_wheel_sha256"] = _digest("malicious-wheel")
+    malicious["qualified_artifact_pins"]["package_wheel_sha256"] = _digest(
+        "malicious-wheel"
+    )
     malicious["closed_record_sha256"] = coordinator._closed_record_sha256(malicious)
     coordinator._validate_closure_request(malicious)
 
@@ -687,14 +866,7 @@ def test_raw_or_resealed_package_request_cannot_authorize_launch(
         coordinator.PublicationHandoffClosureRequestAuthorization(
             request=malicious,
             batch_evidence={},
-            qualified_artifact_pins=GPUQualificationArtifactPins(
-                runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
-                patched_vllm_wheel_sha256=_digest("patched-vllm"),
-                package_wheel_sha256=_digest("package-wheel"),
-                cachet_source_tree_sha256=_digest("source-closure-file"),
-                runner_sha256=_digest("qualified-producer-runner"),
-                input_bundle_sha256=_digest("input-bundle"),
-            ),
+            qualified_artifact_pins=_qualified_pins(_config()),
             qualification_authorization_binding={},
             controller_lease_root=_test_controller_lease_root("q8"),
             _issuer=object(),
@@ -715,7 +887,6 @@ def test_raw_or_resealed_package_request_cannot_authorize_launch(
     "field_name",
     [
         "package_wheel_sha256",
-        "patched_vllm_wheel_sha256",
         "cachet_source_tree_sha256",
     ],
 )
@@ -723,7 +894,7 @@ def test_coordinator_config_must_match_qualified_producer_artifacts_before_rende
     field_name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _config()
-    input_bundle_sha256 = _digest("input-bundle")
+    input_bundle_sha256 = GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256
     qualification = _hardware_qualification(
         monkeypatch,
         config,
@@ -750,19 +921,13 @@ def test_coordinator_config_must_match_qualified_producer_artifacts_before_rende
 
 def test_request_authority_rejects_qualified_pin_substitution() -> None:
     request = _request()
-    pins = GPUQualificationArtifactPins(
-        runtime_lock_sha256=request["coordinator"]["runtime_lock_sha256"],
-        patched_vllm_wheel_sha256=request["coordinator"][
-            "patched_vllm_wheel_sha256"
-        ],
+    pins = replace(
+        coordinator._q8.gpu_qualification_artifact_pins_v2_from_record(
+            request["qualified_artifact_pins"]
+        ),
         package_wheel_sha256=_digest("substituted-qualified-package"),
-        cachet_source_tree_sha256=request["coordinator"][
-            "cachet_source_tree_sha256"
-        ],
-        runner_sha256=_digest("qualified-producer-runner"),
-        input_bundle_sha256=request["input_bundle_sha256"],
     )
-    with pytest.raises(ValueError, match="package/source pins differ"):
+    with pytest.raises(ValueError, match="qualification artifact pins drift"):
         coordinator.PublicationHandoffClosureRequestAuthorization(
             request=request,
             batch_evidence={
@@ -780,7 +945,7 @@ def test_caller_resealed_qualification_and_arbitrary_pins_cannot_issue_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config()
-    input_bundle_sha256 = _digest("input-bundle")
+    input_bundle_sha256 = GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256
     qualification = _hardware_qualification(
         monkeypatch,
         config,
@@ -824,7 +989,7 @@ def test_caller_resealed_qualification_and_arbitrary_pins_cannot_issue_request(
             {"worker_authorizations": {}},
         ),
     )
-    arbitrary = PublicationLatencyGeneratorHardwareQualification(
+    arbitrary = PublicationLatencyGeneratorHardwareQualificationV2(
         evidence_record=dict(qualification.evidence_record),
         plan_record=dict(qualification.plan_record),
         expected_campaign_id=qualification.expected_campaign_id,
@@ -1075,6 +1240,44 @@ def test_mac_collector_never_resolves_dbfs_and_issues_live_authority(
         )
         is authority
     )
+
+
+def test_collector_rejects_raw_python_task_substitution_before_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request()
+    root = tmp_path / "reservation"
+    request_authorization = _authorize_request(
+        request, controller_lease_root=root
+    )
+    payload = _write_collection_reservation(root, request_authorization)
+    monkeypatch.setattr(
+        coordinator,
+        "download_databricks_volume_file_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("substituted Python task fetched an artifact")
+        ),
+    )
+    workspace = DatabricksWorkspaceConfig("https://workspace.example", "token")
+    for mutation in ("python_file", "ordered_parameters"):
+        terminal = _terminal(payload)
+        observed_python_task = terminal["tasks"][0]["spark_python_task"]
+        if mutation == "python_file":
+            observed_python_task["python_file"] = "dbfs:/attacker.py"
+        else:
+            parameters = observed_python_task["parameters"]
+            parameters[0], parameters[1] = parameters[1], parameters[0]
+        monkeypatch.setattr(
+            coordinator,
+            "get_databricks_run",
+            lambda _workspace, _run_id, terminal=terminal: terminal,
+        )
+        with pytest.raises(ValueError, match="spark_python_task differs"):
+            coordinator.collect_publication_handoff_closure(
+                workspace,
+                reservation_root=root,
+                request_authorization=request_authorization,
+            )
 
 
 def test_collector_rejects_resealed_tampered_result(

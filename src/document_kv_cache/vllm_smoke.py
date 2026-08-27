@@ -88,6 +88,9 @@ from document_kv_cache.model_profiles import (
     QWEN3_4B_ROPE_THETA,
     layout_for_model,
 )
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+)
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.publication_handoff_artifacts import (
     PUBLICATION_HANDOFF_STAGING_ATTESTATION_FILENAME,
@@ -108,6 +111,11 @@ from document_kv_cache.publication_inputs import (
 from document_kv_cache.runtime_telemetry import (
     RuntimeTelemetrySampler,
     bind_runtime_resource_evidence_record_file,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    VLLM_PATCHED_WHEEL_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
@@ -226,6 +234,7 @@ __all__ = [
     "VLLM_REPRESENTATIVE_WORKLOAD_PROFILES",
     "vllm_representative_workload_profile",
     "VLLMSmokeBenchmarkConfig",
+    "VLLMNativeRuntimeBundleV2",
     "VLLMPreparedHandoffGenerationConfig",
     "run_vllm_smoke_benchmark",
     "build_metadata",
@@ -239,6 +248,7 @@ __all__ = [
     "dependency_override_constraints",
     "document_kv_package_install_spec",
     "install_document_kv_package",
+    "install_native_v2_runtime",
     "installed_package_freeze",
     "verify_vllm_runtime_lock_installation",
     "materialize_virtualenv_bootstrap",
@@ -465,6 +475,125 @@ class VLLMPreparedHandoffGenerationConfig:
         }
 
 
+_VLLM_NATIVE_RUNTIME_V2_RECORD_KEYS = (
+    "package_wheel_sha256",
+    "package_wheel_uri",
+    "patched_flashinfer_wheel_sha256",
+    "patched_flashinfer_wheel_uri",
+    "patched_vllm_wheel_sha256",
+    "patched_vllm_wheel_uri",
+    "runtime_closure_manifest_sha256",
+    "runtime_closure_manifest_uri",
+    "runtime_lock_sha256",
+    "runtime_lock_uri",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class VLLMNativeRuntimeBundleV2:
+    """Exact mounted artifacts for the native-v2 publication runtime."""
+
+    runtime_lock_uri: str
+    runtime_lock_sha256: str
+    patched_vllm_wheel_uri: str
+    patched_vllm_wheel_sha256: str
+    patched_flashinfer_wheel_uri: str
+    patched_flashinfer_wheel_sha256: str
+    runtime_closure_manifest_uri: str
+    runtime_closure_manifest_sha256: str
+    package_wheel_uri: str
+    package_wheel_sha256: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "runtime_lock_uri",
+            "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
+            "package_wheel_uri",
+        ):
+            value = getattr(self, field_name)
+            if (
+                not isinstance(value, str)
+                or not value
+                or value.strip() != value
+                or any(ord(character) < 32 for character in value)
+            ):
+                raise ValueError(f"{field_name} must be a non-empty canonical path")
+            local_path = Path(_cluster_file_path(value))
+            if not local_path.is_absolute():
+                raise ValueError(f"{field_name} must resolve to an absolute path")
+        local_paths = {
+            _cluster_file_path(getattr(self, field_name))
+            for field_name in (
+                "runtime_lock_uri",
+                "patched_vllm_wheel_uri",
+                "patched_flashinfer_wheel_uri",
+                "runtime_closure_manifest_uri",
+                "package_wheel_uri",
+            )
+        }
+        if len(local_paths) != 5:
+            raise ValueError("native-v2 runtime artifact paths must be distinct")
+        for field_name in (
+            "runtime_lock_sha256",
+            "patched_vllm_wheel_sha256",
+            "patched_flashinfer_wheel_sha256",
+            "runtime_closure_manifest_sha256",
+            "package_wheel_sha256",
+        ):
+            _validated_sha256_digest(getattr(self, field_name), field_name)
+        fixed = {
+            "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+            "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "runtime_closure_manifest_sha256": (
+                RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+            ),
+        }
+        for field_name, expected in fixed.items():
+            if getattr(self, field_name) != expected:
+                raise ValueError(f"{field_name} differs from the native-v2 authority")
+
+    @classmethod
+    def from_record(cls, value: Mapping[str, Any]) -> VLLMNativeRuntimeBundleV2:
+        """Parse the exact ten-key native-v2 runtime mapping."""
+
+        if not isinstance(value, Mapping) or set(value) != set(
+            _VLLM_NATIVE_RUNTIME_V2_RECORD_KEYS
+        ):
+            raise ValueError("native-v2 runtime bundle keys differ")
+        normalized: dict[str, str] = {}
+        for field_name in _VLLM_NATIVE_RUNTIME_V2_RECORD_KEYS:
+            field_value = value[field_name]
+            if not isinstance(field_value, str):
+                raise TypeError(f"{field_name} must be a string")
+            normalized[field_name] = field_value
+        return cls(**normalized)
+
+    def to_record(self) -> dict[str, str]:
+        """Return the canonical ten-key URI and digest mapping."""
+
+        return {
+            field_name: getattr(self, field_name)
+            for field_name in _VLLM_NATIVE_RUNTIME_V2_RECORD_KEYS
+        }
+
+    def local_path(self, artifact: str) -> Path:
+        """Resolve one named artifact to its mounted local path."""
+
+        field_name = f"{artifact}_uri"
+        if field_name not in {
+            "runtime_lock_uri",
+            "patched_vllm_wheel_uri",
+            "patched_flashinfer_wheel_uri",
+            "runtime_closure_manifest_uri",
+            "package_wheel_uri",
+        }:
+            raise ValueError("unknown native-v2 runtime artifact")
+        return Path(_cluster_file_path(getattr(self, field_name)))
+
+
 @dataclass(frozen=True)
 class VLLMSmokeBenchmarkConfig:
     """Runtime configuration for a one-node Databricks vLLM smoke run."""
@@ -539,6 +668,7 @@ class VLLMSmokeBenchmarkConfig:
     temperature: float = 0.0
     generation_seed: int | None = None
     payload_cache_prime_target_count: int | None = None
+    native_runtime_v2: VLLMNativeRuntimeBundleV2 | None = None
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -1147,6 +1277,26 @@ class VLLMSmokeBenchmarkConfig:
                     "approved workload manifest"
                 )
             _validate_vllm_representative_workload(self)
+        native_runtime = self.native_runtime_v2
+        if native_runtime is not None and not isinstance(
+            native_runtime, VLLMNativeRuntimeBundleV2
+        ):
+            raise TypeError("native_runtime_v2 must be a VLLMNativeRuntimeBundleV2")
+        if native_runtime is not None and self.package_install_spec is not None:
+            configured_package = os.path.normpath(
+                _cluster_file_path(self.package_install_spec)
+            )
+            native_package = os.path.normpath(
+                str(native_runtime.local_path("package_wheel"))
+            )
+            if configured_package != native_package:
+                raise ValueError(
+                    "package_install_spec must match native_runtime_v2 package_wheel_uri"
+                )
+        if self.benchmark_evidence_policy == "publication" and native_runtime is None:
+            raise ValueError(
+                "publication benchmarks require a complete native_runtime_v2 bundle"
+            )
 
     @property
     def local_dir(self) -> Path:
@@ -1603,13 +1753,18 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     write_json(config.metadata_path, metadata)
 
     create_venv(config.venv_dir)
-    install_vllm(config.venv_python)
-    install_document_kv_package(
-        config.venv_python, document_kv_package_install_spec(config)
-    )
-    metadata["vllm_runtime_lock_verification"] = verify_vllm_runtime_lock_installation(
-        config.venv_python
-    )
+    if config.native_runtime_v2 is None:
+        install_vllm(config.venv_python)
+        install_document_kv_package(
+            config.venv_python, document_kv_package_install_spec(config)
+        )
+        metadata["vllm_runtime_lock_verification"] = (
+            verify_vllm_runtime_lock_installation(config.venv_python)
+        )
+    else:
+        native_runtime_attestation = install_native_v2_runtime(config)
+        metadata["native_runtime_v2_attestation"] = native_runtime_attestation
+        metadata["vllm_runtime_lock_verification"] = native_runtime_attestation
     metadata["vllm_runtime_lock_verification_scope"] = (
         "base-runtime-before-unlocked-lmcache" if is_multi else "final-runtime"
     )
@@ -1740,14 +1895,36 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "vllm_wheel_filename": VLLM_WHEEL_FILENAME,
         "vllm_wheel_url": VLLM_WHEEL_URL,
         "vllm_wheel_sha256": VLLM_WHEEL_SHA256,
-        "vllm_patched_wheel_uri": os.environ.get(VLLM_PATCHED_WHEEL_URI_ENV),
-        "vllm_patched_wheel_sha256": os.environ.get(VLLM_PATCHED_WHEEL_SHA256_ENV),
-        "vllm_runtime_lock": {
-            "filename": VLLM_RUNTIME_LOCK_FILENAME,
-            "sha256": VLLM_RUNTIME_LOCK_SHA256,
-            "locked_distribution_count": VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT,
-            "platform": "CPython 3.11 / Linux x86_64 / glibc 2.35",
-        },
+        "vllm_patched_wheel_uri": (
+            config.native_runtime_v2.patched_vllm_wheel_uri
+            if config.native_runtime_v2 is not None
+            else os.environ.get(VLLM_PATCHED_WHEEL_URI_ENV)
+        ),
+        "vllm_patched_wheel_sha256": (
+            config.native_runtime_v2.patched_vllm_wheel_sha256
+            if config.native_runtime_v2 is not None
+            else os.environ.get(VLLM_PATCHED_WHEEL_SHA256_ENV)
+        ),
+        "vllm_runtime_lock": (
+            {
+                "uri": config.native_runtime_v2.runtime_lock_uri,
+                "sha256": config.native_runtime_v2.runtime_lock_sha256,
+                "platform": "CPython 3.11 / Linux x86_64 / glibc 2.35",
+                "runtime_contract": "native-v2",
+            }
+            if config.native_runtime_v2 is not None
+            else {
+                "filename": VLLM_RUNTIME_LOCK_FILENAME,
+                "sha256": VLLM_RUNTIME_LOCK_SHA256,
+                "locked_distribution_count": VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT,
+                "platform": "CPython 3.11 / Linux x86_64 / glibc 2.35",
+            }
+        ),
+        "native_runtime_v2": (
+            None
+            if config.native_runtime_v2 is None
+            else config.native_runtime_v2.to_record()
+        ),
         "virtualenv_bootstrap": {
             "version": VIRTUALENV_BOOTSTRAP_VERSION,
             "filename": VIRTUALENV_BOOTSTRAP_FILENAME,
@@ -1769,7 +1946,11 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "runtime_telemetry_path": str(config.runtime_telemetry_copy_path),
         "runtime_telemetry_interval_seconds": config.runtime_telemetry_interval_seconds,
         "dependency_constraints": dependency_constraints(),
-        "dependency_index_urls": list(VLLM_PACKAGE_INDEX_URLS),
+        "dependency_index_urls": (
+            []
+            if config.native_runtime_v2 is not None
+            else list(VLLM_PACKAGE_INDEX_URLS)
+        ),
         "vllm_cuda_variant": VLLM_CUDA_VARIANT,
         "vllm_cuda_requirements_sha256": VLLM_CUDA_REQUIREMENTS_SHA256,
         "vllm_dockerfile_sha256": VLLM_DOCKERFILE_SHA256,
@@ -2008,6 +2189,8 @@ def dependency_override_constraints() -> list[str]:
 
 
 def _cluster_file_path(uri: str) -> str:
+    if uri.startswith("dbfs:/Volumes/"):
+        return uri.removeprefix("dbfs:")
     if uri.startswith("dbfs:/"):
         return "/dbfs/" + uri.removeprefix("dbfs:/").lstrip("/")
     return uri
@@ -2025,6 +2208,8 @@ def _source_checkout_root() -> Path | None:
 def document_kv_package_install_spec(config: VLLMSmokeBenchmarkConfig) -> str:
     """Return the package spec that must be installed into the vLLM venv."""
 
+    if config.native_runtime_v2 is not None:
+        return str(config.native_runtime_v2.local_path("package_wheel"))
     if config.package_install_spec is not None:
         return _cluster_file_path(config.package_install_spec)
     env_value = os.environ.get(DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV)
@@ -4690,6 +4875,248 @@ def install_vllm(python_executable: Path) -> None:
     )
 
 
+_NATIVE_RUNTIME_V2_ARTIFACT_NAMES = (
+    "runtime_lock",
+    "patched_vllm_wheel",
+    "patched_flashinfer_wheel",
+    "runtime_closure_manifest",
+    "package_wheel",
+)
+_NATIVE_RUNTIME_V2_INSTALL_TIMEOUT_SECONDS = 3_600
+_NATIVE_RUNTIME_V2_PIP_CHECK_TIMEOUT_SECONDS = 300
+_NATIVE_RUNTIME_V2_FINAL_VERIFIER_TIMEOUT_SECONDS = 300
+_NATIVE_RUNTIME_V2_PIP_CHECK_STDOUT = "No broken requirements found.\n"
+
+
+def _native_runtime_v2_artifact_snapshot(
+    bundle: VLLMNativeRuntimeBundleV2,
+) -> tuple[dict[str, Path], tuple[tuple[object, ...], ...]]:
+    paths: dict[str, Path] = {}
+    rows: list[tuple[object, ...]] = []
+    for artifact in _NATIVE_RUNTIME_V2_ARTIFACT_NAMES:
+        path = bundle.local_path(artifact)
+        try:
+            info = os.lstat(path)
+        except OSError as exc:
+            raise RuntimeError(
+                f"native-v2 runtime artifact is unavailable: {artifact}"
+            ) from exc
+        if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size <= 0:
+            raise RuntimeError(
+                f"native-v2 runtime artifact must be one non-empty regular file: {artifact}"
+            )
+        expected_sha256 = getattr(bundle, f"{artifact}_sha256")
+        observed_sha256 = _file_sha256(path)
+        if observed_sha256 != expected_sha256:
+            raise RuntimeError(f"native-v2 runtime artifact SHA-256 differs: {artifact}")
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"native-v2 runtime artifact cannot be resolved: {artifact}"
+            ) from exc
+        paths[artifact] = resolved
+        rows.append(
+            (
+                artifact,
+                str(path),
+                str(resolved),
+                info.st_dev,
+                info.st_ino,
+                stat.S_IMODE(info.st_mode),
+                info.st_uid,
+                info.st_gid,
+                info.st_nlink,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+                observed_sha256,
+            )
+        )
+    if len({str(path) for path in paths.values()}) != len(paths):
+        raise RuntimeError("native-v2 runtime artifacts resolve to duplicate files")
+    return paths, tuple(rows)
+
+
+def _native_v2_direct_reference(
+    distribution: str,
+    path: Path,
+    expected_sha256: str,
+) -> str:
+    return f"{distribution} @ {path.as_uri()}#sha256={expected_sha256}"
+
+
+def _run_native_v2_final_runtime_verifier(
+    python_executable: Path,
+    *,
+    paths: Mapping[str, Path],
+    bundle: VLLMNativeRuntimeBundleV2,
+    environment: Mapping[str, str],
+    cwd: Path,
+) -> dict[str, Any]:
+    code = (
+        "import json,sys;"
+        "from document_kv_cache._gpu_qualification_sentinels_v2 import "
+        "verify_gpu_qualification_v2_runtime_installation as verify;"
+        "record=verify(runtime_lock=sys.argv[1],vllm_uri=sys.argv[2],"
+        "flashinfer_uri=sys.argv[3],runtime_closure_manifest=sys.argv[4],"
+        "package_uri=sys.argv[5],package_sha256=sys.argv[6]);"
+        "print(json.dumps(record,allow_nan=False,ensure_ascii=True,"
+        "separators=(',',':'),sort_keys=True))"
+    )
+    vllm_uri = paths["patched_vllm_wheel"].as_uri()
+    flashinfer_uri = paths["patched_flashinfer_wheel"].as_uri()
+    package_uri = paths["package_wheel"].as_uri()
+    completed = subprocess.run(
+        [
+            str(python_executable),
+            "-c",
+            code,
+            str(paths["runtime_lock"]),
+            vllm_uri,
+            flashinfer_uri,
+            str(paths["runtime_closure_manifest"]),
+            package_uri,
+            bundle.package_wheel_sha256,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=_NATIVE_RUNTIME_V2_FINAL_VERIFIER_TIMEOUT_SECONDS,
+        env=dict(environment),
+        cwd=cwd,
+    )
+    if completed.stderr != "":
+        raise RuntimeError("native-v2 final runtime verifier wrote stderr")
+    try:
+        value = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("native-v2 final runtime verifier output is invalid") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("native-v2 final runtime verifier returned no record")
+    canonical_stdout = (
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    if completed.stdout != canonical_stdout:
+        raise RuntimeError("native-v2 final runtime verifier output is not canonical")
+    from document_kv_cache.gpu_qualification_v2 import (
+        validate_gpu_qualification_v2_runtime_attestation,
+    )
+
+    validate_gpu_qualification_v2_runtime_attestation(value)
+    if (
+        value.get("vllm_direct_url") != vllm_uri
+        or value.get("flashinfer_direct_url") != flashinfer_uri
+    ):
+        raise RuntimeError("native-v2 final runtime verifier origin differs")
+    return value
+
+
+def install_native_v2_runtime(
+    config: VLLMSmokeBenchmarkConfig,
+) -> dict[str, Any]:
+    """Install and attest the complete native-v2 publication runtime."""
+
+    bundle = config.native_runtime_v2
+    if bundle is None:
+        raise ValueError("native_runtime_v2 is required")
+    paths, opening_snapshot = _native_runtime_v2_artifact_snapshot(bundle)
+    environment = _pip_subprocess_environment()
+    environment["PYTHONSAFEPATH"] = "1"
+    commands = [
+        [
+            str(config.venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            "--requirement",
+            str(paths["runtime_lock"]),
+        ],
+        [
+            str(config.venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            _native_v2_direct_reference(
+                "vllm",
+                paths["patched_vllm_wheel"],
+                bundle.patched_vllm_wheel_sha256,
+            ),
+        ],
+        [
+            str(config.venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            _native_v2_direct_reference(
+                "flashinfer-python",
+                paths["patched_flashinfer_wheel"],
+                bundle.patched_flashinfer_wheel_sha256,
+            ),
+        ],
+        [
+            str(config.venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            _native_v2_direct_reference(
+                "cachet-kv",
+                paths["package_wheel"],
+                bundle.package_wheel_sha256,
+            ),
+        ],
+    ]
+    for command in commands:
+        print("+", " ".join(command), flush=True)
+        subprocess.run(
+            command,
+            check=True,
+            timeout=_NATIVE_RUNTIME_V2_INSTALL_TIMEOUT_SECONDS,
+            env=environment,
+            cwd=config.venv_dir,
+        )
+    pip_check_command = [str(config.venv_python), "-m", "pip", "check"]
+    print("+", " ".join(pip_check_command), flush=True)
+    pip_check = subprocess.run(
+        pip_check_command,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=_NATIVE_RUNTIME_V2_PIP_CHECK_TIMEOUT_SECONDS,
+        env=environment,
+        cwd=config.venv_dir,
+    )
+    if (
+        pip_check.stdout != _NATIVE_RUNTIME_V2_PIP_CHECK_STDOUT
+        or pip_check.stderr != ""
+    ):
+        raise RuntimeError("native-v2 pip check output differs")
+    attestation = _run_native_v2_final_runtime_verifier(
+        config.venv_python,
+        paths=paths,
+        bundle=bundle,
+        environment=environment,
+        cwd=config.venv_dir,
+    )
+    closing_paths, closing_snapshot = _native_runtime_v2_artifact_snapshot(bundle)
+    if closing_paths != paths or closing_snapshot != opening_snapshot:
+        raise RuntimeError("native-v2 runtime artifacts changed during installation")
+    return attestation
+
+
 def install_document_kv_package(python_executable: Path, install_spec: str) -> None:
     run(
         [str(python_executable), "-m", "pip", "install", "--no-deps", install_spec],
@@ -4733,7 +5160,11 @@ def verify_vllm_runtime_patch_closure(
                 "id": patch["id"],
                 "base_version": VLLM_VERSION,
                 "package_version": VLLM_PACKAGE_VERSION,
-                "wheel_sha256": os.environ.get(VLLM_PATCHED_WHEEL_SHA256_ENV),
+                "wheel_sha256": (
+                    config.native_runtime_v2.patched_vllm_wheel_sha256
+                    if config.native_runtime_v2 is not None
+                    else os.environ.get(VLLM_PATCHED_WHEEL_SHA256_ENV)
+                ),
                 "path": str(path),
                 "verified": True,
                 "installed_sha256": digest,
@@ -5970,6 +6401,13 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--native-runtime-v2-json",
+        help=(
+            "Exact ten-key mounted URI/SHA mapping for the native-v2 publication "
+            "runtime. Required by publication evidence runs."
+        ),
+    )
+    parser.add_argument(
         "--dataset",
         action="append",
         default=None,
@@ -6092,6 +6530,16 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
             "--publication-latency-schedule-record-json",
         )
     )
+    native_runtime_v2 = (
+        None
+        if args.native_runtime_v2_json is None
+        else VLLMNativeRuntimeBundleV2.from_record(
+            _json_object_from_cli(
+                args.native_runtime_v2_json,
+                "--native-runtime-v2-json",
+            )
+        )
+    )
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
         benchmark_suite_id=args.benchmark_suite_id,
@@ -6173,6 +6621,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
             if args.publication_handoff_local_nvme_dir is None
             else Path(_cluster_file_path(args.publication_handoff_local_nvme_dir))
         ),
+        native_runtime_v2=native_runtime_v2,
     )
 
 
