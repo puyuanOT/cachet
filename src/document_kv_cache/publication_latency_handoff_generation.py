@@ -452,7 +452,7 @@ def _bootstrap(argv: list[str]) -> None:
         raise FileExistsError("refusing to reuse an unverified handoff runtime")
     pip_environment = _pip_subprocess_environment()
     subprocess.check_call(
-        [sys.executable, "-m", "venv", venv_dir],
+        [sys.executable, "-m", "venv", "--copies", venv_dir],
         env=pip_environment,
     )
     pip_environment["VIRTUAL_ENV"] = venv_dir

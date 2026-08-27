@@ -564,6 +564,9 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
     assert '"--extra-index-url"' not in (
         generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
     )
+    assert '[sys.executable, "-m", "venv", "--copies", venv_dir]' in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
     install_script = generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT.split(
         "pip = [venv_python, \"-m\", \"pip\"]",
         maxsplit=1,

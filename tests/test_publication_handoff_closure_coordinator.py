@@ -771,6 +771,7 @@ def test_closure_runner_inherits_native_v2_four_step_cpu_runtime() -> None:
     script = coordinator.PUBLICATION_HANDOFF_CLOSURE_RUNNER_SCRIPT
     assert "CACHET_HANDOFF_CLOSURE_LOCKED_RUNTIME" in script
     assert 'variable_name.upper().startswith(("PIP_", "_PIP_"))' in script
+    assert '[sys.executable, "-m", "venv", "--copies", venv_dir]' in script
     assert "verify_gpu_qualification_v2_runtime_installation" in script
     install_markers = (
         '"--require-hashes", "--only-binary", ":all:"',
