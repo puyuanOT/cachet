@@ -640,6 +640,7 @@ def run_gpu_qualification_local_preflight_v2(
         output_root,
         command_runner=_run_command,
         now=_utc_now,
+        verify_source_rebuild=True,
         final_latency_semantic_mode=_LatencySemanticValidationMode.EXECUTE,
     )
 
@@ -691,6 +692,7 @@ def validate_gpu_qualification_local_preflight_bundle_v2(
             Path(temporary).resolve() / "preflight",
             command_runner=_run_command,
             now=_utc_now,
+            verify_source_rebuild=False,
             final_latency_semantic_mode=_LatencySemanticValidationMode.STATIC,
         )
     _validate_live_workspace_and_remote_artifacts_v2(

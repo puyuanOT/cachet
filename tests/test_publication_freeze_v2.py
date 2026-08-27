@@ -486,6 +486,36 @@ def test_source_closure_v2_validates_seal_and_rejects_v1_identity(
     assert not output.exists()
 
 
+def test_source_closure_without_rebuild_never_enters_pypi_build_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record, repository, artifact_root = _source_record_fixture(
+        tmp_path, monkeypatch
+    )
+    build_calls: list[str] = []
+
+    def forbidden_build(*_args: object, **_kwargs: object) -> None:
+        build_calls.append("build_package_twice")
+
+    def forbidden_pypi_environment(*_args: object, **_kwargs: object) -> None:
+        build_calls.append("pypi_build_environment")
+
+    monkeypatch.setattr(freeze_v1, "_build_package_twice", forbidden_build)
+    monkeypatch.setattr(freeze_v1, "_build_environment", forbidden_pypi_environment)
+
+    freeze_v2._validate_publication_source_closure_v2_record(
+        record,
+        repository_root=repository,
+        artifact_root=artifact_root,
+        explicit_artifact_paths=None,
+        verify_rebuild=False,
+        latency_semantic_mode=freeze_v2._LatencySemanticValidationMode.STATIC,
+    )
+
+    assert build_calls == []
+
+
 def test_source_builder_reference_failure_leaves_no_artifact_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1153,6 +1183,37 @@ def _run_synthetic_preflight(
     return evidence, output, plan
 
 
+def test_public_preflight_authoring_explicitly_enables_source_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs, _plan_record = _preflight_inputs(tmp_path)
+    observed: dict[str, object] = {}
+    sealed = {"sealed": True}
+
+    def observe_authoring(
+        *_args: object,
+        **kwargs: object,
+    ) -> dict[str, Any]:
+        observed.update(kwargs)
+        return sealed
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "_run_gpu_qualification_local_preflight_v2",
+        observe_authoring,
+    )
+
+    assert freeze_v2.run_gpu_qualification_local_preflight_v2(
+        inputs,
+        tmp_path / "authoring-preflight",
+    ) is sealed
+    assert observed["verify_source_rebuild"] is True
+    assert observed["final_latency_semantic_mode"] is (
+        freeze_v2._LatencySemanticValidationMode.EXECUTE
+    )
+
+
 def test_preflight_writes_exact_eight_children_and_parent_file_seals(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1216,6 +1277,30 @@ def test_preflight_rejects_resealed_semantic_child_tamper(
             output / "local-preflight-evidence.json",
             plan=plan,
         )
+
+    replay_started = False
+
+    def replay_must_not_start(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        nonlocal replay_started
+        replay_started = True
+        raise AssertionError("ephemeral live replay started before semantic validation")
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "_run_gpu_qualification_local_preflight_v2",
+        replay_must_not_start,
+    )
+    with pytest.raises(ValueError, match="runtime_artifact_closure.*result differs"):
+        freeze_v2.validate_gpu_qualification_local_preflight_bundle_v2(
+            output / "local-preflight-evidence.json",
+            plan_record=plan,
+            submit_payloads=tuple({} for _ in range(14)),
+            workspace_config=freeze_v2.DatabricksWorkspaceConfig(
+                "https://workspace.example",
+                "secret",
+            ),
+        )
+    assert replay_started is False
 
 
 def test_preflight_command_failure_never_writes_parent_seal(
@@ -1283,6 +1368,7 @@ def test_live_preflight_executes_latency_once_after_remote_and_detects_mutation(
     original_structural = freeze_v2._validate_preflight_bundle_structural
     original_hashes = freeze_v2._preflight_bundle_file_hashes
     events: list[str] = []
+    replay_source_rebuilds: list[bool] = []
     mutate_after_execute = False
     mutate_during_remote_at: int | None = None
     remote_failure_at: int | None = None
@@ -1318,9 +1404,11 @@ def test_live_preflight_executes_latency_once_after_remote_and_detects_mutation(
         _inputs: freeze_v2.GPUQualificationLocalPreflightInputsV2,
         _output_root: str | Path,
         *,
+        verify_source_rebuild: bool,
         final_latency_semantic_mode: freeze_v2._LatencySemanticValidationMode,
         **_kwargs: object,
     ) -> dict[str, Any]:
+        replay_source_rebuilds.append(verify_source_rebuild)
         events.append(f"ephemeral:{final_latency_semantic_mode.value}")
         return evidence
 
@@ -1474,6 +1562,7 @@ def test_live_preflight_executes_latency_once_after_remote_and_detects_mutation(
         "structural:static",
     ]
     ruff_path.write_bytes(original_ruff_bytes)
+    assert replay_source_rebuilds == [False] * 5
 
 
 def test_v2_artifact_and_check_role_constants_are_exact() -> None:
