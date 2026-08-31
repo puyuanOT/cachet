@@ -59,6 +59,16 @@ _RETAINED_LEDGER_PATH = (
 )
 _SINGLE_USER_NAME = "v2-controller@example.com"
 _OUTPUT_ROOT = "dbfs:/Volumes/catalog/schema/volume/gpuq-v2-results"
+_SUCCESSOR_LEDGER_PREFIX = ledger_api.DatabricksLedgerPrefix(
+    ledger_id=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.ledger_id,
+    cap_cluster_hours=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.cap_cluster_hours,
+    reservation_count=279,
+    submission_receipt_count=141,
+    terminal_actual_count=279,
+    prefix_sha256=(
+        "7bdfab96021910df7a06ac1cf87604eefe7c1f4181f49a242212f699c443ca1a"
+    ),
+)
 
 
 def _digest(value: str) -> str:
@@ -127,32 +137,7 @@ def _write_ledger(path: Path, ledger: ledger_api.DatabricksClusterHourLedger) ->
     )
 
 
-def _copy_opening_ledger(
-    destination: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
-    retained_stat = _stable_stat(_RETAINED_LEDGER_PATH)
-    retained = ledger_api.read_databricks_cluster_hour_ledger_json(
-        _RETAINED_LEDGER_PATH
-    )
-    opening_prefix = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
-    ledger_api.require_databricks_ledger_prefix(retained, opening_prefix)
-    opening = replace(
-        retained,
-        reservations=retained.reservations[: opening_prefix.reservation_count],
-        submission_receipts=retained.submission_receipts[
-            : opening_prefix.submission_receipt_count
-        ],
-        terminal_actuals=retained.terminal_actuals[
-            : opening_prefix.terminal_actual_count
-        ],
-    )
-    assert ledger_api.databricks_ledger_prefix(opening) == opening_prefix
-    _write_ledger(destination, opening)
-    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
-    assert _stable_stat(_RETAINED_LEDGER_PATH) == retained_stat
-
+def _bind_isolated_ledger_path(monkeypatch: pytest.MonkeyPatch) -> None:
     def frozen_path_sha256(_path: str | Path) -> str:
         return PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256
 
@@ -179,6 +164,66 @@ def _copy_opening_ledger(
         "databricks_ledger_path_sha256",
         frozen_path_sha256,
     )
+
+
+def _copy_opening_ledger(
+    destination: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
+    retained_stat = _stable_stat(_RETAINED_LEDGER_PATH)
+    retained = ledger_api.read_databricks_cluster_hour_ledger_json(
+        _RETAINED_LEDGER_PATH
+    )
+    opening_prefix = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    ledger_api.require_databricks_ledger_prefix(retained, opening_prefix)
+    opening = replace(
+        retained,
+        reservations=retained.reservations[: opening_prefix.reservation_count],
+        submission_receipts=retained.submission_receipts[
+            : opening_prefix.submission_receipt_count
+        ],
+        terminal_actuals=retained.terminal_actuals[
+            : opening_prefix.terminal_actual_count
+        ],
+    )
+    assert ledger_api.databricks_ledger_prefix(opening) == opening_prefix
+    _write_ledger(destination, opening)
+    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
+    assert _stable_stat(_RETAINED_LEDGER_PATH) == retained_stat
+    _bind_isolated_ledger_path(monkeypatch)
+
+
+def _copy_retained_live_ledger(
+    destination: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
+    retained_stat = _stable_stat(_RETAINED_LEDGER_PATH)
+    retained = ledger_api.read_databricks_cluster_hour_ledger_json(
+        _RETAINED_LEDGER_PATH
+    )
+    historical = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    ledger_api.require_databricks_ledger_prefix(retained, historical)
+    ledger_api.require_databricks_ledger_prefix(retained, _SUCCESSOR_LEDGER_PREFIX)
+    successor = replace(
+        retained,
+        reservations=retained.reservations[
+            : _SUCCESSOR_LEDGER_PREFIX.reservation_count
+        ],
+        submission_receipts=retained.submission_receipts[
+            : _SUCCESSOR_LEDGER_PREFIX.submission_receipt_count
+        ],
+        terminal_actuals=retained.terminal_actuals[
+            : _SUCCESSOR_LEDGER_PREFIX.terminal_actual_count
+        ],
+    )
+    assert ledger_api.databricks_ledger_prefix(successor) == _SUCCESSOR_LEDGER_PREFIX
+    assert _SUCCESSOR_LEDGER_PREFIX != historical
+    _write_ledger(destination, successor)
+    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
+    assert _stable_stat(_RETAINED_LEDGER_PATH) == retained_stat
+    _bind_isolated_ledger_path(monkeypatch)
 
 
 def _install_preflight_stub(
@@ -288,6 +333,7 @@ class _Case:
     plan: dict[str, Any]
     artifact_uris: dict[str, str]
     ledger_path: Path
+    phase_predecessor: ledger_api.DatabricksLedgerPrefix
     receipt_root: Path
     preflight_path: Path
     preflight_freshness: list[bool]
@@ -300,14 +346,23 @@ class _Case:
             "artifact_uris": self.artifact_uris,
             "output_root": _OUTPUT_ROOT,
             "ledger_path": self.ledger_path,
+            "expected_phase_predecessor_prefix": self.phase_predecessor,
             "submit_receipt_root": self.receipt_root,
             "local_preflight_evidence_path": self.preflight_path,
         }
 
 
-def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Case:
+def _case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    retained_live_ledger: bool = False,
+) -> _Case:
     ledger_path = tmp_path / "cluster-hours.json"
-    _copy_opening_ledger(ledger_path, monkeypatch)
+    if retained_live_ledger:
+        _copy_retained_live_ledger(ledger_path, monkeypatch)
+    else:
+        _copy_opening_ledger(ledger_path, monkeypatch)
     plan = _plan()
     config = DatabricksWorkspaceConfig(
         "https://dbc.example",
@@ -329,6 +384,9 @@ def _case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Case:
         plan=plan,
         artifact_uris=_artifact_uris(),
         ledger_path=ledger_path,
+        phase_predecessor=ledger_api.databricks_ledger_prefix(
+            ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path)
+        ),
         receipt_root=tmp_path / "submit-receipts-v2",
         preflight_path=_write_preflight(plan, tmp_path / "preflight-v2.json"),
         preflight_freshness=_install_preflight_stub(monkeypatch),
@@ -550,6 +608,7 @@ def test_v2_submit_and_resume_signatures_own_payload_transport_and_clock() -> No
         "artifact_uris",
         "output_root",
         "ledger_path",
+        "expected_phase_predecessor_prefix",
         "submit_receipt_root",
         "local_preflight_evidence_path",
     )
@@ -653,6 +712,101 @@ def test_fresh_v2_submit_reserves_and_receipts_exact_fourteen_with_v2_seals(
         _assert_v2_seal(receipt)
 
 
+def test_successor_fresh_submit_uses_complete_live_predecessor_after_historical_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, retained_live_ledger=True)
+    historical = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    before = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    live_predecessor = ledger_api.databricks_ledger_prefix(before)
+    assert case.plan["campaign_ledger_prefix"] == historical.to_record()
+    assert (
+        historical.reservation_count,
+        historical.submission_receipt_count,
+        historical.terminal_actual_count,
+    ) == (265, 127, 265)
+    assert (
+        live_predecessor.reservation_count,
+        live_predecessor.submission_receipt_count,
+        live_predecessor.terminal_actual_count,
+    ) == (279, 141, 279)
+
+    receipts = databricks_v2.submit_gpu_qualification_jobs_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+
+    after = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(receipts) == 14
+    assert after.reservations[: live_predecessor.reservation_count] == (
+        before.reservations
+    )
+    assert after.submission_receipts[: live_predecessor.submission_receipt_count] == (
+        before.submission_receipts
+    )
+    assert after.terminal_actuals == before.terminal_actuals
+    assert len(after.reservations) == live_predecessor.reservation_count + 14
+    assert len(after.submission_receipts) == (
+        live_predecessor.submission_receipt_count + 14
+    )
+    assert tuple(
+        item.attempt_id
+        for item in after.reservations[live_predecessor.reservation_count :]
+    ) == case.cloud.attempt_ids
+    assert tuple(
+        item.attempt_id
+        for item in after.submission_receipts[
+            live_predecessor.submission_receipt_count :
+        ]
+    ) == case.cloud.attempt_ids
+
+    lease = _json(case.receipt_root / "phase-lease-v2.json")
+    marker = _json(case.receipt_root / "batch-reserved-v2.json")
+    assert lease["predecessor_prefix"] == live_predecessor.to_record()
+    assert marker["predecessor_prefix"] == live_predecessor.to_record()
+    expected_batch_prefix = ledger_api.databricks_ledger_prefix_at_counts(
+        after,
+        reservation_count=live_predecessor.reservation_count + 14,
+        submission_receipt_count=live_predecessor.submission_receipt_count,
+        terminal_actual_count=live_predecessor.terminal_actual_count,
+    )
+    assert marker["batch_prefix"] == expected_batch_prefix.to_record()
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+    assert case.preflight_freshness == [True]
+
+
+def test_successor_submit_rejects_nonquiescent_live_predecessor_without_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, retained_live_ledger=True)
+    live = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    _write_ledger(
+        case.ledger_path,
+        replace(live, terminal_actuals=live.terminal_actuals[:-1]),
+    )
+    nonquiescent = ledger_api.read_databricks_cluster_hour_ledger_json(
+        case.ledger_path
+    )
+    assert nonquiescent.active_reserved_task_count == 1
+    assert nonquiescent.active_reserved_cluster_hours > 0.0
+    case.phase_predecessor = ledger_api.databricks_ledger_prefix(nonquiescent)
+    ledger_before = case.ledger_path.read_bytes()
+    ledger_stat = _stable_stat(case.ledger_path)
+
+    with pytest.raises(ValueError, match="phase predecessor must be quiescent"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _stable_stat(case.ledger_path) == ledger_stat
+    assert case.cloud.post_attempt_ids == []
+    assert not case.receipt_root.exists()
+
+
 def test_resume_recovers_exact_lease_only_crash_and_reserves_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -700,6 +854,200 @@ def test_resume_recovers_exact_lease_only_crash_and_reserves_once(
     assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
     assert case.cloud.resume_attempt_ids == list(case.cloud.attempt_ids)
     assert case.preflight_freshness == [True, False]
+
+
+def test_reservation_postcommit_exception_retains_lease_for_exact_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, retained_live_ledger=True)
+    predecessor = case.phase_predecessor
+    original_reserver = (
+        databricks_v2.reserve_databricks_run_attempt_batch_authorized_json
+    )
+
+    def reserve_then_interrupt(*args: Any, **kwargs: Any) -> Any:
+        original_reserver(*args, **kwargs)
+        raise RuntimeError("simulated postcommit reservation interruption")
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "reserve_databricks_run_attempt_batch_authorized_json",
+        reserve_then_interrupt,
+    )
+    with pytest.raises(RuntimeError, match="postcommit reservation interruption"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+
+    interrupted = ledger_api.read_databricks_cluster_hour_ledger_json(
+        case.ledger_path
+    )
+    assert len(interrupted.reservations) == predecessor.reservation_count + 14
+    assert (
+        len(interrupted.submission_receipts)
+        == predecessor.submission_receipt_count
+    )
+    assert len(interrupted.terminal_actuals) == predecessor.terminal_actual_count
+    assert {path.name for path in case.receipt_root.iterdir()} == {
+        "phase-lease-v2.json"
+    }
+    assert case.cloud.post_attempt_ids == []
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "reserve_databricks_run_attempt_batch_authorized_json",
+        original_reserver,
+    )
+    receipts = databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+    completed = ledger_api.read_databricks_cluster_hour_ledger_json(
+        case.ledger_path
+    )
+    assert len(receipts) == 14
+    assert len(completed.reservations) == predecessor.reservation_count + 14
+    assert (
+        len(completed.submission_receipts)
+        == predecessor.submission_receipt_count + 14
+    )
+    assert tuple(
+        item.attempt_id
+        for item in completed.reservations[predecessor.reservation_count :]
+    ) == case.cloud.attempt_ids
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+    assert case.cloud.resume_attempt_ids == list(case.cloud.attempt_ids)
+
+
+def test_successor_lease_only_resume_reserves_once_after_complete_live_predecessor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch, retained_live_ledger=True)
+    before = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    live_predecessor = ledger_api.databricks_ledger_prefix(before)
+    ledger_before = case.ledger_path.read_bytes()
+    original_writer = databricks_v1._write_canonical_exclusive
+
+    def crash_after_lease(record: Mapping[str, Any], path: str | Path) -> None:
+        original_writer(record, path)
+        if Path(path).name == "phase-lease-v2.json":
+            raise RuntimeError("simulated successor stop after the v2 lease")
+
+    monkeypatch.setattr(
+        databricks_v1,
+        "_write_canonical_exclusive",
+        crash_after_lease,
+    )
+    with pytest.raises(RuntimeError, match="successor stop after the v2 lease"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    assert case.ledger_path.read_bytes() == ledger_before
+    lease = _json(case.receipt_root / "phase-lease-v2.json")
+    assert lease["predecessor_prefix"] == live_predecessor.to_record()
+    assert case.cloud.post_attempt_ids == []
+
+    monkeypatch.setattr(
+        databricks_v1,
+        "_write_canonical_exclusive",
+        original_writer,
+    )
+    receipts = databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+
+    after = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(receipts) == 14
+    assert after.reservations[: live_predecessor.reservation_count] == (
+        before.reservations
+    )
+    assert after.submission_receipts[: live_predecessor.submission_receipt_count] == (
+        before.submission_receipts
+    )
+    assert after.terminal_actuals == before.terminal_actuals
+    assert len(after.reservations) == live_predecessor.reservation_count + 14
+    assert len(after.submission_receipts) == (
+        live_predecessor.submission_receipt_count + 14
+    )
+    marker = _json(case.receipt_root / "batch-reserved-v2.json")
+    assert marker["predecessor_prefix"] == live_predecessor.to_record()
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+    assert case.cloud.resume_attempt_ids == list(case.cloud.attempt_ids)
+    assert case.preflight_freshness == [True, False]
+
+
+def test_resume_rejects_resealed_live_lease_predecessor_without_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    historical = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    assert case.phase_predecessor == historical
+    original_writer = databricks_v1._write_canonical_exclusive
+
+    def crash_after_lease(record: Mapping[str, Any], path: str | Path) -> None:
+        original_writer(record, path)
+        if Path(path).name == "phase-lease-v2.json":
+            raise RuntimeError("successor lease-only fixture")
+
+    monkeypatch.setattr(
+        databricks_v1,
+        "_write_canonical_exclusive",
+        crash_after_lease,
+    )
+    with pytest.raises(RuntimeError, match="successor lease-only fixture"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    monkeypatch.setattr(
+        databricks_v1,
+        "_write_canonical_exclusive",
+        original_writer,
+    )
+
+    lease_path = case.receipt_root / "phase-lease-v2.json"
+    lease = _json(lease_path)
+    assert lease["predecessor_prefix"] == historical.to_record()
+    _copy_retained_live_ledger(case.ledger_path, monkeypatch)
+    live_predecessor = ledger_api.databricks_ledger_prefix(
+        ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    )
+    assert live_predecessor != historical
+    lease["predecessor_prefix"] = live_predecessor.to_record()
+    lease["closed_record_sha256"] = ""
+    databricks_v2._seal_controller_record_v2(lease)
+    lease_path.write_text(
+        canonical_gpu_qualification_json(lease) + "\n",
+        encoding="utf-8",
+    )
+    ledger_before = case.ledger_path.read_bytes()
+    ledger_stat = _stable_stat(case.ledger_path)
+    root_before = _root_snapshot(case.receipt_root)
+
+    def forbidden_resume(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        pytest.fail("a drifted successor predecessor reached cloud recovery")
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "resume_pre_reserved_databricks_run",
+        forbidden_resume,
+    )
+    with pytest.raises(ValueError, match="phase lease differs"):
+        databricks_v2.resume_gpu_qualification_job_submissions_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _stable_stat(case.ledger_path) == ledger_stat
+    assert _root_snapshot(case.receipt_root) == root_before
+    assert case.cloud.post_attempt_ids == []
+    assert case.cloud.resume_attempt_ids == []
 
 
 def _interrupt_after_sixth_ledger_receipt(
@@ -1163,11 +1511,20 @@ def test_v2_collector_resumes_canonical_partial_terminal_reconciliation(
     assert len(list(evidence_root.glob("*.terminal-receipt-v2.json"))) == 14
 
 
+@pytest.mark.parametrize("retained_live_ledger", (False, True))
 def test_v2_collector_atomically_publishes_exact14_and_replay_is_read_only(
+    retained_live_ledger: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    case = _case(tmp_path, monkeypatch)
+    case = _case(
+        tmp_path,
+        monkeypatch,
+        retained_live_ledger=retained_live_ledger,
+    )
+    predecessor = ledger_api.databricks_ledger_prefix(
+        ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    )
     _payloads, _contracts, runs, results = (
         _completed_submission_with_terminal_fixtures(case)
     )
@@ -1206,10 +1563,11 @@ def test_v2_collector_atomically_publishes_exact14_and_replay_is_read_only(
         databricks_v1.GPUQualificationLaunchAuthorization,
     )
     assert authorization.selection == selection
+    assert authorization.predecessor_prefix == predecessor
     ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
     assert ledger.active_reserved_cluster_hours == 0.0
     assert len(ledger.terminal_actuals) == (
-        GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.terminal_actual_count + 14
+        predecessor.terminal_actual_count + 14
     )
     assert not list(tmp_path.glob(".qualification-evidence-v2.staging-*"))
 

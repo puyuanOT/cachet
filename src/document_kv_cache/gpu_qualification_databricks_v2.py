@@ -24,6 +24,7 @@ import zlib
 
 from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourLedger,
+    DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
     databricks_ledger_prefix_at_counts,
@@ -1383,6 +1384,7 @@ def submit_gpu_qualification_jobs_v2(
     artifact_uris: Mapping[str, str],
     output_root: str,
     ledger_path: str | Path,
+    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
     submit_receipt_root: str | Path,
     local_preflight_evidence_path: str | Path,
 ) -> tuple[dict[str, Any], ...]:
@@ -1411,6 +1413,7 @@ def submit_gpu_qualification_jobs_v2(
         initial,
         plan=plan,
         ledger_path=ledger_path,
+        expected_predecessor=expected_phase_predecessor_prefix,
         contracts=contracts,
         label="v2 qualification launch",
     )
@@ -1421,13 +1424,16 @@ def submit_gpu_qualification_jobs_v2(
         reservations: tuple[Any, ...],
         snapshots: tuple[Mapping[str, Any], ...],
     ) -> None:
-        _require_v2_ledger_predecessor(
+        observed_predecessor = _require_v2_ledger_predecessor(
             live,
             plan=plan,
             ledger_path=ledger_path,
+            expected_predecessor=expected_phase_predecessor_prefix,
             contracts=contracts,
             label="v2 qualification batch reservation",
         )
+        if observed_predecessor != predecessor:
+            raise ValueError("v2 phase predecessor changed before reservation")
         if len(reservations) != len(contracts) or len(snapshots) != len(contracts):
             raise ValueError("v2 batch is not the exact fourteen jobs")
         for contract, reservation, snapshot in zip(
@@ -1472,12 +1478,16 @@ def submit_gpu_qualification_jobs_v2(
             )
         )
     except BaseException:
-        if lease_path.is_file() and not lease_path.is_symlink():
-            lease_path.unlink()
-            databricks_v1._fsync_directory(receipt_root)
-        if receipt_root.is_dir() and not any(receipt_root.iterdir()):
-            receipt_root.rmdir()
-            databricks_v1._fsync_directory(receipt_root.parent)
+        if _v2_batch_reservation_provably_absent(
+            ledger_path,
+            predecessor=predecessor,
+        ):
+            if lease_path.is_file() and not lease_path.is_symlink():
+                lease_path.unlink()
+                databricks_v1._fsync_directory(receipt_root)
+            if receipt_root.is_dir() and not any(receipt_root.iterdir()):
+                receipt_root.rmdir()
+                databricks_v1._fsync_directory(receipt_root.parent)
         raise
     marker = _batch_marker_record_v2(
         plan=plan,
@@ -1541,6 +1551,7 @@ def resume_gpu_qualification_job_submissions_v2(
     artifact_uris: Mapping[str, str],
     output_root: str,
     ledger_path: str | Path,
+    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
     submit_receipt_root: str | Path,
     local_preflight_evidence_path: str | Path,
 ) -> tuple[dict[str, Any], ...]:
@@ -1567,6 +1578,7 @@ def resume_gpu_qualification_job_submissions_v2(
         plan=plan,
         contracts=contracts,
         ledger_path=ledger_path,
+        expected_phase_predecessor_prefix=expected_phase_predecessor_prefix,
         submit_receipt_root=submit_receipt_root,
         local_preflight_binding=preflight_binding,
     )
@@ -1791,27 +1803,105 @@ def _require_v2_ledger_predecessor(
     *,
     plan: Mapping[str, Any],
     ledger_path: str | Path,
+    expected_predecessor: DatabricksLedgerPrefix,
     contracts: Sequence[Mapping[str, Any]],
     label: str,
-) -> Any:
+) -> DatabricksLedgerPrefix:
+    if not isinstance(expected_predecessor, DatabricksLedgerPrefix):
+        raise TypeError("expected_phase_predecessor_prefix has the wrong type")
+    predecessor = databricks_ledger_prefix_at_counts(
+        ledger,
+        reservation_count=len(ledger.reservations),
+        submission_receipt_count=len(ledger.submission_receipts),
+        terminal_actual_count=len(ledger.terminal_actuals),
+    )
+    if predecessor != expected_predecessor:
+        raise ValueError("v2 live ledger differs from the authorized phase predecessor")
+    _require_v2_phase_predecessor(
+        ledger,
+        plan=plan,
+        ledger_path=ledger_path,
+        predecessor=predecessor,
+        contracts=contracts,
+        label=label,
+    )
+    return predecessor
+
+
+def _v2_batch_reservation_provably_absent(
+    ledger_path: str | Path,
+    *,
+    predecessor: DatabricksLedgerPrefix,
+) -> bool:
+    """Return true only when a failed reservation left the ledger untouched."""
+
+    try:
+        live = read_databricks_cluster_hour_ledger_json(ledger_path)
+        current = databricks_ledger_prefix_at_counts(
+            live,
+            reservation_count=len(live.reservations),
+            submission_receipt_count=len(live.submission_receipts),
+            terminal_actual_count=len(live.terminal_actuals),
+        )
+    except BaseException:
+        return False
+    return current == predecessor
+
+
+def _require_v2_phase_predecessor(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    plan: Mapping[str, Any],
+    ledger_path: str | Path,
+    predecessor: DatabricksLedgerPrefix,
+    contracts: Sequence[Mapping[str, Any]],
+    label: str,
+) -> DatabricksClusterHourLedger:
+    """Validate one live phase predecessor against the frozen plan opening."""
+
     if databricks_ledger_path_sha256(ledger_path) != plan.get(
         "campaign_ledger_path_sha256"
     ):
         raise ValueError("v2 ledger path differs from the plan")
     if ledger.ledger_id != plan.get("campaign_ledger_id"):
         raise ValueError("v2 ledger ID differs from the plan")
-    predecessor = databricks_ledger_prefix_from_record(
+    opening = databricks_ledger_prefix_from_record(
         databricks_v1._required_mapping(
             plan.get("campaign_ledger_prefix"), "campaign_ledger_prefix"
         )
     )
+    require_databricks_ledger_prefix(ledger, opening)
     require_databricks_ledger_prefix(ledger, predecessor)
-    if ledger.terminal_actual_cluster_hours != plan.get(
+    predecessor_ledger = DatabricksClusterHourLedger(
+        ledger_id=ledger.ledger_id,
+        cap_cluster_hours=ledger.cap_cluster_hours,
+        reservations=ledger.reservations[: predecessor.reservation_count],
+        submission_receipts=ledger.submission_receipts[
+            : predecessor.submission_receipt_count
+        ],
+        terminal_actuals=ledger.terminal_actuals[: predecessor.terminal_actual_count],
+    )
+    require_databricks_ledger_prefix(predecessor_ledger, opening)
+    opening_ledger = DatabricksClusterHourLedger(
+        ledger_id=ledger.ledger_id,
+        cap_cluster_hours=ledger.cap_cluster_hours,
+        reservations=ledger.reservations[: opening.reservation_count],
+        submission_receipts=ledger.submission_receipts[
+            : opening.submission_receipt_count
+        ],
+        terminal_actuals=ledger.terminal_actuals[: opening.terminal_actual_count],
+    )
+    if opening_ledger.terminal_actual_cluster_hours != plan.get(
         "campaign_opening_terminal_gpu_hours"
     ):
         raise ValueError("v2 ledger opening terminal balance drift")
+    if (
+        predecessor_ledger.active_reserved_task_count != 0
+        or predecessor_ledger.active_reserved_cluster_hours != 0.0
+    ):
+        raise ValueError("v2 phase predecessor must be quiescent")
     databricks_v1._require_qualification_ledger_admission(
-        ledger,
+        predecessor_ledger,
         proposed_task_count=len(contracts),
         proposed_reserved_cluster_hours=(
             len(contracts)
@@ -1820,7 +1910,7 @@ def _require_v2_ledger_predecessor(
         ),
         label=label,
     )
-    return predecessor
+    return predecessor_ledger
 
 
 def _batch_requests_v2(
@@ -1984,6 +2074,7 @@ def _replay_batch_marker_v2(
     plan: Mapping[str, Any],
     contracts: Sequence[Mapping[str, Any]],
     ledger_path: str | Path,
+    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
     submit_receipt_root: str | Path,
     local_preflight_binding: Mapping[str, str],
 ) -> tuple[Any, dict[str, Any]]:
@@ -1996,11 +2087,9 @@ def _replay_batch_marker_v2(
         "v2 qualification phase lease",
     )
     pins = pins_from_gpu_qualification_plan_v2(plan)
-    expected_predecessor = databricks_ledger_prefix_from_record(
-        databricks_v1._required_mapping(
-            plan.get("campaign_ledger_prefix"), "campaign_ledger_prefix"
-        )
-    )
+    if not isinstance(expected_phase_predecessor_prefix, DatabricksLedgerPrefix):
+        raise TypeError("expected_phase_predecessor_prefix has the wrong type")
+    phase_predecessor = expected_phase_predecessor_prefix
     expected_lease = _phase_lease_record_v2(
         plan=plan,
         pins=pins,
@@ -2008,7 +2097,7 @@ def _replay_batch_marker_v2(
             plan.get("campaign_ledger_path_sha256"),
             "campaign_ledger_path_sha256",
         ),
-        predecessor_prefix=expected_predecessor,
+        predecessor_prefix=phase_predecessor,
         contracts=contracts,
         local_preflight_binding=local_preflight_binding,
     )
@@ -2017,51 +2106,21 @@ def _replay_batch_marker_v2(
     ):
         raise ValueError("v2 phase lease differs from the frozen batch")
     _require_controller_record_seal_v2(lease, "v2 phase lease")
-    if databricks_ledger_path_sha256(ledger_path) != plan.get(
-        "campaign_ledger_path_sha256"
-    ):
-        raise ValueError("v2 replay ledger path differs from the plan")
     live = read_databricks_cluster_hour_ledger_json(ledger_path)
-    if live.ledger_id != plan.get("campaign_ledger_id"):
-        raise ValueError("v2 replay ledger ID differs from the plan")
-    predecessor_ledger = DatabricksClusterHourLedger(
-        ledger_id=live.ledger_id,
-        cap_cluster_hours=live.cap_cluster_hours,
-        reservations=live.reservations[: expected_predecessor.reservation_count],
-        submission_receipts=live.submission_receipts[
-            : expected_predecessor.submission_receipt_count
-        ],
-        terminal_actuals=live.terminal_actuals[
-            : expected_predecessor.terminal_actual_count
-        ],
-    )
-    if databricks_ledger_prefix_at_counts(
-        predecessor_ledger,
-        reservation_count=len(predecessor_ledger.reservations),
-        submission_receipt_count=len(predecessor_ledger.submission_receipts),
-        terminal_actual_count=len(predecessor_ledger.terminal_actuals),
-    ) != expected_predecessor:
-        raise ValueError("v2 phase predecessor history drift")
-    if predecessor_ledger.terminal_actual_cluster_hours != plan.get(
-        "campaign_opening_terminal_gpu_hours"
-    ):
-        raise ValueError("v2 replay opening terminal balance drift")
-    databricks_v1._require_qualification_ledger_admission(
-        predecessor_ledger,
-        proposed_task_count=len(contracts),
-        proposed_reserved_cluster_hours=(
-            len(contracts)
-            * databricks_v1.GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS
-            / 3600.0
-        ),
+    _require_v2_phase_predecessor(
+        live,
+        plan=plan,
+        ledger_path=ledger_path,
+        predecessor=phase_predecessor,
+        contracts=contracts,
         label="v2 durable batch replay",
     )
     requests = _batch_requests_v2(plan, contracts)
     if (
-        len(live.reservations) == expected_predecessor.reservation_count
+        len(live.reservations) == phase_predecessor.reservation_count
         and len(live.submission_receipts)
-        == expected_predecessor.submission_receipt_count
-        and len(live.terminal_actuals) == expected_predecessor.terminal_actual_count
+        == phase_predecessor.submission_receipt_count
+        and len(live.terminal_actuals) == phase_predecessor.terminal_actual_count
     ):
         if {item.name for item in root.iterdir()} != {_V2_PHASE_LEASE_FILENAME}:
             raise ValueError("v2 lease-only resume root has unexpected evidence")
@@ -2069,31 +2128,29 @@ def _replay_batch_marker_v2(
             reserve_databricks_run_attempt_batch_authorized_json(
                 ledger_path,
                 requests,
-                expected_predecessor_prefix=expected_predecessor,
+                expected_predecessor_prefix=phase_predecessor,
             )
         )
     else:
         if (
             len(live.reservations)
-            != expected_predecessor.reservation_count + len(contracts)
+            != phase_predecessor.reservation_count + len(contracts)
             or not (
-                expected_predecessor.submission_receipt_count
+                phase_predecessor.submission_receipt_count
                 <= len(live.submission_receipts)
-                <= expected_predecessor.submission_receipt_count + len(contracts)
+                <= phase_predecessor.submission_receipt_count + len(contracts)
             )
             or len(live.terminal_actuals)
-            != expected_predecessor.terminal_actual_count
+            != phase_predecessor.terminal_actual_count
         ):
             raise ValueError("v2 replay ledger is not a canonical batch prefix")
-        authorization = (
-            replay_databricks_run_attempt_batch_authorization_json(
-                ledger_path,
-                requests,
-                expected_predecessor_prefix=expected_predecessor,
-            )
+        authorization = replay_databricks_run_attempt_batch_authorization_json(
+            ledger_path,
+            requests,
+            expected_predecessor_prefix=phase_predecessor,
         )
     live = read_databricks_cluster_hour_ledger_json(ledger_path)
-    receipt_start = expected_predecessor.submission_receipt_count
+    receipt_start = phase_predecessor.submission_receipt_count
     receipt_suffix = live.submission_receipts[receipt_start:]
     receipt_count = len(receipt_suffix)
     if tuple(item.attempt_id for item in receipt_suffix) != (
@@ -2261,6 +2318,7 @@ def _replay_completed_batch_v2(
     plan: Mapping[str, Any],
     contracts: Sequence[Mapping[str, Any]],
     ledger_path: str | Path,
+    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
     submit_receipt_root: str | Path,
     local_preflight_binding: Mapping[str, str],
 ) -> tuple[
@@ -2277,11 +2335,9 @@ def _replay_completed_batch_v2(
         "v2 qualification phase lease",
     )
     pins = pins_from_gpu_qualification_plan_v2(plan)
-    predecessor = databricks_ledger_prefix_from_record(
-        databricks_v1._required_mapping(
-            plan.get("campaign_ledger_prefix"), "campaign_ledger_prefix"
-        )
-    )
+    if not isinstance(expected_phase_predecessor_prefix, DatabricksLedgerPrefix):
+        raise TypeError("expected_phase_predecessor_prefix has the wrong type")
+    phase_predecessor = expected_phase_predecessor_prefix
     expected_lease = _phase_lease_record_v2(
         plan=plan,
         pins=pins,
@@ -2289,7 +2345,7 @@ def _replay_completed_batch_v2(
             plan.get("campaign_ledger_path_sha256"),
             "campaign_ledger_path_sha256",
         ),
-        predecessor_prefix=predecessor,
+        predecessor_prefix=phase_predecessor,
         contracts=contracts,
         local_preflight_binding=local_preflight_binding,
     )
@@ -2305,26 +2361,34 @@ def _replay_completed_batch_v2(
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     if ledger.ledger_id != plan.get("campaign_ledger_id"):
         raise ValueError("v2 completed-batch ledger ID differs from the plan")
+    _require_v2_phase_predecessor(
+        ledger,
+        plan=plan,
+        ledger_path=ledger_path,
+        predecessor=phase_predecessor,
+        contracts=contracts,
+        label="v2 completed batch replay",
+    )
     authorization = replay_databricks_run_attempt_batch_authorization_json(
         ledger_path,
         _batch_requests_v2(plan, contracts),
-        expected_predecessor_prefix=predecessor,
+        expected_predecessor_prefix=phase_predecessor,
     )
     require_databricks_publication_batch_admission(ledger, authorization)
-    receipt_stop = predecessor.submission_receipt_count + len(contracts)
-    terminal_stop = predecessor.terminal_actual_count + len(contracts)
+    receipt_stop = phase_predecessor.submission_receipt_count + len(contracts)
+    terminal_stop = phase_predecessor.terminal_actual_count + len(contracts)
     if (
         len(ledger.reservations) != authorization.batch_prefix.reservation_count
         or len(ledger.submission_receipts) != receipt_stop
         or not (
-            predecessor.terminal_actual_count
+            phase_predecessor.terminal_actual_count
             <= len(ledger.terminal_actuals)
             <= terminal_stop
         )
     ):
         raise ValueError("v2 completed batch is not the current ledger suffix")
     terminal_suffix = ledger.terminal_actuals[
-        predecessor.terminal_actual_count : terminal_stop
+        phase_predecessor.terminal_actual_count : terminal_stop
     ]
     if (
         tuple(item.attempt_id for item in terminal_suffix)
@@ -2433,6 +2497,7 @@ def collect_gpu_qualification_evidence_v2(
     artifact_uris: Mapping[str, str],
     output_root: str,
     ledger_path: str | Path,
+    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
     submit_receipt_root: str | Path,
     local_preflight_evidence_path: str | Path,
     evidence_root: str | Path,
@@ -2458,6 +2523,9 @@ def collect_gpu_qualification_evidence_v2(
             plan=plan,
             contracts=contracts,
             ledger_path=ledger_path,
+            expected_phase_predecessor_prefix=(
+                expected_phase_predecessor_prefix
+            ),
             submit_receipt_root=submit_receipt_root,
             local_preflight_binding=preflight_binding,
         )
@@ -2599,6 +2667,7 @@ def collect_gpu_qualification_evidence_v2(
         artifact_uris=artifact_uris,
         output_root=output_root,
         ledger_path=ledger_path,
+        expected_phase_predecessor_prefix=expected_phase_predecessor_prefix,
         submit_receipt_root=submit_receipt_root,
         local_preflight_evidence_path=local_preflight_evidence_path,
         evidence_root=target_root,
@@ -2616,6 +2685,7 @@ def replay_gpu_qualification_launch_authorization_v2(
     artifact_uris: Mapping[str, str],
     output_root: str,
     ledger_path: str | Path,
+    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
     submit_receipt_root: str | Path,
     local_preflight_evidence_path: str | Path,
     evidence_root: str | Path,
@@ -2643,6 +2713,7 @@ def replay_gpu_qualification_launch_authorization_v2(
         plan=plan,
         contracts=contracts,
         ledger_path=ledger_path,
+        expected_phase_predecessor_prefix=expected_phase_predecessor_prefix,
         submit_receipt_root=submit_receipt_root,
         local_preflight_binding=preflight_binding,
     )
