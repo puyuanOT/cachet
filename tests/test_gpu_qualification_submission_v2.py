@@ -131,13 +131,27 @@ def _copy_opening_ledger(
     destination: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
+    retained_stat = _stable_stat(_RETAINED_LEDGER_PATH)
     retained = ledger_api.read_databricks_cluster_hour_ledger_json(
         _RETAINED_LEDGER_PATH
     )
-    assert ledger_api.databricks_ledger_prefix(retained) == (
-        GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    opening_prefix = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    ledger_api.require_databricks_ledger_prefix(retained, opening_prefix)
+    opening = replace(
+        retained,
+        reservations=retained.reservations[: opening_prefix.reservation_count],
+        submission_receipts=retained.submission_receipts[
+            : opening_prefix.submission_receipt_count
+        ],
+        terminal_actuals=retained.terminal_actuals[
+            : opening_prefix.terminal_actual_count
+        ],
     )
-    destination.write_bytes(_RETAINED_LEDGER_PATH.read_bytes())
+    assert ledger_api.databricks_ledger_prefix(opening) == opening_prefix
+    _write_ledger(destination, opening)
+    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
+    assert _stable_stat(_RETAINED_LEDGER_PATH) == retained_stat
 
     def frozen_path_sha256(_path: str | Path) -> str:
         return PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256

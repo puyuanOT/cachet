@@ -62,6 +62,9 @@ from document_kv_cache.gpu_qualification_databricks import (
     validate_gpu_qualification_submission_rejection_record,
     write_gpu_qualification_bootstrap_runner,
 )
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+)
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
     PUBLICATION_CAMPAIGN_ID,
@@ -225,30 +228,44 @@ def _current_live_and_prior_receipt_ledgers() -> tuple[
 ]:
     live_bytes = _RETAINED_LEDGER_PATH.read_bytes()
     live_stat = _RETAINED_LEDGER_PATH.stat()
-    assert len(live_bytes) == 256_696
-    assert hashlib.sha256(live_bytes).hexdigest() == (
-        "65c02ffb7975898aee3fcfd77c4c46d07d5864452cef21bb3988f60e8e93c3bc"
-    )
     live = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
-    assert (
-        len(live.reservations),
-        len(live.submission_receipts),
-        len(live.terminal_actuals),
-    ) == (265, 127, 265)
+    assert live_bytes == _canonical_ledger_bytes(live)
     assert live.active_reserved_task_count == 0
     assert live.active_reserved_cluster_hours == 0
-    assert live.terminal_actual_cluster_hours == 77.50443361111115
-    assert live.accounted_cluster_hours == 77.50443361111115
-    assert live.remaining_cluster_hours == 946.4955663888888
-    assert databricks_ledger_prefix(live).prefix_sha256 == (
-        "e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"
+    opening_prefix = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    resource_ledger.require_databricks_ledger_prefix(live, opening_prefix)
+    reviewed_opening = replace(
+        live,
+        reservations=live.reservations[: opening_prefix.reservation_count],
+        submission_receipts=live.submission_receipts[
+            : opening_prefix.submission_receipt_count
+        ],
+        terminal_actuals=live.terminal_actuals[
+            : opening_prefix.terminal_actual_count
+        ],
     )
+    reviewed_opening_bytes = _canonical_ledger_bytes(reviewed_opening)
+    assert len(reviewed_opening_bytes) == 256_696
+    assert hashlib.sha256(reviewed_opening_bytes).hexdigest() == (
+        "65c02ffb7975898aee3fcfd77c4c46d07d5864452cef21bb3988f60e8e93c3bc"
+    )
+    assert (
+        len(reviewed_opening.reservations),
+        len(reviewed_opening.submission_receipts),
+        len(reviewed_opening.terminal_actuals),
+    ) == (265, 127, 265)
+    assert reviewed_opening.active_reserved_task_count == 0
+    assert reviewed_opening.active_reserved_cluster_hours == 0
+    assert reviewed_opening.terminal_actual_cluster_hours == 77.50443361111115
+    assert reviewed_opening.accounted_cluster_hours == 77.50443361111115
+    assert reviewed_opening.remaining_cluster_hours == 946.4955663888888
+    assert databricks_ledger_prefix(reviewed_opening) == opening_prefix
 
     historical_opening = replace(
-        live,
-        reservations=live.reservations[:236],
-        submission_receipts=live.submission_receipts[:98],
-        terminal_actuals=live.terminal_actuals[:236],
+        reviewed_opening,
+        reservations=reviewed_opening.reservations[:236],
+        submission_receipts=reviewed_opening.submission_receipts[:98],
+        terminal_actuals=reviewed_opening.terminal_actuals[:236],
     )
     historical_bytes = _canonical_ledger_bytes(historical_opening)
     assert len(historical_bytes) == 220_426

@@ -884,7 +884,22 @@ class _Distribution:
 def _patch_verifier_through_distribution_scan(
     monkeypatch: pytest.MonkeyPatch,
     distributions: list[_Distribution],
-) -> None:
+) -> Path:
+    explicit_roots = {
+        distribution._root
+        for distribution in distributions
+        if distribution._root is not None
+    }
+    assert len(explicit_roots) <= 1
+    site_packages = (
+        next(iter(explicit_roots))
+        if explicit_roots
+        else Path(runtime_v2.__file__).resolve().parents[1]
+    )
+    for distribution in distributions:
+        if distribution._root is None:
+            distribution._root = site_packages
+
     monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
     monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
     monkeypatch.setattr(
@@ -908,8 +923,17 @@ def _patch_verifier_through_distribution_scan(
         },
     )
     monkeypatch.setattr(
-        runtime_v2.importlib.metadata, "distributions", lambda: distributions
+        runtime_v2, "_isolated_runtime_site_packages", lambda: site_packages
     )
+
+    def installed_distributions(*, path: list[str]) -> list[_Distribution]:
+        assert path == [str(site_packages)]
+        return distributions
+
+    monkeypatch.setattr(
+        runtime_v2.importlib.metadata, "distributions", installed_distributions
+    )
+    return site_packages
 
 
 @pytest.mark.parametrize(
@@ -928,8 +952,20 @@ def test_standalone_verifier_rejects_duplicate_anonymous_or_missing_distribution
     distributions: list[_Distribution],
     error: str,
 ) -> None:
-    _patch_verifier_through_distribution_scan(monkeypatch, distributions)
+    site_packages = _patch_verifier_through_distribution_scan(
+        monkeypatch, distributions
+    )
     with pytest.raises(RuntimeError, match=error):
+        runtime_v2.verify_gpu_qualification_v2_runtime_installation(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+    distributions[0]._root = site_packages.parent
+    with pytest.raises(RuntimeError, match="outside private site-packages"):
         runtime_v2.verify_gpu_qualification_v2_runtime_installation(
             runtime_lock="base.lock",
             vllm_uri="file:///vllm.whl",
@@ -1080,6 +1116,7 @@ def test_standalone_verifier_rejects_member_hash_or_import_annotation(
 
 def test_runtime_platform_requires_exact_python_3_11_11(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(runtime_v2.platform, "python_implementation", lambda: "CPython")
     monkeypatch.setattr(runtime_v2.platform, "python_version", lambda: "3.11.11")
@@ -1092,6 +1129,26 @@ def test_runtime_platform_requires_exact_python_3_11_11(
     monkeypatch.setattr(runtime_v2.platform, "python_version", lambda: "3.11.12")
     with pytest.raises(RuntimeError, match="requires Linux CPython3.11"):
         runtime_v2._require_runtime_platform()
+
+    runtime_root = tmp_path.resolve() / "runtime"
+    runtime_python = runtime_root / "bin/python"
+    site_packages = runtime_root / "lib/python3.11/site-packages"
+    verifier_source = site_packages / (
+        "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+    )
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_bytes(b"reviewed copied interpreter")
+    verifier_source.parent.mkdir(parents=True)
+    verifier_source.write_bytes(b"reviewed verifier")
+    monkeypatch.setattr(runtime_v2.sys, "prefix", str(runtime_root))
+    monkeypatch.setattr(runtime_v2.sys, "base_prefix", "/reviewed/base-python")
+    monkeypatch.setattr(runtime_v2.sys, "executable", str(runtime_python))
+    monkeypatch.setattr(runtime_v2, "__file__", str(verifier_source))
+    assert runtime_v2._isolated_runtime_site_packages() == site_packages
+
+    monkeypatch.setattr(runtime_v2, "__file__", str(tmp_path / "ambient.py"))
+    with pytest.raises(RuntimeError, match="runtime path identity differs"):
+        runtime_v2._isolated_runtime_site_packages()
 
 
 def test_real_runtime_closure_has_exact_identity_and_rejects_tamper(

@@ -913,9 +913,11 @@ def _verify_gpu_qualification_v2_runtime_installation(
     closure = _read_exact_runtime_closure(Path(runtime_closure_manifest))
 
     enter_stage("distribution_inventory")
+    site_packages = _isolated_runtime_site_packages()
     installed: dict[str, list[str]] = {}
     distributions: dict[str, importlib.metadata.Distribution] = {}
-    for distribution in importlib.metadata.distributions():
+    for distribution in importlib.metadata.distributions(path=[str(site_packages)]):
+        _require_distribution_root(distribution, site_packages=site_packages)
         try:
             raw_name = distribution.metadata["Name"]
         except KeyError as exc:
@@ -1531,6 +1533,75 @@ def _base_lock_projection(path: Path) -> tuple[dict[str, str], int]:
         if _BASE_LOCK_HASH_RE.fullmatch(line) is not None:
             hash_count += 1
     return versions, hash_count
+
+
+def _isolated_runtime_site_packages() -> Path:
+    """Bind metadata discovery and this verifier to the copied private runtime."""
+
+    if not all(
+        isinstance(value, str) and value
+        for value in (sys.prefix, sys.base_prefix, sys.executable, __file__)
+    ):
+        raise RuntimeError("v2 installed runtime path identity differs")
+    runtime_root = Path(sys.prefix)
+    runtime_python = Path(sys.executable)
+    if (
+        not runtime_root.is_absolute()
+        or ".." in runtime_root.parts
+        or str(runtime_root) != sys.prefix
+        or runtime_python != runtime_root / "bin" / "python"
+        or sys.prefix == sys.base_prefix
+    ):
+        raise RuntimeError("v2 installed runtime path identity differs")
+    try:
+        if (
+            runtime_root.resolve(strict=True) != runtime_root
+            or not runtime_root.is_dir()
+            or runtime_python.resolve(strict=True) != runtime_python
+            or not runtime_python.is_file()
+            or runtime_python.is_symlink()
+        ):
+            raise RuntimeError("v2 installed runtime path identity differs")
+    except OSError as exc:
+        raise RuntimeError("v2 installed runtime path identity differs") from exc
+
+    site_packages = runtime_root / "lib/python3.11/site-packages"
+    verifier_source = site_packages / (
+        "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+    )
+    try:
+        if (
+            site_packages.resolve(strict=True) != site_packages
+            or not site_packages.is_dir()
+            or site_packages.is_symlink()
+            or Path(__file__) != verifier_source
+            or verifier_source.resolve(strict=True) != verifier_source
+            or not verifier_source.is_file()
+            or verifier_source.is_symlink()
+        ):
+            raise RuntimeError("v2 installed runtime path identity differs")
+    except OSError as exc:
+        raise RuntimeError("v2 installed runtime path identity differs") from exc
+    return site_packages
+
+
+def _require_distribution_root(
+    distribution: importlib.metadata.Distribution,
+    *,
+    site_packages: Path,
+) -> None:
+    """Reject metadata records that do not belong to the bound private root."""
+
+    root = Path(str(distribution.locate_file("")))
+    try:
+        if root != site_packages or root.resolve(strict=True) != site_packages:
+            raise RuntimeError(
+                "v2 installed distribution is outside private site-packages"
+            )
+    except OSError as exc:
+        raise RuntimeError(
+            "v2 installed distribution is outside private site-packages"
+        ) from exc
 
 
 def _validate_direct_url(
