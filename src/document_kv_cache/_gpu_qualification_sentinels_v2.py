@@ -80,6 +80,8 @@ from document_kv_cache.vllm_smoke import (
 _RUNTIME_LOCK_ATTESTATION_ENV: Final = (
     "CACHET_GPU_QUALIFICATION_RUNTIME_LOCK_ATTESTATION"
 )
+_FLASHINFER_LOGGING_LEVEL_ENV: Final = "FLASHINFER_LOGGING_LEVEL"
+_FLASHINFER_LOGGING_LEVEL: Final = "ERROR"
 _BASE_LOCK_REQUIREMENT_RE: Final = re.compile(r"^([A-Za-z0-9_.-]+)==([^ ]+?)(?: \\)?$")
 _BASE_LOCK_HASH_RE: Final = re.compile(r"^\s+--hash=sha256:[0-9a-f]{64}(?: \\)?$")
 _CANONICAL_NAME_RE: Final = re.compile(r"[-_.]+")
@@ -636,6 +638,7 @@ def run_gpu_qualification_sentinel_v2(
         expected_python_version=expected_python_version,
     )
     environment = _pip_subprocess_environment()
+    environment[_FLASHINFER_LOGGING_LEVEL_ENV] = _FLASHINFER_LOGGING_LEVEL
     environment["PYTHONSAFEPATH"] = "1"
     runtime_lock = artifact_paths["runtime_lock_sha256"]
     patched_vllm = artifact_paths["patched_vllm_wheel_sha256"]
@@ -1121,7 +1124,11 @@ def _run_final_runtime_verifier(
     if not envelope["ok"]:
         raise RuntimeError(
             "v2 final runtime verifier rejected the installation "
-            f"({envelope['stage']}/{envelope['category']})"
+            f"({envelope['stage']}/{envelope['category']}; "
+            f"stdout_bytes={envelope['stdout_bytes']}; "
+            f"stdout_sha256={envelope['stdout_sha256']}; "
+            f"stderr_bytes={envelope['stderr_bytes']}; "
+            f"stderr_sha256={envelope['stderr_sha256']})"
         )
     return cast(dict[str, Any], envelope["attestation"])
 

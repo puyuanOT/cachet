@@ -19,10 +19,12 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 from typing import Any, Final, Protocol, cast
 import zlib
 
 from document_kv_cache.databricks_resource_ledger import (
+    DatabricksBatchReservationAuthorization,
     DatabricksClusterHourLedger,
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
@@ -162,6 +164,13 @@ _V2_PREFLIGHT_BINDING_KEYS: Final = frozenset(
         "record_sha256",
         "submit_payloads_sha256",
     }
+)
+_V2_TERMINAL_LIFE_CYCLE_STATES: Final = frozenset(
+    {"TERMINATED", "SKIPPED", "INTERNAL_ERROR", "BLOCKED"}
+)
+_V2_TERMINAL_POLL_SECONDS: Final = 30.0
+_V2_TERMINAL_WAIT_SECONDS: Final = (
+    databricks_v1.GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS + 3600
 )
 
 GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT: Final = """from __future__ import annotations
@@ -1376,6 +1385,117 @@ def _builtin_sentinel_runner_v2(
     )
 
 
+def _staggered_batch_progress_v2(
+    ledger: DatabricksClusterHourLedger,
+    authorization: DatabricksBatchReservationAuthorization,
+) -> tuple[int, int]:
+    """Validate and return the exact receipt/terminal progress of one v2 batch."""
+
+    if not isinstance(ledger, DatabricksClusterHourLedger):
+        raise TypeError("v2 staggered progress requires a Databricks ledger")
+    if not isinstance(authorization, DatabricksBatchReservationAuthorization):
+        raise TypeError("v2 staggered progress requires atomic batch authority")
+    require_databricks_ledger_prefix(ledger, authorization.batch_prefix)
+    predecessor = authorization.predecessor_prefix
+    member_count = len(authorization.attempt_ids)
+    if member_count != 14:
+        raise ValueError("v2 staggered progress requires the exact fourteen-job batch")
+    if len(ledger.reservations) != authorization.batch_prefix.reservation_count:
+        raise ValueError("v2 staggered batch has an unrelated reservation suffix")
+    receipt_count = len(ledger.submission_receipts) - (
+        predecessor.submission_receipt_count
+    )
+    terminal_count = len(ledger.terminal_actuals) - predecessor.terminal_actual_count
+    if not 0 <= terminal_count <= receipt_count <= member_count:
+        raise ValueError("v2 staggered receipt/terminal counts are not canonical")
+    if receipt_count - terminal_count > 1:
+        raise ValueError("v2 staggered batch has more than one active cloud run")
+    receipts = ledger.submission_receipts[
+        predecessor.submission_receipt_count :
+    ]
+    terminals = ledger.terminal_actuals[predecessor.terminal_actual_count :]
+    if tuple(item.attempt_id for item in receipts) != (
+        authorization.attempt_ids[:receipt_count]
+    ):
+        raise ValueError("v2 staggered receipt suffix is not the canonical job prefix")
+    if tuple(item.submit_payload_sha256 for item in receipts) != (
+        authorization.submit_payload_sha256s[:receipt_count]
+    ):
+        raise ValueError("v2 staggered receipt suffix payload digest drift")
+    if tuple(item.attempt_id for item in terminals) != (
+        authorization.attempt_ids[:terminal_count]
+    ):
+        raise ValueError("v2 staggered terminal suffix is not the canonical job prefix")
+    if tuple(item.submit_payload_sha256 for item in terminals) != (
+        authorization.submit_payload_sha256s[:terminal_count]
+    ):
+        raise ValueError("v2 staggered terminal suffix payload digest drift")
+    return receipt_count, terminal_count
+
+
+def _wait_and_record_staggered_terminal_v2(
+    config: DatabricksWorkspaceConfig,
+    *,
+    ledger_path: str | Path,
+    contract: Mapping[str, Any],
+    batch_authorization: DatabricksBatchReservationAuthorization,
+) -> DatabricksClusterHourLedger:
+    """Wait for one receipt-bound terminal and durably close it before the next POST."""
+
+    attempt_id = str(contract["reservation_attempt_id"])
+    try:
+        member_index = batch_authorization.attempt_ids.index(attempt_id)
+    except ValueError as exc:
+        raise ValueError("v2 terminal barrier attempt is outside the atomic batch") from exc
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    receipt_count, terminal_count = _staggered_batch_progress_v2(
+        ledger, batch_authorization
+    )
+    if terminal_count > member_index:
+        return ledger
+    if receipt_count != member_index + 1 or terminal_count != member_index:
+        raise ValueError("v2 terminal barrier is not the sole active batch member")
+    receipt = ledger.submission_receipts[
+        batch_authorization.predecessor_prefix.submission_receipt_count
+        + member_index
+    ]
+    deadline = time.monotonic() + _V2_TERMINAL_WAIT_SECONDS
+    while True:
+        run = get_databricks_run(config, receipt.run_id)
+        observed_run_id = databricks_v1._databricks_run_id(
+            run.get("run_id"), "v2 staggered runs/get run_id"
+        )
+        if observed_run_id != receipt.run_id:
+            raise ValueError("v2 staggered runs/get run_id differs from its receipt")
+        state = databricks_v1._required_mapping(
+            run.get("state"), "v2 staggered runs/get state"
+        )
+        life_cycle_state = state.get("life_cycle_state")
+        if not isinstance(life_cycle_state, str) or not life_cycle_state:
+            raise ValueError("v2 staggered runs/get lifecycle state is invalid")
+        if life_cycle_state in _V2_TERMINAL_LIFE_CYCLE_STATES:
+            updated = record_databricks_verified_run_terminal_actual_json(
+                ledger_path,
+                attempt_id=attempt_id,
+                run_record=run,
+            )
+            updated_receipts, updated_terminals = _staggered_batch_progress_v2(
+                updated, batch_authorization
+            )
+            if (
+                updated_receipts != member_index + 1
+                or updated_terminals != member_index + 1
+            ):
+                raise RuntimeError("v2 terminal barrier did not close its exact member")
+            return updated
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"timed out waiting for v2 qualification job {contract['job_id']!r}"
+            )
+        time.sleep(min(_V2_TERMINAL_POLL_SECONDS, remaining))
+
+
 def submit_gpu_qualification_jobs_v2(
     config: DatabricksWorkspaceConfig,
     *,
@@ -1496,8 +1616,16 @@ def submit_gpu_qualification_jobs_v2(
     )
     marker_path = receipt_root / _V2_BATCH_MARKER_FILENAME
     databricks_v1._write_canonical_exclusive(marker, marker_path)
+    if _staggered_batch_progress_v2(
+        read_databricks_cluster_hour_ledger_json(ledger_path), authorization
+    ) != (0, 0):
+        raise RuntimeError("fresh v2 batch did not start at zero staggered progress")
     receipts: list[dict[str, Any]] = []
-    for contract in contracts:
+    for member_index, contract in enumerate(contracts):
+        if _staggered_batch_progress_v2(
+            read_databricks_cluster_hour_ledger_json(ledger_path), authorization
+        ) != (member_index, member_index):
+            raise ValueError("fresh v2 batch progress changed before its next POST")
         payload = databricks_v1._required_mapping(
             contract.get("payload"), "v2 payload"
         )
@@ -1533,6 +1661,12 @@ def submit_gpu_qualification_jobs_v2(
         intent_path.unlink()
         databricks_v1._fsync_directory(receipt_root)
         receipts.append(receipt)
+        _wait_and_record_staggered_terminal_v2(
+            config,
+            ledger_path=ledger_path,
+            contract=contract,
+            batch_authorization=authorization,
+        )
     expected_names = {
         _V2_PHASE_LEASE_FILENAME,
         _V2_BATCH_MARKER_FILENAME,
@@ -1540,6 +1674,12 @@ def submit_gpu_qualification_jobs_v2(
     }
     if {item.name for item in receipt_root.iterdir()} != expected_names:
         raise ValueError("submitted v2 receipt directory is not closed")
+    final_ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    require_databricks_batch_terminal_closure(
+        final_ledger,
+        authorization,
+        require_complete_current_prefix=True,
+    )
     return tuple(receipts)
 
 
@@ -1615,6 +1755,12 @@ def resume_gpu_qualification_job_submissions_v2(
                 intent_path.unlink()
                 databricks_v1._fsync_directory(root)
             receipts.append(receipt)
+            _wait_and_record_staggered_terminal_v2(
+                config,
+                ledger_path=ledger_path,
+                contract=contract,
+                batch_authorization=authorization,
+            )
             continue
         expected_intent = _post_intent_record_v2(
             contract=contract,
@@ -1667,6 +1813,12 @@ def resume_gpu_qualification_job_submissions_v2(
             intent_path.unlink()
             databricks_v1._fsync_directory(root)
         receipts.append(receipt)
+        _wait_and_record_staggered_terminal_v2(
+            config,
+            ledger_path=ledger_path,
+            contract=contract,
+            batch_authorization=authorization,
+        )
     expected_names = {
         _V2_PHASE_LEASE_FILENAME,
         _V2_BATCH_MARKER_FILENAME,
@@ -1674,6 +1826,12 @@ def resume_gpu_qualification_job_submissions_v2(
     }
     if {item.name for item in root.iterdir()} != expected_names:
         raise ValueError("resumed v2 receipt directory is not closed")
+    final_ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    require_databricks_batch_terminal_closure(
+        final_ledger,
+        authorization,
+        require_complete_current_prefix=True,
+    )
     return tuple(receipts)
 
 
@@ -2140,8 +2298,11 @@ def _replay_batch_marker_v2(
                 <= len(live.submission_receipts)
                 <= phase_predecessor.submission_receipt_count + len(contracts)
             )
-            or len(live.terminal_actuals)
-            != phase_predecessor.terminal_actual_count
+            or not (
+                phase_predecessor.terminal_actual_count
+                <= len(live.terminal_actuals)
+                <= phase_predecessor.terminal_actual_count + len(contracts)
+            )
         ):
             raise ValueError("v2 replay ledger is not a canonical batch prefix")
         authorization = replay_databricks_run_attempt_batch_authorization_json(
@@ -2150,17 +2311,9 @@ def _replay_batch_marker_v2(
             expected_predecessor_prefix=phase_predecessor,
         )
     live = read_databricks_cluster_hour_ledger_json(ledger_path)
-    receipt_start = phase_predecessor.submission_receipt_count
-    receipt_suffix = live.submission_receipts[receipt_start:]
-    receipt_count = len(receipt_suffix)
-    if tuple(item.attempt_id for item in receipt_suffix) != (
-        authorization.attempt_ids[:receipt_count]
-    ):
-        raise ValueError("v2 replay receipt suffix is not the canonical batch prefix")
-    if tuple(item.submit_payload_sha256 for item in receipt_suffix) != (
-        authorization.submit_payload_sha256s[:receipt_count]
-    ):
-        raise ValueError("v2 replay receipt suffix payload digest drift")
+    receipt_count, terminal_count = _staggered_batch_progress_v2(
+        live, authorization
+    )
     require_databricks_publication_batch_admission(
         live,
         authorization,
@@ -2176,6 +2329,7 @@ def _replay_batch_marker_v2(
         contracts=contracts,
         ledger=live,
         receipt_count=receipt_count,
+        terminal_count=terminal_count,
         batch_authorization=authorization,
         expected_marker=expected_marker,
     )
@@ -2193,7 +2347,8 @@ def _validated_resume_evidence_prefix_v2(
     contracts: Sequence[Mapping[str, Any]],
     ledger: DatabricksClusterHourLedger,
     receipt_count: int,
-    batch_authorization: Any,
+    terminal_count: int,
+    batch_authorization: DatabricksBatchReservationAuthorization,
     expected_marker: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     entries = tuple(root.iterdir())
@@ -2223,12 +2378,23 @@ def _validated_resume_evidence_prefix_v2(
         allowed_receipt_counts.add(receipt_count - 1)
     if controller_receipt_count not in allowed_receipt_counts:
         raise ValueError("v2 controller receipts differ from the ledger prefix")
+    if not (
+        terminal_count
+        <= controller_receipt_count
+        <= receipt_count
+        <= len(contracts)
+    ) or controller_receipt_count - terminal_count > 1:
+        raise ValueError("v2 controller receipt/terminal progress is not canonical")
     intent_indices = tuple(
         index for index, name in enumerate(intent_names) if name in names
     )
     marker_path = root / _V2_BATCH_MARKER_FILENAME
     if _V2_BATCH_MARKER_FILENAME not in names:
-        if names != {_V2_PHASE_LEASE_FILENAME} or receipt_count != 0:
+        if (
+            names != {_V2_PHASE_LEASE_FILENAME}
+            or receipt_count != 0
+            or terminal_count != 0
+        ):
             raise ValueError("v2 batch marker is absent outside lease-only recovery")
         return None
     marker = databricks_v1._read_canonical_json_object_file(
@@ -2242,12 +2408,14 @@ def _validated_resume_evidence_prefix_v2(
     _require_controller_record_seal_v2(marker, "v2 batch marker")
     allowed_intent_indices: set[tuple[int, ...]]
     if controller_receipt_count == receipt_count - 1:
+        if terminal_count != controller_receipt_count:
+            raise ValueError("v2 ledger receipt advanced beyond controller terminals")
         allowed_intent_indices = {(controller_receipt_count,)}
     else:
         allowed_intent_indices = {()}
-        if receipt_count < len(contracts):
+        if receipt_count < len(contracts) and terminal_count == receipt_count:
             allowed_intent_indices.add((receipt_count,))
-        if receipt_count > 0:
+        if receipt_count > 0 and terminal_count == receipt_count - 1:
             allowed_intent_indices.add((receipt_count - 1,))
     if intent_indices not in allowed_intent_indices:
         raise ValueError("v2 resume intent is not the canonical durable crash point")
@@ -2322,7 +2490,10 @@ def _replay_completed_batch_v2(
     submit_receipt_root: str | Path,
     local_preflight_binding: Mapping[str, str],
 ) -> tuple[
-    Any, dict[str, Any], tuple[dict[str, Any], ...], DatabricksClusterHourLedger
+    DatabricksBatchReservationAuthorization,
+    dict[str, Any],
+    tuple[dict[str, Any], ...],
+    DatabricksClusterHourLedger,
 ]:
     """Replay a submitted batch without reserving or weakening terminal suffixes."""
 
@@ -2375,26 +2546,14 @@ def _replay_completed_batch_v2(
         expected_predecessor_prefix=phase_predecessor,
     )
     require_databricks_publication_batch_admission(ledger, authorization)
-    receipt_stop = phase_predecessor.submission_receipt_count + len(contracts)
-    terminal_stop = phase_predecessor.terminal_actual_count + len(contracts)
-    if (
-        len(ledger.reservations) != authorization.batch_prefix.reservation_count
-        or len(ledger.submission_receipts) != receipt_stop
-        or not (
-            phase_predecessor.terminal_actual_count
-            <= len(ledger.terminal_actuals)
-            <= terminal_stop
-        )
-    ):
+    receipt_count, terminal_count = _staggered_batch_progress_v2(
+        ledger, authorization
+    )
+    if receipt_count != len(contracts) or terminal_count not in {
+        len(contracts) - 1,
+        len(contracts),
+    }:
         raise ValueError("v2 completed batch is not the current ledger suffix")
-    terminal_suffix = ledger.terminal_actuals[
-        phase_predecessor.terminal_actual_count : terminal_stop
-    ]
-    if (
-        tuple(item.attempt_id for item in terminal_suffix)
-        != (authorization.attempt_ids[: len(terminal_suffix)])
-    ):
-        raise ValueError("v2 terminal reconciliation prefix is not canonical")
     marker = databricks_v1._read_canonical_json_object_file(
         root / _V2_BATCH_MARKER_FILENAME,
         "v2 qualification batch marker",

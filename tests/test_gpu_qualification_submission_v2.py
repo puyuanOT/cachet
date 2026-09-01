@@ -271,6 +271,9 @@ class _PackageOwnedCloud:
         self.post_attempt_ids: list[str] = []
         self.resume_attempt_ids: list[str] = []
         self.post_payloads: list[dict[str, Any]] = []
+        self.get_run_ids: list[str] = []
+        self.events: list[tuple[str, str]] = []
+        self.runs: dict[str, dict[str, Any]] = {}
 
     def _run_id(self, attempt_id: str) -> int:
         return 900_000 + self.attempt_ids.index(attempt_id)
@@ -287,15 +290,63 @@ class _PackageOwnedCloud:
         assert config is self.config
         assert attempt_id in batch_authorization.attempt_ids
         assert batch_authorization.attempt_ids == self.attempt_ids
+        member_index = self.attempt_ids.index(attempt_id)
+        if member_index > 0:
+            assert self.get_run_ids[-1] == str(
+                self._run_id(self.attempt_ids[member_index - 1])
+            )
         self.post_attempt_ids.append(attempt_id)
         self.post_payloads.append(deepcopy(dict(payload)))
         response = {"run_id": self._run_id(attempt_id)}
+        run_id = str(response["run_id"])
+        task = payload["tasks"][0]
+        run_start = 1_787_533_140_000 + member_index * 10_000
+        task_start = run_start + 1_000
+        task_end = task_start + 5_000
+        self.runs[run_id] = {
+            "end_time": task_end + 1_000,
+            "run_id": response["run_id"],
+            "run_name": payload["run_name"],
+            "run_type": "SUBMIT_RUN",
+            "start_time": run_start,
+            "state": {
+                "life_cycle_state": "TERMINATED",
+                "result_state": "SUCCESS",
+            },
+            "tasks": [
+                {
+                    "attempt_number": 0,
+                    "cluster_instance": {"cluster_id": f"cluster-{run_id}"},
+                    "end_time": task_end,
+                    "new_cluster": task["new_cluster"],
+                    "run_id": 990_000 + member_index,
+                    "start_time": task_start,
+                    "state": {
+                        "life_cycle_state": "TERMINATED",
+                        "result_state": "SUCCESS",
+                    },
+                    "task_key": task["task_key"],
+                }
+            ],
+        }
+        self.events.append(("post", attempt_id))
         ledger_api.record_databricks_run_submission_receipt_json(
             ledger_path,
             attempt_id=attempt_id,
             submit_response=response,
         )
         return response
+
+    def get_run(
+        self,
+        config: DatabricksWorkspaceConfig,
+        run_id: str,
+    ) -> dict[str, Any]:
+        assert config is self.config
+        normalized = str(run_id)
+        self.get_run_ids.append(normalized)
+        self.events.append(("get", normalized))
+        return deepcopy(self.runs[normalized])
 
     def resume(
         self,
@@ -379,6 +430,7 @@ def _case(
         "resume_pre_reserved_databricks_run",
         cloud.resume,
     )
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", cloud.get_run)
     return _Case(
         config=config,
         plan=plan,
@@ -477,47 +529,19 @@ def _completed_submission_with_terminal_fixtures(
             output_root=_OUTPUT_ROOT,
         )
     )
-    runs: dict[str, dict[str, Any]] = {}
+    runs = deepcopy(case.cloud.runs)
     results: dict[str, dict[str, Any]] = {}
-    for index, (planned_job, payload, contract) in enumerate(
-        zip(
-            case.plan["cloud_qualification"]["jobs"],
-            payloads,
-            contracts,
-            strict=True,
-        )
+    for planned_job, payload, contract in zip(
+        case.plan["cloud_qualification"]["jobs"],
+        payloads,
+        contracts,
+        strict=True,
     ):
         run_id = str(case.cloud._run_id(str(contract["reservation_attempt_id"])))
-        run_start = 1_787_533_140_000 + index * 10_000
-        task_start = run_start + 1_000
-        task_end = task_start + 5_000
-        task = payload["tasks"][0]
         cluster_id = f"cluster-{run_id}"
-        runs[run_id] = {
-            "end_time": task_end + 1_000,
-            "run_id": int(run_id),
-            "run_name": payload["run_name"],
-            "run_type": "SUBMIT_RUN",
-            "start_time": run_start,
-            "state": {
-                "life_cycle_state": "TERMINATED",
-                "result_state": "SUCCESS",
-            },
-            "tasks": [
-                {
-                    "attempt_number": 0,
-                    "cluster_instance": {"cluster_id": cluster_id},
-                    "end_time": task_end,
-                    "new_cluster": task["new_cluster"],
-                    "run_id": 990_000 + index,
-                    "start_time": task_start,
-                    "state": {
-                        "life_cycle_state": "TERMINATED",
-                        "result_state": "SUCCESS",
-                    },
-                    "task_key": task["task_key"],
-                }
-            ],
+        assert runs[run_id]["run_name"] == payload["run_name"]
+        assert runs[run_id]["tasks"][0]["cluster_instance"] == {
+            "cluster_id": cluster_id
         }
         results[str(contract["output_json"])] = {
             "closed_record_sha256": _digest(f"result:{contract['job_id']}"),
@@ -625,7 +649,14 @@ def test_v2_submit_and_resume_signatures_own_payload_transport_and_clock() -> No
             signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
             for name in expected[1:]
         )
-        assert not {"submit_payloads", "opener", "now"}.intersection(
+        assert not {
+            "submit_payloads",
+            "opener",
+            "now",
+            "get_run",
+            "sleep",
+            "monotonic",
+        }.intersection(
             signature.parameters
         )
 
@@ -663,7 +694,8 @@ def test_fresh_v2_submit_reserves_and_receipts_exact_fourteen_with_v2_seals(
     opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
     assert len(ledger.reservations) == opening.reservation_count + 14
     assert len(ledger.submission_receipts) == opening.submission_receipt_count + 14
-    assert len(ledger.terminal_actuals) == opening.terminal_actual_count
+    assert len(ledger.terminal_actuals) == opening.terminal_actual_count + 14
+    assert ledger.active_reserved_cluster_hours == 0.0
     assert tuple(
         item.attempt_id for item in ledger.reservations[opening.reservation_count :]
     ) == case.cloud.attempt_ids
@@ -677,6 +709,18 @@ def test_fresh_v2_submit_reserves_and_receipts_exact_fourteen_with_v2_seals(
         item.attempt_id
         for item in ledger.submission_receipts[opening.submission_receipt_count :]
     ) == case.cloud.attempt_ids
+    assert tuple(
+        item.attempt_id
+        for item in ledger.terminal_actuals[opening.terminal_actual_count :]
+    ) == case.cloud.attempt_ids
+    assert case.cloud.events == [
+        event
+        for attempt_id in case.cloud.attempt_ids
+        for event in (
+            ("post", attempt_id),
+            ("get", str(case.cloud._run_id(attempt_id))),
+        )
+    ]
 
     lease = _json(case.receipt_root / "phase-lease-v2.json")
     marker = _json(case.receipt_root / "batch-reserved-v2.json")
@@ -712,6 +756,63 @@ def test_fresh_v2_submit_reserves_and_receipts_exact_fourteen_with_v2_seals(
         _assert_v2_seal(receipt)
 
 
+def test_terminal_barrier_timeout_stops_before_next_post_and_resume_closes_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    original_wait_seconds = databricks_v2._V2_TERMINAL_WAIT_SECONDS
+
+    def running_get(
+        config: DatabricksWorkspaceConfig,
+        run_id: str,
+    ) -> dict[str, Any]:
+        run = case.cloud.get_run(config, run_id)
+        run["state"] = {"life_cycle_state": "RUNNING", "result_state": None}
+        return run
+
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", running_get)
+    monkeypatch.setattr(databricks_v2, "_V2_TERMINAL_WAIT_SECONDS", 0.0)
+
+    with pytest.raises(TimeoutError, match="timed out waiting for v2 qualification"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    interrupted = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(interrupted.submission_receipts) == opening.submission_receipt_count + 1
+    assert len(interrupted.terminal_actuals) == opening.terminal_actual_count
+    assert case.cloud.post_attempt_ids == [case.cloud.attempt_ids[0]]
+    assert {path.name for path in case.receipt_root.iterdir()} == {
+        "phase-lease-v2.json",
+        "batch-reserved-v2.json",
+        f"{_planned_job_ids(case.plan)[0]}.json",
+    }
+
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", case.cloud.get_run)
+    monkeypatch.setattr(
+        databricks_v2,
+        "_V2_TERMINAL_WAIT_SECONDS",
+        original_wait_seconds,
+    )
+    receipts = databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+
+    completed = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(receipts) == 14
+    assert len(completed.terminal_actuals) == opening.terminal_actual_count + 14
+    first_terminal_get = case.cloud.events.index(
+        ("get", str(case.cloud._run_id(case.cloud.attempt_ids[0]))),
+        2,
+    )
+    second_post = case.cloud.events.index(("post", case.cloud.attempt_ids[1]))
+    assert first_terminal_get < second_post
+
+
 def test_successor_fresh_submit_uses_complete_live_predecessor_after_historical_prefix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -745,11 +846,15 @@ def test_successor_fresh_submit_uses_complete_live_predecessor_after_historical_
     assert after.submission_receipts[: live_predecessor.submission_receipt_count] == (
         before.submission_receipts
     )
-    assert after.terminal_actuals == before.terminal_actuals
+    assert after.terminal_actuals[: live_predecessor.terminal_actual_count] == (
+        before.terminal_actuals
+    )
     assert len(after.reservations) == live_predecessor.reservation_count + 14
     assert len(after.submission_receipts) == (
         live_predecessor.submission_receipt_count + 14
     )
+    assert len(after.terminal_actuals) == live_predecessor.terminal_actual_count + 14
+    assert after.active_reserved_cluster_hours == 0.0
     assert tuple(
         item.attempt_id
         for item in after.reservations[live_predecessor.reservation_count :]
@@ -969,11 +1074,15 @@ def test_successor_lease_only_resume_reserves_once_after_complete_live_predecess
     assert after.submission_receipts[: live_predecessor.submission_receipt_count] == (
         before.submission_receipts
     )
-    assert after.terminal_actuals == before.terminal_actuals
+    assert after.terminal_actuals[: live_predecessor.terminal_actual_count] == (
+        before.terminal_actuals
+    )
     assert len(after.reservations) == live_predecessor.reservation_count + 14
     assert len(after.submission_receipts) == (
         live_predecessor.submission_receipt_count + 14
     )
+    assert len(after.terminal_actuals) == live_predecessor.terminal_actual_count + 14
+    assert after.active_reserved_cluster_hours == 0.0
     marker = _json(case.receipt_root / "batch-reserved-v2.json")
     assert marker["predecessor_prefix"] == live_predecessor.to_record()
     assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
@@ -1103,6 +1212,11 @@ def test_resume_after_five_posts_is_canonical_and_second_resume_is_byte_idempote
     job_ids = _planned_job_ids(case.plan)
     assert len(interrupted.reservations) == opening.reservation_count + 14
     assert len(interrupted.submission_receipts) == opening.submission_receipt_count + 6
+    assert len(interrupted.terminal_actuals) == opening.terminal_actual_count + 5
+    assert case.cloud.get_run_ids == [
+        str(case.cloud._run_id(attempt_id))
+        for attempt_id in case.cloud.attempt_ids[:5]
+    ]
     assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids[:6])
     assert {path.name for path in case.receipt_root.iterdir()} == {
         "phase-lease-v2.json",
@@ -1127,6 +1241,13 @@ def test_resume_after_five_posts_is_canonical_and_second_resume_is_byte_idempote
     assert len(set(case.cloud.post_attempt_ids)) == 14
     final = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
     assert len(final.submission_receipts) == opening.submission_receipt_count + 14
+    assert len(final.terminal_actuals) == opening.terminal_actual_count + 14
+    assert final.active_reserved_cluster_hours == 0.0
+    sixth_get = case.cloud.events.index(
+        ("get", str(case.cloud._run_id(case.cloud.attempt_ids[5])))
+    )
+    seventh_post = case.cloud.events.index(("post", case.cloud.attempt_ids[6]))
+    assert sixth_get < seventh_post
 
     ledger_bytes = case.ledger_path.read_bytes()
     ledger_stat = _stable_stat(case.ledger_path)
@@ -1135,6 +1256,7 @@ def test_resume_after_five_posts_is_canonical_and_second_resume_is_byte_idempote
         path.name: _stable_stat(path) for path in case.receipt_root.iterdir()
     }
     resume_calls_before = list(case.cloud.resume_attempt_ids)
+    get_calls_before = list(case.cloud.get_run_ids)
 
     def forbidden_resume(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         pytest.fail("a completed v2 phase must not invoke cloud submission")
@@ -1150,6 +1272,7 @@ def test_resume_after_five_posts_is_canonical_and_second_resume_is_byte_idempote
     )
     assert replayed == receipts
     assert case.cloud.resume_attempt_ids == resume_calls_before
+    assert case.cloud.get_run_ids == get_calls_before
     assert case.ledger_path.read_bytes() == ledger_bytes
     assert _stable_stat(case.ledger_path) == ledger_stat
     assert _root_bytes(case.receipt_root) == root_bytes
@@ -1272,25 +1395,45 @@ def test_resume_cross_v1_phase_record_rejects_without_any_write(
     assert case.cloud.resume_attempt_ids == []
 
 
-def test_resume_rejects_noncanonical_batch_receipt_prefix_without_writes(
+@pytest.mark.parametrize(
+    ("suffix_kind", "error_pattern"),
+    (
+        ("receipt", "receipt"),
+        ("terminal", "terminal"),
+        ("terminal-count", "more than one active cloud run"),
+    ),
+)
+def test_resume_rejects_noncanonical_batch_progress_prefix_without_writes(
+    suffix_kind: str,
+    error_pattern: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A resequenced post-batch receipt slice must never be normalized by resume."""
+    """A resequenced post-batch slice must never be normalized by resume."""
 
     case = _case(tmp_path, monkeypatch)
     _interrupt_after_sixth_ledger_receipt(case, monkeypatch)
     ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
-    receipt_start = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.submission_receipt_count
-    receipts = list(ledger.submission_receipts)
-    receipts[receipt_start], receipts[receipt_start + 1] = (
-        receipts[receipt_start + 1],
-        receipts[receipt_start],
-    )
-    _write_ledger(
-        case.ledger_path,
-        replace(ledger, submission_receipts=tuple(receipts)),
-    )
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    if suffix_kind == "receipt":
+        receipt_items = list(ledger.submission_receipts)
+        start = opening.submission_receipt_count
+        receipt_items[start], receipt_items[start + 1] = (
+            receipt_items[start + 1],
+            receipt_items[start],
+        )
+        changed = replace(ledger, submission_receipts=tuple(receipt_items))
+    elif suffix_kind == "terminal":
+        terminal_items = list(ledger.terminal_actuals)
+        start = opening.terminal_actual_count
+        terminal_items[start], terminal_items[start + 1] = (
+            terminal_items[start + 1],
+            terminal_items[start],
+        )
+        changed = replace(ledger, terminal_actuals=tuple(terminal_items))
+    else:
+        changed = replace(ledger, terminal_actuals=ledger.terminal_actuals[:-1])
+    _write_ledger(case.ledger_path, changed)
     ledger_before = case.ledger_path.read_bytes()
     root_before = _root_bytes(case.receipt_root)
 
@@ -1302,13 +1445,48 @@ def test_resume_rejects_noncanonical_batch_receipt_prefix_without_writes(
         "resume_pre_reserved_databricks_run",
         forbidden_resume,
     )
-    with pytest.raises(ValueError, match="receipt"):
+    with pytest.raises(ValueError, match=error_pattern):
         databricks_v2.resume_gpu_qualification_job_submissions_v2(
             case.config,
             **case.call_kwargs(),
         )
     assert case.ledger_path.read_bytes() == ledger_before
     assert _root_bytes(case.receipt_root) == root_before
+
+
+def test_resume_rejects_terminal_progress_ahead_of_controller_receipt_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    _interrupt_after_sixth_ledger_receipt(case, monkeypatch)
+    sixth_attempt = case.cloud.attempt_ids[5]
+    sixth_run_id = str(case.cloud._run_id(sixth_attempt))
+    ledger_api.record_databricks_verified_run_terminal_actual_json(
+        case.ledger_path,
+        attempt_id=sixth_attempt,
+        run_record=case.cloud.runs[sixth_run_id],
+    )
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    drifted = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(drifted.submission_receipts) == opening.submission_receipt_count + 6
+    assert len(drifted.terminal_actuals) == opening.terminal_actual_count + 6
+    assert len(list(case.receipt_root.glob("*.json"))) == 7
+    ledger_before = case.ledger_path.read_bytes()
+    root_before = _root_bytes(case.receipt_root)
+    post_calls = list(case.cloud.post_attempt_ids)
+    get_calls = list(case.cloud.get_run_ids)
+
+    with pytest.raises(ValueError, match="controller receipt/terminal progress"):
+        databricks_v2.resume_gpu_qualification_job_submissions_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _root_bytes(case.receipt_root) == root_before
+    assert case.cloud.post_attempt_ids == post_calls
+    assert case.cloud.get_run_ids == get_calls
 
 
 @pytest.mark.parametrize(
@@ -1322,6 +1500,7 @@ def test_resume_rejects_noncanonical_batch_receipt_prefix_without_writes(
         "wrong-receipt-semantics",
         "wrong-intent-index",
         "wrong-intent-semantics",
+        "next-intent-before-terminal",
         "symlink",
     ),
 )
@@ -1373,6 +1552,44 @@ def test_resume_rejects_noncanonical_partial_root_before_any_write(
             canonical_gpu_qualification_json(intent) + "\n",
             encoding="utf-8",
         )
+    elif tamper == "next-intent-before-terminal":
+        _validated_plan, _validated_pins, _payloads, contracts = (
+            databricks_v2._validated_controller_contract_v2(
+                plan_record=case.plan,
+                single_user_name=_SINGLE_USER_NAME,
+                artifact_uris=case.artifact_uris,
+                output_root=_OUTPUT_ROOT,
+            )
+        )
+        ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+        marker = _json(case.receipt_root / "batch-reserved-v2.json")
+        sixth_receipt = databricks_v2._submit_receipt_record_v2(
+            plan=case.plan,
+            contract=contracts[5],
+            ledger=ledger,
+            phase_batch_record_sha256=str(marker["closed_record_sha256"]),
+        )
+        (case.receipt_root / f"{job_ids[5]}.json").write_text(
+            canonical_gpu_qualification_json(sixth_receipt) + "\n",
+            encoding="utf-8",
+        )
+        current_intent.unlink()
+        authorization = (
+            ledger_api.replay_databricks_run_attempt_batch_authorization_json(
+                case.ledger_path,
+                databricks_v2._batch_requests_v2(case.plan, contracts),
+                expected_predecessor_prefix=case.phase_predecessor,
+            )
+        )
+        next_intent = databricks_v2._post_intent_record_v2(
+            contract=contracts[6],
+            batch_authorization=authorization,
+            phase_batch_record_sha256=str(marker["closed_record_sha256"]),
+        )
+        (case.receipt_root / f"{job_ids[6]}.post-intent-v2").write_text(
+            canonical_gpu_qualification_json(next_intent) + "\n",
+            encoding="utf-8",
+        )
     else:
         (case.receipt_root / "unexpected-link").symlink_to(
             "phase-lease-v2.json"
@@ -1404,7 +1621,7 @@ def test_resume_rejects_noncanonical_partial_root_before_any_write(
     assert case.cloud.resume_attempt_ids == resume_calls
 
 
-def test_v2_collector_reconciles_all_terminals_before_control_plane_rejection(
+def test_v2_collector_rejects_terminal_control_plane_drift_before_result_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1427,7 +1644,9 @@ def test_v2_collector_reconciles_all_terminals_before_control_plane_rejection(
     monkeypatch.setattr(databricks_v2, "get_databricks_run", get_run)
     evidence_root = tmp_path / "qualification-evidence-v2"
 
-    with pytest.raises(ValueError, match="run_name differs"):
+    with pytest.raises(
+        ValueError, match="terminal runs/get reconciliation differs from the ledger"
+    ):
         databricks_v2.collect_gpu_qualification_evidence_v2(
             case.config,
             **_collector_kwargs(case, evidence_root),
@@ -1457,9 +1676,20 @@ def test_v2_collector_resumes_canonical_partial_terminal_reconciliation(
     _payloads, contracts, runs, results = (
         _completed_submission_with_terminal_fixtures(case)
     )
-    second_run_id = str(case.cloud._run_id(case.cloud.attempt_ids[1]))
-    terminal_second_run = deepcopy(runs[second_run_id])
-    runs[second_run_id]["state"] = {
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    completed_submission = ledger_api.read_databricks_cluster_hour_ledger_json(
+        case.ledger_path
+    )
+    _write_ledger(
+        case.ledger_path,
+        replace(
+            completed_submission,
+            terminal_actuals=completed_submission.terminal_actuals[:-1],
+        ),
+    )
+    last_run_id = str(case.cloud._run_id(case.cloud.attempt_ids[-1]))
+    terminal_last_run = deepcopy(runs[last_run_id])
+    runs[last_run_id]["state"] = {
         "life_cycle_state": "RUNNING",
         "result_state": None,
     }
@@ -1481,16 +1711,16 @@ def test_v2_collector_resumes_canonical_partial_terminal_reconciliation(
             **_collector_kwargs(case, evidence_root),
         )
 
-    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
     partial = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
     partial_suffix = partial.terminal_actuals[opening.terminal_actual_count :]
-    assert tuple(actual.attempt_id for actual in partial_suffix) == (
-        contracts[0]["reservation_attempt_id"],
+    assert tuple(actual.attempt_id for actual in partial_suffix) == tuple(
+        contract["reservation_attempt_id"] for contract in contracts[:-1]
     )
+    assert len(partial_suffix) == 13
     assert partial.active_reserved_cluster_hours > 0.0
     assert not evidence_root.exists()
 
-    runs[second_run_id] = terminal_second_run
+    runs[last_run_id] = terminal_last_run
     evidence, authorization = databricks_v2.collect_gpu_qualification_evidence_v2(
         case.config,
         **_collector_kwargs(case, evidence_root),

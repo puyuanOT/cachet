@@ -281,7 +281,11 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
 
     monkeypatch.setattr(runtime_v2, "create_venv", create_venv)
     monkeypatch.setattr(runtime_v2, "_attest_isolated_python", attest)
-    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(
+        runtime_v2,
+        "_pip_subprocess_environment",
+        lambda: {"FLASHINFER_LOGGING_LEVEL": "DEBUG"},
+    )
     monkeypatch.setattr(runtime_v2.subprocess, "run", run)
 
     vllm_uri = artifact_paths["patched_vllm_wheel_sha256"].resolve().as_uri()
@@ -298,7 +302,10 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert observed_python == runtime_python
         assert kwargs == {
             "closure_path": artifact_paths["runtime_closure_manifest_sha256"],
-            "environment": {"PYTHONSAFEPATH": "1"},
+            "environment": {
+                "FLASHINFER_LOGGING_LEVEL": "ERROR",
+                "PYTHONSAFEPATH": "1",
+            },
             "flashinfer_uri": flashinfer_uri,
             "package_sha256": _PACKAGE_SHA256,
             "package_uri": package_uri,
@@ -321,6 +328,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert input_bundle == artifact_paths["input_bundle_sha256"]
         assert expected_sha256 == GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256
         assert environment["PYTHONSAFEPATH"] == "1"
+        assert environment["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
 
     monkeypatch.setattr(
         runtime_v2, "_verify_input_bundle_in_isolated_runtime", verify_input
@@ -332,6 +340,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         output_path = Path(arguments[arguments.index("--output-json") + 1])
         output_path.write_text("{}\n", encoding="utf-8")
         assert kwargs["environment"]["PYTHONSAFEPATH"] == "1"
+        assert kwargs["environment"]["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
     monkeypatch.setattr(runtime_v2, "_run_bounded_worker_process", worker)
@@ -391,6 +400,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert kwargs["check"] is True
         assert kwargs["cwd"] == runtime_dir
         assert kwargs["env"]["PYTHONSAFEPATH"] == "1"
+        assert kwargs["env"]["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
     assert [call[1]["timeout"] for call in subprocess_calls] == [3600] * 4 + [300]
     assert attest_calls == [("3.11.11", None), ("3.11.11", identity.file_binding)]
     assert events == [
@@ -815,7 +825,7 @@ def test_outer_final_verifier_waits_for_nested_pip_group_cleanup(
     started = runtime_v2.monotonic()
     with pytest.raises(
         RuntimeError,
-        match=r"rejected the installation \(pip_check/subprocess_timeout\)",
+        match=r"rejected the installation \(pip_check/subprocess_timeout;",
     ):
         runtime_v2._run_final_runtime_verifier(
             Path(runtime_v2.sys.executable),
@@ -1415,7 +1425,7 @@ def test_final_verifier_child_classifies_pip_subprocess_start_failure(
     )
 
 
-def test_final_verifier_parent_accepts_only_binary_canonical_child_success(
+def test_final_verifier_parent_accepts_success_and_reports_rejection_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1462,6 +1472,45 @@ def test_final_verifier_parent_accepts_only_binary_canonical_child_success(
         "output_limit_bytes": (runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES),
         "timeout_seconds": runtime_v2._FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS,
     }
+
+    stdout = b"authenticated-stdout-secret"
+    stderr = b"authenticated-stderr-secret"
+    rejected = runtime_v2._final_runtime_verifier_failure_envelope(
+        stage="flashinfer_import",
+        category="verification_rejected",
+        stdout_bytes=len(stdout),
+        stdout_sha256=sha256(stdout).hexdigest(),
+        stderr_bytes=len(stderr),
+        stderr_sha256=sha256(stderr).hexdigest(),
+    )
+    encoded_rejection = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        rejected
+    )
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(stdout=encoded_rejection),
+    )
+    with pytest.raises(RuntimeError, match="rejected the installation") as raised:
+        runtime_v2._run_final_runtime_verifier(
+            runtime_python,
+            runtime_lock=tmp_path / "base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            closure_path=tmp_path / "closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment={"PYTHONSAFEPATH": "1"},
+        )
+    diagnostic = str(raised.value)
+    assert diagnostic == (
+        "v2 final runtime verifier rejected the installation "
+        f"(flashinfer_import/verification_rejected; stdout_bytes={len(stdout)}; "
+        f"stdout_sha256={sha256(stdout).hexdigest()}; stderr_bytes={len(stderr)}; "
+        f"stderr_sha256={sha256(stderr).hexdigest()})"
+    )
+    assert stdout.decode("ascii") not in diagnostic
+    assert stderr.decode("ascii") not in diagnostic
 
 
 def _malformed_final_child_outputs() -> list[tuple[str, bytes]]:

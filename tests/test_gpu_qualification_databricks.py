@@ -91,6 +91,16 @@ _RETAINED_LEDGER_PATH = (
     / "vllm-0271-publication-prep"
     / "cluster-hours.json"
 )
+_RETAINED_LEDGER_REVIEWED_SUCCESSOR_PREFIX = DatabricksLedgerPrefix(
+    ledger_id=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.ledger_id,
+    cap_cluster_hours=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.cap_cluster_hours,
+    reservation_count=279,
+    submission_receipt_count=141,
+    terminal_actual_count=279,
+    prefix_sha256=(
+        "7bdfab96021910df7a06ac1cf87604eefe7c1f4181f49a242212f699c443ca1a"
+    ),
+)
 
 
 @pytest.fixture(autouse=True)
@@ -230,17 +240,40 @@ def _current_live_and_prior_receipt_ledgers() -> tuple[
     live_stat = _RETAINED_LEDGER_PATH.stat()
     live = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
     assert live_bytes == _canonical_ledger_bytes(live)
-    assert live.active_reserved_task_count == 0
-    assert live.active_reserved_cluster_hours == 0
-    opening_prefix = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
-    resource_ledger.require_databricks_ledger_prefix(live, opening_prefix)
-    reviewed_opening = replace(
+    successor_prefix = _RETAINED_LEDGER_REVIEWED_SUCCESSOR_PREFIX
+    resource_ledger.require_databricks_ledger_prefix(live, successor_prefix)
+    reviewed_successor = replace(
         live,
-        reservations=live.reservations[: opening_prefix.reservation_count],
+        reservations=live.reservations[: successor_prefix.reservation_count],
         submission_receipts=live.submission_receipts[
-            : opening_prefix.submission_receipt_count
+            : successor_prefix.submission_receipt_count
         ],
         terminal_actuals=live.terminal_actuals[
+            : successor_prefix.terminal_actual_count
+        ],
+    )
+    reviewed_successor_bytes = _canonical_ledger_bytes(reviewed_successor)
+    assert len(reviewed_successor_bytes) == 274_180
+    assert hashlib.sha256(reviewed_successor_bytes).hexdigest() == (
+        "b1c89ac4c8eaa68287f9bf41aa31105156f7d73a650b7adabf319d291037e825"
+    )
+    assert reviewed_successor.active_reserved_task_count == 0
+    assert reviewed_successor.active_reserved_cluster_hours == 0
+    assert databricks_ledger_prefix(reviewed_successor) == successor_prefix
+    opening_prefix = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    resource_ledger.require_databricks_ledger_prefix(
+        reviewed_successor,
+        opening_prefix,
+    )
+    reviewed_opening = replace(
+        reviewed_successor,
+        reservations=reviewed_successor.reservations[
+            : opening_prefix.reservation_count
+        ],
+        submission_receipts=reviewed_successor.submission_receipts[
+            : opening_prefix.submission_receipt_count
+        ],
+        terminal_actuals=reviewed_successor.terminal_actuals[
             : opening_prefix.terminal_actual_count
         ],
     )
