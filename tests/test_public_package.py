@@ -593,6 +593,8 @@ EXPECTED_PUBLIC_SUBMODULES = frozenset(
     'pr_evidence',
     'probe_fixtures',
     'publication_campaign',
+    'publication_campaign_finalizer',
+    'publication_campaign_tables',
     'publication_bf16_handoff_generation',
     'publication_freeze',
     'publication_freeze_v2',

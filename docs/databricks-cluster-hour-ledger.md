@@ -383,8 +383,21 @@ The refreshed campaign closes as
 `2d35875107c709d71e6f558d2a029afb53ee371d851e83a18fe0d194f6fc0e0c`
 in canonical file
 `353b8b3e77eca5347901232709a40c45a0f996be4fc6f25ed55511d38457dc85`.
-The retained opening balance is now 71.390128 GPU-hours, with zero active
-reservations and 952.609872 hours remaining under the 1,024-hour aggregate cap.
+The immutable campaign-opening snapshot records 71.390128 GPU-hours, zero active
+reservations, and 952.609872 hours remaining under the 1,024-hour aggregate cap
+at the exact 236/98/236 prefix. It is historical plan authority, not a claim
+about the live ledger; every successor stage and final publication record must
+bind its own later ledger prefix.
+
+The reviewed qualification-v2 opening extends that same ordered ledger to
+265/127/265 at prefix
+`e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1`
+and 77.50443361111115 terminal GPU-hours. The latest reconciled quiescent GPU
+predecessor in this repository extends it again to 279/141/279 at prefix
+`7bdfab96021910df7a06ac1cf87604eefe7c1f4181f49a242212f699c443ca1a`
+and 81.16875222222224 terminal GPU-hours. These are immutable successor
+snapshots, not permission to reuse a stale controller freeze; a new freeze must
+bind the then-current complete predecessor.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
@@ -473,9 +486,10 @@ every nonzero-indexed full-score wave (waves 1–9); both wave-zero phases use
 hard cap/headroom admission. The three generation workloads contain 72,871,510
 cache-prefix tokens; at the required 35 effective
 tokens/GPU-second their combined allowance is 578.345317 GPU-hours. The
-retained ledger opens the reset with 71.390128 terminal GPU-hours, leaving only
-250.264554 hours inside the protected 900-hour envelope for qualification,
-timed latency, and full-score consumers at that generation threshold.
+campaign-opening snapshot records 71.390128 terminal GPU-hours. At that
+historical prefix, this left only 250.264554 hours inside the protected 900-hour
+envelope for qualification, timed latency, and full-score consumers at that
+generation threshold.
 
 The BF16 prerequisite closes 308,448,018,432 payload bytes (287.264603 GiB);
 its conservative absolute 16k slot envelope is 288 GiB. The full-score program

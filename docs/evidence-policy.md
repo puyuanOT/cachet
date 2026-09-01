@@ -23,15 +23,87 @@ the corresponding table must say **provisional / non-publication-qualified**.
 This remains true even when the private job succeeded or the raw sample count
 is large.
 
-The built-in HotpotQA publication scorer ports only the answer EM/F1 portion of
-the official
-[`hotpot_evaluate_v1.py`](https://github.com/hotpotqa/hotpot/blob/3635853403a8735609ee997664e1528f4480762a/hotpot_evaluate_v1.py)
-script, pinned to upstream commit
-`3635853403a8735609ee997664e1528f4480762a`. Cachet does not claim supporting-fact
-or joint HotpotQA metrics because the serving benchmark does not collect
-supporting-fact predictions. Other built-in V1 dataset scorers remain diagnostic
-and cannot satisfy a publication gate until a versioned dataset-approved scorer
-is registered.
+Clear Databricks single-user principals are private control-plane material.
+Execution plans, job records, submit-payload snapshots, and controller leases
+that contain `single_user_name` must remain in ignored or access-restricted
+control roots and must not be copied into committed benchmark evidence. Public
+sanitized evidence may retain only the SHA-256 principal attestation returned
+by the live current-user check.
+
+The default V1 registry contains four publication-approved, versioned scorer
+contracts. All four require the shared versioned final-answer parser and emit
+only their declared metrics:
+
+- Biography uses Cachet's normalized-title exact match for the versioned entity
+  identification task. Its normalizer preserves name-significant punctuation.
+- HotpotQA ports only the answer EM/F1 portion of the official
+  [`hotpot_evaluate_v1.py`](https://github.com/hotpotqa/hotpot/blob/3635853403a8735609ee997664e1528f4480762a/hotpot_evaluate_v1.py)
+  script, pinned to upstream commit
+  `3635853403a8735609ee997664e1528f4480762a`. Cachet does not claim
+  supporting-fact or joint metrics because the serving benchmark does not
+  collect supporting-fact predictions.
+- MusiQue ports the official v1.0 answer EM/F1 implementation at pinned commit
+  `922ac98f19a201998dbdae6d7f2887a5258dbdeb`, maximized over the preserved
+  answer aliases. Cachet does not claim support-index or answerability-group
+  metrics.
+- NIAH uses exact requested-value accuracy over the frozen 8k/16k/32k by
+  10%/50%/90% needle-position grid. The first canonical cell contains 112
+  examples and each of the other eight contains 111; redistribution is not an
+  equivalent 1,000-example grid.
+
+The generic built-in answer diagnostic remains diagnostic and cannot satisfy a
+publication gate in place of one of these registered scorer contracts.
+
+One-arm physical latency jobs are sealed as `smoke` component evidence because
+a Baseline-only job contains no cache arm and cannot truthfully make a
+comparative publication claim. This does not relax the publication gate. The
+vLLM 0.27.1 campaign finalizer must independently revalidate all 115 component
+records, exactly reaggregate the latency summary and complete paired full-score
+aggregate, prove their uninterrupted shared-ledger lineage, and emit one
+sanitized `cachet.vllm_0271_publication_report.v1`. The only passing campaign
+gate is the exact `document_kv.benchmark_publication_gate.v1` record whose
+`benchmark_payload_digest` equals that report's `closed_record_sha256`.
+Each preserved full-score raw run must also replay the frozen suite, isolated
+arm, model/runtime, 64-token, temperature-zero, concurrency-four, one-pass
+benchmark manifest. The replay rebuilds the complete arm and runtime manifest
+from the governed natural and enriched inputs, binds Vanilla to runtime-prompt
+delivery, and matches the SHA-256 of the exact prompt serialized by the client
+along with server-usage token accounting. That validated protocol is carried
+through every shard
+evidence record, the aggregate, and the public report; it is not reconstructed
+from a label at publication time. Every metric summary carries an
+`invalid_parser_score_sum` audit value that must be exactly zero in the raw
+reaggregation, aggregate validator, report validator, and table renderer.
+
+The campaign report and gate are an inseparable promotion pair. The report may
+contain only whitelisted aggregate tables, scorer/parser contracts, ledger
+accounting, and content-addressed source bindings. It must not copy artifact
+URIs, principals, Jobs API identifiers, prompts, answers, raw outputs, or logs.
+Missing, duplicated, tampered, locally scoped, interleaved-ledger, active-ledger,
+or below-headroom inputs fail closed and remain provisional.
+The public pair additionally pins the frozen campaign, inventory, shard-plan,
+and execution-plan digests, requires 15,360–16,640 cold-read attestations, and
+accepts only the authorized 1,024-hour ledger cap.
+Each file is published from complete immutable temporary bytes; the gate is
+published first and the report last as the pair's commit file. An exact
+read-only gate-only interruption is retryable, while a report without its gate
+or any mismatched partial fails closed. Authority-replaying loads accept the
+writer's sealed `0444` mode or Git checkout modes made owner-only/group-readable
+by a secure umask (`0600`, `0640`, or `0644`, including read-only variants);
+crash recovery accepts only the sealed mode, and every load still requires
+stable canonical bytes plus complete source and ledger replay.
+
+Human-readable campaign tables are a deterministic projection of that exact
+pair, not a second hand-edited evidence source. The publication-table renderer
+uses fixed row identities and order, type-exact finite numeric formatting, and
+named Markdown regions. Promotion must byte-compare every governed region with
+fresh renderer output. The benchmark surface is valid only in one of two
+states: entirely pending with no report folder, or finalized with the complete
+report/gate/README trio. A partial pair, mixed pending and populated cells,
+unexpected row, or one-cell transcription difference fails closed.
+The child README is renderer-owned too: it names both exact JSON files and the
+validated report digest, so a hand-written or stale appendix index cannot
+silently accompany an otherwise valid pair.
 
 ## Fair Comparison Design
 

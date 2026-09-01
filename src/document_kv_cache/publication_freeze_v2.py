@@ -230,6 +230,8 @@ _V2_STATIC_ANALYSIS_TARGETS: Final = tuple(
             "src/document_kv_cache/gpu_qualification_databricks_v2.py",
             "src/document_kv_cache/flashinfer_wheel_repack.py",
             "src/document_kv_cache/runtime_artifact_closure.py",
+            "src/document_kv_cache/publication_campaign_finalizer.py",
+            "src/document_kv_cache/publication_campaign_tables.py",
             "src/document_kv_cache/publication_freeze_v2.py",
         )
     )
@@ -1639,7 +1641,7 @@ def _command_check_specs(
                 "tests",
             ),
             (str(inputs.python_executable), "-m", "pytest", "--version"),
-            "pytest 8.0.0",
+            "pytest 9.1.1",
         ),
         (
             "ruff",

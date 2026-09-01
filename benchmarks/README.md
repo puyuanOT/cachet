@@ -2,10 +2,12 @@
 
 This directory is the public benchmark surface for Cachet.
 
+<!-- cachet:vllm-0271-publication-table:status:begin -->
 > **Status: vLLM 0.27.1 campaign pending.** No latency, resource, ablation, or
 > full-dataset score produced by the reset campaign has been published yet.
 > Every metric cell below is therefore `N/A (0.27.1 campaign pending)` unless
 > the method or runner is unsupported. `N/A` is never a zero.
+<!-- cachet:vllm-0271-publication-table:status:end -->
 
 Superseded serving-engine evidence and its numeric tables were removed instead
 of being mixed with the reset. A result may replace a pending cell only after
@@ -35,10 +37,12 @@ production job is submitted.
 | Repeats | 2 per example within each deployment block |
 | Deployment blocks | 5 matched fresh-cluster blocks |
 | Requests per method/context/concurrency cell and block | 256 |
-| Decode | Forced 256-token latency decode; exact decoding pins come from the closed execution record |
+| Latency decode | Forced 256-token decode; exact decoding pins come from the closed latency execution record |
+| Full-score decode | Natural EOS with a 64-token maximum, temperature 0, closed-loop concurrency 4, one paired pass per method, and no prompt padding or tokenizer truncation |
 | No-retry job timeouts | 8k c1/c2/c4: 6/4/4h; 16k: 8/6/4h; 32k: 12/8/4h; all c4 auxiliary jobs: 4h |
 | Experimental units | Core Baseline/Vanilla pair; Disk/RAM/UC trio; 16k-c4 core pair plus BF16/A10G four-job wave |
-| Analysis | Paired hierarchical bootstrap over deployment blocks and examples; no post-hoc cell significance |
+| Latency analysis | Paired hierarchical bootstrap over deployment blocks and examples; no post-hoc cell significance |
+| Full-score analysis | Per-example paired deltas with pointwise 95% paired-example bootstrap intervals, 20,000 draws, and dataset stratification |
 | Full-score scope | One complete paired pass over every selected dataset row; no padding, truncation, sampling replacement, or answer-quality preservation gate |
 | Budget | 1,024 aggregate GPU-hours, 900 active reserved hours, 124 hours unreserved headroom, at most 16 parallel jobs |
 | Retained ledger opening | 71.390128 reconciled GPU-hours; exact 236/98/236 post-migration append-only prefix is campaign-bound; zero active reservations |
@@ -57,9 +61,11 @@ estimated from another method.
 
 ## Main Latency And Resource Table
 
-Latency values will be reported in seconds. Each pending row represents five
-matched deployment blocks; no prior measurement is carried forward.
+Latency values are reported in seconds. Memory values are rendered as GiB
+together with their exact byte counts. Each implemented row represents five
+matched deployment blocks; no pre-reset measurement is carried forward.
 
+<!-- cachet:vllm-0271-publication-table:core-latency:begin -->
 | Method | Input context | Concurrency setting | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 decode tok/s | Configured closed-loop concurrency | Peak GPU process memory | Peak host memory | Peak process-tree RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Baseline | 8k | 1 | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) |
@@ -80,6 +86,7 @@ matched deployment blocks; no prior measurement is carried forward.
 | Vanilla&nbsp;KV | 32k | 2 | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) |
 | Baseline | 32k | 4 | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) |
 | Vanilla&nbsp;KV | 32k | 4 | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) |
+<!-- cachet:vllm-0271-publication-table:core-latency:end -->
 
 ## Paired Latency Estimands
 
@@ -89,6 +96,7 @@ treatment is faster. The table reports estimation with pointwise 95% paired
 hierarchical-bootstrap intervals; it is not a grid of post-hoc significance
 tests.
 
+<!-- cachet:vllm-0271-publication-table:latency-estimands:begin -->
 | Treatment vs reference | Setting | TTFT geometric speedup | TTFT 95% CI | TTC geometric speedup | TTC 95% CI | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Vanilla KV vs Baseline | 8k, concurrency 1 | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Five matched blocks pending |
@@ -104,6 +112,7 @@ tests.
 | RAM vs Disk | 16k, concurrency 4, L4 | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Dedicated five-block storage schedule pending |
 | Unity Catalog vs Disk | 16k, concurrency 4, L4 | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Dedicated five-block storage schedule pending |
 | A10G vs L4 | 16k, concurrency 4, local NVMe | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Five matched blocks pending |
+<!-- cachet:vllm-0271-publication-table:latency-estimands:end -->
 
 ## Unsupported Method Status
 
@@ -117,25 +126,36 @@ tests.
 
 The reset requires a complete paired evaluation over every selected row in the
 four implemented datasets. The earlier small diagnostic is not retained or
-substituted for this table. Parser-status cells report the complete counts for
-`ok`, `missing_block`, `multiple_or_malformed_blocks`, `extraneous_text`,
-`nested_block`, and `empty_answer`, including explicit zeros for unobserved
-states. Invalid parses score zero rather than disappearing from a denominator.
+substituted for this table. Full-score values use one paired pass per method
+over all 83,653 natural-length examples, with no padding or tokenizer
+truncation. Requests run at closed-loop concurrency 4, temperature 0, natural
+EOS enabled, and a 64-token maximum. Parser-status cells report the complete
+counts for `ok`, `missing_block`, `multiple_or_malformed_blocks`,
+`extraneous_text`, `nested_block`, and `empty_answer`, including explicit zeros for unobserved
+states. Invalid or malformed final-answer parses receive zero
+and remain in denominators. Scores, deltas, and confidence limits are unit-scale
+fractions rendered to six decimal places; scientific notation is used if a
+nonzero value would otherwise round to zero. Intervals are pointwise 95%
+paired-example bootstrap intervals with 20,000 draws, stratified by dataset;
+NIAH is additionally reported over its frozen nine-cell grid.
 
-| Dataset | Official metric | Baseline | Baseline parser-status counts | Vanilla KV | Vanilla parser-status counts | Vanilla − Baseline | Paired 95% CI |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Biography | Normalized-title exact match | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
-| HotpotQA | Answer exact match | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
-| HotpotQA | Answer F1 | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
-| MusiQue | Official answer exact match, alias-max | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
-| MusiQue | Official answer F1, alias-max | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
-| NIAH | Exact-value overall accuracy | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
-| LongBench v2 | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) |
-| RULER | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) |
+<!-- cachet:vllm-0271-publication-table:dataset-scores:begin -->
+| Dataset | Governed metric | n | Baseline | Baseline parser-status counts | Vanilla KV | Vanilla parser-status counts | Vanilla − Baseline | Paired 95% CI |
+| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: |
+| Biography | Normalized-title exact match | 72831 | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
+| HotpotQA | Answer exact match | 7405 | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
+| HotpotQA | Answer F1 | 7405 | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
+| MusiQue | Official answer exact match, alias-max | 2417 | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
+| MusiQue | Official answer F1, alias-max | 2417 | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
+| NIAH | Exact-value overall accuracy | 1000 | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
+| LongBench v2 | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) |
+| RULER | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) |
+<!-- cachet:vllm-0271-publication-table:dataset-scores:end -->
 
 NIAH is additionally reported as the full 3-by-3 grid below; every cell is a
 governed exact-value accuracy over its bound source examples.
 
+<!-- cachet:vllm-0271-publication-table:niah-grid:begin -->
 | Context | Needle position | n | Baseline accuracy | Vanilla KV accuracy | Vanilla − Baseline | Paired 95% CI |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 8k | 10% | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
@@ -147,53 +167,75 @@ governed exact-value accuracy over its bound source examples.
 | 32k | 10% | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
 | 32k | 50% | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
 | 32k | 90% | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) | N/A (0.27.1 full evaluation pending) |
+<!-- cachet:vllm-0271-publication-table:niah-grid:end -->
 
 ## Ablation Tables
 
-Every implemented ablation is refreshed on vLLM 0.27.1. Precision and hardware
-reuse the exact 16k, concurrency-4 core Vanilla control from the same deployment
-block. Storage uses a dedicated matched Disk/RAM/Unity Catalog trio per block:
-two examples per dataset, 32 repeats, 256 requests, and concurrency 4.
+Every implemented ablation belongs to the governed vLLM 0.27.1 refresh.
+Precision and hardware reuse the exact 16k, concurrency-4 core Vanilla control
+from the same deployment block. Storage uses a dedicated matched Disk/RAM/Unity
+Catalog trio per block: two examples per dataset, 32 repeats, 256 requests, and
+concurrency 4.
 Those two identities are the lowest domain-separated SHA-256 ranks within the
 canonical 32-example dataset domain; callers cannot choose a favorable subset.
 
 ### Document KV Precision
 
+<!-- cachet:vllm-0271-publication-table:precision:begin -->
 | Document KV payload/runtime KV | P50 TTFT | P50 TTC | Status |
 | --- | ---: | ---: | --- |
 | Q8 / `fp8_e5m2` | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Core 16k, concurrency-4 Vanilla anchor |
 | bf16 / bf16 | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Implemented refresh cell |
 | Packed Q4 | N/A (not implemented) | N/A (not implemented) | No packed-Q4 payload and serving dequantization contract |
+<!-- cachet:vllm-0271-publication-table:precision:end -->
 
 ### Storage Tier
 
+<!-- cachet:vllm-0271-publication-table:storage:begin -->
 | Storage tier | P50 TTFT | P50 TTC | Status |
 | --- | ---: | ---: | --- |
 | Local NVMe disk | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Dedicated strict-cold storage control in each block |
-| RAM | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | 16-GiB provider payload cache; eight targets populated and verified before 256 measured hits |
-| Unity Catalog mounted path | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Dedicated mounted-path cell; OS eviction and exact bytes are proved while backend-cache state remains unproven |
+| RAM | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Requires a 16-GiB provider payload cache with eight targets populated and verified before 256 measured hits |
+| Unity Catalog mounted path | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Requires proof of OS eviction and exact bytes; backend-cache state remains unproven |
 | Hybrid RAM/disk/Unity Catalog | N/A (not implemented) | N/A (not implemented) | Combined serving policy is unsupported |
+<!-- cachet:vllm-0271-publication-table:storage:end -->
 
 ### Hardware
 
+<!-- cachet:vllm-0271-publication-table:hardware:begin -->
 | Hardware | P50 TTFT | P50 TTC | Status |
 | --- | ---: | ---: | --- |
 | AWS g6/L4, `g6.8xlarge` | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Core 16k, concurrency-4 Vanilla anchor |
 | AWS g5/A10G, `g5.8xlarge` | N/A (0.27.1 campaign pending) | N/A (0.27.1 campaign pending) | Implemented compatibility refresh cell; storage topology remains part of the setting |
+<!-- cachet:vllm-0271-publication-table:hardware:end -->
 
 ### Serving Platform
 
+<!-- cachet:vllm-0271-publication-table:platform:begin -->
 | Serving platform | Result | Status |
 | --- | --- | --- |
 | vLLM 0.27.1 | N/A (0.27.1 campaign pending) | Campaign target |
 | SGLang | N/A (Q8 pre-RoPE serving path not implemented) | Unsupported for the main campaign |
+<!-- cachet:vllm-0271-publication-table:platform:end -->
+
+### Resource And Cache Telemetry
+
+The final report renders all 23 governed descriptive cells with aggregate GPU,
+host, process-tree, connector-load, backend-read, cold-read, eviction,
+mounted-path, payload-cache, and storage-materialization telemetry.
+
+<!-- cachet:vllm-0271-publication-table:resource-cache:begin -->
+| Cell coverage | Resource and cache telemetry | Status |
+| --- | --- | --- |
+| All 23 governed descriptive cells | N/A (0.27.1 campaign pending) | Exact report-bound telemetry pending |
+<!-- cachet:vllm-0271-publication-table:resource-cache:end -->
 
 ## Evidence And Publication Gate
 
-The appendix is intentionally empty of result evidence while the campaign is
-pending. Production evidence must be sanitized and content-addressed; raw Jobs
-API responses, credentials, wheels, logs, generated datasets, prompt payloads,
-and local scratch output do not belong here.
+The appendix accepts only the exact sanitized, content-addressed report/gate
+pair under `appendix/vllm-0271-publication-v1/`. Raw Jobs API responses,
+credentials, wheels, logs, generated datasets, prompt payloads, and local
+scratch output do not belong here.
 
 Publication requires all of the following:
 
@@ -208,13 +250,24 @@ Publication requires all of the following:
 - matched fresh-cluster latency execution records for all planned cells;
 - the corrected complete paired score execution record;
 - resource, cache-state, and Databricks control-plane attestations; and
-- a passing publication-gate record.
+- one sealed, sanitized `cachet.vllm_0271_publication_report.v1` that
+  reaggregates both branches, binds the exact 115-job latency closure and
+  160-shard full-score closure, and projects the published tables; and
+- its exact passing `document_kv.benchmark_publication_gate.v1` pair, whose
+  `benchmark_payload_digest` equals the campaign report's
+  `closed_record_sha256`.
+
+The isolated one-arm latency jobs are component evidence under the `smoke`
+policy. They make no standalone comparative claim. Publication is authorized
+only by the final campaign-level report/gate pair after all Baseline and Vanilla
+components have been recomputed and the shared GPU ledger closes with no active
+reservation and the protected 124-hour headroom intact.
 
 ## Directory Layout
 
 | Folder | Purpose |
 | --- | --- |
-| [`appendix/`](appendix/) | Future sanitized 0.27.1 campaign evidence after the publication gate passes |
+| [`appendix/`](appendix/) | Sanitized 0.27.1 campaign report/gate pair, present only after the publication gate passes |
 | [`databricks/`](databricks/) | Databricks evidence-handling policy; no run results are currently published |
 | [`native-engine/`](native-engine/) | Native integration scope; not a latency result folder |
 | [`sglang/`](sglang/) | Explicit unsupported/pending SGLang benchmark status |

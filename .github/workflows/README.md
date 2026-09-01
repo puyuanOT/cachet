@@ -28,9 +28,13 @@ The `test` job runs independently on Python 3.11 and 3.12. Each matrix job:
    `cachet` and `document_kv_cache` import surfaces, verifies that the removed
    legacy facade is absent, and exercises a packaged Cachet CLI.
 
-Ruff/mypy targets are intentionally explicit. When framework integration files
-change, add them only after the exact strict commands pass in a clean Python
-3.11 and 3.12 environment; an imported-module failure is still a CI failure.
+Ruff/mypy targets are intentionally explicit. After `poetry install`,
+non-target first-party imports resolve through the installed PEP 561 package
+and remain dependency surfaces rather than additional checking roots. When a
+framework integration file changes, add it to both exact target lists only
+after the strict commands pass in clean Python 3.11 and 3.12 environments; any
+diagnostic in an explicit root or import resolution required by that root fails
+CI.
 
 ## Required Gate
 

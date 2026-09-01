@@ -1,13 +1,15 @@
 # Benchmark Appendix
 
-No benchmark result evidence is currently published here.
+This appendix accepts at most one publication result folder for the frozen
+vLLM 0.27.1 campaign:
+`vllm-0271-publication-v1/`. Its absence means that no campaign result is
+published. Its presence is valid only when it contains exactly the canonical
+`README.md`, `campaign-report.json`, and `benchmark-publication-gate.json`, the
+report/gate pair passes exact validation, and the governed tables in the
+[benchmark root](../) byte-match the deterministic renderer.
 
-The repository is resetting the public benchmark surface to the frozen vLLM
-0.27.1 campaign. Superseded result folders were removed rather than retained as
-active or historical comparison points. Future folders must contain sanitized,
-content-addressed evidence that matches the closed campaign and passes the
-publication gate described in the [benchmark root](../).
-
-Use [`../_template/README.md`](../_template/README.md) when adding the first
-qualified campaign report. Do not commit raw Databricks responses, credentials,
-wheels, logs, generated datasets, prompt payloads, or local scratch output.
+Superseded result folders are not retained as active or historical comparison
+points. Do not commit raw Databricks responses, credentials, wheels, logs,
+generated datasets, prompt payloads, or local scratch output. The report shape
+and sanitization boundary are documented in
+[`../_template/README.md`](../_template/README.md).

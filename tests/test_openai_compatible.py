@@ -1,5 +1,6 @@
 import json
 import math
+from hashlib import sha256
 from urllib.error import HTTPError
 
 import pytest
@@ -172,6 +173,9 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert generation.metadata["request_payload_prompt_chars"] == str(
         len(benchmark_request().logical_prompt_text)
     )
+    assert generation.metadata["request_payload_prompt_sha256"] == sha256(
+        benchmark_request().logical_prompt_text.encode("utf-8")
+    ).hexdigest()
     assert "request_id" not in generation.metadata
     request_body = engine.payloads[0]
     assert request_body["prompt"] == benchmark_request().logical_prompt_text

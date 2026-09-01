@@ -174,6 +174,14 @@ return as a production dependency.
   concurrency, auxiliary-resource, score, GPU-hour budget, and no-retry
   condition-timeout design (8k: 6/4/4h, 16k: 8/6/4h, 32k: 12/8/4h at
   c1/c2/c4; c4 auxiliaries: 4h).
+- `publication_campaign_finalizer.py` recomputes the complete latency and
+  full-score branches, proves their exact shared-ledger succession, emits only
+  sanitized table projections and digest bindings, and creates the sole
+  standard publication gate bound to the sealed campaign-report digest.
+- `publication_campaign_tables.py` validates the exact sanitized report/gate
+  pair and deterministically renders and byte-checks the governed public
+  Markdown table regions plus the digest-bound appendix README; manual result
+  transcription is not an evidence path.
 - `publication_bf16_handoff_generation.py` produces the exact 16k auxiliary
   BF16 pre-RoPE handoff bundle with 16 capability-authorized, no-retry L40S
   jobs, direct control-plane/ledger reconciliation, durable content closure,

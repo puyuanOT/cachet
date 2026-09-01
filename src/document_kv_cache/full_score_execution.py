@@ -34,11 +34,22 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from document_kv_cache._benchmark_datasets import _example_from_record
+from document_kv_cache._benchmark_manifest import (
+    _build_experiment_manifest,
+    benchmark_experiment_manifest_to_record,
+)
+from document_kv_cache._benchmark_models import (
+    EMPTY_REQUEST_CUSTOMIZATION_DIGEST,
+    BenchmarkManifestContext,
+)
 from document_kv_cache._hardware_targets import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     validate_aws_single_node_gpu_type,
 )
-from document_kv_cache.benchmark_runner import benchmark_run_result_from_record
+from document_kv_cache.benchmark_runner import (
+    DEFAULT_OPENAI_COMPLETIONS_ENDPOINT,
+    benchmark_run_result_from_record,
+)
 from document_kv_cache.benchmark_handoffs import (
     enrich_benchmark_jsonl_with_handoffs,
     generate_benchmark_handoff_bundles,
@@ -48,6 +59,10 @@ from document_kv_cache.benchmark_handoffs import (
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     FINAL_ANSWER_NO_EXTRACTION_VALUE,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
@@ -58,7 +73,9 @@ from document_kv_cache.benchmarks import (
     FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
     FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
     NIAH_CELL_IDS,
+    BenchmarkSuite,
     DatasetScoreContext,
+    baseline_prefill_arm,
     benchmark_cache_prefix_segments,
     build_prompt_parts,
     default_dataset_scorer_registry,
@@ -104,6 +121,7 @@ from document_kv_cache.databricks_runs import (
     databricks_run_status_record,
     get_databricks_run,
     recover_pre_reserved_databricks_run,
+    require_databricks_current_user_name,
     require_databricks_run_idempotency_token,
     resume_pre_reserved_databricks_run,
     summarize_databricks_run,
@@ -202,8 +220,8 @@ FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE = (
     "cachet.full_score_deletion_attestation.v1"
 )
 FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION = 1
-FULL_SCORE_AGGREGATE_RECORD_TYPE = "cachet.full_score_aggregate.v1"
-FULL_SCORE_AGGREGATE_SCHEMA_VERSION = 1
+FULL_SCORE_AGGREGATE_RECORD_TYPE = "cachet.full_score_aggregate.v2"
+FULL_SCORE_AGGREGATE_SCHEMA_VERSION = 2
 FULL_SCORE_EXECUTION_PLAN_RECORD_TYPE = "cachet.full_score_execution_plan.v1"
 FULL_SCORE_EXECUTION_PLAN_SCHEMA_VERSION = 1
 FULL_SCORE_READY_SHARD_RECORD_TYPE = "cachet.full_score_ready_shard.v2"
@@ -966,8 +984,13 @@ class DatabricksFullScoreJobConfig:
             raise ValueError("full-score consumers require g6.8xlarge/L4")
         if self.spark_version != DEFAULT_DATABRICKS_SPARK_VERSION:
             raise ValueError("full-score Databricks Runtime is frozen")
-        if self.data_security_mode != "SINGLE_USER" or not self.single_user_name:
+        if self.data_security_mode != "SINGLE_USER":
             raise ValueError("full-score tasks require a SINGLE_USER principal")
+        object.__setattr__(
+            self,
+            "single_user_name",
+            _validated_full_score_single_user_name(self.single_user_name),
+        )
         if self.availability != "ON_DEMAND" or self.zone_id != "auto":
             raise ValueError("full-score tasks require the reviewed on-demand topology")
         object.__setattr__(self, "custom_tags", dict(self.custom_tags))
@@ -1480,7 +1503,10 @@ def validate_full_score_worker_payload(
         raise ValueError("worker execution-plan hash drift")
     if record.get("protocol") != _full_score_protocol_record():
         raise ValueError("worker full-score protocol drift")
-    if record.get("scorers") != _scorer_contract_record():
+    if not _json_type_exact_equal(
+        record.get("scorers"),
+        _scorer_contract_record(),
+    ):
         raise ValueError("worker scorer/parser identity drift")
     runtime_binding = _required_mapping(record, "runtime")
     runtime = _runtime_from_record(runtime_binding)
@@ -3500,6 +3526,22 @@ def collect_governed_full_score_phase_attempt(
         compact_artifact_resolver is None
     ):
         raise TypeError("phase collection compact I/O requires publisher and CAS")
+    submit_file = _governed_compact_file(
+        submit_payload_path,
+        "full-score submit payload",
+        compact_artifact_resolver,
+    )
+    submit_payload = _json_object(
+        submit_file.read_bytes(),
+        "full-score submit payload",
+    )
+    _submit_snapshot, canonical_submit = (
+        canonical_databricks_submit_payload_snapshot(submit_payload)
+    )
+    if sha256(canonical_submit).hexdigest() != (
+        submission_authorization.submit_payload_sha256
+    ):
+        raise ValueError("phase collection submit-payload authority drift")
     _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
     plan_sha256 = _require_sha256(
         execution_plan.get("closed_record_sha256"),
@@ -3521,6 +3563,11 @@ def collect_governed_full_score_phase_attempt(
         expected_submit_payload_sha256s=(
             submission_authorization.submit_payload_sha256,
         ),
+    )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        opener=opener,
     )
     before = read_databricks_cluster_hour_ledger_json(live_path)
     require_databricks_ledger_prefix(before, batch_prefix)
@@ -3688,8 +3735,16 @@ def build_full_score_matched_billing_block(
         raise ValueError("matched block shard-evidence closure drift")
     if evidence.get("durable_evidence_committed") is not True:
         raise ValueError("matched block evidence is not durably committed")
-    if evidence.get("scorers") != _scorer_contract_record():
+    if not _json_type_exact_equal(
+        evidence.get("scorers"),
+        _scorer_contract_record(),
+    ):
         raise ValueError("matched block scorer/parser identity drift")
+    if not _json_type_exact_equal(
+        evidence.get("protocol"),
+        _full_score_protocol_record(),
+    ):
+        raise ValueError("matched block full-score protocol drift")
     if evidence.get("execution_plan_sha256") != execution_plan.get(
         "closed_record_sha256"
     ):
@@ -4912,10 +4967,13 @@ def _full_score_phase_lease_path(
     wave_index: int,
     phase: str,
 ) -> Path:
-    ledger = Path(ledger_path).expanduser().absolute()
-    root = ledger.with_name(f"{ledger.name}.full-score-phase-leases")
-    if root.is_symlink():
-        raise ValueError("full-score phase lease root must not be a symlink")
+    path = _full_score_phase_lease_candidate_path(
+        ledger_path,
+        execution_plan_sha256=execution_plan_sha256,
+        wave_index=wave_index,
+        phase=phase,
+    )
+    root = path.parent
     try:
         root.mkdir(mode=0o700)
         _fsync_directory(root.parent)
@@ -4923,6 +4981,22 @@ def _full_score_phase_lease_path(
         pass
     if not root.is_dir() or root.is_symlink():
         raise ValueError("full-score phase lease root must be a real directory")
+    return path
+
+
+def _full_score_phase_lease_candidate_path(
+    ledger_path: str | Path,
+    *,
+    execution_plan_sha256: str,
+    wave_index: int,
+    phase: str,
+) -> Path:
+    """Return the deterministic lease path without creating its directory."""
+
+    ledger = Path(ledger_path).expanduser().absolute()
+    root = ledger.with_name(f"{ledger.name}.full-score-phase-leases")
+    if root.is_symlink():
+        raise ValueError("full-score phase lease root must not be a symlink")
     identity = _canonical_sha256(
         {
             "domain": "cachet.full_score_phase_lease_path.v1",
@@ -4961,10 +5035,13 @@ def _full_score_phase_intent_path(
     wave_index: int,
     phase: str,
 ) -> Path:
-    ledger = Path(ledger_path).expanduser().absolute()
-    root = ledger.with_name(f"{ledger.name}.full-score-phase-intents")
-    if root.is_symlink():
-        raise ValueError("full-score phase intent root must not be a symlink")
+    path = _full_score_phase_intent_candidate_path(
+        ledger_path,
+        execution_plan_sha256=execution_plan_sha256,
+        wave_index=wave_index,
+        phase=phase,
+    )
+    root = path.parent
     try:
         root.mkdir(mode=0o700)
         _fsync_directory(root.parent)
@@ -4972,6 +5049,22 @@ def _full_score_phase_intent_path(
         pass
     if not root.is_dir() or root.is_symlink():
         raise ValueError("full-score phase intent root must be a real directory")
+    return path
+
+
+def _full_score_phase_intent_candidate_path(
+    ledger_path: str | Path,
+    *,
+    execution_plan_sha256: str,
+    wave_index: int,
+    phase: str,
+) -> Path:
+    """Return the deterministic intent path without creating its directory."""
+
+    ledger = Path(ledger_path).expanduser().absolute()
+    root = ledger.with_name(f"{ledger.name}.full-score-phase-intents")
+    if root.is_symlink():
+        raise ValueError("full-score phase intent root must not be a symlink")
     identity = _canonical_sha256(
         {
             "domain": "cachet.full_score_phase_intent_path.v1",
@@ -5066,7 +5159,7 @@ def _require_full_score_phase_intent(
     ledger_path: str | Path,
     expected: Mapping[str, Any],
 ) -> Path:
-    path = _full_score_phase_intent_path(
+    path = _full_score_phase_intent_candidate_path(
         ledger_path,
         execution_plan_sha256=_required_string(
             expected,
@@ -5107,7 +5200,7 @@ def _require_full_score_phase_lease(
     ledger_path: str | Path,
     authorization: FullScorePhaseSubmissionAuthorization,
 ) -> Path:
-    intent_path = _full_score_phase_intent_path(
+    intent_path = _full_score_phase_intent_candidate_path(
         ledger_path,
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
@@ -5137,7 +5230,7 @@ def _require_full_score_phase_lease(
     ):
         raise ValueError("full-score phase intent authority binding drift")
     record = _full_score_phase_lease_record(authorization)
-    path = _full_score_phase_lease_path(
+    path = _full_score_phase_lease_candidate_path(
         ledger_path,
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
@@ -5361,6 +5454,15 @@ def submit_governed_full_score_phase_attempt(
     )
     if payload_sha256 != submission_authorization.submit_payload_sha256:
         raise ValueError("full-score submission payload binding drift")
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        opener=opener,
+    )
+    _require_full_score_phase_lease(
+        ledger_path,
+        submission_authorization,
+    )
     return submit_pre_reserved_databricks_run(
         workspace,
         submit_payload,
@@ -5388,9 +5490,14 @@ def _replay_governed_full_score_phase_submission_authorization(
     remote_ready_authorization: object | None = None,
     remote_consumer_authorizations: Sequence[object] | None = None,
     compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
-    _finalize_missing_lease: bool,
+    _finalize_missing_lease: bool | None,
 ) -> FullScorePhaseSubmissionAuthorization:
-    """Reissue one historical atomic phase authority after controller restart."""
+    """Reissue one historical atomic phase authority after controller restart.
+
+    Lease mode ``None`` is a read-only preflight used before live identity
+    authentication; ``True`` finalizes a missing lease and ``False`` requires
+    the exact lease to exist.
+    """
 
     _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
     require_databricks_run_idempotency_token(
@@ -5546,10 +5653,36 @@ def _replay_governed_full_score_phase_submission_authorization(
         ),
         _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
     )
-    if _finalize_missing_lease:
+    if _finalize_missing_lease is True:
         _write_or_require_full_score_phase_lease(live_path, authorization)
-    else:
+    elif _finalize_missing_lease is False:
         _require_full_score_phase_lease(live_path, authorization)
+    elif _finalize_missing_lease is None:
+        lease_path = _full_score_phase_lease_candidate_path(
+            live_path,
+            execution_plan_sha256=authorization.execution_plan_sha256,
+            wave_index=authorization.wave_index,
+            phase=authorization.phase,
+        )
+        lease_root = lease_path.parent
+        if lease_root.exists() and (
+            not lease_root.is_dir() or lease_root.is_symlink()
+        ):
+            raise ValueError(
+                "full-score phase lease root must be a real directory"
+            )
+        if lease_path.exists() or lease_path.is_symlink():
+            expected_lease = _canonical_pretty_json_bytes(
+                _full_score_phase_lease_record(authorization)
+            )
+            if (
+                lease_path.is_symlink()
+                or not lease_path.is_file()
+                or lease_path.read_bytes() != expected_lease
+            ):
+                raise ValueError("full-score phase lease binding drift")
+    else:
+        raise TypeError("full-score replay lease mode is invalid")
     return authorization
 
 
@@ -5655,7 +5788,30 @@ def resume_governed_full_score_phase_attempt(
 ) -> tuple[dict[str, Any], FullScorePhaseSubmissionAuthorization]:
     """Resume a reserved phase without risking a second physical run."""
 
-    authorization = recover_governed_full_score_phase_reservation(
+    authorization = _replay_governed_full_score_phase_submission_authorization(
+        ledger_path,
+        submit_payload,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_id=attempt_id,
+        qualification_launch_authorization=qualification_launch_authorization,
+        predecessor_authorization=predecessor_authorization,
+        latency_execution_plan_record=latency_execution_plan_record,
+        budget_admission_path=budget_admission_path,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
+        _finalize_missing_lease=None,
+    )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        opener=opener,
+    )
+    recovered_authorization = recover_governed_full_score_phase_reservation(
         ledger_path,
         submit_payload,
         execution_plan=execution_plan,
@@ -5672,6 +5828,9 @@ def resume_governed_full_score_phase_attempt(
         remote_consumer_authorizations=remote_consumer_authorizations,
         compact_artifact_resolver=compact_artifact_resolver,
     )
+    if recovered_authorization != authorization:
+        raise RuntimeError("full-score resume authority changed across live auth")
+    authorization = recovered_authorization
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     receipt = next(
         (
@@ -5683,6 +5842,7 @@ def resume_governed_full_score_phase_attempt(
     )
     if receipt is not None:
         return {"run_id": receipt.run_id}, authorization
+    _require_full_score_phase_lease(ledger_path, authorization)
     response = resume_pre_reserved_databricks_run(
         workspace,
         submit_payload,
@@ -5740,6 +5900,15 @@ def recover_governed_full_score_phase_attempt(
         submit_payload,
         attempt_id=submission_authorization.attempt_id,
     )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        opener=opener,
+    )
+    _require_full_score_phase_lease(
+        ledger_path,
+        submission_authorization,
+    )
     return recover_pre_reserved_databricks_run(
         workspace,
         submit_payload,
@@ -5772,6 +5941,28 @@ def reserve_and_submit_governed_full_score_phase_attempt(
 ) -> tuple[dict[str, Any], FullScorePhaseSubmissionAuthorization]:
     """Reserve, submit exact bytes, and persist the run receipt in one action."""
 
+    _governed_full_score_phase_reservation_validator(
+        ledger_path,
+        submit_payload,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_id=attempt_id,
+        qualification_launch_authorization=qualification_launch_authorization,
+        predecessor_authorization=predecessor_authorization,
+        latency_execution_plan_record=latency_execution_plan_record,
+        budget_admission_path=budget_admission_path,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        opener=opener,
+    )
     _updated, submission_authorization = (
         reserve_governed_full_score_phase_attempt(
             ledger_path,
@@ -5880,23 +6071,41 @@ def validate_paired_full_score_outputs(
     *,
     shard: Mapping[str, Any],
     examples: Mapping[tuple[str, str], Any],
+    vanilla_examples: Mapping[tuple[str, str], Any],
 ) -> tuple[dict[str, Any], ...]:
     """Re-score raw outputs and require exact one-to-one paired coverage."""
 
     baseline = benchmark_run_result_from_record(baseline_record)
     vanilla = benchmark_run_result_from_record(vanilla_record)
     expected_items = _shard_items_by_key(shard)
+    shard_id = _required_string(shard, "shard_id")
     baseline_by_key = _validated_method_measurements(
         baseline.measurements,
         method="baseline_prefill",
+        shard_id=shard_id,
         expected_items=expected_items,
         examples=examples,
     )
     vanilla_by_key = _validated_method_measurements(
         vanilla.measurements,
         method="vanilla_prefill",
+        shard_id=shard_id,
         expected_items=expected_items,
-        examples=examples,
+        examples=vanilla_examples,
+    )
+    _validate_full_score_benchmark_protocol(
+        baseline,
+        method="baseline_prefill",
+        shard=shard,
+        expected_items=expected_items,
+        protocol_examples=examples,
+    )
+    _validate_full_score_benchmark_protocol(
+        vanilla,
+        method="vanilla_prefill",
+        shard=shard,
+        expected_items=expected_items,
+        protocol_examples=vanilla_examples,
     )
     if set(baseline_by_key) != set(vanilla_by_key):
         raise ValueError("baseline and Vanilla output identities are not paired")
@@ -5926,6 +6135,254 @@ def validate_paired_full_score_outputs(
             }
         )
     return tuple(paired)
+
+
+def _build_expected_full_score_benchmark_manifest(
+    *,
+    method: str,
+    shard_id: str,
+    protocol_examples: Mapping[tuple[str, str], Any],
+    measurements: Sequence[Any],
+) -> Any:
+    """Rebuild every raw manifest field from the governed command inputs."""
+
+    if method not in FULL_SCORE_METHODS:
+        raise ValueError("unsupported full-score benchmark method")
+    expected_arm = (
+        baseline_prefill_arm()
+        if method == "baseline_prefill"
+        else method_benchmark_arm(
+            "vanilla_prefill",
+            physical_transform_id="cachet.vanilla.per_document_segments",
+        )
+    )
+    expected_suite_id = f"{FULL_SCORE_PROTOCOL_ID}:{shard_id}:{method}"
+    expected_datasets = tuple(
+        sorted({dataset for dataset, _example_id in protocol_examples})
+    )
+    suite = BenchmarkSuite(
+        suite_id=expected_suite_id,
+        examples=tuple(protocol_examples.values()),
+        model_id=FULL_SCORE_SERVED_MODEL_NAME,
+        hardware_target="aws-g6-l4",
+        datasets=expected_datasets,
+    )
+    context = BenchmarkManifestContext(
+        model_revision=MAIN_LATENCY_TOKENIZER_REVISION,
+        canonical_model_id=FULL_SCORE_MODEL_ID,
+        tokenizer_id=MAIN_LATENCY_TOKENIZER_ID,
+        tokenizer_revision=MAIN_LATENCY_TOKENIZER_REVISION,
+        engine_id="vllm",
+        engine_version=PUBLICATION_CAMPAIGN_ENGINE_VERSION,
+        serving_platform="databricks-aws-single-gpu",
+        model_dtype=FULL_SCORE_MODEL_DTYPE,
+        model_quantization=FULL_SCORE_MODEL_QUANTIZATION,
+        runtime_kv_dtype=FULL_SCORE_KV_DTYPE,
+        max_output_tokens=FULL_SCORE_MAX_TOKENS,
+        temperature=FULL_SCORE_TEMPERATURE,
+        stream=True,
+        runtime_id=f"{FULL_SCORE_PROTOCOL_ID}:{shard_id}",
+        measurement_scopes=("quality",),
+    )
+    return _build_experiment_manifest(
+        suite,
+        arms=(expected_arm,),
+        measurements=measurements,
+        scorer_registry=default_dataset_scorer_registry(),
+        context=context,
+        request_parallelism=FULL_SCORE_REQUEST_PARALLELISM,
+        repeats=FULL_SCORE_PASSES_PER_METHOD,
+        warmups=0,
+        isolate_arms=True,
+        shuffle=False,
+        seed=None,
+        interleave_examples=False,
+        baseline_arm_id=expected_arm.arm_id,
+        request_customization_digests={
+            expected_arm.arm_id: EMPTY_REQUEST_CUSTOMIZATION_DIGEST
+        },
+    )
+
+
+def _validate_full_score_benchmark_protocol(
+    result: Any,
+    *,
+    method: str,
+    shard: Mapping[str, Any],
+    expected_items: Mapping[tuple[str, str], Mapping[str, Any]],
+    protocol_examples: Mapping[tuple[str, str], Any],
+) -> None:
+    """Bind one reconstructed raw run to the exact frozen score protocol."""
+
+    if method not in FULL_SCORE_METHODS:
+        raise ValueError("unsupported full-score benchmark method")
+    shard_id = _required_string(shard, "shard_id")
+    expected_arm_id = (
+        BASELINE_PREFILL_ARM
+        if method == "baseline_prefill"
+        else FULL_SCORE_VANILLA_ARM_ID
+    )
+    expected_datasets = tuple(sorted({dataset for dataset, _ in expected_items}))
+    expected_suite_id = f"{FULL_SCORE_PROTOCOL_ID}:{shard_id}:{method}"
+    if set(protocol_examples) != set(expected_items):
+        raise ValueError(f"{method} raw benchmark example coverage drift")
+    suite = result.suite
+    manifest = result.experiment_manifest
+    if manifest is None:
+        raise ValueError("full-score raw output lacks an experiment manifest")
+    result_contract = {
+        "baseline_arm_id": result.baseline_arm_id,
+        "evidence_policy": result.evidence_policy,
+        "execution_isolation_mode": result.execution_isolation_mode,
+        "interleave_examples": result.interleave_examples,
+        "isolate_arms": result.isolate_arms,
+        "prefix_cache_salt_mode": result.prefix_cache_salt_mode,
+        "repeats": result.repeats,
+        "request_parallelism": result.request_parallelism,
+        "seed": result.seed,
+        "shuffle": result.shuffle,
+        "warmups": result.warmups,
+    }
+    expected_result_contract = {
+        "baseline_arm_id": expected_arm_id,
+        "evidence_policy": "smoke",
+        "execution_isolation_mode": "shared_process_sequential",
+        "interleave_examples": False,
+        "isolate_arms": True,
+        "prefix_cache_salt_mode": "per_request",
+        "repeats": FULL_SCORE_PASSES_PER_METHOD,
+        "request_parallelism": FULL_SCORE_REQUEST_PARALLELISM,
+        "seed": None,
+        "shuffle": False,
+        "warmups": 0,
+    }
+    if not _json_type_exact_equal(result_contract, expected_result_contract):
+        raise ValueError(f"{method} raw benchmark execution protocol drift")
+    if (
+        suite.suite_id != expected_suite_id
+        or suite.model_id != FULL_SCORE_SERVED_MODEL_NAME
+        or suite.hardware_target != "aws-g6-l4"
+        or tuple(suite.datasets) != expected_datasets
+        or len(suite.examples) != len(expected_items)
+    ):
+        raise ValueError(f"{method} raw benchmark suite identity drift")
+    expected_manifest = _build_expected_full_score_benchmark_manifest(
+        method=method,
+        shard_id=shard_id,
+        protocol_examples=protocol_examples,
+        measurements=result.measurements,
+    )
+    if not _json_type_exact_equal(
+        benchmark_experiment_manifest_to_record(manifest),
+        benchmark_experiment_manifest_to_record(expected_manifest),
+    ):
+        raise ValueError(f"{method} raw benchmark complete manifest protocol drift")
+    manifest_contract = {
+        "baseline_arm_id": manifest.baseline_arm_id,
+        "benchmark_seed": manifest.benchmark_seed,
+        "comparison_mode": manifest.comparison_mode,
+        "complete_dataset_split": manifest.complete_dataset_split,
+        "datasets": list(manifest.datasets),
+        "decode_settings": dict(manifest.decode_settings),
+        "example_count": manifest.example_count,
+        "execution_isolation_mode": manifest.execution_isolation_mode,
+        "experiment_id": manifest.experiment_id,
+        "generation_seed": manifest.generation_seed,
+        "input_tokens_target": manifest.input_tokens_target,
+        "isolate_arms": manifest.isolate_arms,
+        "measurement_scopes": list(manifest.measurement_scopes),
+        "model_id": manifest.model_id,
+        "order_mode": manifest.order_mode,
+        "output_tokens_target": manifest.output_tokens_target,
+        "repeats": manifest.repeats,
+        "request_parallelism": manifest.request_parallelism,
+        "runtime_id": manifest.runtime_id,
+        "shuffle": manifest.shuffle,
+        "stream": manifest.stream,
+        "temperature": manifest.temperature,
+        "varied_setting": manifest.varied_setting,
+        "warmups": manifest.warmups,
+    }
+    expected_manifest_contract: dict[str, Any] = {
+        "baseline_arm_id": expected_arm_id,
+        "benchmark_seed": None,
+        "comparison_mode": "methods_same_setting",
+        "complete_dataset_split": False,
+        "datasets": list(expected_datasets),
+        "decode_settings": {},
+        "example_count": len(expected_items),
+        "execution_isolation_mode": "shared_process_sequential",
+        "experiment_id": expected_suite_id,
+        "generation_seed": None,
+        "input_tokens_target": None,
+        "isolate_arms": True,
+        "measurement_scopes": ["quality"],
+        "model_id": FULL_SCORE_SERVED_MODEL_NAME,
+        "order_mode": "arm_isolated",
+        "output_tokens_target": FULL_SCORE_MAX_TOKENS,
+        "repeats": FULL_SCORE_PASSES_PER_METHOD,
+        "request_parallelism": FULL_SCORE_REQUEST_PARALLELISM,
+        "runtime_id": f"{FULL_SCORE_PROTOCOL_ID}:{shard_id}",
+        "shuffle": False,
+        "stream": True,
+        "temperature": FULL_SCORE_TEMPERATURE,
+        "varied_setting": "",
+        "warmups": 0,
+    }
+    if not _json_type_exact_equal(manifest_contract, expected_manifest_contract):
+        raise ValueError(f"{method} raw benchmark manifest protocol drift")
+    if len(manifest.arms) != 1:
+        raise ValueError(f"{method} raw benchmark must contain one isolated arm")
+    arm = manifest.arms[0]
+    runtime_environment = arm.runtime_environment
+    arm_contract = {
+        "arm_id": arm.arm_id,
+        "implementation_kind": arm.implementation_kind,
+        "method_id": arm.method_id,
+        "requires_cachet_handoff": arm.requires_cachet_handoff,
+        "uses_cache": arm.uses_cache,
+    }
+    expected_arm_contract = {
+        "arm_id": expected_arm_id,
+        "implementation_kind": (
+            "baseline" if method == "baseline_prefill" else "cachet"
+        ),
+        "method_id": "" if method == "baseline_prefill" else "vanilla_prefill",
+        "requires_cachet_handoff": method == "vanilla_prefill",
+        "uses_cache": method == "vanilla_prefill",
+    }
+    if not _json_type_exact_equal(arm_contract, expected_arm_contract):
+        raise ValueError(f"{method} raw benchmark arm identity drift")
+    runtime_contract = {
+        "canonical_model_id": runtime_environment.canonical_model_id,
+        "engine_id": runtime_environment.engine_id,
+        "engine_version": runtime_environment.engine_version,
+        "hardware_target": runtime_environment.hardware_target,
+        "model_dtype": runtime_environment.model_dtype,
+        "model_quantization": runtime_environment.model_quantization,
+        "model_revision": runtime_environment.model_revision,
+        "runtime_kv_dtype": runtime_environment.runtime_kv_dtype,
+        "served_model_id": runtime_environment.served_model_id,
+        "serving_platform": runtime_environment.serving_platform,
+        "tokenizer_id": runtime_environment.tokenizer_id,
+        "tokenizer_revision": runtime_environment.tokenizer_revision,
+    }
+    expected_runtime_contract = {
+        "canonical_model_id": FULL_SCORE_MODEL_ID,
+        "engine_id": "vllm",
+        "engine_version": PUBLICATION_CAMPAIGN_ENGINE_VERSION,
+        "hardware_target": "aws-g6-l4",
+        "model_dtype": FULL_SCORE_MODEL_DTYPE,
+        "model_quantization": FULL_SCORE_MODEL_QUANTIZATION,
+        "model_revision": MAIN_LATENCY_TOKENIZER_REVISION,
+        "runtime_kv_dtype": FULL_SCORE_KV_DTYPE,
+        "served_model_id": FULL_SCORE_SERVED_MODEL_NAME,
+        "serving_platform": "databricks-aws-single-gpu",
+        "tokenizer_id": MAIN_LATENCY_TOKENIZER_ID,
+        "tokenizer_revision": MAIN_LATENCY_TOKENIZER_REVISION,
+    }
+    if not _json_type_exact_equal(runtime_contract, expected_runtime_contract):
+        raise ValueError(f"{method} raw benchmark runtime identity drift")
 
 
 def build_full_score_connector_proof(
@@ -6155,6 +6612,18 @@ def _require_full_score_final_consumer_aggregation_authorization(
     }
 
 
+def _full_score_aggregate_bootstrap_contract() -> dict[str, Any]:
+    return {
+        "confidence_level": 0.95,
+        "draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
+        "resampling_unit": "paired_example_within_dataset_or_niah_cell",
+        "rng_algorithm": "cpython-3.11-random.Random-mt19937-choices-v1",
+        "seed_domain": "cachet.full_score.paired_bootstrap.seed.v1",
+        "stratification": "dataset; niah additionally by frozen 9-cell grid",
+        "tail_algorithm": "linear_interpolated_empirical_quantile_type7_v1",
+    }
+
+
 def aggregate_full_score_shard_evidence(
     inventory: FullScoreInventory,
     shard_plan: Mapping[str, Any],
@@ -6237,6 +6706,10 @@ def aggregate_full_score_shard_evidence(
                         authorization.controller_authorization_record_sha256
                     ),
                     "coordinator_run_id": authorization.coordinator_run_id,
+                    "execution_plan_sha256": authorization.execution_plan_sha256,
+                    "phase_terminal_record_sha256": (
+                        authorization.phase_terminal_record_sha256
+                    ),
                     "runs_get_receipt_record_sha256": (
                         authorization.runs_get_receipt_record_sha256
                     ),
@@ -6459,6 +6932,10 @@ def aggregate_full_score_shard_evidence(
                     )
                     if score > 1:
                         raise ValueError("paired-example quality score exceeds one")
+                    if not parser_valid and score != 0:
+                        raise ValueError(
+                            "invalid parsed answers must receive zero quality scores"
+                        )
             per_example[key] = pair_record
     if set(observed_shards) != set(expected_shards):
         raise ValueError("full-score evidence does not cover every planned shard")
@@ -6467,8 +6944,12 @@ def aggregate_full_score_shard_evidence(
         raise ValueError("full-score evidence does not cover every inventory ID")
 
     accumulators: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+    invalid_parser_sums: dict[tuple[str, str, str], float] = defaultdict(float)
     parser_counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
     niah_cells: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+    niah_invalid_parser_sums: dict[tuple[str, str, str], float] = defaultdict(
+        float
+    )
     for (dataset, _example_id), pair in per_example.items():
         pair_methods = cast(Mapping[str, Mapping[str, Any]], pair["methods"])
         for method in FULL_SCORE_METHODS:
@@ -6480,10 +6961,18 @@ def aggregate_full_score_shard_evidence(
                 if not isinstance(metric, str) or not isinstance(raw_value, (int, float)):
                     raise ValueError("per-example score is invalid")
                 accumulators[(dataset, method, metric)].append(float(raw_value))
+                if method_record.get("parser_valid") is not True:
+                    invalid_parser_sums[(dataset, method, metric)] += float(
+                        raw_value
+                    )
                 if dataset == "niah" and pair.get("niah_cell_id"):
                     niah_cells[
                         (cast(str, pair["niah_cell_id"]), method, metric)
                     ].append(float(raw_value))
+                    if method_record.get("parser_valid") is not True:
+                        niah_invalid_parser_sums[
+                            (cast(str, pair["niah_cell_id"]), method, metric)
+                        ] += float(raw_value)
             parser_counts[(dataset, method)][
                 cast(str, method_record["parser_status"])
             ] += 1
@@ -6499,15 +6988,7 @@ def aggregate_full_score_shard_evidence(
     if observed_niah_cells != set(NIAH_CELL_IDS):
         raise ValueError("the corrected full NIAH score requires all nine cells")
 
-    bootstrap_identity = {
-        "confidence_level": 0.95,
-        "draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
-        "resampling_unit": "paired_example_within_dataset_or_niah_cell",
-        "rng_algorithm": "cpython-3.11-random.Random-mt19937-choices-v1",
-        "seed_domain": "cachet.full_score.paired_bootstrap.seed.v1",
-        "stratification": "dataset; niah additionally by frozen 9-cell grid",
-        "tail_algorithm": "linear_interpolated_empirical_quantile_type7_v1",
-    }
+    bootstrap_identity = _full_score_aggregate_bootstrap_contract()
     datasets: dict[str, Any] = {}
     for dataset in SUPPORTED_V1_DATASETS:
         count = sum(1 for key in expected_keys if key[0] == dataset)
@@ -6516,6 +6997,9 @@ def aggregate_full_score_shard_evidence(
             metrics = {
                 metric: {
                     "example_count": len(values),
+                    "invalid_parser_score_sum": invalid_parser_sums[
+                        (candidate_dataset, candidate_method, metric)
+                    ],
                     "mean": sum(values) / len(values),
                     "sum": sum(values),
                 }
@@ -6558,6 +7042,9 @@ def aggregate_full_score_shard_evidence(
             method: {
                 metric: {
                     "example_count": len(values),
+                    "invalid_parser_score_sum": niah_invalid_parser_sums[
+                        (candidate_cell, candidate_method, metric)
+                    ],
                     "mean": sum(values) / len(values),
                     "sum": sum(values),
                 }
@@ -6596,7 +7083,9 @@ def aggregate_full_score_shard_evidence(
         "methods": list(FULL_SCORE_METHODS),
         "niah_grid": niah_grid,
         "passes_per_method": FULL_SCORE_PASSES_PER_METHOD,
+        "protocol": _full_score_protocol_record(),
         "record_type": FULL_SCORE_AGGREGATE_RECORD_TYPE,
+        "scorers": _scorer_contract_record(),
         "schema_version": FULL_SCORE_AGGREGATE_SCHEMA_VERSION,
         "shard_count": len(observed_shards),
         "shard_plan_sha256": expected_plan_sha,
@@ -6633,7 +7122,782 @@ def aggregate_full_score_shard_evidence(
     aggregate_record["closed_record_sha256"] = _closed_record_sha256(
         aggregate_record
     )
+    validate_full_score_aggregate_record(
+        aggregate_record,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        execution_plan=execution_plan,
+        require_publication=(
+            authorization_scope == FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+        ),
+    )
     return aggregate_record
+
+
+def validate_full_score_aggregate_record(
+    record: Mapping[str, Any],
+    *,
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    execution_plan: Mapping[str, Any] | None = None,
+    require_publication: bool = False,
+) -> None:
+    """Strictly validate one closed full-score publication result.
+
+    The aggregate intentionally omits raw model outputs.  This validator
+    therefore proves the complete closed summary algebra and, for publication
+    records, the exact remote shard/wave and terminal-ledger lineage.  Raw score
+    replay remains the responsibility of ``aggregate_full_score_shard_evidence``.
+    """
+
+    if not isinstance(record, Mapping):
+        raise TypeError("full-score aggregate must be an object")
+    if type(require_publication) is not bool:
+        raise TypeError("require_publication must be a boolean")
+    if record.get("record_type") != FULL_SCORE_AGGREGATE_RECORD_TYPE:
+        raise ValueError("unsupported full-score aggregate record_type")
+    if (
+        type(record.get("schema_version")) is not int
+        or record.get("schema_version") != FULL_SCORE_AGGREGATE_SCHEMA_VERSION
+    ):
+        raise ValueError("unsupported full-score aggregate schema_version")
+    _require_sha256(
+        record.get("closed_record_sha256"),
+        field_name="full-score aggregate closed_record_sha256",
+    )
+    if record.get("closed_record_sha256") != _closed_record_sha256(record):
+        raise ValueError("full-score aggregate closure drift")
+
+    scope = record.get("authorization_scope")
+    if scope not in {
+        FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE,
+        FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE,
+    }:
+        raise ValueError("full-score aggregate authorization_scope drift")
+    publication_scoped = scope == FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+    if require_publication and not publication_scoped:
+        raise ValueError(
+            "publication full-score aggregate rejects local_fixture_only scope"
+        )
+    expected_keys = {
+        "aggregation_unit",
+        "authorization_scope",
+        "bootstrap",
+        "closed_record_sha256",
+        "datasets",
+        "identity_count",
+        "inventory_sha256",
+        "methods",
+        "niah_grid",
+        "passes_per_method",
+        "protocol",
+        "record_type",
+        "schema_version",
+        "scorers",
+        "shard_count",
+        "shard_plan_sha256",
+    }
+    if publication_scoped:
+        expected_keys.update({"execution_plan_sha256", "publication_lineage"})
+    if set(record) != expected_keys:
+        raise ValueError("full-score aggregate top-level schema drift")
+
+    if not isinstance(inventory, FullScoreInventory):
+        raise TypeError("full-score aggregate inventory must be FullScoreInventory")
+    validate_full_score_shard_plan(shard_plan, inventory=inventory)
+    shard_plan_sha256 = _require_sha256(
+        shard_plan.get("closed_record_sha256"),
+        field_name="full-score aggregate shard-plan SHA-256",
+    )
+    if record.get("inventory_sha256") != inventory.inventory_sha256:
+        raise ValueError("full-score aggregate inventory binding drift")
+    if record.get("shard_plan_sha256") != shard_plan_sha256:
+        raise ValueError("full-score aggregate shard-plan binding drift")
+
+    if publication_scoped:
+        if execution_plan is None:
+            raise ValueError(
+                "publication full-score aggregate requires the remote execution plan"
+            )
+        _validate_publication_full_score_inputs(
+            inventory,
+            shard_plan,
+            execution_plan,
+        )
+        execution_plan_sha256 = _require_sha256(
+            execution_plan.get("closed_record_sha256"),
+            field_name="full-score aggregate execution-plan SHA-256",
+        )
+        if record.get("execution_plan_sha256") != execution_plan_sha256:
+            raise ValueError("full-score aggregate execution-plan binding drift")
+    elif execution_plan is not None:
+        _validate_execution_plan(
+            execution_plan,
+            inventory=inventory,
+            shard_plan=shard_plan,
+        )
+
+    raw_shards = shard_plan.get("shards")
+    if not isinstance(raw_shards, list):
+        raise ValueError("full-score aggregate shard plan has no shard array")
+    if (
+        _required_int(record, "identity_count") != len(inventory.items)
+        or _required_int(record, "shard_count") != len(raw_shards)
+    ):
+        raise ValueError("full-score aggregate inventory/shard count drift")
+    if record.get("aggregation_unit") != (
+        "per_example_once_never_shard_means"
+    ):
+        raise ValueError("full-score aggregate aggregation-unit drift")
+    if record.get("methods") != list(FULL_SCORE_METHODS):
+        raise ValueError("full-score aggregate method contract drift")
+    if (
+        _required_int(record, "passes_per_method")
+        != FULL_SCORE_PASSES_PER_METHOD
+    ):
+        raise ValueError("full-score aggregate pass contract drift")
+    if not _json_type_exact_equal(
+        record.get("protocol"),
+        _full_score_protocol_record(),
+    ):
+        raise ValueError("full-score aggregate protocol contract drift")
+    if record.get("bootstrap") != _full_score_aggregate_bootstrap_contract():
+        raise ValueError("full-score aggregate bootstrap contract drift")
+    scorer_contract = _scorer_contract_record()
+    if not _json_type_exact_equal(record.get("scorers"), scorer_contract):
+        raise ValueError("full-score aggregate scorer/parser contract drift")
+
+    expected_counts = Counter(item.dataset for item in inventory.items)
+    metric_names_by_dataset = {
+        scorer_record["dataset"]: tuple(scorer_record["metric_names"])
+        for scorer_record in scorer_contract
+    }
+    raw_datasets = record.get("datasets")
+    if not isinstance(raw_datasets, Mapping) or set(raw_datasets) != set(
+        SUPPORTED_V1_DATASETS
+    ):
+        raise ValueError("full-score aggregate dataset coverage drift")
+    dataset_method_summaries: dict[
+        str, dict[str, dict[str, tuple[float, float]]]
+    ] = {}
+    dataset_paired_means: dict[str, dict[str, float]] = {}
+    bootstrap_draws = _required_int(
+        _required_mapping(record, "bootstrap"),
+        "draws",
+    )
+    for dataset in SUPPORTED_V1_DATASETS:
+        dataset_record = _required_mapping(raw_datasets, dataset)
+        if set(dataset_record) != {
+            "example_count",
+            "methods",
+            "paired_vanilla_minus_baseline",
+        }:
+            raise ValueError("full-score aggregate dataset schema drift")
+        expected_count = expected_counts[dataset]
+        if _required_int(dataset_record, "example_count") != expected_count:
+            raise ValueError("full-score aggregate dataset count drift")
+        metric_names = metric_names_by_dataset.get(dataset)
+        if not metric_names:
+            raise ValueError("full-score aggregate scorer dataset coverage drift")
+        methods = _required_mapping(dataset_record, "methods")
+        if set(methods) != set(FULL_SCORE_METHODS):
+            raise ValueError("full-score aggregate dataset method coverage drift")
+        method_summaries: dict[str, dict[str, tuple[float, float]]] = {}
+        for method in FULL_SCORE_METHODS:
+            method_record = _required_mapping(methods, method)
+            if set(method_record) != {
+                "example_count",
+                "metrics",
+                "parser_status_counts",
+            }:
+                raise ValueError("full-score aggregate method schema drift")
+            if _required_int(method_record, "example_count") != expected_count:
+                raise ValueError("full-score aggregate method count drift")
+            raw_metrics = _required_mapping(method_record, "metrics")
+            if set(raw_metrics) != set(metric_names):
+                raise ValueError("full-score aggregate metric coverage drift")
+            method_summaries[method] = {
+                metric: _validate_full_score_aggregate_metric_summary(
+                    _required_mapping(raw_metrics, metric),
+                    expected_count=expected_count,
+                    label=f"datasets.{dataset}.{method}.{metric}",
+                )
+                for metric in metric_names
+            }
+            parser_counts = _required_mapping(
+                method_record,
+                "parser_status_counts",
+            )
+            if set(parser_counts) != set(FINAL_ANSWER_PARSER_STATUSES):
+                raise ValueError(
+                    "full-score aggregate parser-status schema drift"
+                )
+            observed_parser_count = 0
+            for status in FINAL_ANSWER_PARSER_STATUSES:
+                status_count = parser_counts.get(status)
+                if type(status_count) is not int or status_count < 0:
+                    raise ValueError(
+                        "full-score aggregate parser-status count drift"
+                    )
+                observed_parser_count += status_count
+            if observed_parser_count != expected_count:
+                raise ValueError(
+                    "full-score aggregate parser-status coverage drift"
+                )
+            valid_parse_count = parser_counts["ok"]
+            if any(
+                total > valid_parse_count
+                and not _full_score_aggregate_numbers_match(
+                    total,
+                    float(valid_parse_count),
+                )
+                for _mean, total in method_summaries[method].values()
+            ):
+                raise ValueError(
+                    "full-score aggregate credits invalid parsed answers"
+                )
+        dataset_method_summaries[dataset] = method_summaries
+        dataset_paired_means[dataset] = (
+            _validate_full_score_aggregate_paired_deltas(
+                _required_mapping(
+                    dataset_record,
+                    "paired_vanilla_minus_baseline",
+                ),
+                dataset_stratum=dataset,
+                expected_count=expected_count,
+                metric_names=metric_names,
+                method_summaries=method_summaries,
+                inventory_sha256=inventory.inventory_sha256,
+                shard_plan_sha256=shard_plan_sha256,
+                bootstrap_draws=bootstrap_draws,
+                label=f"datasets.{dataset}.paired",
+            )
+        )
+
+    _validate_full_score_aggregate_niah_grid(
+        record.get("niah_grid"),
+        expected_count=expected_counts["niah"],
+        metric_names=metric_names_by_dataset["niah"],
+        dataset_method_summaries=dataset_method_summaries["niah"],
+        dataset_paired_means=dataset_paired_means["niah"],
+        inventory_sha256=inventory.inventory_sha256,
+        shard_plan_sha256=shard_plan_sha256,
+        bootstrap_draws=bootstrap_draws,
+    )
+    if publication_scoped:
+        assert execution_plan is not None
+        _validate_full_score_aggregate_publication_lineage(
+            _required_mapping(record, "publication_lineage"),
+            execution_plan=execution_plan,
+            shard_plan=shard_plan,
+        )
+
+
+def _validate_full_score_aggregate_metric_summary(
+    record: Mapping[str, Any],
+    *,
+    expected_count: int,
+    label: str,
+) -> tuple[float, float]:
+    if set(record) != {
+        "example_count",
+        "invalid_parser_score_sum",
+        "mean",
+        "sum",
+    }:
+        raise ValueError(f"{label} metric summary schema drift")
+    if _required_int(record, "example_count") != expected_count:
+        raise ValueError(f"{label} metric example count drift")
+    mean = _full_score_aggregate_finite_number(record.get("mean"), f"{label}.mean")
+    total = _full_score_aggregate_finite_number(record.get("sum"), f"{label}.sum")
+    invalid_parser_score_sum = _full_score_aggregate_finite_number(
+        record.get("invalid_parser_score_sum"),
+        f"{label}.invalid_parser_score_sum",
+    )
+    if invalid_parser_score_sum != 0.0:
+        raise ValueError(f"{label} credits an invalid parsed answer")
+    if (
+        not 0 <= mean <= 1
+        or not 0 <= total <= expected_count
+        or not _full_score_aggregate_numbers_match(
+            mean,
+            total / expected_count,
+        )
+    ):
+        raise ValueError(f"{label} metric mean/sum identity drift")
+    return mean, total
+
+
+def _validate_full_score_aggregate_paired_deltas(
+    record: Mapping[str, Any],
+    *,
+    dataset_stratum: str,
+    expected_count: int,
+    metric_names: Sequence[str],
+    method_summaries: Mapping[str, Mapping[str, tuple[float, float]]],
+    inventory_sha256: str,
+    shard_plan_sha256: str,
+    bootstrap_draws: int,
+    label: str,
+) -> dict[str, float]:
+    if set(record) != set(metric_names):
+        raise ValueError(f"{label} paired metric coverage drift")
+    means: dict[str, float] = {}
+    for metric in metric_names:
+        summary = _required_mapping(record, metric)
+        if set(summary) != {
+            "bootstrap_ci95",
+            "example_count",
+            "mean",
+            "seed_sha256",
+        }:
+            raise ValueError(f"{label}.{metric} paired schema drift")
+        if _required_int(summary, "example_count") != expected_count:
+            raise ValueError(f"{label}.{metric} paired count drift")
+        mean = _full_score_aggregate_finite_number(
+            summary.get("mean"),
+            f"{label}.{metric}.mean",
+        )
+        expected_mean = (
+            method_summaries["vanilla_prefill"][metric][0]
+            - method_summaries["baseline_prefill"][metric][0]
+        )
+        if not -1 <= mean <= 1 or not _full_score_aggregate_numbers_match(
+            mean,
+            expected_mean,
+        ):
+            raise ValueError(f"{label}.{metric} paired mean identity drift")
+        expected_seed = _full_score_paired_bootstrap_seed_sha256(
+            dataset=dataset_stratum,
+            inventory_sha256=inventory_sha256,
+            metric=metric,
+            shard_plan_sha256=shard_plan_sha256,
+        )
+        if summary.get("seed_sha256") != expected_seed:
+            raise ValueError(f"{label}.{metric} deterministic CI identity drift")
+        ci = _required_mapping(summary, "bootstrap_ci95")
+        if set(ci) != {"draws", "lower", "upper"}:
+            raise ValueError(f"{label}.{metric} bootstrap CI schema drift")
+        if _required_int(ci, "draws") != bootstrap_draws:
+            raise ValueError(f"{label}.{metric} bootstrap draw identity drift")
+        lower = _full_score_aggregate_finite_number(
+            ci.get("lower"),
+            f"{label}.{metric}.bootstrap_ci95.lower",
+        )
+        upper = _full_score_aggregate_finite_number(
+            ci.get("upper"),
+            f"{label}.{metric}.bootstrap_ci95.upper",
+        )
+        if not -1 <= lower <= upper <= 1:
+            raise ValueError(f"{label}.{metric} bootstrap CI bounds drift")
+        if expected_count == 1 and (
+            not _full_score_aggregate_numbers_match(lower, mean)
+            or not _full_score_aggregate_numbers_match(upper, mean)
+        ):
+            raise ValueError(f"{label}.{metric} singleton bootstrap CI drift")
+        means[metric] = mean
+    return means
+
+
+def _validate_full_score_aggregate_niah_grid(
+    value: Any,
+    *,
+    expected_count: int,
+    metric_names: Sequence[str],
+    dataset_method_summaries: Mapping[
+        str, Mapping[str, tuple[float, float]]
+    ],
+    dataset_paired_means: Mapping[str, float],
+    inventory_sha256: str,
+    shard_plan_sha256: str,
+    bootstrap_draws: int,
+) -> None:
+    if expected_count != 1000:
+        raise ValueError("full-score aggregate requires exactly 1,000 NIAH examples")
+    if not isinstance(value, Mapping) or set(value) != set(NIAH_CELL_IDS):
+        raise ValueError("full-score aggregate requires the exact nine-cell NIAH grid")
+    observed_count = 0
+    cell_metric_counts: dict[tuple[str, str], int] = defaultdict(int)
+    cell_metric_sums: dict[tuple[str, str], float] = defaultdict(float)
+    cell_paired_weighted_means: dict[str, float] = defaultdict(float)
+    for cell_index, cell_id in enumerate(NIAH_CELL_IDS):
+        cell = _required_mapping(value, cell_id)
+        if set(cell) != {
+            "example_count",
+            "methods",
+            "paired_vanilla_minus_baseline",
+        }:
+            raise ValueError("full-score aggregate NIAH cell schema drift")
+        cell_count = _required_int(cell, "example_count")
+        expected_cell_count = 112 if cell_index == 0 else 111
+        if cell_count != expected_cell_count:
+            raise ValueError("full-score aggregate NIAH cell count distribution drift")
+        observed_count += cell_count
+        methods = _required_mapping(cell, "methods")
+        if set(methods) != set(FULL_SCORE_METHODS):
+            raise ValueError("full-score aggregate NIAH method coverage drift")
+        method_summaries: dict[str, dict[str, tuple[float, float]]] = {}
+        for method in FULL_SCORE_METHODS:
+            raw_metrics = _required_mapping(methods, method)
+            if set(raw_metrics) != set(metric_names):
+                raise ValueError("full-score aggregate NIAH metric coverage drift")
+            method_summaries[method] = {}
+            for metric in metric_names:
+                mean, total = _validate_full_score_aggregate_metric_summary(
+                    _required_mapping(raw_metrics, metric),
+                    expected_count=cell_count,
+                    label=f"niah_grid.{cell_id}.{method}.{metric}",
+                )
+                method_summaries[method][metric] = (mean, total)
+                cell_metric_counts[(method, metric)] += cell_count
+                cell_metric_sums[(method, metric)] += total
+        paired_means = _validate_full_score_aggregate_paired_deltas(
+            _required_mapping(cell, "paired_vanilla_minus_baseline"),
+            dataset_stratum=f"niah/{cell_id}",
+            expected_count=cell_count,
+            metric_names=metric_names,
+            method_summaries=method_summaries,
+            inventory_sha256=inventory_sha256,
+            shard_plan_sha256=shard_plan_sha256,
+            bootstrap_draws=bootstrap_draws,
+            label=f"niah_grid.{cell_id}.paired",
+        )
+        for metric, mean in paired_means.items():
+            cell_paired_weighted_means[metric] += mean * cell_count
+    if observed_count != expected_count:
+        raise ValueError("full-score aggregate NIAH cell count coverage drift")
+    for method in FULL_SCORE_METHODS:
+        for metric in metric_names:
+            if cell_metric_counts[(method, metric)] != expected_count or not (
+                _full_score_aggregate_numbers_match(
+                    cell_metric_sums[(method, metric)],
+                    dataset_method_summaries[method][metric][1],
+                )
+            ):
+                raise ValueError(
+                    "full-score aggregate NIAH cell/dataset metric identity drift"
+                )
+    for metric in metric_names:
+        if not _full_score_aggregate_numbers_match(
+            cell_paired_weighted_means[metric] / expected_count,
+            dataset_paired_means[metric],
+        ):
+            raise ValueError(
+                "full-score aggregate NIAH paired cell/dataset identity drift"
+            )
+
+
+def _validate_full_score_aggregate_publication_lineage(
+    lineage: Mapping[str, Any],
+    *,
+    execution_plan: Mapping[str, Any],
+    shard_plan: Mapping[str, Any],
+) -> None:
+    if set(lineage) != {
+        "authorization_sha256",
+        "batch_prefix",
+        "evidence",
+        "ledger_id",
+        "ledger_path_sha256",
+        "predecessor_prefix",
+        "remote_consumer_authorizations",
+        "terminal_prefix",
+        "terminal_record_sha256",
+        "wave_index",
+    }:
+        raise ValueError("full-score aggregate publication-lineage schema drift")
+    authorization_sha256 = _require_sha256(
+        lineage.get("authorization_sha256"),
+        field_name="aggregate publication authorization_sha256",
+    )
+    ledger_path_sha256 = _require_sha256(
+        lineage.get("ledger_path_sha256"),
+        field_name="aggregate publication ledger_path_sha256",
+    )
+    terminal_record_sha256 = _require_sha256(
+        lineage.get("terminal_record_sha256"),
+        field_name="aggregate publication terminal_record_sha256",
+    )
+    ledger_id = _required_string(lineage, "ledger_id")
+    predecessor_prefix = databricks_ledger_prefix_from_record(
+        _required_mapping(lineage, "predecessor_prefix")
+    )
+    batch_prefix = databricks_ledger_prefix_from_record(
+        _required_mapping(lineage, "batch_prefix")
+    )
+    terminal_prefix = databricks_ledger_prefix_from_record(
+        _required_mapping(lineage, "terminal_prefix")
+    )
+    if (
+        {prefix.ledger_id for prefix in (
+            predecessor_prefix,
+            batch_prefix,
+            terminal_prefix,
+        )}
+        != {ledger_id}
+        or len(
+            {
+                prefix.cap_cluster_hours
+                for prefix in (
+                    predecessor_prefix,
+                    batch_prefix,
+                    terminal_prefix,
+                )
+            }
+        )
+        != 1
+        or batch_prefix.reservation_count
+        != predecessor_prefix.reservation_count + 1
+        or batch_prefix.submission_receipt_count
+        != predecessor_prefix.submission_receipt_count
+        or batch_prefix.terminal_actual_count
+        != predecessor_prefix.terminal_actual_count
+        or terminal_prefix.reservation_count != batch_prefix.reservation_count
+        or terminal_prefix.submission_receipt_count
+        != batch_prefix.submission_receipt_count + 1
+        or terminal_prefix.terminal_actual_count
+        != batch_prefix.terminal_actual_count + 1
+    ):
+        raise ValueError("full-score aggregate terminal ledger lineage drift")
+    expected_authorization_sha256 = _canonical_sha256(
+        {
+            "batch_prefix": batch_prefix.to_record(),
+            "ledger_path_sha256": ledger_path_sha256,
+            "terminal_prefix": terminal_prefix.to_record(),
+            "terminal_record_sha256": terminal_record_sha256,
+        }
+    )
+    if authorization_sha256 != expected_authorization_sha256:
+        raise ValueError("full-score aggregate terminal authority closure drift")
+
+    execution_plan_sha256 = _require_sha256(
+        execution_plan.get("closed_record_sha256"),
+        field_name="aggregate remote execution-plan SHA-256",
+    )
+    waves = execution_plan.get("waves")
+    if not isinstance(waves, list) or not waves:
+        raise ValueError("aggregate remote execution plan has no waves")
+    expected_wave_by_shard: dict[str, int] = {}
+    for wave_index, raw_wave in enumerate(waves):
+        wave = _json_mapping(raw_wave, "aggregate remote execution wave")
+        shard_ids = wave.get("shard_ids")
+        raw_wave_shards = wave.get("shards")
+        if not isinstance(shard_ids, list) or not isinstance(raw_wave_shards, list):
+            raise ValueError("aggregate remote execution wave schema drift")
+        normalized_shard_ids = [
+            _require_nonempty(
+                shard_id,
+                "aggregate remote execution shard_id",
+            )
+            for shard_id in shard_ids
+        ]
+        wave_shard_ids = [
+            _required_string(
+                _json_mapping(raw_shard, "aggregate remote execution shard"),
+                "shard_id",
+            )
+            for raw_shard in raw_wave_shards
+        ]
+        if (
+            wave.get("wave_index") != wave_index
+            or normalized_shard_ids != wave_shard_ids
+            or not normalized_shard_ids
+            or len(set(normalized_shard_ids)) != len(normalized_shard_ids)
+            or any(
+                shard_id in expected_wave_by_shard
+                for shard_id in normalized_shard_ids
+            )
+        ):
+            raise ValueError("aggregate remote execution wave/shard lineage drift")
+        expected_wave_by_shard.update(
+            {shard_id: wave_index for shard_id in normalized_shard_ids}
+        )
+    plan_shards = shard_plan.get("shards")
+    if not isinstance(plan_shards, list):
+        raise ValueError("aggregate remote shard plan has no shards")
+    expected_shard_ids = {
+        _required_string(
+            _json_mapping(raw_shard, "aggregate remote planned shard"),
+            "shard_id",
+        )
+        for raw_shard in plan_shards
+    }
+    if set(expected_wave_by_shard) != expected_shard_ids:
+        raise ValueError("aggregate remote execution-plan shard lineage drift")
+    final_wave_index = len(waves) - 1
+    if (
+        _required_int(lineage, "wave_index") != final_wave_index
+    ):
+        raise ValueError("full-score aggregate final-wave lineage drift")
+
+    raw_authorizations = lineage.get("remote_consumer_authorizations")
+    if not isinstance(raw_authorizations, list) or len(raw_authorizations) != len(
+        waves
+    ):
+        raise ValueError("aggregate remote execution-plan authority coverage drift")
+    authorization_by_wave: dict[int, Mapping[str, Any]] = {}
+    for wave_index, raw_authorization in enumerate(raw_authorizations):
+        remote_authorization = _json_mapping(
+            raw_authorization,
+            "aggregate remote consumer authorization",
+        )
+        if set(remote_authorization) != {
+            "authorization_record_sha256",
+            "coordinator_run_id",
+            "execution_plan_sha256",
+            "phase_terminal_record_sha256",
+            "runs_get_receipt_record_sha256",
+            "wave_index",
+        }:
+            raise ValueError("aggregate remote authorization schema drift")
+        if (
+            _required_int(remote_authorization, "wave_index") != wave_index
+            or remote_authorization.get("execution_plan_sha256")
+            != execution_plan_sha256
+            or _required_run_id(
+                remote_authorization.get("coordinator_run_id"),
+                "aggregate remote coordinator_run_id",
+            )
+            != remote_authorization.get("coordinator_run_id")
+        ):
+            raise ValueError("aggregate remote execution-plan authority drift")
+        for field_name in (
+            "authorization_record_sha256",
+            "phase_terminal_record_sha256",
+            "runs_get_receipt_record_sha256",
+        ):
+            _require_sha256(
+                remote_authorization.get(field_name),
+                field_name=f"aggregate remote {field_name}",
+            )
+        authorization_by_wave[wave_index] = remote_authorization
+    for field_name in (
+        "authorization_record_sha256",
+        "coordinator_run_id",
+        "phase_terminal_record_sha256",
+        "runs_get_receipt_record_sha256",
+    ):
+        if len(
+            {
+                authorization.get(field_name)
+                for authorization in authorization_by_wave.values()
+            }
+        ) != len(waves):
+            raise ValueError("aggregate remote authorization identity reuse")
+    if authorization_by_wave[final_wave_index].get(
+        "phase_terminal_record_sha256"
+    ) != terminal_record_sha256:
+        raise ValueError("aggregate remote/final terminal lineage drift")
+
+    raw_evidence = lineage.get("evidence")
+    if not isinstance(raw_evidence, list) or len(raw_evidence) != len(
+        expected_shard_ids
+    ):
+        raise ValueError("aggregate remote evidence shard coverage drift")
+    observed_shards: list[str] = []
+    durable_roots: set[str] = set()
+    evidence_identities: dict[str, set[str]] = {
+        field_name: set()
+        for field_name in (
+            "deletion_file_sha256",
+            "deletion_record_sha256",
+            "deletion_uri",
+            "evidence_file_sha256",
+            "evidence_record_sha256",
+            "evidence_uri",
+        )
+    }
+    from document_kv_cache.full_score_remote_control import (
+        _consumer_evidence_artifact_uri,
+    )
+
+    for raw_binding in raw_evidence:
+        binding = _json_mapping(raw_binding, "aggregate remote evidence binding")
+        if set(binding) != {
+            "authorization_record_sha256",
+            "deletion_file_sha256",
+            "deletion_record_sha256",
+            "deletion_uri",
+            "evidence_file_sha256",
+            "evidence_record_sha256",
+            "evidence_uri",
+            "shard_id",
+            "wave_index",
+        }:
+            raise ValueError("aggregate remote evidence binding schema drift")
+        shard_id = _required_string(binding, "shard_id")
+        binding_wave_index = binding.get("wave_index")
+        if (
+            type(binding_wave_index) is not int
+            or expected_wave_by_shard.get(shard_id) != binding_wave_index
+            or shard_id in observed_shards
+            or binding.get("authorization_record_sha256")
+            != authorization_by_wave[binding_wave_index].get(
+                "authorization_record_sha256"
+            )
+        ):
+            raise ValueError("aggregate remote execution-plan evidence drift")
+        for field_name in (
+            "authorization_record_sha256",
+            "deletion_file_sha256",
+            "deletion_record_sha256",
+            "evidence_file_sha256",
+            "evidence_record_sha256",
+        ):
+            _require_sha256(
+                binding.get(field_name),
+                field_name=f"aggregate evidence {field_name}",
+            )
+        for field_name, identities in evidence_identities.items():
+            identity = _required_string(binding, field_name)
+            if identity in identities:
+                raise ValueError("aggregate remote evidence identity reuse")
+            identities.add(identity)
+        evidence_uri = _required_string(binding, "evidence_uri")
+        evidence_suffix = (
+            f"/evidence/wave-{binding_wave_index:03d}/{shard_id}/evidence.json"
+        )
+        if not evidence_uri.endswith(evidence_suffix):
+            raise ValueError("aggregate remote evidence URI lineage drift")
+        durable_root = evidence_uri[: -len(evidence_suffix)]
+        if (
+            evidence_uri
+            != _consumer_evidence_artifact_uri(
+                durable_root,
+                wave_index=binding_wave_index,
+                shard_id=shard_id,
+                filename="evidence.json",
+            )
+            or binding.get("deletion_uri")
+            != _consumer_evidence_artifact_uri(
+                durable_root,
+                wave_index=binding_wave_index,
+                shard_id=shard_id,
+                filename="deletion-attestation.json",
+            )
+        ):
+            raise ValueError("aggregate remote evidence URI lineage drift")
+        durable_roots.add(durable_root)
+        observed_shards.append(shard_id)
+    if (
+        observed_shards != sorted(expected_shard_ids)
+        or len(durable_roots) != 1
+    ):
+        raise ValueError("aggregate remote evidence ordered coverage drift")
+
+
+def _full_score_aggregate_finite_number(value: Any, field_name: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not float("-inf") < float(value) < float("inf")
+    ):
+        raise ValueError(f"{field_name} must be finite numeric data")
+    return float(value)
+
+
+def _full_score_aggregate_numbers_match(left: float, right: float) -> bool:
+    return abs(left - right) <= 1e-12 * max(1.0, abs(left), abs(right))
 
 
 def _paired_delta_summaries(
@@ -6655,14 +7919,11 @@ def _paired_delta_summaries(
             metric_values[metric].append(float(vanilla[metric]) - float(baseline[metric]))
     summaries = {}
     for metric, values in sorted(metric_values.items()):
-        seed_sha256 = _canonical_sha256(
-            {
-                "dataset_stratum": dataset,
-                "domain": "cachet.full_score.paired_bootstrap.seed.v1",
-                "inventory_sha256": inventory_sha256,
-                "metric": metric,
-                "shard_plan_sha256": shard_plan_sha256,
-            }
+        seed_sha256 = _full_score_paired_bootstrap_seed_sha256(
+            dataset=dataset,
+            inventory_sha256=inventory_sha256,
+            metric=metric,
+            shard_plan_sha256=shard_plan_sha256,
         )
         summaries[metric] = {
             "bootstrap_ci95": _paired_bootstrap_ci(
@@ -6675,6 +7936,24 @@ def _paired_delta_summaries(
             "seed_sha256": seed_sha256,
         }
     return summaries
+
+
+def _full_score_paired_bootstrap_seed_sha256(
+    *,
+    dataset: str,
+    inventory_sha256: str,
+    metric: str,
+    shard_plan_sha256: str,
+) -> str:
+    return _canonical_sha256(
+        {
+            "dataset_stratum": dataset,
+            "domain": "cachet.full_score.paired_bootstrap.seed.v1",
+            "inventory_sha256": inventory_sha256,
+            "metric": metric,
+            "shard_plan_sha256": shard_plan_sha256,
+        }
+    )
 
 
 def _paired_bootstrap_ci(
@@ -7025,7 +8304,7 @@ def _run_producer_worker(
         del generator
         gc.collect()
         try:
-            import torch  # type: ignore[import-not-found]
+            import torch
         except ImportError:
             pass
         else:
@@ -7367,6 +8646,7 @@ def _consume_ready_shard(
         dataset: ready_dir / "enriched" / f"{dataset}.jsonl" for dataset in datasets
     }
     examples = _load_ready_examples(inputs)
+    vanilla_examples = _load_ready_examples(enriched)
     baseline_path = shard_local / "baseline.json"
     vanilla_path = shard_local / "vanilla.json"
     telemetry_path = shard_local / "runtime-telemetry.json"
@@ -7417,6 +8697,7 @@ def _consume_ready_shard(
         _json_object(vanilla_path.read_bytes(), "Vanilla output"),
         shard=shard,
         examples=examples,
+        vanilla_examples=vanilla_examples,
     )
     lifecycle.advance("validate_paired_outputs")
     log_handle.flush()
@@ -7498,6 +8779,7 @@ def _consume_ready_shard(
         "method_wall_seconds": method_wall_seconds,
         "paired_examples": list(paired),
         "preserved_files": preserved,
+        "protocol": _full_score_protocol_record(),
         "ready_shard_sha256": ready.get("closed_record_sha256"),
         "record_type": FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE,
         "runtime_verification": _validate_runtime_verification_binding(
@@ -7705,10 +8987,163 @@ def _recover_committed_consumer_shard(
     return evidence
 
 
+def _full_score_expected_prompt_delivery(
+    example: Any,
+    *,
+    method: str,
+) -> tuple[str, str, str | None, str | None, str | None]:
+    prompt_parts = build_prompt_parts(example)
+    logical_prompt = prompt_parts.prefill_prompt
+    if method == "baseline_prefill":
+        return logical_prompt, logical_prompt, None, None, None
+    arm_params = getattr(example, "arm_kv_transfer_params", None)
+    if not isinstance(arm_params, Mapping) or set(arm_params) != {
+        FULL_SCORE_VANILLA_ARM_ID
+    }:
+        raise ValueError("Vanilla input lacks its exact handoff parameter mapping")
+    params = _json_mapping(
+        arm_params[FULL_SCORE_VANILLA_ARM_ID],
+        "Vanilla input handoff parameters",
+    )
+    if params.get(DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM) != "runtime":
+        raise ValueError("Vanilla input handoff does not require runtime prompt text")
+    runtime_prefix = params.get(DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM, "")
+    if not isinstance(runtime_prefix, str):
+        raise ValueError("Vanilla runtime prompt prefix must be a string")
+    runtime_prompt = f"{runtime_prefix}{prompt_parts.cache_suffix_text}"
+    kv_parameter_keys = ",".join(
+        sorted(
+            {
+                *params,
+                DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
+                DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
+            }
+        )
+    )
+    expected_request_id = params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+    expected_artifact_id = params.get(DOCUMENT_KV_ARTIFACT_ID_PARAM)
+    if (
+        not isinstance(expected_request_id, str)
+        or not expected_request_id
+        or not isinstance(expected_artifact_id, str)
+        or not expected_artifact_id
+    ):
+        raise ValueError("Vanilla handoff lacks request/artifact identity")
+    return (
+        logical_prompt,
+        runtime_prompt,
+        kv_parameter_keys,
+        expected_request_id,
+        expected_artifact_id,
+    )
+
+
+def _required_positive_prompt_metadata_int(
+    metadata: Mapping[str, Any],
+    field_name: str,
+) -> int:
+    value = metadata.get(field_name)
+    if (
+        not isinstance(value, str)
+        or not value.isascii()
+        or not value.isdigit()
+        or value.startswith("0")
+    ):
+        raise ValueError(f"measurement metadata.{field_name} is not canonical")
+    return int(value)
+
+
+def _validate_full_score_measurement_prompt_protocol(
+    measurement: Any,
+    *,
+    method: str,
+    expected_logical_prompt_sha256: str,
+    expected_runtime_prompt_sha256: str,
+    expected_request_prompt_chars: int,
+    expected_prefix_cache_salt: str,
+    expected_kv_parameter_keys: str | None,
+    expected_logical_prompt_tokens: int,
+) -> None:
+    metadata = measurement.metadata
+    expected_prompt_mode = (
+        "logical" if method == "baseline_prefill" else "runtime"
+    )
+    expected_payload_keys = (
+        "cache_salt,max_tokens,model,prompt,stream,stream_options,temperature"
+        if method == "baseline_prefill"
+        else (
+            "cache_salt,kv_transfer_params,max_tokens,model,prompt,request_id,"
+            "stream,stream_options,temperature"
+        )
+    )
+    expected_metadata = {
+        "kv_transfer_params_attached": (
+            "false" if method == "baseline_prefill" else "true"
+        ),
+        "logical_prompt_sha256": expected_logical_prompt_sha256,
+        "physical_transform_id": (
+            "identity"
+            if method == "baseline_prefill"
+            else "cachet.vanilla.per_document_segments"
+        ),
+        "physical_transform_version": "1",
+        "prefix_cache_salt": expected_prefix_cache_salt,
+        "prefix_cache_salt_attached": "true",
+        "prompt_text_mode": expected_prompt_mode,
+        "prompt_token_source": "server_usage",
+        "request_mode": "completion",
+        "request_payload_endpoint": DEFAULT_OPENAI_COMPLETIONS_ENDPOINT,
+        "request_payload_keys": expected_payload_keys,
+        "request_payload_max_token_fields": "max_tokens",
+        "request_payload_max_tokens": str(FULL_SCORE_MAX_TOKENS),
+        "request_payload_prompt_chars": str(expected_request_prompt_chars),
+        "request_payload_prompt_sha256": expected_runtime_prompt_sha256,
+        "runtime_prompt_sha256": expected_runtime_prompt_sha256,
+        "server": "openai-compatible",
+        "server_usage_prompt_tokens_present": "true",
+        "stream": "true",
+    }
+    if any(metadata.get(key) != value for key, value in expected_metadata.items()):
+        raise ValueError(f"{method} measurement prompt-delivery protocol drift")
+    if expected_kv_parameter_keys is None:
+        if "request_payload_kv_transfer_param_keys" in metadata:
+            raise ValueError("baseline measurement unexpectedly sent KV parameters")
+        if "request_id" in metadata:
+            raise ValueError("baseline measurement unexpectedly sent a request ID")
+    elif (
+        metadata.get("request_payload_kv_transfer_param_keys")
+        != expected_kv_parameter_keys
+        or metadata.get("request_id") != measurement.request_id
+    ):
+        raise ValueError("Vanilla measurement request/handoff binding drift")
+    logical_tokens = _required_positive_prompt_metadata_int(
+        metadata,
+        "logical_prompt_tokens",
+    )
+    runtime_tokens = _required_positive_prompt_metadata_int(
+        metadata,
+        "runtime_prompt_tokens",
+    )
+    server_tokens = _required_positive_prompt_metadata_int(
+        metadata,
+        "server_usage_prompt_tokens",
+    )
+    if (
+        type(measurement.prompt_tokens) is not int
+        or measurement.prompt_tokens <= 0
+        or measurement.prompt_tokens != server_tokens
+        or runtime_tokens != server_tokens
+        or logical_tokens != expected_logical_prompt_tokens
+        or (method == "baseline_prefill" and logical_tokens != runtime_tokens)
+    ):
+        raise ValueError(f"{method} measurement prompt-token accounting drift")
+
+
 def _validated_method_measurements(
     measurements: Sequence[Any],
     *,
     method: str,
+    shard_id: str,
     expected_items: Mapping[tuple[str, str], Mapping[str, Any]],
     examples: Mapping[tuple[str, str], Any],
 ) -> dict[tuple[str, str], Any]:
@@ -7731,6 +9166,8 @@ def _validated_method_measurements(
             raise ValueError(f"{method} output contains an inference error")
         if method == "baseline_prefill" and measurement.cache_method:
             raise ValueError("baseline output unexpectedly declares a cache method")
+        if method == "baseline_prefill" and measurement.artifact_id != "":
+            raise ValueError("baseline output unexpectedly declares an artifact ID")
         if method == "vanilla_prefill" and measurement.cache_method != "vanilla_prefill":
             raise ValueError("Vanilla output does not declare vanilla_prefill")
         if method == "baseline_prefill" and measurement.request_id != "":
@@ -7757,6 +9194,66 @@ def _validated_method_measurements(
                 raise ValueError("measurement NIAH cell differs from bound source")
         elif observed_niah_cell is not None:
             raise ValueError("non-NIAH measurement declares a NIAH cell")
+        (
+            logical_prompt,
+            runtime_prompt,
+            kv_parameter_keys,
+            expected_handoff_request_id,
+            expected_artifact_id,
+        ) = (
+            _full_score_expected_prompt_delivery(example, method=method)
+        )
+        expected_logical_prompt_sha256 = sha256(
+            logical_prompt.encode("utf-8")
+        ).hexdigest()
+        if expected_logical_prompt_sha256 != item.get("natural_prompt_sha256"):
+            raise ValueError("measurement source logical prompt hash drift")
+        expected_runtime_prompt_sha256 = sha256(
+            runtime_prompt.encode("utf-8")
+        ).hexdigest()
+        if (
+            method == "vanilla_prefill"
+            and expected_runtime_prompt_sha256 == expected_logical_prompt_sha256
+        ):
+            raise ValueError("Vanilla runtime prompt did not remove a cached prefix")
+        arm_label = "baseline" if method == "baseline_prefill" else "vanilla"
+        expected_suite_id = f"{FULL_SCORE_PROTOCOL_ID}:{shard_id}:{method}"
+        if method == "vanilla_prefill":
+            if (
+                expected_handoff_request_id is None
+                or expected_artifact_id is None
+            ):  # pragma: no cover - validated by the prompt-delivery helper.
+                raise AssertionError("Vanilla handoff identity was not returned")
+            expected_measurement_request_id = (
+                f"{expected_suite_id}:{measurement.dataset}:"
+                f"{measurement.example_id}:{expected_arm}:"
+                f"repeat-{measurement.repeat_index}:"
+                f"{expected_handoff_request_id}"
+            )
+            if (
+                measurement.request_id != expected_measurement_request_id
+                or measurement.artifact_id != expected_artifact_id
+            ):
+                raise ValueError("Vanilla measurement handoff identity drift")
+        expected_prefix_cache_salt = (
+            f"{shard_id}:{arm_label}:{expected_suite_id}:"
+            f"{measurement.dataset}:{measurement.example_id}:{expected_arm}:"
+            f"repeat-{measurement.repeat_index}"
+        )
+        _validate_full_score_measurement_prompt_protocol(
+            measurement,
+            method=method,
+            expected_logical_prompt_sha256=expected_logical_prompt_sha256,
+            expected_runtime_prompt_sha256=expected_runtime_prompt_sha256,
+            expected_request_prompt_chars=len(runtime_prompt),
+            expected_prefix_cache_salt=expected_prefix_cache_salt,
+            expected_kv_parameter_keys=kv_parameter_keys,
+            expected_logical_prompt_tokens=(
+                _required_int(item, "natural_prompt_tokens")
+                if method == "baseline_prefill"
+                else len(logical_prompt.split())
+            ),
+        )
         scorer = registry.get(measurement.dataset)
         if (
             measurement.scorer_id != scorer.scorer_id
@@ -10282,8 +11779,16 @@ def _validate_shard_evidence_record(
         raise ValueError("shard evidence inventory drift")
     if record.get("shard_plan_sha256") != shard_plan_sha256:
         raise ValueError("shard evidence plan drift")
-    if record.get("scorers") != _scorer_contract_record():
+    if not _json_type_exact_equal(
+        record.get("scorers"),
+        _scorer_contract_record(),
+    ):
         raise ValueError("shard evidence scorer/parser drift")
+    if not _json_type_exact_equal(
+        record.get("protocol"),
+        _full_score_protocol_record(),
+    ):
+        raise ValueError("shard evidence full-score protocol drift")
     _validate_runtime_verification_binding(record.get("runtime_verification"))
     scope = record.get("authorization_scope")
     if scope not in {
@@ -10753,10 +12258,14 @@ def load_governed_full_score_shard_evidence(
     input_paths = {
         dataset: resolved_files[f"input_{dataset}"] for dataset in datasets
     }
+    enriched_paths = {
+        dataset: resolved_files[f"enriched_{dataset}"] for dataset in datasets
+    }
     source_records, examples = _load_governed_ready_source_records(
         input_paths,
         shard=shard,
     )
+    vanilla_examples = _load_ready_examples(enriched_paths)
     paired = validate_paired_full_score_outputs(
         _json_object(
             resolved_files["baseline_raw_output"].read_bytes(),
@@ -10768,15 +12277,13 @@ def load_governed_full_score_shard_evidence(
         ),
         shard=shard,
         examples=examples,
+        vanilla_examples=vanilla_examples,
     )
     if list(paired) != evidence.get("paired_examples"):
         raise ValueError("governed paired outputs do not replay")
     _validate_governed_handoff_replay(
         source_records=source_records,
-        enriched_paths={
-            dataset: resolved_files[f"enriched_{dataset}"]
-            for dataset in datasets
-        },
+        enriched_paths=enriched_paths,
         manifest_paths={
             dataset: resolved_files[f"handoff_manifest_{dataset}"]
             for dataset in datasets
@@ -11139,6 +12646,44 @@ def _require_nonempty(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
     return value
+
+
+def _validated_full_score_single_user_name(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or any(
+            ord(character) < 32 or 127 <= ord(character) <= 159
+            for character in value
+        )
+    ):
+        raise ValueError(
+            "full-score single_user_name must be a normalized non-empty string"
+        )
+    return value
+
+
+def _full_score_phase_single_user_name(
+    submit_payload: Mapping[str, Any],
+) -> str:
+    if not isinstance(submit_payload, Mapping):
+        raise TypeError("full-score submit payload must be a mapping")
+    tasks = submit_payload.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("full-score submit payload must contain tasks")
+    principals = {
+        _validated_full_score_single_user_name(
+            _required_mapping(
+                _json_mapping(raw_task, "full-score submit task"),
+                "new_cluster",
+            ).get("single_user_name")
+        )
+        for raw_task in tasks
+    }
+    if len(principals) != 1:
+        raise ValueError("full-score phase tasks must share one exact principal")
+    return next(iter(principals))
 
 
 def _require_sha256(value: Any, *, field_name: str) -> str:
@@ -11570,6 +13115,7 @@ def _validated_full_score_phase_submit_payload(
         raise ValueError("full-score submit task coverage differs from its wave")
     if len(tasks) > FULL_SCORE_MAX_WORKERS:
         raise ValueError("full-score phase exceeds sixteen live GPU tasks")
+    single_user_name = _full_score_phase_single_user_name(submit_payload)
     run_name = _required_string(submit_payload, "run_name")
     if not run_name.endswith(f"-wave-{wave_index:03d}-{phase}"):
         raise ValueError("full-score submit run_name phase/wave drift")
@@ -11632,8 +13178,7 @@ def _validated_full_score_phase_submit_payload(
             or cluster.get("num_workers") != 0
             or cluster.get("spark_version") != DEFAULT_DATABRICKS_SPARK_VERSION
             or cluster.get("data_security_mode") != "SINGLE_USER"
-            or not isinstance(cluster.get("single_user_name"), str)
-            or not cluster.get("single_user_name")
+            or cluster.get("single_user_name") != single_user_name
             or cluster.get("spark_conf")
             != {
                 "spark.databricks.cluster.profile": "singleNode",
@@ -12017,6 +13562,27 @@ def _canonical_sha256(value: Any) -> str:
     ).hexdigest()
 
 
+def _json_type_exact_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values without Python's bool/int/float equality coercions."""
+
+    try:
+        return json.dumps(
+            left,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ) == json.dumps(
+            right,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _closed_record_sha256(record: Mapping[str, Any]) -> str:
     payload = dict(record)
     payload.pop("closed_record_sha256", None)
@@ -12154,6 +13720,7 @@ __all__ = [
     "reserve_governed_full_score_phase_attempt",
     "submit_governed_full_score_phase_attempt",
     "run_full_score_worker",
+    "validate_full_score_aggregate_record",
     "validate_full_score_live_p90_budget_admission",
     "validate_full_score_worker_payload",
     "validate_paired_full_score_outputs",

@@ -580,7 +580,7 @@ def _fake_runner(
     if "--version" in command:
         name = Path(command[0]).name
         versions = {
-            "python": "pytest 8.0.0\n",
+            "python": "pytest 9.1.1\n",
             "ruff": "ruff 0.15.21\n",
             "mypy": "mypy 2.2.0 (compiled: yes)\n",
         }
@@ -1005,6 +1005,7 @@ def test_preflight_and_git_subprocesses_ignore_hostile_ambient_environment(
     assert environment["PYTEST_ADDOPTS"] == ""
     assert environment["PYTEST_PLUGINS"] == ""
     assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
     assert environment["MYPYPATH"] == ""
     assert "MYPY_CACHE_DIR" not in environment
     assert "RUFF_CONFIG" not in environment
@@ -1034,6 +1035,27 @@ def test_preflight_and_git_subprocesses_ignore_hostile_ambient_environment(
     )
     assert collected.returncode == 0
     assert b"test_preflight_and_git_subprocesses_ignore_hostile" in collected.stdout
+
+    package_root = tmp_path / "package-root"
+    package_root.mkdir()
+    (package_root / "bytecode_probe.py").write_text(
+        "PROBE = 'imported'\n",
+        encoding="utf-8",
+    )
+    imported = freeze._run_command(
+        (
+            str(freeze._DEFAULT_PYTHON_EXECUTABLE),
+            "-c",
+            "import bytecode_probe",
+        ),
+        package_root,
+        environment,
+    )
+    assert imported.returncode == 0
+    assert imported.stdout == b""
+    assert imported.stderr == b""
+    assert not (package_root / "__pycache__").exists()
+
     with pytest.raises(RuntimeError, match="exact no-skip publication suite"):
         freeze._require_exact_pytest_completion(
             (

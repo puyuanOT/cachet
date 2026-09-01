@@ -2063,7 +2063,7 @@ def test_publication_baseline_forwards_schedule_with_original_dataset_paths(tmp_
     digest = "3" * 64
     schedule_path = tmp_path / "schedule.json"
     config = VLLMSmokeBenchmarkConfig(
-        **_publication_baseline_config_kwargs(tmp_path),
+        **_publication_baseline_config_kwargs(tmp_path, policy="smoke"),
         benchmark_repeats=2,
         request_parallelism=4,
         publication_latency_schedule_path=schedule_path,
@@ -2081,6 +2081,7 @@ def test_publication_baseline_forwards_schedule_with_original_dataset_paths(tmp_
         == digest
     )
     assert dataset_args(dataset_paths) == args[-8:]
+    assert config.benchmark_evidence_policy == "smoke"
     assert config.stages_publication_handoffs is False
 
 

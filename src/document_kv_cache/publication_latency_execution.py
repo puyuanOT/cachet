@@ -43,8 +43,15 @@ from document_kv_cache.benchmark_runner import (
     PUBLICATION_LATENCY_REQUESTS_SHA256_METADATA_KEY,
     PUBLICATION_LATENCY_SCHEDULE_SHA256_METADATA_KEY,
     PUBLICATION_LATENCY_SEED_SHA256_METADATA_KEY,
+    BenchmarkRunResult,
+    benchmark_gate_inputs_from_record,
     benchmark_record_aggregate_issues,
+    benchmark_record_payload_digest,
     benchmark_run_result_from_record,
+)
+from document_kv_cache.benchmark_gates import (
+    benchmark_evidence_gate_to_record,
+    evaluate_benchmark_evidence_gate,
 )
 from document_kv_cache.benchmark_metrics import request_decode_tokens_per_second
 from document_kv_cache.benchmarks import (
@@ -62,6 +69,7 @@ from document_kv_cache.databricks_resource_ledger import (
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     DatabricksBatchReservationAuthorization,
+    DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
@@ -86,6 +94,7 @@ from document_kv_cache.databricks_runs import (
     download_databricks_volume_file_bytes,
     get_databricks_run,
     list_databricks_volume_directory,
+    require_databricks_current_user_name,
     require_databricks_run_idempotency_token,
     resume_pre_reserved_databricks_run,
     submit_databricks_run,
@@ -102,6 +111,8 @@ from document_kv_cache.gpu_qualification import (
 )
 from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
+    GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+    GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
     GPUQualificationArtifactPinsV2,
     validate_gpu_qualification_evidence_v2_record,
     validate_gpu_qualification_plan_v2_record,
@@ -132,6 +143,8 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_ENGINE_VERSION,
     PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET,
     PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS,
+    PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+    PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
     PUBLICATION_CAMPAIGN_REPEATS_PER_EXAMPLE,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
     PUBLICATION_CAMPAIGN_STORAGE_EXAMPLES_PER_DATASET,
@@ -193,6 +206,7 @@ PUBLICATION_LATENCY_JOB_RECORD_TYPE: Final = "cachet.publication_latency_job.v2"
 PUBLICATION_LATENCY_JOB_RESULT_RECORD_TYPE: Final = (
     "cachet.publication_latency_job_result.v2"
 )
+PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY: Final = "smoke"
 PUBLICATION_LATENCY_SUBMISSION_RECORD_TYPE: Final = (
     "cachet.publication_latency_wave_submission.v2"
 )
@@ -230,7 +244,7 @@ PUBLICATION_LATENCY_MAX_OUTPUT_TOKENS: Final = 256
 PUBLICATION_LATENCY_TEMPERATURE: Final = 0.0
 PUBLICATION_LATENCY_GENERATION_SEED: Final = 17
 PUBLICATION_LATENCY_DATABRICKS_AVAILABILITY: Final = "ON_DEMAND"
-PUBLICATION_LATENCY_DATABRICKS_DATA_SECURITY_MODE: Final = "NONE"
+PUBLICATION_LATENCY_DATABRICKS_DATA_SECURITY_MODE: Final = "SINGLE_USER"
 PUBLICATION_LATENCY_DATABRICKS_ZONES: Final = (
     "us-west-2a",
     "us-west-2b",
@@ -288,6 +302,18 @@ _DESCRIPTIVE_AUXILIARY_SETTING_IDS = (
     "storage-ram",
     "storage-uc",
     "hardware-a10g",
+)
+_DESCRIPTIVE_CACHE_TELEMETRY_FIELDS = (
+    "backend_bytes_read",
+    "cold_read_attested_count",
+    "eviction_requested_count",
+    "eviction_succeeded_count",
+    "expected_backend_bytes_read",
+    "load_count",
+    "mounted_path_load_count",
+    "payload_cache_hit_count",
+    "payload_cache_miss_count",
+    "storage_materialization_count",
 )
 
 
@@ -786,8 +812,11 @@ class PublicationLatencySourceClosureCoordinatorConfig:
             raise ValueError("source-closure Databricks Runtime drift")
         if self.data_security_mode != "SINGLE_USER":
             raise ValueError("source closure requires SINGLE_USER mode")
-        if not isinstance(self.single_user_name, str) or not self.single_user_name:
-            raise ValueError("source closure requires a single-user principal")
+        object.__setattr__(
+            self,
+            "single_user_name",
+            _validated_single_user_name(self.single_user_name),
+        )
         if self.timeout_seconds != PUBLICATION_LATENCY_SOURCE_CLOSURE_TIMEOUT_SECONDS:
             raise ValueError("source-closure timeout is frozen to two hours")
         runtime_root = PurePosixPath(self.runtime_venv_dir)
@@ -1298,6 +1327,9 @@ def build_publication_latency_source_closure_request(
         expected_campaign_id=_required_string(campaign_plan_record, "campaign_id"),
         expected_artifact_pins=qualification_artifact_pins,
     )
+    _require_reviewed_qualification_plan_campaign_binding(
+        campaign_plan_record, qualification_plan_record
+    )
     if coordinator_config.package_wheel_sha256 != final_artifacts.file(
         "package_wheel"
     ).sha256 or not _same_durable_file_location(
@@ -1373,6 +1405,12 @@ def build_publication_latency_source_closure_request(
     require_databricks_ledger_prefix(ledger, bf16.ledger_prefix)
     if databricks_ledger_prefix(ledger) != bf16.ledger_prefix:
         raise ValueError("BF16 is not the complete live source-closure predecessor")
+    _require_reviewed_qualification_plan_campaign_successor(
+        ledger,
+        ledger_path=ledger_file,
+        campaign_plan_record=campaign_plan_record,
+        qualification_plan_record=qualification_plan_record,
+    )
 
     schedule_bindings = _source_closure_schedule_bindings(
         schedule_records,
@@ -2323,7 +2361,9 @@ def _source_closure_config_from_record(
         ),
         request_root_uri=_required_string(record, "request_root_uri"),
         result_root_uri=_required_string(record, "result_root_uri"),
-        single_user_name=_required_string(record, "single_user_name"),
+        single_user_name=_validated_single_user_name(
+            record.get("single_user_name")
+        ),
         runner_sha256=_required_sha256(record, "runner_sha256"),
         node_type_id=_required_string(record, "node_type_id"),
         spark_version=_required_string(record, "spark_version"),
@@ -2677,6 +2717,12 @@ def submit_publication_latency_source_closure(
     require_databricks_ledger_prefix(live, predecessor)
     if databricks_ledger_prefix(live) != predecessor:
         raise ValueError("source-closure predecessor is not the complete live ledger")
+    coordinator = _source_closure_config_from_record(_mapping(request, "coordinator"))
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=coordinator.single_user_name,
+        opener=opener,
+    )
     lease_root = _create_latency_phase_lease_root(phase_lease_root)
     _write_canonical_json_exclusive(lease_root / "request.json", request)
     _write_canonical_json_exclusive(
@@ -2754,6 +2800,12 @@ def resume_publication_latency_source_closure(
         _mapping(lineage, "predecessor_prefix")
     )
     _require_unchanged_source_closure_gpu_ledger(ledger_file, predecessor)
+    coordinator = _source_closure_config_from_record(_mapping(request, "coordinator"))
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=coordinator.single_user_name,
+        opener=opener,
+    )
     return _submit_or_resume_publication_latency_source_closure(
         workspace,
         request_authorization=authorization,
@@ -3144,9 +3196,6 @@ def build_publication_latency_execution_plan(
         campaign_plan_record.get("campaign_opening_terminal_gpu_hours"),
         "campaign_opening_terminal_gpu_hours",
     )
-    campaign_record_sha256 = _required_sha256(
-        campaign_plan_record, "closed_record_sha256"
-    )
     campaign_ledger_prefix = databricks_ledger_prefix_from_record(
         _mapping(campaign_plan_record, "campaign_ledger_prefix")
     )
@@ -3181,14 +3230,9 @@ def build_publication_latency_execution_plan(
         )
     if selection.attention_backend != GPU_QUALIFICATION_PUBLICATION_BACKEND:
         raise ValueError("qualification did not select the publication backend")
-    if (
-        qualification_plan_record.get("campaign_record_sha256")
-        != campaign_record_sha256
-        or qualification_plan_record.get("campaign_ledger_id") != campaign_ledger_id
-        or qualification_plan_record.get("campaign_ledger_prefix")
-        != campaign_ledger_prefix.to_record()
-    ):
-        raise ValueError("GPU qualification plan differs from the campaign binding")
+    _require_reviewed_qualification_plan_campaign_binding(
+        campaign_plan_record, qualification_plan_record
+    )
 
     handoff_execution_file = final_artifacts.file("handoff_execution")
     authenticated_handoff = require_q8_handoff_remote_closure_authorization(
@@ -3351,24 +3395,6 @@ def build_publication_latency_execution_plan(
     }
     if authorization_ledger_paths != {campaign_ledger_path_sha256}:
         raise ValueError("publication authorities use a different campaign ledger path")
-    if (
-        qualification_plan_record.get("campaign_record_sha256")
-        != (campaign_record_sha256)
-        or qualification_plan_record.get("campaign_ledger_id") != campaign_ledger_id
-    ):
-        raise ValueError("qualification plan differs from the campaign record")
-    if qualification_plan_record.get("campaign_ledger_path_sha256") != (
-        campaign_ledger_path_sha256
-    ):
-        raise ValueError("qualification plan uses a different campaign ledger path")
-    if qualification_plan_record.get("campaign_ledger_prefix") != (
-        campaign_ledger_prefix.to_record()
-    ):
-        raise ValueError("qualification plan uses a different campaign ledger prefix")
-    if qualification_plan_record.get("campaign_opening_terminal_gpu_hours") != (
-        campaign_opening_terminal_gpu_hours
-    ):
-        raise ValueError("qualification plan opening terminal balance drift")
     if qualification_launch_authorization.ledger_prefix.reservation_count < (
         campaign_ledger_prefix.reservation_count
     ):
@@ -3469,6 +3495,9 @@ def build_publication_latency_execution_plan(
         },
         "output_root_uri": final_artifacts.handoff_generation_root_uri,
     }
+    source_closure_binding = _source_closure_authorization_binding(
+        authenticated_source_closure
+    )
     sources: dict[str, Any] = {
         "bf16_handoff": bf16_binding,
         "campaign": campaign_binding,
@@ -3480,9 +3509,7 @@ def build_publication_latency_execution_plan(
         "handoff_generation": handoff_binding,
         "qualification": qualification_binding,
         "schedules": schedule_bindings,
-        "source_closure": _source_closure_authorization_binding(
-            authenticated_source_closure
-        ),
+        "source_closure": source_closure_binding,
         "storage_schedules": storage_schedule_bindings,
         "storage_inputs": {
             **final_artifacts.file("storage_inputs").to_record(),
@@ -3553,6 +3580,10 @@ def build_publication_latency_execution_plan(
             ),
             "serving_engine": "vllm",
             "serving_engine_version": PUBLICATION_CAMPAIGN_ENGINE_VERSION,
+            "single_user_name": _required_string(
+                source_closure_binding,
+                "single_user_name",
+            ),
             "zones": list(PUBLICATION_LATENCY_DATABRICKS_ZONES),
         },
         "schema_version": PUBLICATION_LATENCY_SCHEMA_VERSION,
@@ -3681,6 +3712,9 @@ def validate_publication_latency_execution_plan_record(
         embedded_qualification_plan,
         expected_campaign_id=campaign_id,
         expected_artifact_pins=pins,
+    )
+    _require_reviewed_qualification_plan_campaign_binding(
+        canonical_campaign, embedded_qualification_plan
     )
     if embedded_qualification_plan.get("closed_record_sha256") != _mapping(
         qualification, "plan"
@@ -3825,6 +3859,7 @@ def validate_publication_latency_execution_plan_record(
             "result_closed_record_sha256",
             "result_file_sha256",
             "result_uri",
+            "single_user_name",
         },
         "publication latency source-closure binding",
     )
@@ -3844,6 +3879,9 @@ def validate_publication_latency_execution_plan_record(
     )
     _databricks_volume_uri(
         source_closure_binding.get("result_uri"), "source-closure result URI"
+    )
+    source_single_user_name = _validated_single_user_name(
+        source_closure_binding.get("single_user_name")
     )
     if (
         source_closure_binding.get("ledger_id") != campaign_ledger_id
@@ -3886,6 +3924,7 @@ def validate_publication_latency_execution_plan_record(
         "selected_32k_l4_gpu_memory_utilization": selected_gmu,
         "serving_engine": "vllm",
         "serving_engine_version": PUBLICATION_CAMPAIGN_ENGINE_VERSION,
+        "single_user_name": source_single_user_name,
         "zones": list(PUBLICATION_LATENCY_DATABRICKS_ZONES),
     }
     if dict(runtime) != expected_runtime:
@@ -4489,6 +4528,9 @@ def _source_closure_authorization_binding(
 ) -> dict[str, Any]:
     if not isinstance(authorization, PublicationLatencySourceClosureAuthorization):
         raise TypeError("source-closure authorization has the wrong type")
+    coordinator = _source_closure_config_from_record(
+        _mapping(authorization.request_record, "coordinator")
+    )
     return {
         "artifacts_sha256": authorization.artifacts_sha256,
         "causal_closure_sha256": authorization.causal_closure_sha256,
@@ -4505,7 +4547,107 @@ def _source_closure_authorization_binding(
         "result_closed_record_sha256": authorization.result_closed_record_sha256,
         "result_file_sha256": authorization.result_file_sha256,
         "result_uri": authorization.result_uri,
+        "single_user_name": coordinator.single_user_name,
     }
+
+
+def _require_reviewed_qualification_plan_campaign_binding(
+    campaign_plan_record: Mapping[str, Any],
+    qualification_plan_record: Mapping[str, Any],
+) -> DatabricksLedgerPrefix:
+    """Bind the reviewed campaign and v2 openings to the same frozen lineage."""
+
+    campaign_prefix = databricks_ledger_prefix_from_record(
+        _mapping(campaign_plan_record, "campaign_ledger_prefix")
+    )
+    qualification_prefix = databricks_ledger_prefix_from_record(
+        _mapping(qualification_plan_record, "campaign_ledger_prefix")
+    )
+    campaign_hours = _finite_nonnegative_number(
+        campaign_plan_record.get("campaign_opening_terminal_gpu_hours"),
+        "campaign opening terminal GPU hours",
+    )
+    qualification_hours = _finite_nonnegative_number(
+        qualification_plan_record.get("campaign_opening_terminal_gpu_hours"),
+        "qualification opening terminal GPU hours",
+    )
+    if (
+        campaign_prefix != PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX
+        or campaign_hours != PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+        or qualification_prefix != GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+        or qualification_hours != GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+        or qualification_plan_record.get("campaign_id")
+        != campaign_plan_record.get("campaign_id")
+        or qualification_plan_record.get("campaign_record_sha256")
+        != campaign_plan_record.get("closed_record_sha256")
+        or qualification_plan_record.get("campaign_ledger_id")
+        != campaign_plan_record.get("campaign_ledger_id")
+        or qualification_plan_record.get("campaign_ledger_path_sha256")
+        != campaign_plan_record.get("campaign_ledger_path_sha256")
+        or qualification_prefix.ledger_id != campaign_prefix.ledger_id
+        or qualification_prefix.cap_cluster_hours != campaign_prefix.cap_cluster_hours
+    ):
+        raise ValueError(
+            "GPU qualification plan does not carry the reviewed campaign successor "
+            "authority"
+        )
+    return qualification_prefix
+
+
+def _require_reviewed_qualification_plan_campaign_successor(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    ledger_path: str | Path,
+    campaign_plan_record: Mapping[str, Any],
+    qualification_plan_record: Mapping[str, Any],
+) -> DatabricksLedgerPrefix:
+    """Prove the reviewed campaign opening is an ordered slice of v2."""
+
+    qualification_prefix = _require_reviewed_qualification_plan_campaign_binding(
+        campaign_plan_record, qualification_plan_record
+    )
+    campaign_prefix = databricks_ledger_prefix_from_record(
+        _mapping(campaign_plan_record, "campaign_ledger_prefix")
+    )
+    if databricks_ledger_path_sha256(ledger_path) != _required_sha256(
+        qualification_plan_record, "campaign_ledger_path_sha256"
+    ):
+        raise ValueError("reviewed campaign successor uses a different ledger path")
+    require_databricks_ledger_prefix(ledger, qualification_prefix)
+    qualification_ledger = DatabricksClusterHourLedger(
+        ledger_id=ledger.ledger_id,
+        cap_cluster_hours=ledger.cap_cluster_hours,
+        reservations=ledger.reservations[: qualification_prefix.reservation_count],
+        submission_receipts=ledger.submission_receipts[
+            : qualification_prefix.submission_receipt_count
+        ],
+        terminal_actuals=ledger.terminal_actuals[
+            : qualification_prefix.terminal_actual_count
+        ],
+    )
+    require_databricks_ledger_prefix(qualification_ledger, qualification_prefix)
+    require_databricks_ledger_prefix(qualification_ledger, campaign_prefix)
+    campaign_ledger = DatabricksClusterHourLedger(
+        ledger_id=ledger.ledger_id,
+        cap_cluster_hours=ledger.cap_cluster_hours,
+        reservations=ledger.reservations[: campaign_prefix.reservation_count],
+        submission_receipts=ledger.submission_receipts[
+            : campaign_prefix.submission_receipt_count
+        ],
+        terminal_actuals=ledger.terminal_actuals[
+            : campaign_prefix.terminal_actual_count
+        ],
+    )
+    require_databricks_ledger_prefix(campaign_ledger, campaign_prefix)
+    if campaign_ledger.terminal_actual_cluster_hours != (
+        PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+    ):
+        raise ValueError("reviewed campaign opening terminal balance drift")
+    if qualification_ledger.terminal_actual_cluster_hours != (
+        GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+    ):
+        raise ValueError("reviewed qualification opening terminal balance drift")
+    return qualification_prefix
 
 
 def _require_remote_handoff_phase_order(
@@ -4898,6 +5040,10 @@ def _render_publication_latency_job_record(
             selection.get("gpu_memory_utilization"),
             "selected 32k GMU",
         ),
+        single_user_name=_required_string(
+            _mapping(sources, "source_closure"),
+            "single_user_name",
+        ),
     )
     input_files = [
         final_artifacts.file(
@@ -5151,6 +5297,7 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
             runtime.get("selected_32k_l4_gpu_memory_utilization"),
             "selected_32k_l4_gpu_memory_utilization",
         ),
+        single_user_name=_required_string(runtime, "single_user_name"),
     )
     if dict(runtime) != expected_runtime:
         raise ValueError("publication latency job runtime policy drift")
@@ -5190,7 +5337,9 @@ def _job_runtime_policy(
     descriptor: Mapping[str, Any],
     *,
     selected_32k_gmu: float,
+    single_user_name: str,
 ) -> dict[str, Any]:
+    principal = _validated_single_user_name(single_user_name)
     input_tokens = _required_int(descriptor, "input_tokens")
     request_parallelism = _required_int(descriptor, "request_parallelism")
     setting_id = descriptor.get("setting_id")
@@ -5228,6 +5377,7 @@ def _job_runtime_policy(
         "run_timeout_seconds": timeout_seconds,
         "runtime_kv_dtype": runtime_kv_dtype,
         "selected_32k_l4_gpu_memory_utilization": selected_32k_gmu,
+        "single_user_name": principal,
         "temperature": PUBLICATION_LATENCY_TEMPERATURE,
         "zone_id": _required_string(descriptor, "zone_id"),
     }
@@ -5332,6 +5482,7 @@ def _build_databricks_publication_latency_run_submit_payload(
             node_type_id=_required_string(runtime, "node_type_id"),
             spark_version=_required_string(runtime, "databricks_spark_version"),
             data_security_mode=_required_string(runtime, "data_security_mode"),
+            single_user_name=_required_string(runtime, "single_user_name"),
             availability=_required_string(runtime, "availability"),
             zone_id=_required_string(runtime, "zone_id"),
             custom_tags={
@@ -5637,6 +5788,13 @@ def submit_publication_latency_launch_wave(
             )
         )
 
+    require_databricks_current_user_name(
+        config,
+        expected_user_name=_publication_latency_single_user_name(
+            execution_plan_record
+        ),
+        opener=opener,
+    )
     lease_root = _create_latency_phase_lease_root(phase_lease_root)
     lease = {
         "attempt_ids": [item[3] for item in jobs],
@@ -5924,12 +6082,20 @@ def resume_publication_latency_launch_wave(
     }
     expected_batch["closed_record_sha256"] = _closed_record_sha256(expected_batch)
     batch_path = lease_root / "batch-reserved.json"
-    if batch_path.exists() or batch_path.is_symlink():
+    batch_exists = batch_path.exists() or batch_path.is_symlink()
+    if batch_exists:
         if _read_latency_controller_record(
             batch_path, "latency batch marker"
         ) != expected_batch:
             raise ValueError("latency batch marker differs from the ledger batch")
-    else:
+    require_databricks_current_user_name(
+        config,
+        expected_user_name=_publication_latency_single_user_name(
+            execution_plan_record
+        ),
+        opener=opener,
+    )
+    if not batch_exists:
         _write_canonical_json_exclusive(batch_path, expected_batch)
     submitted: list[dict[str, Any]] = []
     for job_id, job, payload, attempt_id, payload_sha256 in jobs:
@@ -7055,6 +7221,83 @@ def validate_publication_latency_collection_record(
         )
 
 
+def _publication_latency_estimand_projection_design() -> list[dict[str, Any]]:
+    design: list[dict[str, Any]] = []
+    for input_tokens in PUBLICATION_CAMPAIGN_CONTEXT_TOKENS:
+        for concurrency in (1, 2, 4):
+            design.append(
+                {
+                    "comparison_family": "method",
+                    "control_cell_id": (
+                        f"core-baseline_prefill-{input_tokens}-c{concurrency}"
+                    ),
+                    "deployment_block_count": (
+                        PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS
+                    ),
+                    "estimand_id": f"method-{input_tokens}-c{concurrency}",
+                    "example_count_per_block": (
+                        len(SUPPORTED_V1_DATASETS)
+                        * PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET
+                    ),
+                    "input_tokens": input_tokens,
+                    "paired_request_count": (
+                        PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS
+                        * PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL
+                    ),
+                    "request_parallelism": concurrency,
+                    "setting_id": None,
+                    "speedup_direction": (
+                        "control_latency_divided_by_treatment_latency"
+                    ),
+                    "treatment_cell_id": (
+                        f"core-vanilla_prefill-{input_tokens}-c{concurrency}"
+                    ),
+                }
+            )
+    for setting_id, comparison_family, _description in (
+        PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
+    ):
+        storage_comparison = setting_id in {"storage-ram", "storage-uc"}
+        design.append(
+            {
+                "comparison_family": comparison_family,
+                "control_cell_id": (
+                    "auxiliary-storage-disk"
+                    if storage_comparison
+                    else "core-vanilla_prefill-16384-c4"
+                ),
+                "deployment_block_count": PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS,
+                "estimand_id": f"auxiliary-{setting_id}",
+                "example_count_per_block": (
+                    len(SUPPORTED_V1_DATASETS)
+                    * (
+                        PUBLICATION_CAMPAIGN_STORAGE_EXAMPLES_PER_DATASET
+                        if storage_comparison
+                        else PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET
+                    )
+                ),
+                "input_tokens": 16_384,
+                "paired_request_count": (
+                    PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS
+                    * (
+                        PUBLICATION_CAMPAIGN_STORAGE_REQUESTS_PER_CELL
+                        if storage_comparison
+                        else PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL
+                    )
+                ),
+                "request_parallelism": 4,
+                "setting_id": setting_id,
+                "speedup_direction": (
+                    "control_latency_divided_by_treatment_latency"
+                ),
+                "treatment_cell_id": f"auxiliary-{setting_id}",
+            }
+        )
+    if len(design) != 13:  # pragma: no cover - frozen constants are static.
+        raise RuntimeError("latency estimand projection does not contain 13 families")
+    return design
+
+
 def aggregate_publication_latency_campaign(
     authorization: PublicationLatencyCollectionAuthorization,
     *,
@@ -7156,6 +7399,10 @@ def aggregate_publication_latency_campaign(
         descriptors=descriptors,
         result_by_job=result_by_job,
     )
+    estimand_projection_by_id = {
+        _required_string(item, "estimand_id"): item
+        for item in _publication_latency_estimand_projection_design()
+    }
 
     estimates: list[dict[str, Any]] = []
     for spec in estimand_specs:
@@ -7187,25 +7434,9 @@ def aggregate_publication_latency_campaign(
             }
         estimates.append(
             {
-                **{
-                    key: value
-                    for key, value in spec.items()
-                    if key not in {"control_jobs", "treatment_jobs"}
-                },
-                "deployment_block_count": PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS,
-                "example_count_per_block": (
-                    len(SUPPORTED_V1_DATASETS)
-                    * (
-                        PUBLICATION_CAMPAIGN_STORAGE_EXAMPLES_PER_DATASET
-                        if spec.get("setting_id") in {"storage-ram", "storage-uc"}
-                        else PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET
-                    )
-                ),
-                "paired_request_count": (
-                    PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS
-                    * PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL
-                ),
-                "speedup_direction": "control_latency_divided_by_treatment_latency",
+                **estimand_projection_by_id[
+                    _required_string(spec, "estimand_id")
+                ],
                 "metrics": metric_records,
             }
         )
@@ -7315,40 +7546,55 @@ def validate_publication_latency_summary_record(
         "storage_workload": "2_examples_per_dataset_x_32_repeats",
     }:
         raise ValueError("publication latency summary inference policy drift")
-    ids = [item.get("estimand_id") for item in estimates]
-    expected_ids = [
-        f"method-{tokens}-c{concurrency}"
-        for tokens in PUBLICATION_CAMPAIGN_CONTEXT_TOKENS
-        for concurrency in (1, 2, 4)
-    ] + [
-        f"auxiliary-{setting_id}"
-        for setting_id, _family, _description in PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
-    ]
-    if ids != expected_ids:
+    _validate_publication_latency_estimate_records(estimates)
+
+
+def _validate_publication_latency_estimate_records(
+    estimates: Sequence[Mapping[str, Any]],
+) -> None:
+    expected_design = _publication_latency_estimand_projection_design()
+    if len(estimates) != len(expected_design):
+        raise ValueError("publication latency summary must contain 13 estimands")
+    if [item.get("estimand_id") for item in estimates] != [
+        item["estimand_id"] for item in expected_design
+    ]:
         raise ValueError("publication latency summary estimand order drift")
-    for estimate in estimates:
+    for estimate, expected in zip(estimates, expected_design, strict=True):
+        _require_exact_keys(
+            estimate,
+            set(expected) | {"metrics"},
+            "publication latency estimand",
+        )
+        if any(
+            type(estimate.get(field_name)) is not type(expected_value)
+            or estimate.get(field_name) != expected_value
+            for field_name, expected_value in expected.items()
+        ):
+            raise ValueError("publication latency estimand frozen-design drift")
         metrics = _mapping(estimate, "metrics")
-        if set(metrics) != {"ttft", "time_to_completion"}:
-            raise ValueError("publication latency summary metric closure drift")
-        for metric in metrics.values():
-            metric_record = _mapping_value(metric, "summary metric")
-            point = _finite_positive_number(
-                metric_record.get("geometric_mean_speedup"), "speedup"
+        _require_exact_keys(
+            metrics,
+            {"ttft", "time_to_completion"},
+            "publication latency summary metrics",
+        )
+        for metric_name in ("ttft", "time_to_completion"):
+            metric_record = _mapping_value(metrics[metric_name], "summary metric")
+            _require_exact_keys(
+                metric_record,
+                {"confidence_interval_95", "geometric_mean_speedup"},
+                "publication latency summary metric",
             )
+            raw_point = metric_record.get("geometric_mean_speedup")
+            if type(raw_point) is not float:
+                raise ValueError("publication latency speedup must be a float")
+            point = _finite_positive_number(raw_point, "speedup")
             interval = metric_record.get("confidence_interval_95")
             if (
-                not isinstance(interval, list)
+                type(interval) is not list
                 or len(interval) != 2
-                or any(
-                    not math.isfinite(float(value)) or float(value) <= 0
-                    for value in interval
-                    if isinstance(value, (int, float)) and not isinstance(value, bool)
-                )
-                or any(
-                    isinstance(value, bool) or not isinstance(value, (int, float))
-                    for value in interval
-                )
-                or float(interval[0]) > float(interval[1])
+                or any(type(value) is not float for value in interval)
+                or any(not math.isfinite(value) or value <= 0 for value in interval)
+                or interval[0] > interval[1]
             ):
                 raise ValueError("publication latency confidence interval is invalid")
             if not math.isfinite(point):  # pragma: no cover - helper already checks.
@@ -7400,6 +7646,37 @@ def _publication_latency_descriptive_cells(
     return rows
 
 
+def _descriptive_cache_telemetry_projection(
+    result_record: Mapping[str, Any],
+    *,
+    method_id: str,
+) -> dict[str, int]:
+    telemetry = _mapping(result_record, "cache_telemetry")
+    projection: dict[str, int] = {}
+    for field_name in _DESCRIPTIVE_CACHE_TELEMETRY_FIELDS:
+        value = telemetry.get(field_name)
+        if (
+            field_name == "expected_backend_bytes_read"
+            and method_id == "baseline_prefill"
+            and field_name not in telemetry
+        ):
+            value = 0
+        projection[field_name] = _nonnegative_int(value, field_name)
+    return projection
+
+
+def _pooled_descriptive_cache_telemetry(
+    blocks: Sequence[Mapping[str, Any]],
+) -> dict[str, int]:
+    return {
+        field_name: sum(
+            _required_int(_mapping(block, "cache_telemetry"), field_name)
+            for block in blocks
+        )
+        for field_name in _DESCRIPTIVE_CACHE_TELEMETRY_FIELDS
+    }
+
+
 def _descriptive_cell_record(
     *,
     cell_id: str,
@@ -7433,7 +7710,8 @@ def _descriptive_cell_record(
         if result_record is None:
             raise ValueError("descriptive cell references a missing job result")
         benchmark = benchmark_run_result_from_record(
-            _mapping(result_record, "benchmark_record"), evidence_policy="publication"
+            _mapping(result_record, "benchmark_record"),
+            evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
         )
         configured_concurrency = benchmark.request_parallelism
         if concurrency is None:
@@ -7449,28 +7727,42 @@ def _descriptive_cell_record(
             raise ValueError("descriptive cell requires one resource record per block")
         resource = benchmark.resource_evidence[0]
         resources.append(resource)
+        cache_telemetry = _descriptive_cache_telemetry_projection(
+            result_record,
+            method_id=_required_string(descriptor, "method_id"),
+        )
         all_ttft.extend(ttft)
         all_ttc.extend(ttc)
         all_decode.extend(decode)
         block_values.append(
             {
+                "cache_telemetry": cache_telemetry,
                 "deployment_block": _required_int(descriptor, "deployment_block"),
                 "job_id": job_id,
                 "observation_count": len(ttft),
                 "configured_closed_loop_concurrency": configured_concurrency,
+                "gpu_utilization_sample_count": resource.sample_count,
+                "mean_gpu_utilization_percent": float(
+                    resource.mean_gpu_utilization_percent
+                ),
                 "p50_decode_tokens_per_second": _empirical_nearest_rank(decode, 0.50),
                 "p50_time_to_completion_seconds": _empirical_nearest_rank(ttc, 0.50),
                 "p50_ttft_seconds": _empirical_nearest_rank(ttft, 0.50),
                 "p95_time_to_completion_seconds": _empirical_nearest_rank(ttc, 0.95),
                 "p95_ttft_seconds": _empirical_nearest_rank(ttft, 0.95),
                 "peak_gpu_process_memory_bytes": resource.peak_gpu_process_memory_bytes,
+                "peak_gpu_utilization_percent": float(
+                    resource.peak_gpu_utilization_percent
+                ),
                 "peak_host_memory_used_bytes": resource.peak_host_memory_used_bytes,
                 "peak_process_tree_rss_bytes": resource.peak_process_tree_rss_bytes,
             }
         )
     assert concurrency is not None
     first = descriptors[ordered_ids[0]]
+    gpu_utilization_sample_count = sum(item.sample_count for item in resources)
     record: dict[str, Any] = {
+        "cache_telemetry": _pooled_descriptive_cache_telemetry(block_values),
         "cell_id": cell_id,
         "cell_kind": cell_kind,
         "cell_sha256": "",
@@ -7479,6 +7771,12 @@ def _descriptive_cell_record(
         "method_id": _required_string(first, "method_id"),
         "observation_count": len(all_ttft),
         "configured_closed_loop_concurrency": concurrency,
+        "gpu_utilization_sample_count": gpu_utilization_sample_count,
+        "mean_gpu_utilization_percent": sum(
+            float(item.mean_gpu_utilization_percent) * item.sample_count
+            for item in resources
+        )
+        / gpu_utilization_sample_count,
         "p50_decode_tokens_per_second": _empirical_nearest_rank(all_decode, 0.50),
         "p50_time_to_completion_seconds": _empirical_nearest_rank(all_ttc, 0.50),
         "p50_ttft_seconds": _empirical_nearest_rank(all_ttft, 0.50),
@@ -7486,6 +7784,9 @@ def _descriptive_cell_record(
         "p95_ttft_seconds": _empirical_nearest_rank(all_ttft, 0.95),
         "peak_gpu_process_memory_bytes": max(
             item.peak_gpu_process_memory_bytes for item in resources
+        ),
+        "peak_gpu_utilization_percent": max(
+            float(item.peak_gpu_utilization_percent) for item in resources
         ),
         "peak_host_memory_used_bytes": max(
             item.peak_host_memory_used_bytes for item in resources
@@ -7504,7 +7805,10 @@ def _descriptive_cell_record(
 
 def _validate_descriptive_cell_record(record: Mapping[str, Any]) -> None:
     metric_fields = {
+        "cache_telemetry",
         "configured_closed_loop_concurrency",
+        "gpu_utilization_sample_count",
+        "mean_gpu_utilization_percent",
         "observation_count",
         "p50_decode_tokens_per_second",
         "p50_time_to_completion_seconds",
@@ -7512,6 +7816,7 @@ def _validate_descriptive_cell_record(record: Mapping[str, Any]) -> None:
         "p95_time_to_completion_seconds",
         "p95_ttft_seconds",
         "peak_gpu_process_memory_bytes",
+        "peak_gpu_utilization_percent",
         "peak_host_memory_used_bytes",
         "peak_process_tree_rss_bytes",
     }
@@ -7537,6 +7842,18 @@ def _validate_descriptive_cell_record(record: Mapping[str, Any]) -> None:
         raise ValueError("descriptive cell digest drift")
     if record.get("quantile_method") != "empirical_nearest_rank":
         raise ValueError("descriptive cell quantile method drift")
+    cell_id = record.get("cell_id")
+    expected_coordinates = (
+        _publication_latency_descriptive_cell_coordinates().get(cell_id)
+        if isinstance(cell_id, str)
+        else None
+    )
+    if expected_coordinates is None or any(
+        type(record.get(field_name)) is not type(expected_value)
+        or record.get(field_name) != expected_value
+        for field_name, expected_value in expected_coordinates.items()
+    ):
+        raise ValueError("descriptive cell frozen-design coordinate drift")
     blocks = _mapping_sequence(record, "physical_blocks")
     if record.get("cell_kind") not in {
         "core_pooled_five_blocks",
@@ -7552,10 +7869,29 @@ def _validate_descriptive_cell_record(record: Mapping[str, Any]) -> None:
             metric_fields | {"deployment_block", "job_id"},
             "publication latency descriptive physical block",
         )
-    if [block.get("deployment_block") for block in blocks] != list(
+    expected_deployment_blocks = list(
         range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
-    ) or len({block.get("job_id") for block in blocks}) != len(blocks):
+    )
+    if [block.get("deployment_block") for block in blocks] != (
+        expected_deployment_blocks
+    ):
         raise ValueError("descriptive cell block identity/order drift")
+    for block, deployment_block in zip(
+        blocks,
+        expected_deployment_blocks,
+        strict=True,
+    ):
+        _positive_int(block.get("deployment_block"), "deployment_block")
+        job_id = _safe_id(block.get("job_id"), "job_id")
+        if job_id != _publication_latency_descriptive_physical_job_id(
+            expected_coordinates,
+            deployment_block=deployment_block,
+        ):
+            raise ValueError("descriptive cell frozen physical job identity drift")
+    if record.get("observation_count") != 1_280 or any(
+        block.get("observation_count") != 256 for block in blocks
+    ):
+        raise ValueError("descriptive cell frozen observation-count drift")
     for container in (record, *blocks):
         _finite_positive_number(
             container.get("p50_decode_tokens_per_second"),
@@ -7580,11 +7916,26 @@ def _validate_descriptive_cell_record(record: Mapping[str, Any]) -> None:
         for field_name in (
             "observation_count",
             "configured_closed_loop_concurrency",
+            "gpu_utilization_sample_count",
+        ):
+            _positive_int(container.get(field_name), field_name)
+        for field_name in (
             "peak_gpu_process_memory_bytes",
             "peak_host_memory_used_bytes",
             "peak_process_tree_rss_bytes",
         ):
             _nonnegative_int(container.get(field_name), field_name)
+        mean_gpu_utilization = _gpu_utilization_percentage(
+            container.get("mean_gpu_utilization_percent"),
+            "mean_gpu_utilization_percent",
+        )
+        peak_gpu_utilization = _gpu_utilization_percentage(
+            container.get("peak_gpu_utilization_percent"),
+            "peak_gpu_utilization_percent",
+        )
+        if mean_gpu_utilization > peak_gpu_utilization:
+            raise ValueError("mean GPU utilization exceeds its physical peak")
+        _validate_descriptive_cache_telemetry(container)
         if (
             p50_ttft > p95_ttft
             or p50_ttc > p95_ttc
@@ -7604,6 +7955,33 @@ def _validate_descriptive_cell_record(record: Mapping[str, Any]) -> None:
         )
     ):
         raise ValueError("descriptive cell configured concurrency/count drift")
+    pooled_gpu_sample_count = sum(
+        _required_int(block, "gpu_utilization_sample_count") for block in blocks
+    )
+    if record.get("gpu_utilization_sample_count") != pooled_gpu_sample_count:
+        raise ValueError("descriptive cell pooled GPU sample-count drift")
+    weighted_mean_gpu_utilization = sum(
+        cast(float, block["mean_gpu_utilization_percent"])
+        * _required_int(block, "gpu_utilization_sample_count")
+        for block in blocks
+    ) / pooled_gpu_sample_count
+    if record.get("mean_gpu_utilization_percent") != weighted_mean_gpu_utilization:
+        raise ValueError("descriptive cell pooled weighted GPU mean drift")
+    if record.get("peak_gpu_utilization_percent") != max(
+        cast(float, block["peak_gpu_utilization_percent"]) for block in blocks
+    ):
+        raise ValueError("descriptive cell pooled GPU utilization peak drift")
+    if dict(_mapping(record, "cache_telemetry")) != (
+        _pooled_descriptive_cache_telemetry(blocks)
+    ):
+        raise ValueError("descriptive cell pooled cache telemetry sum drift")
+    for container in (record, *blocks):
+        _validate_descriptive_cache_claim(
+            _mapping(container, "cache_telemetry"),
+            method_id=cast(str, record["method_id"]),
+            observation_count=_required_int(container, "observation_count"),
+            setting_id=cast(str | None, record.get("setting_id")),
+        )
     for peak_field in (
         "peak_gpu_process_memory_bytes",
         "peak_host_memory_used_bytes",
@@ -7613,6 +7991,160 @@ def _validate_descriptive_cell_record(record: Mapping[str, Any]) -> None:
             _required_int(block, peak_field) for block in blocks
         ):
             raise ValueError("descriptive cell pooled resource peak drift")
+
+
+def _publication_latency_descriptive_cell_coordinates() -> dict[str, dict[str, Any]]:
+    coordinates: dict[str, dict[str, Any]] = {}
+    for input_tokens in PUBLICATION_CAMPAIGN_CONTEXT_TOKENS:
+        for concurrency in (1, 2, 4):
+            for method_id in ("baseline_prefill", "vanilla_prefill"):
+                cell_id = f"core-{method_id}-{input_tokens}-c{concurrency}"
+                coordinates[cell_id] = {
+                    "cell_kind": "core_pooled_five_blocks",
+                    "comparison_family": None,
+                    "input_tokens": input_tokens,
+                    "method_id": method_id,
+                    "request_parallelism": concurrency,
+                    "setting_id": None,
+                }
+    auxiliary_families = {
+        "storage-disk": "storage",
+        **{
+            setting_id: family
+            for setting_id, family, _description in (
+                PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
+            )
+        },
+    }
+    for setting_id in _DESCRIPTIVE_AUXILIARY_SETTING_IDS:
+        cell_id = f"auxiliary-{setting_id}"
+        coordinates[cell_id] = {
+            "cell_kind": "auxiliary_pooled_five_blocks",
+            "comparison_family": auxiliary_families[setting_id],
+            "input_tokens": 16_384,
+            "method_id": "vanilla_prefill",
+            "request_parallelism": 4,
+            "setting_id": setting_id,
+        }
+    return coordinates
+
+
+def _publication_latency_descriptive_physical_job_id(
+    coordinates: Mapping[str, Any],
+    *,
+    deployment_block: int,
+) -> str:
+    block = _positive_int(deployment_block, "deployment_block")
+    setting_id = coordinates.get("setting_id")
+    if setting_id is not None:
+        return f"block-{block:02d}-{_safe_id(setting_id, 'setting_id')}"
+    input_tokens = _positive_int(coordinates.get("input_tokens"), "input_tokens")
+    request_parallelism = _positive_int(
+        coordinates.get("request_parallelism"),
+        "request_parallelism",
+    )
+    method_id = coordinates.get("method_id")
+    if method_id == "baseline_prefill":
+        method_label = "baseline"
+    elif method_id == "vanilla_prefill":
+        method_label = "vanilla"
+    else:  # pragma: no cover - coordinates are generated from the frozen design.
+        raise ValueError("descriptive cell method is outside the frozen design")
+    return (
+        f"block-{block:02d}-{input_tokens // 1024}k-"
+        f"c{request_parallelism}-{method_label}"
+    )
+
+
+def _gpu_utilization_percentage(value: Any, field_name: str) -> float:
+    if type(value) is not float or not math.isfinite(value) or not 0.0 <= value <= 100.0:
+        raise ValueError(f"{field_name} must be a finite float in [0, 100]")
+    return value
+
+
+def _validate_descriptive_cache_telemetry(
+    container: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    telemetry = _mapping(container, "cache_telemetry")
+    _require_exact_keys(
+        telemetry,
+        set(_DESCRIPTIVE_CACHE_TELEMETRY_FIELDS),
+        "publication latency descriptive cache telemetry",
+    )
+    for field_name in _DESCRIPTIVE_CACHE_TELEMETRY_FIELDS:
+        _nonnegative_int(telemetry.get(field_name), field_name)
+    return telemetry
+
+
+def _validate_descriptive_cache_claim(
+    telemetry: Mapping[str, Any],
+    *,
+    method_id: str,
+    observation_count: int,
+    setting_id: str | None,
+) -> None:
+    observations = _positive_int(observation_count, "observation_count")
+    byte_fields = {"backend_bytes_read", "expected_backend_bytes_read"}
+    validated_telemetry: dict[str, int] = {}
+    for field_name in _DESCRIPTIVE_CACHE_TELEMETRY_FIELDS:
+        value = _nonnegative_int(telemetry.get(field_name), field_name)
+        validated_telemetry[field_name] = value
+        if field_name not in byte_fields and value > observations:
+            raise ValueError(
+                f"{field_name} exceeds descriptive observation_count"
+            )
+    backend_bytes_read = validated_telemetry["backend_bytes_read"]
+    expected_backend_bytes_read = validated_telemetry[
+        "expected_backend_bytes_read"
+    ]
+    if method_id == "baseline_prefill":
+        if any(telemetry[field_name] != 0 for field_name in telemetry):
+            raise ValueError("Baseline descriptive cache telemetry must be zero")
+        return
+    if telemetry.get("load_count") != observations:
+        raise ValueError("Vanilla descriptive cache load-count drift")
+    if telemetry.get("storage_materialization_count") != telemetry.get(
+        "payload_cache_miss_count"
+    ):
+        raise ValueError("descriptive cache materialization/miss drift")
+    if setting_id == "storage-ram":
+        if (
+            telemetry.get("payload_cache_hit_count") != observations
+            or telemetry.get("payload_cache_miss_count") != 0
+            or telemetry.get("backend_bytes_read") != 0
+            or telemetry.get("expected_backend_bytes_read") != 0
+            or telemetry.get("cold_read_attested_count") != 0
+            or telemetry.get("eviction_requested_count") != 0
+            or telemetry.get("eviction_succeeded_count") != 0
+            or telemetry.get("mounted_path_load_count") != 0
+        ):
+            raise ValueError("RAM descriptive cache telemetry claim drift")
+        return
+    if setting_id == "storage-uc":
+        if (
+            telemetry.get("eviction_requested_count") != observations
+            or telemetry.get("eviction_succeeded_count") != observations
+            or telemetry.get("mounted_path_load_count") != observations
+            or telemetry.get("payload_cache_hit_count") != 0
+            or telemetry.get("payload_cache_miss_count") != 0
+            or telemetry.get("storage_materialization_count") != 0
+            or backend_bytes_read <= 0
+            or backend_bytes_read != expected_backend_bytes_read
+        ):
+            raise ValueError("UC descriptive cache telemetry claim drift")
+        return
+    if (
+        telemetry.get("cold_read_attested_count") != observations
+        or telemetry.get("eviction_requested_count") != observations
+        or telemetry.get("eviction_succeeded_count") != observations
+        or telemetry.get("mounted_path_load_count") != 0
+        or telemetry.get("payload_cache_hit_count") != 0
+        or telemetry.get("payload_cache_miss_count") != 0
+        or telemetry.get("storage_materialization_count") != 0
+        or backend_bytes_read <= 0
+        or backend_bytes_read != expected_backend_bytes_read
+    ):
+        raise ValueError("cold descriptive cache telemetry claim drift")
 
 
 def _required_decode_rate(measurement: Any) -> float:
@@ -7665,11 +8197,11 @@ def _paired_log_ratios_by_block(
             raise ValueError("latency estimand references a missing job result")
         control = benchmark_run_result_from_record(
             _mapping(result_by_job[control_id], "benchmark_record"),
-            evidence_policy="publication",
+            evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
         )
         treatment = benchmark_run_result_from_record(
             _mapping(result_by_job[treatment_id], "benchmark_record"),
-            evidence_policy="publication",
+            evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
         )
         control_by_key = {
             (item.dataset, item.example_id, item.repeat_index): item
@@ -7870,6 +8402,8 @@ def _validate_submit_payload(
         or cluster.get("num_workers") != 0
         or cluster.get("spark_version") != runtime.get("databricks_spark_version")
         or cluster.get("data_security_mode") != runtime.get("data_security_mode")
+        or cluster.get("single_user_name")
+        != _validated_single_user_name(runtime.get("single_user_name"))
     ):
         raise ValueError("publication latency cluster hardware drift")
     aws_attributes = _mapping(cluster, "aws_attributes")
@@ -8347,7 +8881,7 @@ def publication_latency_vllm_config(
         benchmark_repeats=_required_int(cell, "repeats_per_example"),
         request_parallelism=_required_int(runtime, "request_parallelism"),
         benchmark_interleave_examples=False,
-        benchmark_evidence_policy="publication",
+        benchmark_evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
         benchmark_manifest_provenance=provenance,
         prefix_cache_salt_mode="per_request",
         prewarm_cache_prefix=False,
@@ -8739,6 +9273,35 @@ def validate_publication_latency_job_result_record(
             raise ValueError("RAM payload-cache artifact digest binding drift")
 
 
+def _require_publication_latency_component_evidence_gate(
+    record: Mapping[str, Any],
+    *,
+    result: BenchmarkRunResult,
+) -> None:
+    artifact_identities, cache_state_attestations = (
+        benchmark_gate_inputs_from_record(record)
+    )
+    expected_gate = benchmark_evidence_gate_to_record(
+        evaluate_benchmark_evidence_gate(
+            result,
+            policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
+            cache_state_attestations=cache_state_attestations,
+            artifact_identities=artifact_identities,
+            benchmark_payload_digest=benchmark_record_payload_digest(record),
+        )
+    )
+    if dict(_mapping(record, "evidence_gate")) != expected_gate:
+        raise ValueError(
+            "benchmark component evidence gate does not match recomputed evidence"
+        )
+    if (
+        expected_gate.get("ok") is not True
+        or expected_gate.get("policy")
+        != PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY
+    ):
+        raise ValueError("benchmark component evidence gate did not pass")
+
+
 def _validate_publication_latency_benchmark(
     record: Mapping[str, Any],
     *,
@@ -8750,7 +9313,10 @@ def _validate_publication_latency_benchmark(
         raise ValueError(
             "benchmark aggregate authentication failed: " + "; ".join(issues)
         )
-    result = benchmark_run_result_from_record(record, evidence_policy="publication")
+    result = benchmark_run_result_from_record(
+        record,
+        evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
+    )
     cell = _mapping(job_record, "cell")
     method_id = _required_string(cell, "method_id")
     expected_arm = (
@@ -8790,9 +9356,7 @@ def _validate_publication_latency_benchmark(
         raise ValueError(
             "benchmark contains failed or invalid fixed-decode measurements"
         )
-    gate = _mapping(record, "evidence_gate")
-    if gate.get("ok") is not True or gate.get("policy") != "publication":
-        raise ValueError("benchmark publication evidence gate did not pass")
+    _require_publication_latency_component_evidence_gate(record, result=result)
     if len(result.resource_evidence) != 1:
         raise ValueError("benchmark must contain one physical-arm resource record")
     resource = result.resource_evidence[0]
@@ -9001,7 +9565,8 @@ def _publication_latency_cache_telemetry_summary(
         and item.get("success") is True
     ]
     benchmark = benchmark_run_result_from_record(
-        benchmark_record, evidence_policy="publication"
+        benchmark_record,
+        evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
     )
     expected_ids = {
         measurement.metadata[PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY]
@@ -9027,6 +9592,10 @@ def _publication_latency_cache_telemetry_summary(
     )
     policy = _mapping(job_record, "cache_telemetry_policy")
     ram_payload_cache = policy.get("host_cache_state") == "prewarmed_payload_cache"
+    uc_mounted_backend = (
+        policy.get("host_cache_state")
+        == "mounted_path_evicted_backend_cache_unproven"
+    )
     for load in loads:
         counts = _mapping(load, "counts")
         attestation = _mapping(load, "cache_state_attestation")
@@ -9077,7 +9646,13 @@ def _publication_latency_cache_telemetry_summary(
         payload_hits += int(attestation.get("payload_cache_hit") is True)
         payload_misses += misses
         mounted_path_loads += int(
-            attestation.get("source") == "local_path"
+            uc_mounted_backend
+            and attestation.get("payload_cache_hit") is False
+            and payload.get("payload_cache_enabled") is False
+            and hits == 0
+            and bytes_read > 0
+            and bytes_read == expected_stored_bytes
+            and attestation.get("source") == "local_path"
             and payload.get("source") == "uri"
             and payload.get("uri_scheme") == "local_path"
         )
@@ -10119,6 +10694,35 @@ def _required_string(value: Mapping[str, Any], field_name: str) -> str:
     return item
 
 
+def _validated_single_user_name(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or any(
+            ord(character) < 32 or 127 <= ord(character) <= 159
+            for character in value
+        )
+    ):
+        raise ValueError("single_user_name must be a normalized non-empty string")
+    return value
+
+
+def _publication_latency_single_user_name(
+    execution_plan_record: Mapping[str, Any],
+) -> str:
+    sources = _mapping(execution_plan_record, "sources")
+    principal = _validated_single_user_name(
+        _mapping(sources, "source_closure").get("single_user_name")
+    )
+    runtime_principal = _validated_single_user_name(
+        _mapping(execution_plan_record, "runtime_policy").get("single_user_name")
+    )
+    if runtime_principal != principal:
+        raise ValueError("publication latency SINGLE_USER principal drift")
+    return principal
+
+
 def _required_int(value: Mapping[str, Any], field_name: str) -> int:
     item = value.get(field_name)
     if type(item) is not int:
@@ -10385,6 +10989,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE",
+    "PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY",
     "PUBLICATION_LATENCY_DATABRICKS_AVAILABILITY",
     "PUBLICATION_LATENCY_DATABRICKS_DATA_SECURITY_MODE",
     "PUBLICATION_LATENCY_DATABRICKS_ZONES",

@@ -733,6 +733,7 @@ def test_sanitized_evidence_drops_untrusted_generation_metadata():
                     "raw_prompt": "TOP_SECRET_PROMPT",
                     "raw_response": "TOP_SECRET_RESPONSE",
                     "prefix_cache_salt": "TOP_SECRET_SALT",
+                    "request_payload_prompt_sha256": "b" * 64,
                     "request_body": "TOP_SECRET_REQUEST_BODY",
                     "payload_path": "/tmp/TOP_SECRET_PATH",
                     "authorization": "Bearer TOP_SECRET_TOKEN",
@@ -796,6 +797,7 @@ def test_sanitized_evidence_drops_untrusted_generation_metadata():
     assert set(record["measurements"][0]["metadata"]) == {
         "logical_prompt_sha256",
         "runtime_prompt_sha256",
+        "request_payload_prompt_sha256",
         "prefix_cache_salt_sha256",
     }
     measurement = record["measurements"][0]

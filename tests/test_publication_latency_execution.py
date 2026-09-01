@@ -19,6 +19,8 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourLedger,
     create_databricks_cluster_hour_ledger_json,
     databricks_ledger_prefix,
+    record_databricks_run_submission_receipt_json,
+    record_databricks_verified_run_terminal_actual_json,
     reserve_databricks_run_attempt_json,
 )
 from document_kv_cache.publication_campaign import (
@@ -41,6 +43,23 @@ from document_kv_cache.publication_inputs import (
     PublicationLatencyExample,
     build_publication_storage_block_schedule,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_latency_current_user(monkeypatch):
+    def bind_current_user(_workspace, *, expected_user_name, opener=None):
+        return {
+            "authenticated": True,
+            "user_name_sha256": execution.sha256(
+                expected_user_name.encode("utf-8")
+            ).hexdigest(),
+        }
+
+    monkeypatch.setattr(
+        execution,
+        "require_databricks_current_user_name",
+        bind_current_user,
+    )
 
 
 def _descriptors():
@@ -132,6 +151,175 @@ def test_frozen_design_closes_115_jobs_matched_zones_and_randomized_waves():
         assert len({wave_by_job[job_id] for job_id in matched_unit_ids}) == 1
 
 
+def test_reviewed_v2_constants_and_successor_verifier_use_ordered_streams(
+    tmp_path,
+    monkeypatch,
+):
+    assert (
+        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.reservation_count,
+        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.submission_receipt_count,
+        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.terminal_actual_count,
+    ) == (236, 98, 236)
+    assert PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.prefix_sha256 == (
+        "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
+    )
+    reviewed_v2_prefix = (
+        qualification_v2.GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    )
+    assert (
+        reviewed_v2_prefix.reservation_count,
+        reviewed_v2_prefix.submission_receipt_count,
+        reviewed_v2_prefix.terminal_actual_count,
+    ) == (265, 127, 265)
+    assert reviewed_v2_prefix.prefix_sha256 == (
+        "e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"
+    )
+    assert PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS == 71.39012833333337
+    assert (
+        qualification_v2.GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+        == 77.50443361111115
+    )
+
+    ledger_path = tmp_path / "ordered-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path, ledger_id="ordered-successor", cap_cluster_hours=1024.0
+    )
+    payload = {
+        "run_name": "ordered-successor",
+        "tasks": [
+            {
+                "max_retries": 0,
+                "new_cluster": {"node_type_id": "g6.8xlarge"},
+                "task_key": "ordered_successor",
+                "timeout_seconds": 3600,
+            }
+        ],
+        "timeout_seconds": 3600,
+    }
+
+    def close_attempt(attempt_id, workload_id, *, run_id, duration_seconds):
+        reserve_databricks_run_attempt_json(
+            ledger_path,
+            payload,
+            attempt_id=attempt_id,
+            workload_id=workload_id,
+        )
+        record_databricks_run_submission_receipt_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            submit_response={"run_id": run_id},
+        )
+        return record_databricks_verified_run_terminal_actual_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            run_record={
+                "end_time": 1_000 + int(duration_seconds * 1_000),
+                "run_id": run_id,
+                "start_time": 1_000,
+                "state": {
+                    "life_cycle_state": "TERMINATED",
+                    "result_state": "SUCCESS",
+                },
+                "tasks": [
+                    {
+                        "end_time": 1_000 + int(duration_seconds * 1_000),
+                        "run_id": run_id * 100,
+                        "start_time": 1_000,
+                        "state": {
+                            "life_cycle_state": "TERMINATED",
+                            "result_state": "SUCCESS",
+                        },
+                        "task_key": "ordered_successor",
+                    }
+                ],
+            },
+        )
+
+    campaign_ledger = close_attempt(
+        "campaign-opening",
+        "campaign",
+        run_id=101,
+        duration_seconds=1800.0,
+    )
+    campaign_prefix = databricks_ledger_prefix(campaign_ledger)
+    assert (
+        campaign_prefix.reservation_count,
+        campaign_prefix.submission_receipt_count,
+        campaign_prefix.terminal_actual_count,
+    ) == (1, 1, 1)
+    qualification_ledger = close_attempt(
+        "qualification-opening",
+        "qualification",
+        run_id=102,
+        duration_seconds=900.0,
+    )
+    qualification_prefix = databricks_ledger_prefix(qualification_ledger)
+    assert (
+        qualification_prefix.reservation_count,
+        qualification_prefix.submission_receipt_count,
+        qualification_prefix.terminal_actual_count,
+    ) == (2, 2, 2)
+    ledger_path_sha256 = execution.databricks_ledger_path_sha256(ledger_path)
+    campaign_hours = campaign_ledger.terminal_actual_cluster_hours
+    qualification_hours = qualification_ledger.terminal_actual_cluster_hours
+    monkeypatch.setattr(
+        execution, "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX", campaign_prefix
+    )
+    monkeypatch.setattr(
+        execution,
+        "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS",
+        campaign_hours,
+    )
+    monkeypatch.setattr(
+        execution,
+        "GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX",
+        qualification_prefix,
+    )
+    monkeypatch.setattr(
+        execution,
+        "GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS",
+        qualification_hours,
+    )
+    campaign = {
+        "campaign_id": "ordered-successor",
+        "campaign_ledger_id": "ordered-successor",
+        "campaign_ledger_path_sha256": ledger_path_sha256,
+        "campaign_ledger_prefix": campaign_prefix.to_record(),
+        "campaign_opening_terminal_gpu_hours": campaign_hours,
+        "closed_record_sha256": "a" * 64,
+    }
+    qualification = {
+        "campaign_id": campaign["campaign_id"],
+        "campaign_ledger_id": campaign["campaign_ledger_id"],
+        "campaign_ledger_path_sha256": campaign["campaign_ledger_path_sha256"],
+        "campaign_ledger_prefix": qualification_prefix.to_record(),
+        "campaign_opening_terminal_gpu_hours": qualification_hours,
+        "campaign_record_sha256": campaign["closed_record_sha256"],
+    }
+
+    assert execution._require_reviewed_qualification_plan_campaign_successor(
+        qualification_ledger,
+        ledger_path=ledger_path,
+        campaign_plan_record=campaign,
+        qualification_plan_record=qualification,
+    ) == qualification_prefix
+
+    with pytest.raises(ValueError, match="shorter than its authorized prefix"):
+        execution._require_reviewed_qualification_plan_campaign_successor(
+            campaign_ledger,
+            ledger_path=ledger_path,
+            campaign_plan_record=campaign,
+            qualification_plan_record=qualification,
+        )
+
+    rebound = deepcopy(qualification)
+    rebound["campaign_ledger_prefix"] = campaign_prefix.to_record()
+    with pytest.raises(ValueError, match="reviewed campaign successor authority"):
+        execution._require_reviewed_qualification_plan_campaign_binding(
+            campaign, rebound
+        )
+
+
 def test_condition_timeouts_and_runtime_zone_are_closed():
     jobs = _descriptors()
     core_32k_c1 = next(
@@ -150,10 +338,16 @@ def test_condition_timeouts_and_runtime_zone_are_closed():
     )
     auxiliary = next(item for item in jobs if item["job_kind"] == "auxiliary")
 
-    runtime = execution._job_runtime_policy(core_32k_c1, selected_32k_gmu=0.75)
+    runtime = execution._job_runtime_policy(
+        core_32k_c1,
+        selected_32k_gmu=0.75,
+        single_user_name="publication@example.com",
+    )
     assert runtime["run_timeout_seconds"] == 12 * 60 * 60
     assert runtime["zone_id"] == core_32k_c1["zone_id"]
     assert runtime["availability"] == "ON_DEMAND"
+    assert runtime["data_security_mode"] == "SINGLE_USER"
+    assert runtime["single_user_name"] == "publication@example.com"
     assert runtime["databricks_spark_version"] == "15.4.x-gpu-ml-scala2.12"
     assert execution._job_timeout_seconds(core_8k_c1) == 6 * 60 * 60
     assert execution._job_timeout_seconds(auxiliary) == 4 * 60 * 60
@@ -167,7 +361,11 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
         and item["input_tokens"] == 32_768
         and item["request_parallelism"] == 1
     )
-    runtime = execution._job_runtime_policy(descriptor, selected_32k_gmu=0.75)
+    runtime = execution._job_runtime_policy(
+        descriptor,
+        selected_32k_gmu=0.75,
+        single_user_name="publication@example.com",
+    )
     runner_uri = "dbfs:/Volumes/catalog/schema/volume/runtime/latency-runner.py"
     package_uri = "dbfs:/Volumes/catalog/schema/volume/runtime/cachet.whl"
     patched_vllm_uri = (
@@ -207,6 +405,7 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
         "driver_node_type_id": runtime["node_type_id"],
         "node_type_id": runtime["node_type_id"],
         "num_workers": 0,
+        "single_user_name": runtime["single_user_name"],
         "spark_env_vars": {
             execution.VLLM_PATCHED_WHEEL_SHA256_ENV: (
                 execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
@@ -254,6 +453,27 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
         attempt_id=job["reservation_attempt_id"],
     )
     execution._validate_submit_payload(payload, job_record=job)
+    assert payload["tasks"][0]["new_cluster"]["data_security_mode"] == (
+        "SINGLE_USER"
+    )
+    assert payload["tasks"][0]["new_cluster"]["single_user_name"] == (
+        "publication@example.com"
+    )
+
+    mutated_principal = deepcopy(payload)
+    mutated_principal["tasks"][0]["new_cluster"]["single_user_name"] = (
+        "attacker@example.com"
+    )
+    mutated_principal = execution.bind_databricks_run_idempotency_token(
+        {
+            key: value
+            for key, value in mutated_principal.items()
+            if key != "idempotency_token"
+        },
+        attempt_id=job["reservation_attempt_id"],
+    )
+    with pytest.raises(ValueError, match="cluster hardware drift"):
+        execution._validate_submit_payload(mutated_principal, job_record=job)
 
     payload["timeout_seconds"] = 4 * 60 * 60
     payload = execution.bind_databricks_run_idempotency_token(
@@ -635,7 +855,11 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
             "campaign_ledger_path_sha256": execution.databricks_ledger_path_sha256(
                 ledger_path
             ),
+            "source_closure": {
+                "single_user_name": "publication@example.com",
+            },
         },
+        "runtime_policy": {"single_user_name": "publication@example.com"},
     }
     monkeypatch.setattr(
         execution, "_require_latency_launch_authorization", lambda *a: None
@@ -659,10 +883,28 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
     monkeypatch.setattr(
         execution, "_require_prior_waves_succeeded", lambda *a, **k: None
     )
+    principal_checks = []
+    monkeypatch.setattr(
+        execution,
+        "require_databricks_current_user_name",
+        lambda _config, *, expected_user_name, opener=None: principal_checks.append(
+            (expected_user_name, opener is not None)
+        ),
+    )
     bf16_authorization = SimpleNamespace(ledger_prefix=opening_prefix)
     source_authorization = SimpleNamespace(ledger_prefix=opening_prefix)
     qualification_authorization = object()
     q8_authorization = object()
+    wrong_principals = []
+
+    def reject_current_user(_config, *, expected_user_name, opener=None):
+        wrong_principals.append((expected_user_name, opener))
+        raise ValueError("Databricks current-user identity differs")
+
+    def rejected_opener(*_args, **_kwargs):
+        raise AssertionError(
+            "wrong-principal wave launch must not perform HTTP"
+        )
 
     class Response:
         status = 200
@@ -685,6 +927,31 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
             self._offset = end
             return chunk
 
+    ledger_before_wrong_principal = ledger_path.read_bytes()
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            execution,
+            "require_databricks_current_user_name",
+            reject_current_user,
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            execution.submit_publication_latency_launch_wave(
+                execution.DatabricksWorkspaceConfig(
+                    "https://dbc.example", "token"
+                ),
+                execution_plan_record=plan,
+                qualification_launch_authorization=qualification_authorization,
+                handoff_serving_authorization=q8_authorization,
+                bf16_handoff_serving_authorization=bf16_authorization,
+                source_closure_authorization=source_authorization,
+                ledger_path=ledger_path,
+                wave_index=0,
+                phase_lease_root=tmp_path / "wave-0",
+                opener=rejected_opener,
+            )
+    assert ledger_path.read_bytes() == ledger_before_wrong_principal
+    assert not (tmp_path / "wave-0").exists()
+
     with pytest.raises(TimeoutError, match="lost response"):
         execution.submit_publication_latency_launch_wave(
             execution.DatabricksWorkspaceConfig("https://dbc.example", "token"),
@@ -701,6 +968,41 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
             ),
         )
     (tmp_path / "wave-0" / "batch-reserved.json").unlink()
+    resume_ledger_snapshot = ledger_path.read_bytes()
+    resume_lease_snapshot = {
+        path.relative_to(tmp_path / "wave-0"): path.read_bytes()
+        for path in (tmp_path / "wave-0").rglob("*")
+        if path.is_file()
+    }
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            execution,
+            "require_databricks_current_user_name",
+            reject_current_user,
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            execution.resume_publication_latency_launch_wave(
+                execution.DatabricksWorkspaceConfig(
+                    "https://dbc.example", "token"
+                ),
+                execution_plan_record=plan,
+                qualification_launch_authorization=qualification_authorization,
+                handoff_serving_authorization=q8_authorization,
+                bf16_handoff_serving_authorization=bf16_authorization,
+                source_closure_authorization=source_authorization,
+                ledger_path=ledger_path,
+                wave_index=0,
+                phase_lease_root=tmp_path / "wave-0",
+                opener=rejected_opener,
+            )
+    assert ledger_path.read_bytes() == resume_ledger_snapshot
+    assert {
+        path.relative_to(tmp_path / "wave-0"): path.read_bytes()
+        for path in (tmp_path / "wave-0").rglob("*")
+        if path.is_file()
+    } == resume_lease_snapshot
+    assert not (tmp_path / "wave-0" / "batch-reserved.json").exists()
+
     submission, submission_authorization = (
         execution.resume_publication_latency_launch_wave(
             execution.DatabricksWorkspaceConfig("https://dbc.example", "token"),
@@ -810,6 +1112,15 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
         )
     )
     assert wave_one["jobs"][0]["run_id"] == "102"
+    assert principal_checks == [
+        ("publication@example.com", True),
+        ("publication@example.com", True),
+        ("publication@example.com", True),
+    ]
+    assert wrong_principals == [
+        ("publication@example.com", rejected_opener),
+        ("publication@example.com", rejected_opener),
+    ]
 
 
 def test_symlink_ancestor_is_rejected(tmp_path):
@@ -952,15 +1263,19 @@ def _native_v2_runtime_attestation(*, vllm_uri, flashinfer_uri):
     }
 
 
-def _native_v2_baseline_job_record():
+def _native_v2_job_record(*, method_id="baseline_prefill"):
     cell = next(
         item
         for item in _descriptors()
-        if item["method_id"] == "baseline_prefill"
+        if item["method_id"] == method_id
         and item["input_tokens"] == 8_192
         and item["request_parallelism"] == 1
     )
-    runtime = execution._job_runtime_policy(cell, selected_32k_gmu=0.75)
+    runtime = execution._job_runtime_policy(
+        cell,
+        selected_32k_gmu=0.75,
+        single_user_name="publication@example.com",
+    )
     artifact_sha256 = {
         "runner": execution.PUBLICATION_LATENCY_RUNNER_SHA256,
         "package_wheel": "a" * 64,
@@ -987,6 +1302,25 @@ def _native_v2_baseline_job_record():
         "campaign_id": PUBLICATION_CAMPAIGN_ID,
         "cell": cell,
         "execution_plan_sha256": "c" * 64,
+        "handoff": (
+            None
+            if method_id == "baseline_prefill"
+            else {
+                "execution": {
+                    "closed_record_sha256": "d" * 64,
+                    "sha256": "e" * 64,
+                },
+                "output_root_uri": (
+                    "dbfs:/Volumes/catalog/schema/volume/handoff-generation"
+                ),
+                "source_kind": "distributed_q8_generation",
+                "stage_kind": "local_nvme",
+                "stage_uri": (
+                    "/local_disk0/cachet-publication-latency/"
+                    f"{'c' * 16}/{cell['job_id']}/handoff"
+                ),
+            }
+        ),
         "input_files": [
             {
                 "dataset": dataset,
@@ -1016,7 +1350,7 @@ def _native_v2_baseline_job_record():
 
 
 def test_publication_vllm_config_binds_complete_native_v2_runtime(monkeypatch):
-    job = _native_v2_baseline_job_record()
+    job = _native_v2_job_record()
     monkeypatch.setattr(
         execution,
         "validate_publication_latency_job_record",
@@ -1050,6 +1384,11 @@ def test_publication_vllm_config_binds_complete_native_v2_runtime(monkeypatch):
         "runtime_lock_uri": artifact_files["runtime_lock"]["uri"],
     }
     assert config.package_install_spec == config.native_runtime_v2.package_wheel_uri
+    assert (
+        config.benchmark_evidence_policy
+        == execution.PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY
+        == "smoke"
+    )
     with pytest.raises(ValueError, match="package_install_spec must match"):
         replace(
             config,
@@ -1057,6 +1396,102 @@ def test_publication_vllm_config_binds_complete_native_v2_runtime(monkeypatch):
                 "dbfs:/Volumes/catalog/schema/volume/runtime/other-cachet.whl"
             ),
         )
+
+
+@pytest.mark.parametrize("method_id", ["baseline_prefill", "vanilla_prefill"])
+def test_one_arm_latency_configs_emit_component_evidence(monkeypatch, method_id):
+    job = _native_v2_job_record(method_id=method_id)
+    monkeypatch.setattr(
+        execution,
+        "validate_publication_latency_job_record",
+        lambda _record: None,
+    )
+
+    config = execution.publication_latency_vllm_config(job)
+
+    assert config.benchmark_evidence_policy == "smoke"
+
+
+def test_component_evidence_gate_recomputes_full_canonical_record(monkeypatch):
+    result = object()
+    artifact_identities = {"artifact": object()}
+    cache_state_attestations = (object(),)
+    payload_digest = "a" * 64
+    gate_result = object()
+    canonical_gate = {
+        "benchmark_payload_digest": payload_digest,
+        "checked_cache_arms": [],
+        "checked_cache_requests": 0,
+        "checked_distinct_examples": 1,
+        "cold_attested_requests": 0,
+        "gate_version": 1,
+        "issues": [],
+        "measurement_scopes": ["latency", "resource"],
+        "ok": True,
+        "policy": "smoke",
+        "record_type": "document_kv.benchmark_evidence_gate.v1",
+    }
+    record = {
+        "evidence_gate": deepcopy(canonical_gate),
+        "gate_inputs": {"sentinel": True},
+    }
+
+    monkeypatch.setattr(
+        execution,
+        "benchmark_gate_inputs_from_record",
+        lambda observed: (
+            artifact_identities,
+            cache_state_attestations,
+        )
+        if observed is record
+        else (_ for _ in ()).throw(AssertionError("unexpected benchmark record")),
+    )
+    monkeypatch.setattr(
+        execution,
+        "benchmark_record_payload_digest",
+        lambda observed: payload_digest
+        if observed is record
+        else (_ for _ in ()).throw(AssertionError("unexpected benchmark record")),
+    )
+
+    def evaluate(observed_result, **kwargs):
+        assert observed_result is result
+        assert kwargs == {
+            "artifact_identities": artifact_identities,
+            "benchmark_payload_digest": payload_digest,
+            "cache_state_attestations": cache_state_attestations,
+            "policy": "smoke",
+        }
+        return gate_result
+
+    monkeypatch.setattr(execution, "evaluate_benchmark_evidence_gate", evaluate)
+    monkeypatch.setattr(
+        execution,
+        "benchmark_evidence_gate_to_record",
+        lambda observed: deepcopy(canonical_gate)
+        if observed is gate_result
+        else (_ for _ in ()).throw(AssertionError("unexpected gate result")),
+    )
+
+    execution._require_publication_latency_component_evidence_gate(
+        record,
+        result=result,
+    )
+
+    for field_name, tampered_value in (
+        ("benchmark_payload_digest", "b" * 64),
+        ("checked_distinct_examples", 2),
+        ("measurement_scopes", ["latency"]),
+    ):
+        record["evidence_gate"] = {
+            **canonical_gate,
+            field_name: tampered_value,
+        }
+        with pytest.raises(ValueError, match="does not match recomputed evidence"):
+            execution._require_publication_latency_component_evidence_gate(
+                record,
+                result=result,
+            )
 
 
 def _source_closure_records():
@@ -1471,6 +1906,10 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     assert task["new_cluster"]["driver_node_type_id"] == "c5d.4xlarge"
     assert task["new_cluster"]["num_workers"] == 0
     assert task["new_cluster"]["spark_version"] == "15.4.x-cpu-ml-scala2.12"
+    assert task["new_cluster"]["data_security_mode"] == "SINGLE_USER"
+    assert task["new_cluster"]["single_user_name"] == (
+        "publication@example.com"
+    )
     assert task["new_cluster"]["custom_tags"]["ResourceClass"] == "SingleNode"
     assert task["timeout_seconds"] == 2 * 60 * 60
     assert payload["timeout_seconds"] == 2 * 60 * 60
@@ -1485,6 +1924,24 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
         len(execution._final_artifact_roles())
         - len(execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_EXCLUDED_ROLES)
     )
+
+
+@pytest.mark.parametrize(
+    "single_user_name",
+    [
+        " publication@example.com",
+        "publication@example.com ",
+        "pub\x00lication@example.com",
+        "pub\x7flication@example.com",
+    ],
+)
+def test_source_closure_rejects_noncanonical_single_user_name(single_user_name):
+    request, _result, _final_artifacts = _source_closure_records()
+    coordinator = deepcopy(request["coordinator"])
+    coordinator["single_user_name"] = single_user_name
+
+    with pytest.raises(ValueError, match="normalized non-empty string"):
+        execution._source_closure_config_from_record(coordinator)
 
 
 def test_source_closure_rejects_qualification_runner_conflation():
@@ -1662,6 +2119,62 @@ def _bind_source_closure_to_ledger(request, result, ledger_path):
     return request, result
 
 
+def test_source_closure_wrong_current_user_fails_before_lease_or_io(
+    tmp_path,
+    monkeypatch,
+):
+    ledger_path = tmp_path / "gpu-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path, ledger_id="campaign", cap_cluster_hours=1024.0
+    )
+    request, result, _final_artifacts = _source_closure_records()
+    request, _result = _bind_source_closure_to_ledger(
+        request, result, ledger_path
+    )
+    lease = tmp_path / "never-created-source-lease"
+    request_authorization = _source_closure_request_authorization(
+        request, phase_lease_root=lease
+    )
+    ledger_before = ledger_path.read_bytes()
+    observed = []
+    external_calls = []
+
+    def reject_current_user(_workspace, *, expected_user_name, opener=None):
+        observed.append((expected_user_name, opener))
+        raise ValueError("Databricks current-user identity differs")
+
+    monkeypatch.setattr(
+        execution,
+        "require_databricks_current_user_name",
+        reject_current_user,
+    )
+    monkeypatch.setattr(
+        execution,
+        "upload_databricks_volume_file_bytes_exclusive",
+        lambda *args, **kwargs: external_calls.append(("upload", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        execution,
+        "submit_databricks_run",
+        lambda *args, **kwargs: external_calls.append(("post", args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="current-user identity differs"):
+        execution.submit_publication_latency_source_closure(
+            execution.DatabricksWorkspaceConfig(
+                "https://dbc.example", "token"
+            ),
+            request_authorization=request_authorization,
+            ledger_path=ledger_path,
+            phase_lease_root=lease,
+        )
+
+    assert observed == [("publication@example.com", None)]
+    assert external_calls == []
+    assert ledger_path.read_bytes() == ledger_before
+    assert not lease.exists()
+
+
 def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_only(
     tmp_path, monkeypatch
 ):
@@ -1725,6 +2238,43 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
     assert persisted_authorization["closed_record_sha256"] == (
         request_authorization.authorization_record_sha256
     )
+    lease_snapshot = {
+        path.relative_to(lease): path.read_bytes()
+        for path in lease.rglob("*")
+        if path.is_file()
+    }
+    observed_principals = []
+
+    def reject_current_user(_workspace, *, expected_user_name, opener=None):
+        observed_principals.append((expected_user_name, opener))
+        raise ValueError("Databricks current-user identity differs")
+
+    def rejected_opener(*_args, **_kwargs):
+        raise AssertionError("wrong-principal recovery must not perform HTTP")
+
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            execution,
+            "require_databricks_current_user_name",
+            reject_current_user,
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            execution.resume_publication_latency_source_closure(
+                workspace,
+                request_authorization=request_authorization,
+                ledger_path=ledger_path,
+                phase_lease_root=lease,
+                opener=rejected_opener,
+            )
+    assert observed_principals == [
+        ("publication@example.com", rejected_opener)
+    ]
+    assert len(upload_calls) == 1
+    assert {
+        path.relative_to(lease): path.read_bytes()
+        for path in lease.rglob("*")
+        if path.is_file()
+    } == lease_snapshot
 
     class Response:
         status = 200
@@ -1948,6 +2498,9 @@ def test_source_closure_collector_uses_direct_get_files_and_cas_without_gpu_ledg
     assert get_calls == ["101"]
     assert ledger_path.read_bytes() == ledger_before
     assert authorization.ledger_prefix == execution.databricks_ledger_prefix(ledger)
+    assert execution._source_closure_authorization_binding(authorization)[
+        "single_user_name"
+    ] == "publication@example.com"
     assert len(list((tmp_path / "cas" / "sha256").glob("*/*"))) == 3
 
 
@@ -2608,9 +3161,23 @@ def test_reclosed_plan_cannot_rebind_handoff_authority(monkeypatch):
         )
 
 
-def test_descriptive_cell_record_is_closed_and_retains_block_values():
-    metrics = {
-        "observation_count": 256,
+def _ram_cache_telemetry(*, requests: int) -> dict[str, int]:
+    return {
+        "backend_bytes_read": 0,
+        "cold_read_attested_count": 0,
+        "eviction_requested_count": 0,
+        "eviction_succeeded_count": 0,
+        "expected_backend_bytes_read": 0,
+        "load_count": requests,
+        "mounted_path_load_count": 0,
+        "payload_cache_hit_count": requests,
+        "payload_cache_miss_count": 0,
+        "storage_materialization_count": 0,
+    }
+
+
+def _descriptive_ram_record() -> dict:
+    latency_metrics = {
         "configured_closed_loop_concurrency": 4,
         "p50_decode_tokens_per_second": 75.0,
         "p50_time_to_completion_seconds": 4.0,
@@ -2621,20 +3188,37 @@ def test_descriptive_cell_record_is_closed_and_retains_block_values():
         "peak_host_memory_used_bytes": 20,
         "peak_process_tree_rss_bytes": 30,
     }
+    sample_counts = (10, 20, 30, 40, 50)
+    mean_utilizations = (10.0, 20.0, 30.0, 40.0, 50.0)
+    peak_utilizations = (15.0, 25.0, 35.0, 45.0, 55.0)
+    total_samples = sum(sample_counts)
     record = {
-        **metrics,
+        **latency_metrics,
+        "cache_telemetry": _ram_cache_telemetry(requests=1280),
         "cell_id": "auxiliary-storage-ram",
         "cell_kind": "auxiliary_pooled_five_blocks",
         "cell_sha256": "",
         "comparison_family": "storage",
+        "gpu_utilization_sample_count": total_samples,
         "input_tokens": 16_384,
+        "mean_gpu_utilization_percent": sum(
+            mean * count
+            for mean, count in zip(mean_utilizations, sample_counts, strict=True)
+        )
+        / total_samples,
         "method_id": "vanilla_prefill",
         "observation_count": 1280,
+        "peak_gpu_utilization_percent": max(peak_utilizations),
         "physical_blocks": [
             {
-                **metrics,
+                **latency_metrics,
+                "cache_telemetry": _ram_cache_telemetry(requests=256),
                 "deployment_block": block,
+                "gpu_utilization_sample_count": sample_counts[block - 1],
                 "job_id": f"block-{block:02d}-storage-ram",
+                "mean_gpu_utilization_percent": mean_utilizations[block - 1],
+                "observation_count": 256,
+                "peak_gpu_utilization_percent": peak_utilizations[block - 1],
             }
             for block in range(1, 6)
         ],
@@ -2643,8 +3227,490 @@ def test_descriptive_cell_record_is_closed_and_retains_block_values():
         "setting_id": "storage-ram",
     }
     record["cell_sha256"] = execution._descriptive_cell_sha256(record)
+    return record
+
+
+def _reclose_descriptive_cell(record: dict) -> dict:
+    record["cell_sha256"] = execution._descriptive_cell_sha256(record)
+    return record
+
+
+def test_descriptive_cell_record_is_closed_and_retains_sanitized_evidence():
+    record = _descriptive_ram_record()
 
     execution._validate_descriptive_cell_record(record)
+    expected_cache_keys = {
+        "backend_bytes_read",
+        "cold_read_attested_count",
+        "eviction_requested_count",
+        "eviction_succeeded_count",
+        "expected_backend_bytes_read",
+        "load_count",
+        "mounted_path_load_count",
+        "payload_cache_hit_count",
+        "payload_cache_miss_count",
+        "storage_materialization_count",
+    }
+    forbidden_cache_keys = {
+        "benchmark_request_ids_sha256",
+        "principal",
+        "telemetry_file_sha256",
+        "uri",
+    }
+    for container in (record, *record["physical_blocks"]):
+        assert set(container["cache_telemetry"]) == expected_cache_keys
+        assert not forbidden_cache_keys.intersection(container["cache_telemetry"])
+        assert {
+            "gpu_utilization_sample_count",
+            "mean_gpu_utilization_percent",
+            "peak_gpu_utilization_percent",
+        } <= set(container)
+
     record["p95_ttft_seconds"] = 3.0
     with pytest.raises(ValueError, match="digest"):
         execution._validate_descriptive_cell_record(record)
+
+
+def test_descriptive_cache_projection_drops_provenance_bearing_telemetry():
+    source_cache = {
+        **_ram_cache_telemetry(requests=256),
+        "benchmark_request_ids_sha256": "a" * 64,
+        "telemetry_file_sha256": "b" * 64,
+    }
+
+    projection = execution._descriptive_cache_telemetry_projection(
+        {"cache_telemetry": source_cache},
+        method_id="vanilla_prefill",
+    )
+
+    assert projection == _ram_cache_telemetry(requests=256)
+    baseline_source = {
+        key: 0
+        for key in _ram_cache_telemetry(requests=0)
+        if key != "expected_backend_bytes_read"
+    }
+    assert execution._descriptive_cache_telemetry_projection(
+        {"cache_telemetry": baseline_source},
+        method_id="baseline_prefill",
+    )["expected_backend_bytes_read"] == 0
+
+
+def test_descriptive_cache_claims_distinguish_uc_from_strict_cold_storage():
+    uc = _ram_cache_telemetry(requests=256)
+    uc.update(
+        {
+            "backend_bytes_read": 4096,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 4096,
+            "mounted_path_load_count": 256,
+            "payload_cache_hit_count": 0,
+        }
+    )
+    execution._validate_descriptive_cache_claim(
+        uc,
+        method_id="vanilla_prefill",
+        observation_count=256,
+        setting_id="storage-uc",
+    )
+    forged_uc = {**uc, "expected_backend_bytes_read": 4097}
+    with pytest.raises(ValueError, match="UC descriptive cache telemetry"):
+        execution._validate_descriptive_cache_claim(
+            forged_uc,
+            method_id="vanilla_prefill",
+            observation_count=256,
+            setting_id="storage-uc",
+        )
+    uc_with_bounded_cold_attestations = {
+        **uc,
+        "cold_read_attested_count": 255,
+    }
+    execution._validate_descriptive_cache_claim(
+        uc_with_bounded_cold_attestations,
+        method_id="vanilla_prefill",
+        observation_count=256,
+        setting_id="storage-uc",
+    )
+    counter_fields = set(uc).difference(
+        {"backend_bytes_read", "expected_backend_bytes_read"}
+    )
+    for field_name in counter_fields:
+        forged_counter = {**uc, field_name: 257}
+        with pytest.raises(ValueError, match="exceeds descriptive observation_count"):
+            execution._validate_descriptive_cache_claim(
+                forged_counter,
+                method_id="vanilla_prefill",
+                observation_count=256,
+                setting_id="storage-uc",
+            )
+    forged_uc_miss = {
+        **uc,
+        "payload_cache_miss_count": 1,
+        "storage_materialization_count": 1,
+    }
+    with pytest.raises(ValueError, match="UC descriptive cache telemetry"):
+        execution._validate_descriptive_cache_claim(
+            forged_uc_miss,
+            method_id="vanilla_prefill",
+            observation_count=256,
+            setting_id="storage-uc",
+        )
+    forged_uc_zero_bytes = {
+        **uc,
+        "backend_bytes_read": 0,
+        "expected_backend_bytes_read": 0,
+    }
+    with pytest.raises(ValueError, match="UC descriptive cache telemetry"):
+        execution._validate_descriptive_cache_claim(
+            forged_uc_zero_bytes,
+            method_id="vanilla_prefill",
+            observation_count=256,
+            setting_id="storage-uc",
+        )
+
+    strict_cold = {
+        **uc,
+        "cold_read_attested_count": 256,
+        "mounted_path_load_count": 0,
+    }
+    execution._validate_descriptive_cache_claim(
+        strict_cold,
+        method_id="vanilla_prefill",
+        observation_count=256,
+        setting_id="storage-disk",
+    )
+    forged_cold = {**strict_cold, "cold_read_attested_count": 255}
+    with pytest.raises(ValueError, match="cold descriptive cache telemetry"):
+        execution._validate_descriptive_cache_claim(
+            forged_cold,
+            method_id="vanilla_prefill",
+            observation_count=256,
+            setting_id="storage-disk",
+        )
+    forged_cold_miss = {
+        **strict_cold,
+        "payload_cache_miss_count": 1,
+        "storage_materialization_count": 1,
+    }
+    with pytest.raises(ValueError, match="cold descriptive cache telemetry"):
+        execution._validate_descriptive_cache_claim(
+            forged_cold_miss,
+            method_id="vanilla_prefill",
+            observation_count=256,
+            setting_id="storage-disk",
+        )
+    forged_cold_zero_bytes = {
+        **strict_cold,
+        "backend_bytes_read": 0,
+        "expected_backend_bytes_read": 0,
+    }
+    with pytest.raises(ValueError, match="cold descriptive cache telemetry"):
+        execution._validate_descriptive_cache_claim(
+            forged_cold_zero_bytes,
+            method_id="vanilla_prefill",
+            observation_count=256,
+            setting_id="storage-disk",
+        )
+
+
+def _realistic_local_path_connector_load(
+    request_id: str,
+    *,
+    cold_read_attested: bool,
+    payload_cache_hit: bool,
+) -> dict:
+    expected_stored_bytes = 4096
+    expected_runtime_bytes = 8192
+    expected_tokens = 128
+    return {
+        "benchmark_request_id": request_id,
+        "cache_state_attestation": {
+            "bytes_read": 0 if payload_cache_hit else expected_stored_bytes,
+            "cold_read_attested": cold_read_attested,
+            "eviction_requested": not payload_cache_hit,
+            "eviction_succeeded": not payload_cache_hit,
+            "expected_runtime_bytes": expected_runtime_bytes,
+            "expected_stored_bytes": expected_stored_bytes,
+            "expected_tokens": expected_tokens,
+            "loaded_tokens": expected_tokens,
+            "payload_cache_hit": payload_cache_hit,
+            "source": "local_path",
+            "successful_loads": 1,
+        },
+        "counts": {
+            "decoded_runtime_payload_bytes": expected_runtime_bytes,
+            "expected_runtime_payload_bytes": expected_runtime_bytes,
+            "expected_stored_payload_bytes": expected_stored_bytes,
+            "payload_cache_hits": int(payload_cache_hit),
+            "payload_cache_misses": 0,
+            "token_count": expected_tokens,
+        },
+        "event": "load_request",
+        "layout": {"dtype": "bfloat16"},
+        "payload": {
+            "payload_cache_enabled": payload_cache_hit,
+            "source": "uri",
+            "uri_scheme": "local_path",
+        },
+        "record_type": "document_kv.vllm_native_provider_load.v1",
+        "success": True,
+    }
+
+
+def test_mounted_path_load_count_requires_verified_uc_backend_reads(monkeypatch):
+    request_ids = [
+        f"request-{index:03d}"
+        for index in range(execution.PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL)
+    ]
+    benchmark = SimpleNamespace(
+        measurements=tuple(
+            SimpleNamespace(
+                metadata={
+                    execution.PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY: request_id
+                }
+            )
+            for request_id in request_ids
+        )
+    )
+    monkeypatch.setattr(
+        execution,
+        "benchmark_run_result_from_record",
+        lambda *_args, **_kwargs: benchmark,
+    )
+    monkeypatch.setattr(execution, "_file_sha256", lambda _path: "a" * 64)
+
+    def summarize(
+        host_cache_state: str,
+        *,
+        cold_read_attested: bool,
+        payload_cache_hit: bool,
+    ) -> dict:
+        records = [
+            _realistic_local_path_connector_load(
+                request_id,
+                cold_read_attested=cold_read_attested,
+                payload_cache_hit=payload_cache_hit,
+            )
+            for request_id in request_ids
+        ]
+        monkeypatch.setattr(
+            execution,
+            "_read_jsonl_file",
+            lambda *_args, **_kwargs: records,
+        )
+        return execution._publication_latency_cache_telemetry_summary(
+            Path("connector-telemetry.jsonl"),
+            job_record={
+                "cache_telemetry_policy": {"host_cache_state": host_cache_state},
+                "cell": {"method_id": "vanilla_prefill"},
+                "runtime": {"runtime_kv_dtype": "bfloat16"},
+            },
+            benchmark_record={},
+        )
+
+    ram = summarize(
+        "prewarmed_payload_cache",
+        cold_read_attested=False,
+        payload_cache_hit=True,
+    )
+    uc = summarize(
+        "mounted_path_evicted_backend_cache_unproven",
+        cold_read_attested=False,
+        payload_cache_hit=False,
+    )
+    disk = summarize(
+        "cold_eviction_required",
+        cold_read_attested=True,
+        payload_cache_hit=False,
+    )
+
+    assert ram["mounted_path_load_count"] == 0
+    assert ram["payload_cache_hit_count"] == len(request_ids)
+    assert ram["backend_bytes_read"] == 0
+    assert uc["mounted_path_load_count"] == len(request_ids)
+    assert uc["backend_bytes_read"] == uc["expected_backend_bytes_read"]
+    assert disk["mounted_path_load_count"] == 0
+    assert disk["cold_read_attested_count"] == len(request_ids)
+
+
+def test_descriptive_cell_validator_rejects_resource_and_cache_tampering():
+    mutations = (
+        (
+            lambda item: item.__setitem__(
+                "gpu_utilization_sample_count",
+                item["gpu_utilization_sample_count"] + 1,
+            ),
+            "sample-count",
+        ),
+        (
+            lambda item: item.__setitem__(
+                "mean_gpu_utilization_percent",
+                item["mean_gpu_utilization_percent"] + 1.0,
+            ),
+            "weighted GPU mean",
+        ),
+        (
+            lambda item: item.__setitem__("peak_gpu_utilization_percent", 54.0),
+            "utilization peak",
+        ),
+        (
+            lambda item: item["cache_telemetry"].__setitem__("load_count", 1281),
+            "pooled cache telemetry sum",
+        ),
+        (
+            lambda item: item["physical_blocks"][0].__setitem__(
+                "mean_gpu_utilization_percent", 10
+            ),
+            "finite float",
+        ),
+        (
+            lambda item: item["physical_blocks"][0].__setitem__(
+                "peak_gpu_utilization_percent", 101.0
+            ),
+            "finite float",
+        ),
+        (
+            lambda item: item["physical_blocks"][0].__setitem__(
+                "gpu_utilization_sample_count", True
+            ),
+            "positive integer",
+        ),
+        (
+            lambda item: item["physical_blocks"][0]["cache_telemetry"].__setitem__(
+                "load_count", True
+            ),
+            "non-negative integer",
+        ),
+        (
+            lambda item: item["physical_blocks"][0]["cache_telemetry"].__setitem__(
+                "telemetry_file_sha256", "a" * 64
+            ),
+            "schema is not closed",
+        ),
+    )
+    for mutate, message in mutations:
+        forged = deepcopy(_descriptive_ram_record())
+        mutate(forged)
+        _reclose_descriptive_cell(forged)
+        with pytest.raises(ValueError, match=message):
+            execution._validate_descriptive_cell_record(forged)
+
+    for non_finite in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="finite float"):
+            execution._gpu_utilization_percentage(
+                non_finite,
+                "mean_gpu_utilization_percent",
+            )
+
+    forged_claim = deepcopy(_descriptive_ram_record())
+    forged_claim["physical_blocks"][0]["cache_telemetry"][
+        "backend_bytes_read"
+    ] = 1
+    forged_claim["cache_telemetry"]["backend_bytes_read"] = 1
+    _reclose_descriptive_cell(forged_claim)
+    with pytest.raises(ValueError, match="RAM descriptive cache telemetry"):
+        execution._validate_descriptive_cell_record(forged_claim)
+
+
+def test_descriptive_cell_rejects_reclosed_job_identity_and_small_count_tampering():
+    core_coordinates = execution._publication_latency_descriptive_cell_coordinates()[
+        "core-baseline_prefill-8192-c1"
+    ]
+    assert execution._publication_latency_descriptive_physical_job_id(
+        core_coordinates,
+        deployment_block=3,
+    ) == "block-03-8k-c1-baseline"
+    ram_coordinates = execution._publication_latency_descriptive_cell_coordinates()[
+        "auxiliary-storage-ram"
+    ]
+    assert execution._publication_latency_descriptive_physical_job_id(
+        ram_coordinates,
+        deployment_block=5,
+    ) == "block-05-storage-ram"
+
+    forged_identity = deepcopy(_descriptive_ram_record())
+    forged_identity["physical_blocks"][0]["job_id"] = "arbitrary-job"
+    _reclose_descriptive_cell(forged_identity)
+    with pytest.raises(ValueError, match="frozen physical job identity"):
+        execution._validate_descriptive_cell_record(forged_identity)
+
+    forged_counts = deepcopy(_descriptive_ram_record())
+    forged_counts["observation_count"] = 5
+    forged_counts["cache_telemetry"]["load_count"] = 5
+    forged_counts["cache_telemetry"]["payload_cache_hit_count"] = 5
+    for block in forged_counts["physical_blocks"]:
+        block["observation_count"] = 1
+        block["cache_telemetry"]["load_count"] = 1
+        block["cache_telemetry"]["payload_cache_hit_count"] = 1
+    _reclose_descriptive_cell(forged_counts)
+    with pytest.raises(ValueError, match="frozen observation-count"):
+        execution._validate_descriptive_cell_record(forged_counts)
+
+
+def _valid_latency_estimand_records() -> list[dict]:
+    return [
+        {
+            **item,
+            "metrics": {
+                "ttft": {
+                    "confidence_interval_95": [1.1, 1.3],
+                    "geometric_mean_speedup": 1.2,
+                },
+                "time_to_completion": {
+                    "confidence_interval_95": [1.0, 1.2],
+                    "geometric_mean_speedup": 1.1,
+                },
+            },
+        }
+        for item in execution._publication_latency_estimand_projection_design()
+    ]
+
+
+def test_latency_estimand_projection_names_exact_frozen_control_and_treatment_cells():
+    estimates = _valid_latency_estimand_records()
+
+    execution._validate_publication_latency_estimate_records(estimates)
+    assert estimates[0]["control_cell_id"] == "core-baseline_prefill-8192-c1"
+    assert estimates[0]["treatment_cell_id"] == "core-vanilla_prefill-8192-c1"
+    assert estimates[9]["control_cell_id"] == "core-vanilla_prefill-16384-c4"
+    assert estimates[10]["control_cell_id"] == "auxiliary-storage-disk"
+    assert estimates[11]["control_cell_id"] == "auxiliary-storage-disk"
+    assert estimates[12]["control_cell_id"] == "core-vanilla_prefill-16384-c4"
+
+
+def test_latency_estimand_validator_rejects_schema_lineage_and_order_tampering():
+    forged = _valid_latency_estimand_records()
+    forged[0]["unexpected"] = True
+    with pytest.raises(ValueError, match="schema is not closed"):
+        execution._validate_publication_latency_estimate_records(forged)
+
+    for field_name, value in (
+        ("comparison_family", "storage"),
+        ("control_cell_id", "core-vanilla_prefill-8192-c1"),
+        ("input_tokens", 16_384),
+        ("request_parallelism", 4),
+        ("setting_id", "storage-ram"),
+        ("treatment_cell_id", "auxiliary-storage-ram"),
+    ):
+        forged = _valid_latency_estimand_records()
+        forged[0][field_name] = value
+        with pytest.raises(ValueError, match="frozen-design"):
+            execution._validate_publication_latency_estimate_records(forged)
+
+    forged = _valid_latency_estimand_records()
+    forged[0], forged[1] = forged[1], forged[0]
+    with pytest.raises(ValueError, match="estimand order"):
+        execution._validate_publication_latency_estimate_records(forged)
+
+    forged = _valid_latency_estimand_records()
+    forged[0]["metrics"]["ttft"]["unexpected"] = 1
+    with pytest.raises(ValueError, match="schema is not closed"):
+        execution._validate_publication_latency_estimate_records(forged)
+
+    forged = _valid_latency_estimand_records()
+    forged[0]["metrics"]["throughput"] = {
+        "confidence_interval_95": [1.0, 1.0],
+        "geometric_mean_speedup": 1.0,
+    }
+    with pytest.raises(ValueError, match="schema is not closed"):
+        execution._validate_publication_latency_estimate_records(forged)

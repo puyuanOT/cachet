@@ -16,6 +16,21 @@ def _digest(label):
     return remote.sha256(label.encode("utf-8")).hexdigest()
 
 
+@pytest.fixture(autouse=True)
+def _bind_remote_current_user(monkeypatch):
+    def bind_current_user(_workspace, *, expected_user_name, opener=None):
+        return {
+            "authenticated": True,
+            "user_name_sha256": _digest(expected_user_name),
+        }
+
+    monkeypatch.setattr(
+        remote,
+        "require_databricks_current_user_name",
+        bind_current_user,
+    )
+
+
 def _close(record):
     record["closed_record_sha256"] = remote._closed_record_sha256(record)
     return record
@@ -633,6 +648,20 @@ def test_remote_render_rejects_runner_config_substitution():
         )
 
 
+@pytest.mark.parametrize(
+    "invalid_principal",
+    ["researcher\x00@example.com", "researcher\x7f@example.com"],
+)
+def test_remote_coordinator_config_rejects_control_character_principal(
+    invalid_principal,
+):
+    with pytest.raises(ValueError, match="SINGLE_USER principal"):
+        replace(
+            _coordinator_config(),
+            single_user_name=invalid_principal,
+        )
+
+
 def test_remote_submit_rejects_runner_or_attempt_substitution_before_io(
     tmp_path,
     monkeypatch,
@@ -683,6 +712,67 @@ def test_remote_submit_rejects_runner_or_attempt_substitution_before_io(
         )
     assert calls == []
     assert not case.request.controller_lease_root.exists()
+
+
+def test_remote_wrong_current_user_fails_before_controller_state_or_io(
+    tmp_path,
+    monkeypatch,
+):
+    case = _request_case(phase_lease_root=tmp_path / "phase-leases")
+    request_uri = _request_uri(case)
+    payload = remote.render_full_score_remote_coordinator_submit_payload(
+        _coordinator_config(),
+        request_uri,
+        case.request,
+    )
+    observed = []
+    external_calls = []
+
+    def reject_current_user(_workspace, *, expected_user_name, opener=None):
+        observed.append((expected_user_name, opener))
+        raise ValueError("Databricks current-user identity differs")
+
+    monkeypatch.setattr(
+        remote,
+        "require_databricks_current_user_name",
+        reject_current_user,
+    )
+    monkeypatch.setattr(
+        remote,
+        "upload_databricks_volume_file_bytes_exclusive",
+        lambda *args, **kwargs: external_calls.append(("upload", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        remote,
+        "submit_databricks_run",
+        lambda *args, **kwargs: external_calls.append(("post", args, kwargs)),
+    )
+    workspace = DatabricksWorkspaceConfig("https://dbc.example", "secret")
+    controller_root = case.request.controller_lease_root
+
+    with pytest.raises(ValueError, match="current-user identity differs"):
+        remote.submit_full_score_remote_coordinator(
+            workspace,
+            payload,
+            request_uri=request_uri,
+            request=case.request,
+            controller_root=controller_root,
+        )
+    assert external_calls == []
+    assert not controller_root.exists()
+
+    with pytest.raises(ValueError, match="current-user identity differs"):
+        remote.recover_full_score_remote_coordinator_submission(
+            workspace,
+            controller_root=controller_root,
+            request_authorization=case.request,
+        )
+    assert observed == [
+        ("researcher@example.com", None),
+        ("researcher@example.com", None),
+    ]
+    assert external_calls == []
+    assert not controller_root.exists()
 
 
 def test_remote_payload_rejects_noncanonical_uri_and_parameters_above_9500_bytes():
@@ -1161,6 +1251,38 @@ def test_controller_recovers_lost_submit_response_with_same_token(
 
     assert (controller_root / "post-intent.json").is_file()
     assert not (controller_root / "submit-response.json").exists()
+    controller_snapshot = {
+        path.relative_to(controller_root): path.read_bytes()
+        for path in controller_root.rglob("*")
+        if path.is_file()
+    }
+    observed_principals = []
+
+    def reject_current_user(_workspace, *, expected_user_name, opener=None):
+        observed_principals.append((expected_user_name, opener))
+        raise ValueError("Databricks current-user identity differs")
+
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            remote,
+            "require_databricks_current_user_name",
+            reject_current_user,
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            remote.recover_full_score_remote_coordinator_submission(
+                workspace,
+                controller_root=controller_root,
+                request_authorization=case.request,
+            )
+    assert observed_principals == [("researcher@example.com", None)]
+    assert post_tokens == [payload["idempotency_token"]]
+    assert not (controller_root / "submit-response.json").exists()
+    assert {
+        path.relative_to(controller_root): path.read_bytes()
+        for path in controller_root.rglob("*")
+        if path.is_file()
+    } == controller_snapshot
+
     assert remote.recover_full_score_remote_coordinator_submission(
         workspace,
         controller_root=controller_root,
@@ -1611,6 +1733,38 @@ def test_remote_run_requires_unrepaired_attempt_zero_and_bound_task_cluster_ids(
             mutated, submit_payload=submit
         )
 
+    governed_cluster = submit["tasks"][0]["new_cluster"]
+    for cluster_field, substituted_value in (
+        ("single_user_name", "substituted-researcher@example.com"),
+        (
+            "custom_tags",
+            {**governed_cluster["custom_tags"], "purpose": "substituted-verifier"},
+        ),
+        (
+            "spark_conf",
+            {**governed_cluster["spark_conf"], "spark.master": "local[1]"},
+        ),
+        (
+            "aws_attributes",
+            {**governed_cluster["aws_attributes"], "availability": "SPOT"},
+        ),
+    ):
+        mutated = copy.deepcopy(run)
+        mutated["tasks"][0]["cluster_spec"]["new_cluster"][cluster_field] = (
+            substituted_value
+        )
+        with pytest.raises(ValueError, match="status/topology drift"):
+            remote._validate_successful_remote_coordinator_run(
+                mutated, submit_payload=submit
+            )
+
+    mutated = copy.deepcopy(run)
+    del mutated["tasks"][0]["cluster_spec"]["new_cluster"]["single_user_name"]
+    with pytest.raises(ValueError, match="status/topology drift"):
+        remote._validate_successful_remote_coordinator_run(
+            mutated, submit_payload=submit
+        )
+
     mutated = copy.deepcopy(run)
     mutated["tasks"][0].pop("cluster_spec")
     mutated["tasks"][0]["node_type_id"] = "c5d.4xlarge"
@@ -1656,6 +1810,63 @@ def test_consumer_collection_requires_authenticated_ready_tree_absence(
         submit_payload=submit,
     )
     result, attestation = _result_and_attestation(case)
+    controller_snapshot = {
+        path.relative_to(controller_root): path.read_bytes()
+        for path in controller_root.rglob("*")
+        if path.is_file()
+    }
+    external_calls = []
+    rejected_cas = remote.FullScoreCompactArtifactCAS(tmp_path / "rejected-cas")
+    rejected_cas_snapshot = {
+        path.relative_to(rejected_cas.root): path.read_bytes()
+        for path in rejected_cas.root.rglob("*")
+        if path.is_file()
+    }
+
+    def reject_current_user(_workspace, *, expected_user_name, opener=None):
+        assert expected_user_name == "researcher@example.com"
+        assert opener is None
+        raise ValueError("Databricks current-user identity differs")
+
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            remote,
+            "require_databricks_current_user_name",
+            reject_current_user,
+        )
+        identity_patch.setattr(
+            remote,
+            "get_databricks_run",
+            lambda *_args: external_calls.append("runs-get"),
+        )
+        identity_patch.setattr(
+            remote,
+            "download_databricks_volume_file_bytes",
+            lambda *_args, **_kwargs: external_calls.append("download"),
+        )
+        identity_patch.setattr(
+            remote,
+            "list_databricks_volume_directory",
+            lambda *_args, **_kwargs: external_calls.append("list"),
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            remote.collect_full_score_remote_coordinator(
+                DatabricksWorkspaceConfig("https://dbc.example", "secret"),
+                controller_root=controller_root,
+                cas=rejected_cas,
+                request_authorization=case.request,
+            )
+    assert external_calls == []
+    assert {
+        path.relative_to(controller_root): path.read_bytes()
+        for path in controller_root.rglob("*")
+        if path.is_file()
+    } == controller_snapshot
+    assert {
+        path.relative_to(rejected_cas.root): path.read_bytes()
+        for path in rejected_cas.root.rglob("*")
+        if path.is_file()
+    } == rejected_cas_snapshot
     monkeypatch.setattr(
         remote, "get_databricks_run", lambda *_args: _successful_run(submit)
     )
@@ -1704,6 +1915,19 @@ def test_consumer_collection_requires_authenticated_ready_tree_absence(
         "/dbfs" not in binding["evidence_uri"]
         for binding in authority.evidence_bindings
     )
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            remote,
+            "require_databricks_current_user_name",
+            reject_current_user,
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            remote.replay_full_score_remote_coordinator_authorization(
+                DatabricksWorkspaceConfig("https://dbc.example", "secret"),
+                controller_root=controller_root,
+                cas=remote.FullScoreCompactArtifactCAS(tmp_path / "cas"),
+                request_authorization=case.request,
+            )
 
 
 def test_final_coverage_requires_all_ten_waves_and_160_unique_shards(monkeypatch):
@@ -1727,27 +1951,14 @@ def test_final_coverage_requires_all_ten_waves_and_160_unique_shards(monkeypatch
             )
         )
 
-    coverage = remote.build_full_score_remote_final_coverage_record(
-        execution, attestations
-    )
-
-    assert coverage["wave_count"] == 10
-    assert coverage["shard_count"] == 160
-    tampered_execution = copy.deepcopy(execution)
-    tampered_execution["waves"][0]["shard_ids"][0] = "tampered"
-    with pytest.raises(ValueError, match="execution-plan closure drift"):
+    with pytest.raises(
+        TypeError,
+        match="publication workflow requires remote consumer authority",
+    ):
         remote.build_full_score_remote_final_coverage_record(
-            tampered_execution, attestations
+            execution,
+            attestations,
         )
-    with pytest.raises(ValueError, match="omits an execution wave"):
-        remote.build_full_score_remote_final_coverage_record(
-            execution, attestations[:-1]
-        )
-    duplicate = copy.deepcopy(attestations)
-    duplicate[-1]["shard_ids"][0] = duplicate[0]["shard_ids"][0]
-    _close(duplicate[-1])
-    with pytest.raises(ValueError, match="wave shard identity drift"):
-        remote.build_full_score_remote_final_coverage_record(execution, duplicate)
 
 
 def test_consumer_authority_requires_exact_ten_wave_160_shard_coverage():
@@ -1831,6 +2042,32 @@ def test_consumer_authority_requires_exact_ten_wave_160_shard_coverage():
     )
     assert len(required) == 10
     assert sum(len(item.evidence_bindings) for item in required) == 160
+    coverage = remote.build_full_score_remote_final_coverage_record(
+        execution,
+        authorizations,
+    )
+    assert coverage["wave_count"] == 10
+    assert coverage["shard_count"] == 160
+    assert coverage["attestation_sha256"] == [
+        item.attestation_record_sha256 for item in authorizations
+    ]
+    tampered_execution = copy.deepcopy(execution)
+    tampered_execution["waves"][0]["shard_ids"][0] = "tampered"
+    with pytest.raises(ValueError, match="execution-plan closure drift"):
+        remote.build_full_score_remote_final_coverage_record(
+            tampered_execution,
+            authorizations,
+        )
+    with pytest.raises(ValueError, match="omits an execution wave"):
+        remote.build_full_score_remote_final_coverage_record(
+            execution,
+            authorizations[:-1],
+        )
+    with pytest.raises(ValueError, match="phase/wave binding drift"):
+        remote.build_full_score_remote_final_coverage_record(
+            execution,
+            [*authorizations, authorizations[-1]],
+        )
     with pytest.raises(ValueError, match="omits an execution wave"):
         remote.require_full_score_remote_consumer_evidence_authorizations(
             authorizations[:-1],
@@ -1841,9 +2078,15 @@ def test_consumer_authority_requires_exact_ten_wave_160_shard_coverage():
             [*authorizations, authorizations[-1]],
             execution_plan=execution,
         )
-    authorizations[0].evidence_bindings[0]["shard_id"] = "extra-shard"
-    with pytest.raises(ValueError, match="result/evidence coverage drift"):
-        remote.require_full_score_remote_consumer_evidence_authorizations(
-            authorizations,
-            execution_plan=execution,
-        )
+    escaped_result = authorizations[0].result_record
+    escaped_result["shard_ids"][0] = "extra-shard"
+    escaped_bindings = authorizations[0].evidence_bindings
+    escaped_bindings[0]["shard_id"] = "extra-shard"
+    assert authorizations[0].result_record is not escaped_result
+    assert authorizations[0].result_record["shard_ids"][0] == "shard-000"
+    assert authorizations[0].evidence_bindings is not escaped_bindings
+    assert authorizations[0].evidence_bindings[0]["shard_id"] == "shard-000"
+    assert remote.require_full_score_remote_consumer_evidence_authorizations(
+        authorizations,
+        execution_plan=execution,
+    ) == required

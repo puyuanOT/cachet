@@ -1040,10 +1040,14 @@ class VLLMSmokeBenchmarkConfig:
                 ),
             )
         if schedule_enabled:
-            if self.benchmark_evidence_policy not in {"canary", "publication"}:
+            if self.benchmark_evidence_policy not in {
+                "smoke",
+                "canary",
+                "publication",
+            }:
                 raise ValueError(
                     "publication latency schedules require "
-                    "benchmark_evidence_policy='canary' or 'publication'"
+                    "benchmark_evidence_policy='smoke', 'canary', or 'publication'"
                 )
             if not self.dataset_specs:
                 raise ValueError(

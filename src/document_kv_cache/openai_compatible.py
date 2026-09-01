@@ -10,6 +10,7 @@ import urllib.request as _urlrequest
 import math
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
@@ -640,6 +641,10 @@ def _payload_shape_metadata(
         metadata["request_payload_prompt_chars"] = str(
             _json_content_char_count(payload["prompt"])
         )
+        if isinstance(payload["prompt"], str):
+            metadata["request_payload_prompt_sha256"] = sha256(
+                payload["prompt"].encode("utf-8")
+            ).hexdigest()
     messages = payload.get("messages")
     if isinstance(messages, Sequence) and not isinstance(
         messages, (str, bytes, bytearray, memoryview)

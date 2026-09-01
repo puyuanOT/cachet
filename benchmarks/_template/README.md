@@ -47,6 +47,7 @@ lengths.
 | Dataset / task scope | Dataset names and example count |
 | Quality metric | Versioned governed full-dataset metric and answer-parser identity, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
+| Campaign report | Sealed `cachet.vllm_0271_publication_report.v1` record, or `N/A` outside that campaign |
 | Publication gate | Passing `document_kv.benchmark_publication_gate.v1` record |
 
 For method comparisons, fix the complete setting and vary only the method. For
@@ -108,16 +109,18 @@ evaluate all selected samples of each dataset and mark score cells
 suites, use a
 separate appendix table, state the number of unique examples per dataset and
 repeats per example, and do not label answer-found containment as official
-dataset accuracy.
+dataset accuracy. Publication score tables use six decimal places and must use
+scientific notation rather than displaying zero when a nonzero value would
+round to zero.
 
-| Dataset | Governed metric | Baseline | Baseline parser-status counts | Vanilla KV | Vanilla parser-status counts | Vanilla − Baseline | Paired 95% CI |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Biography | Normalized-title exact match |  |  |  |  |  |  |
-| HotpotQA | Answer exact match |  |  |  |  |  |  |
-| HotpotQA | Answer F1 |  |  |  |  |  |  |
-| MusiQue | Official answer exact match, alias-max |  |  |  |  |  |  |
-| MusiQue | Official answer F1, alias-max |  |  |  |  |  |  |
-| NIAH | Exact-value overall accuracy |  |  |  |  |  |  |
+| Dataset | Governed metric | n | Baseline | Baseline parser-status counts | Vanilla KV | Vanilla parser-status counts | Vanilla − Baseline | Paired 95% CI |
+| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: |
+| Biography | Normalized-title exact match |  |  |  |  |  |  |  |
+| HotpotQA | Answer exact match |  |  |  |  |  |  |  |
+| HotpotQA | Answer F1 |  |  |  |  |  |  |  |
+| MusiQue | Official answer exact match, alias-max |  |  |  |  |  |  |  |
+| MusiQue | Official answer F1, alias-max |  |  |  |  |  |  |  |
+| NIAH | Exact-value overall accuracy |  |  |  |  |  |  |  |
 
 Publish the NIAH 8k/16k/32k by 10%/50%/90% needle-position grid separately;
 an overall score does not replace any of its nine governed cells. Each grid row
@@ -155,9 +158,28 @@ List sanitized records committed beside this README, such as:
 - `metadata.json`
 - `document-kv-connector-telemetry.jsonl`
 - `cache-state-attestations.jsonl`
+- `campaign-report.json`
 - `benchmark-publication-gate.json`
 - `prepared-handoff-generation.json`
 - `prewarm-cache-prefix.json`, only for warm/prewarmed-prefix measurements
+
+For the vLLM 0.27.1 campaign, `campaign-report.json` and
+`benchmark-publication-gate.json` are an exact pair: the gate's
+`benchmark_payload_digest` must equal the report's `closed_record_sha256`.
+Neither file qualifies evidence by itself. Publication writes the gate first
+and the report last as the pair's commit file; only an exact immutable
+gate-only interruption may be resumed. The authority-replaying loader accepts
+the sealed files directly or secure-umask Git checkout copies (`0600`, `0640`,
+or `0644`, including read-only variants), but never uses checkout mode as a
+substitute for canonical-byte and source replay.
+
+For the frozen campaign, do not transcribe report values into Markdown by
+hand. Generate the named table regions from the exact report/gate pair and
+require byte-for-byte renderer validation before committing the report folder.
+Generate the child `README.md` from the same pair; it must name both JSON files
+and embed the validated report digest exactly.
+Pending and finalized table states are mutually exclusive; partial promotion
+or a mixed pending/populated table is invalid.
 
 Do not include Databricks tokens, raw Jobs API responses, package wheels,
 cluster logs, generated payload blobs, prompt text, or local scratch

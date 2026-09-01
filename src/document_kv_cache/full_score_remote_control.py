@@ -35,6 +35,7 @@ from document_kv_cache.databricks_runs import (
     download_databricks_volume_file_bytes,
     get_databricks_run,
     list_databricks_volume_directory,
+    require_databricks_current_user_name,
     require_databricks_run_idempotency_token,
     submit_databricks_run,
     upload_databricks_volume_file_bytes_exclusive,
@@ -257,6 +258,10 @@ class FullScoreRemoteCoordinatorJobConfig:
             or not isinstance(self.single_user_name, str)
             or not self.single_user_name
             or self.single_user_name.strip() != self.single_user_name
+            or any(
+                ord(character) < 32 or 127 <= ord(character) <= 159
+                for character in self.single_user_name
+            )
         ):
             raise ValueError("remote coordinator requires a SINGLE_USER principal")
         if self.timeout_seconds != FULL_SCORE_REMOTE_COORDINATOR_TIMEOUT_SECONDS:
@@ -414,7 +419,7 @@ class FullScoreRemoteTreeAuthorization:
     result_uri: str
     result_file_sha256: str
     result_record_sha256: str
-    result_record: Mapping[str, Any]
+    _result_record_bytes: bytes = field(repr=False)
     attestation_uri: str
     attestation_file_sha256: str
     attestation_record_sha256: str
@@ -423,7 +428,7 @@ class FullScoreRemoteTreeAuthorization:
     controller_authorization_record_sha256: str
     runs_get_receipt_record_sha256: str
     phase_terminal_record_sha256: str
-    evidence_bindings: tuple[Mapping[str, Any], ...]
+    _evidence_bindings_bytes: bytes = field(repr=False)
 
     def __init__(
         self,
@@ -513,8 +518,53 @@ class FullScoreRemoteTreeAuthorization:
             ("phase_terminal_record_sha256", phase_terminal_record_sha256),
         ):
             object.__setattr__(self, name, attribute_value)
-        object.__setattr__(self, "result_record", canonical_result)
-        object.__setattr__(self, "evidence_bindings", canonical_evidence_bindings)
+        object.__setattr__(
+            self,
+            "_result_record_bytes",
+            _pretty_json_bytes(canonical_result),
+        )
+        object.__setattr__(
+            self,
+            "_evidence_bindings_bytes",
+            (
+                json.dumps(
+                    canonical_evidence_bindings,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8"),
+        )
+
+    @property
+    def result_record(self) -> Mapping[str, Any]:
+        """Return a fresh deep copy of the authorized result record."""
+
+        return _json_object(
+            self._result_record_bytes,
+            "remote tree authorization result record",
+        )
+
+    @property
+    def evidence_bindings(self) -> tuple[Mapping[str, Any], ...]:
+        """Return fresh deep copies of the authorized evidence bindings."""
+
+        try:
+            value = json.loads(self._evidence_bindings_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:  # pragma: no cover
+            raise ValueError(
+                "remote tree authorization evidence bindings must be valid JSON"
+            ) from exc
+        if not isinstance(value, list) or any(
+            not isinstance(binding, dict) for binding in value
+        ):  # pragma: no cover - bytes are constructed above.
+            raise ValueError(
+                "remote tree authorization evidence bindings must be "
+                "an array of objects"
+            )
+        return tuple(cast(list[Mapping[str, Any]], value))
 
 
 def _require_real_directory(path: Path, label: str) -> None:
@@ -840,6 +890,7 @@ def collect_governed_full_score_remote_phase_attempt(
     submit_payload_uri: str,
     control_plane_run_uri: str,
     terminal_record_uri: str,
+    single_user_name: str,
     opener: Any | None = None,
 ) -> tuple[dict[str, Any], full_score.FullScorePhaseAuthorization]:
     """Collect a GPU phase on Mac through Files/CAS with a local ledger only."""
@@ -855,11 +906,24 @@ def collect_governed_full_score_remote_phase_attempt(
     terminal_uri = _volume_file_uri(terminal_record_uri, "terminal_record_uri")
     if len({submit_uri, run_uri, terminal_uri}) != 3:
         raise ValueError("remote phase compact artifact URIs must be distinct")
+    expected_single_user_name = full_score._validated_full_score_single_user_name(
+        single_user_name
+    )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=expected_single_user_name,
+        opener=opener,
+    )
     submit_file = compact_io.download(submit_uri)
     submit_record = _json_object(
         submit_file.read_bytes(),
         "remote phase submit payload",
     )
+    if (
+        full_score._full_score_phase_single_user_name(submit_record)
+        != expected_single_user_name
+    ):
+        raise ValueError("remote phase submit payload principal drift")
     tasks = submit_record.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("remote phase submit payload has no tasks")
@@ -2033,6 +2097,13 @@ def submit_full_score_remote_coordinator(
     token = require_databricks_run_idempotency_token(
         canonical_payload, attempt_id=attempt_id
     )
+    coordinator = _full_score_remote_coordinator_job_config_from_record(
+        _required_mapping(canonical_request, "coordinator")
+    )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=coordinator.single_user_name,
+    )
     root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
         paths = _full_score_remote_controller_paths(root)
@@ -2143,12 +2214,18 @@ def recover_full_score_remote_coordinator_submission(
             request_authorization
         )
     )
-    root = _prepare_full_score_remote_controller_root(
-        _require_full_score_remote_controller_lease_root(
-            request_authorization,
-            controller_root,
-        )
+    controller_lease_root = _require_full_score_remote_controller_lease_root(
+        request_authorization,
+        controller_root,
     )
+    coordinator = _full_score_remote_coordinator_job_config_from_record(
+        _required_mapping(request_authorization.to_record(), "coordinator")
+    )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=coordinator.single_user_name,
+    )
+    root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
         return _recover_full_score_remote_coordinator_submission_locked(
             workspace,
@@ -2587,12 +2664,19 @@ def collect_full_score_remote_coordinator(
             request_authorization
         )
     )
-    root = _prepare_full_score_remote_controller_root(
-        _require_full_score_remote_controller_lease_root(
-            request_authorization,
-            controller_root,
-        )
+    request_record = request_authorization.to_record()
+    coordinator = _full_score_remote_coordinator_job_config_from_record(
+        _required_mapping(request_record, "coordinator")
     )
+    controller_lease_root = _require_full_score_remote_controller_lease_root(
+        request_authorization,
+        controller_root,
+    )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=coordinator.single_user_name,
+    )
+    root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
         paths = _full_score_remote_controller_paths(root)
         request_authorization, submit_payload, post_intent, submit_response = (
@@ -2602,7 +2686,7 @@ def collect_full_score_remote_coordinator(
                 request_authorization=request_authorization,
             )
         )
-        request = request_authorization.to_record()
+        request = request_record
         run_id = cast(str, submit_response["run_id"])
         run = _json_mapping(
             get_databricks_run(workspace, run_id),
@@ -2720,12 +2804,19 @@ def replay_full_score_remote_coordinator_authorization(
             request_authorization
         )
     )
-    root = _prepare_full_score_remote_controller_root(
-        _require_full_score_remote_controller_lease_root(
-            request_authorization,
-            controller_root,
-        )
+    request_record = request_authorization.to_record()
+    coordinator = _full_score_remote_coordinator_job_config_from_record(
+        _required_mapping(request_record, "coordinator")
     )
+    controller_lease_root = _require_full_score_remote_controller_lease_root(
+        request_authorization,
+        controller_root,
+    )
+    require_databricks_current_user_name(
+        workspace,
+        expected_user_name=coordinator.single_user_name,
+    )
+    root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
         return _replay_full_score_remote_coordinator_authorization_locked(
             workspace,
@@ -2867,65 +2958,21 @@ def require_full_score_remote_consumer_evidence_authorization(
 
 def build_full_score_remote_final_coverage_record(
     execution_plan: Mapping[str, Any],
-    wave_attestations: Sequence[Mapping[str, Any]],
+    wave_authorizations: Sequence[object],
 ) -> dict[str, Any]:
-    """Close exact ten-wave/160-shard coverage from compact attestations."""
+    """Close exact coverage from issuer-only, fully replayed wave authority."""
 
     execution_sha = _require_sha256(
         execution_plan.get("closed_record_sha256"), "execution_plan_sha256"
     )
-    if execution_sha != _closed_record_sha256(execution_plan):
-        raise ValueError("final coverage rejects execution-plan closure drift")
-    waves = execution_plan.get("waves")
-    expected_wave_count = (
-        full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
-        // full_score.FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE
+    authorizations = require_full_score_remote_consumer_evidence_authorizations(
+        wave_authorizations,
+        execution_plan=execution_plan,
     )
-    if not isinstance(waves, list) or len(waves) != expected_wave_count:
-        raise ValueError("final coverage requires exactly ten execution waves")
-    expected_by_wave = {}
-    for index, raw_wave in enumerate(waves):
-        wave = _json_mapping(raw_wave, "execution wave")
-        shard_ids = wave.get("shard_ids")
-        if (
-            not isinstance(shard_ids, list)
-            or len(shard_ids) != full_score.FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE
-            or any(
-                not isinstance(shard_id, str) or not shard_id for shard_id in shard_ids
-            )
-            or len(set(shard_ids)) != len(shard_ids)
-        ):
-            raise ValueError(
-                "final coverage requires sixteen unique shard ids per wave"
-            )
-        expected_by_wave[index] = set(cast(list[str], shard_ids))
-    observed: dict[int, Mapping[str, Any]] = {}
-    for raw in wave_attestations:
-        attestation = _json_mapping(raw, "wave attestation")
-        if (
-            attestation.get("record_type")
-            != FULL_SCORE_REMOTE_COORDINATOR_ATTESTATION_RECORD_TYPE
-            or attestation.get("closed_record_sha256")
-            != _closed_record_sha256(attestation)
-            or attestation.get("action") != "consumer_evidence"
-            or attestation.get("execution_plan_sha256") != execution_sha
-        ):
-            raise ValueError("final coverage rejects invalid wave attestation")
-        wave_index = attestation.get("wave_index")
-        if type(wave_index) is not int or wave_index in observed:
-            raise ValueError("final coverage has duplicate/invalid wave index")
-        shard_ids = attestation.get("shard_ids")
-        if not isinstance(shard_ids, list) or set(shard_ids) != expected_by_wave.get(
-            wave_index
-        ):
-            raise ValueError("final coverage wave shard identity drift")
-        observed[wave_index] = attestation
-    if set(observed) != set(expected_by_wave):
-        raise ValueError("final coverage omits an execution wave")
     all_shards = [
-        shard_id
-        for wave_index in sorted(observed)
-        for shard_id in cast(list[str], observed[wave_index]["shard_ids"])
+        cast(str, binding["shard_id"])
+        for authorization in authorizations
+        for binding in authorization.evidence_bindings
     ]
     if (
         len(all_shards) != full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
@@ -2934,7 +2981,8 @@ def build_full_score_remote_final_coverage_record(
         raise ValueError("final coverage is not exactly 160 unique shards")
     record: dict[str, Any] = {
         "attestation_sha256": [
-            observed[index]["closed_record_sha256"] for index in sorted(observed)
+            authorization.attestation_record_sha256
+            for authorization in authorizations
         ],
         "closed_record_sha256": "",
         "execution_plan_sha256": execution_sha,
@@ -2942,7 +2990,7 @@ def build_full_score_remote_final_coverage_record(
         "schema_version": FULL_SCORE_REMOTE_FINAL_COVERAGE_SCHEMA_VERSION,
         "shard_count": len(all_shards),
         "shard_ids_sha256": _canonical_sha256(sorted(all_shards)),
-        "wave_count": len(observed),
+        "wave_count": len(authorizations),
     }
     record["closed_record_sha256"] = _closed_record_sha256(record)
     return record
@@ -4275,10 +4323,20 @@ def _validate_successful_remote_coordinator_run(
         observed_cluster = cluster_spec_new_cluster
     else:
         raise ValueError("remote coordinator run cluster topology is missing")
+    try:
+        observed_cluster_projection = {
+            key: observed_cluster[key] for key in cluster
+        }
+    except KeyError as exc:
+        raise ValueError(
+            "remote coordinator run task status/topology drift"
+        ) from exc
     if (
         task.get("task_key") != expected.get("task_key")
         or task_state.get("life_cycle_state") != "TERMINATED"
         or task_state.get("result_state") != "SUCCESS"
+        or _pretty_json_bytes(observed_cluster_projection)
+        != _pretty_json_bytes(cluster)
         or observed_cluster.get("node_type_id") != cluster.get("node_type_id")
         or observed_cluster.get("driver_node_type_id")
         != cluster.get("driver_node_type_id")

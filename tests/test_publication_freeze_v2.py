@@ -1144,7 +1144,7 @@ def _runner(*, fail_check: str | None = None) -> freeze_v2.CommandRunner:
         executable = Path(command[0]).name
         if "--version" in command:
             versions = {
-                "python": "pytest 8.0.0\n",
+                "python": "pytest 9.1.1\n",
                 "ruff": "ruff 0.15.21\n",
                 "mypy": "mypy 2.2.0 (compiled: yes)\n",
             }
@@ -1247,6 +1247,10 @@ def test_preflight_writes_exact_eight_children_and_parent_file_seals(
             "cachet.gpu_qualification.local_check_evidence.v2"
         )
         assert child["schema_version"] == 2
+    unit_tests = json.loads(
+        (output / "unit_tests.json").read_text(encoding="utf-8")
+    )
+    assert unit_tests["environment"]["PYTHONDONTWRITEBYTECODE"] == "1"
     mypy = json.loads((output / "mypy.json").read_text(encoding="utf-8"))
     assert mypy["command"][1:] == [
         "--strict",
@@ -1257,6 +1261,14 @@ def test_preflight_writes_exact_eight_children_and_parent_file_seals(
         "pyproject.toml",
         *freeze_v2._V2_STATIC_ANALYSIS_TARGETS,
     ]
+    assert (
+        "src/document_kv_cache/publication_campaign_finalizer.py"
+        in freeze_v2._V2_STATIC_ANALYSIS_TARGETS
+    )
+    assert (
+        "src/document_kv_cache/publication_campaign_tables.py"
+        in freeze_v2._V2_STATIC_ANALYSIS_TARGETS
+    )
 
 
 def test_preflight_rejects_resealed_semantic_child_tamper(

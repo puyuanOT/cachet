@@ -57,7 +57,12 @@ BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE = (
 )
 
 _SANITIZED_DIGEST_METADATA_KEYS = frozenset(
-    {"logical_prompt_sha256", "runtime_prompt_sha256", "prefix_cache_salt_sha256"}
+    {
+        "logical_prompt_sha256",
+        "runtime_prompt_sha256",
+        "request_payload_prompt_sha256",
+        "prefix_cache_salt_sha256",
+    }
 )
 _SANITIZED_INTEGER_METADATA_KEYS = frozenset(
     {

@@ -1,8 +1,10 @@
 import ast
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 from textwrap import dedent
@@ -1244,6 +1246,15 @@ def test_repository_map_and_evidence_policy_are_documented():
         "Keep exploratory run payloads and task status files under ignored `databricks-runs/`"
         in (compact_evidence_policy)
     )
+    assert (
+        "Clear Databricks single-user principals are private control-plane material"
+        in compact_evidence_policy
+    )
+    assert (
+        "must not be copied into committed benchmark evidence"
+        in compact_evidence_policy
+    )
+    assert "only the SHA-256 principal attestation" in compact_evidence_policy
 
 
 def test_release_ops_doc_classifies_installed_cli_surface():
@@ -1267,69 +1278,113 @@ def test_release_ops_doc_classifies_installed_cli_surface():
     assert "Prefer `cachet-*` in new documentation" in release_ops
 
 
-def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
-    benchmark_root = REPO_ROOT / "benchmarks"
-    root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
-    appendix_readme = (benchmark_root / "appendix" / "README.md").read_text(
-        encoding="utf-8"
+def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
+    from document_kv_cache.publication_campaign_finalizer import (
+        validate_vllm_0271_publication_report_pair,
     )
+    from document_kv_cache.publication_campaign_tables import (
+        PUBLICATION_TABLE_REGION_MARKERS,
+        PUBLICATION_TABLE_SECTION_ORDER,
+        render_vllm_0271_publication_appendix_readme,
+        validate_vllm_0271_publication_table_regions,
+    )
+
+    benchmark_root = REPO_ROOT / "benchmarks"
+
+    def benchmark_tree_snapshot() -> tuple[tuple[str, str], ...]:
+        assert stat.S_ISDIR(benchmark_root.lstat().st_mode)
+        entries = list(benchmark_root.rglob("*"))
+        entry_types: list[tuple[str, str]] = []
+        for path in entries:
+            relative_path = str(path.relative_to(benchmark_root))
+            mode = path.lstat().st_mode
+            assert not stat.S_ISLNK(mode), relative_path
+            if stat.S_ISREG(mode):
+                entry_type = "file"
+            elif stat.S_ISDIR(mode):
+                entry_type = "directory"
+            else:
+                raise AssertionError(
+                    f"unexpected benchmark filesystem entry type: {relative_path}"
+                )
+            entry_types.append((relative_path, entry_type))
+        return tuple(sorted(entry_types))
+
+    initial_tree = benchmark_tree_snapshot()
+    initial_entry_types = dict(initial_tree)
+    byte_snapshots: dict[Path, bytes] = {}
+
+    def stable_read_bytes(path: Path) -> bytes:
+        raw = path.read_bytes()
+        previous = byte_snapshots.setdefault(path, raw)
+        assert raw == previous
+        return raw
+
+    def strict_markdown(path: Path) -> str:
+        raw = stable_read_bytes(path)
+        value = raw.decode("utf-8")
+        assert "\r" not in value
+        assert "\x00" not in value
+        assert value.encode("utf-8") == raw
+        return value
+
+    root_readme = strict_markdown(benchmark_root / "README.md")
+    appendix_readme = strict_markdown(benchmark_root / "appendix" / "README.md")
+    campaign_dir = benchmark_root / "appendix" / "vllm-0271-publication-v1"
+    campaign_readme_path = campaign_dir / "README.md"
+    report_path = campaign_dir / "campaign-report.json"
+    gate_path = campaign_dir / "benchmark-publication-gate.json"
+    final_paths = (campaign_readme_path, report_path, gate_path)
+    final_presence = tuple(
+        str(path.relative_to(benchmark_root)) in initial_entry_types
+        for path in final_paths
+    )
+    assert not any(final_presence) or all(final_presence), (
+        "the vLLM 0.27.1 publication folder must be wholly absent or contain "
+        "its complete README/report/gate triplet"
+    )
+    if all(final_presence):
+        assert initial_entry_types.get(
+            str(campaign_dir.relative_to(benchmark_root))
+        ) == "directory"
+        for path in final_paths:
+            assert initial_entry_types.get(
+                str(path.relative_to(benchmark_root))
+            ) == "file"
+
+    pending_region_sha256 = {
+        "status": "ceb545987a0a9a6b14e8617c5af605b265cd55c1c45474e056eaa4793685eb3f",
+        "core_latency": "e4012c18c6aa023d93919610f68c02385cfa76dbcd29ee608a23edbb791a23b8",
+        "latency_estimands": "341201526f4b28bc76ba5d1ddcf66df3240bfe2feedbcae56d081cf33add257d",
+        "dataset_scores": "4a6a9d3b30ef909e83ec9dea540b138f4e78795a98b5ef2e4361a27dee6483d2",
+        "niah_grid": "eb1fa55d0a856564926e9ea8c8254d7c0b931da8cdd28e09dd3d37f550fe60fe",
+        "precision": "d18bc5be5f573458b9800650fda6c721c43ef34c71d186c7b0aa2bf007c2ca2d",
+        "storage": "842216b24e5e49f7367f9df0715cf6f6c3d5b34a8ef64e06ddf4146993abfd8b",
+        "hardware": "eb992ebe448c2d5e3f00b875940173097a24ef79d25bb3522013950f20145190",
+        "platform": "97a00d7d436f66dfb7cb5397198aad028caa4350a32a17f55d3523cad15cdc12",
+        "resource_cache": "2bee80d43cbb3e3da6341a95299291ea976a9d546d4cf27239b134a0863af210",
+    }
+    observed_region_sha256: dict[str, str] = {}
+
+    previous_marker_end = -1
+    for section in PUBLICATION_TABLE_SECTION_ORDER:
+        begin, end = PUBLICATION_TABLE_REGION_MARKERS[section]
+        assert root_readme.count(begin) == 1
+        assert root_readme.count(end) == 1
+        begin_at = root_readme.index(begin)
+        end_at = root_readme.index(end)
+        assert previous_marker_end < begin_at < end_at
+        content_at = begin_at + len(begin)
+        observed_region_sha256[section] = sha256(
+            root_readme[content_at:end_at].encode("utf-8")
+        ).hexdigest()
+        previous_marker_end = end_at + len(end)
+
     main_table = _markdown_section(root_readme, "Main Latency And Resource Table")
     estimand_table = _markdown_section(root_readme, "Paired Latency Estimands")
     score_table = _markdown_section(root_readme, "Benchmark Dataset Score Table")
 
-    assert "Status: vLLM 0.27.1 campaign pending" in root_readme
-    assert "No latency, resource, ablation, or" in root_readme
-    assert "Deployment blocks | 5 matched fresh-cluster blocks" in root_readme
-    assert "Closed-loop request concurrency | 1, 2, and 4" in root_readme
-    assert main_table.count("| Baseline |") == 9
-    assert main_table.count("| Vanilla&nbsp;KV |") == 9
-    assert main_table.count("N/A (0.27.1 campaign pending)") == 162
-    assert "P50 decode tok/s" in main_table
-    assert "Peak GPU process memory" in main_table
-    assert estimand_table.count("| Vanilla KV vs Baseline |") == 9
-    assert estimand_table.count("N/A (0.27.1 campaign pending)") == 52
-    for auxiliary in (
-        "BF16 payload/runtime KV vs Q8",
-        "RAM vs Disk",
-        "Unity Catalog vs Disk",
-        "A10G vs L4",
-    ):
-        assert auxiliary in estimand_table
-    for context in ("8k", "16k", "32k"):
-        for concurrency in (1, 2, 4):
-            assert f"| Baseline | {context} | {concurrency} |" in main_table
-            assert f"| Vanilla&nbsp;KV | {context} | {concurrency} |" in main_table
-
-    assert score_table.count("N/A (0.27.1 full evaluation pending)") == 81
-    assert "Baseline parser-status counts" in score_table
-    assert "Vanilla parser-status counts" in score_table
-    for parser_status in (
-        "ok",
-        "missing_block",
-        "multiple_or_malformed_blocks",
-        "extraneous_text",
-        "nested_block",
-        "empty_answer",
-    ):
-        assert f"`{parser_status}`" in score_table
-    assert "including explicit zeros for unobserved" in score_table
-    assert "Vanilla − Baseline" in score_table
-    assert score_table.count("| 8k |") == 3
-    assert score_table.count("| 16k |") == 3
-    assert score_table.count("| 32k |") == 3
-    assert "| Context | Needle position | n |" in score_table
-    assert "N/A (runner not implemented)" in score_table
-    for method in ("KV&nbsp;Packet", "CacheBlend", "InfoFlow&nbsp;KV"):
-        assert method in root_readme
-    assert "71.390128 reconciled GPU-hours" in root_readme
-    assert "exact 236/98/236 post-migration append-only prefix" in root_readme
-    assert "zero active reservations" in root_readme
-    assert (
-        "No benchmark result evidence is currently published here." in appendix_readme
-    )
-    assert "Superseded result folders were removed" in appendix_readme
-
-    expected_files = {
+    base_files = {
         "README.md",
         "_template/README.md",
         "appendix/README.md",
@@ -1339,12 +1394,165 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "storage/README.md",
         "vllm/README.md",
     }
+    base_directories = {
+        "_template",
+        "appendix",
+        "databricks",
+        "native-engine",
+        "sglang",
+        "storage",
+        "vllm",
+    }
+    if not any(final_presence):
+        assert observed_region_sha256 == pending_region_sha256
+        assert "Status: vLLM 0.27.1 campaign pending" in root_readme
+        assert "No latency, resource, ablation, or" in root_readme
+        assert "Deployment blocks | 5 matched fresh-cluster blocks" in root_readme
+        assert "Closed-loop request concurrency | 1, 2, and 4" in root_readme
+        assert main_table.count("| Baseline |") == 9
+        assert main_table.count("| Vanilla&nbsp;KV |") == 9
+        assert main_table.count("N/A (0.27.1 campaign pending)") == 162
+        assert "P50 decode tok/s" in main_table
+        assert "Peak GPU process memory" in main_table
+        assert estimand_table.count("| Vanilla KV vs Baseline |") == 9
+        assert estimand_table.count("N/A (0.27.1 campaign pending)") == 52
+        for auxiliary in (
+            "BF16 payload/runtime KV vs Q8",
+            "RAM vs Disk",
+            "Unity Catalog vs Disk",
+            "A10G vs L4",
+        ):
+            assert auxiliary in estimand_table
+        for context in ("8k", "16k", "32k"):
+            for concurrency in (1, 2, 4):
+                assert f"| Baseline | {context} | {concurrency} |" in main_table
+                assert (
+                    f"| Vanilla&nbsp;KV | {context} | {concurrency} |"
+                    in main_table
+                )
+
+        assert score_table.count("N/A (0.27.1 full evaluation pending)") == 81
+        assert "Baseline parser-status counts" in score_table
+        assert "Vanilla parser-status counts" in score_table
+        for parser_status in (
+            "ok",
+            "missing_block",
+            "multiple_or_malformed_blocks",
+            "extraneous_text",
+            "nested_block",
+            "empty_answer",
+        ):
+            assert f"`{parser_status}`" in score_table
+        assert "including explicit zeros for unobserved" in score_table
+        assert "Vanilla − Baseline" in score_table
+        assert score_table.count("| 8k |") == 3
+        assert score_table.count("| 16k |") == 3
+        assert score_table.count("| 32k |") == 3
+        assert "| Context | Needle position | n |" in score_table
+        assert "N/A (runner not implemented)" in score_table
+        assert "All 23 governed descriptive cells" in root_readme
+        assert "absence means that no campaign result is" in appendix_readme
+        assert "Superseded result folders are not retained" in appendix_readme
+        expected_files = base_files
+    else:
+
+        def canonical_json_record(path: Path) -> dict[str, object]:
+            def reject_duplicate_keys(
+                pairs: list[tuple[str, object]],
+            ) -> dict[str, object]:
+                value: dict[str, object] = {}
+                for key, item in pairs:
+                    assert key not in value
+                    value[key] = item
+                return value
+
+            raw = stable_read_bytes(path)
+            record = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=reject_duplicate_keys,
+            )
+            assert isinstance(record, dict)
+            canonical = (
+                json.dumps(
+                    record,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
+            assert raw == canonical
+            return record
+
+        report = canonical_json_record(report_path)
+        gate = canonical_json_record(gate_path)
+        validate_vllm_0271_publication_report_pair(report, gate)
+        validate_vllm_0271_publication_table_regions(root_readme, report, gate)
+        expected_campaign_readme = render_vllm_0271_publication_appendix_readme(
+            report,
+            gate,
+        )
+        expected_campaign_readme_bytes = expected_campaign_readme.encode("utf-8")
+        assert (
+            stable_read_bytes(campaign_readme_path)
+            == expected_campaign_readme_bytes
+        )
+        assert "Status: vLLM 0.27.1 campaign published" in root_readme
+        benchmark_markdown = "\n".join(
+            strict_markdown(benchmark_root / relative_path)
+            for relative_path, entry_type in initial_tree
+            if entry_type == "file" and relative_path.endswith(".md")
+        )
+        assert "N/A (0.27.1 campaign pending)" not in benchmark_markdown
+        assert "N/A (0.27.1 full evaluation pending)" not in benchmark_markdown
+        assert "| Dataset | Governed metric | n |" in root_readme
+        for unsupported in (
+            "KV&nbsp;Packet",
+            "CacheBlend",
+            "InfoFlow&nbsp;KV",
+            "LongBench v2",
+            "RULER",
+            "Packed Q4",
+            "Hybrid RAM/disk/Unity Catalog",
+            "SGLang",
+        ):
+            assert unsupported in root_readme
+        expected_files = base_files | {
+            "appendix/vllm-0271-publication-v1/README.md",
+            "appendix/vllm-0271-publication-v1/benchmark-publication-gate.json",
+            "appendix/vllm-0271-publication-v1/campaign-report.json",
+        }
+        base_directories = base_directories | {
+            "appendix/vllm-0271-publication-v1"
+        }
+
+    unsupported_method_section = _markdown_section(
+        root_readme,
+        "Unsupported Method Status",
+    )
+    assert sha256(unsupported_method_section.encode("utf-8")).hexdigest() == (
+        "eb927a995873e13379d1c4921c26c8149a5bf417a9f6f2f5c163460c22dded46"
+    )
+    assert "71.390128 reconciled GPU-hours" in root_readme
+    assert "exact 236/98/236 post-migration append-only prefix" in root_readme
+    assert "zero active reservations" in root_readme
     actual_files = {
-        str(path.relative_to(benchmark_root))
-        for path in benchmark_root.rglob("*")
-        if path.is_file()
+        relative_path
+        for relative_path, entry_type in initial_tree
+        if entry_type == "file"
     }
     assert actual_files == expected_files
+    actual_directories = {
+        relative_path
+        for relative_path, entry_type in initial_tree
+        if entry_type == "directory"
+    }
+    assert actual_directories == base_directories
+    for path, expected_bytes in byte_snapshots.items():
+        assert path.read_bytes() == expected_bytes
+    final_tree = benchmark_tree_snapshot()
+    assert final_tree == initial_tree
 
     ledger_doc = (REPO_ROOT / "docs" / "databricks-cluster-hour-ledger.md").read_text(
         encoding="utf-8"
@@ -1573,9 +1781,18 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
         "reconciled opening balance is therefore 67.930336 GPU-hours"
     ) in compact_ledger_doc
     assert (
-        "The retained opening balance is now 71.390128 GPU-hours, with zero active "
-        "reservations and 952.609872 hours remaining"
+        "The immutable campaign-opening snapshot records 71.390128 GPU-hours, "
+        "zero active reservations, and 952.609872 hours remaining"
     ) in compact_ledger_doc
+    assert (
+        "historical plan authority, not a claim about the live ledger"
+        in compact_ledger_doc
+    )
+    assert "extends that same ordered ledger to 265/127/265" in compact_ledger_doc
+    assert "extends it again to 279/141/279" in compact_ledger_doc
+    assert (
+        "not permission to reuse a stale controller freeze" in compact_ledger_doc
+    )
     for provenance_sha256 in (
         "694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830",
         "7455fa1e30356bb79ccb75a8dbe24df32f33a365141505e0270eb13c7f39b71d",
@@ -1590,7 +1807,7 @@ def test_standalone_benchmark_surface_tracks_pending_0271_campaign():
     subindex_expectations = {
         "databricks": "No Databricks benchmark result is currently published",
         "sglang": "not implemented",
-        "storage": "vLLM 0.27.1 campaign will refresh",
+        "storage": "vLLM 0.27.1 campaign defines",
         "vllm": "vLLM 0.27.1",
     }
     for folder, expected in subindex_expectations.items():

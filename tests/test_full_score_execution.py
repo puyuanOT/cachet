@@ -135,6 +135,27 @@ class _AcceptedButResponseLostOpener:
         raise TimeoutError("accepted remotely; local response was lost")
 
 
+@pytest.fixture(autouse=True)
+def _bind_full_score_current_user(monkeypatch):
+    def require_current_user(_workspace, *, expected_user_name, opener=None):
+        assert expected_user_name == "researcher@example.com"
+        return {
+            "authenticated": True,
+            "user_name_sha256": _digest(expected_user_name),
+        }
+
+    monkeypatch.setattr(
+        full_score,
+        "require_databricks_current_user_name",
+        require_current_user,
+    )
+    monkeypatch.setattr(
+        full_score_remote,
+        "require_databricks_current_user_name",
+        require_current_user,
+    )
+
+
 def _digest(label):
     return sha256(label.encode("utf-8")).hexdigest()
 
@@ -180,6 +201,11 @@ def _close(record):
         full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE,
     }:
         record.setdefault("runtime_verification", _runtime_verification())
+    if (
+        record.get("record_type")
+        == full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE
+    ):
+        record.setdefault("protocol", full_score._full_score_protocol_record())
     record["closed_record_sha256"] = full_score._closed_record_sha256(record)
     return record
 
@@ -1333,10 +1359,11 @@ def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
         )
 
 
-def test_niah_measurement_cell_must_replay_from_bound_source():
+def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
     key = ("niah", "niah-example")
     measurement = SimpleNamespace(
         arm_id=full_score.BASELINE_PREFILL_ARM,
+        artifact_id="",
         cache_method=None,
         dataset=key[0],
         error=None,
@@ -1359,10 +1386,209 @@ def test_niah_measurement_cell_must_replay_from_bound_source():
         full_score._validated_method_measurements(
             [measurement],
             method="baseline_prefill",
+            shard_id="shard-000",
             expected_items={
                 key: {"natural_prompt_sha256": _digest("natural-prompt")}
             },
             examples={key: example},
+        )
+
+    injected_baseline_artifact = copy.deepcopy(measurement)
+    injected_baseline_artifact.artifact_id = _digest("injected-baseline-artifact")
+    with pytest.raises(ValueError, match="unexpectedly declares an artifact ID"):
+        full_score._validated_method_measurements(
+            [injected_baseline_artifact],
+            method="baseline_prefill",
+            shard_id="shard-000",
+            expected_items={
+                key: {"natural_prompt_sha256": _digest("natural-prompt")}
+            },
+            examples={key: example},
+        )
+
+    protocol_source = _score_record("niah", 0)
+    protocol_example = full_score._example_from_record(
+        protocol_source,
+        default_dataset="niah",
+        record_index=1,
+        require_dataset=True,
+    )
+    protocol_key = ("niah", protocol_example.example_id)
+    protocol_examples = {protocol_key: protocol_example}
+
+    def protocol_result(method):
+        arm_id = (
+            full_score.BASELINE_PREFILL_ARM
+            if method == "baseline_prefill"
+            else full_score.FULL_SCORE_VANILLA_ARM_ID
+        )
+        measurements = ()
+        manifest = full_score._build_expected_full_score_benchmark_manifest(
+            method=method,
+            shard_id="shard-000",
+            protocol_examples=protocol_examples,
+            measurements=measurements,
+        )
+        return SimpleNamespace(
+            baseline_arm_id=arm_id,
+            evidence_policy="smoke",
+            execution_isolation_mode="shared_process_sequential",
+            experiment_manifest=manifest,
+            interleave_examples=False,
+            isolate_arms=True,
+            prefix_cache_salt_mode="per_request",
+            repeats=full_score.FULL_SCORE_PASSES_PER_METHOD,
+            request_parallelism=full_score.FULL_SCORE_REQUEST_PARALLELISM,
+            measurements=measurements,
+            seed=None,
+            shuffle=False,
+            suite=SimpleNamespace(
+                datasets=("niah",),
+                examples=(object(),),
+                hardware_target="aws-g6-l4",
+                model_id=full_score.FULL_SCORE_SERVED_MODEL_NAME,
+                suite_id=(
+                    f"{full_score.FULL_SCORE_PROTOCOL_ID}:shard-000:{method}"
+                ),
+            ),
+            warmups=0,
+        )
+
+    shard = {"shard_id": "shard-000"}
+    expected_items = {
+        protocol_key: {"natural_prompt_sha256": _digest("natural-prompt")}
+    }
+    for method in full_score.FULL_SCORE_METHODS:
+        result = protocol_result(method)
+        full_score._validate_full_score_benchmark_protocol(
+            result,
+            method=method,
+            shard=shard,
+            expected_items=expected_items,
+            protocol_examples=protocol_examples,
+        )
+        object.__setattr__(result.experiment_manifest, "temperature", 0.5)
+        with pytest.raises(ValueError, match="complete manifest protocol drift"):
+            full_score._validate_full_score_benchmark_protocol(
+                result,
+                method=method,
+                shard=shard,
+                expected_items=expected_items,
+                protocol_examples=protocol_examples,
+            )
+
+        arm_drift = protocol_result(method)
+        object.__setattr__(
+            arm_drift.experiment_manifest.arms[0],
+            "method_version",
+            "substituted-method-version",
+        )
+        with pytest.raises(ValueError, match="complete manifest protocol drift"):
+            full_score._validate_full_score_benchmark_protocol(
+                arm_drift,
+                method=method,
+                shard=shard,
+                expected_items=expected_items,
+                protocol_examples=protocol_examples,
+            )
+
+        runtime_drift = protocol_result(method)
+        object.__setattr__(
+            runtime_drift.experiment_manifest.arms[0].runtime_environment,
+            "lora_id",
+            "substituted-lora",
+        )
+        with pytest.raises(ValueError, match="complete manifest protocol drift"):
+            full_score._validate_full_score_benchmark_protocol(
+                runtime_drift,
+                method=method,
+                shard=shard,
+                expected_items=expected_items,
+                protocol_examples=protocol_examples,
+            )
+
+    concurrency_drift = protocol_result("baseline_prefill")
+    concurrency_drift.request_parallelism = 1
+    with pytest.raises(ValueError, match="execution protocol drift"):
+        full_score._validate_full_score_benchmark_protocol(
+            concurrency_drift,
+            method="baseline_prefill",
+            shard=shard,
+            expected_items=expected_items,
+            protocol_examples=protocol_examples,
+        )
+
+    logical_prompt_sha256 = _digest("logical-prompt")
+    runtime_prompt_sha256 = _digest("runtime-prompt")
+    expected_cache_salt = "shard-000:vanilla:exact-cache-salt"
+    vanilla_prompt_measurement = SimpleNamespace(
+        metadata={
+            "kv_transfer_params_attached": "true",
+            "logical_prompt_sha256": logical_prompt_sha256,
+            "logical_prompt_tokens": "20",
+            "physical_transform_id": "cachet.vanilla.per_document_segments",
+            "physical_transform_version": "1",
+            "prefix_cache_salt": expected_cache_salt,
+            "prefix_cache_salt_attached": "true",
+            "prompt_text_mode": "runtime",
+            "prompt_token_source": "server_usage",
+            "request_id": "request-1",
+            "request_mode": "completion",
+            "request_payload_endpoint": "/v1/completions",
+            "request_payload_keys": (
+                "cache_salt,kv_transfer_params,max_tokens,model,prompt,request_id,"
+                "stream,stream_options,temperature"
+            ),
+            "request_payload_kv_transfer_param_keys": "document_kv.request_id",
+            "request_payload_max_token_fields": "max_tokens",
+            "request_payload_max_tokens": "64",
+            "request_payload_prompt_chars": "12",
+            "request_payload_prompt_sha256": runtime_prompt_sha256,
+            "runtime_prompt_sha256": runtime_prompt_sha256,
+            "runtime_prompt_tokens": "4",
+            "server": "openai-compatible",
+            "server_usage_prompt_tokens": "4",
+            "server_usage_prompt_tokens_present": "true",
+            "stream": "true",
+        },
+        prompt_tokens=4,
+        request_id="request-1",
+    )
+    prompt_protocol = {
+        "method": "vanilla_prefill",
+        "expected_logical_prompt_sha256": logical_prompt_sha256,
+        "expected_runtime_prompt_sha256": runtime_prompt_sha256,
+        "expected_request_prompt_chars": 12,
+        "expected_prefix_cache_salt": expected_cache_salt,
+        "expected_kv_parameter_keys": "document_kv.request_id",
+        "expected_logical_prompt_tokens": 20,
+    }
+    full_score._validate_full_score_measurement_prompt_protocol(
+        vanilla_prompt_measurement,
+        **prompt_protocol,
+    )
+    missing_runtime_flag = copy.deepcopy(vanilla_prompt_measurement)
+    missing_runtime_flag.metadata["prompt_text_mode"] = "logical"
+    with pytest.raises(ValueError, match="prompt-delivery protocol drift"):
+        full_score._validate_full_score_measurement_prompt_protocol(
+            missing_runtime_flag,
+            **prompt_protocol,
+        )
+    sent_logical_prompt = copy.deepcopy(vanilla_prompt_measurement)
+    sent_logical_prompt.metadata[
+        "request_payload_prompt_sha256"
+    ] = logical_prompt_sha256
+    with pytest.raises(ValueError, match="prompt-delivery protocol drift"):
+        full_score._validate_full_score_measurement_prompt_protocol(
+            sent_logical_prompt,
+            **prompt_protocol,
+        )
+    noncanonical_usage = copy.deepcopy(vanilla_prompt_measurement)
+    noncanonical_usage.metadata["server_usage_prompt_tokens"] = "04"
+    with pytest.raises(ValueError, match="not canonical"):
+        full_score._validate_full_score_measurement_prompt_protocol(
+            noncanonical_usage,
+            **prompt_protocol,
         )
 
 
@@ -1641,6 +1867,14 @@ def test_databricks_renders_two_independent_bounded_phases(campaign, monkeypatch
     assert {task["new_cluster"]["node_type_id"] for task in producer_run["tasks"]} == {
         "g6e.4xlarge"
     }
+    assert {
+        task["new_cluster"]["data_security_mode"]
+        for task in producer_run["tasks"]
+    } == {"SINGLE_USER"}
+    assert {
+        task["new_cluster"]["single_user_name"]
+        for task in producer_run["tasks"]
+    } == {"researcher@example.com"}
     assert all("depends_on" not in task for task in producer_run["tasks"])
     assert all(
         set(task)
@@ -1659,6 +1893,28 @@ def test_databricks_renders_two_independent_bounded_phases(campaign, monkeypatch
         workload_id="full-score",
     )
     assert producer_reservation.reserved_cluster_hours == 96.0
+    mixed_principals = copy.deepcopy(producer_run)
+    mixed_principals["tasks"][0]["new_cluster"]["single_user_name"] = (
+        "attacker@example.com"
+    )
+    with pytest.raises(ValueError, match="share one exact principal"):
+        full_score._validated_full_score_phase_submit_payload(
+            campaign["execution_plan"],
+            mixed_principals,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+        )
+    for invalid_principal in (
+        "researcher\x00@example.com",
+        "researcher\x7f@example.com",
+    ):
+        with pytest.raises(ValueError, match="normalized non-empty string"):
+            replace(
+                campaign["job"],
+                single_user_name=invalid_principal,
+            )
 
     consumers = _phase_payloads(campaign, 0, "consumer")
     with pytest.raises(ValueError, match="producer-phase completion"):
@@ -2480,6 +2736,73 @@ def test_governed_submit_couples_reservation_exact_wire_and_receipt(campaign):
     assert len(opener.requests) == 1
 
 
+def test_full_score_live_identity_fails_before_reservation_state(
+    campaign,
+    monkeypatch,
+):
+    attempt_id = "wave-000-producer-wrong-principal"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    observed = []
+
+    def reject_current_user(_workspace, *, expected_user_name, opener=None):
+        observed.append((expected_user_name, opener))
+        raise ValueError("Databricks current-user identity differs")
+
+    monkeypatch.setattr(
+        full_score,
+        "require_databricks_current_user_name",
+        reject_current_user,
+    )
+    ledger_path = campaign["tmp_path"] / "wrong-principal-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    ledger_before = ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match="current-user identity differs"):
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+            submit_payload,
+            ledger_path=ledger_path,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign[
+                "latency_collection_authorization"
+            ],
+            latency_execution_plan_record=campaign[
+                "latency_execution_plan_record"
+            ],
+        )
+
+    assert ledger_path.read_bytes() == ledger_before
+    assert not ledger_path.with_name(
+        f"{ledger_path.name}.full-score-phase-intents"
+    ).exists()
+    assert not ledger_path.with_name(
+        f"{ledger_path.name}.full-score-phase-leases"
+    ).exists()
+
+    assert observed == [("researcher@example.com", None)]
+
+
 def test_direct_collection_issues_ordered_path_bound_phase_authority(campaign):
     collected = _collect_wave_zero_producer(campaign, label="phase-chain")
     authorization = collected["phase_authorization"]
@@ -2814,7 +3137,10 @@ def test_publication_aggregate_requires_current_final_consumer_authority(campaig
         )
 
 
-def test_terminal_collection_resumes_exact_crash_boundaries_and_races(campaign):
+def test_terminal_collection_resumes_exact_crash_boundaries_and_races(
+    campaign,
+    monkeypatch,
+):
     workspace = DatabricksWorkspaceConfig(
         "https://dbc.example/",
         "secret-token",
@@ -2833,6 +3159,34 @@ def test_terminal_collection_resumes_exact_crash_boundaries_and_races(campaign):
             terminal_record_path=reserved["terminal_path"],
             opener=reserved["opener"],
         )
+
+    wrong_identity = _reserve_wave_zero_producer(
+        campaign,
+        label="collector-wrong-principal",
+    )
+    wrong_identity_ledger = wrong_identity["ledger_path"].read_bytes()
+    wrong_identity_request_count = len(wrong_identity["opener"].requests)
+    observed_principals = []
+
+    def reject_current_user(_workspace, *, expected_user_name, opener=None):
+        observed_principals.append((expected_user_name, opener))
+        raise ValueError("Databricks current-user identity differs")
+
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            full_score,
+            "require_databricks_current_user_name",
+            reject_current_user,
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            collect(wrong_identity)
+    assert observed_principals == [
+        ("researcher@example.com", wrong_identity["opener"])
+    ]
+    assert len(wrong_identity["opener"].requests) == wrong_identity_request_count
+    assert wrong_identity["ledger_path"].read_bytes() == wrong_identity_ledger
+    assert not wrong_identity["run_path"].exists()
+    assert not wrong_identity["terminal_path"].exists()
 
     after_run_file = _reserve_wave_zero_producer(
         campaign,
@@ -2945,7 +3299,10 @@ def test_concurrent_duplicate_phase_launch_opens_exactly_once(campaign):
     assert len(ledger.submission_receipts) == 1
 
 
-def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(campaign):
+def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
+    campaign,
+    monkeypatch,
+):
     attempt_id = "wave-000-producer-recovery"
     submit_payload = full_score.build_databricks_full_score_run_submit_payload(
         campaign["job"],
@@ -2989,6 +3346,46 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(campaign):
             ],
         )
     )
+    rejected_opener = _FakeDatabricksOpener({"run_id": 91_999})
+    observed_principals = []
+
+    def reject_current_user(_workspace, *, expected_user_name, opener=None):
+        observed_principals.append((expected_user_name, opener))
+        raise ValueError("Databricks current-user identity differs")
+
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            full_score,
+            "require_databricks_current_user_name",
+            reject_current_user,
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            full_score.submit_governed_full_score_phase_attempt(
+                DatabricksWorkspaceConfig(
+                    "https://dbc.example/", "secret-token"
+                ),
+                submit_payload,
+                ledger_path=ledger_path,
+                submission_authorization=submission_authorization,
+                opener=rejected_opener,
+            )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            full_score.recover_governed_full_score_phase_attempt(
+                DatabricksWorkspaceConfig(
+                    "https://dbc.example/", "secret-token"
+                ),
+                submit_payload,
+                ledger_path=ledger_path,
+                submission_authorization=submission_authorization,
+                opener=rejected_opener,
+            )
+    assert observed_principals == [
+        ("researcher@example.com", rejected_opener),
+        ("researcher@example.com", rejected_opener),
+    ]
+    assert rejected_opener.requests == []
+    assert not ledger_path.with_name(f"{ledger_path.name}.post-claims").exists()
+
     lost = _AcceptedButResponseLostOpener()
     with pytest.raises(TimeoutError, match="response was lost"):
         full_score.submit_governed_full_score_phase_attempt(
@@ -3153,6 +3550,8 @@ def test_reserved_phase_resumes_after_controller_restart(
                 phase="producer",
             )
             lease_path.unlink()
+            lease_root = lease_path.parent
+            lease_root.rmdir()
             with pytest.raises(ValueError, match="post-batch lease"):
                 full_score.replay_governed_full_score_phase_submission_authorization(
                     ledger_path,
@@ -3173,6 +3572,125 @@ def test_reserved_phase_resumes_after_controller_restart(
                         "latency_execution_plan_record"
                     ],
                 )
+            assert not lease_root.exists()
+            ledger_before_wrong_identity = ledger_path.read_bytes()
+            rejected_opener = _FakeDatabricksOpener({"run_id": 92_999})
+            observed_principals = []
+
+            def reject_current_user(
+                _workspace,
+                *,
+                expected_user_name,
+                opener=None,
+            ):
+                observed_principals.append((expected_user_name, opener))
+                raise ValueError("Databricks current-user identity differs")
+
+            with monkeypatch.context() as identity_patch:
+                identity_patch.setattr(
+                    full_score,
+                    "require_databricks_current_user_name",
+                    reject_current_user,
+                )
+                with pytest.raises(
+                    ValueError,
+                    match="current-user identity differs",
+                ):
+                    full_score.resume_governed_full_score_phase_attempt(
+                        workspace,
+                        submit_payload,
+                        ledger_path=ledger_path,
+                        execution_plan=campaign["execution_plan"],
+                        inventory=campaign["inventory"],
+                        shard_plan=campaign["shard_plan"],
+                        wave_index=0,
+                        phase="producer",
+                        attempt_id=attempt_id,
+                        qualification_launch_authorization=campaign[
+                            "qualification_launch_authorization"
+                        ],
+                        predecessor_authorization=campaign[
+                            "latency_collection_authorization"
+                        ],
+                        latency_execution_plan_record=campaign[
+                            "latency_execution_plan_record"
+                        ],
+                        opener=rejected_opener,
+                    )
+            assert observed_principals == [
+                ("researcher@example.com", rejected_opener)
+            ]
+            assert rejected_opener.requests == []
+            assert ledger_path.read_bytes() == ledger_before_wrong_identity
+            assert not lease_root.exists()
+            assert not ledger_path.with_name(
+                f"{ledger_path.name}.post-claims"
+            ).exists()
+
+            intent_path = full_score._full_score_phase_intent_path(
+                ledger_path,
+                execution_plan_sha256=campaign["execution_plan"][
+                    "closed_record_sha256"
+                ],
+                wave_index=0,
+                phase="producer",
+            )
+            intent_bytes = intent_path.read_bytes()
+            race_opener = _FakeDatabricksOpener({"run_id": 92_998})
+
+            def authenticate_after_deleting_intent(
+                _workspace,
+                *,
+                expected_user_name,
+                opener=None,
+            ):
+                assert expected_user_name == "researcher@example.com"
+                assert opener is race_opener
+                intent_path.unlink()
+                return {
+                    "authenticated": True,
+                    "user_name_sha256": _digest(expected_user_name),
+                }
+
+            with monkeypatch.context() as identity_patch:
+                identity_patch.setattr(
+                    full_score,
+                    "require_databricks_current_user_name",
+                    authenticate_after_deleting_intent,
+                )
+                with pytest.raises(
+                    ValueError,
+                    match="pre-reservation intent",
+                ):
+                    full_score.resume_governed_full_score_phase_attempt(
+                        workspace,
+                        submit_payload,
+                        ledger_path=ledger_path,
+                        execution_plan=campaign["execution_plan"],
+                        inventory=campaign["inventory"],
+                        shard_plan=campaign["shard_plan"],
+                        wave_index=0,
+                        phase="producer",
+                        attempt_id=attempt_id,
+                        qualification_launch_authorization=campaign[
+                            "qualification_launch_authorization"
+                        ],
+                        predecessor_authorization=campaign[
+                            "latency_collection_authorization"
+                        ],
+                        latency_execution_plan_record=campaign[
+                            "latency_execution_plan_record"
+                        ],
+                        opener=race_opener,
+                    )
+            assert race_opener.requests == []
+            assert ledger_path.read_bytes() == ledger_before_wrong_identity
+            assert not lease_root.exists()
+            assert not ledger_path.with_name(
+                f"{ledger_path.name}.post-claims"
+            ).exists()
+            intent_path.write_bytes(intent_bytes)
+
             replayed = full_score.recover_governed_full_score_phase_reservation(
                 ledger_path,
                 submit_payload,
@@ -3944,6 +4462,44 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
     remote_files[producer_submit_uri] = (
         full_score._canonical_pretty_json_bytes(producer_submit)
     )
+    downloads_before_wrong_identity = list(download_calls)
+    producer_requests_before_wrong_identity = len(producer_opener.requests)
+
+    def reject_remote_current_user(
+        _workspace,
+        *,
+        expected_user_name,
+        opener=None,
+    ):
+        assert expected_user_name == "researcher@example.com"
+        assert opener is producer_opener
+        raise ValueError("Databricks current-user identity differs")
+
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            full_score_remote,
+            "require_databricks_current_user_name",
+            reject_remote_current_user,
+        )
+        with pytest.raises(ValueError, match="current-user identity differs"):
+            full_score_remote.collect_governed_full_score_remote_phase_attempt(
+                workspace,
+                cas=cas,
+                execution_plan=campaign["execution_plan"],
+                inventory=campaign["inventory"],
+                shard_plan=campaign["shard_plan"],
+                ledger_path=ledger_path,
+                submission_authorization=producer_submission_authorization,
+                submit_payload_uri=producer_submit_uri,
+                control_plane_run_uri=producer_run_uri,
+                terminal_record_uri=producer_terminal_uri,
+                single_user_name="researcher@example.com",
+                opener=producer_opener,
+            )
+    assert download_calls == downloads_before_wrong_identity
+    assert len(producer_opener.requests) == producer_requests_before_wrong_identity
+    with pytest.raises(ValueError, match="missing"):
+        cas.resolve(producer_submit_uri)
     producer_terminal, producer_authorization = (
         full_score_remote.collect_governed_full_score_remote_phase_attempt(
             workspace,
@@ -3956,6 +4512,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
             submit_payload_uri=producer_submit_uri,
             control_plane_run_uri=producer_run_uri,
             terminal_record_uri=producer_terminal_uri,
+            single_user_name="researcher@example.com",
             opener=producer_opener,
         )
     )
@@ -4067,6 +4624,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
             submit_payload_uri=consumer_submit_uri,
             control_plane_run_uri=consumer_run_uri,
             terminal_record_uri=consumer_terminal_uri,
+            single_user_name="researcher@example.com",
             opener=consumer_opener,
         )
     )
@@ -4252,6 +4810,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
             submit_payload_uri=wave_one_submit_uri,
             control_plane_run_uri=wave_one_run_uri,
             terminal_record_uri=wave_one_terminal_uri,
+            single_user_name="researcher@example.com",
             opener=wave_one_opener,
         )
     )
@@ -5208,6 +5767,10 @@ def test_governed_paths_and_recursive_delete_reject_ancestor_symlinks(
 def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
     tmp_path, monkeypatch
 ):
+    assert full_score.FULL_SCORE_AGGREGATE_RECORD_TYPE == (
+        "cachet.full_score_aggregate.v2"
+    )
+    assert full_score.FULL_SCORE_AGGREGATE_SCHEMA_VERSION == 2
     counts = {"biography": 1, "hotpotqa": 1, "musique": 1, "niah": 1000}
     paths = _write_sources(tmp_path / "full-scores", counts)
     inventory = load_full_score_inventory(paths, tokenizer=_CharacterTokenizer())
@@ -5453,6 +6016,7 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         controller_authorization_record_sha256=_digest("remote-authorization"),
         coordinator_run_id="97101",
         evidence_bindings=(evidence_binding,),
+        execution_plan_sha256=execution_plan["closed_record_sha256"],
         phase_terminal_record_sha256=aggregate_terminal_record_sha256,
         runs_get_receipt_record_sha256=_digest("remote-runs-get-receipt"),
         wave_index=0,
@@ -5517,12 +6081,35 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
                 remote_authorization.controller_authorization_record_sha256
             ),
             "coordinator_run_id": remote_authorization.coordinator_run_id,
+            "execution_plan_sha256": execution_plan["closed_record_sha256"],
+            "phase_terminal_record_sha256": aggregate_terminal_record_sha256,
             "runs_get_receipt_record_sha256": (
                 remote_authorization.runs_get_receipt_record_sha256
             ),
             "wave_index": 0,
         }
     ]
+    assert publication_aggregate["scorers"] == full_score._scorer_contract_record()
+    full_score.validate_full_score_aggregate_record(
+        publication_aggregate,
+        inventory=inventory,
+        shard_plan=plan,
+        execution_plan=execution_plan,
+        require_publication=True,
+    )
+    remote_plan_drift = copy.deepcopy(publication_aggregate)
+    remote_plan_drift["publication_lineage"][
+        "remote_consumer_authorizations"
+    ][0]["execution_plan_sha256"] = _digest("remote-plan-drift")
+    _close(remote_plan_drift)
+    with pytest.raises(ValueError, match="remote execution-plan authority drift"):
+        full_score.validate_full_score_aggregate_record(
+            remote_plan_drift,
+            inventory=inventory,
+            shard_plan=plan,
+            execution_plan=execution_plan,
+            require_publication=True,
+        )
     original_evidence_bytes = evidence_path.read_bytes()
     evidence_path.write_bytes(original_evidence_bytes + b" ")
     with pytest.raises(ValueError, match="CAS evidence binding drift"):
@@ -5566,6 +6153,25 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         [evidence],
         authorization_scope=full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE,
     )
+    assert set(aggregate) == {
+        "aggregation_unit",
+        "authorization_scope",
+        "bootstrap",
+        "closed_record_sha256",
+        "datasets",
+        "identity_count",
+        "inventory_sha256",
+        "methods",
+        "niah_grid",
+        "passes_per_method",
+        "protocol",
+        "record_type",
+        "schema_version",
+        "scorers",
+        "shard_count",
+        "shard_plan_sha256",
+    }
+    assert aggregate["scorers"] == full_score._scorer_contract_record()
     assert aggregate["identity_count"] == 1003
     assert aggregate["datasets"]["niah"]["example_count"] == 1000
     assert set(aggregate["niah_grid"]) == set(NIAH_CELL_IDS)
@@ -5583,6 +6189,10 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
             assert set(counts_by_status) == expected_statuses
             assert counts_by_status["ok"] == counts[dataset]
             assert sum(counts_by_status.values()) == counts[dataset]
+            assert all(
+                summary["invalid_parser_score_sum"] == 0.0
+                for summary in method_record["metrics"].values()
+            )
     for dataset, delta in deltas.items():
         summaries = aggregate["datasets"][dataset][
             "paired_vanilla_minus_baseline"
@@ -5591,6 +6201,165 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
             round(delta, 7)
         }
         assert all(value["bootstrap_ci95"]["draws"] == 25 for value in summaries.values())
+    full_score.validate_full_score_aggregate_record(
+        aggregate,
+        inventory=inventory,
+        shard_plan=plan,
+    )
+    aggregate_niah_redistribution = copy.deepcopy(aggregate)
+    aggregate_niah_redistribution["niah_grid"][NIAH_CELL_IDS[0]][
+        "example_count"
+    ] -= 1
+    aggregate_niah_redistribution["niah_grid"][NIAH_CELL_IDS[1]][
+        "example_count"
+    ] += 1
+    _close(aggregate_niah_redistribution)
+    with pytest.raises(ValueError, match="cell count distribution drift"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_niah_redistribution,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+    with pytest.raises(ValueError, match="rejects local_fixture_only"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate,
+            inventory=inventory,
+            shard_plan=plan,
+            require_publication=True,
+        )
+
+    aggregate_scorer_drift = copy.deepcopy(aggregate)
+    aggregate_scorer_drift["scorers"][0]["answer_parser_digest"] = _digest(
+        "aggregate-parser-drift"
+    )
+    _close(aggregate_scorer_drift)
+    with pytest.raises(ValueError, match="scorer/parser contract drift"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_scorer_drift,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_scorer_type_drift = copy.deepcopy(aggregate)
+    aggregate_scorer_type_drift["scorers"][0]["publication_approved"] = 1
+    _close(aggregate_scorer_type_drift)
+    with pytest.raises(ValueError, match="scorer/parser contract drift"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_scorer_type_drift,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_parser_count_drift = copy.deepcopy(aggregate)
+    aggregate_parser_count_drift["datasets"]["biography"]["methods"][
+        "baseline_prefill"
+    ]["parser_status_counts"]["ok"] = 0
+    _close(aggregate_parser_count_drift)
+    with pytest.raises(ValueError, match="parser-status coverage drift"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_parser_count_drift,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_invalid_score_credit = copy.deepcopy(aggregate)
+    invalid_credit_counts = aggregate_invalid_score_credit["datasets"][
+        "biography"
+    ]["methods"]["baseline_prefill"]["parser_status_counts"]
+    invalid_credit_counts["ok"] = 0
+    invalid_credit_counts["missing_block"] = 1
+    _close(aggregate_invalid_score_credit)
+    with pytest.raises(ValueError, match="credits invalid parsed answers"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_invalid_score_credit,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_metric_drift = copy.deepcopy(aggregate)
+    biography_metrics = aggregate_metric_drift["datasets"]["biography"][
+        "methods"
+    ]["baseline_prefill"]["metrics"]
+    first_biography_metric = next(iter(biography_metrics.values()))
+    first_biography_metric["sum"] = 0.5
+    _close(aggregate_metric_drift)
+    with pytest.raises(ValueError, match="metric mean/sum identity drift"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_metric_drift,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_invalid_parser_sum = copy.deepcopy(aggregate)
+    first_invalid_parser_summary = next(
+        iter(
+            aggregate_invalid_parser_sum["datasets"]["biography"]["methods"][
+                "baseline_prefill"
+            ]["metrics"].values()
+        )
+    )
+    first_invalid_parser_summary["invalid_parser_score_sum"] = 0.25
+    _close(aggregate_invalid_parser_sum)
+    with pytest.raises(ValueError, match="credits an invalid parsed answer"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_invalid_parser_sum,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_protocol_drift = copy.deepcopy(aggregate)
+    aggregate_protocol_drift["protocol"]["temperature"] = 0.5
+    _close(aggregate_protocol_drift)
+    with pytest.raises(ValueError, match="protocol contract drift"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_protocol_drift,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_paired_mean_drift = copy.deepcopy(aggregate)
+    first_paired_summary = next(
+        iter(
+            aggregate_paired_mean_drift["datasets"]["biography"][
+                "paired_vanilla_minus_baseline"
+            ].values()
+        )
+    )
+    first_paired_summary["mean"] = 0.0
+    _close(aggregate_paired_mean_drift)
+    with pytest.raises(ValueError, match="paired mean identity drift"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_paired_mean_drift,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_seed_drift = copy.deepcopy(aggregate)
+    first_biography_delta = next(
+        iter(
+            aggregate_seed_drift["datasets"]["biography"][
+                "paired_vanilla_minus_baseline"
+            ].values()
+        )
+    )
+    first_biography_delta["seed_sha256"] = _digest("aggregate-seed-drift")
+    _close(aggregate_seed_drift)
+    with pytest.raises(ValueError, match="deterministic CI identity drift"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_seed_drift,
+            inventory=inventory,
+            shard_plan=plan,
+        )
+
+    aggregate_niah_coverage_drift = copy.deepcopy(aggregate)
+    del aggregate_niah_coverage_drift["niah_grid"][NIAH_CELL_IDS[-1]]
+    _close(aggregate_niah_coverage_drift)
+    with pytest.raises(ValueError, match="exact nine-cell NIAH grid"):
+        full_score.validate_full_score_aggregate_record(
+            aggregate_niah_coverage_drift,
+            inventory=inventory,
+            shard_plan=plan,
+        )
 
     scorer_drift = copy.deepcopy(evidence)
     scorer_drift["paired_examples"][0]["methods"]["baseline_prefill"][
@@ -5602,6 +6371,26 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
             inventory,
             plan,
             [scorer_drift],
+            authorization_scope=(
+                full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE
+            ),
+        )
+
+    invalid_parser_score = copy.deepcopy(evidence)
+    invalid_pair = next(
+        pair
+        for pair in invalid_parser_score["paired_examples"]
+        if pair["dataset"] == "biography"
+    )
+    invalid_method = invalid_pair["methods"]["baseline_prefill"]
+    invalid_method["parser_status"] = "missing_block"
+    invalid_method["parser_valid"] = False
+    _close(invalid_parser_score)
+    with pytest.raises(ValueError, match="invalid parsed answers must receive zero"):
+        full_score.aggregate_full_score_shard_evidence(
+            inventory,
+            plan,
+            [invalid_parser_score],
             authorization_scope=(
                 full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE
             ),

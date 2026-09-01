@@ -113,7 +113,7 @@ PUBLICATION_FREEZE_MAX_CHECK_RECORD_BYTES: Final = 2 * 1024 * 1024
 PUBLICATION_FREEZE_MAX_COMMAND_OUTPUT_BYTES: Final = 1024 * 1024
 PUBLICATION_FREEZE_COMMAND_TAIL_BYTES: Final = 8 * 1024
 PUBLICATION_FREEZE_COMMAND_TIMEOUT_SECONDS: Final = 30 * 60
-PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 3_795
+PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 3_892
 _DEFAULT_PYTHON_EXECUTABLE: Final = Path(
     "/opt/homebrew/opt/python@3.11/bin/python3.11"
 ).resolve()
@@ -2361,7 +2361,7 @@ def _command_check_specs(
                 "tests",
             ),
             (str(inputs.python_executable), "-m", "pytest", "--version"),
-            "pytest 8.0.0",
+            "pytest 9.1.1",
         ),
         (
             "ruff",
@@ -3050,6 +3050,7 @@ def _preflight_environment(repository_root: Path) -> dict[str, str]:
         {
             "MYPY_CONFIG_FILE": str(config_path),
             "MYPYPATH": "",
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONPATH": str((repository_root / "src").resolve()),
             "PYTEST_ADDOPTS": "",
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
