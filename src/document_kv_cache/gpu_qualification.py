@@ -147,6 +147,47 @@ _NATIVE_SHARED_OBJECT_DISTRIBUTIONS: Final = frozenset(
 )
 _NATIVE_SHARED_OBJECT_NAME_RE: Final = re.compile(r".+\.so(?:\..+)?\Z")
 _NATIVE_LDD_MAX_STREAM_BYTES: Final = 256 * 1024
+_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER: Final = (
+    "bitsandbytes/libbitsandbytes_cuda129.so"
+)
+_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES: Final = {
+    **{
+        ("bitsandbytes", f"bitsandbytes/libbitsandbytes_rocm{version}.so"): (
+            frozenset(
+                {
+                    "libhipblas.so.3",
+                    "libhipblaslt.so.1",
+                    "libhipsparse.so.4",
+                }
+            )
+        )
+        for version in ("70", "71", "72")
+    },
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_xpu.so",
+    ): frozenset(
+        {
+            "libimf.so",
+            "libintlc.so.5",
+            "libirng.so",
+            "libsvml.so",
+            "libsycl.so.8",
+        }
+    ),
+    (
+        "triton",
+        "triton/plugins/libMLIRDialectPlugin.so",
+    ): frozenset({"libtriton.so"}),
+    (
+        "triton",
+        "triton/plugins/libMLIRDialectPlugin.so.23.0git",
+    ): frozenset({"libtriton.so"}),
+    (
+        "triton",
+        "triton/plugins/libTritonPluginsTestLib.so",
+    ): frozenset({"libtriton.so"}),
+}
 
 _SHA256_HEX_LENGTH = 64
 _HARDWARE = (
@@ -1769,6 +1810,7 @@ def _validate_runtime_handoff_measurements_with_attestation(
             "triton_compiled_kernel_names",
             "triton_kernel_launch_count",
             "unresolved_native_shared_object_count",
+            "unresolved_runtime_reachable_native_shared_object_count",
             "weight_bits",
             "weight_quantization",
             "trust_remote_code",
@@ -1814,7 +1856,7 @@ def _validate_runtime_handoff_measurements_with_attestation(
         "glibc_version": "2.35",
         "triton_cache_miss_compile": True,
         "triton_compiled_kernel_names": list(_FORCED_TRITON_KERNEL_NAMES),
-        "unresolved_native_shared_object_count": 0,
+        "unresolved_runtime_reachable_native_shared_object_count": 0,
         "weight_bits": 4,
         "weight_quantization": "bitsandbytes",
         "trust_remote_code": False,
@@ -1829,13 +1871,37 @@ def _validate_runtime_handoff_measurements_with_attestation(
     native_shared_object_count = _positive_int(
         value.get("native_shared_object_count"), "native_shared_object_count"
     )
-    _validate_native_shared_object_evidence(
+    (
+        unresolved_native_count,
+        unresolved_runtime_reachable_native_count,
+        selected_bitsandbytes_native_library_path,
+    ) = _validate_native_shared_object_evidence(
         _sequence(
             value.get("native_shared_object_evidence"),
             "native_shared_object_evidence",
         ),
         expected_count=native_shared_object_count,
     )
+    if (
+        type(value.get("unresolved_native_shared_object_count")) is not int
+        or value.get("unresolved_native_shared_object_count")
+        != unresolved_native_count
+    ):
+        raise ValueError(
+            "runtime/handoff unresolved_native_shared_object_count differs "
+            "from native evidence"
+        )
+    if (
+        type(value.get("unresolved_runtime_reachable_native_shared_object_count"))
+        is not int
+        or value.get("unresolved_runtime_reachable_native_shared_object_count")
+        != unresolved_runtime_reachable_native_count
+        or unresolved_runtime_reachable_native_count != 0
+    ):
+        raise ValueError(
+            "runtime/handoff unresolved_runtime_reachable_native_shared_object_count "
+            "must equal the derived zero count"
+        )
     software_path = value.get("e5m2_software_path_exercised")
     if not isinstance(software_path, bool):
         raise ValueError("e5m2_software_path_exercised must be boolean")
@@ -1845,7 +1911,10 @@ def _validate_runtime_handoff_measurements_with_attestation(
         _mapping(
             value.get("weight_quantizer_attestation"),
             "weight_quantizer_attestation",
-        )
+        ),
+        expected_loaded_native_library_path=(
+            selected_bitsandbytes_native_library_path
+        ),
     )
     attestation_validator(
         _mapping(
@@ -1859,7 +1928,7 @@ def _validate_native_shared_object_evidence(
     value: Sequence[Any],
     *,
     expected_count: int,
-) -> None:
+) -> tuple[int, int, str]:
     if len(value) != expected_count:
         raise ValueError(
             "native shared-object evidence count differs from "
@@ -1882,6 +1951,7 @@ def _validate_native_shared_object_evidence(
             "member",
             "path",
             "resolved_path",
+            "resolution_scope",
             "soname_bindings",
         }
     )
@@ -1891,6 +1961,10 @@ def _validate_native_shared_object_evidence(
     object_paths: list[tuple[str, str, str, bool]] = []
     path_owners: dict[str, str] = {}
     distribution_roots: dict[str, str] = {}
+    unresolved_native_count = 0
+    unresolved_runtime_reachable_native_count = 0
+    observed_platform_inapplicable_members: set[tuple[str, str]] = set()
+    selected_bitsandbytes_native_library_path: str | None = None
     for index, raw_record in enumerate(value):
         label = f"native shared-object evidence {index}"
         record = _mapping(raw_record, label)
@@ -1908,6 +1982,24 @@ def _validate_native_shared_object_evidence(
         if record.get("distribution_version") != expected_version:
             raise ValueError(f"{label} distribution_version differs")
         member = _canonical_native_member(record.get("member"), f"{label}.member")
+        platform_missing_sonames = (
+            _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES.get(
+                (distribution, member)
+            )
+        )
+        expected_resolution_scope = (
+            "platform_inapplicable"
+            if platform_missing_sonames is not None
+            else "runtime_reachable"
+        )
+        if platform_missing_sonames is not None:
+            observed_platform_inapplicable_members.add((distribution, member))
+        if record.get("resolution_scope") != expected_resolution_scope:
+            raise ValueError(f"{label} resolution_scope differs from member policy")
+        is_selected_bitsandbytes_member = (
+            distribution == "bitsandbytes"
+            and member == _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
+        )
         member_path = PurePosixPath(member)
         path = _canonical_native_path(record.get("path"), f"{label}.path")
         path_object = PurePosixPath(path)
@@ -1933,6 +2025,17 @@ def _validate_native_shared_object_evidence(
         if type(is_symlink) is not bool:
             raise ValueError(f"{label} is_symlink must be boolean")
         assert isinstance(is_symlink, bool)
+        if is_selected_bitsandbytes_member:
+            if is_symlink:
+                raise ValueError(
+                    f"{label} selected bitsandbytes member must not be a symlink"
+                )
+            if selected_bitsandbytes_native_library_path is not None:
+                raise ValueError(
+                    "native shared-object evidence repeats the selected "
+                    "bitsandbytes member"
+                )
+            selected_bitsandbytes_native_library_path = path
         if not is_symlink and resolved_path != path:
             raise ValueError(f"{label} non-symlink path and resolved_path differ")
         if type(record.get("ldd_returncode")) is not int or record.get(
@@ -1985,7 +2088,7 @@ def _validate_native_shared_object_evidence(
         raw_bindings = _sequence(
             record.get("soname_bindings"), f"{label}.soname_bindings"
         )
-        bindings: list[tuple[str, str]] = []
+        bindings: list[tuple[str, str | None]] = []
         for binding_index, raw_binding in enumerate(raw_bindings):
             binding_label = f"{label}.soname_bindings {binding_index}"
             binding = _mapping(raw_binding, binding_label)
@@ -2001,14 +2104,31 @@ def _validate_native_shared_object_evidence(
                 or any(character.isspace() for character in soname)
             ):
                 raise ValueError(f"{binding_label} SONAME is invalid")
-            resolved_binding = _canonical_native_path(
-                binding.get("resolved_path"), f"{binding_label}.resolved_path"
+            raw_resolved_binding = binding.get("resolved_path")
+            resolved_binding = (
+                None
+                if raw_resolved_binding is None
+                else _canonical_native_path(
+                    raw_resolved_binding, f"{binding_label}.resolved_path"
+                )
             )
             bindings.append((soname, resolved_binding))
-        if bindings != sorted(bindings) or len(set(bindings)) != len(bindings):
+        if bindings != sorted(
+            bindings, key=lambda binding: (binding[0], binding[1] or "")
+        ) or len(set(bindings)) != len(bindings):
             raise ValueError(f"{label} soname_bindings are not canonical and unique")
         if bindings != parsed_bindings:
             raise ValueError(f"{label} soname_bindings differ from ldd_stdout")
+        missing_sonames = {
+            soname for soname, resolved_binding in bindings if resolved_binding is None
+        }
+        permitted_missing_sonames = platform_missing_sonames or frozenset()
+        if not missing_sonames.issubset(permitted_missing_sonames):
+            raise ValueError(f"{label} contains a non-permitted unresolved binding")
+        if missing_sonames:
+            unresolved_native_count += 1
+            if expected_resolution_scope == "runtime_reachable":
+                unresolved_runtime_reachable_native_count += 1
         previous_owner = path_owners.setdefault(path, distribution)
         if previous_owner != distribution:
             raise ValueError(f"{label} path is claimed by multiple distributions")
@@ -2016,6 +2136,17 @@ def _validate_native_shared_object_evidence(
         object_paths.append((distribution, path, resolved_path, is_symlink))
     if owners != _NATIVE_SHARED_OBJECT_DISTRIBUTIONS:
         raise ValueError("native shared-object evidence owner closure differs")
+    if observed_platform_inapplicable_members != set(
+        _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+    ):
+        raise ValueError(
+            "native shared-object evidence platform-inapplicable member closure "
+            "differs"
+        )
+    if selected_bitsandbytes_native_library_path is None:
+        raise ValueError(
+            "native shared-object evidence lacks the selected bitsandbytes member"
+        )
     if ordering != sorted(ordering) or len(set(ordering)) != len(ordering):
         raise ValueError("native shared-object evidence is not canonical and unique")
     regular_paths_by_owner: dict[str, set[str]] = {}
@@ -2029,6 +2160,11 @@ def _validate_native_shared_object_evidence(
             raise ValueError(
                 "native shared-object symlink target is not owned by its distribution"
             )
+    return (
+        unresolved_native_count,
+        unresolved_runtime_reachable_native_count,
+        selected_bitsandbytes_native_library_path,
+    )
 
 
 def _canonical_native_member(value: Any, label: str) -> str:
@@ -2063,8 +2199,10 @@ def _canonical_native_path(value: Any, label: str) -> str:
     return value
 
 
-def _native_ldd_soname_bindings(stdout: str, *, label: str) -> list[tuple[str, str]]:
-    bindings: list[tuple[str, str]] = []
+def _native_ldd_soname_bindings(
+    stdout: str, *, label: str
+) -> list[tuple[str, str | None]]:
+    bindings: list[tuple[str, str | None]] = []
     observed_sonames: set[str] = set()
     for raw_line in stdout.splitlines():
         stripped = raw_line.strip()
@@ -2083,18 +2221,19 @@ def _native_ldd_soname_bindings(stdout: str, *, label: str) -> list[tuple[str, s
             raise ValueError(f"{label} ldd_stdout SONAME is invalid or repeated")
         observed_sonames.add(soname)
         if resolution == "not found":
-            raise ValueError(f"{label} contains an unresolved ldd binding")
-        match = re.fullmatch(
-            r"(?P<path>/.*?)(?:\s+\(0x[0-9a-fA-F]+\))?",
-            resolution,
-        )
-        if match is None:
-            raise ValueError(f"{label} ldd_stdout binding is not an absolute path")
-        resolved_path = _canonical_native_path(
-            match.group("path"), f"{label} ldd_stdout binding path"
-        )
+            resolved_path: str | None = None
+        else:
+            match = re.fullmatch(
+                r"(?P<path>/.*?)(?:\s+\(0x[0-9a-fA-F]+\))?",
+                resolution,
+            )
+            if match is None:
+                raise ValueError(f"{label} ldd_stdout binding is not an absolute path")
+            resolved_path = _canonical_native_path(
+                match.group("path"), f"{label} ldd_stdout binding path"
+            )
         bindings.append((soname, resolved_path))
-    return sorted(bindings)
+    return sorted(bindings, key=lambda binding: (binding[0], binding[1] or ""))
 
 
 def _validate_runtime_lock_attestation(value: Mapping[str, Any]) -> None:
@@ -2844,13 +2983,19 @@ def _validate_auto_backend_measurements(value: Mapping[str, Any]) -> None:
         raise ValueError("auto backend diagnostic must keep trust_remote_code disabled")
 
 
-def _validate_weight_quantizer_attestation(value: Mapping[str, Any]) -> None:
+def _validate_weight_quantizer_attestation(
+    value: Mapping[str, Any],
+    *,
+    expected_loaded_native_library_path: str | None = None,
+) -> None:
     expected_keys = frozenset(
         {
             "bitsandbytes_loader_sha256",
             "bitsandbytes_version",
             "dynamic_quant_call",
             "hf_generator_config",
+            "loaded_native_library_member",
+            "loaded_native_library_path",
         }
     )
     _require_exact_keys(value, expected_keys, "weight quantizer attestation")
@@ -2860,6 +3005,30 @@ def _validate_weight_quantizer_attestation(value: Mapping[str, Any]) -> None:
         raise ValueError("bitsandbytes loader source hash mismatch")
     if value.get("bitsandbytes_version") != _RUNTIME_CORE_VERSIONS["bitsandbytes"]:
         raise ValueError("bitsandbytes version mismatch")
+    if value.get("loaded_native_library_member") != (
+        _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
+    ):
+        raise ValueError("loaded bitsandbytes native library member mismatch")
+    loaded_native_library_path = _canonical_native_path(
+        value.get("loaded_native_library_path"),
+        "loaded bitsandbytes native library path",
+    )
+    loaded_path = PurePosixPath(loaded_native_library_path)
+    selected_member = PurePosixPath(_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER)
+    if (
+        len(loaded_path.parts) <= len(selected_member.parts)
+        or loaded_path.parts[-len(selected_member.parts) :] != selected_member.parts
+    ):
+        raise ValueError(
+            "loaded bitsandbytes native library path does not match its member"
+        )
+    if (
+        expected_loaded_native_library_path is not None
+        and loaded_native_library_path != expected_loaded_native_library_path
+    ):
+        raise ValueError(
+            "loaded bitsandbytes native library path differs from native evidence"
+        )
     dynamic = _mapping(value.get("dynamic_quant_call"), "dynamic quant call")
     _require_exact_keys(
         dynamic,

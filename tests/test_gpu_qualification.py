@@ -125,6 +125,11 @@ def _weight_quantizer_attestation() -> dict[str, Any]:
             "bnb_4bit_use_double_quant": True,
             "load_in_4bit": True,
         },
+        "loaded_native_library_member": "bitsandbytes/libbitsandbytes_cuda129.so",
+        "loaded_native_library_path": (
+            "/runtime/lib/python3.11/site-packages/"
+            "bitsandbytes/libbitsandbytes_cuda129.so"
+        ),
     }
 
 
@@ -140,45 +145,145 @@ def _seal(record: dict[str, Any]) -> None:
     ).hexdigest()
 
 
+def _set_native_record_soname_bindings(
+    record: dict[str, Any], bindings: dict[str, str | None]
+) -> None:
+    ordered_bindings = sorted(bindings.items())
+    lines = [
+        (
+            f"{soname} => not found"
+            if resolved_path is None
+            else f"{soname} => {resolved_path} (0x00000001)"
+        )
+        for soname, resolved_path in ordered_bindings
+    ]
+    stdout = "".join(f"{line}\n" for line in lines)
+    stdout_bytes = stdout.encode("utf-8")
+    record.update(
+        {
+            "ldd_stdout": stdout,
+            "ldd_stdout_lines": lines,
+            "ldd_stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+            "ldd_stdout_utf8_bytes": len(stdout_bytes),
+            "soname_bindings": [
+                {"resolved_path": resolved_path, "soname": soname}
+                for soname, resolved_path in ordered_bindings
+            ],
+        }
+    )
+
+
 def _native_shared_object_evidence() -> list[dict[str, Any]]:
     root = "/runtime/lib/python3.11/site-packages"
-    owned_members = (
-        ("bitsandbytes", CORE_VERSIONS["bitsandbytes"], "bitsandbytes/libbitsandbytes.so"),
+    resolved_members = (
+        (
+            "bitsandbytes",
+            CORE_VERSIONS["bitsandbytes"],
+            "bitsandbytes/libbitsandbytes_cuda129.so",
+        ),
         ("torch", CORE_VERSIONS["torch"], "torch/lib/libtorch.so.2"),
         ("triton", CORE_VERSIONS["triton"], "triton/_C/libtriton.so"),
         ("vllm", GPU_QUALIFICATION_VLLM_VERSION, "vllm/_C.abi3.so"),
     )
-    evidence: list[dict[str, Any]] = []
-    for distribution, version, member in owned_members:
-        resolved_binding = f"/lib/{distribution}/libc.so.6"
-        stdout = f"libc.so.6 => {resolved_binding} (0x00000001)\n"
-        stdout_bytes = stdout.encode("utf-8")
-        evidence.append(
+    dormant_members = {
+        **{
+            f"bitsandbytes/libbitsandbytes_rocm{version}.so": frozenset(
+                {
+                    "libhipblas.so.3",
+                    "libhipblaslt.so.1",
+                    "libhipsparse.so.4",
+                }
+            )
+            for version in ("70", "71", "72")
+        },
+        "bitsandbytes/libbitsandbytes_xpu.so": frozenset(
             {
-                "distribution": distribution,
-                "distribution_version": version,
-                "is_symlink": False,
-                "ldd_returncode": 0,
-                "ldd_stderr": "",
-                "ldd_stderr_lines": [],
-                "ldd_stderr_sha256": hashlib.sha256(b"").hexdigest(),
-                "ldd_stderr_utf8_bytes": 0,
-                "ldd_stdout": stdout,
-                "ldd_stdout_lines": [stdout.strip()],
-                "ldd_stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
-                "ldd_stdout_utf8_bytes": len(stdout_bytes),
-                "member": member,
-                "path": f"{root}/{member}",
-                "resolved_path": f"{root}/{member}",
-                "soname_bindings": [
-                    {
-                        "resolved_path": resolved_binding,
-                        "soname": "libc.so.6",
-                    }
-                ],
+                "libimf.so",
+                "libintlc.so.5",
+                "libirng.so",
+                "libsvml.so",
+                "libsycl.so.8",
             }
+        ),
+        "triton/plugins/libMLIRDialectPlugin.so": frozenset({"libtriton.so"}),
+        "triton/plugins/libMLIRDialectPlugin.so.23.0git": frozenset(
+            {"libtriton.so"}
+        ),
+        "triton/plugins/libTritonPluginsTestLib.so": frozenset({"libtriton.so"}),
+    }
+    evidence: list[dict[str, Any]] = []
+    for distribution, version, member in resolved_members:
+        resolved_binding = f"/lib/{distribution}/libc.so.6"
+        record = _native_shared_object_record(
+            distribution=distribution,
+            version=version,
+            member=member,
+            root=root,
+            resolution_scope="runtime_reachable",
         )
-    return evidence
+        _set_native_record_soname_bindings(
+            record, {"libc.so.6": resolved_binding}
+        )
+        evidence.append(record)
+    for member, missing_sonames in dormant_members.items():
+        distribution = member.split("/", 1)[0]
+        version = CORE_VERSIONS[distribution]
+        resolved_member = (
+            "triton/plugins/libMLIRDialectPlugin.so.23.0git"
+            if member == "triton/plugins/libMLIRDialectPlugin.so"
+            else member
+        )
+        record = _native_shared_object_record(
+            distribution=distribution,
+            version=version,
+            member=member,
+            root=root,
+            resolution_scope="platform_inapplicable",
+            resolved_member=resolved_member,
+        )
+        _set_native_record_soname_bindings(
+            record, {soname: None for soname in missing_sonames}
+        )
+        evidence.append(record)
+    return sorted(
+        evidence,
+        key=lambda record: (
+            record["distribution"],
+            record["member"],
+            record["path"],
+        ),
+    )
+
+
+def _native_shared_object_record(
+    *,
+    distribution: str,
+    version: str,
+    member: str,
+    root: str,
+    resolution_scope: str,
+    resolved_member: str | None = None,
+) -> dict[str, Any]:
+    resolved_member = member if resolved_member is None else resolved_member
+    return {
+        "distribution": distribution,
+        "distribution_version": version,
+        "is_symlink": resolved_member != member,
+        "ldd_returncode": 0,
+        "ldd_stderr": "",
+        "ldd_stderr_lines": [],
+        "ldd_stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        "ldd_stderr_utf8_bytes": 0,
+        "ldd_stdout": "",
+        "ldd_stdout_lines": [],
+        "ldd_stdout_sha256": hashlib.sha256(b"").hexdigest(),
+        "ldd_stdout_utf8_bytes": 0,
+        "member": member,
+        "path": f"{root}/{member}",
+        "resolved_path": f"{root}/{resolved_member}",
+        "resolution_scope": resolution_scope,
+        "soname_bindings": [],
+    }
 
 
 def _runtime_measurements(*, software_path: bool) -> dict[str, Any]:
@@ -238,7 +343,8 @@ def _runtime_measurements(*, software_path: bool) -> dict[str, Any]:
             "triton_unified_attention",
         ],
         "triton_kernel_launch_count": 19,
-        "unresolved_native_shared_object_count": 0,
+        "unresolved_native_shared_object_count": 7,
+        "unresolved_runtime_reachable_native_shared_object_count": 0,
         "weight_bits": 4,
         "weight_quantization": "bitsandbytes",
         "trust_remote_code": False,
@@ -1907,6 +2013,13 @@ def test_runtime_native_evidence_rejects_resealed_internal_contradictions(
     elif mutation == "double-slash":
         record["path"] = f"/{record['path']}"
     elif mutation == "unowned-symlink":
+        record = next(
+            item
+            for item in runtime_job["measurements"][
+                "native_shared_object_evidence"
+            ]
+            if item["distribution"] == "torch"
+        )
         record["is_symlink"] = True
         record["resolved_path"] = f"{record['path']}.unowned"
     else:
@@ -1918,6 +2031,260 @@ def test_runtime_native_evidence_rejects_resealed_internal_contradictions(
             1, second_record
         )
         runtime_job["measurements"]["native_shared_object_count"] += 1
+    _reseal_evidence(evidence)
+
+    with pytest.raises(ValueError, match=message):
+        validate_gpu_qualification_evidence_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=CAMPAIGN_ID,
+            expected_artifact_pins=PINS,
+        )
+
+
+def _forced_runtime_measurements(evidence: dict[str, Any]) -> dict[str, Any]:
+    return next(
+        job["measurements"]
+        for job in evidence["cloud_gpu_evidence"]["jobs"]
+        if job["job_id"].endswith("forced-triton-runtime-handoff")
+    )
+
+
+def _native_record(measurements: dict[str, Any], member: str) -> dict[str, Any]:
+    return next(
+        record
+        for record in measurements["native_shared_object_evidence"]
+        if record["member"] == member
+    )
+
+
+def test_runtime_native_evidence_accepts_exact_platform_inapplicable_closure() -> None:
+    plan, evidence = _valid_evidence()
+    measurements = _forced_runtime_measurements(evidence)
+    records = measurements["native_shared_object_evidence"]
+
+    assert len(records) == 11
+    assert sum(
+        any(binding["resolved_path"] is None for binding in record["soname_bindings"])
+        for record in records
+    ) == 7
+    assert sum(
+        binding["resolved_path"] is None
+        for record in records
+        for binding in record["soname_bindings"]
+    ) == 17
+    assert measurements["unresolved_native_shared_object_count"] == 7
+    assert (
+        measurements["unresolved_runtime_reachable_native_shared_object_count"] == 0
+    )
+
+    validate_gpu_qualification_evidence_record(
+        evidence,
+        plan_record=plan,
+        expected_campaign_id=CAMPAIGN_ID,
+        expected_artifact_pins=PINS,
+    )
+
+
+def test_runtime_native_evidence_requires_complete_platform_member_closure() -> None:
+    plan, evidence = _valid_evidence()
+    measurements = _forced_runtime_measurements(evidence)
+    records = measurements["native_shared_object_evidence"]
+    removed = _native_record(
+        measurements, "triton/plugins/libTritonPluginsTestLib.so"
+    )
+    records.remove(removed)
+    measurements["native_shared_object_count"] -= 1
+    measurements["unresolved_native_shared_object_count"] -= 1
+    _reseal_evidence(evidence)
+
+    with pytest.raises(ValueError, match="platform-inapplicable member closure"):
+        validate_gpu_qualification_evidence_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=CAMPAIGN_ID,
+            expected_artifact_pins=PINS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("resolved_sonames", "expected_unresolved_count"),
+    (
+        (("libhipblas.so.3",), 7),
+        (
+            (
+                "libhipblas.so.3",
+                "libhipblaslt.so.1",
+                "libhipsparse.so.4",
+            ),
+            6,
+        ),
+    ),
+)
+def test_runtime_native_evidence_accepts_missing_subset_or_empty(
+    resolved_sonames: tuple[str, ...], expected_unresolved_count: int
+) -> None:
+    plan, evidence = _valid_evidence()
+    measurements = _forced_runtime_measurements(evidence)
+    record = _native_record(
+        measurements, "bitsandbytes/libbitsandbytes_rocm70.so"
+    )
+    bindings = {
+        binding["soname"]: binding["resolved_path"]
+        for binding in record["soname_bindings"]
+    }
+    for soname in resolved_sonames:
+        bindings[soname] = f"/opt/rocm/lib/{soname}"
+    _set_native_record_soname_bindings(record, bindings)
+    measurements["unresolved_native_shared_object_count"] = (
+        expected_unresolved_count
+    )
+    _reseal_evidence(evidence)
+
+    validate_gpu_qualification_evidence_record(
+        evidence,
+        plan_record=plan,
+        expected_campaign_id=CAMPAIGN_ID,
+        expected_artifact_pins=PINS,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("wrong-member", "non-permitted unresolved binding"),
+        ("extra-missing", "non-permitted unresolved binding"),
+        ("required-missing", "non-permitted unresolved binding"),
+        ("platform-scope", "resolution_scope differs from member policy"),
+        ("runtime-scope", "resolution_scope differs from member policy"),
+        ("total-count", "unresolved_native_shared_object_count differs"),
+        (
+            "reachable-count",
+            "unresolved_runtime_reachable_native_shared_object_count",
+        ),
+    ),
+)
+def test_runtime_native_evidence_rejects_member_policy_contradictions(
+    mutation: str, message: str
+) -> None:
+    plan, evidence = _valid_evidence()
+    measurements = _forced_runtime_measurements(evidence)
+    dormant_record = _native_record(
+        measurements, "bitsandbytes/libbitsandbytes_rocm70.so"
+    )
+    selected_record = _native_record(
+        measurements, "bitsandbytes/libbitsandbytes_cuda129.so"
+    )
+    if mutation == "wrong-member":
+        dormant_record["member"] = "bitsandbytes/libbitsandbytes_rocm69.so"
+        dormant_record["path"] = dormant_record["path"].replace("rocm70", "rocm69")
+        dormant_record["resolved_path"] = dormant_record["path"]
+        dormant_record["resolution_scope"] = "runtime_reachable"
+    elif mutation == "extra-missing":
+        bindings = {
+            binding["soname"]: binding["resolved_path"]
+            for binding in dormant_record["soname_bindings"]
+        }
+        bindings["libunexpected.so"] = None
+        _set_native_record_soname_bindings(dormant_record, bindings)
+    elif mutation == "required-missing":
+        _set_native_record_soname_bindings(selected_record, {"libc.so.6": None})
+    elif mutation == "platform-scope":
+        dormant_record["resolution_scope"] = "runtime_reachable"
+    elif mutation == "runtime-scope":
+        selected_record["resolution_scope"] = "platform_inapplicable"
+    elif mutation == "total-count":
+        measurements["unresolved_native_shared_object_count"] = 6
+    else:
+        measurements["unresolved_runtime_reachable_native_shared_object_count"] = 1
+    measurements["native_shared_object_evidence"].sort(
+        key=lambda record: (
+            record["distribution"],
+            record["member"],
+            record["path"],
+        )
+    )
+    _reseal_evidence(evidence)
+
+    with pytest.raises(ValueError, match=message):
+        validate_gpu_qualification_evidence_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=CAMPAIGN_ID,
+            expected_artifact_pins=PINS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("attestation", "loaded bitsandbytes native library member mismatch"),
+        ("evidence", "lacks the selected bitsandbytes member"),
+    ),
+)
+def test_runtime_native_evidence_requires_selected_bitsandbytes_member(
+    mutation: str, message: str
+) -> None:
+    plan, evidence = _valid_evidence()
+    measurements = _forced_runtime_measurements(evidence)
+    if mutation == "attestation":
+        measurements["weight_quantizer_attestation"][
+            "loaded_native_library_member"
+        ] = "bitsandbytes/libbitsandbytes_cuda128.so"
+    else:
+        selected_record = _native_record(
+            measurements, "bitsandbytes/libbitsandbytes_cuda129.so"
+        )
+        selected_record["member"] = "bitsandbytes/libbitsandbytes_cuda128.so"
+        selected_record["path"] = selected_record["path"].replace(
+            "cuda129", "cuda128"
+        )
+        selected_record["resolved_path"] = selected_record["path"]
+        measurements["native_shared_object_evidence"].sort(
+            key=lambda record: (
+                record["distribution"],
+                record["member"],
+                record["path"],
+            )
+        )
+    _reseal_evidence(evidence)
+
+    with pytest.raises(ValueError, match=message):
+        validate_gpu_qualification_evidence_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=CAMPAIGN_ID,
+            expected_artifact_pins=PINS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("symlink", "selected bitsandbytes member must not be a symlink"),
+        ("attested-path", "path differs from native evidence"),
+    ),
+)
+def test_runtime_native_evidence_binds_selected_bitsandbytes_regular_path(
+    mutation: str, message: str
+) -> None:
+    plan, evidence = _valid_evidence()
+    measurements = _forced_runtime_measurements(evidence)
+    selected_record = _native_record(
+        measurements, "bitsandbytes/libbitsandbytes_cuda129.so"
+    )
+    if mutation == "symlink":
+        selected_record["is_symlink"] = True
+        selected_record["resolved_path"] = _native_record(
+            measurements, "bitsandbytes/libbitsandbytes_rocm70.so"
+        )["path"]
+    else:
+        measurements["weight_quantizer_attestation"][
+            "loaded_native_library_path"
+        ] = (
+            "/alternate/runtime/lib/python3.11/site-packages/"
+            "bitsandbytes/libbitsandbytes_cuda129.so"
+        )
     _reseal_evidence(evidence)
 
     with pytest.raises(ValueError, match=message):

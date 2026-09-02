@@ -10,6 +10,7 @@ qualification evidence.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import gc
 import importlib.metadata
 import json
@@ -98,6 +99,48 @@ _NATIVE_SHARED_OBJECT_DISTRIBUTIONS: Final = (
 )
 _NATIVE_SHARED_OBJECT_NAME_RE: Final = re.compile(r".+\.so(?:\..+)?\Z")
 _NATIVE_LDD_MAX_STREAM_BYTES: Final = 256 * 1024
+_NATIVE_SELECTOR_ENVIRONMENT_NAMES: Final = (
+    "BNB_CUDA_VERSION",
+    "LLVM_PASS_PLUGIN_PATH",
+    "TRITON_BACKENDS_IN_TREE",
+    "TRITON_DEFAULT_BACKEND",
+    "TRITON_PLUGIN_PATHS",
+)
+_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER: Final = (
+    "bitsandbytes/libbitsandbytes_cuda129.so"
+)
+_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES: Final = {
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm70.so",
+    ): frozenset({"libhipblas.so.3", "libhipblaslt.so.1", "libhipsparse.so.4"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm71.so",
+    ): frozenset({"libhipblas.so.3", "libhipblaslt.so.1", "libhipsparse.so.4"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm72.so",
+    ): frozenset({"libhipblas.so.3", "libhipblaslt.so.1", "libhipsparse.so.4"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_xpu.so",
+    ): frozenset(
+        {"libimf.so", "libintlc.so.5", "libirng.so", "libsvml.so", "libsycl.so.8"}
+    ),
+    (
+        "triton",
+        "triton/plugins/libMLIRDialectPlugin.so",
+    ): frozenset({"libtriton.so"}),
+    (
+        "triton",
+        "triton/plugins/libMLIRDialectPlugin.so.23.0git",
+    ): frozenset({"libtriton.so"}),
+    (
+        "triton",
+        "triton/plugins/libTritonPluginsTestLib.so",
+    ): frozenset({"libtriton.so"}),
+}
 _EXPECTED_SENTINELS: Final = frozenset(
     {
         "forced_triton_runtime_handoff",
@@ -111,6 +154,17 @@ _EXPECTED_SENTINELS: Final = frozenset(
 )
 
 
+def _reject_native_selector_environment() -> None:
+    selected = sorted(
+        name for name in _NATIVE_SELECTOR_ENVIRONMENT_NAMES if name in os.environ
+    )
+    if selected:
+        raise RuntimeError(
+            "GPU qualification forbids native-library selector environment names: "
+            + ", ".join(selected)
+        )
+
+
 def execute_planned_sentinel(
     *,
     plan_record: Mapping[str, Any],
@@ -120,6 +174,7 @@ def execute_planned_sentinel(
 ) -> dict[str, Any]:
     """Run exactly one plan-selected sentinel and return measured fields."""
 
+    _reject_native_selector_environment()
     sentinel = _required_string(planned_job, "sentinel")
     if sentinel not in _EXPECTED_SENTINELS:
         raise ValueError(f"unsupported GPU qualification sentinel: {sentinel!r}")
@@ -513,9 +568,23 @@ def _runtime_handoff_sentinel(
     pip_check_ok = _pip_check_ok()
     if not pip_check_ok:
         raise RuntimeError("pip check failed in the isolated runtime")
+    weight_attestation = _weight_quantizer_attestation()
     native_evidence = _native_shared_object_resolution()
     native_count = len(native_evidence)
-    unresolved_count = 0
+    unresolved_count = sum(
+        any(binding["resolved_path"] is None for binding in record["soname_bindings"])
+        for record in native_evidence
+    )
+    unresolved_runtime_reachable_count = sum(
+        record["resolution_scope"] == "runtime_reachable"
+        and any(
+            binding["resolved_path"] is None
+            for binding in record["soname_bindings"]
+        )
+        for record in native_evidence
+    )
+    if unresolved_runtime_reachable_count != 0:
+        raise RuntimeError("runtime-reachable native shared objects remain unresolved")
     libcudart_majors = _libcudart_major_versions()
     if libcudart_majors != [12]:
         raise RuntimeError(f"unexpected libcudart majors: {libcudart_majors!r}")
@@ -535,7 +604,6 @@ def _runtime_handoff_sentinel(
     ):
         raise RuntimeError("A10G did not select the E5M2 software-capability path")
     runtime_contract = _mapping(plan_record.get("runtime_contract"), "runtime_contract")
-    weight_attestation = _weight_quantizer_attestation()
     return {
         "attention_backend_observed": "TRITON_ATTN",
         "attention_backend_requested": "TRITON_ATTN",
@@ -572,6 +640,9 @@ def _runtime_handoff_sentinel(
         "triton_compiled_kernel_names": probe["triton_compiled_kernel_names"],
         "triton_kernel_launch_count": probe["triton_kernel_launch_count"],
         "unresolved_native_shared_object_count": unresolved_count,
+        "unresolved_runtime_reachable_native_shared_object_count": (
+            unresolved_runtime_reachable_count
+        ),
         "weight_bits": 4,
         "weight_quantization": "bitsandbytes",
         "trust_remote_code": False,
@@ -983,6 +1054,28 @@ def _native_shared_object_resolution(
     if not owned_objects:
         raise RuntimeError("no owned native runtime shared objects were found")
 
+    observed_owned_members = {
+        (item["distribution"], item["member"]) for item in owned_objects
+    }
+    required_owned_members = {
+        key
+        for key in _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+        if key[0] in names
+    }
+    if "bitsandbytes" in names:
+        required_owned_members.add(
+            ("bitsandbytes", _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER)
+        )
+    missing_required_members = required_owned_members - observed_owned_members
+    if missing_required_members:
+        raise RuntimeError(
+            "native distribution inventory lacks required reviewed members: "
+            + ", ".join(
+                f"{distribution}:{member}"
+                for distribution, member in sorted(missing_required_members)
+            )
+        )
+
     ldd_environment = dict(os.environ)
     ldd_environment.update({"LANG": "C", "LC_ALL": "C"})
     evidence: list[dict[str, Any]] = []
@@ -1042,13 +1135,36 @@ def _native_shared_object_resolution(
             ),
             "ldd_stdout_sha256": sha256(stdout_bytes).hexdigest(),
             "ldd_stdout_utf8_bytes": len(stdout_bytes),
+            "resolution_scope": (
+                "platform_inapplicable"
+                if (owned["distribution"], owned["member"])
+                in _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+                else "runtime_reachable"
+            ),
             "soname_bindings": bindings,
         }
         evidence.append(record)
+        missing_sonames = {
+            binding["soname"]
+            for binding in bindings
+            if binding["resolved_path"] is None
+        }
+        permitted_missing_sonames = (
+            _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES.get(
+                (owned["distribution"], owned["member"])
+            )
+        )
         if (
             completed.returncode != 0
             or bool(completed.stderr)
-            or any(binding["resolved_path"] is None for binding in bindings)
+            or (
+                permitted_missing_sonames is None
+                and bool(missing_sonames)
+            )
+            or (
+                permitted_missing_sonames is not None
+                and not missing_sonames.issubset(permitted_missing_sonames)
+            )
         ):
             failures.append(record)
     if failures:
@@ -1175,8 +1291,16 @@ def _ldd_soname_bindings(stdout: str) -> list[dict[str, str | None]]:
             if match is None:
                 raise ValueError("ldd binding resolution is not an absolute path")
             resolved_path = match.group("path")
-            if not resolved_path or resolved_path.strip() != resolved_path:
-                raise ValueError("ldd binding path is invalid")
+            path = PurePosixPath(resolved_path)
+            if (
+                not resolved_path
+                or not path.is_absolute()
+                or resolved_path.startswith("//")
+                or path.as_posix() != resolved_path
+                or any(part in {"", ".", ".."} for part in path.parts[1:])
+                or any(ord(character) < 32 for character in resolved_path)
+            ):
+                raise ValueError("ldd binding path is not canonical")
         bindings.append({"resolved_path": resolved_path, "soname": soname})
     return sorted(
         bindings,
@@ -1235,12 +1359,99 @@ def _site_packages_read_only() -> bool:
         return False
 
 
+def _selected_bitsandbytes_native_library_path() -> Path:
+    distribution_name = "bitsandbytes"
+    distribution = importlib.metadata.distribution(distribution_name)
+    raw_files = distribution.files
+    if raw_files is None:
+        raise RuntimeError("bitsandbytes has no owned file inventory")
+    owned_member_count = sum(
+        str(raw_member) == _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
+        for raw_member in raw_files
+    )
+    if owned_member_count != 1:
+        raise RuntimeError(
+            "bitsandbytes does not uniquely own the selected CUDA 12.9 library"
+        )
+    member = _native_shared_object_member(
+        _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER,
+        distribution_name=distribution_name,
+    )
+    if member is None:  # pragma: no cover - the package-owned constant is a .so
+        raise RuntimeError("selected bitsandbytes native library is not a shared object")
+
+    root_path = _canonical_native_located_path(
+        distribution.locate_file(""),
+        label="bitsandbytes native distribution root",
+    )
+    _require_no_native_symlink_ancestors(
+        root_path,
+        label="bitsandbytes native distribution root",
+        include_leaf=True,
+    )
+    located_path = _canonical_native_located_path(
+        distribution.locate_file(member),
+        label="selected bitsandbytes native library located path",
+    )
+    expected_path = root_path.joinpath(*member.parts)
+    if located_path != expected_path:
+        raise RuntimeError(
+            "selected bitsandbytes native library locates outside its canonical "
+            f"member path: {located_path}"
+        )
+    _require_no_native_symlink_ancestors(
+        located_path,
+        label="selected bitsandbytes native library",
+        include_leaf=True,
+    )
+    try:
+        resolved_root = root_path.resolve(strict=True)
+        resolved_path = located_path.resolve(strict=True)
+        status = located_path.stat()
+    except OSError as exc:
+        raise RuntimeError("selected bitsandbytes native library is unavailable") from exc
+    if not resolved_root.is_dir():
+        raise RuntimeError("bitsandbytes native distribution root is not a directory")
+    if not stat.S_ISREG(status.st_mode) or resolved_path != located_path:
+        raise RuntimeError(
+            "selected bitsandbytes native library is not a canonical regular file"
+        )
+    if not resolved_path.is_relative_to(resolved_root):
+        raise RuntimeError("selected bitsandbytes native library escapes its owner")
+    return located_path
+
+
 def _weight_quantizer_attestation() -> dict[str, Any]:
     """Exercise the pinned NF4/double-quant call and inspect its output state."""
 
+    _reject_native_selector_environment()
+    selected_native_path = _selected_bitsandbytes_native_library_path()
     torch = _torch()
+    if getattr(getattr(torch, "version", None), "cuda", None) != "12.9":
+        raise RuntimeError("bitsandbytes qualification requires PyTorch CUDA 12.9")
+    import bitsandbytes.cextension as bnb_cextension  # type: ignore[import-not-found]
     import bitsandbytes.functional as bnb_functional  # type: ignore[import-not-found]
     from transformers import BitsAndBytesConfig  # type: ignore[import-not-found]
+
+    native_library = bnb_cextension.lib
+    if bnb_functional.lib is not native_library:
+        raise RuntimeError("bitsandbytes functional layer uses a different native library")
+    if getattr(native_library, "compiled_with_cuda", None) is not True:
+        raise RuntimeError("bitsandbytes native library was not compiled with CUDA")
+    loaded_cdll = getattr(native_library, "_lib", None)
+    if not isinstance(loaded_cdll, ctypes.CDLL):
+        raise RuntimeError("bitsandbytes CUDA library is not backed by ctypes.CDLL")
+    loaded_name = getattr(loaded_cdll, "_name", None)
+    loaded_handle = getattr(loaded_cdll, "_handle", None)
+    if type(loaded_name) is not str or loaded_name != str(selected_native_path):
+        raise RuntimeError(
+            "bitsandbytes ctypes.CDLL did not load the selected owned CUDA 12.9 member"
+        )
+    if type(loaded_handle) is not int or loaded_handle <= 0:
+        raise RuntimeError("bitsandbytes ctypes.CDLL has no positive native handle")
+    cuda_backend = sys.modules.get("bitsandbytes.backends.cuda.ops")
+    if cuda_backend is None or getattr(cuda_backend, "lib", None) is not native_library:
+        raise RuntimeError("bitsandbytes CUDA quantizer uses a different native library")
 
     loader_hash = _installed_vllm_member_hashes(
         {
@@ -1269,6 +1480,17 @@ def _weight_quantizer_attestation() -> dict[str, Any]:
         quant_type="nf4",
     )
     torch.cuda.synchronize()
+    if (
+        bnb_cextension.lib is not native_library
+        or bnb_functional.lib is not native_library
+        or getattr(cuda_backend, "lib", None) is not native_library
+        or getattr(native_library, "_lib", None) is not loaded_cdll
+        or getattr(loaded_cdll, "_name", None) != loaded_name
+        or getattr(loaded_cdll, "_handle", None) != loaded_handle
+    ):
+        raise RuntimeError(
+            "bitsandbytes native library identity changed during the NF4 call"
+        )
     if str(packed.dtype).removeprefix("torch.") != "uint8":
         raise RuntimeError("dynamic NF4 call did not produce uint8 packed weights")
     if getattr(state, "quant_type", None) != "nf4" or not bool(
@@ -1306,6 +1528,10 @@ def _weight_quantizer_attestation() -> dict[str, Any]:
             "quant_type": "nf4",
         },
         "hf_generator_config": config_record,
+        "loaded_native_library_member": (
+            _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
+        ),
+        "loaded_native_library_path": str(selected_native_path),
     }
 
 

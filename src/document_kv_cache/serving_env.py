@@ -46,9 +46,10 @@ VLLM_PATCHED_WHEEL_SHA256_ENV = "DOCUMENT_KV_VLLM_PATCHED_WHEEL_SHA256"
 # contain commas are intentionally matched through an invariant pre-comma
 # prefix.  The pinned cuda-bindings wheel and CPython/vLLM runtime fix the
 # corresponding suffixes.  The bitsandbytes filter supplies its full reviewed
-# 0.49.2/PyTorch 2.13 message because that message has no comma.  Each allowance
-# is confined to its category, attributed module, and source line; every other
-# warning is promoted to an exception.
+# 0.49.2/PyTorch 2.13 message because that message has no comma.  The
+# torch.jit allowance likewise supplies its full pinned PyTorch 2.13 message.
+# Each allowance is confined to its category, attributed module, and source
+# line; every other warning is promoted to an exception.
 GPU_RUNTIME_PYTHONWARNINGS = ",".join(
     (
         "error",
@@ -73,6 +74,11 @@ GPU_RUNTIME_PYTHONWARNINGS = ",".join(
             "ignore:'vllm.model_executor.models.registry' found in sys.modules "
             "after import of package 'vllm.model_executor.models'"
             ":RuntimeWarning:runpy:128"
+        ),
+        (
+            "ignore:`torch.jit.script_method` is deprecated. Please switch to "
+            "`torch.compile` or `torch.export`."
+            ":DeprecationWarning:torch.jit._script:365"
         ),
     )
 )

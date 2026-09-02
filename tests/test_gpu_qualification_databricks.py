@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+import document_kv_cache.gpu_qualification as gpu_qualification
 import document_kv_cache.gpu_qualification_databricks as qualification_job
 import document_kv_cache._gpu_qualification_sentinel_worker as sentinel_worker
 import document_kv_cache.gpu_qualification_sentinels as qualification_sentinels
@@ -6965,6 +6966,74 @@ def _owned_distribution_versions() -> dict[str, str]:
     }
 
 
+_EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES = {
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm70.so",
+    ): frozenset({"libhipblas.so.3", "libhipblaslt.so.1", "libhipsparse.so.4"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm71.so",
+    ): frozenset({"libhipblas.so.3", "libhipblaslt.so.1", "libhipsparse.so.4"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm72.so",
+    ): frozenset({"libhipblas.so.3", "libhipblaslt.so.1", "libhipsparse.so.4"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_xpu.so",
+    ): frozenset(
+        {"libimf.so", "libintlc.so.5", "libirng.so", "libsvml.so", "libsycl.so.8"}
+    ),
+    (
+        "triton",
+        "triton/plugins/libMLIRDialectPlugin.so",
+    ): frozenset({"libtriton.so"}),
+    (
+        "triton",
+        "triton/plugins/libMLIRDialectPlugin.so.23.0git",
+    ): frozenset({"libtriton.so"}),
+    (
+        "triton",
+        "triton/plugins/libTritonPluginsTestLib.so",
+    ): frozenset({"libtriton.so"}),
+}
+_EXPECTED_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER = (
+    "bitsandbytes/libbitsandbytes_cuda129.so"
+)
+
+
+def _complete_native_files_by_distribution() -> dict[str, tuple[str, ...]]:
+    return {
+        "bitsandbytes": tuple(
+            sorted(
+                {
+                    member
+                    for distribution, member in (
+                        _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+                    )
+                    if distribution == "bitsandbytes"
+                }
+                | {_EXPECTED_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER}
+            )
+        ),
+        "torch": ("torch/lib/libtorch.so.2",),
+        "triton": tuple(
+            sorted(
+                {
+                    member
+                    for distribution, member in (
+                        _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+                    )
+                    if distribution == "triton"
+                }
+                | {"triton/_C/libtriton_runtime.so"}
+            )
+        ),
+        "vllm": ("vllm/libvllm.so",),
+    }
+
+
 def _install_owned_distribution_fakes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6995,16 +7064,30 @@ def _install_owned_distribution_fakes(
     return root, distributions
 
 
+def test_native_platform_policy_is_an_independent_literal_closed_set() -> None:
+    assert sentinel_worker._PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES == (
+        _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+    )
+    assert gpu_qualification._PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES == (
+        _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+    )
+    assert sentinel_worker._SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER == (
+        _EXPECTED_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
+    )
+    assert gpu_qualification._SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER == (
+        _EXPECTED_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
+    )
+
+
 def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    files_by_distribution = {
-        "bitsandbytes": ("bitsandbytes/libbitsandbytes.so",),
-        "torch": ("torch/lib/libtorch.so.2",),
-        "triton": ("triton/_C/libtriton.so",),
-        "vllm": ("vllm/libalias.so", "vllm/libreal.so.1"),
-    }
+    files_by_distribution = _complete_native_files_by_distribution()
+    files_by_distribution["vllm"] = (
+        "vllm/libalias.so",
+        "vllm/libreal.so.1",
+    )
     root, _distributions = _install_owned_distribution_fakes(
         tmp_path,
         monkeypatch,
@@ -7039,7 +7122,9 @@ def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_or
     assert {item["distribution"] for item in evidence} == set(
         files_by_distribution
     )
-    assert len(evidence) == len(calls) == 5
+    assert len(evidence) == len(calls) == sum(
+        len(files) for files in files_by_distribution.values()
+    )
     assert all(str(unrelated) != call[0][1] for call in calls)
     alias = next(item for item in evidence if item["member"] == "vllm/libalias.so")
     assert alias["is_symlink"] is True
@@ -7056,6 +7141,562 @@ def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_or
         for call in calls
     )
     assert all(call[1]["encoding"] == "utf-8" for call in calls)
+    assert {
+        (item["distribution"], item["member"])
+        for item in evidence
+        if item["resolution_scope"] == "platform_inapplicable"
+    } == set(_EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES)
+    assert all(
+        item["resolution_scope"] == "runtime_reachable"
+        for item in evidence
+        if (item["distribution"], item["member"])
+        not in _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+    )
+
+
+def test_native_shared_object_resolution_accepts_only_reviewed_platform_subsets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform_members = {
+        member
+        for _distribution, member in (
+            _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+        )
+    }
+    files_by_distribution = {
+        "bitsandbytes": tuple(
+            sorted(
+                {
+                    member
+                    for distribution, member in (
+                        _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+                    )
+                    if distribution == "bitsandbytes"
+                }
+                | {"bitsandbytes/libbitsandbytes_cuda129.so"}
+            )
+        ),
+        "torch": ("torch/lib/libtorch.so.2",),
+        "triton": tuple(
+            sorted(
+                {
+                    member
+                    for distribution, member in (
+                        _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+                    )
+                    if distribution == "triton"
+                }
+                | {"triton/_C/libtriton_runtime.so"}
+            )
+        ),
+        "vllm": ("vllm/libvllm.so",),
+    }
+    _install_owned_distribution_fakes(
+        tmp_path,
+        monkeypatch,
+        files_by_distribution=files_by_distribution,
+    )
+    missing_by_member = {
+        "bitsandbytes/libbitsandbytes_rocm70.so": ("libhipblas.so.3",),
+        "bitsandbytes/libbitsandbytes_rocm71.so": (),
+        "bitsandbytes/libbitsandbytes_rocm72.so": (
+            "libhipblas.so.3",
+            "libhipblaslt.so.1",
+            "libhipsparse.so.4",
+        ),
+        "bitsandbytes/libbitsandbytes_xpu.so": ("libsycl.so.8",),
+        "triton/plugins/libMLIRDialectPlugin.so": (),
+        "triton/plugins/libMLIRDialectPlugin.so.23.0git": ("libtriton.so",),
+        "triton/plugins/libTritonPluginsTestLib.so": ("libtriton.so",),
+    }
+
+    def ldd(argv, **_kwargs):
+        member = next(
+            candidate
+            for candidate in platform_members | {
+                "bitsandbytes/libbitsandbytes_cuda129.so",
+                "torch/lib/libtorch.so.2",
+                "triton/_C/libtriton_runtime.so",
+                "vllm/libvllm.so",
+            }
+            if argv[1].endswith(candidate)
+        )
+        missing = missing_by_member.get(member, ())
+        stdout = "".join(f"{soname} => not found\n" for soname in missing)
+        if not missing:
+            stdout = "libc.so.6 => /lib/libc.so.6 (0x1234)\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(sentinel_worker.subprocess, "run", ldd)
+
+    evidence = sentinel_worker._native_shared_object_resolution()
+
+    platform_evidence = {
+        (record["distribution"], record["member"]): record
+        for record in evidence
+        if record["resolution_scope"] == "platform_inapplicable"
+    }
+    assert set(platform_evidence) == set(
+        _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
+    )
+    assert len(platform_evidence) == 7
+    assert all(
+        {
+            binding["soname"]
+            for binding in record["soname_bindings"]
+            if binding["resolved_path"] is None
+        }.issubset(
+            _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES[key]
+        )
+        for key, record in platform_evidence.items()
+    )
+    assert all(
+        not any(
+            binding["resolved_path"] is None
+            for binding in record["soname_bindings"]
+        )
+        for record in evidence
+        if record["resolution_scope"] == "runtime_reachable"
+    )
+
+
+def test_native_shared_object_resolution_requires_complete_reviewed_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files_by_distribution = _complete_native_files_by_distribution()
+    omitted = "triton/plugins/libTritonPluginsTestLib.so"
+    files_by_distribution["triton"] = tuple(
+        member for member in files_by_distribution["triton"] if member != omitted
+    )
+    _install_owned_distribution_fakes(
+        tmp_path,
+        monkeypatch,
+        files_by_distribution=files_by_distribution,
+    )
+
+    def forbidden_ldd(*_args, **_kwargs):
+        raise AssertionError("ldd ran before reviewed inventory closure")
+
+    monkeypatch.setattr(sentinel_worker.subprocess, "run", forbidden_ldd)
+
+    with pytest.raises(RuntimeError, match="lacks required reviewed members"):
+        sentinel_worker._native_shared_object_resolution()
+
+
+@pytest.mark.parametrize(
+    ("distribution", "member", "missing_soname"),
+    (
+        (
+            "bitsandbytes",
+            "bitsandbytes/libbitsandbytes_rocm70.so",
+            "libunexpected.so",
+        ),
+        (
+            "bitsandbytes",
+            "bitsandbytes/libbitsandbytes_cuda129.so",
+            "libhipblas.so.3",
+        ),
+        (
+            "triton",
+            "triton/plugins/libUnreviewedPlugin.so",
+            "libtriton.so",
+        ),
+    ),
+)
+def test_native_shared_object_resolution_rejects_extra_or_wrong_member_sonames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    distribution: str,
+    member: str,
+    missing_soname: str,
+) -> None:
+    files_by_distribution = _complete_native_files_by_distribution()
+    if member not in files_by_distribution[distribution]:
+        files_by_distribution[distribution] = tuple(
+            sorted((*files_by_distribution[distribution], member))
+        )
+    _install_owned_distribution_fakes(
+        tmp_path,
+        monkeypatch,
+        files_by_distribution=files_by_distribution,
+    )
+
+    def ldd(argv, **_kwargs):
+        stdout = (
+            f"{missing_soname} => not found\n"
+            if argv[1].endswith(member)
+            else "libc.so.6 => /lib/libc.so.6 (0x1234)\n"
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(sentinel_worker.subprocess, "run", ldd)
+
+    with pytest.raises(RuntimeError, match="owned native shared-object audit failed"):
+        sentinel_worker._native_shared_object_resolution()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("duplicate", "uniquely own"),
+        ("missing", "uniquely own"),
+        ("mislocated", "canonical member path"),
+        ("symlink", "symlink ancestor"),
+    ),
+)
+def test_selected_bitsandbytes_native_library_path_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+) -> None:
+    files_by_distribution = _complete_native_files_by_distribution()
+    root, distributions = _install_owned_distribution_fakes(
+        tmp_path,
+        monkeypatch,
+        files_by_distribution=files_by_distribution,
+    )
+    selected = _EXPECTED_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
+    bitsandbytes = distributions["bitsandbytes"]
+    if mutation == "duplicate":
+        assert bitsandbytes.files is not None
+        bitsandbytes.files = (*bitsandbytes.files, selected)
+    elif mutation == "missing":
+        assert bitsandbytes.files is not None
+        bitsandbytes.files = tuple(
+            member for member in bitsandbytes.files if member != selected
+        )
+    elif mutation == "mislocated":
+        bitsandbytes._locations[selected] = (
+            root / "bitsandbytes/libbitsandbytes_rocm70.so"
+        )
+    else:
+        selected_path = root / selected
+        selected_path.unlink()
+        selected_path.symlink_to("libbitsandbytes_rocm70.so")
+
+    with pytest.raises(RuntimeError, match=message):
+        sentinel_worker._selected_bitsandbytes_native_library_path()
+
+
+def test_selected_bitsandbytes_native_library_path_accepts_exact_regular_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files_by_distribution = _complete_native_files_by_distribution()
+    root, _distributions = _install_owned_distribution_fakes(
+        tmp_path,
+        monkeypatch,
+        files_by_distribution=files_by_distribution,
+    )
+
+    assert sentinel_worker._selected_bitsandbytes_native_library_path() == (
+        root / _EXPECTED_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
+    )
+
+
+@pytest.mark.parametrize(
+    "resolved_path",
+    ("//lib/libc.so.6", "/lib/../lib/libc.so.6", "/lib/\x01libc.so.6"),
+)
+def test_native_ldd_parser_matches_validator_canonical_path_rejection(
+    resolved_path: str,
+) -> None:
+    stdout = f"libc.so.6 => {resolved_path} (0x1234)\n"
+
+    with pytest.raises(ValueError, match="canonical"):
+        sentinel_worker._ldd_soname_bindings(stdout)
+    with pytest.raises(ValueError, match="canonical"):
+        gpu_qualification._native_ldd_soname_bindings(stdout, label="reviewed")
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    sentinel_worker._NATIVE_SELECTOR_ENVIRONMENT_NAMES,
+)
+def test_execute_planned_sentinel_rejects_native_selectors_before_torch_import(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    environment_name: str,
+) -> None:
+    monkeypatch.setenv(environment_name, "")
+
+    def forbidden_torch():
+        raise AssertionError("torch imported before selector rejection")
+
+    monkeypatch.setattr(sentinel_worker, "_torch", forbidden_torch)
+
+    with pytest.raises(RuntimeError, match="native-library selector"):
+        sentinel_worker.execute_planned_sentinel(
+            plan_record={},
+            planned_job={"sentinel": "forced_triton_runtime_handoff"},
+            input_bundle=tmp_path / "input",
+            work_dir=tmp_path / "work",
+        )
+
+
+class _FakeBitsAndBytesCDLL:
+    def __init__(self, name: str, handle: int = 17) -> None:
+        self._name = name
+        self._handle = handle
+
+
+class _FakeBitsAndBytesTensor:
+    def __init__(self, dtype: str) -> None:
+        self.dtype = dtype
+
+    def reshape(self, *_shape: int) -> "_FakeBitsAndBytesTensor":
+        return self
+
+
+class _FakeBitsAndBytesConfig:
+    def __init__(self, **values: Any) -> None:
+        for key, value in values.items():
+            setattr(self, key, value)
+
+
+def _install_weight_quantizer_fakes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mutation: str | None = None,
+) -> tuple[Path, types.SimpleNamespace]:
+    selected_path = (
+        tmp_path
+        / "site-packages"
+        / "bitsandbytes"
+        / "libbitsandbytes_cuda129.so"
+    )
+    selected_path.parent.mkdir(parents=True)
+    selected_path.write_bytes(b"selected")
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_selected_bitsandbytes_native_library_path",
+        lambda: selected_path,
+    )
+    monkeypatch.setattr(sentinel_worker.ctypes, "CDLL", _FakeBitsAndBytesCDLL)
+
+    cdll: object = _FakeBitsAndBytesCDLL(str(selected_path))
+    if mutation == "wrong-member":
+        cdll = _FakeBitsAndBytesCDLL(
+            str(selected_path.with_name("libbitsandbytes_cuda128.so"))
+        )
+    elif mutation == "zero-handle":
+        cdll = _FakeBitsAndBytesCDLL(str(selected_path), handle=0)
+    elif mutation == "not-cdll":
+        cdll = object()
+    native_library = types.SimpleNamespace(
+        _lib=cdll,
+        compiled_with_cuda=mutation != "not-compiled-with-cuda",
+    )
+    functional_library = (
+        object() if mutation == "functional-library" else native_library
+    )
+    backend_library = object() if mutation == "backend-library" else native_library
+
+    torch = types.SimpleNamespace(
+        bfloat16="bfloat16",
+        uint8="uint8",
+        version=types.SimpleNamespace(
+            cuda="12.8" if mutation == "wrong-cuda-version" else "12.9"
+        ),
+        cuda=types.SimpleNamespace(synchronize=lambda: None),
+        linspace=lambda *_args, **_kwargs: _FakeBitsAndBytesTensor("bfloat16"),
+    )
+    monkeypatch.setattr(sentinel_worker, "_torch", lambda: torch)
+
+    bitsandbytes = types.ModuleType("bitsandbytes")
+    bitsandbytes.__path__ = []
+    cextension = types.ModuleType("bitsandbytes.cextension")
+    cextension.lib = native_library
+    functional = types.ModuleType("bitsandbytes.functional")
+    functional.lib = functional_library
+    cuda_ops = types.ModuleType("bitsandbytes.backends.cuda.ops")
+    cuda_ops.lib = backend_library
+
+    def quantize_4bit(*_args, **_kwargs):
+        if mutation == "changed-during-call":
+            native_library._lib = _FakeBitsAndBytesCDLL(str(selected_path))
+        return (
+            _FakeBitsAndBytesTensor("uint8"),
+            types.SimpleNamespace(quant_type="nf4", nested=True),
+        )
+
+    functional.quantize_4bit = quantize_4bit
+    bitsandbytes.cextension = cextension
+    bitsandbytes.functional = functional
+    transformers = types.ModuleType("transformers")
+    transformers.BitsAndBytesConfig = _FakeBitsAndBytesConfig
+    monkeypatch.setitem(sys.modules, "bitsandbytes", bitsandbytes)
+    monkeypatch.setitem(sys.modules, "bitsandbytes.cextension", cextension)
+    monkeypatch.setitem(sys.modules, "bitsandbytes.functional", functional)
+    monkeypatch.setitem(sys.modules, "bitsandbytes.backends.cuda.ops", cuda_ops)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_installed_vllm_member_hashes",
+        lambda expected: dict(expected),
+    )
+    monkeypatch.setattr(
+        sentinel_worker.importlib.metadata,
+        "version",
+        lambda name: "0.49.2" if name == "bitsandbytes" else "unexpected",
+    )
+    return selected_path, native_library
+
+
+def test_weight_quantizer_attestation_binds_real_nf4_call_to_selected_cdll(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_weight_quantizer_fakes(tmp_path, monkeypatch)
+
+    attestation = sentinel_worker._weight_quantizer_attestation()
+
+    assert attestation["loaded_native_library_member"] == (
+        "bitsandbytes/libbitsandbytes_cuda129.so"
+    )
+    assert attestation["loaded_native_library_path"] == str(
+        tmp_path
+        / "site-packages"
+        / "bitsandbytes"
+        / "libbitsandbytes_cuda129.so"
+    )
+    assert attestation["dynamic_quant_call"] == {
+        "compress_statistics": True,
+        "input_dtype": "bfloat16",
+        "nested_state": True,
+        "packed_dtype": "uint8",
+        "quant_type": "nf4",
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (
+        ("wrong-member", "selected owned CUDA 12.9 member"),
+        ("zero-handle", "positive native handle"),
+        ("not-cdll", "ctypes.CDLL"),
+        ("not-compiled-with-cuda", "not compiled with CUDA"),
+        ("wrong-cuda-version", "requires PyTorch CUDA 12.9"),
+        ("functional-library", "functional layer uses a different"),
+        ("backend-library", "CUDA quantizer uses a different"),
+        ("changed-during-call", "identity changed during the NF4 call"),
+    ),
+)
+def test_weight_quantizer_attestation_rejects_unbound_or_changed_cdll(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    expected: str,
+) -> None:
+    _install_weight_quantizer_fakes(
+        tmp_path,
+        monkeypatch,
+        mutation=mutation,
+    )
+
+    with pytest.raises(RuntimeError, match=expected):
+        sentinel_worker._weight_quantizer_attestation()
+
+
+def test_runtime_handoff_reports_truthful_unresolved_native_counts_after_quantizer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(
+            get_device_capability=lambda _index: (8, 9),
+            is_available=lambda: True,
+        )
+    )
+    monkeypatch.setattr(sentinel_worker, "_torch", lambda: torch)
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_triton_e5m2_probe",
+        lambda _work_dir: {
+            "finite_logits": True,
+            "triton_cache_miss_compile": True,
+            "triton_compile_count": 2,
+            "triton_compiled_kernel_names": ["a", "b"],
+            "triton_kernel_launch_count": 4,
+        },
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_exercise_all_layer_handoff",
+        lambda _work_dir: {"handoff_injected": True},
+    )
+    monkeypatch.setattr(
+        sentinel_worker.importlib.metadata,
+        "version",
+        lambda name: (
+            sentinel_worker._CORE_VERSIONS[name]
+            if name in sentinel_worker._CORE_VERSIONS
+            else GPU_QUALIFICATION_VLLM_VERSION
+        ),
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_runtime_lock_attestation_for_plan",
+        lambda _plan: {"ok": True},
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_installed_vllm_member_hashes",
+        lambda expected: dict(expected),
+    )
+    monkeypatch.setattr(sentinel_worker, "_direct_url_matches_patched_wheel", lambda: True)
+    monkeypatch.setattr(sentinel_worker, "_pip_check_ok", lambda: True)
+
+    def weight_attestation():
+        events.append("weight")
+        return {"loaded_native_library_member": "bitsandbytes/libbitsandbytes_cuda129.so"}
+
+    def native_evidence():
+        events.append("native")
+        return (
+            {
+                "resolution_scope": "platform_inapplicable",
+                "soname_bindings": [
+                    {"resolved_path": None, "soname": "libtriton.so"}
+                ],
+            },
+            {
+                "resolution_scope": "runtime_reachable",
+                "soname_bindings": [
+                    {"resolved_path": "/lib/libc.so.6", "soname": "libc.so.6"}
+                ],
+            },
+        )
+
+    monkeypatch.setattr(sentinel_worker, "_weight_quantizer_attestation", weight_attestation)
+    monkeypatch.setattr(sentinel_worker, "_native_shared_object_resolution", native_evidence)
+    monkeypatch.setattr(sentinel_worker, "_libcudart_major_versions", lambda: [12])
+    monkeypatch.setattr(sentinel_worker.platform, "python_version", lambda: "3.11.11")
+    monkeypatch.setattr(sentinel_worker.platform, "libc_ver", lambda: ("glibc", "2.35"))
+    monkeypatch.setattr(sentinel_worker, "_system_cuda_version", lambda: "12.1")
+    monkeypatch.setattr(sentinel_worker, "_site_packages_read_only", lambda: True)
+
+    measured = sentinel_worker._runtime_handoff_sentinel(
+        plan_record={
+            "runtime_contract": {
+                "model_id": "Qwen/Qwen3-4B",
+                "model_revision": "reviewed",
+            }
+        },
+        planned_job={"hardware_id": "aws-g6-l4"},
+        input_bundle=tmp_path / "input",
+        work_dir=tmp_path,
+    )
+
+    assert events == ["weight", "native"]
+    assert measured["native_shared_object_count"] == 2
+    assert measured["unresolved_native_shared_object_count"] == 1
+    assert measured["unresolved_runtime_reachable_native_shared_object_count"] == 0
 
 
 @pytest.mark.parametrize(
@@ -7078,10 +7719,7 @@ def test_native_shared_object_resolution_fails_closed_with_owned_ldd_evidence(
     returncode: int,
     expected: str,
 ):
-    files = {
-        distribution: (f"{distribution}/lib{distribution}.so",)
-        for distribution in _owned_distribution_versions()
-    }
+    files = _complete_native_files_by_distribution()
     _install_owned_distribution_fakes(
         tmp_path,
         monkeypatch,
@@ -7103,7 +7741,10 @@ def test_native_shared_object_resolution_fails_closed_with_owned_ldd_evidence(
 
     assert expected in str(exc.value)
     assert '"distribution":"bitsandbytes"' in str(exc.value)
-    assert '"member":"bitsandbytes/libbitsandbytes.so"' in str(exc.value)
+    assert (
+        '"member":"bitsandbytes/libbitsandbytes_cuda129.so"'
+        in str(exc.value)
+    )
 
 
 @pytest.mark.parametrize("member", ("../escape.so", "/absolute/escape.so"))

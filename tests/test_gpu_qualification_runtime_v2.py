@@ -757,6 +757,10 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
         "'vllm.model_executor.models.registry'; this may result in unpredictable "
         "behaviour"
     )
+    torch_jit_message = (
+        "`torch.jit.script_method` is deprecated. Please switch to "
+        "`torch.compile` or `torch.export`."
+    )
     transcript = b"".join(
         (
             "<frozen importlib._bootstrap_external>:1241: FutureWarning: "
@@ -785,6 +789,10 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             f"ignore:{vllm_registry_message.partition(',')[0]}"
             ":RuntimeWarning:runpy:128"
         ),
+        (
+            f"ignore:{torch_jit_message}"
+            ":DeprecationWarning:torch.jit._script:365"
+        ),
     ]
 
     # Python startup filters are case-insensitive prefix matches.  The locked
@@ -795,6 +803,7 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             f"messages = {messages!r}",
             f"bitsandbytes_message = {bitsandbytes_message!r}",
             f"vllm_registry_message = {vllm_registry_message!r}",
+            f"torch_jit_message = {torch_jit_message!r}",
             "for message in messages:",
             "    warnings.warn_explicit(",
             "        message, FutureWarning,",
@@ -826,6 +835,18 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             "    warnings.warn_explicit(",
             "        startup_equivalent, RuntimeWarning,",
             '        "<frozen runpy>", 128, module="runpy",',
+            "    )",
+            "warnings.warn_explicit(",
+            "    torch_jit_message, DeprecationWarning,",
+            '    "torch/jit/_script.py", 365, module="torch.jit._script",',
+            ")",
+            "for startup_equivalent in (",
+            '    torch_jit_message + " reviewed suffix",',
+            "    torch_jit_message.swapcase(),",
+            "):",
+            "    warnings.warn_explicit(",
+            "        startup_equivalent, DeprecationWarning,",
+            '        "torch/jit/_script.py", 365, module="torch.jit._script",',
             "    )",
             "cases = (",
             "    (",
@@ -873,6 +894,21 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             "    (",
             '        "an unrelated frozen runpy warning", RuntimeWarning,',
             '        "runpy", 128,',
+            "    ),",
+            "    (torch_jit_message, FutureWarning, \"torch.jit._script\", 365),",
+            "    (torch_jit_message, DeprecationWarning,",
+            '     "torch.jit._scriptX", 365),',
+            "    (torch_jit_message, DeprecationWarning,",
+            '     "torch.jit._script", 366),',
+            "    (torch_jit_message.replace(",
+            '         "script_method", "script_methods", 1), DeprecationWarning,',
+            '     "torch.jit._script", 365),',
+            "    (torch_jit_message.replace(",
+            '         "deprecated.", "deprecated!", 1), DeprecationWarning,',
+            '     "torch.jit._script", 365),',
+            "    (",
+            '        "an unrelated torch JIT deprecation", DeprecationWarning,',
+            '        "torch.jit._script", 365,',
             "    ),",
             ")",
             "for message, category, module, lineno in cases:",
