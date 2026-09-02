@@ -7100,12 +7100,19 @@ def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_or
     unrelated.write_bytes(b"unowned")
     calls: list[tuple[list[str], dict[str, Any]]] = []
     reviewed_torch_library = "/reviewed/runtime/site-packages/torch/lib"
+    reported_cuda_runtime_path = (
+        "/runtime/lib/python3.11/site-packages/"
+        "torch/lib/../../nvidia/cuda_runtime/lib/libcudart.so.12"
+    )
     monkeypatch.setenv("LD_LIBRARY_PATH", reviewed_torch_library)
 
     def ldd(argv, **kwargs):
         calls.append((argv, kwargs))
         soname = Path(argv[1]).name
-        stdout = f"libc.so.6 => /lib/{soname}/libc.so.6 (0x1234)\n"
+        if soname == "libtorch.so.2":
+            stdout = f"libcudart.so.12 => {reported_cuda_runtime_path} (0x1234)\n"
+        else:
+            stdout = f"libc.so.6 => /lib/{soname}/libc.so.6 (0x1234)\n"
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(sentinel_worker.subprocess, "run", ldd)
@@ -7133,6 +7140,15 @@ def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_or
         {
             "resolved_path": "/lib/libalias.so/libc.so.6",
             "soname": "libc.so.6",
+        }
+    ]
+    torch_record = next(
+        item for item in evidence if item["member"] == "torch/lib/libtorch.so.2"
+    )
+    assert torch_record["soname_bindings"] == [
+        {
+            "resolved_path": reported_cuda_runtime_path,
+            "soname": "libcudart.so.12",
         }
     ]
     assert all(call[1]["env"]["LC_ALL"] == "C" for call in calls)
@@ -7398,18 +7414,51 @@ def test_selected_bitsandbytes_native_library_path_accepts_exact_regular_member(
 
 
 @pytest.mark.parametrize(
-    "resolved_path",
-    ("//lib/libc.so.6", "/lib/../lib/libc.so.6", "/lib/\x01libc.so.6"),
+    "rejected_paths",
+    (
+        (
+            "lib/libc.so.6",
+            "//lib/libc.so.6",
+            "/lib//libc.so.6",
+            "/lib/libc.so.6/",
+        ),
+        (
+            "/lib/./libc.so.6",
+            "/lib\\libc.so.6",
+            "/lib/\x01libc.so.6",
+            "/lib/\x7flibc.so.6",
+            "/lib/\x9flibc.so.6",
+        ),
+        (
+            "/../libc.so.6",
+            "/lib/../../libc.so.6",
+            "/lib/..",
+        ),
+    ),
 )
-def test_native_ldd_parser_matches_validator_canonical_path_rejection(
-    resolved_path: str,
+def test_native_ldd_parser_matches_validator_reported_path_contract(
+    rejected_paths: tuple[str, ...],
 ) -> None:
-    stdout = f"libc.so.6 => {resolved_path} (0x1234)\n"
+    reported_path = (
+        "/runtime/lib/python3.11/site-packages/"
+        "torch/lib/../../nvidia/cuda_runtime/lib/libcudart.so.12"
+    )
+    stdout = f"libcudart.so.12 => {reported_path} (0x1234)\n"
+    assert sentinel_worker._ldd_soname_bindings(stdout) == [
+        {"resolved_path": reported_path, "soname": "libcudart.so.12"}
+    ]
+    assert gpu_qualification._native_ldd_soname_bindings(
+        stdout, label="reviewed"
+    ) == [("libcudart.so.12", reported_path)]
 
-    with pytest.raises(ValueError, match="canonical"):
-        sentinel_worker._ldd_soname_bindings(stdout)
-    with pytest.raises(ValueError, match="canonical"):
-        gpu_qualification._native_ldd_soname_bindings(stdout, label="reviewed")
+    for rejected_path in rejected_paths:
+        rejected_stdout = f"libc.so.6 => {rejected_path} (0x1234)\n"
+        with pytest.raises(ValueError):
+            sentinel_worker._ldd_soname_bindings(rejected_stdout)
+        with pytest.raises(ValueError):
+            gpu_qualification._native_ldd_soname_bindings(
+                rejected_stdout, label="reviewed"
+            )
 
 
 @pytest.mark.parametrize(

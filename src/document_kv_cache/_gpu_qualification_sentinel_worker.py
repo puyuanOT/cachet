@@ -1265,6 +1265,36 @@ def _require_no_native_symlink_ancestors(
         candidate = parent
 
 
+def _ldd_reported_absolute_path(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    components = value.split("/")
+    if (
+        not value.startswith("/")
+        or value.startswith("//")
+        or value.endswith("/")
+        or "\\" in value
+        or any(
+            ord(character) < 32 or 127 <= ord(character) <= 159
+            for character in value
+        )
+        or any(component in {"", "."} for component in components[1:])
+        or components[-1] == ".."
+    ):
+        raise ValueError(f"{label} must be a valid ldd-reported absolute path")
+    depth = 0
+    for component in components[1:]:
+        if component == "..":
+            if depth == 0:
+                raise ValueError(
+                    f"{label} must be a valid ldd-reported absolute path"
+                )
+            depth -= 1
+        else:
+            depth += 1
+    return value
+
+
 def _ldd_soname_bindings(stdout: str) -> list[dict[str, str | None]]:
     bindings: list[dict[str, str | None]] = []
     observed_sonames: set[str] = set()
@@ -1290,17 +1320,9 @@ def _ldd_soname_bindings(stdout: str) -> list[dict[str, str | None]]:
             match = re.fullmatch(r"(?P<path>/.*?)(?:\s+\(0x[0-9a-fA-F]+\))?", resolution)
             if match is None:
                 raise ValueError("ldd binding resolution is not an absolute path")
-            resolved_path = match.group("path")
-            path = PurePosixPath(resolved_path)
-            if (
-                not resolved_path
-                or not path.is_absolute()
-                or resolved_path.startswith("//")
-                or path.as_posix() != resolved_path
-                or any(part in {"", ".", ".."} for part in path.parts[1:])
-                or any(ord(character) < 32 for character in resolved_path)
-            ):
-                raise ValueError("ldd binding path is not canonical")
+            resolved_path = _ldd_reported_absolute_path(
+                match.group("path"), "ldd binding path"
+            )
         bindings.append({"resolved_path": resolved_path, "soname": soname})
     return sorted(
         bindings,

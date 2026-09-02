@@ -751,6 +751,16 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
         "_check_is_size will be removed in a future PyTorch release along with "
         "guard_size_oblivious.     Use _check(i >= 0) instead."
     )
+    flashinfer_message = (
+        "\n    Prefer using device seq_lens directly to avoid implicit H<>D sync.\n"
+        "    If a CPU copy is needed, use `seq_lens.cpu()` instead.\n"
+        "    Will be removed in a future release, please migrate as soon as "
+        "possible.\n    "
+    )
+    assert len(flashinfer_message.encode("utf-8")) == 212
+    assert sha256(flashinfer_message.encode("utf-8")).hexdigest() == (
+        "4181d2e307079b3d05aadd829c221993da5c442ab6a8b972fca76ece24c3d8c9"
+    )
     vllm_registry_message = (
         "'vllm.model_executor.models.registry' found in sys.modules after import "
         "of package 'vllm.model_executor.models', but prior to execution of "
@@ -786,8 +796,16 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             ":FutureWarning:bitsandbytes.backends.cuda.ops:213"
         ),
         (
+            f"ignore:{bitsandbytes_message}"
+            ":FutureWarning:bitsandbytes.backends.cuda.ops:468"
+        ),
+        (
             f"ignore:{vllm_registry_message.partition(',')[0]}"
             ":RuntimeWarning:runpy:128"
+        ),
+        (
+            "ignore::DeprecationWarning:"
+            "vllm.v1.attention.backends.flashinfer:1234"
         ),
         (
             f"ignore:{torch_jit_message}"
@@ -795,13 +813,18 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
         ),
     ]
 
-    # Python startup filters are case-insensitive prefix matches.  The locked
-    # interpreter and wheel hashes make those documented equivalences immutable.
+    # Python startup message filters are case-insensitive prefix matches.  The
+    # locked interpreter and wheel hashes make those documented equivalences
+    # immutable.  FlashInfer necessarily has no message predicate because the
+    # startup grammar strips its leading whitespace and splits its later comma;
+    # the exact category, module, and pinned source line are its boundary.
     child_code = "\n".join(
         (
             "import warnings",
+            "from typing_extensions import deprecated",
             f"messages = {messages!r}",
             f"bitsandbytes_message = {bitsandbytes_message!r}",
+            f"flashinfer_message = {flashinfer_message!r}",
             f"vllm_registry_message = {vllm_registry_message!r}",
             f"torch_jit_message = {torch_jit_message!r}",
             "for message in messages:",
@@ -810,20 +833,21 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             '        "<frozen importlib._bootstrap_external>", 1241,',
             '        module="importlib._bootstrap_external",',
             "    )",
-            "warnings.warn_explicit(",
-            "    bitsandbytes_message, FutureWarning,",
-            '    "bitsandbytes/backends/cuda/ops.py", 213,',
-            '    module="bitsandbytes.backends.cuda.ops",',
-            ")",
-            "for startup_equivalent in (",
-            '    bitsandbytes_message + " reviewed suffix",',
-            "    bitsandbytes_message.swapcase(),",
-            "):",
+            "for bitsandbytes_lineno in (213, 468):",
             "    warnings.warn_explicit(",
-            "        startup_equivalent, FutureWarning,",
-            '        "bitsandbytes/backends/cuda/ops.py", 213,',
+            "        bitsandbytes_message, FutureWarning,",
+            '        "bitsandbytes/backends/cuda/ops.py", bitsandbytes_lineno,',
             '        module="bitsandbytes.backends.cuda.ops",',
             "    )",
+            "    for startup_equivalent in (",
+            '        bitsandbytes_message + " reviewed suffix",',
+            "        bitsandbytes_message.swapcase(),",
+            "    ):",
+            "        warnings.warn_explicit(",
+            "            startup_equivalent, FutureWarning,",
+            '            "bitsandbytes/backends/cuda/ops.py", bitsandbytes_lineno,',
+            '            module="bitsandbytes.backends.cuda.ops",',
+            "        )",
             "warnings.warn_explicit(",
             "    vllm_registry_message, RuntimeWarning,",
             '    "<frozen runpy>", 128, module="runpy",',
@@ -836,6 +860,26 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             "        startup_equivalent, RuntimeWarning,",
             '        "<frozen runpy>", 128, module="runpy",',
             "    )",
+            "@deprecated(flashinfer_message, category=DeprecationWarning)",
+            "def deprecated_seq_lens_cpu():",
+            "    return None",
+            "flashinfer_scope = {",
+            '    "__name__": "vllm.v1.attention.backends.flashinfer",',
+            '    "deprecated_seq_lens_cpu": deprecated_seq_lens_cpu,',
+            "}",
+            "exec(",
+            "    compile(",
+            '        "\\n" * 1233 + "deprecated_seq_lens_cpu()\\n",',
+            '        "vllm/v1/attention/backends/flashinfer.py",',
+            '        "exec",',
+            "    ),",
+            "    flashinfer_scope,",
+            ")",
+            "warnings.warn_explicit(",
+            '    "any message at the sole pinned expression", DeprecationWarning,',
+            '    "vllm/v1/attention/backends/flashinfer.py", 1234,',
+            '    module="vllm.v1.attention.backends.flashinfer",',
+            ")",
             "warnings.warn_explicit(",
             "    torch_jit_message, DeprecationWarning,",
             '    "torch/jit/_script.py", 365, module="torch.jit._script",',
@@ -869,13 +913,26 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             "    (bitsandbytes_message, FutureWarning,",
             '     "document_kv_cache._gpu_qualification_sentinel_worker", 213),',
             "    (bitsandbytes_message, FutureWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 212),',
+            "    (bitsandbytes_message, FutureWarning,",
             '     "bitsandbytes.backends.cuda.ops", 214),',
+            "    (bitsandbytes_message, RuntimeWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 468),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "document_kv_cache._gpu_qualification_sentinel_worker", 468),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 467),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 469),',
             "    (bitsandbytes_message.replace(",
             '         "_check_is_size", "_check_is_sizeX", 1), FutureWarning,',
             '     "bitsandbytes.backends.cuda.ops", 213),',
             "    (bitsandbytes_message.replace(",
             '         "     Use", "    Use"), FutureWarning,',
             '     "bitsandbytes.backends.cuda.ops", 213),',
+            "    (bitsandbytes_message.replace(",
+            '         "_check_is_size", "_check_is_sizeX", 1), FutureWarning,',
+            '     "bitsandbytes.backends.cuda.ops", 468),',
             "    (",
             '        "an unrelated bitsandbytes future warning", FutureWarning,',
             '        "bitsandbytes.backends.cuda.ops", 213,',
@@ -895,6 +952,14 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             '        "an unrelated frozen runpy warning", RuntimeWarning,',
             '        "runpy", 128,',
             "    ),",
+            "    (flashinfer_message, FutureWarning,",
+            '     "vllm.v1.attention.backends.flashinfer", 1234),',
+            "    (flashinfer_message, DeprecationWarning,",
+            '     "vllm.v1.attention.backends.flashinferX", 1234),',
+            "    (flashinfer_message, DeprecationWarning,",
+            '     "vllm.v1.attention.backends.flashinfer", 1233),',
+            "    (flashinfer_message, DeprecationWarning,",
+            '     "vllm.v1.attention.backends.flashinfer", 1235),',
             "    (torch_jit_message, FutureWarning, \"torch.jit._script\", 365),",
             "    (torch_jit_message, DeprecationWarning,",
             '     "torch.jit._scriptX", 365),',

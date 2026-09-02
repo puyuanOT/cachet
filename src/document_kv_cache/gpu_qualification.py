@@ -2108,7 +2108,7 @@ def _validate_native_shared_object_evidence(
             resolved_binding = (
                 None
                 if raw_resolved_binding is None
-                else _canonical_native_path(
+                else _ldd_reported_absolute_path(
                     raw_resolved_binding, f"{binding_label}.resolved_path"
                 )
             )
@@ -2199,6 +2199,36 @@ def _canonical_native_path(value: Any, label: str) -> str:
     return value
 
 
+def _ldd_reported_absolute_path(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    components = value.split("/")
+    if (
+        not value.startswith("/")
+        or value.startswith("//")
+        or value.endswith("/")
+        or "\\" in value
+        or any(
+            ord(character) < 32 or 127 <= ord(character) <= 159
+            for character in value
+        )
+        or any(component in {"", "."} for component in components[1:])
+        or components[-1] == ".."
+    ):
+        raise ValueError(f"{label} must be a valid ldd-reported absolute path")
+    depth = 0
+    for component in components[1:]:
+        if component == "..":
+            if depth == 0:
+                raise ValueError(
+                    f"{label} must be a valid ldd-reported absolute path"
+                )
+            depth -= 1
+        else:
+            depth += 1
+    return value
+
+
 def _native_ldd_soname_bindings(
     stdout: str, *, label: str
 ) -> list[tuple[str, str | None]]:
@@ -2229,7 +2259,7 @@ def _native_ldd_soname_bindings(
             )
             if match is None:
                 raise ValueError(f"{label} ldd_stdout binding is not an absolute path")
-            resolved_path = _canonical_native_path(
+            resolved_path = _ldd_reported_absolute_path(
                 match.group("path"), f"{label} ldd_stdout binding path"
             )
         bindings.append((soname, resolved_path))

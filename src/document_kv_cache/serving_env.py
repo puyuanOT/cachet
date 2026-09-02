@@ -45,11 +45,14 @@ VLLM_PATCHED_WHEEL_SHA256_ENV = "DOCUMENT_KV_VLLM_PATCHED_WHEEL_SHA256"
 # ``PYTHONWARNINGS`` uses commas to delimit filters, so reviewed messages that
 # contain commas are intentionally matched through an invariant pre-comma
 # prefix.  The pinned cuda-bindings wheel and CPython/vLLM runtime fix the
-# corresponding suffixes.  The bitsandbytes filter supplies its full reviewed
-# 0.49.2/PyTorch 2.13 message because that message has no comma.  The
-# torch.jit allowance likewise supplies its full pinned PyTorch 2.13 message.
-# Each allowance is confined to its category, attributed module, and source
-# line; every other warning is promoted to an exception.
+# corresponding suffixes.  The two bitsandbytes filters supply their full
+# reviewed 0.49.2/PyTorch 2.13 message because it has no comma.  FlashInfer's
+# reviewed multiline message cannot be represented exactly: Python strips its
+# leading field whitespace and its later comma is a filter delimiter.  Its
+# empty message field is therefore confined to the exact category, attributed
+# module, and line of the sole expression in the pinned vLLM wheel.  The
+# torch.jit allowance supplies its full pinned PyTorch 2.13 message.  Every
+# other warning is promoted to an exception.
 GPU_RUNTIME_PYTHONWARNINGS = ",".join(
     (
         "error",
@@ -71,9 +74,18 @@ GPU_RUNTIME_PYTHONWARNINGS = ",".join(
             ":FutureWarning:bitsandbytes.backends.cuda.ops:213"
         ),
         (
+            "ignore:_check_is_size will be removed in a future PyTorch release "
+            "along with guard_size_oblivious.     Use _check(i >= 0) instead."
+            ":FutureWarning:bitsandbytes.backends.cuda.ops:468"
+        ),
+        (
             "ignore:'vllm.model_executor.models.registry' found in sys.modules "
             "after import of package 'vllm.model_executor.models'"
             ":RuntimeWarning:runpy:128"
+        ),
+        (
+            "ignore::DeprecationWarning:"
+            "vllm.v1.attention.backends.flashinfer:1234"
         ),
         (
             "ignore:`torch.jit.script_method` is deprecated. Please switch to "

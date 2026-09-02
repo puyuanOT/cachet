@@ -2009,7 +2009,37 @@ def test_runtime_native_evidence_rejects_resealed_internal_contradictions(
     elif mutation == "stdout-bytes":
         record["ldd_stdout_utf8_bytes"] += 1
     elif mutation == "bindings":
-        record["soname_bindings"] = []
+        for escaping_reported_path in (
+            "/../libc.so.6",
+            "/lib/../../libc.so.6",
+        ):
+            escaped_evidence = deepcopy(evidence)
+            escaped_measurements = _forced_runtime_measurements(escaped_evidence)
+            escaped_record = escaped_measurements[
+                "native_shared_object_evidence"
+            ][0]
+            _set_native_record_soname_bindings(
+                escaped_record, {"libc.so.6": escaping_reported_path}
+            )
+            _reseal_evidence(escaped_evidence)
+            with pytest.raises(ValueError, match="ldd-reported absolute path"):
+                validate_gpu_qualification_evidence_record(
+                    escaped_evidence,
+                    plan_record=plan,
+                    expected_campaign_id=CAMPAIGN_ID,
+                    expected_artifact_pins=PINS,
+                )
+        reported_path = (
+            "/runtime/lib/python3.11/site-packages/"
+            "torch/lib/../../nvidia/cuda_runtime/lib/libcudart.so.12"
+        )
+        _set_native_record_soname_bindings(
+            record, {"libcudart.so.12": reported_path}
+        )
+        record["soname_bindings"][0]["resolved_path"] = (
+            "/runtime/lib/python3.11/site-packages/"
+            "nvidia/cuda_runtime/lib/libcudart.so.12"
+        )
     elif mutation == "double-slash":
         record["path"] = f"/{record['path']}"
     elif mutation == "unowned-symlink":
@@ -2077,6 +2107,19 @@ def test_runtime_native_evidence_accepts_exact_platform_inapplicable_closure() -
     assert (
         measurements["unresolved_runtime_reachable_native_shared_object_count"] == 0
     )
+
+    reported_path = (
+        "/runtime/lib/python3.11/site-packages/"
+        "torch/lib/../../nvidia/cuda_runtime/lib/libcudart.so.12"
+    )
+    torch_record = _native_record(measurements, "torch/lib/libtorch.so.2")
+    _set_native_record_soname_bindings(
+        torch_record, {"libcudart.so.12": reported_path}
+    )
+    _reseal_evidence(evidence)
+    assert torch_record["soname_bindings"] == [
+        {"resolved_path": reported_path, "soname": "libcudart.so.12"}
+    ]
 
     validate_gpu_qualification_evidence_record(
         evidence,
