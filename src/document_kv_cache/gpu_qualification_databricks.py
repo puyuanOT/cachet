@@ -101,7 +101,10 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS,
     PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS,
 )
-from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
+from document_kv_cache.serving_env import (
+    VLLM_RUNTIME_LOCK_SHA256,
+    gpu_runtime_warning_environment_overrides,
+)
 
 
 GPU_QUALIFICATION_DATABRICKS_PURPOSE: Final = "cachet-vllm-0271-gpu-qualification"
@@ -6226,6 +6229,7 @@ def _observe_gpu_runtime(
     runtime_root = work_dir / "runtime"
     runtime_python = work_dir / "runtime" / "bin" / "python"
     environment = _isolated_python_environment()
+    environment.update(gpu_runtime_warning_environment_overrides())
     before = _attest_isolated_python(
         runtime_root,
         expected_python_version=expected_python_version,
@@ -6253,6 +6257,8 @@ def _observe_gpu_runtime(
         env=environment,
         cwd=runtime_root,
     )
+    if completed.stderr != "":
+        raise RuntimeError("GPU runtime identity probe wrote stderr")
     driver = subprocess.run(
         [
             "nvidia-smi",

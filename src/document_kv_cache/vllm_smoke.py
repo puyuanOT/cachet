@@ -151,6 +151,7 @@ from document_kv_cache.serving_env import (
     VIRTUALENV_BOOTSTRAP_SHA256,
     VIRTUALENV_BOOTSTRAP_URL,
     VIRTUALENV_BOOTSTRAP_VERSION,
+    gpu_runtime_warning_environment_overrides,
     patched_vllm_wheel_install_spec,
     validate_vllm_runtime_lock_platform,
     vllm_runtime_install_requirements,
@@ -3470,6 +3471,8 @@ def probe_lmcache_import(
 ) -> dict[str, object]:
     """Fail fast if lmcache cannot be imported alongside vLLM (torch ABI check)."""
 
+    probe_environment = dict(env)
+    probe_environment.update(gpu_runtime_warning_environment_overrides())
     script = (
         "import json\n"
         "rec = {}\n"
@@ -3492,7 +3495,7 @@ def probe_lmcache_import(
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
-        env=env,
+        env=probe_environment,
     )
     record: dict[str, object]
     try:
@@ -4958,6 +4961,8 @@ def _run_native_v2_final_runtime_verifier(
     environment: Mapping[str, str],
     cwd: Path,
 ) -> dict[str, Any]:
+    verifier_environment = dict(environment)
+    verifier_environment.update(gpu_runtime_warning_environment_overrides())
     code = (
         "import json,sys;"
         "from document_kv_cache._gpu_qualification_sentinels_v2 import "
@@ -4987,7 +4992,7 @@ def _run_native_v2_final_runtime_verifier(
         capture_output=True,
         text=True,
         timeout=_NATIVE_RUNTIME_V2_FINAL_VERIFIER_TIMEOUT_SECONDS,
-        env=dict(environment),
+        env=verifier_environment,
         cwd=cwd,
     )
     if completed.stderr != "":
@@ -5033,6 +5038,7 @@ def install_native_v2_runtime(
         raise ValueError("native_runtime_v2 is required")
     paths, opening_snapshot = _native_runtime_v2_artifact_snapshot(bundle)
     environment = _pip_subprocess_environment()
+    environment.update(gpu_runtime_warning_environment_overrides())
     environment["PYTHONSAFEPATH"] = "1"
     commands = [
         [
@@ -5308,6 +5314,8 @@ print(json.dumps(payload, sort_keys=True), flush=True)
     probe_script_path = output_path.with_name(f"{output_path.stem}.py")
     probe_script_path.write_text(code, encoding="utf-8")
     argv = [str(python_executable), str(probe_script_path)]
+    probe_environment = dict(os.environ if env is None else env)
+    probe_environment.update(gpu_runtime_warning_environment_overrides())
     print("+", " ".join([argv[0], "<vllm import probe>"]), flush=True)
     try:
         completed = subprocess.run(
@@ -5316,7 +5324,7 @@ print(json.dumps(payload, sort_keys=True), flush=True)
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
-            env=env or os.environ.copy(),
+            env=probe_environment,
         )
     except subprocess.TimeoutExpired as exc:
         record = {
@@ -6079,6 +6087,7 @@ def _is_bitsandbytes_4bit_quantization(value: str | None) -> bool:
 
 def vllm_server_env_overrides() -> dict[str, str]:
     return {
+        **gpu_runtime_warning_environment_overrides(),
         "PYTHONUNBUFFERED": "1",
         "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
         # Databricks' system CUDA 12.1 toolchain can be older than the cu129

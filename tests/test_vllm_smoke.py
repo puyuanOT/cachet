@@ -22,6 +22,8 @@ from document_kv_cache.canary_orchestration import (
     representative_vllm_comparison_suite_id,
 )
 from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
     VLLM_CUDA_REQUIREMENTS_SHA256,
     VLLM_CUDA_VARIANT,
     VLLM_DOCKERFILE_SHA256,
@@ -822,6 +824,8 @@ def test_install_native_v2_runtime_uses_exact_local_sequence_and_attestation(
 
     monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
     monkeypatch.setenv("_PIP_USE_IMPORTLIB_METADATA", "0")
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "DEBUG")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
     monkeypatch.setattr(public_vllm_smoke, "_file_sha256", file_sha256)
     monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
     monkeypatch.setattr(
@@ -880,9 +884,22 @@ def test_install_native_v2_runtime_uses_exact_local_sequence_and_attestation(
     assert attestation == {"ok": True, "attestation": "native-v2"}
     assert len(verifier_calls) == 1
     assert verifier_calls[0][0] == config.venv_python
+    assert (
+        verifier_calls[0][1]["environment"]["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert (
+        verifier_calls[0][1]["environment"]["PYTHONWARNINGS"]
+        == GPU_RUNTIME_PYTHONWARNINGS
+    )
     for _argv, kwargs in calls:
         environment = kwargs["env"]
+        assert (
+            environment["FLASHINFER_LOGGING_LEVEL"]
+            == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        )
         assert environment["PYTHONSAFEPATH"] == "1"
+        assert environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
         assert {
             key
             for key in environment
@@ -948,7 +965,11 @@ def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
     ]
     assert kwargs["capture_output"] is True
     assert kwargs["text"] is True
-    assert kwargs["env"] == {"PYTHONSAFEPATH": "1"}
+    assert kwargs["env"] == {
+        "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+        "PYTHONSAFEPATH": "1",
+        "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+    }
 
 
 def test_create_venv_fallback_is_hash_pinned_and_dependency_free(monkeypatch, tmp_path):
@@ -4284,7 +4305,9 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
         metadata["dependency_override_constraints"] == dependency_override_constraints()
     )
     assert metadata["vllm_server_env_overrides"] == {
+        "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
         "PYTHONUNBUFFERED": "1",
+        "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
         "VLLM_USE_FLASHINFER_SAMPLER": "0",
         "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
     }
@@ -4361,6 +4384,8 @@ def test_server_env_defaults_q4_handoff_generator_to_matching_transformers_confi
         CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "DEBUG")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-q4-handoff",
         output_dir=tmp_path / "out",
@@ -4378,6 +4403,11 @@ def test_server_env_defaults_q4_handoff_generator_to_matching_transformers_confi
 
     env = server_env(config)
 
+    assert (
+        env["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert env["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert env[CACHET_TRANSFORMERS_MODEL_ID_ENV] == "Qwen/Qwen3-4B-Instruct-2507"
     assert env[CACHET_TRANSFORMERS_TOKENIZER_ID_ENV] == "Qwen/Qwen3-4B-Instruct-2507"
     assert env[CACHET_TRANSFORMERS_TORCH_DTYPE_ENV] == "bfloat16"
@@ -4516,6 +4546,15 @@ def test_probe_vllm_import_records_native_provider_evidence(monkeypatch, tmp_pat
 
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
+        if argv[1] == "-c":
+            compile(argv[2], "<lmcache-import-probe>", "exec")
+            assert "import lmcache" in argv[2]
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=0,
+                stdout='{"ok": true, "lmcache_v1_adapter_import": true}\n',
+                stderr="",
+            )
         probe_source = Path(argv[1]).read_text(encoding="utf-8")
         compile(probe_source, argv[1], "exec")
         assert "build_vllm_native_provider_probe_record" in probe_source
@@ -4544,6 +4583,29 @@ def test_probe_vllm_import_records_native_provider_evidence(monkeypatch, tmp_pat
         == "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"
     )
     assert calls[0][1]["env"]["HF_HOME"] == str(tmp_path / "hf-cache")
+    assert (
+        calls[0][1]["env"]["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert calls[0][1]["env"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+
+    public_vllm_smoke.probe_lmcache_import(
+        tmp_path / "venv" / "bin" / "python",
+        tmp_path / "lmcache-probe.json",
+        timeout_seconds=3,
+        env={
+            "HF_HOME": str(tmp_path / "hf-cache"),
+            "FLASHINFER_LOGGING_LEVEL": "hostile",
+            "PYTHONWARNINGS": "ignore",
+        },
+    )
+
+    assert calls[1][1]["env"]["HF_HOME"] == str(tmp_path / "hf-cache")
+    assert (
+        calls[1][1]["env"]["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert calls[1][1]["env"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
 
 
 def test_installed_versions_uses_cachet_distribution_name(monkeypatch, tmp_path):

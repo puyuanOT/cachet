@@ -27,7 +27,13 @@ from document_kv_cache.databricks_vllm_smoke_job import (
     write_databricks_vllm_smoke_run_submit_json,
     write_databricks_vllm_smoke_runner_script,
 )
-from document_kv_cache.serving_env import VLLM_PACKAGE_VERSION, VLLM_VERSION
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+    VLLM_PACKAGE_VERSION,
+    VLLM_VERSION,
+    gpu_runtime_warning_environment_overrides,
+)
 from document_kv_cache.vllm_smoke import (
     DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
     build_benchmark_runner_args,
@@ -1013,6 +1019,7 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
     )
     assert runtime_identity == stored_post_rope_runtime_identity().to_record()
     assert task["new_cluster"]["spark_env_vars"] == {
+        **gpu_runtime_warning_environment_overrides(),
         "CACHET_TRANSFORMERS_DEVICE": "cuda",
         "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
         "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE": "true",
@@ -1074,6 +1081,7 @@ def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
     assert '"--no-deps"' in runner_text
     assert "dbfs:/" in runner_text
     assert "document_kv_cache.vllm_smoke" in runner_text
+    assert "_require_gpu_runtime_warning_startup" in runner_text
     assert "if exit_code:" in runner_text
 
 
@@ -1152,6 +1160,8 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
         "PIP_INDEX_URL": "https://attacker.invalid/simple",
         "pip_no_index": "1",
         "PIP_REQUIREMENT": "/attacker/requirements.txt",
+        "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+        "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
         "VIRTUAL_ENV": "/attacker/venv",
     }
 
@@ -1192,7 +1202,12 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
         "PIP_NO_INPUT",
     }
     assert pip_environment["PIP_CONFIG_FILE"] == os.devnull
+    assert (
+        pip_environment["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
     assert pip_environment["PYTHONNOUSERSITE"] == "1"
+    assert pip_environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert all(
         variable not in pip_environment
         for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
@@ -1309,7 +1324,10 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
     assert task["max_retries"] == 0
     assert "libraries" not in task
     assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
-    assert task["new_cluster"]["spark_env_vars"] == {"CACHET_TRANSFORMERS_DEVICE": "cuda"}
+    assert task["new_cluster"]["spark_env_vars"] == {
+        **gpu_runtime_warning_environment_overrides(),
+        "CACHET_TRANSFORMERS_DEVICE": "cuda",
+    }
     assert "vllm_smoke" in runner_path.read_text(encoding="utf-8")
 
 

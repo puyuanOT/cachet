@@ -46,6 +46,8 @@ from document_kv_cache.native_probe_factories import (
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
     PIP_BOOTSTRAP_CONSTRAINTS,
     SGLANG_DEPENDENCY_CONSTRAINTS,
     VLLM_PACKAGE_INDEX_URLS,
@@ -57,6 +59,7 @@ from document_kv_cache.serving_env import (
     VIRTUALENV_BOOTSTRAP_SHA256,
     VIRTUALENV_BOOTSTRAP_URL,
     VIRTUALENV_BOOTSTRAP_VERSION,
+    gpu_runtime_warning_environment_overrides,
     vllm_runtime_lock_path,
 )
 
@@ -488,6 +491,7 @@ def test_build_databricks_engine_probe_payload_sets_native_delegate_env_var():
     task = payload["tasks"][0]
 
     assert task["new_cluster"]["spark_env_vars"] == {
+        **gpu_runtime_warning_environment_overrides(),
         VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe"
     }
     assert "--native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
@@ -518,6 +522,7 @@ def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
     parameters = task["spark_python_task"]["parameters"]
 
     assert task["new_cluster"]["spark_env_vars"] == {
+        **gpu_runtime_warning_environment_overrides(),
         VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
     }
     assert _parameter_values(parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
@@ -1007,6 +1012,7 @@ def test_build_databricks_engine_probe_matrix_payload_sets_backend_delegate_env_
         for task in payload["tasks"]
     }
     assert cluster_by_backend["vllm"]["spark_env_vars"] == {
+        **gpu_runtime_warning_environment_overrides(),
         VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe"
     }
     assert cluster_by_backend["sglang"]["spark_env_vars"] == {
@@ -3021,14 +3027,16 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
                 "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
                 "        handle.write(json.dumps({'event': 'subprocess_check_call'}) + '\\n')",
                 "    with open(os.environ['PIP_CALLS_JSONL'], 'a', encoding='utf-8') as handle:",
-                "        handle.write(json.dumps({'argv': argv, 'has_env': kwargs.get('env') is not None}) + '\\n')",
+                "        env = kwargs.get('env') or {}",
+                "        handle.write(json.dumps({'argv': argv, 'has_env': kwargs.get('env') is not None, 'flashinfer_logging_level': env.get('FLASHINFER_LOGGING_LEVEL'), 'pythonwarnings': env.get('PYTHONWARNINGS')}) + '\\n')",
                 "    return 0",
                 "",
                 "def _capture_call(argv, **kwargs):",
                 "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
                 "        handle.write(json.dumps({'event': 'subprocess_call'}) + '\\n')",
                 "    with open(os.environ['REEXEC_CALLS_JSONL'], 'a', encoding='utf-8') as handle:",
-                "        handle.write(json.dumps({'argv': argv, 'has_env': kwargs.get('env') is not None}) + '\\n')",
+                "        env = kwargs.get('env') or {}",
+                "        handle.write(json.dumps({'argv': argv, 'has_env': kwargs.get('env') is not None, 'flashinfer_logging_level': env.get('FLASHINFER_LOGGING_LEVEL'), 'pythonwarnings': env.get('PYTHONWARNINGS')}) + '\\n')",
                 "    return 0",
                 "",
                 "subprocess.check_call = _capture_check_call",
@@ -3042,12 +3050,40 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
     write_databricks_engine_probe_runner_script(runner_path)
     env = {
         **os.environ,
+        "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
         "PYTHONPATH": str(tmp_path),
+        "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
         "PIP_CALLS_JSONL": str(pip_calls_path),
         "REEXEC_CALLS_JSONL": str(reexec_calls_path),
         "TASK_ARGS_JSON": str(task_args_path),
         "RUNNER_EVENTS_JSONL": str(events_path),
     }
+
+    hostile_env = {
+        **env,
+        "FLASHINFER_LOGGING_LEVEL": "hostile",
+        "PYTHONWARNINGS": "ignore",
+    }
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(runner_path),
+            "--skip-runtime-package-install",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            "--expected-backend",
+            "vllm",
+        ],
+        check=False,
+        capture_output=True,
+        env=hostile_env,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert (
+        "vLLM engine-probe runner lacks the pinned CUDA warning startup policy"
+        in rejected.stderr
+    )
 
     subprocess.run(
         [
@@ -3101,6 +3137,15 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
             ],
         ]
     assert all(record["has_env"] is True for record in pip_records)
+    assert all(
+        record["flashinfer_logging_level"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        for record in pip_records
+    )
+    assert all(
+        record["pythonwarnings"] == GPU_RUNTIME_PYTHONWARNINGS
+        for record in pip_records
+    )
     assert pip_calls[2][0] == str(venv_python)
     assert pip_calls[3][0] == str(venv_python)
     reexec_records = [json.loads(line) for line in reexec_calls_path.read_text(encoding="utf-8").splitlines()]
@@ -3116,7 +3161,14 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
             "vllm",
         ]
     ]
-    assert reexec_records == [{"argv": reexec_calls[0], "has_env": True}]
+    assert reexec_records == [
+        {
+            "argv": reexec_calls[0],
+            "flashinfer_logging_level": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+            "has_env": True,
+            "pythonwarnings": GPU_RUNTIME_PYTHONWARNINGS,
+        }
+    ]
     assert not task_args_path.exists()
 
     subprocess.run(
@@ -3150,6 +3202,29 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
         "subprocess_call",
         "engine_probe_runner_import",
         "run_engine_probe_task",
+    ]
+
+    sglang_completed = subprocess.run(
+        [
+            sys.executable,
+            str(runner_path),
+            "--skip-runtime-package-install",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+            "--expected-backend",
+            "sglang",
+        ],
+        check=False,
+        capture_output=True,
+        env=hostile_env,
+        text=True,
+    )
+    assert sglang_completed.returncode == 0
+    assert json.loads(task_args_path.read_text(encoding="utf-8")) == [
+        "--handoff-json",
+        "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+        "--expected-backend",
+        "sglang",
     ]
 
 
@@ -3308,6 +3383,7 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
     assert cluster["node_type_id"] == "g6.8xlarge"
     assert cluster["driver_node_type_id"] == "g6.8xlarge"
     assert cluster["spark_env_vars"] == {
+        **gpu_runtime_warning_environment_overrides(),
         VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
     }
     assert parameters[:12] == [

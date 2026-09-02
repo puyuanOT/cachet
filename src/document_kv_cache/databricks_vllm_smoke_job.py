@@ -67,6 +67,11 @@ from document_kv_cache.model_profiles import (
     QWEN3_4B_ROPE_THETA,
     layout_for_model,
 )
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+    gpu_runtime_warning_environment_overrides,
+)
 
 
 DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME = "document-kv-vllm-smoke"
@@ -80,6 +85,10 @@ import hmac
 import os
 import subprocess
 import sys
+
+
+_GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL = "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__"
+_GPU_RUNTIME_PYTHONWARNINGS = "__GPU_RUNTIME_PYTHONWARNINGS__"
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -97,10 +106,13 @@ def _pip_subprocess_environment() -> dict[str, str]:
         env.pop(variable_name, None)
     env.update(
         {
+            "FLASHINFER_LOGGING_LEVEL": _GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
             "PIP_CONFIG_FILE": os.devnull,
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": _GPU_RUNTIME_PYTHONWARNINGS,
         }
     )
     return env
@@ -142,14 +154,28 @@ def _install_package_wheel(argv: list[str]) -> list[str]:
     return remaining
 
 
+def _require_gpu_runtime_warning_startup() -> None:
+    if (
+        os.environ.get("FLASHINFER_LOGGING_LEVEL")
+        != _GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        or os.environ.get("PYTHONWARNINGS") != _GPU_RUNTIME_PYTHONWARNINGS
+        or tuple(sys.warnoptions) != tuple(_GPU_RUNTIME_PYTHONWARNINGS.split(","))
+    ):
+        raise RuntimeError("vLLM runner lacks the pinned CUDA warning startup policy")
+
+
 if __name__ == "__main__":
     remaining_args = _install_package_wheel(sys.argv[1:])
+    _require_gpu_runtime_warning_startup()
     from document_kv_cache.vllm_smoke import main
 
     exit_code = main(remaining_args)
     if exit_code:
         raise SystemExit(exit_code)
-"""
+""".replace(
+    "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+).replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
 
 __all__ = [
     "DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME",
@@ -626,6 +652,7 @@ class DatabricksVLLMSmokeJobConfig:
                     + ", ".join(mismatches)
                 )
         spark_env_vars = dict(_validated_spark_env_vars(self.spark_env_vars))
+        spark_env_vars.update(gpu_runtime_warning_environment_overrides())
         if self.is_representative_submission:
             _validate_representative_node_type_id(
                 self.node_type_id,

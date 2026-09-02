@@ -67,8 +67,11 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
     VLLM_PATCHED_WHEEL_SHA256_ENV,
     VLLM_PATCHED_WHEEL_URI_ENV,
+    gpu_runtime_warning_environment_overrides,
 )
 from document_kv_cache.vllm_smoke import (
     _attest_isolated_python,
@@ -80,8 +83,6 @@ from document_kv_cache.vllm_smoke import (
 _RUNTIME_LOCK_ATTESTATION_ENV: Final = (
     "CACHET_GPU_QUALIFICATION_RUNTIME_LOCK_ATTESTATION"
 )
-_FLASHINFER_LOGGING_LEVEL_ENV: Final = "FLASHINFER_LOGGING_LEVEL"
-_FLASHINFER_LOGGING_LEVEL: Final = "ERROR"
 _BASE_LOCK_REQUIREMENT_RE: Final = re.compile(r"^([A-Za-z0-9_.-]+)==([^ ]+?)(?: \\)?$")
 _BASE_LOCK_HASH_RE: Final = re.compile(r"^\s+--hash=sha256:[0-9a-f]{64}(?: \\)?$")
 _CANONICAL_NAME_RE: Final = re.compile(r"[-_.]+")
@@ -638,7 +639,7 @@ def run_gpu_qualification_sentinel_v2(
         expected_python_version=expected_python_version,
     )
     environment = _pip_subprocess_environment()
-    environment[_FLASHINFER_LOGGING_LEVEL_ENV] = _FLASHINFER_LOGGING_LEVEL
+    environment.update(gpu_runtime_warning_environment_overrides())
     environment["PYTHONSAFEPATH"] = "1"
     runtime_lock = artifact_paths["runtime_lock_sha256"]
     patched_vllm = artifact_paths["patched_vllm_wheel_sha256"]
@@ -853,6 +854,7 @@ def _verify_gpu_qualification_v2_runtime_installation(
     _require_runtime_platform()
     enter_stage("pip_check")
     verifier_environment = _pip_subprocess_environment()
+    verifier_environment.update(gpu_runtime_warning_environment_overrides())
     verifier_environment["PYTHONSAFEPATH"] = "1"
     try:
         pip_check = _run_bounded_binary_subprocess(
@@ -1669,6 +1671,15 @@ def _require_runtime_platform() -> None:
     ):
         raise RuntimeError(
             "v2 final runtime verifier requires Linux CPython3.11 x86_64 glibc2.35"
+        )
+    if (
+        os.environ.get("PYTHONWARNINGS") != GPU_RUNTIME_PYTHONWARNINGS
+        or tuple(sys.warnoptions) != tuple(GPU_RUNTIME_PYTHONWARNINGS.split(","))
+        or os.environ.get("FLASHINFER_LOGGING_LEVEL")
+        != GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    ):
+        raise RuntimeError(
+            "v2 final runtime verifier requires the pinned CUDA warning startup policy"
         )
 
 

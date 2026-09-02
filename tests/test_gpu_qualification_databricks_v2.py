@@ -53,6 +53,11 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_HASH_COUNT,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+    gpu_runtime_warning_environment_overrides,
+)
 
 
 def _pins() -> GPUQualificationArtifactPinsV2:
@@ -147,21 +152,21 @@ def _payloads() -> tuple[dict[str, Any], ...]:
 
 def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256 == (
-        "a90174a693f1d77d31746611d0f68542c82fe109ff83fbfe896f1b98039b8812"
+        "147dedca8fcdb2e76c427a3afd7df88d5b5b5ec5f7316145bfe082d4731e68e4"
     )
-    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 22240
+    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 22724
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "9312d9c48eb448aaf687c800ff5d37bddc973a9331e7a9013b50141480d0068f"
+        "696c54a736a95625136a831c644280b8af198e52e314cf29b3bcb8b7059d486b"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15393
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 121683
+    assert len(payload_bytes) == 128333
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "492ebcf1ccc53c1ecd0a584927f4d58f06287e88acd526c9a3b4cb1b2232969a"
+        "ea46a2c92cfe6332d10b83da541966e814b24a90ad72c405d4ed5566f7ae8fbd"
     )
 
 
@@ -191,6 +196,9 @@ def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> 
         assert (
             task["spark_python_task"]["python_file"]
             == (_artifact_uris()["runner_sha256"])
+        )
+        assert task["new_cluster"]["spark_env_vars"] == (
+            gpu_runtime_warning_environment_overrides()
         )
     assert min(sizes) == 7607
     assert max(sizes) == 7679
@@ -467,6 +475,10 @@ def _set_sanitized_child_environment(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PYTHONNOUSERSITE", "1")
     monkeypatch.setenv("PYTHONSAFEPATH", "1")
+    monkeypatch.setenv(
+        "FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
 
 
 def test_v2_bootstrap_runner_and_emitted_child_stub_compile_exactly() -> None:
@@ -505,7 +517,12 @@ def test_v2_bootstrap_validates_transport_and_snapshots_package_before_install(
         assert snapshot.name.endswith(".whl")
         assert snapshot.read_bytes() == paths["package_wheel_sha256"].read_bytes()
         assert Path(kwargs["cwd"]) == snapshot.parent
+        assert (
+            kwargs["env"]["FLASHINFER_LOGGING_LEVEL"]
+            == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        )
         assert kwargs["env"]["PYTHONSAFEPATH"] == "1"
+        assert kwargs["env"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
         calls.append(command)
         return types.SimpleNamespace(returncode=0)
 
@@ -656,6 +673,11 @@ def test_v2_bootstrap_handoff_uses_one_snapshot_and_isolates_private_env(
     assert "PIP_INDEX_URL" not in pip_env
     assert "PYTHONPATH" not in pip_env
     assert pip_env["PIP_CONFIG_FILE"] == os.devnull
+    assert (
+        pip_env["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert pip_env["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     handoff = json.loads(raw_handoff)
     assert handoff["cluster_id"] == cluster_id
     assert handoff["sources"] == [

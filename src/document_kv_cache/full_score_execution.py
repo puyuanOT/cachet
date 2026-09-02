@@ -147,6 +147,11 @@ from document_kv_cache._gpu_qualification_sentinels_v2 import (
     _bounded_stream_result_is_exact,
     _run_bounded_binary_subprocess,
 )
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+    gpu_runtime_warning_environment_overrides,
+)
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
     require_gpu_qualification_launch_authorization,
@@ -385,11 +390,13 @@ def _pip_subprocess_environment() -> dict[str, str]:
         env.pop(variable_name, None)
     env.update(
         {
+            "FLASHINFER_LOGGING_LEVEL": "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
             "PIP_CONFIG_FILE": os.devnull,
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": "__GPU_RUNTIME_PYTHONWARNINGS__",
         }
     )
     return env
@@ -508,7 +515,10 @@ def _bootstrap(argv: list[str]) -> None:
 
 if __name__ == "__main__":
     _bootstrap(sys.argv[1:])
-"""
+""".replace(
+    "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+).replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
 FULL_SCORE_RUNNER_SHA256 = sha256(FULL_SCORE_RUNNER_SCRIPT.encode("utf-8")).hexdigest()
 
 _SHA256_LENGTH = 64
@@ -9952,6 +9962,7 @@ def _run_runtime_verifier(
 
 def _worker_environment(runtime: FullScoreRuntimeConfig) -> dict[str, str]:
     env = dict(os.environ)
+    env.update(gpu_runtime_warning_environment_overrides())
     fixed = {
         CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV: "0",
         CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV: "head_major",

@@ -45,6 +45,8 @@ from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_t
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
 from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
     PIP_BOOTSTRAP_CONSTRAINTS,
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_VERSION,
@@ -56,6 +58,7 @@ from document_kv_cache.serving_env import (
     VIRTUALENV_BOOTSTRAP_SHA256,
     VIRTUALENV_BOOTSTRAP_URL,
     VIRTUALENV_BOOTSTRAP_VERSION,
+    gpu_runtime_warning_environment_overrides,
     vllm_runtime_install_requirements,
 )
 from document_kv_cache.storage import local_path
@@ -154,6 +157,8 @@ VLLM_PACKAGE_INDEX_URLS = __CACHET_VLLM_PACKAGE_INDEX_URLS__
 VLLM_LOCKED_DIRECT_REQUIREMENTS = __CACHET_VLLM_LOCKED_DIRECT_REQUIREMENTS__
 VLLM_RUNTIME_LOCK_MEMBER = __CACHET_VLLM_RUNTIME_LOCK_MEMBER__
 VLLM_RUNTIME_LOCK_SHA256 = __CACHET_VLLM_RUNTIME_LOCK_SHA256__
+GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL = __GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__
+GPU_RUNTIME_PYTHONWARNINGS = __GPU_RUNTIME_PYTHONWARNINGS__
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -183,6 +188,23 @@ def _pip_subprocess_environment() -> dict[str, str]:
         }
     )
     return env
+
+
+def _require_vllm_warning_startup(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--expected-backend")
+    args, _remaining = parser.parse_known_args(argv)
+    if args.expected_backend != "vllm":
+        return
+    if (
+        os.environ.get("FLASHINFER_LOGGING_LEVEL")
+        != GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        or os.environ.get("PYTHONWARNINGS") != GPU_RUNTIME_PYTHONWARNINGS
+        or tuple(sys.warnoptions) != tuple(GPU_RUNTIME_PYTHONWARNINGS.split(","))
+    ):
+        raise RuntimeError(
+            "vLLM engine-probe runner lacks the pinned CUDA warning startup policy"
+        )
 
 
 def _create_serving_venv(venv_dir: str) -> None:
@@ -475,6 +497,7 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
     )
 
 if __name__ == "__main__":
+    _require_vllm_warning_startup(sys.argv[1:])
     remaining_args, reexec_exit_code = _install_runtime_packages(sys.argv[1:])
     if reexec_exit_code is not None:
         if reexec_exit_code:
@@ -509,6 +532,12 @@ if __name__ == "__main__":
 ).replace(
     "__CACHET_VLLM_RUNTIME_LOCK_SHA256__",
     repr(VLLM_RUNTIME_LOCK_SHA256),
+).replace(
+    "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+    repr(GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL),
+).replace(
+    "__GPU_RUNTIME_PYTHONWARNINGS__",
+    repr(GPU_RUNTIME_PYTHONWARNINGS),
 )
 
 __all__ = [
@@ -936,11 +965,13 @@ def _engine_probe_task_from_target(
 
 def _engine_probe_cluster(config: DatabricksEngineProbeJobConfig) -> dict[str, Any]:
     cluster = build_single_node_gpu_cluster(_cluster_config_from_engine_probe_job(config))
-    if config.native_probe_delegate_factory is None:
-        return cluster
     spark_env_vars = dict(cluster.get("spark_env_vars", {}))
-    spark_env_vars[_native_probe_delegate_env_name(config.expected_backend)] = config.native_probe_delegate_factory
-    cluster["spark_env_vars"] = spark_env_vars
+    if config.expected_backend == ServingBackend.VLLM:
+        spark_env_vars.update(gpu_runtime_warning_environment_overrides())
+    if config.native_probe_delegate_factory is not None:
+        spark_env_vars[_native_probe_delegate_env_name(config.expected_backend)] = config.native_probe_delegate_factory
+    if spark_env_vars:
+        cluster["spark_env_vars"] = spark_env_vars
     return cluster
 
 

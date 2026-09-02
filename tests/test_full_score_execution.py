@@ -11,6 +11,10 @@ import pytest
 
 import cachet.full_score_execution as cachet_full_score
 import document_kv_cache.full_score_execution as full_score
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+)
 import document_kv_cache.full_score_remote_control as full_score_remote
 import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
 import document_kv_cache.runtime_artifact_closure as runtime_artifact_closure
@@ -1191,7 +1195,11 @@ def test_publication_path_rejects_a_reclosed_but_reordered_execution_plan(
         )
 
 
-def test_worker_payloads_are_token_balanced_closed_and_persistent(campaign):
+def test_worker_payloads_are_token_balanced_closed_and_persistent(
+    campaign, monkeypatch
+):
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "DEBUG")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
     payloads = campaign["payloads"]
     assert len(_phase_payloads(campaign, 0, "producer")) == 16
     assert len(_phase_payloads(campaign, 0, "consumer")) == 16
@@ -1223,6 +1231,11 @@ def test_worker_payloads_are_token_balanced_closed_and_persistent(campaign):
         assert command[command.index("--repeats") + 1] == "1"
         assert not any("trunc" in argument or "padding" in argument for argument in command)
     environment = full_score._worker_environment(campaign["bundle"].runtime)
+    assert (
+        environment["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert environment["CACHET_TRANSFORMERS_DEVICE_MAP"] == "auto"
     assert json.loads(environment["CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON"]) == (
         full_score.FULL_SCORE_GENERATOR_QUANTIZATION_CONFIG
@@ -5423,6 +5436,8 @@ def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
     monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
     monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
     monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "DEBUG")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
     environment = namespace["_pip_subprocess_environment"]()
     assert {key for key in environment if key.upper().startswith("PIP_")} == {
         "PIP_CONFIG_FILE",
@@ -5430,8 +5445,13 @@ def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
         "PIP_NO_INPUT",
     }
     assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert (
+        environment["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
     assert environment["PYTHONNOUSERSITE"] == "1"
     assert environment["PYTHONSAFEPATH"] == "1"
+    assert environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert "_PIP_STANDALONE_CERT" not in environment
     assert all(
         variable not in environment
@@ -5521,6 +5541,8 @@ def test_runtime_verifier_requires_bounded_canonical_stdout_and_empty_stderr(
     canonical = full_score._canonical_pretty_json_bytes(_runtime_attestation())
     output_path = campaign["tmp_path"] / "native-v2-runtime-attestation.json"
     bounded_call = {}
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "DEBUG")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
 
     def successful_verifier(arguments, **kwargs):
         bounded_call["count"] = bounded_call.get("count", 0) + 1
@@ -5550,6 +5572,14 @@ def test_runtime_verifier_requires_bounded_canonical_stdout_and_empty_stderr(
     )
     assert bounded_call["output_limit_bytes"] == (
         full_score.FULL_SCORE_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES
+    )
+    assert (
+        bounded_call["environment"]["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert (
+        bounded_call["environment"]["PYTHONWARNINGS"]
+        == GPU_RUNTIME_PYTHONWARNINGS
     )
     repeated = full_score._run_runtime_verifier(
         runtime,

@@ -54,6 +54,10 @@ from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_INPUT_TOKEN_SLOTS,
 )
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+)
 from document_kv_cache.publication_latency_handoff_generation import (
     PUBLICATION_LATENCY_HANDOFF_TASK_COUNT,
     DatabricksPublicationLatencyHandoffJobConfig,
@@ -546,6 +550,8 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
     monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
     monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
     monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "DEBUG")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
     environment = namespace["_pip_subprocess_environment"]()
     assert {
         key for key in environment if key.upper().startswith("PIP_")
@@ -555,8 +561,13 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
         "PIP_NO_INPUT",
     }
     assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert (
+        environment["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
     assert not any(key.upper().startswith("_PIP_") for key in environment)
     assert environment["PYTHONNOUSERSITE"] == "1"
+    assert environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert all(
         variable not in environment
         for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")

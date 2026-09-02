@@ -43,6 +43,10 @@ from document_kv_cache.publication_inputs import (
     PublicationLatencyExample,
     build_publication_storage_block_schedule,
 )
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -407,6 +411,8 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
         "num_workers": 0,
         "single_user_name": runtime["single_user_name"],
         "spark_env_vars": {
+            "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+            "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
             execution.VLLM_PATCHED_WHEEL_SHA256_ENV: (
                 execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
             ),
@@ -1800,6 +1806,8 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
     monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
     monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "DEBUG")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
     for filename, script in (
         ("publication_latency_runner.py", execution.PUBLICATION_LATENCY_RUNNER_SCRIPT),
         (
@@ -1818,8 +1826,13 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
             "PIP_NO_INPUT",
         }
         assert environment["PIP_CONFIG_FILE"] == os.devnull
+        assert (
+            environment["FLASHINFER_LOGGING_LEVEL"]
+            == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        )
         assert not any(key.upper().startswith("_PIP_") for key in environment)
         assert environment["PYTHONNOUSERSITE"] == "1"
+        assert environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
         assert all(
             variable not in environment
             for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")

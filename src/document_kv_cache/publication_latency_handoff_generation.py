@@ -142,6 +142,8 @@ from document_kv_cache.publication_campaign import (
     publication_campaign_full_launch_budget_projection,
 )
 from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
     TRANSFORMERS_CONSTRAINT,
 )
 from document_kv_cache.runtime_artifact_closure import (
@@ -293,11 +295,13 @@ def _pip_subprocess_environment() -> dict[str, str]:
         env.pop(variable_name, None)
     env.update(
         {
+            "FLASHINFER_LOGGING_LEVEL": "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
             "PIP_CONFIG_FILE": os.devnull,
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": "__GPU_RUNTIME_PYTHONWARNINGS__",
         }
     )
     return env
@@ -527,7 +531,10 @@ def _bootstrap(argv: list[str]) -> None:
 
 if __name__ == "__main__":
     _bootstrap(sys.argv[1:])
-"""
+""".replace(
+    "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+).replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
 PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256 = sha256(
     PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT.encode("utf-8")
 ).hexdigest()

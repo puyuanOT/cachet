@@ -74,6 +74,8 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
 )
 from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
     VLLM_PATCHED_WHEEL_SHA256_ENV,
     VLLM_PATCHED_WHEEL_URI_ENV,
     VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT,
@@ -6450,6 +6452,10 @@ def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount(
     monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
     monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
     monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
+    monkeypatch.setenv(
+        "FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
     environments = (
         namespace["_pip_subprocess_environment"](),
         qualification_sentinels._pip_subprocess_environment(),
@@ -6465,10 +6471,29 @@ def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount(
         }
         assert environment["PIP_CONFIG_FILE"] == os.devnull
         assert environment["PYTHONNOUSERSITE"] == "1"
+        assert (
+            environment["FLASHINFER_LOGGING_LEVEL"]
+            == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        )
+        assert environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
         assert all(
             variable not in environment
             for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
         )
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "hostile")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
+    gpu_runtime_environment = (
+        qualification_sentinels._gpu_runtime_subprocess_environment()
+    )
+    assert (
+        gpu_runtime_environment["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert gpu_runtime_environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+    monkeypatch.setenv(
+        "FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
     runtime_root = tmp_path / "runtime"
     site_packages = runtime_root / "lib/python3.11/site-packages"
     site_packages.mkdir(parents=True)
@@ -6843,6 +6868,11 @@ def test_observe_gpu_runtime_attests_identity_and_uses_distribution_version(
     assert "metadata.version('vllm')" in calls[1][0][2]
     assert "'vllm_source_version':vllm.__version__" in calls[1][0][2]
     assert "'vllm_version':vllm.__version__" not in calls[1][0][2]
+    assert (
+        calls[1][1]["env"]["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert calls[1][1]["env"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert calls[2][0][0] == "nvidia-smi"
     assert "'base_prefix':sys.base_prefix" in calls[3][0][2]
 

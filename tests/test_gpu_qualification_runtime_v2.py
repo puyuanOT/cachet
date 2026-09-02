@@ -58,6 +58,8 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_SIZE,
 )
 from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
     VLLM_PATCHED_WHEEL_SHA256_ENV,
     VLLM_PATCHED_WHEEL_URI_ENV,
 )
@@ -284,7 +286,10 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
     monkeypatch.setattr(
         runtime_v2,
         "_pip_subprocess_environment",
-        lambda: {"FLASHINFER_LOGGING_LEVEL": "DEBUG"},
+        lambda: {
+            "FLASHINFER_LOGGING_LEVEL": "DEBUG",
+            "PYTHONWARNINGS": "ignore",
+        },
     )
     monkeypatch.setattr(runtime_v2.subprocess, "run", run)
 
@@ -303,8 +308,11 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert kwargs == {
             "closure_path": artifact_paths["runtime_closure_manifest_sha256"],
             "environment": {
-                "FLASHINFER_LOGGING_LEVEL": "ERROR",
+                "FLASHINFER_LOGGING_LEVEL": (
+                    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+                ),
                 "PYTHONSAFEPATH": "1",
+                "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
             },
             "flashinfer_uri": flashinfer_uri,
             "package_sha256": _PACKAGE_SHA256,
@@ -329,6 +337,9 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert expected_sha256 == GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256
         assert environment["PYTHONSAFEPATH"] == "1"
         assert environment["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
+        assert (
+            environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+        )
 
     monkeypatch.setattr(
         runtime_v2, "_verify_input_bundle_in_isolated_runtime", verify_input
@@ -341,6 +352,10 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         output_path.write_text("{}\n", encoding="utf-8")
         assert kwargs["environment"]["PYTHONSAFEPATH"] == "1"
         assert kwargs["environment"]["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
+        assert (
+            kwargs["environment"]["PYTHONWARNINGS"]
+            == GPU_RUNTIME_PYTHONWARNINGS
+        )
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
     monkeypatch.setattr(runtime_v2, "_run_bounded_worker_process", worker)
@@ -401,6 +416,9 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert kwargs["cwd"] == runtime_dir
         assert kwargs["env"]["PYTHONSAFEPATH"] == "1"
         assert kwargs["env"]["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
+        assert (
+            kwargs["env"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+        )
     assert [call[1]["timeout"] for call in subprocess_calls] == [3600] * 4 + [300]
     assert attest_calls == [("3.11.11", None), ("3.11.11", identity.file_binding)]
     assert events == [
@@ -465,7 +483,10 @@ def test_runtime_installer_rejects_nonexact_sealed_plan_or_job_before_install(
 def test_standalone_verifier_pip_check_is_exact_bounded_binary_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    environment = {"PIP_CONFIG_FILE": "/reviewed/pip.conf"}
+    environment = {
+        "PIP_CONFIG_FILE": "/reviewed/pip.conf",
+        "PYTHONWARNINGS": "ignore",
+    }
     calls: list[tuple[list[str], dict[str, Any]]] = []
     monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
     monkeypatch.setattr(
@@ -495,7 +516,14 @@ def test_standalone_verifier_pip_check_is_exact_bounded_binary_subprocess(
             [runtime_v2.sys.executable, "-m", "pip", "check"],
             {
                 "cwd": Path(runtime_v2.sys.prefix),
-                "environment": {**environment, "PYTHONSAFEPATH": "1"},
+                "environment": {
+                    **environment,
+                    "FLASHINFER_LOGGING_LEVEL": (
+                        GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+                    ),
+                    "PYTHONSAFEPATH": "1",
+                    "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+                },
                 "output_limit_bytes": (
                     runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES
                 ),
@@ -607,6 +635,101 @@ def test_standalone_verifier_rejects_pip_check_marker_mismatch_without_leak(
             package_sha256=_PACKAGE_SHA256,
         )
     assert "stderr-secret" not in str(raised.value)
+
+
+def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
+    messages = (
+        (
+            "The cuda.cuda module is deprecated and will be removed in a future "
+            "release, please switch to use the cuda.bindings.driver module instead."
+        ),
+        (
+            "The cuda.cudart module is deprecated and will be removed in a future "
+            "release, please switch to use the cuda.bindings.runtime module instead."
+        ),
+        (
+            "The cuda.nvrtc module is deprecated and will be removed in a future "
+            "release, please switch to use the cuda.bindings.nvrtc module instead."
+        ),
+    )
+    transcript = b"".join(
+        (
+            "<frozen importlib._bootstrap_external>:1241: FutureWarning: "
+            f"{message}\n"
+        ).encode("utf-8")
+        for message in messages
+    )
+    assert len(transcript) == 597
+    assert (
+        sha256(transcript).hexdigest()
+        == "5ce62998bdbb2f2c0e3d268b77a220f1725deaf63143544be8c8bf24536dfdbe"
+    )
+    assert GPU_RUNTIME_PYTHONWARNINGS.split(",") == [
+        "error",
+        *(
+            "ignore:"
+            f"{message.partition(',')[0]}"
+            ":FutureWarning:importlib._bootstrap_external:1241"
+            for message in messages
+        ),
+    ]
+
+    child_code = "\n".join(
+        (
+            "import warnings",
+            f"messages = {messages!r}",
+            "for message in messages:",
+            "    warnings.warn_explicit(",
+            "        message, FutureWarning,",
+            '        "<frozen importlib._bootstrap_external>", 1241,',
+            '        module="importlib._bootstrap_external",',
+            "    )",
+            "cases = (",
+            "    (",
+            '        "an unrelated future warning", FutureWarning,',
+            '        "importlib._bootstrap_external", 1241,',
+            "    ),",
+            "    (messages[0], RuntimeWarning, ",
+            '     "importlib._bootstrap_external", 1241),',
+            "    (messages[0], FutureWarning, ",
+            '     "another.module", 1241),',
+            "    (messages[0], FutureWarning, ",
+            '     "importlib._bootstrap_external", 1242),',
+            "    (",
+            '        "The cuda.cudaX module is deprecated and will be removed in a "',
+            '        "future release, near-prefix mutation", FutureWarning,',
+            '        "importlib._bootstrap_external", 1241,',
+            "    ),",
+            ")",
+            "for message, category, module, lineno in cases:",
+            "    try:",
+            "        warnings.warn_explicit(",
+            '            message, category, "<frozen importlib._bootstrap_external>",',
+            "            lineno, module=module,",
+            "        )",
+            "    except Warning:",
+            "        continue",
+            '    raise AssertionError("non-allowlisted warning did not raise")',
+            'print("policy-ok")',
+        )
+    )
+    environment = dict(os.environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["FLASHINFER_LOGGING_LEVEL"] = (
+        GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    environment["PYTHONWARNINGS"] = GPU_RUNTIME_PYTHONWARNINGS
+    completed = subprocess.run(
+        [runtime_v2.sys.executable, "-c", child_code],
+        check=False,
+        capture_output=True,
+        env=environment,
+    )
+    assert (completed.returncode, completed.stdout, completed.stderr) == (
+        0,
+        b"policy-ok\n",
+        b"",
+    )
 
 
 @pytest.mark.parametrize("failure", ["nonzero", "timeout"])
@@ -1134,8 +1257,25 @@ def test_runtime_platform_requires_exact_python_3_11_11(
     monkeypatch.setattr(runtime_v2.platform, "libc_ver", lambda: ("glibc", "2.35"))
     monkeypatch.setattr(runtime_v2.sys, "version_info", (3, 11, 11, "final", 0))
     monkeypatch.setattr(runtime_v2.sys, "platform", "linux")
+    monkeypatch.setenv(
+        "FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
+    monkeypatch.setattr(
+        runtime_v2.sys,
+        "warnoptions",
+        GPU_RUNTIME_PYTHONWARNINGS.split(","),
+    )
 
     runtime_v2._require_runtime_platform()
+    monkeypatch.setattr(runtime_v2.sys, "warnoptions", ["ignore"])
+    with pytest.raises(RuntimeError, match="pinned CUDA warning startup policy"):
+        runtime_v2._require_runtime_platform()
+    monkeypatch.setattr(
+        runtime_v2.sys,
+        "warnoptions",
+        GPU_RUNTIME_PYTHONWARNINGS.split(","),
+    )
     monkeypatch.setattr(runtime_v2.platform, "python_version", lambda: "3.11.12")
     with pytest.raises(RuntimeError, match="requires Linux CPython3.11"):
         runtime_v2._require_runtime_platform()

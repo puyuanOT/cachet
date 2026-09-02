@@ -24,6 +24,7 @@ from document_kv_cache.gpu_qualification import canonical_gpu_qualification_json
 from document_kv_cache.serving_env import (
     VLLM_PATCHED_WHEEL_SHA256_ENV,
     VLLM_PATCHED_WHEEL_URI_ENV,
+    gpu_runtime_warning_environment_overrides,
     vllm_runtime_lock_path,
 )
 from document_kv_cache.vllm_smoke import (
@@ -52,6 +53,12 @@ _ALLOWED_SITE_PACKAGES_RELATIVE_PARTS = frozenset(
         ("local", "lib", "python3.11", "dist-packages"),
     }
 )
+
+
+def _gpu_runtime_subprocess_environment() -> dict[str, str]:
+    environment = _pip_subprocess_environment()
+    environment.update(gpu_runtime_warning_environment_overrides())
+    return environment
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,7 +555,7 @@ def run_gpu_qualification_sentinel(
     if installed_python_identity != created_python_identity:
         raise RuntimeError("isolated runtime Python identity changed during installation")
 
-    environment = _pip_subprocess_environment()
+    environment = _gpu_runtime_subprocess_environment()
     environment.update(
         {
             "HF_HOME": "/local_disk0/cachet-vllm-0271-hf",

@@ -42,6 +42,39 @@ VLLM_WHEEL_INSTALL_SPEC = (
 )
 VLLM_PATCHED_WHEEL_URI_ENV = "DOCUMENT_KV_VLLM_PATCHED_WHEEL_URI"
 VLLM_PATCHED_WHEEL_SHA256_ENV = "DOCUMENT_KV_VLLM_PATCHED_WHEEL_SHA256"
+# ``PYTHONWARNINGS`` uses commas to delimit filters, so each reviewed
+# cuda-bindings deprecation is intentionally matched through its invariant
+# pre-comma prefix.  The hash-pinned cuda-bindings wheel fixes the remaining
+# message suffix.  Every other warning is promoted to an exception.
+GPU_RUNTIME_PYTHONWARNINGS = ",".join(
+    (
+        "error",
+        (
+            "ignore:The cuda.cuda module is deprecated and will be removed in a "
+            "future release:FutureWarning:importlib._bootstrap_external:1241"
+        ),
+        (
+            "ignore:The cuda.cudart module is deprecated and will be removed in a "
+            "future release:FutureWarning:importlib._bootstrap_external:1241"
+        ),
+        (
+            "ignore:The cuda.nvrtc module is deprecated and will be removed in a "
+            "future release:FutureWarning:importlib._bootstrap_external:1241"
+        ),
+    )
+)
+GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL = "ERROR"
+
+
+def gpu_runtime_warning_environment_overrides() -> dict[str, str]:
+    """Return the exact warning policy for verifier and worker descendants."""
+
+    return {
+        "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+        "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+    }
+
+
 VLLM_CUDA_REQUIREMENTS_SHA256 = (
     "30091f418325ea9f97bc546cb03eb1a35e1cc20b2500b522b3dabd3b1aaee241"
 )
@@ -623,6 +656,8 @@ __all__ = [
     "FLASHINFER_CONSTRAINT",
     "FLASHINFER_JIT_CACHE_CONSTRAINT",
     "FLASHINFER_PYTHON_CONSTRAINT",
+    "GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL",
+    "GPU_RUNTIME_PYTHONWARNINGS",
     "HUGGINGFACE_HUB_CONSTRAINT",
     "HUMMING_KERNELS_CONSTRAINT",
     "NVIDIA_CUTLASS_DSL_CONSTRAINT",
@@ -678,6 +713,7 @@ __all__ = [
     "VIRTUALENV_BOOTSTRAP_SHA256",
     "VIRTUALENV_BOOTSTRAP_URL",
     "VIRTUALENV_BOOTSTRAP_VERSION",
+    "gpu_runtime_warning_environment_overrides",
     "augment_vllm_runtime_lock_indexes",
     "patched_vllm_wheel_install_spec",
     "vllm_runtime_install_requirements",

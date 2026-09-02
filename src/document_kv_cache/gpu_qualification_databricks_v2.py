@@ -67,6 +67,11 @@ from document_kv_cache.gpu_qualification_v2 import (
     validate_gpu_qualification_plan_v2_record,
     validate_local_preflight_evidence_v2_record,
 )
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+    gpu_runtime_warning_environment_overrides,
+)
 
 
 GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES: Final = (
@@ -93,6 +98,7 @@ _V2_BOOTSTRAP_HANDOFF_SCHEMA_VERSION: Final = 2
 _V2_BOOTSTRAP_HANDOFF_MAX_BYTES: Final = 4096
 _V2_BOOTSTRAP_HANDOFF_MISSING: Final = object()
 _V2_CHILD_REQUIRED_ENV: Final = {
+    **gpu_runtime_warning_environment_overrides(),
     "PYTHONNOUSERSITE": "1",
     "PYTHONSAFEPATH": "1",
 }
@@ -686,11 +692,13 @@ def _subprocess_environment(base_env: dict[str, str]) -> dict[str, str]:
         env.pop(variable_name, None)
     env.update(
         {
+            "FLASHINFER_LOGGING_LEVEL": "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
             "PIP_CONFIG_FILE": os.devnull,
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": "__GPU_RUNTIME_PYTHONWARNINGS__",
         }
     )
     return env
@@ -784,7 +792,10 @@ def _run(argv: list[str], base_env: dict[str, str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_run(sys.argv[1:], dict(os.environ)))
-"""
+""".replace(
+    "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+).replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
 GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256: Final = sha256(
     GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT.encode("utf-8")
 ).hexdigest()
@@ -867,6 +878,9 @@ def render_gpu_qualification_submit_payloads_v2(
                 "plan_sha256": plan_digest[:32],
                 "protocol": "gpu-qualification-v2",
             },
+        )
+        cluster["spark_env_vars"] = dict(
+            gpu_runtime_warning_environment_overrides()
         )
         task = {
             "task_key": databricks_v1._task_key(job_id),
