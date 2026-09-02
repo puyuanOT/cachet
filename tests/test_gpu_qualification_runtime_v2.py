@@ -747,6 +747,10 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             "release, please switch to use the cuda.bindings.nvrtc module instead."
         ),
     )
+    bitsandbytes_message = (
+        "_check_is_size will be removed in a future PyTorch release along with "
+        "guard_size_oblivious.     Use _check(i >= 0) instead."
+    )
     transcript = b"".join(
         (
             "<frozen importlib._bootstrap_external>:1241: FutureWarning: "
@@ -767,17 +771,38 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             ":FutureWarning:importlib._bootstrap_external:1241"
             for message in messages
         ),
+        (
+            f"ignore:{bitsandbytes_message}"
+            ":FutureWarning:bitsandbytes.backends.cuda.ops:213"
+        ),
     ]
 
+    # Python startup filters are case-insensitive prefix matches.  The locked
+    # wheel hashes make those two documented equivalences immutable.
     child_code = "\n".join(
         (
             "import warnings",
             f"messages = {messages!r}",
+            f"bitsandbytes_message = {bitsandbytes_message!r}",
             "for message in messages:",
             "    warnings.warn_explicit(",
             "        message, FutureWarning,",
             '        "<frozen importlib._bootstrap_external>", 1241,',
             '        module="importlib._bootstrap_external",',
+            "    )",
+            "warnings.warn_explicit(",
+            "    bitsandbytes_message, FutureWarning,",
+            '    "bitsandbytes/backends/cuda/ops.py", 213,',
+            '    module="bitsandbytes.backends.cuda.ops",',
+            ")",
+            "for startup_equivalent in (",
+            '    bitsandbytes_message + " reviewed suffix",',
+            "    bitsandbytes_message.swapcase(),",
+            "):",
+            "    warnings.warn_explicit(",
+            "        startup_equivalent, FutureWarning,",
+            '        "bitsandbytes/backends/cuda/ops.py", 213,',
+            '        module="bitsandbytes.backends.cuda.ops",',
             "    )",
             "cases = (",
             "    (",
@@ -794,6 +819,22 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             '        "The cuda.cudaX module is deprecated and will be removed in a "',
             '        "future release, near-prefix mutation", FutureWarning,',
             '        "importlib._bootstrap_external", 1241,',
+            "    ),",
+            "    (bitsandbytes_message, RuntimeWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 213),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "document_kv_cache._gpu_qualification_sentinel_worker", 213),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 214),',
+            "    (bitsandbytes_message.replace(",
+            '         "_check_is_size", "_check_is_sizeX", 1), FutureWarning,',
+            '     "bitsandbytes.backends.cuda.ops", 213),',
+            "    (bitsandbytes_message.replace(",
+            '         "     Use", "    Use"), FutureWarning,',
+            '     "bitsandbytes.backends.cuda.ops", 213),',
+            "    (",
+            '        "an unrelated bitsandbytes future warning", FutureWarning,',
+            '        "bitsandbytes.backends.cuda.ops", 213,',
             "    ),",
             ")",
             "for message, category, module, lineno in cases:",

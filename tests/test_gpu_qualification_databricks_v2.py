@@ -152,12 +152,12 @@ def _payloads() -> tuple[dict[str, Any], ...]:
 
 def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256 == (
-        "211f86492bad896016fa49a0e3b51bac4d88cafd0a06696c80e2412c7dfc0bc7"
+        "f1bc180870d6f9b61dd7349f9837d3f4aba8147334818dba577e0ce5c19f68c3"
     )
-    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 24302
+    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 24662
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "ef224dd58062286b6e0b05aff997caaf58760ed69318955127e7e4486d180ebe"
+        "0b29561fe33ea8ff6a9fa7ba4492c2d01b2d88145253680a14391e6711c898b4"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15393
     payloads = _payloads()
@@ -166,7 +166,7 @@ def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     ).encode("utf-8")
     assert len(payload_bytes) == 121683
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "619bb706587c901fff521f05ca1689e2f0fd983460146406936f71b7cd4ffab6"
+        "64d85c0944c315542fdaba477ec3d9d06870467a78df180b2265e005eb721394"
     )
 
 

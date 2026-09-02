@@ -45,7 +45,10 @@ VLLM_PATCHED_WHEEL_SHA256_ENV = "DOCUMENT_KV_VLLM_PATCHED_WHEEL_SHA256"
 # ``PYTHONWARNINGS`` uses commas to delimit filters, so each reviewed
 # cuda-bindings deprecation is intentionally matched through its invariant
 # pre-comma prefix.  The hash-pinned cuda-bindings wheel fixes the remaining
-# message suffix.  Every other warning is promoted to an exception.
+# message suffix.  The full reviewed bitsandbytes 0.49.2/PyTorch 2.13 message
+# uses the same startup-filter prefix semantics, confined to its attributed
+# CUDA-backend module and source line; the locked wheel hashes fix that prefix
+# and its suffix.  Every other warning is promoted to an exception.
 GPU_RUNTIME_PYTHONWARNINGS = ",".join(
     (
         "error",
@@ -60,6 +63,11 @@ GPU_RUNTIME_PYTHONWARNINGS = ",".join(
         (
             "ignore:The cuda.nvrtc module is deprecated and will be removed in a "
             "future release:FutureWarning:importlib._bootstrap_external:1241"
+        ),
+        (
+            "ignore:_check_is_size will be removed in a future PyTorch release "
+            "along with guard_size_oblivious.     Use _check(i >= 0) instead."
+            ":FutureWarning:bitsandbytes.backends.cuda.ops:213"
         ),
     )
 )
