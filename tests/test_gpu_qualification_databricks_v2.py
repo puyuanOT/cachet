@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import inspect
 import json
@@ -151,21 +152,21 @@ def _payloads() -> tuple[dict[str, Any], ...]:
 
 def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256 == (
-        "e6fd8bcc7c4f6e98ddfaf87f8c13ac08e386fb987a4a09cbfd42e6054279df17"
+        "211f86492bad896016fa49a0e3b51bac4d88cafd0a06696c80e2412c7dfc0bc7"
     )
-    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 24249
+    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 24302
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "eb304de01e2975412324b6cf2cc134542654b0ae819e5ff78db1f5b8b58fe663"
+        "ef224dd58062286b6e0b05aff997caaf58760ed69318955127e7e4486d180ebe"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15393
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 121627
+    assert len(payload_bytes) == 121683
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "1582d0f0e5841617c66d1e47e5d1de16dc6d4fa469e617cb49e69acc43e9cfb4"
+        "619bb706587c901fff521f05ca1689e2f0fd983460146406936f71b7cd4ffab6"
     )
 
 
@@ -197,8 +198,8 @@ def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> 
             == (_artifact_uris()["runner_sha256"])
         )
         assert "spark_env_vars" not in task["new_cluster"]
-    assert min(sizes) == 7603
-    assert max(sizes) == 7675
+    assert min(sizes) == 7607
+    assert max(sizes) == 7679
     assert (
         max(sizes) < databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
     )
@@ -562,6 +563,43 @@ def test_v2_bootstrap_runner_and_emitted_child_stub_compile_exactly() -> None:
             completed.stderr
         )
         assert "ModuleNotFoundError" not in completed.stderr
+
+    parsed_runner = ast.parse(
+        databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT,
+        filename="gpu-qualification-v2-bootstrap.py",
+    )
+    main_guard = parsed_runner.body[-1]
+    assert isinstance(main_guard, ast.If)
+    main_code = compile(
+        ast.Module(body=[main_guard], type_ignores=[]),
+        "gpu-qualification-v2-bootstrap-main.py",
+        "exec",
+    )
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def execute_top_level(returncode: int) -> None:
+        def run(argv: list[str], environment: dict[str, str]) -> int:
+            calls.append((argv, environment))
+            return returncode
+
+        exec(
+            main_code,
+            {
+                "__name__": "__main__",
+                "_run": run,
+                "os": types.SimpleNamespace(environ={"EXACT": "value"}),
+                "sys": types.SimpleNamespace(argv=["runner.py", "sentinel"]),
+            },
+        )
+
+    execute_top_level(0)
+    with pytest.raises(SystemExit) as failure:
+        execute_top_level(17)
+    assert failure.value.code == 17
+    assert calls == [
+        (["sentinel"], {"EXACT": "value"}),
+        (["sentinel"], {"EXACT": "value"}),
+    ]
 
 
 def test_v2_bootstrap_validates_transport_and_snapshots_package_before_install(

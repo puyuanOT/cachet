@@ -240,6 +240,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
     work_dir = tmp_path / "work"
     runtime_dir = work_dir / "runtime"
     runtime_python = runtime_dir / "bin" / "python"
+    torch_library_dir = runtime_dir / "lib/python3.11/site-packages/torch/lib"
     events: list[str] = []
     subprocess_calls: list[tuple[list[str], dict[str, Any]]] = []
     identity = SimpleNamespace(file_binding="reviewed-python-binding")
@@ -256,6 +257,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert copies is True
         (path / "bin").mkdir(parents=True)
         (path / "bin" / "python").write_bytes(b"python")
+        torch_library_dir.mkdir(parents=True)
 
     attest_calls: list[tuple[str, str | None]] = []
 
@@ -288,6 +290,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         "_pip_subprocess_environment",
         lambda: {
             "FLASHINFER_LOGGING_LEVEL": "DEBUG",
+            "LD_LIBRARY_PATH": "/ambient/reviewed-lib",
             "PYTHONWARNINGS": "ignore",
         },
     )
@@ -298,6 +301,23 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         artifact_paths["patched_flashinfer_wheel_sha256"].resolve().as_uri()
     )
     package_uri = artifact_paths["package_wheel_sha256"].resolve().as_uri()
+
+    original_launch_environment = runtime_v2._runtime_launch_environment
+
+    def launch_environment(
+        *,
+        runtime_dir: Path,
+        install_environment: dict[str, str],
+    ) -> dict[str, str]:
+        events.append("launch-environment")
+        return original_launch_environment(
+            runtime_dir=runtime_dir,
+            install_environment=install_environment,
+        )
+
+    monkeypatch.setattr(
+        runtime_v2, "_runtime_launch_environment", launch_environment
+    )
 
     def final_verifier(
         observed_python: Path,
@@ -310,6 +330,9 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
             "environment": {
                 "FLASHINFER_LOGGING_LEVEL": (
                     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+                ),
+                "LD_LIBRARY_PATH": (
+                    f"{torch_library_dir}{os.pathsep}/ambient/reviewed-lib"
                 ),
                 "PYTHONSAFEPATH": "1",
                 "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
@@ -340,6 +363,9 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert (
             environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
         )
+        assert environment["LD_LIBRARY_PATH"] == (
+            f"{torch_library_dir}{os.pathsep}/ambient/reviewed-lib"
+        )
 
     monkeypatch.setattr(
         runtime_v2, "_verify_input_bundle_in_isolated_runtime", verify_input
@@ -355,6 +381,9 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert (
             kwargs["environment"]["PYTHONWARNINGS"]
             == GPU_RUNTIME_PYTHONWARNINGS
+        )
+        assert kwargs["environment"]["LD_LIBRARY_PATH"] == (
+            f"{torch_library_dir}{os.pathsep}/ambient/reviewed-lib"
         )
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
@@ -416,6 +445,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert kwargs["cwd"] == runtime_dir
         assert kwargs["env"]["PYTHONSAFEPATH"] == "1"
         assert kwargs["env"]["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
+        assert kwargs["env"]["LD_LIBRARY_PATH"] == "/ambient/reviewed-lib"
         assert (
             kwargs["env"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
         )
@@ -427,6 +457,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         "install-3",
         "install-4",
         "pip-check",
+        "launch-environment",
         "final-verifier",
         "input-verifier",
         "worker",
@@ -447,6 +478,70 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         expected_job_id=job_id,
         expected_artifact_pins=pins,
     )
+
+    validation_runtime = tmp_path / "validation-runtime"
+    validation_torch_library = (
+        validation_runtime / "lib/python3.11/site-packages/torch/lib"
+    )
+    validation_torch_library.mkdir(parents=True)
+    install_environment = {
+        "LD_LIBRARY_PATH": "/existing/one:/existing/two",
+        "UNCHANGED": "yes",
+    }
+    assert original_launch_environment(
+        runtime_dir=validation_runtime,
+        install_environment=install_environment,
+    ) == {
+        "LD_LIBRARY_PATH": (
+            f"{validation_torch_library}{os.pathsep}/existing/one:/existing/two"
+        ),
+        "UNCHANGED": "yes",
+    }
+    assert install_environment == {
+        "LD_LIBRARY_PATH": "/existing/one:/existing/two",
+        "UNCHANGED": "yes",
+    }
+
+    missing_runtime = tmp_path / "missing-torch-library-runtime"
+    missing_runtime.mkdir()
+    file_runtime = tmp_path / "file-torch-library-runtime"
+    file_torch_library = file_runtime / "lib/python3.11/site-packages/torch/lib"
+    file_torch_library.parent.mkdir(parents=True)
+    file_torch_library.write_bytes(b"not-a-directory")
+    linked_runtime = tmp_path / "linked-torch-library-runtime"
+    linked_torch_library = (
+        linked_runtime / "lib/python3.11/site-packages/torch/lib"
+    )
+    linked_torch_library.parent.mkdir(parents=True)
+    linked_target = tmp_path / "linked-torch-library-target"
+    linked_target.mkdir()
+    linked_torch_library.symlink_to(linked_target, target_is_directory=True)
+    escaping_runtime = tmp_path / "escaping-torch-library-runtime"
+    escaping_torch = escaping_runtime / "lib/python3.11/site-packages/torch"
+    escaping_torch.parent.mkdir(parents=True)
+    escaping_target = tmp_path / "escaping-torch-target"
+    (escaping_target / "lib").mkdir(parents=True)
+    escaping_torch.symlink_to(escaping_target, target_is_directory=True)
+    linked_runtime_root = tmp_path / "linked-runtime-root"
+    linked_runtime_root.symlink_to(validation_runtime, target_is_directory=True)
+    noncanonical_runtime = (
+        validation_runtime / ".." / validation_runtime.name
+    )
+    for rejected_runtime in (
+        missing_runtime,
+        file_runtime,
+        linked_runtime,
+        escaping_runtime,
+        linked_runtime_root,
+        noncanonical_runtime,
+    ):
+        with pytest.raises(
+            RuntimeError, match="v2 isolated torch library directory differs"
+        ):
+            original_launch_environment(
+                runtime_dir=rejected_runtime,
+                install_environment={},
+            )
 
 
 @pytest.mark.parametrize("tamper", ["plan", "job"])

@@ -659,8 +659,12 @@ def test_worker_binary_capture_enforces_exact_tail_boundaries(
     extra_bytes: int,
     truncated: bool,
 ):
-    stdout = b"A" * (8 + extra_bytes)
-    stderr = b"B" * (4 + extra_bytes)
+    stdout_tail_max_bytes = qualification_sentinels._WORKER_STDOUT_TAIL_MAX_BYTES
+    stderr_tail_max_bytes = qualification_sentinels._WORKER_STDERR_TAIL_MAX_BYTES
+    assert stdout_tail_max_bytes == 2_000
+    assert stderr_tail_max_bytes == 16_384
+    stdout = b"A" * (stdout_tail_max_bytes + extra_bytes)
+    stderr = b"B" * (stderr_tail_max_bytes + extra_bytes)
     code = (
         "import os; "
         f"os.write(1,{stdout!r}); "
@@ -673,8 +677,6 @@ def test_worker_binary_capture_enforces_exact_tail_boundaries(
         timeout_seconds=5,
         environment=os.environ,
         cwd=tmp_path,
-        stdout_tail_max_bytes=8,
-        stderr_tail_max_bytes=4,
         drain_timeout_seconds=0.5,
         termination_grace_seconds=0.5,
     )
@@ -683,11 +685,13 @@ def test_worker_binary_capture_enforces_exact_tail_boundaries(
     assert result.stdout.byte_count == len(stdout)
     assert result.stdout.sha256 == hashlib.sha256(stdout).hexdigest()
     assert result.stdout.truncated is truncated
-    assert result.stdout.tail == stdout[-8:]
+    assert len(result.stdout.tail) == stdout_tail_max_bytes
+    assert result.stdout.tail == stdout[-stdout_tail_max_bytes:]
     assert result.stderr.byte_count == len(stderr)
     assert result.stderr.sha256 == hashlib.sha256(stderr).hexdigest()
     assert result.stderr.truncated is truncated
-    assert result.stderr.tail == stderr[-4:]
+    assert len(result.stderr.tail) == stderr_tail_max_bytes
+    assert result.stderr.tail == stderr[-stderr_tail_max_bytes:]
 
 
 def test_worker_nonzero_diagnostic_is_exact_and_utf8_safe(tmp_path: Path):

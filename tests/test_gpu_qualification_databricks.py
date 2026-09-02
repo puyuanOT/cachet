@@ -7016,6 +7016,8 @@ def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_or
     unrelated.parent.mkdir()
     unrelated.write_bytes(b"unowned")
     calls: list[tuple[list[str], dict[str, Any]]] = []
+    reviewed_torch_library = "/reviewed/runtime/site-packages/torch/lib"
+    monkeypatch.setenv("LD_LIBRARY_PATH", reviewed_torch_library)
 
     def ldd(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -7049,6 +7051,10 @@ def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_or
         }
     ]
     assert all(call[1]["env"]["LC_ALL"] == "C" for call in calls)
+    assert all(
+        call[1]["env"]["LD_LIBRARY_PATH"] == reviewed_torch_library
+        for call in calls
+    )
     assert all(call[1]["encoding"] == "utf-8" for call in calls)
 
 

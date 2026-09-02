@@ -35,6 +35,7 @@ from document_kv_cache.gpu_qualification import canonical_gpu_qualification_json
 import document_kv_cache.gpu_qualification as qualification_v1
 from document_kv_cache.gpu_qualification_sentinels import (
     _make_site_packages_read_only,
+    _open_runtime_root_no_follow,
     _run_bounded_worker_process,
     _verify_input_bundle_in_isolated_runtime,
     _worker_stream_diagnostic,
@@ -82,6 +83,9 @@ from document_kv_cache.vllm_smoke import (
 
 _RUNTIME_LOCK_ATTESTATION_ENV: Final = (
     "CACHET_GPU_QUALIFICATION_RUNTIME_LOCK_ATTESTATION"
+)
+_RUNTIME_TORCH_LIBRARY_RELATIVE_PATH: Final = Path(
+    "lib/python3.11/site-packages/torch/lib"
 )
 _BASE_LOCK_REQUIREMENT_RE: Final = re.compile(r"^([A-Za-z0-9_.-]+)==([^ ]+?)(?: \\)?$")
 _BASE_LOCK_HASH_RE: Final = re.compile(r"^\s+--hash=sha256:[0-9a-f]{64}(?: \\)?$")
@@ -718,6 +722,10 @@ def run_gpu_qualification_sentinel_v2(
     if installed_python_identity != created_python_identity:
         raise RuntimeError("v2 isolated Python identity changed during installation")
 
+    launch_environment = _runtime_launch_environment(
+        runtime_dir=runtime_dir,
+        install_environment=environment,
+    )
     attestation = _run_final_runtime_verifier(
         runtime_python,
         runtime_lock=runtime_lock,
@@ -726,13 +734,13 @@ def run_gpu_qualification_sentinel_v2(
         closure_path=closure_path,
         package_uri=package_uri,
         package_sha256=pins.package_wheel_sha256,
-        environment=environment,
+        environment=launch_environment,
     )
     validate_gpu_qualification_v2_runtime_attestation(attestation)
     os.environ[VLLM_PATCHED_WHEEL_URI_ENV] = str(patched_vllm)
     os.environ[VLLM_PATCHED_WHEEL_SHA256_ENV] = pins.patched_vllm_wheel_sha256
 
-    worker_environment = dict(environment)
+    worker_environment = dict(launch_environment)
     worker_environment.update(
         {
             "HF_HOME": "/local_disk0/cachet-vllm-0271-hf",
@@ -810,6 +818,46 @@ def run_gpu_qualification_sentinel_v2(
         "measurements": measurements,
         "runtime_verification": runtime_verification,
     }
+
+
+def _runtime_launch_environment(
+    *,
+    runtime_dir: Path,
+    install_environment: Mapping[str, str],
+) -> dict[str, str]:
+    """Bind post-install children to the exact private torch library directory."""
+
+    error = "v2 isolated torch library directory differs"
+    if not runtime_dir.is_absolute() or ".." in runtime_dir.parts:
+        raise RuntimeError(error)
+    torch_library_dir = runtime_dir / _RUNTIME_TORCH_LIBRARY_RELATIVE_PATH
+    try:
+        resolved_runtime_dir = runtime_dir.resolve(strict=True)
+        resolved_torch_library_dir = torch_library_dir.resolve(strict=True)
+        if (
+            resolved_runtime_dir != runtime_dir
+            or not runtime_dir.is_dir()
+            or resolved_torch_library_dir != torch_library_dir
+            or not torch_library_dir.is_dir()
+            or torch_library_dir.is_symlink()
+            or not resolved_torch_library_dir.is_relative_to(resolved_runtime_dir)
+            or os.pathsep in str(torch_library_dir)
+        ):
+            raise RuntimeError(error)
+        directory_descriptor = _open_runtime_root_no_follow(torch_library_dir)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(error) from exc
+    try:
+        os.close(directory_descriptor)
+    except OSError as exc:
+        raise RuntimeError(error) from exc
+
+    launch_environment = dict(install_environment)
+    existing_library_path = launch_environment.get("LD_LIBRARY_PATH")
+    launch_environment["LD_LIBRARY_PATH"] = str(torch_library_dir)
+    if existing_library_path:
+        launch_environment["LD_LIBRARY_PATH"] += os.pathsep + existing_library_path
+    return launch_environment
 
 
 def verify_gpu_qualification_v2_runtime_installation(

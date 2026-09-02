@@ -814,7 +814,9 @@ def _run(argv: list[str], base_env: dict[str, str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(_run(sys.argv[1:], dict(os.environ)))
+    exit_code = _run(sys.argv[1:], dict(os.environ))
+    if exit_code != 0:
+        raise SystemExit(exit_code)
 """.replace(
     "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
