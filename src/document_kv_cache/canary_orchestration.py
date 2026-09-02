@@ -62,7 +62,6 @@ from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.serving_env import (
     VLLM_DEPENDENCY_CONSTRAINTS,
     VLLM_VERSION,
-    gpu_runtime_warning_environment_overrides,
 )
 from document_kv_cache.storage import local_path
 
@@ -113,7 +112,7 @@ REPRESENTATIVE_CACHE_STATE = "cold"
 REPRESENTATIVE_VLLM_RUNNER_BASENAME = "run_vllm_smoke.py"
 REPRESENTATIVE_SGLANG_RUNNER_BASENAME = "run_sglang_smoke.py"
 REPRESENTATIVE_VLLM_RUNNER_SHA256 = (
-    "8205d25718bffcee4beb4225a9af2f80dd372a8be15c477c30c74b46e0d78ec1"
+    "f83dfb97f681f581c84d6d96b2377893d1907cd541660ba3f2c6f91b6d929cdc"
 )
 REPRESENTATIVE_SGLANG_RUNNER_SHA256 = (
     "6e3b5cd79181828bcb515e210fea46e6aa75b7636c2a3bf8e19775f5026bc1de"
@@ -1093,11 +1092,6 @@ def _validate_representative_canary_payload_contract(
         "representative task.new_cluster.spark_env_vars",
     )
     expected_spark_env_vars = {"DOCUMENT_KV_EVICT_PAGE_CACHE": "1"}
-    if workload.serving_platform == "vllm":
-        expected_spark_env_vars = {
-            **gpu_runtime_warning_environment_overrides(),
-            **expected_spark_env_vars,
-        }
     if spark_env_vars != expected_spark_env_vars:
         raise ValueError(
             "representative spark_env_vars must equal the fixed serving-runtime "

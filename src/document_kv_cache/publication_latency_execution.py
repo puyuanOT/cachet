@@ -189,7 +189,6 @@ from document_kv_cache.serving_env import (
     GPU_RUNTIME_PYTHONWARNINGS,
     VLLM_PATCHED_WHEEL_SHA256_ENV,
     VLLM_PATCHED_WHEEL_URI_ENV,
-    gpu_runtime_warning_environment_overrides,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
@@ -325,7 +324,6 @@ PUBLICATION_LATENCY_RUNNER_SCRIPT = r"""from __future__ import annotations
 import argparse
 import hashlib
 import os
-import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -380,18 +378,26 @@ def _pip_subprocess_environment() -> dict[str, str]:
     return env
 
 
-def _require_gpu_runtime_warning_startup() -> None:
-    if (
-        os.environ.get("FLASHINFER_LOGGING_LEVEL")
-        != "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__"
-        or os.environ.get("PYTHONWARNINGS")
-        != "__GPU_RUNTIME_PYTHONWARNINGS__"
-        or tuple(sys.warnoptions)
-        != tuple("__GPU_RUNTIME_PYTHONWARNINGS__".split(","))
-    ):
-        raise RuntimeError(
-            "publication latency runner lacks the pinned CUDA warning startup policy"
-        )
+_CHILD_STUB = (
+    "import os\n"
+    "import runpy\n"
+    "import sys\n"
+    "if (\n"
+    "    os.environ.get('FLASHINFER_LOGGING_LEVEL')\n"
+    "    != '__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__'\n"
+    "    or os.environ.get('PYTHONWARNINGS')\n"
+    "    != '__GPU_RUNTIME_PYTHONWARNINGS__'\n"
+    "    or tuple(sys.warnoptions)\n"
+    "    != tuple('__GPU_RUNTIME_PYTHONWARNINGS__'.split(','))\n"
+    "):\n"
+    "    raise RuntimeError(\n"
+    "        'publication latency child lacks the pinned CUDA warning startup policy'\n"
+    "    )\n"
+    "sys.argv = ['document_kv_cache.publication_latency_execution', *sys.argv[1:]]\n"
+    "runpy.run_module(\n"
+    "    'document_kv_cache.publication_latency_execution', run_name='__main__'\n"
+    ")\n"
+)
 
 
 def main() -> None:
@@ -425,20 +431,24 @@ def main() -> None:
         ],
         env=_pip_subprocess_environment(),
     )
-    _require_gpu_runtime_warning_startup()
-    sys.argv = [
-        "document_kv_cache.publication_latency_execution",
-        "run-job",
-        "--job-record-json",
-        args.job_record_json,
-        "--expected-job-sha256",
-        args.expected_job_sha256,
-        "--cloud-run-id",
-        args.cloud_run_id,
-        "--task-run-id",
-        args.task_run_id,
-    ]
-    runpy.run_module("document_kv_cache.publication_latency_execution", run_name="__main__")
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            _CHILD_STUB,
+            "run-job",
+            "--job-record-json",
+            args.job_record_json,
+            "--expected-job-sha256",
+            args.expected_job_sha256,
+            "--cloud-run-id",
+            args.cloud_run_id,
+            "--task-run-id",
+            args.task_run_id,
+        ],
+        env=_pip_subprocess_environment(),
+    )
 
 
 if __name__ == "__main__":
@@ -5523,7 +5533,6 @@ def _build_databricks_publication_latency_run_submit_payload(
         )
     )
     cluster["spark_env_vars"] = {
-        **gpu_runtime_warning_environment_overrides(),
         VLLM_PATCHED_WHEEL_SHA256_ENV: _required_string(
             artifact_files["patched_vllm_wheel"],
             "sha256",
@@ -8454,7 +8463,6 @@ def _validate_submit_payload(
     if python_task.get("python_file") != runner_uri:
         raise ValueError("publication latency runner python_file drift")
     expected_spark_environment = {
-        **gpu_runtime_warning_environment_overrides(),
         VLLM_PATCHED_WHEEL_SHA256_ENV: _required_sha256(
             artifacts_by_role["patched_vllm_wheel"],
             "sha256",

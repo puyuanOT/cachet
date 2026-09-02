@@ -32,7 +32,6 @@ from document_kv_cache.serving_env import (
     GPU_RUNTIME_PYTHONWARNINGS,
     VLLM_PACKAGE_VERSION,
     VLLM_VERSION,
-    gpu_runtime_warning_environment_overrides,
 )
 from document_kv_cache.vllm_smoke import (
     DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
@@ -368,9 +367,9 @@ def test_databricks_payload_forwards_arbitrary_arms_evidence_and_provenance():
     assert payload["timeout_seconds"] == 14400
     assert task["timeout_seconds"] == 14400
     assert task["max_retries"] == 0
-    assert task["new_cluster"]["spark_env_vars"][
-        "DOCUMENT_KV_EVICT_PAGE_CACHE"
-    ] == "1"
+    assert task["new_cluster"]["spark_env_vars"] == {
+        "DOCUMENT_KV_EVICT_PAGE_CACHE": "1"
+    }
 
 
 def test_databricks_representative_provenance_builds_benchmark_runner_args(monkeypatch):
@@ -820,6 +819,25 @@ def test_databricks_vllm_generic_canary_only_requires_pinned_identity():
     )
 
 
+def test_databricks_vllm_cluster_env_strips_parent_warning_policy_only():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="generic-parent-policy",
+        output_dir="/Volumes/catalog/schema/volume/generic-parent-policy",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        spark_env_vars={
+            "FLASHINFER_LOGGING_LEVEL": "DEBUG",
+            "PYTHONWARNINGS": "ignore",
+            "CACHET_TRANSFORMERS_DEVICE": "cuda",
+        },
+    )
+
+    assert config.spark_env_vars == {"CACHET_TRANSFORMERS_DEVICE": "cuda"}
+    assert build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0][
+        "new_cluster"
+    ]["spark_env_vars"] == {"CACHET_TRANSFORMERS_DEVICE": "cuda"}
+
+
 def test_databricks_vllm_smoke_config_requires_single_user_name():
     try:
         DatabricksVLLMSmokeJobConfig(
@@ -1019,7 +1037,6 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
     )
     assert runtime_identity == stored_post_rope_runtime_identity().to_record()
     assert task["new_cluster"]["spark_env_vars"] == {
-        **gpu_runtime_warning_environment_overrides(),
         "CACHET_TRANSFORMERS_DEVICE": "cuda",
         "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
         "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE": "true",
@@ -1081,8 +1098,12 @@ def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
     assert '"--no-deps"' in runner_text
     assert "dbfs:/" in runner_text
     assert "document_kv_cache.vllm_smoke" in runner_text
-    assert "_require_gpu_runtime_warning_startup" in runner_text
-    assert "if exit_code:" in runner_text
+    assert "_CHILD_STUB" in runner_text
+    assert "_run_smoke_child" in runner_text
+    assert '[sys.executable, "-P", "-c", _CHILD_STUB, *argv]' in runner_text
+    child_import = runner_text.index("from document_kv_cache.vllm_smoke import main")
+    assert runner_text.index("tuple(sys.warnoptions)") < child_import
+    assert runner_text.index("_expected_environment.items()") < child_import
 
 
 def test_representative_vllm_runner_digest_matches_embedded_script():
@@ -1092,83 +1113,49 @@ def test_representative_vllm_runner_digest_matches_embedded_script():
     )
 
 
-def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_path):
-    runner_path = tmp_path / "run_vllm_smoke.py"
-    pip_call_path = tmp_path / "pip-call.json"
-    main_args_path = tmp_path / "main-args.json"
-    events_path = tmp_path / "events.jsonl"
+def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(
+    tmp_path,
+    monkeypatch,
+):
     wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     wheel_path.write_bytes(b"verified Cachet wheel bytes")
     wheel_sha256 = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
-    package_dir = tmp_path / "document_kv_cache"
-    package_dir.mkdir()
-    (package_dir / "__init__.py").write_text("", encoding="utf-8")
-    (package_dir / "vllm_smoke.py").write_text(
-        "\n".join(
-            [
-                "import json",
-                "import os",
-                "",
-                "with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
-                "    handle.write(json.dumps({'event': 'vllm_smoke_import'}) + '\\n')",
-                "",
-                "def main(argv=None):",
-                "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
-                "        handle.write(json.dumps({'event': 'main'}) + '\\n')",
-                "    with open(os.environ['MAIN_ARGS_JSON'], 'w', encoding='utf-8') as handle:",
-                "        json.dump({",
-                "            'argv': argv,",
-                "            'package_install_spec': os.environ.get('DOCUMENT_KV_PACKAGE_INSTALL_SPEC'),",
-                "            'package_wheel_sha256': os.environ.get('DOCUMENT_KV_PACKAGE_WHEEL_SHA256'),",
-                "        }, handle)",
-                "    return 0",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / "sitecustomize.py").write_text(
-        "\n".join(
-            [
-                "import json",
-                "import os",
-                "import subprocess",
-                "",
-                "def _capture_check_call(argv, **kwargs):",
-                "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
-                "        handle.write(json.dumps({'event': 'pip_install'}) + '\\n')",
-                "    with open(os.environ['PIP_CALL_JSON'], 'w', encoding='utf-8') as handle:",
-                "        json.dump({'argv': argv, 'env': kwargs.get('env')}, handle)",
-                "    return 0",
-                "",
-                "subprocess.check_call = _capture_check_call",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    events = []
+    calls = {}
 
-    write_databricks_vllm_smoke_runner_script(runner_path)
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(tmp_path),
-        "PIP_CALL_JSON": str(pip_call_path),
-        "MAIN_ARGS_JSON": str(main_args_path),
-        "RUNNER_EVENTS_JSONL": str(events_path),
+    def capture_check_call(argv, **kwargs):
+        events.append("pip_install")
+        calls["pip"] = {"argv": argv, **kwargs}
+
+    class ChildResult:
+        returncode = 0
+
+    def capture_run(argv, **kwargs):
+        events.append("smoke_child")
+        calls["child"] = {"argv": argv, **kwargs}
+        return ChildResult()
+
+    monkeypatch.setattr(subprocess, "check_call", capture_check_call)
+    monkeypatch.setattr(subprocess, "run", capture_run)
+    for name, value in {
         "DOCUMENT_KV_PACKAGE_WHEEL_SHA256": "a" * 64,
+        "FLASHINFER_LOGGING_LEVEL": "DEBUG",
         "PIP_CONFIG_FILE": "/attacker/pip.conf",
         "PIP_INDEX_URL": "https://attacker.invalid/simple",
         "pip_no_index": "1",
         "PIP_REQUIREMENT": "/attacker/requirements.txt",
-        "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
-        "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+        "PYTHONHOME": "/attacker/python",
+        "PYTHONPATH": str(tmp_path),
+        "PYTHONWARNINGS": "ignore",
         "VIRTUAL_ENV": "/attacker/venv",
-    }
-
-    subprocess.run(
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("DOCUMENT_KV_PACKAGE_INSTALL_SPEC", "/attacker/cachet")
+    monkeypatch.setattr(
+        sys,
+        "argv",
         [
-            sys.executable,
-            str(runner_path),
+            "run_vllm_smoke.py",
             "--package-wheel-uri",
             str(wheel_path),
             "--package-wheel-sha256",
@@ -1178,13 +1165,17 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
             "--output-dir",
             "/dbfs/tmp/cachet/output",
         ],
-        check=True,
-        capture_output=True,
-        env=env,
-        text=True,
     )
 
-    pip_call = json.loads(pip_call_path.read_text(encoding="utf-8"))
+    with pytest.raises(SystemExit) as exit_info:
+        exec(
+            compile(VLLM_SMOKE_RUNNER_SCRIPT, "<generated-vllm-runner>", "exec"),
+            {"__name__": "__main__"},
+        )
+
+    assert exit_info.value.code == 0
+    assert events == ["pip_install", "smoke_child"]
+    pip_call = calls["pip"]
     assert Path(pip_call["argv"][0]).resolve() == Path(sys.executable).resolve()
     assert pip_call["argv"][1:] == [
         "-m",
@@ -1207,29 +1198,31 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
         == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
     )
     assert pip_environment["PYTHONNOUSERSITE"] == "1"
+    assert pip_environment["PYTHONSAFEPATH"] == "1"
     assert pip_environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert all(
         variable not in pip_environment
         for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
     )
-    main_payload = json.loads(main_args_path.read_text(encoding="utf-8"))
-    assert main_payload == {
-        "argv": [
-            "--benchmark-id",
-            "v1-vllm-smoke-001",
-            "--output-dir",
-            "/dbfs/tmp/cachet/output",
-        ],
-        "package_install_spec": str(wheel_path),
-        "package_wheel_sha256": wheel_sha256,
-    }
-    events = [json.loads(line)["event"] for line in events_path.read_text(encoding="utf-8").splitlines()]
-    assert events == ["pip_install", "vllm_smoke_import", "main"]
+    child_call = calls["child"]
+    assert child_call["argv"][:3] == [sys.executable, "-P", "-c"]
+    assert child_call["argv"][4:] == [
+        "--benchmark-id",
+        "v1-vllm-smoke-001",
+        "--output-dir",
+        "/dbfs/tmp/cachet/output",
+    ]
+    assert child_call["check"] is False
+    assert child_call["env"]["DOCUMENT_KV_PACKAGE_INSTALL_SPEC"] == str(wheel_path)
+    assert child_call["env"]["DOCUMENT_KV_PACKAGE_WHEEL_SHA256"] == wheel_sha256
 
-    subprocess.run(
+    events.clear()
+    calls.clear()
+    monkeypatch.setattr(
+        sys,
+        "argv",
         [
-            sys.executable,
-            str(runner_path),
+            "run_vllm_smoke.py",
             "--package-wheel-uri",
             str(wheel_path),
             "--benchmark-id",
@@ -1237,13 +1230,129 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
             "--output-dir",
             "/dbfs/tmp/cachet/generic-output",
         ],
-        check=True,
+    )
+    with pytest.raises(SystemExit) as generic_exit_info:
+        exec(
+            compile(VLLM_SMOKE_RUNNER_SCRIPT, "<generated-vllm-runner>", "exec"),
+            {"__name__": "__main__"},
+        )
+
+    assert generic_exit_info.value.code == 0
+    assert events == ["pip_install", "smoke_child"]
+    assert "DOCUMENT_KV_PACKAGE_WHEEL_SHA256" not in calls["child"]["env"]
+
+
+@pytest.mark.parametrize(
+    "parent_policy",
+    [
+        {},
+        {
+            "FLASHINFER_LOGGING_LEVEL": "DEBUG",
+            "PYTHONWARNINGS": "ignore",
+        },
+    ],
+    ids=("missing-parent-policy", "hostile-parent-policy"),
+)
+def test_generated_vllm_smoke_runner_sanitizes_child_boundary(
+    monkeypatch,
+    parent_policy,
+):
+    for name in ("FLASHINFER_LOGGING_LEVEL", "PYTHONWARNINGS"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in parent_policy.items():
+        monkeypatch.setenv(name, value)
+    for name, value in {
+        "PIP_INDEX_URL": "https://attacker.invalid/simple",
+        "pip_no_index": "1",
+        "PYTHONHOME": "/attacker/python",
+        "PYTHONPATH": "/attacker/packages",
+        "VIRTUAL_ENV": "/attacker/venv",
+    }.items():
+        monkeypatch.setenv(name, value)
+    captured = {}
+
+    class ChildResult:
+        returncode = 0
+
+    def capture_run(argv, **kwargs):
+        captured.update(argv=argv, **kwargs)
+        return ChildResult()
+
+    namespace = {"__name__": "generated_vllm_runner_test"}
+    exec(
+        compile(VLLM_SMOKE_RUNNER_SCRIPT, "<generated-vllm-runner>", "exec"),
+        namespace,
+    )
+    monkeypatch.setattr(subprocess, "run", capture_run)
+
+    assert namespace["_run_smoke_child"](["--benchmark-id", "smoke"]) == 0
+    assert captured["argv"][:3] == [sys.executable, "-P", "-c"]
+    assert captured["argv"][4:] == ["--benchmark-id", "smoke"]
+    child_environment = captured["env"]
+    assert child_environment["FLASHINFER_LOGGING_LEVEL"] == (
+        GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert child_environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+    assert child_environment["PYTHONNOUSERSITE"] == "1"
+    assert child_environment["PYTHONSAFEPATH"] == "1"
+    assert {
+        name: value
+        for name, value in child_environment.items()
+        if name.upper().startswith("PIP_")
+    } == {
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+    }
+    assert all(
+        name not in child_environment
+        for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
+    )
+
+
+@pytest.mark.parametrize(
+    ("environment_mutation", "extra_python_args", "message"),
+    [
+        (lambda env: env.pop("PYTHONWARNINGS"), (), "pinned CUDA runtime environment"),
+        (
+            lambda env: env.__setitem__("PYTHONWARNINGS", "ignore"),
+            (),
+            "pinned CUDA runtime environment",
+        ),
+        (lambda env: None, ("-W", "ignore"), "warning startup policy differs"),
+    ],
+    ids=("missing-policy", "hostile-policy", "hostile-warnoptions"),
+)
+def test_generated_vllm_smoke_child_validates_policy_before_import(
+    environment_mutation,
+    extra_python_args,
+    message,
+):
+    namespace = {"__name__": "generated_vllm_runner_test"}
+    exec(
+        compile(VLLM_SMOKE_RUNNER_SCRIPT, "<generated-vllm-runner>", "exec"),
+        namespace,
+    )
+    child_environment = namespace["_pip_subprocess_environment"]()
+    environment_mutation(child_environment)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            *extra_python_args,
+            "-c",
+            namespace["_CHILD_STUB"],
+        ],
+        check=False,
         capture_output=True,
-        env=env,
+        env=child_environment,
         text=True,
     )
-    generic_main_payload = json.loads(main_args_path.read_text(encoding="utf-8"))
-    assert generic_main_payload["package_wheel_sha256"] is None
+
+    assert completed.returncode != 0
+    assert message in completed.stderr
+    assert "No module named 'document_kv_cache'" not in completed.stderr
 
 
 def test_generated_vllm_smoke_runner_rejects_tampered_wheel(tmp_path):
@@ -1325,7 +1434,6 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
     assert "libraries" not in task
     assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
     assert task["new_cluster"]["spark_env_vars"] == {
-        **gpu_runtime_warning_environment_overrides(),
         "CACHET_TRANSFORMERS_DEVICE": "cuda",
     }
     assert "vllm_smoke" in runner_path.read_text(encoding="utf-8")

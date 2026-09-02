@@ -58,7 +58,6 @@ from document_kv_cache.serving_env import (
     VIRTUALENV_BOOTSTRAP_SHA256,
     VIRTUALENV_BOOTSTRAP_URL,
     VIRTUALENV_BOOTSTRAP_VERSION,
-    gpu_runtime_warning_environment_overrides,
     vllm_runtime_install_requirements,
 )
 from document_kv_cache.storage import local_path
@@ -159,6 +158,34 @@ VLLM_RUNTIME_LOCK_MEMBER = __CACHET_VLLM_RUNTIME_LOCK_MEMBER__
 VLLM_RUNTIME_LOCK_SHA256 = __CACHET_VLLM_RUNTIME_LOCK_SHA256__
 GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL = __GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__
 GPU_RUNTIME_PYTHONWARNINGS = __GPU_RUNTIME_PYTHONWARNINGS__
+VLLM_ENGINE_PROBE_CHILD_CODE = '''import os
+import sys
+
+if (
+    os.environ.get("FLASHINFER_LOGGING_LEVEL")
+    != __GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__
+    or os.environ.get("PYTHONWARNINGS") != __GPU_RUNTIME_PYTHONWARNINGS__
+    or tuple(sys.warnoptions)
+    != tuple(__GPU_RUNTIME_PYTHONWARNINGS__.split(","))
+    or not sys.flags.safe_path
+    or "PYTHONHOME" in os.environ
+    or "PYTHONPATH" in os.environ
+):
+    raise RuntimeError(
+        "vLLM engine-probe child lacks the pinned CUDA warning startup policy"
+    )
+
+_virtual_env = os.environ.get("VIRTUAL_ENV")
+if _virtual_env is not None:
+    _venv_bindir = "Scripts" if os.name == "nt" else "bin"
+    _venv_python = os.path.join(_virtual_env, _venv_bindir, "python")
+    if os.path.realpath(sys.executable) != os.path.realpath(_venv_python):
+        raise RuntimeError("vLLM engine-probe child has an invalid VIRTUAL_ENV")
+
+from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_task
+
+raise SystemExit(run_engine_probe_task(sys.argv[1:]))
+'''
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -185,26 +212,62 @@ def _pip_subprocess_environment() -> dict[str, str]:
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
         }
     )
     return env
 
 
-def _require_vllm_warning_startup(argv: list[str]) -> None:
+def _expected_backend(argv: list[str]) -> str | None:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--expected-backend")
     args, _remaining = parser.parse_known_args(argv)
-    if args.expected_backend != "vllm":
-        return
-    if (
-        os.environ.get("FLASHINFER_LOGGING_LEVEL")
-        != GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
-        or os.environ.get("PYTHONWARNINGS") != GPU_RUNTIME_PYTHONWARNINGS
-        or tuple(sys.warnoptions) != tuple(GPU_RUNTIME_PYTHONWARNINGS.split(","))
-    ):
-        raise RuntimeError(
-            "vLLM engine-probe runner lacks the pinned CUDA warning startup policy"
-        )
+    return args.expected_backend
+
+
+def _vllm_child_environment(
+    base_env: dict[str, str],
+    *,
+    expected_virtual_env: str | None = None,
+) -> dict[str, str]:
+    env = dict(base_env)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH"):
+        env.pop(variable_name, None)
+    if expected_virtual_env is None:
+        env.pop("VIRTUAL_ENV", None)
+    elif env.get("VIRTUAL_ENV") != expected_virtual_env:
+        raise RuntimeError("vLLM engine-probe child VIRTUAL_ENV differs")
+    env.update(
+        {
+            "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+        }
+    )
+    return env
+
+
+def _run_vllm_child(
+    python_executable: str,
+    argv: list[str],
+    *,
+    base_env: dict[str, str],
+    expected_virtual_env: str | None = None,
+) -> int:
+    return subprocess.call(
+        [
+            python_executable,
+            "-P",
+            "-c",
+            VLLM_ENGINE_PROBE_CHILD_CODE,
+            *argv,
+        ],
+        env=_vllm_child_environment(
+            base_env,
+            expected_virtual_env=expected_virtual_env,
+        ),
+    )
 
 
 def _create_serving_venv(venv_dir: str) -> None:
@@ -483,6 +546,16 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
             [venv_python, "-c", verification_code, patched_vllm_spec],
             env=venv_env,
         )
+    if _expected_backend(remaining) == "vllm":
+        return (
+            remaining,
+            _run_vllm_child(
+                venv_python,
+                remaining,
+                base_env=venv_env,
+                expected_virtual_env=venv_dir,
+            ),
+        )
     return (
         remaining,
         subprocess.call(
@@ -497,11 +570,18 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
     )
 
 if __name__ == "__main__":
-    _require_vllm_warning_startup(sys.argv[1:])
     remaining_args, reexec_exit_code = _install_runtime_packages(sys.argv[1:])
     if reexec_exit_code is not None:
         if reexec_exit_code:
             raise SystemExit(reexec_exit_code)
+    elif _expected_backend(remaining_args) == "vllm":
+        exit_code = _run_vllm_child(
+            sys.executable,
+            remaining_args,
+            base_env=_pip_subprocess_environment(),
+        )
+        if exit_code:
+            raise SystemExit(exit_code)
     else:
         from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_task
 
@@ -966,8 +1046,6 @@ def _engine_probe_task_from_target(
 def _engine_probe_cluster(config: DatabricksEngineProbeJobConfig) -> dict[str, Any]:
     cluster = build_single_node_gpu_cluster(_cluster_config_from_engine_probe_job(config))
     spark_env_vars = dict(cluster.get("spark_env_vars", {}))
-    if config.expected_backend == ServingBackend.VLLM:
-        spark_env_vars.update(gpu_runtime_warning_environment_overrides())
     if config.native_probe_delegate_factory is not None:
         spark_env_vars[_native_probe_delegate_env_name(config.expected_backend)] = config.native_probe_delegate_factory
     if spark_env_vars:

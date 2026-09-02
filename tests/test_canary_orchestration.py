@@ -330,6 +330,10 @@ def test_real_representative_job_payloads_match_manifest_and_reserve_40_hours():
         workload.workload_id
         for workload in representative_canary_workload_manifest().workloads
     ]
+    assert [
+        payload["tasks"][0]["new_cluster"]["spark_env_vars"]
+        for _workload_id, payload in payloads
+    ] == [{"DOCUMENT_KV_EVICT_PAGE_CACHE": "1"}] * 10
 
 
 def test_representative_vllm_payload_binds_provenance_to_wheel_digest():

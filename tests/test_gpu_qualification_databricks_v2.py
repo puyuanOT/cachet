@@ -56,7 +56,6 @@ from document_kv_cache.runtime_artifact_closure import (
 from document_kv_cache.serving_env import (
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
-    gpu_runtime_warning_environment_overrides,
 )
 
 
@@ -152,21 +151,21 @@ def _payloads() -> tuple[dict[str, Any], ...]:
 
 def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256 == (
-        "147dedca8fcdb2e76c427a3afd7df88d5b5b5ec5f7316145bfe082d4731e68e4"
+        "e6fd8bcc7c4f6e98ddfaf87f8c13ac08e386fb987a4a09cbfd42e6054279df17"
     )
-    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 22724
+    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 24249
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "696c54a736a95625136a831c644280b8af198e52e314cf29b3bcb8b7059d486b"
+        "eb304de01e2975412324b6cf2cc134542654b0ae819e5ff78db1f5b8b58fe663"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15393
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 128333
+    assert len(payload_bytes) == 121627
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "ea46a2c92cfe6332d10b83da541966e814b24a90ad72c405d4ed5566f7ae8fbd"
+        "1582d0f0e5841617c66d1e47e5d1de16dc6d4fa469e617cb49e69acc43e9cfb4"
     )
 
 
@@ -197,11 +196,9 @@ def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> 
             task["spark_python_task"]["python_file"]
             == (_artifact_uris()["runner_sha256"])
         )
-        assert task["new_cluster"]["spark_env_vars"] == (
-            gpu_runtime_warning_environment_overrides()
-        )
-    assert min(sizes) == 7607
-    assert max(sizes) == 7679
+        assert "spark_env_vars" not in task["new_cluster"]
+    assert min(sizes) == 7603
+    assert max(sizes) == 7675
     assert (
         max(sizes) < databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
     )
@@ -479,6 +476,16 @@ def _set_sanitized_child_environment(
         "FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
     )
     monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
+    monkeypatch.setattr(
+        sys,
+        "flags",
+        types.SimpleNamespace(safe_path=True, no_user_site=1),
+    )
+    monkeypatch.setattr(
+        sys,
+        "warnoptions",
+        list(GPU_RUNTIME_PYTHONWARNINGS.split(",")),
+    )
 
 
 def test_v2_bootstrap_runner_and_emitted_child_stub_compile_exactly() -> None:
@@ -489,10 +496,72 @@ def test_v2_bootstrap_runner_and_emitted_child_stub_compile_exactly() -> None:
         "exec",
     )
     exec(runner_code, namespace)
-    compile(namespace["_CHILD_STUB"], "gpu-qualification-v2-child.py", "exec")
-    assert namespace["_CHILD_STUB"].index("os.environ.pop") < namespace[
-        "_CHILD_STUB"
-    ].index("from document_kv_cache")
+    child_stub = namespace["_CHILD_STUB"]
+    compile(child_stub, "gpu-qualification-v2-child.py", "exec")
+    first_cachet_import = child_stub.index("from document_kv_cache")
+    for startup_check in (
+        "_cachet_required_environment.items()",
+        "_cachet_forbidden_environment",
+        "sys.flags.safe_path",
+        "sys.warnoptions",
+        "os.environ.pop",
+    ):
+        assert child_stub.index(startup_check) < first_cachet_import
+
+    exact_environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"}
+    }
+    exact_environment.update(
+        {
+            "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+        }
+    )
+    cases: list[tuple[list[str], dict[str, str], str]] = []
+    missing_policy = dict(exact_environment)
+    missing_policy.pop("PYTHONWARNINGS")
+    cases.append(
+        (
+            [sys.executable, "-P", "-c", child_stub],
+            missing_policy,
+            "exact startup environment",
+        )
+    )
+    hostile_policy = {
+        **exact_environment,
+        "FLASHINFER_LOGGING_LEVEL": "DEBUG",
+        "PYTHONWARNINGS": "ignore",
+    }
+    cases.append(
+        (
+            [sys.executable, "-P", "-c", child_stub],
+            hostile_policy,
+            "exact startup environment",
+        )
+    )
+    cases.append(
+        (
+            [sys.executable, "-P", "-W", "ignore", "-c", child_stub],
+            exact_environment,
+            "exact warning startup options",
+        )
+    )
+    for command, environment, expected_error in cases:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            env=environment,
+            text=True,
+        )
+        assert completed.returncode != 0
+        assert f"RuntimeError: GPU qualification v2 child lacks its {expected_error}" in (
+            completed.stderr
+        )
+        assert "ModuleNotFoundError" not in completed.stderr
 
 
 def test_v2_bootstrap_validates_transport_and_snapshots_package_before_install(
@@ -629,9 +698,11 @@ def test_v2_bootstrap_handoff_uses_one_snapshot_and_isolates_private_env(
     base_env = {
         "DATABRICKS_CLUSTER_ID": cluster_id,
         "DB_CLUSTER_ID": cluster_id,
+        "FLASHINFER_LOGGING_LEVEL": "DEBUG",
         "KEEP_FROM_BASE": "original",
         "PIP_INDEX_URL": "https://example.invalid/simple",
         "PYTHONPATH": "/tmp/untrusted",
+        "PYTHONWARNINGS": "ignore",
     }
     spark_calls: list[str] = []
 
@@ -678,6 +749,13 @@ def test_v2_bootstrap_handoff_uses_one_snapshot_and_isolates_private_env(
         == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
     )
     assert pip_env["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+    assert {
+        key: child_env[key]
+        for key in ("FLASHINFER_LOGGING_LEVEL", "PYTHONWARNINGS")
+    } == {
+        "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+        "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+    }
     handoff = json.loads(raw_handoff)
     assert handoff["cluster_id"] == cluster_id
     assert handoff["sources"] == [

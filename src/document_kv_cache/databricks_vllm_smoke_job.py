@@ -154,24 +154,51 @@ def _install_package_wheel(argv: list[str]) -> list[str]:
     return remaining
 
 
-def _require_gpu_runtime_warning_startup() -> None:
-    if (
-        os.environ.get("FLASHINFER_LOGGING_LEVEL")
-        != _GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
-        or os.environ.get("PYTHONWARNINGS") != _GPU_RUNTIME_PYTHONWARNINGS
-        or tuple(sys.warnoptions) != tuple(_GPU_RUNTIME_PYTHONWARNINGS.split(","))
-    ):
-        raise RuntimeError("vLLM runner lacks the pinned CUDA warning startup policy")
+_CHILD_STUB = (
+    "import os\\n"
+    "import sys\\n"
+    "_expected_environment = {\\n"
+    f"    'FLASHINFER_LOGGING_LEVEL': {_GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL!r},\\n"
+    "    'PYTHONNOUSERSITE': '1',\\n"
+    "    'PYTHONSAFEPATH': '1',\\n"
+    f"    'PYTHONWARNINGS': {_GPU_RUNTIME_PYTHONWARNINGS!r},\\n"
+    "}\\n"
+    "_expected_pip_environment = {\\n"
+    "    'PIP_CONFIG_FILE': os.devnull,\\n"
+    "    'PIP_DISABLE_PIP_VERSION_CHECK': '1',\\n"
+    "    'PIP_NO_INPUT': '1',\\n"
+    "}\\n"
+    "if any(os.environ.get(name) != value for name, value in "
+    "_expected_environment.items()):\\n"
+    "    raise RuntimeError('vLLM child lacks the pinned CUDA runtime environment')\\n"
+    "if {name: value for name, value in os.environ.items() if "
+    "name.upper().startswith('PIP_')} != _expected_pip_environment:\\n"
+    "    raise RuntimeError('vLLM child pip environment is not sanitized')\\n"
+    "if any(name in os.environ for name in ('PYTHONHOME', 'PYTHONPATH', "
+    "'VIRTUAL_ENV')):\\n"
+    "    raise RuntimeError('vLLM child inherited an unsafe Python environment')\\n"
+    "if not sys.flags.safe_path:\\n"
+    "    raise RuntimeError('vLLM child was not launched with safe-path mode')\\n"
+    "if tuple(sys.warnoptions) != tuple("
+    "_expected_environment['PYTHONWARNINGS'].split(',')):\\n"
+    "    raise RuntimeError('vLLM child warning startup policy differs')\\n"
+    "from document_kv_cache.vllm_smoke import main\\n"
+    "raise SystemExit(main(sys.argv[1:]))\\n"
+)
+
+
+def _run_smoke_child(argv: list[str]) -> int:
+    completed = subprocess.run(
+        [sys.executable, "-P", "-c", _CHILD_STUB, *argv],
+        check=False,
+        env=_pip_subprocess_environment(),
+    )
+    return completed.returncode
 
 
 if __name__ == "__main__":
     remaining_args = _install_package_wheel(sys.argv[1:])
-    _require_gpu_runtime_warning_startup()
-    from document_kv_cache.vllm_smoke import main
-
-    exit_code = main(remaining_args)
-    if exit_code:
-        raise SystemExit(exit_code)
+    raise SystemExit(_run_smoke_child(remaining_args))
 """.replace(
     "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
@@ -652,7 +679,8 @@ class DatabricksVLLMSmokeJobConfig:
                     + ", ".join(mismatches)
                 )
         spark_env_vars = dict(_validated_spark_env_vars(self.spark_env_vars))
-        spark_env_vars.update(gpu_runtime_warning_environment_overrides())
+        for policy_variable in gpu_runtime_warning_environment_overrides():
+            spark_env_vars.pop(policy_variable, None)
         if self.is_representative_submission:
             _validate_representative_node_type_id(
                 self.node_type_id,

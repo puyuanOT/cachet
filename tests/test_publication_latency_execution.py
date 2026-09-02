@@ -3,6 +3,7 @@ import json
 import math
 import os
 import random
+import subprocess
 import sys
 from copy import deepcopy
 from dataclasses import replace
@@ -411,8 +412,6 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
         "num_workers": 0,
         "single_user_name": runtime["single_user_name"],
         "spark_env_vars": {
-            "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
-            "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
             execution.VLLM_PATCHED_WHEEL_SHA256_ENV: (
                 execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
             ),
@@ -465,6 +464,27 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
     assert payload["tasks"][0]["new_cluster"]["single_user_name"] == (
         "publication@example.com"
     )
+    spark_environment = payload["tasks"][0]["new_cluster"]["spark_env_vars"]
+    assert "FLASHINFER_LOGGING_LEVEL" not in spark_environment
+    assert "PYTHONWARNINGS" not in spark_environment
+
+    mutated_warning_policy = deepcopy(payload)
+    mutated_warning_policy["tasks"][0]["new_cluster"]["spark_env_vars"][
+        "PYTHONWARNINGS"
+    ] = GPU_RUNTIME_PYTHONWARNINGS
+    mutated_warning_policy = execution.bind_databricks_run_idempotency_token(
+        {
+            key: value
+            for key, value in mutated_warning_policy.items()
+            if key != "idempotency_token"
+        },
+        attempt_id=job["reservation_attempt_id"],
+    )
+    with pytest.raises(ValueError, match="Spark environment drift"):
+        execution._validate_submit_payload(
+            mutated_warning_policy,
+            job_record=job,
+        )
 
     mutated_principal = deepcopy(payload)
     mutated_principal["tasks"][0]["new_cluster"]["single_user_name"] = (
@@ -1887,6 +1907,105 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     )
     with pytest.raises(RuntimeError, match="executing publication latency runner"):
         runner_namespace["main"]()
+
+    wheel = tmp_path / "cachet.whl"
+    wheel.write_bytes(b"publication-latency-wheel")
+    valid_runner_namespace = {
+        "__file__": str(bound_runner),
+        "__name__": "latency_runner_child_test",
+    }
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_RUNNER_SCRIPT,
+            str(bound_runner),
+            "exec",
+        ),
+        valid_runner_namespace,
+    )
+    calls = []
+
+    def capture_check_call(command, *, env):
+        calls.append((command, env))
+
+    monkeypatch.setattr(
+        valid_runner_namespace["subprocess"],
+        "check_call",
+        capture_check_call,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(bound_runner),
+            "--job-record-json",
+            "{}",
+            "--expected-job-sha256",
+            "0" * 64,
+            "--runner-uri",
+            str(bound_runner),
+            "--runner-sha256",
+            execution.sha256(bound_runner.read_bytes()).hexdigest(),
+            "--package-wheel-uri",
+            str(wheel),
+            "--package-wheel-sha256",
+            execution.sha256(wheel.read_bytes()).hexdigest(),
+            "--cloud-run-id",
+            "1",
+            "--task-run-id",
+            "2",
+        ],
+    )
+    valid_runner_namespace["main"]()
+    assert len(calls) == 2
+    child_command, child_environment = calls[1]
+    assert child_command[:3] == [sys.executable, "-P", "-c"]
+    assert child_command[4:] == [
+        "run-job",
+        "--job-record-json",
+        "{}",
+        "--expected-job-sha256",
+        "0" * 64,
+        "--cloud-run-id",
+        "1",
+        "--task-run-id",
+        "2",
+    ]
+    child_stub = child_command[3]
+    assert child_stub.index("sys.warnoptions") < child_stub.index(
+        "runpy.run_module"
+    )
+    assert (
+        child_environment["FLASHINFER_LOGGING_LEVEL"]
+        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    )
+    assert child_environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+    child_cases = []
+    missing_policy_environment = dict(child_environment)
+    missing_policy_environment.pop("PYTHONWARNINGS")
+    child_cases.append(([], missing_policy_environment, "pinned CUDA warning"))
+    hostile_policy_environment = {
+        **child_environment,
+        "FLASHINFER_LOGGING_LEVEL": "DEBUG",
+        "PYTHONWARNINGS": "ignore",
+    }
+    child_cases.append(([], hostile_policy_environment, "pinned CUDA warning"))
+    child_cases.append((["-W", "ignore"], child_environment, "pinned CUDA warning"))
+    for extra_python_args, environment, expected_error in child_cases:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-P",
+                *extra_python_args,
+                "-c",
+                child_stub,
+            ],
+            capture_output=True,
+            env=environment,
+            text=True,
+        )
+        assert completed.returncode != 0
+        assert expected_error in completed.stderr
+        assert "ModuleNotFoundError" not in completed.stderr
     source_install = execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT.split(
         'pip = [venv_python, "-m", "pip"]', maxsplit=1
     )[1]

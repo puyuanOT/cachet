@@ -231,6 +231,17 @@ _HANDOFF_RECORD_TYPE = (
 )
 _HANDOFF_SCHEMA_VERSION = 2
 _HANDOFF_MAX_BYTES = 4096
+_CHILD_REQUIRED_ENV = {
+    "FLASHINFER_LOGGING_LEVEL": "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONSAFEPATH": "1",
+    "PYTHONWARNINGS": "__GPU_RUNTIME_PYTHONWARNINGS__",
+}
+_CHILD_FORBIDDEN_ENV = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+)
 _CLUSTER_ID_MAX_UTF8_BYTES = 256
 _CLUSTER_ID_ENV_NAMES = (
     "DATABRICKS_CLUSTER_ID",
@@ -759,7 +770,19 @@ def _bootstrap(
 
 
 _CHILD_STUB = (
-    "import os\\n"
+    "import os,sys\\n"
+    f"_cachet_required_environment = {_CHILD_REQUIRED_ENV!r}\\n"
+    f"_cachet_forbidden_environment = {_CHILD_FORBIDDEN_ENV!r}\\n"
+    "if any(os.environ.get(name) != expected for name, expected in "
+    "_cachet_required_environment.items()):\\n"
+    "    raise RuntimeError('GPU qualification v2 child lacks its exact startup environment')\\n"
+    "if any(name in os.environ for name in _cachet_forbidden_environment):\\n"
+    "    raise RuntimeError('GPU qualification v2 child inherited an unsafe Python path')\\n"
+    "if not sys.flags.safe_path or not sys.flags.no_user_site:\\n"
+    "    raise RuntimeError('GPU qualification v2 child lacks its exact Python startup flags')\\n"
+    "if tuple(sys.warnoptions) != tuple("
+    "_cachet_required_environment['PYTHONWARNINGS'].split(',')):\\n"
+    "    raise RuntimeError('GPU qualification v2 child lacks its exact warning startup options')\\n"
     f"_cachet_handoff = os.environ.pop({_HANDOFF_ENV!r}, None)\\n"
     "from document_kv_cache.gpu_qualification_databricks_v2 import "
     "_main_from_bootstrap_handoff_v2\\n"
@@ -878,9 +901,6 @@ def render_gpu_qualification_submit_payloads_v2(
                 "plan_sha256": plan_digest[:32],
                 "protocol": "gpu-qualification-v2",
             },
-        )
-        cluster["spark_env_vars"] = dict(
-            gpu_runtime_warning_environment_overrides()
         )
         task = {
             "task_key": databricks_v1._task_key(job_id),
