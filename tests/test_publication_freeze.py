@@ -1007,6 +1007,7 @@ def test_preflight_and_git_subprocesses_ignore_hostile_ambient_environment(
     assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
     assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
     assert environment["MYPYPATH"] == ""
+    assert environment["RUFF_NO_CACHE"] == "true"
     assert "MYPY_CACHE_DIR" not in environment
     assert "RUFF_CONFIG" not in environment
     assert "GIT_DIR" not in freeze._git_environment()
