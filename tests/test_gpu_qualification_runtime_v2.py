@@ -751,6 +751,12 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
         "_check_is_size will be removed in a future PyTorch release along with "
         "guard_size_oblivious.     Use _check(i >= 0) instead."
     )
+    vllm_registry_message = (
+        "'vllm.model_executor.models.registry' found in sys.modules after import "
+        "of package 'vllm.model_executor.models', but prior to execution of "
+        "'vllm.model_executor.models.registry'; this may result in unpredictable "
+        "behaviour"
+    )
     transcript = b"".join(
         (
             "<frozen importlib._bootstrap_external>:1241: FutureWarning: "
@@ -775,15 +781,20 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             f"ignore:{bitsandbytes_message}"
             ":FutureWarning:bitsandbytes.backends.cuda.ops:213"
         ),
+        (
+            f"ignore:{vllm_registry_message.partition(',')[0]}"
+            ":RuntimeWarning:runpy:128"
+        ),
     ]
 
     # Python startup filters are case-insensitive prefix matches.  The locked
-    # wheel hashes make those two documented equivalences immutable.
+    # interpreter and wheel hashes make those documented equivalences immutable.
     child_code = "\n".join(
         (
             "import warnings",
             f"messages = {messages!r}",
             f"bitsandbytes_message = {bitsandbytes_message!r}",
+            f"vllm_registry_message = {vllm_registry_message!r}",
             "for message in messages:",
             "    warnings.warn_explicit(",
             "        message, FutureWarning,",
@@ -803,6 +814,18 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             "        startup_equivalent, FutureWarning,",
             '        "bitsandbytes/backends/cuda/ops.py", 213,',
             '        module="bitsandbytes.backends.cuda.ops",',
+            "    )",
+            "warnings.warn_explicit(",
+            "    vllm_registry_message, RuntimeWarning,",
+            '    "<frozen runpy>", 128, module="runpy",',
+            ")",
+            "for startup_equivalent in (",
+            '    vllm_registry_message + " reviewed suffix",',
+            "    vllm_registry_message.swapcase(),",
+            "):",
+            "    warnings.warn_explicit(",
+            "        startup_equivalent, RuntimeWarning,",
+            '        "<frozen runpy>", 128, module="runpy",',
             "    )",
             "cases = (",
             "    (",
@@ -835,6 +858,21 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
             "    (",
             '        "an unrelated bitsandbytes future warning", FutureWarning,',
             '        "bitsandbytes.backends.cuda.ops", 213,',
+            "    ),",
+            "    (vllm_registry_message, FutureWarning, \"runpy\", 128),",
+            "    (vllm_registry_message, RuntimeWarning,",
+            '     "vllm.model_executor.models.registry", 128),',
+            "    (vllm_registry_message, RuntimeWarning, \"runpy\", 129),",
+            "    (vllm_registry_message.replace(",
+            '         "registry\' found", "registryX\' found", 1), RuntimeWarning,',
+            '     "runpy", 128),',
+            "    (vllm_registry_message.replace(",
+            "         \"'vllm.model_executor.models',\",",
+            "         \"'vllm.model_executor.modelsX',\", 1), RuntimeWarning,",
+            '     "runpy", 128),',
+            "    (",
+            '        "an unrelated frozen runpy warning", RuntimeWarning,',
+            '        "runpy", 128,',
             "    ),",
             ")",
             "for message, category, module, lineno in cases:",

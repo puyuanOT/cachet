@@ -329,6 +329,10 @@ import sys
 from pathlib import Path
 
 
+_FLASHINFER_LOGGING_LEVEL = "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__"
+_PYTHONWARNINGS = "__GPU_RUNTIME_PYTHONWARNINGS__"
+
+
 def _cluster_path(uri: str) -> str:
     if uri.startswith("dbfs:/Volumes/"):
         return "/Volumes/" + uri.removeprefix("dbfs:/Volumes/")
@@ -366,13 +370,13 @@ def _pip_subprocess_environment() -> dict[str, str]:
         env.pop(variable_name, None)
     env.update(
         {
-            "FLASHINFER_LOGGING_LEVEL": "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+            "FLASHINFER_LOGGING_LEVEL": _FLASHINFER_LOGGING_LEVEL,
             "PIP_CONFIG_FILE": os.devnull,
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONSAFEPATH": "1",
-            "PYTHONWARNINGS": "__GPU_RUNTIME_PYTHONWARNINGS__",
+            "PYTHONWARNINGS": _PYTHONWARNINGS,
         }
     )
     return env
@@ -384,11 +388,11 @@ _CHILD_STUB = (
     "import sys\n"
     "if (\n"
     "    os.environ.get('FLASHINFER_LOGGING_LEVEL')\n"
-    "    != '__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__'\n"
+    f"    != {_FLASHINFER_LOGGING_LEVEL!r}\n"
     "    or os.environ.get('PYTHONWARNINGS')\n"
-    "    != '__GPU_RUNTIME_PYTHONWARNINGS__'\n"
+    f"    != {_PYTHONWARNINGS!r}\n"
     "    or tuple(sys.warnoptions)\n"
-    "    != tuple('__GPU_RUNTIME_PYTHONWARNINGS__'.split(','))\n"
+    f"    != tuple({_PYTHONWARNINGS!r}.split(','))\n"
     "):\n"
     "    raise RuntimeError(\n"
     "        'publication latency child lacks the pinned CUDA warning startup policy'\n"

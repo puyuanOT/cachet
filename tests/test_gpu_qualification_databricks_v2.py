@@ -152,21 +152,21 @@ def _payloads() -> tuple[dict[str, Any], ...]:
 
 def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256 == (
-        "f1bc180870d6f9b61dd7349f9837d3f4aba8147334818dba577e0ce5c19f68c3"
+        "448c366addd85a5dd17613bb4dd898205049d46d0237926fe44816c46919b1f4"
     )
-    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 24662
+    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 24950
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "0b29561fe33ea8ff6a9fa7ba4492c2d01b2d88145253680a14391e6711c898b4"
+        "3ad8a0568f540e42b866651ecfcefa3405d8412d3c23f26b983bc3e3197d53a4"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 15393
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 121683
+    assert len(payload_bytes) == 121627
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "64d85c0944c315542fdaba477ec3d9d06870467a78df180b2265e005eb721394"
+        "96139d9f409a8c1f45e8a0e14e118c75eca571756fd941eb934edb562026758b"
     )
 
 
@@ -198,8 +198,8 @@ def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> 
             == (_artifact_uris()["runner_sha256"])
         )
         assert "spark_env_vars" not in task["new_cluster"]
-    assert min(sizes) == 7607
-    assert max(sizes) == 7679
+    assert min(sizes) == 7603
+    assert max(sizes) == 7675
     assert (
         max(sizes) < databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
     )
