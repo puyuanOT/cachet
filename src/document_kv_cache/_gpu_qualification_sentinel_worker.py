@@ -2653,6 +2653,7 @@ def _matched_token_sentinel(
             config,
             timeout_seconds=1_200,
         )
+        _require_server_triton_backend(config.server_log_path)
         results = _run_matched_http_requests(
             config=config,
             selected_records=selected_records,
@@ -3450,32 +3451,40 @@ def _require_exact_connector_loads(
         or len(records) != expected_count
     ):
         raise RuntimeError(f"{label} connector load closure is not exact")
-    expected_pairs = {
-        (request_id, f"cmpl-{request_id}-0") for request_id in expected_ids
-    }
-    observed_pairs: list[tuple[str, str]] = []
+    runtime_request_ids: set[str] = set()
     layers_by_client_id: dict[str, int] = {}
     for record in records:
         benchmark_request_id = record.get("benchmark_request_id")
         runtime_request_id = record.get("request_id")
-        if not isinstance(benchmark_request_id, str) or not isinstance(
-            runtime_request_id, str
+        if (
+            not isinstance(benchmark_request_id, str)
+            or not benchmark_request_id
+            or not isinstance(runtime_request_id, str)
+            or not runtime_request_id
         ):
             raise RuntimeError(f"{label} connector load identity is invalid")
-        observed_pairs.append((benchmark_request_id, runtime_request_id))
         counts = record.get("counts")
         layers = counts.get("layers_loaded") if isinstance(counts, Mapping) else None
         if layers != GPU_QUALIFICATION_MODEL_LAYER_COUNT:
             raise RuntimeError(
                 f"{label} connector load did not inject all model layers"
             )
-        if benchmark_request_id in layers_by_client_id:
+        runtime_prefix = f"cmpl-{benchmark_request_id}-0-"
+        runtime_suffix = runtime_request_id.removeprefix(runtime_prefix)
+        if (
+            not runtime_request_id.startswith(runtime_prefix)
+            or len(runtime_suffix) != 8
+            or any(character not in "0123456789abcdef" for character in runtime_suffix)
+        ):
+            raise RuntimeError(f"{label} connector load identity closure differs")
+        if (
+            benchmark_request_id in layers_by_client_id
+            or runtime_request_id in runtime_request_ids
+        ):
             raise RuntimeError(f"{label} connector load identity is duplicated")
         layers_by_client_id[benchmark_request_id] = int(layers)
-    if (
-        len(set(observed_pairs)) != expected_count
-        or set(observed_pairs) != expected_pairs
-    ):
+        runtime_request_ids.add(runtime_request_id)
+    if set(layers_by_client_id) != set(expected_ids):
         raise RuntimeError(f"{label} connector load identity closure differs")
     return [layers_by_client_id[request_id] for request_id in expected_ids]
 

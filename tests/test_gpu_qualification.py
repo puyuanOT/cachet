@@ -1101,9 +1101,9 @@ def test_worker_nonzero_diagnostic_is_exact_and_utf8_safe(
         {
             "benchmark_request_id": client_id,
             "counts": {"layers_loaded": 36},
-            "request_id": f"cmpl-{client_id}-0",
+            "request_id": f"cmpl-{client_id}-0-{ordinal:08x}",
         }
-        for client_id in capacity_ids
+        for ordinal, client_id in enumerate(capacity_ids)
     ]
     assert sentinel_worker._require_exact_connector_loads(
         capacity_loads,
@@ -1119,19 +1119,54 @@ def test_worker_nonzero_diagnostic_is_exact_and_utf8_safe(
         {
             "benchmark_request_id": client_id,
             "counts": {"layers_loaded": 36},
-            "request_id": f"cmpl-{client_id}-0",
+            "request_id": f"cmpl-{client_id}-0-{ordinal:08x}",
         }
-        for client_id in matched_ids
+        for ordinal, client_id in enumerate(matched_ids)
     ]
     assert sentinel_worker._require_exact_connector_loads(
         matched_loads,
         expected_client_request_ids=matched_ids,
         label="matched-token",
     ) == [36] * 8
-    matched_loads[-1]["request_id"] = "cmpl-tampered-0"
+    mismatched_loads = [dict(item) for item in matched_loads]
+    mismatched_loads[-1]["benchmark_request_id"] = "gpuq-matched-unexpected"
     with pytest.raises(RuntimeError, match="identity closure differs"):
         sentinel_worker._require_exact_connector_loads(
-            matched_loads,
+            mismatched_loads,
+            expected_client_request_ids=matched_ids,
+            label="matched-token",
+        )
+    malformed_runtime_loads = [dict(item) for item in matched_loads]
+    malformed_runtime_loads[-1]["request_id"] = (
+        f"cmpl-{matched_ids[-1]}-0-DEADBEEF"
+    )
+    with pytest.raises(RuntimeError, match="identity closure differs"):
+        sentinel_worker._require_exact_connector_loads(
+            malformed_runtime_loads,
+            expected_client_request_ids=matched_ids,
+            label="matched-token",
+        )
+    unsuffixed_runtime_loads = [dict(item) for item in matched_loads]
+    unsuffixed_runtime_loads[-1]["request_id"] = f"cmpl-{matched_ids[-1]}-0"
+    with pytest.raises(RuntimeError, match="identity closure differs"):
+        sentinel_worker._require_exact_connector_loads(
+            unsuffixed_runtime_loads,
+            expected_client_request_ids=matched_ids,
+            label="matched-token",
+        )
+    crossed_runtime_loads = [dict(item) for item in matched_loads]
+    crossed_runtime_loads[-1]["request_id"] = matched_loads[0]["request_id"]
+    with pytest.raises(RuntimeError, match="identity closure differs"):
+        sentinel_worker._require_exact_connector_loads(
+            crossed_runtime_loads,
+            expected_client_request_ids=matched_ids,
+            label="matched-token",
+        )
+    duplicated_runtime_loads = [dict(item) for item in matched_loads]
+    duplicated_runtime_loads[-1] = dict(duplicated_runtime_loads[0])
+    with pytest.raises(RuntimeError, match="identity is duplicated"):
+        sentinel_worker._require_exact_connector_loads(
+            duplicated_runtime_loads,
             expected_client_request_ids=matched_ids,
             label="matched-token",
         )
