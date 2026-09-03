@@ -16,6 +16,9 @@ from typing import Any, Final
 from document_kv_cache.publication_campaign_finalizer import (
     validate_vllm_0271_publication_report_pair,
 )
+from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
+)
 
 
 _METHODS: Final[tuple[str, ...]] = ("baseline_prefill", "vanilla_prefill")
@@ -1501,7 +1504,9 @@ def _render_hardware(cells: Mapping[str, Mapping[str, Any]]) -> str:
             (
                 "AWS g5/A10G, `g5.8xlarge`",
                 cells["auxiliary-hardware-a10g"],
-                "Implemented five-block compatibility refresh cell",
+                "Implemented five-block compatibility refresh cell; "
+                "qualified vLLM `gpu_memory_utilization="
+                f"{GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION:.2f}`",
             ),
         ),
     )

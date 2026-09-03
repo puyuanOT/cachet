@@ -102,6 +102,7 @@ from document_kv_cache.databricks_runs import (
     upload_databricks_volume_file_bytes_exclusive,
 )
 from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
     GPU_QUALIFICATION_DECODE_HEADROOM_TOKENS,
     GPU_QUALIFICATION_MODEL_ID,
     GPU_QUALIFICATION_MODEL_REVISION,
@@ -5395,11 +5396,12 @@ def _job_runtime_policy(
         if setting_id == "precision-bf16"
         else PUBLICATION_LATENCY_Q8_DTYPE
     )
-    gpu_memory_utilization = (
-        selected_32k_gmu
-        if hardware_target == "aws-g6-l4" and input_tokens == 32_768
-        else 0.90
-    )
+    if hardware_target == "aws-g5-a10g":
+        gpu_memory_utilization = GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION
+    elif input_tokens == 32_768:
+        gpu_memory_utilization = selected_32k_gmu
+    else:
+        gpu_memory_utilization = 0.90
     timeout_seconds = _job_timeout_seconds(descriptor)
     return {
         "attention_backend": GPU_QUALIFICATION_PUBLICATION_BACKEND,

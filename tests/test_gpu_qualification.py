@@ -20,6 +20,7 @@ from document_kv_cache import gpu_qualification_sentinels as qualification_senti
 import document_kv_cache.gpu_qualification as qualification_protocol
 from document_kv_cache.databricks_resource_ledger import DatabricksLedgerPrefix
 from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
     GPU_QUALIFICATION_A10G_MAX_MODEL_LEN,
     GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS,
@@ -577,7 +578,7 @@ def _a10g_capacity_measurements() -> dict[str, Any]:
         "connector_successful_load_count": 4,
         "fatal_error_count": 0,
         "forced_decode_tokens": GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS,
-        "gpu_memory_utilization": 0.90,
+        "gpu_memory_utilization": GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
         "input_tokens_per_request": GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
         "kv_cache_capacity_tokens": (
             GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS
@@ -2464,6 +2465,18 @@ def test_plan_freezes_the_complete_bounded_gpu_qualification_matrix():
     assert all(job["max_retries"] == 0 for job in cloud["jobs"])
     assert [job["sentinel"] for job in cloud["jobs"]].count("l4_32k_c4_gmu_sweep") == 3
     assert [job["sentinel"] for job in cloud["jobs"]].count("a10g_16k_c4_capacity") == 1
+    a10g_capacity_job = next(
+        job
+        for job in cloud["jobs"]
+        if job["sentinel"] == "a10g_16k_c4_capacity"
+    )
+    assert GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION == 0.85
+    assert a10g_capacity_job["requirements"]["gpu_memory_utilization"] == (
+        GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION
+    )
+    assert a10g_capacity_job["requirements"][
+        "minimum_observed_peak_headroom_bytes"
+    ] == 2 * 1024**3
     assert {
         job["hardware_id"]
         for job in cloud["jobs"]
@@ -3204,7 +3217,7 @@ def test_runtime_attestation_rejects_cuda13_linkage_and_synthetic_token_probe():
         )
 
 
-def test_a10g_campaign_shaped_16k_c4_capacity_gate_is_required():
+def test_a10g_campaign_shaped_16k_c4_capacity_gate_is_required(monkeypatch):
     plan, evidence = _valid_evidence()
     result = next(
         item
@@ -3225,6 +3238,57 @@ def test_a10g_campaign_shaped_16k_c4_capacity_gate_is_required():
             expected_campaign_id=CAMPAIGN_ID,
             expected_artifact_pins=PINS,
         )
+
+    _, evidence = _valid_evidence()
+    result = next(
+        item
+        for item in evidence["cloud_gpu_evidence"]["jobs"]
+        if item["job_id"] == "aws-g5-a10g-16k-c4-capacity"
+    )
+    result["measurements"]["gpu_memory_utilization"] = 0.90
+    _reseal_evidence(evidence)
+    with pytest.raises(ValueError, match="must equal 0.85"):
+        validate_gpu_qualification_evidence_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=CAMPAIGN_ID,
+            expected_artifact_pins=PINS,
+        )
+
+    capacity_call: dict[str, Any] = {}
+
+    def measured_capacity(**kwargs):
+        capacity_call.update(kwargs)
+        return {
+            "kv_cache_capacity_tokens": (
+                GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS
+            ),
+            "observed_peak_headroom_bytes": (
+                GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES
+            ),
+        }
+
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_model_capacity_measurements",
+        measured_capacity,
+    )
+    measured = sentinel_worker._a10g_capacity_sentinel(
+        plan_record={},
+        planned_job={},
+        input_bundle=Path("input-bundle"),
+        work_dir=Path("work"),
+    )
+    assert capacity_call["gpu_memory_utilization"] == (
+        GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION
+    )
+    assert measured["capacity_qualified"] is True
+    assert sentinel_worker._matched_token_gpu_memory_utilization("aws-g5-a10g") == (
+        GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION
+    )
+    assert sentinel_worker._matched_token_gpu_memory_utilization("aws-g6-l4") == 0.75
+    with pytest.raises(RuntimeError, match="unsupported hardware"):
+        sentinel_worker._matched_token_gpu_memory_utilization("unknown")
 
 
 def test_gmu_sweep_rejects_oom_and_requires_a_qualified_candidate():

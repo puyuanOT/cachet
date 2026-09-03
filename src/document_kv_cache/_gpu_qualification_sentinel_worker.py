@@ -32,6 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Final, NoReturn
 
 from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
     GPU_QUALIFICATION_A10G_MAX_MODEL_LEN,
     GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS,
@@ -1796,7 +1797,7 @@ def _a10g_capacity_sentinel(
         planned_job=planned_job,
         input_bundle=input_bundle,
         work_dir=work_dir,
-        gpu_memory_utilization=0.90,
+        gpu_memory_utilization=GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
         input_context_tokens=GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
         max_model_len=GPU_QUALIFICATION_A10G_MAX_MODEL_LEN,
     )
@@ -2608,6 +2609,14 @@ def _fsync_tree(root: Path) -> None:
         os.close(descriptor)
 
 
+def _matched_token_gpu_memory_utilization(hardware_id: str) -> float:
+    if hardware_id == "aws-g6-l4":
+        return 0.75
+    if hardware_id == "aws-g5-a10g":
+        return GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION
+    raise RuntimeError("matched-token sentinel received unsupported hardware")
+
+
 def _matched_token_sentinel(
     *,
     plan_record: Mapping[str, Any],
@@ -2692,7 +2701,7 @@ def _matched_token_sentinel(
         force_max_tokens=True,
         max_model_len=8_256,
         max_num_seqs=1,
-        gpu_memory_utilization=0.75 if hardware_id == "aws-g6-l4" else 0.90,
+        gpu_memory_utilization=_matched_token_gpu_memory_utilization(hardware_id),
         benchmark_repeats=2,
         request_parallelism=1,
         hardware_target=hardware_id,

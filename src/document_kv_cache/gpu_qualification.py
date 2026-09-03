@@ -81,6 +81,7 @@ GPU_QUALIFICATION_REQUIRED_KV_CAPACITY_TOKENS: Final = (
     GPU_QUALIFICATION_REQUEST_PARALLELISM * GPU_QUALIFICATION_MAX_MODEL_LEN
 )
 GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS: Final = 16_384
+GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION: Final = 0.85
 GPU_QUALIFICATION_A10G_MAX_MODEL_LEN: Final = (
     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS
     + GPU_QUALIFICATION_DECODE_HEADROOM_TOKENS
@@ -1315,7 +1316,9 @@ def _qualification_jobs() -> list[dict[str, Any]]:
             evidence_class="publication_gate",
             backend_mode="forced_triton",
             requirements={
-                "gpu_memory_utilization": 0.90,
+                "gpu_memory_utilization": (
+                    GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION
+                ),
                 "max_model_len": GPU_QUALIFICATION_A10G_MAX_MODEL_LEN,
                 "input_tokens_per_request": (
                     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS
@@ -2795,8 +2798,16 @@ def _validate_a10g_capacity_measurements(value: Mapping[str, Any]) -> None:
         label="A10G capacity",
     )
     gmu = _finite_float(value.get("gpu_memory_utilization"), "gpu_memory_utilization")
-    if not math.isclose(gmu, 0.90, rel_tol=0.0, abs_tol=1e-12):
-        raise ValueError("A10G 16k c4 gpu_memory_utilization must equal 0.90")
+    if not math.isclose(
+        gmu,
+        GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(
+            "A10G 16k c4 gpu_memory_utilization must equal "
+            f"{GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION:.2f}"
+        )
     if (
         type(value.get("max_model_len")) is not int
         or value.get("max_model_len") != GPU_QUALIFICATION_A10G_MAX_MODEL_LEN
@@ -3491,6 +3502,7 @@ def _is_exact_scalar(value: Any, expected: Any) -> bool:
 
 
 __all__ = [
+    "GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION",
     "GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS",
     "GPU_QUALIFICATION_A10G_MAX_MODEL_LEN",
     "GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS",

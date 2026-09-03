@@ -468,6 +468,7 @@ def test_render_is_deterministic_and_uses_frozen_row_orders() -> None:
         "dataset_scores"
     ]
     assert "1.000 GiB (1,073,741,824 bytes)" in first["resource_cache"]
+    assert "qualified vLLM `gpu_memory_utilization=0.85`" in first["hardware"]
     appendix = campaign_tables.render_vllm_0271_publication_appendix_readme(
         report,
         {"synthetic": True},

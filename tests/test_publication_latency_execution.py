@@ -17,6 +17,7 @@ import document_kv_cache.gpu_qualification_v2 as qualification_v2
 import document_kv_cache.publication_latency_execution as execution
 import document_kv_cache.vllm_smoke as vllm_smoke
 from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
     build_gpu_qualification_system_cuda_parent_attestation,
 )
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
@@ -360,6 +361,30 @@ def test_condition_timeouts_and_runtime_zone_are_closed():
     assert runtime["databricks_spark_version"] == "15.4.x-gpu-ml-scala2.12"
     assert execution._job_timeout_seconds(core_8k_c1) == 6 * 60 * 60
     assert execution._job_timeout_seconds(auxiliary) == 4 * 60 * 60
+
+    a10g_jobs = [job for job in jobs if job.get("setting_id") == "hardware-a10g"]
+    assert len(a10g_jobs) == 5
+    assert {
+        execution._job_runtime_policy(
+            job,
+            selected_32k_gmu=0.75,
+            single_user_name="publication@example.com",
+        )["gpu_memory_utilization"]
+        for job in a10g_jobs
+    } == {GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION}
+    l4_16k = next(
+        job
+        for job in jobs
+        if job["job_kind"] == "core"
+        and job["input_tokens"] == 16_384
+        and job["request_parallelism"] == 4
+    )
+    assert execution._job_runtime_policy(
+        l4_16k,
+        selected_32k_gmu=0.75,
+        single_user_name="publication@example.com",
+    )["gpu_memory_utilization"] == 0.90
+    assert runtime["gpu_memory_utilization"] == 0.75
 
 
 def test_submit_payload_rejects_timeout_and_zone_tampering():
