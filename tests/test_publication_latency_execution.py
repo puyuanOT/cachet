@@ -16,6 +16,9 @@ import pytest
 import document_kv_cache.gpu_qualification_v2 as qualification_v2
 import document_kv_cache.publication_latency_execution as execution
 import document_kv_cache.vllm_smoke as vllm_smoke
+from document_kv_cache.gpu_qualification import (
+    build_gpu_qualification_system_cuda_parent_attestation,
+)
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourLedger,
@@ -1275,6 +1278,15 @@ def _native_v2_runtime_attestation(*, vllm_uri, flashinfer_uri):
         ),
         "runtime_closure_file_sha256": (
             qualification_v2.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+        ),
+        "system_cuda_parent_attestation": (
+            build_gpu_qualification_system_cuda_parent_attestation(
+                distribution_root="/databricks/python/lib/python3.11/site-packages",
+                libcudart_path=(
+                    "/databricks/python/lib/python3.11/site-packages/"
+                    "nvidia/cuda_runtime/lib/libcudart.so.12"
+                ),
+            )
         ),
         "unexpected_distributions": [],
         "vllm_direct_url": vllm_uri,

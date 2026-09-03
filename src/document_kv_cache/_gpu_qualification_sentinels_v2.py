@@ -34,9 +34,12 @@ from document_kv_cache.flashinfer_wheel_repack import (
 from document_kv_cache.gpu_qualification import canonical_gpu_qualification_json
 import document_kv_cache.gpu_qualification as qualification_v1
 from document_kv_cache.gpu_qualification_sentinels import (
+    _SYSTEM_CUDA_PARENT_ATTESTATION_ENV,
+    _capture_system_cuda_parent_attestation,
     _make_site_packages_read_only,
     _open_runtime_root_no_follow,
     _run_bounded_worker_process,
+    _system_cuda_parent_attestation_from_environment,
     _verify_input_bundle_in_isolated_runtime,
     _worker_stream_diagnostic,
 )
@@ -633,6 +636,7 @@ def run_gpu_qualification_sentinel_v2(
             raise ValueError(f"v2 artifact {key} differs from the plan")
     closure_path = artifact_paths["runtime_closure_manifest_sha256"]
     _read_exact_runtime_closure(closure_path)
+    system_cuda_parent_attestation = _capture_system_cuda_parent_attestation()
 
     runtime_dir = work_dir / "runtime"
     runtime_python = runtime_dir / "bin" / "python"
@@ -643,8 +647,12 @@ def run_gpu_qualification_sentinel_v2(
         expected_python_version=expected_python_version,
     )
     environment = _pip_subprocess_environment()
+    environment.pop(_SYSTEM_CUDA_PARENT_ATTESTATION_ENV, None)
     environment.update(gpu_runtime_warning_environment_overrides())
     environment["PYTHONSAFEPATH"] = "1"
+    environment[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
+        canonical_gpu_qualification_json(system_cuda_parent_attestation)
+    )
     runtime_lock = artifact_paths["runtime_lock_sha256"]
     patched_vllm = artifact_paths["patched_vllm_wheel_sha256"]
     patched_flashinfer = artifact_paths["patched_flashinfer_wheel_sha256"]
@@ -747,6 +755,9 @@ def run_gpu_qualification_sentinel_v2(
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONSAFEPATH": "1",
             "TOKENIZERS_PARALLELISM": "false",
+            _SYSTEM_CUDA_PARENT_ATTESTATION_ENV: (
+                canonical_gpu_qualification_json(system_cuda_parent_attestation)
+            ),
             VLLM_PATCHED_WHEEL_URI_ENV: str(patched_vllm),
             VLLM_PATCHED_WHEEL_SHA256_ENV: pins.patched_vllm_wheel_sha256,
             _RUNTIME_LOCK_ATTESTATION_ENV: json.dumps(
@@ -1099,6 +1110,9 @@ def _verify_gpu_qualification_v2_runtime_installation(
         "pip_check_ok": pip_check_ok,
         "runtime_closure_closed_record_sha256": closure["closed_record_sha256"],
         "runtime_closure_file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "system_cuda_parent_attestation": (
+            _system_cuda_parent_attestation_from_environment()
+        ),
         "unexpected_distributions": unexpected,
         "vllm_direct_url": vllm_direct_url,
         "vllm_member_sha256": vllm_members,

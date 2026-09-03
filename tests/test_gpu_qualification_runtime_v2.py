@@ -180,6 +180,15 @@ def _attestation(*, vllm_uri: str, flashinfer_uri: str) -> dict[str, Any]:
             RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256
         ),
         "runtime_closure_file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "system_cuda_parent_attestation": (
+            qualification_v1.build_gpu_qualification_system_cuda_parent_attestation(
+                distribution_root="/databricks/python/lib/python3.11/site-packages",
+                libcudart_path=(
+                    "/databricks/python/lib/python3.11/site-packages/"
+                    "nvidia/cuda_runtime/lib/libcudart.so.12"
+                ),
+            )
+        ),
         "unexpected_distributions": [],
         "vllm_direct_url": vllm_uri,
         "vllm_member_sha256": closure["vllm"]["member_sha256"],
@@ -244,6 +253,16 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
     events: list[str] = []
     subprocess_calls: list[tuple[list[str], dict[str, Any]]] = []
     identity = SimpleNamespace(file_binding="reviewed-python-binding")
+    parent_attestation = (
+        qualification_v1.build_gpu_qualification_system_cuda_parent_attestation(
+            distribution_root="/databricks/python/lib/python3.11/site-packages",
+            libcudart_path=(
+                "/databricks/python/lib/python3.11/site-packages/"
+                "nvidia/cuda_runtime/lib/libcudart.so.12"
+            ),
+        )
+    )
+    parent_attestation_json = canonical_gpu_qualification_json(parent_attestation)
 
     digest_by_path = {
         artifact_paths[key]: pins.to_record()[key]
@@ -254,6 +273,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
     monkeypatch.setattr(runtime_v2, "_read_exact_runtime_closure", lambda _path: {})
 
     def create_venv(path: Path, *, copies: bool) -> None:
+        events.append("create-venv")
         assert copies is True
         (path / "bin").mkdir(parents=True)
         (path / "bin" / "python").write_bytes(b"python")
@@ -284,11 +304,21 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
     monkeypatch.setattr(runtime_v2, "create_venv", create_venv)
+    def capture_parent_attestation() -> dict[str, Any]:
+        events.append("parent-attestation")
+        return deepcopy(parent_attestation)
+
+    monkeypatch.setattr(
+        runtime_v2,
+        "_capture_system_cuda_parent_attestation",
+        capture_parent_attestation,
+    )
     monkeypatch.setattr(runtime_v2, "_attest_isolated_python", attest)
     monkeypatch.setattr(
         runtime_v2,
         "_pip_subprocess_environment",
         lambda: {
+            runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV: "hostile-ambient",
             "FLASHINFER_LOGGING_LEVEL": "DEBUG",
             "LD_LIBRARY_PATH": "/ambient/reviewed-lib",
             "PYTHONWARNINGS": "ignore",
@@ -336,6 +366,9 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
                 ),
                 "PYTHONSAFEPATH": "1",
                 "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+                runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV: (
+                    parent_attestation_json
+                ),
             },
             "flashinfer_uri": flashinfer_uri,
             "package_sha256": _PACKAGE_SHA256,
@@ -366,6 +399,10 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert environment["LD_LIBRARY_PATH"] == (
             f"{torch_library_dir}{os.pathsep}/ambient/reviewed-lib"
         )
+        assert (
+            environment[runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV]
+            == parent_attestation_json
+        )
 
     monkeypatch.setattr(
         runtime_v2, "_verify_input_bundle_in_isolated_runtime", verify_input
@@ -385,6 +422,14 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert kwargs["environment"]["LD_LIBRARY_PATH"] == (
             f"{torch_library_dir}{os.pathsep}/ambient/reviewed-lib"
         )
+        assert (
+            kwargs["environment"][runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV]
+            == parent_attestation_json
+        )
+        retained = json.loads(
+            kwargs["environment"][runtime_v2._RUNTIME_LOCK_ATTESTATION_ENV]
+        )["system_cuda_parent_attestation"]
+        assert retained == parent_attestation
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
     monkeypatch.setattr(runtime_v2, "_run_bounded_worker_process", worker)
@@ -447,11 +492,17 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
         assert kwargs["env"]["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
         assert kwargs["env"]["LD_LIBRARY_PATH"] == "/ambient/reviewed-lib"
         assert (
+            kwargs["env"][runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV]
+            == parent_attestation_json
+        )
+        assert (
             kwargs["env"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
         )
     assert [call[1]["timeout"] for call in subprocess_calls] == [3600] * 4 + [300]
     assert attest_calls == [("3.11.11", None), ("3.11.11", identity.file_binding)]
     assert events == [
+        "parent-attestation",
+        "create-venv",
         "install-1",
         "install-2",
         "install-3",
@@ -464,6 +515,10 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
     ]
     assert result["measurements"] == {}
     runtime_verification = result["runtime_verification"]
+    assert (
+        runtime_verification["attestation"]["system_cuda_parent_attestation"]
+        == parent_attestation
+    )
     assert (
         runtime_verification["closed_record_sha256"]
         == sha256(

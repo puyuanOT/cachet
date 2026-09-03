@@ -25,6 +25,7 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
     GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
     GPU_QUALIFICATION_VLLM_VERSION,
+    build_gpu_qualification_system_cuda_parent_attestation,
     build_gpu_qualification_plan,
     canonical_gpu_qualification_json,
 )
@@ -121,6 +122,15 @@ def _attestation() -> dict[str, Any]:
             RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256
         ),
         "runtime_closure_file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "system_cuda_parent_attestation": (
+            build_gpu_qualification_system_cuda_parent_attestation(
+                distribution_root="/databricks/python/lib/python3.11/site-packages",
+                libcudart_path=(
+                    "/databricks/python/lib/python3.11/site-packages/"
+                    "nvidia/cuda_runtime/lib/libcudart.so.12"
+                ),
+            )
+        ),
         "unexpected_distributions": [],
         "vllm_direct_url": "file:///runtime/vllm-0.27.1%2Bcu129.whl",
         "vllm_member_sha256": {
@@ -1143,9 +1153,10 @@ def test_v2_bootstrap_writer_is_exclusive_and_transport_signature_is_narrow(
     assert "patched_vllm_wheel_uri" not in signature.parameters
 
 
-def test_v2_executor_requires_closed_sentinel_wrapper_and_publishes_result(
+def test_v2_executor_publishes_valid_result_and_logs_rejected_measurements(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     plan = _plan()
     pins = _pins()
@@ -1200,15 +1211,17 @@ def test_v2_executor_requires_closed_sentinel_wrapper_and_publishes_result(
         ]
     )
 
+    diagnostic_measurements = {
+        "backend_selection_mode": "auto",
+        "observed_backend": "FLASHINFER",
+        "publication_backend_changed": False,
+        "trust_remote_code": False,
+    }
+
     def runner(**kwargs: Any) -> dict[str, Any]:
         assert tuple(kwargs["artifact_paths"]) == GPU_QUALIFICATION_V2_ARTIFACT_KEYS
         return {
-            "measurements": {
-                "backend_selection_mode": "auto",
-                "observed_backend": "FLASHINFER",
-                "publication_backend_changed": False,
-                "trust_remote_code": False,
-            },
+            "measurements": dict(diagnostic_measurements),
             "runtime_verification": build_gpu_runtime_verification_v2(
                 plan_sha256=plan["closed_record_sha256"],
                 job_id=job_id,
@@ -1253,6 +1266,67 @@ def test_v2_executor_requires_closed_sentinel_wrapper_and_publishes_result(
     )
     assert reread == record
     assert not work_dir.exists()
+
+    failed_output_uri = (
+        "dbfs:/Volumes/catalog/schema/volume/failed-output/"
+        f"{plan['closed_record_sha256']}/{job_id}/gpu-job-result.json"
+    )
+    failed_output_path = (
+        tmp_path
+        / "failed-output"
+        / plan["closed_record_sha256"]
+        / job_id
+        / "gpu-job-result.json"
+    )
+    monkeypatch.setattr(
+        databricks_v1,
+        "_cluster_file_path",
+        lambda value: (
+            failed_output_path
+            if str(value) == failed_output_uri
+            else tmp_path / hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+        ),
+    )
+    failed_timestamps = iter(
+        [
+            datetime_from_iso("2026-08-25T00:00:02Z"),
+            datetime_from_iso("2026-08-25T00:00:03Z"),
+        ]
+    )
+
+    def reject_result(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError("forced result validation failure")
+
+    monkeypatch.setattr(
+        databricks_v2,
+        "validate_gpu_job_result_v2_record",
+        reject_result,
+    )
+    capsys.readouterr()
+    with pytest.raises(ValueError, match="forced result validation failure"):
+        databricks_v2.execute_gpu_qualification_job_v2(
+            plan_record=plan,
+            expected_plan_sha256=plan["closed_record_sha256"],
+            job_id=job_id,
+            reservation_attempt_id=attempt_id,
+            artifact_uris=_artifact_uris(),
+            artifact_sha256=pins.to_record(),
+            output_json=failed_output_uri,
+            work_dir=str(work_dir),
+            cloud_run_id="456",
+            cloud_cluster_id="cluster-2",
+            sentinel_runner=runner,
+            now=lambda: next(failed_timestamps),
+        )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        databricks_v2._V2_UNVALIDATED_MEASUREMENTS_LOG_PREFIX
+        + canonical_gpu_qualification_json(diagnostic_measurements)
+        + "\n"
+    )
+    assert not failed_output_path.exists()
+    assert work_dir.is_dir()
 
 
 def test_v2_runtime_lock_and_closure_parsers_accept_tracked_authority() -> None:

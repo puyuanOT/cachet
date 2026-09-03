@@ -6,8 +6,11 @@ payload rendering and CPU unit tests do not require the GPU runtime.
 
 from __future__ import annotations
 
+import errno
+import importlib.metadata
 import json
 import os
+import re
 import selectors
 import signal
 import stat
@@ -20,7 +23,16 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from document_kv_cache.gpu_qualification import canonical_gpu_qualification_json
+from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME,
+    GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION,
+    GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER,
+    GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256,
+    GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES,
+    build_gpu_qualification_system_cuda_parent_attestation,
+    canonical_gpu_qualification_json,
+    validate_gpu_qualification_system_cuda_parent_attestation,
+)
 from document_kv_cache.serving_env import (
     VLLM_PATCHED_WHEEL_SHA256_ENV,
     VLLM_PATCHED_WHEEL_URI_ENV,
@@ -38,6 +50,10 @@ from document_kv_cache.vllm_smoke import (
 
 
 _RUNTIME_LOCK_ATTESTATION_ENV = "CACHET_GPU_QUALIFICATION_RUNTIME_LOCK_ATTESTATION"
+_SYSTEM_CUDA_PARENT_ATTESTATION_ENV = (
+    "CACHET_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION"
+)
+_SYSTEM_CUDA_PARENT_FILE_READ_BYTES = 64 * 1024
 _WORKER_STDOUT_TAIL_MAX_BYTES = 2_000
 _WORKER_STDERR_TAIL_MAX_BYTES = 16_384
 _WORKER_STREAM_READ_BYTES = 64 * 1024
@@ -57,8 +73,164 @@ _ALLOWED_SITE_PACKAGES_RELATIVE_PARTS = frozenset(
 
 def _gpu_runtime_subprocess_environment() -> dict[str, str]:
     environment = _pip_subprocess_environment()
+    environment.pop(_SYSTEM_CUDA_PARENT_ATTESTATION_ENV, None)
     environment.update(gpu_runtime_warning_environment_overrides())
     return environment
+
+
+def _canonical_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def _file_identity(status: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_size,
+        status.st_mtime_ns,
+    )
+
+
+def _read_bounded_no_follow_regular_file(
+    path: Path,
+    *,
+    max_bytes: int,
+    allow_absent: bool,
+    label: str,
+) -> bytes | None:
+    """Read one stable regular leaf through a no-follow descriptor."""
+
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("no-follow file read limit must be a positive integer")
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+            )
+        except FileNotFoundError as exc:
+            if allow_absent and exc.errno == errno.ENOENT:
+                return None
+            raise RuntimeError(f"{label} is unavailable") from exc
+        except OSError as exc:
+            raise RuntimeError(f"{label} could not be opened without following") from exc
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or not 0 <= before.st_size <= max_bytes:
+            raise RuntimeError(f"{label} is not a bounded regular file")
+        chunks: list[bytes] = []
+        byte_count = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(_SYSTEM_CUDA_PARENT_FILE_READ_BYTES, max_bytes + 1 - byte_count),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            byte_count += len(chunk)
+            if byte_count > max_bytes:
+                raise RuntimeError(f"{label} exceeds its byte limit")
+        after = os.fstat(descriptor)
+        if _file_identity(before) != _file_identity(after) or byte_count != after.st_size:
+            raise RuntimeError(f"{label} changed while it was read")
+        try:
+            path_status = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            raise RuntimeError(f"{label} path changed after it was read") from exc
+        if _file_identity(path_status) != _file_identity(after):
+            raise RuntimeError(f"{label} path changed after it was read")
+        return b"".join(chunks)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _capture_system_cuda_parent_attestation() -> dict[str, Any]:
+    matches: list[importlib.metadata.Distribution] = []
+    for distribution in importlib.metadata.distributions():
+        raw_name = distribution.metadata["Name"]
+        if (
+            isinstance(raw_name, str)
+            and _canonical_distribution_name(raw_name)
+            == GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME
+        ):
+            matches.append(distribution)
+    if len(matches) != 1 or matches[0].version != (
+        GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION
+    ):
+        raise RuntimeError("Databricks parent CUDA runtime distribution differs")
+    distribution = matches[0]
+    files = distribution.files
+    members = (
+        []
+        if files is None
+        else [
+            member
+            for member in files
+            if str(member) == GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER
+        ]
+    )
+    if len(members) != 1:
+        raise RuntimeError("Databricks parent CUDA runtime member inventory differs")
+    distribution_root = Path(str(distribution.locate_file("")))
+    libcudart_path = Path(str(distribution.locate_file(members[0])))
+    expected_path = distribution_root / GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER
+    if libcudart_path != expected_path:
+        raise RuntimeError("Databricks parent CUDA runtime member path differs")
+    content = _read_bounded_no_follow_regular_file(
+        libcudart_path,
+        max_bytes=GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES,
+        allow_absent=False,
+        label="Databricks parent CUDA runtime member",
+    )
+    if (
+        content is None
+        or len(content) != GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES
+        or sha256(content).hexdigest()
+        != GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256
+    ):
+        raise RuntimeError("Databricks parent CUDA runtime member bytes differ")
+    return build_gpu_qualification_system_cuda_parent_attestation(
+        distribution_root=str(distribution_root),
+        libcudart_path=str(libcudart_path),
+    )
+
+
+def _system_cuda_parent_attestation_from_environment() -> dict[str, Any]:
+    raw = os.environ.get(_SYSTEM_CUDA_PARENT_ATTESTATION_ENV)
+    if raw is None:
+        raise RuntimeError("Databricks parent CUDA runtime attestation is unavailable")
+    try:
+        record = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Databricks parent CUDA runtime attestation is invalid JSON"
+        ) from exc
+    if (
+        not isinstance(record, dict)
+        or canonical_gpu_qualification_json(record) != raw
+    ):
+        raise RuntimeError("Databricks parent CUDA runtime attestation is not canonical")
+    try:
+        validate_gpu_qualification_system_cuda_parent_attestation(record)
+    except ValueError as exc:
+        raise RuntimeError("Databricks parent CUDA runtime attestation differs") from exc
+    member = _read_bounded_no_follow_regular_file(
+        Path(record["libcudart_path"]),
+        max_bytes=GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES,
+        allow_absent=False,
+        label="attested Databricks parent CUDA runtime member",
+    )
+    if (
+        member is None
+        or len(member) != GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES
+        or sha256(member).hexdigest()
+        != GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256
+    ):
+        raise RuntimeError("attested Databricks parent CUDA runtime member bytes differ")
+    return dict(record)
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,6 +693,7 @@ def run_gpu_qualification_sentinel(
         plan_record, "runtime_lock_sha256"
     )
     expected_python_version = _runtime_python_version(plan_record)
+    system_cuda_parent_attestation = _capture_system_cuda_parent_attestation()
     supplied_runtime_lock = artifact_paths["runtime_lock_sha256"]
     packaged_runtime_lock = vllm_runtime_lock_path()
     for label, path in (
@@ -562,6 +735,9 @@ def run_gpu_qualification_sentinel(
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONSAFEPATH": "1",
             "TOKENIZERS_PARALLELISM": "false",
+            _SYSTEM_CUDA_PARENT_ATTESTATION_ENV: canonical_gpu_qualification_json(
+                system_cuda_parent_attestation
+            ),
             VLLM_PATCHED_WHEEL_URI_ENV: str(patched_wheel),
             VLLM_PATCHED_WHEEL_SHA256_ENV: expected_patched_sha256,
         }

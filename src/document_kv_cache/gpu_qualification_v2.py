@@ -325,6 +325,7 @@ _RUNTIME_ATTESTATION_KEYS: Final = frozenset(
         "pip_check_ok",
         "runtime_closure_closed_record_sha256",
         "runtime_closure_file_sha256",
+        "system_cuda_parent_attestation",
         "unexpected_distributions",
         "vllm_direct_url",
         "vllm_member_sha256",
@@ -1293,6 +1294,13 @@ def validate_gpu_qualification_v2_runtime_attestation(
             normalized.get(field_name) != expected_value
         ):
             raise ValueError(f"GPU qualification v2 attestation {field_name} differs")
+    system_cuda_parent_attestation = _mapping_copy(
+        normalized.get("system_cuda_parent_attestation"),
+        "GPU qualification v2 attestation system_cuda_parent_attestation",
+    )
+    qualification_v1.validate_gpu_qualification_system_cuda_parent_attestation(
+        system_cuda_parent_attestation
+    )
     for field_name in (
         "flashinfer_direct_url",
         "vllm_direct_url",

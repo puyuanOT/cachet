@@ -97,6 +97,9 @@ _V2_BOOTSTRAP_HANDOFF_RECORD_TYPE: Final = (
 _V2_BOOTSTRAP_HANDOFF_SCHEMA_VERSION: Final = 2
 _V2_BOOTSTRAP_HANDOFF_MAX_BYTES: Final = 4096
 _V2_BOOTSTRAP_HANDOFF_MISSING: Final = object()
+_V2_UNVALIDATED_MEASUREMENTS_LOG_PREFIX: Final = (
+    "CACHET_GPU_QUALIFICATION_UNVALIDATED_MEASUREMENTS="
+)
 _V2_CHILD_REQUIRED_ENV: Final = {
     **gpu_runtime_warning_environment_overrides(),
     "PYTHONNOUSERSITE": "1",
@@ -1075,11 +1078,20 @@ def execute_gpu_qualification_job_v2(
         runtime_verification=runtime_verification,
         measurements=measurements,
     )
-    validate_gpu_job_result_v2_record(
-        record,
-        plan_record=plan,
-        expected_artifact_pins=pins,
-    )
+    try:
+        validate_gpu_job_result_v2_record(
+            record,
+            plan_record=plan,
+            expected_artifact_pins=pins,
+        )
+    except Exception:
+        print(
+            _V2_UNVALIDATED_MEASUREMENTS_LOG_PREFIX
+            + canonical_gpu_qualification_json(measurements),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
     databricks_v1._remove_success_work_dir(local_work_dir)
     databricks_v1._write_canonical_exclusive(record, output_path)
     return record

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,6 +17,7 @@ import pytest
 
 from document_kv_cache import _gpu_qualification_sentinel_worker as sentinel_worker
 from document_kv_cache import gpu_qualification_sentinels as qualification_sentinels
+import document_kv_cache.gpu_qualification as qualification_protocol
 from document_kv_cache.databricks_resource_ledger import DatabricksLedgerPrefix
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
@@ -782,6 +783,225 @@ def _reseal_evidence(evidence: dict[str, Any]) -> None:
             _seal(receipt)
     _seal(cloud)
     _seal(evidence)
+
+
+def _test_system_cuda_parent_attestation(
+    *, root: str = "/databricks/python/lib/python3.11/site-packages"
+) -> dict[str, Any]:
+    return qualification_protocol.build_gpu_qualification_system_cuda_parent_attestation(
+        distribution_root=root,
+        libcudart_path=(
+            f"{root}/"
+            f"{qualification_protocol.GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER}"
+        ),
+    )
+
+
+def _install_test_cuda_distribution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    symlink: bool = False,
+) -> tuple[bytes, Path]:
+    payload = b"reviewed-test-libcudart"
+    member = PurePosixPath("nvidia/cuda_runtime/lib/libcudart.so.12")
+    root = tmp_path / "site-packages"
+    member_path = root / member
+    member_path.parent.mkdir(parents=True)
+    if symlink:
+        target = tmp_path / "external-libcudart.so.12"
+        target.write_bytes(payload)
+        member_path.symlink_to(target)
+    else:
+        member_path.write_bytes(payload)
+    distribution = SimpleNamespace(
+        metadata={"Name": "nvidia_cuda_runtime_cu12"},
+        version="12.1.105",
+        files=(member,),
+        locate_file=lambda item: root / str(item),
+    )
+    monkeypatch.setattr(
+        qualification_sentinels.importlib.metadata,
+        "distributions",
+        lambda: iter((distribution,)),
+    )
+    digest = hashlib.sha256(payload).hexdigest()
+    for module in (qualification_sentinels, qualification_protocol):
+        monkeypatch.setattr(
+            module,
+            "GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES",
+            len(payload),
+        )
+        monkeypatch.setattr(
+            module,
+            "GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256",
+            digest,
+        )
+    return payload, member_path
+
+
+def test_system_cuda_parent_capture_binds_distribution_member_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, member_path = _install_test_cuda_distribution(tmp_path, monkeypatch)
+
+    record = qualification_sentinels._capture_system_cuda_parent_attestation()
+
+    assert record["distribution_name"] == "nvidia-cuda-runtime-cu12"
+    assert record["distribution_version"] == "12.1.105"
+    assert record["libcudart_path"] == str(member_path)
+    assert record["libcudart_size_bytes"] == len(payload)
+    assert record["libcudart_sha256"] == hashlib.sha256(payload).hexdigest()
+    qualification_protocol.validate_gpu_qualification_system_cuda_parent_attestation(
+        record
+    )
+
+    monkeypatch.setenv(
+        qualification_sentinels._SYSTEM_CUDA_PARENT_ATTESTATION_ENV,
+        canonical_gpu_qualification_json(record),
+    )
+    assert (
+        qualification_sentinels._system_cuda_parent_attestation_from_environment()
+        == record
+    )
+    member_path.write_bytes(b"same-size-tampered-data")
+    assert len(member_path.read_bytes()) == len(payload)
+    with pytest.raises(RuntimeError, match="member bytes differ"):
+        qualification_sentinels._system_cuda_parent_attestation_from_environment()
+
+
+def test_system_cuda_parent_capture_rejects_symlink_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_test_cuda_distribution(tmp_path, monkeypatch, symlink=True)
+
+    with pytest.raises(RuntimeError, match="without following"):
+        qualification_sentinels._capture_system_cuda_parent_attestation()
+
+
+@pytest.mark.parametrize("versions", [(), ("12.1.104",), ("12.1.105", "12.1.105")])
+def test_system_cuda_parent_capture_rejects_nonexact_distribution_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    versions: tuple[str, ...],
+) -> None:
+    distributions = tuple(
+        SimpleNamespace(
+            metadata={"Name": "nvidia-cuda-runtime-cu12"},
+            version=version,
+        )
+        for version in versions
+    )
+    monkeypatch.setattr(
+        qualification_sentinels.importlib.metadata,
+        "distributions",
+        lambda: iter(distributions),
+    )
+
+    with pytest.raises(RuntimeError, match="distribution differs"):
+        qualification_sentinels._capture_system_cuda_parent_attestation()
+
+
+def test_no_follow_reader_treats_only_enoent_as_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = tmp_path / "missing"
+    assert qualification_sentinels._read_bounded_no_follow_regular_file(
+        missing,
+        max_bytes=10,
+        allow_absent=True,
+        label="test file",
+    ) is None
+
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    with pytest.raises(RuntimeError, match="regular file"):
+        qualification_sentinels._read_bounded_no_follow_regular_file(
+            directory,
+            max_bytes=10,
+            allow_absent=True,
+            label="test file",
+        )
+
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(RuntimeError, match="regular file"):
+        qualification_sentinels._read_bounded_no_follow_regular_file(
+            fifo,
+            max_bytes=10,
+            allow_absent=True,
+            label="test file",
+        )
+
+    real_open = qualification_sentinels.os.open
+
+    def denied_open(path: Path, flags: int) -> int:
+        if path == missing:
+            raise PermissionError("injected denial")
+        return real_open(path, flags)
+
+    monkeypatch.setattr(qualification_sentinels.os, "open", denied_open)
+    with pytest.raises(RuntimeError, match="could not be opened"):
+        qualification_sentinels._read_bounded_no_follow_regular_file(
+            missing,
+            max_bytes=10,
+            allow_absent=True,
+            label="test file",
+        )
+
+
+@pytest.mark.parametrize(
+    ("direct_json", "expected_error"),
+    [
+        (None, None),
+        (b'{"cuda":{"version":"12.1.105"}}', None),
+        (b'{"cuda":{"version":"12.2"}}', "evidence disagrees"),
+        (b'{"cuda":{"version":"12.01"}}', "canonical numeric"),
+        (b"not-json", "invalid"),
+    ],
+)
+def test_system_cuda_version_probes_every_runtime_source_without_nvcc(
+    monkeypatch: pytest.MonkeyPatch,
+    direct_json: bytes | None,
+    expected_error: str | None,
+) -> None:
+    calls: list[tuple[Path, int, bool, str]] = []
+
+    def read(
+        path: Path,
+        *,
+        max_bytes: int,
+        allow_absent: bool,
+        label: str,
+    ) -> bytes | None:
+        calls.append((path, max_bytes, allow_absent, label))
+        return direct_json
+
+    monkeypatch.setattr(
+        qualification_sentinels, "_read_bounded_no_follow_regular_file", read
+    )
+    monkeypatch.setattr(
+        sentinel_worker.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("nvcc must not be executed"),
+    )
+    parent = _test_system_cuda_parent_attestation()
+
+    if expected_error is None:
+        assert sentinel_worker._system_cuda_version(parent) == "12.1"
+    else:
+        with pytest.raises(RuntimeError, match=expected_error):
+            sentinel_worker._system_cuda_version(parent)
+    assert calls == [
+        (
+            Path("/usr/local/cuda/version.json"),
+            64 * 1024,
+            True,
+            "system CUDA version JSON",
+        )
+    ]
 
 
 @pytest.mark.parametrize(

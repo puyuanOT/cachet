@@ -98,6 +98,21 @@ GPU_QUALIFICATION_DETERMINISM_REPEATS: Final = 2
 GPU_QUALIFICATION_MAX_LOGIT_DRIFT: Final = 1e-4
 GPU_QUALIFICATION_MAX_E5M2_BF16_ERROR: Final = 0.125
 GPU_QUALIFICATION_MODEL_LAYER_COUNT: Final = 36
+GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RECORD_TYPE: Final = (
+    "cachet.gpu_qualification.system_cuda_parent_attestation.v1"
+)
+GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_SCHEMA_VERSION: Final = 1
+GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME: Final = (
+    "nvidia-cuda-runtime-cu12"
+)
+GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION: Final = "12.1.105"
+GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER: Final = (
+    "nvidia/cuda_runtime/lib/libcudart.so.12"
+)
+GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES: Final = 679_264
+GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256: Final = (
+    "9335f6a29ca91010e2da9f40e82fb4b28e3a4ae22fd385e1293e93bf3c46c9e6"
+)
 GPU_QUALIFICATION_GENERATION_HARDWARE_ID: Final = "aws-g6e-l40s"
 GPU_QUALIFICATION_GENERATION_GPU: Final = "NVIDIA L40S"
 GPU_QUALIFICATION_GENERATION_COMPUTE_CAPABILITY: Final = "8.9"
@@ -1024,6 +1039,99 @@ def canonical_gpu_qualification_json(record: Mapping[str, Any]) -> str:
         ensure_ascii=False,
         allow_nan=False,
     )
+
+
+def _canonical_absolute_posix_path(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or value.startswith("//")
+        or value.endswith("/")
+        or "\\" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError(f"{label} must be a canonical absolute POSIX path")
+    pure = PurePosixPath(value)
+    if str(pure) != value or any(part in {".", ".."} for part in pure.parts):
+        raise ValueError(f"{label} must be a canonical absolute POSIX path")
+    return value
+
+
+def validate_gpu_qualification_system_cuda_parent_attestation(
+    value: Mapping[str, Any],
+) -> None:
+    """Validate the exact parent DBR userspace-CUDA provenance record."""
+
+    normalized = _mapping(value, "system CUDA parent attestation")
+    expected = {
+        "distribution_name": GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME,
+        "distribution_version": (
+            GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION
+        ),
+        "libcudart_member": GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER,
+        "libcudart_sha256": GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256,
+        "libcudart_size_bytes": (
+            GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES
+        ),
+        "record_type": (
+            GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RECORD_TYPE
+        ),
+        "schema_version": (
+            GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_SCHEMA_VERSION
+        ),
+    }
+    _require_exact_keys(
+        normalized,
+        frozenset({*expected, "distribution_root", "libcudart_path"}),
+        "system CUDA parent attestation",
+    )
+    for field_name, expected_value in expected.items():
+        if not _is_exact_scalar(normalized.get(field_name), expected_value):
+            raise ValueError(f"system CUDA parent attestation {field_name} differs")
+    distribution_root = _canonical_absolute_posix_path(
+        normalized.get("distribution_root"),
+        "system CUDA parent attestation distribution_root",
+    )
+    libcudart_path = _canonical_absolute_posix_path(
+        normalized.get("libcudart_path"),
+        "system CUDA parent attestation libcudart_path",
+    )
+    expected_path = str(
+        PurePosixPath(distribution_root)
+        / GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER
+    )
+    if libcudart_path != expected_path:
+        raise ValueError(
+            "system CUDA parent attestation libcudart_path is not distribution-owned"
+        )
+
+
+def build_gpu_qualification_system_cuda_parent_attestation(
+    *, distribution_root: str, libcudart_path: str
+) -> dict[str, Any]:
+    """Build one closed record after the launcher verifies the member bytes."""
+
+    record: dict[str, Any] = {
+        "distribution_name": GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME,
+        "distribution_root": distribution_root,
+        "distribution_version": (
+            GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION
+        ),
+        "libcudart_member": GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER,
+        "libcudart_path": libcudart_path,
+        "libcudart_sha256": GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256,
+        "libcudart_size_bytes": (
+            GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES
+        ),
+        "record_type": (
+            GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RECORD_TYPE
+        ),
+        "schema_version": (
+            GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_SCHEMA_VERSION
+        ),
+    }
+    validate_gpu_qualification_system_cuda_parent_attestation(record)
+    return record
 
 
 def write_canonical_gpu_qualification_json(

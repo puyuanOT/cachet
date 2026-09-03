@@ -7990,7 +7990,26 @@ def test_runtime_handoff_reports_truthful_unresolved_native_counts_after_quantiz
     monkeypatch.setattr(sentinel_worker, "_libcudart_major_versions", lambda: [12])
     monkeypatch.setattr(sentinel_worker.platform, "python_version", lambda: "3.11.11")
     monkeypatch.setattr(sentinel_worker.platform, "libc_ver", lambda: ("glibc", "2.35"))
-    monkeypatch.setattr(sentinel_worker, "_system_cuda_version", lambda: "12.1")
+    parent_root = tmp_path / "parent-site-packages"
+    parent_attestation = (
+        gpu_qualification.build_gpu_qualification_system_cuda_parent_attestation(
+            distribution_root=str(parent_root),
+            libcudart_path=str(
+                parent_root
+                / gpu_qualification.GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        qualification_sentinels,
+        "_system_cuda_parent_attestation_from_environment",
+        lambda: parent_attestation,
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_system_cuda_version",
+        lambda _parent_attestation: "12.1",
+    )
     monkeypatch.setattr(sentinel_worker, "_site_packages_read_only", lambda: True)
 
     measured = sentinel_worker._runtime_handoff_sentinel(

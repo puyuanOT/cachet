@@ -49,6 +49,7 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_MODEL_REVISION,
     GPU_QUALIFICATION_REQUIRED_KV_CAPACITY_TOKENS,
     GPU_QUALIFICATION_REQUEST_PARALLELISM,
+    GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION,
     GPU_QUALIFICATION_INPUT_CONTEXT_TOKENS,
     GPU_QUALIFICATION_INPUT_DATASETS,
     GPU_QUALIFICATION_INPUT_ROWS_PER_DATASET_BUCKET,
@@ -618,6 +619,26 @@ def _runtime_handoff_sentinel(
     if installed != _CORE_VERSIONS:
         raise RuntimeError(f"locked runtime distributions differ: {installed!r}")
     runtime_lock_attestation = _runtime_lock_attestation_for_plan(plan_record)
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _system_cuda_parent_attestation_from_environment,
+    )
+
+    system_cuda_parent_attestation = (
+        _system_cuda_parent_attestation_from_environment()
+    )
+    retained_system_cuda_attestation = runtime_lock_attestation.get(
+        "system_cuda_parent_attestation"
+    )
+    if retained_system_cuda_attestation is not None and (
+        canonical_gpu_qualification_json(
+            _mapping(
+                retained_system_cuda_attestation,
+                "retained system CUDA parent attestation",
+            )
+        )
+        != canonical_gpu_qualification_json(system_cuda_parent_attestation)
+    ):
+        raise RuntimeError("retained system CUDA parent attestation differs")
     if importlib.metadata.version("vllm") != GPU_QUALIFICATION_VLLM_VERSION:
         raise RuntimeError("installed vLLM version differs from the qualification pin")
     patch_hashes = _installed_vllm_member_hashes(_PATCH_MEMBER_SHA256)
@@ -653,7 +674,7 @@ def _runtime_handoff_sentinel(
         raise RuntimeError(f"unexpected libcudart majors: {libcudart_majors!r}")
     python_version = platform.python_version()
     glibc_version = platform.libc_ver()[1]
-    system_cuda = _system_cuda_version()
+    system_cuda = _system_cuda_version(system_cuda_parent_attestation)
     if (python_version, glibc_version, system_cuda) != ("3.11.11", "2.35", "12.1"):
         raise RuntimeError(
             "platform closure mismatch: "
@@ -1392,24 +1413,60 @@ def _libcudart_major_versions() -> list[int]:
     return sorted(majors)
 
 
-def _system_cuda_version() -> str:
-    version_json = Path("/usr/local/cuda/version.json")
-    if version_json.is_file():
-        record = json.loads(version_json.read_text(encoding="utf-8"))
+def _cuda_major_minor(value: Any, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise RuntimeError(f"{label} is not a string")
+    match = re.fullmatch(
+        r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)"
+        r"(?:\.(?:0|[1-9]\d*))*",
+        value,
+    )
+    if match is None:
+        raise RuntimeError(f"{label} is not a canonical numeric CUDA version")
+    return f"{match.group('major')}.{match.group('minor')}"
+
+
+def _system_cuda_version(parent_attestation: Mapping[str, Any]) -> str:
+    """Attest userspace CUDA, intentionally excluding the optional compiler.
+
+    ``nvcc`` identifies a compiler toolkit rather than the distribution-owned
+    runtime linked by DBR.  It is therefore neither required nor executed.
+    """
+
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _read_bounded_no_follow_regular_file,
+    )
+
+    parent_version = _cuda_major_minor(
+        parent_attestation.get("distribution_version"),
+        label="Databricks parent CUDA runtime distribution version",
+    )
+    expected_parent_version = _cuda_major_minor(
+        GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION,
+        label="expected Databricks parent CUDA runtime distribution version",
+    )
+    if parent_version != expected_parent_version:
+        raise RuntimeError("Databricks parent CUDA runtime version differs")
+    observed = {"distribution_libcudart": parent_version}
+    version_json = _read_bounded_no_follow_regular_file(
+        Path("/usr/local/cuda/version.json"),
+        max_bytes=64 * 1024,
+        allow_absent=True,
+        label="system CUDA version JSON",
+    )
+    if version_json is not None:
+        try:
+            record = json.loads(version_json)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("system CUDA version JSON is invalid") from exc
         cuda = record.get("cuda") if isinstance(record, Mapping) else None
         version = cuda.get("version") if isinstance(cuda, Mapping) else None
-        if isinstance(version, str):
-            return ".".join(version.split(".")[:2])
-    completed = subprocess.run(
-        ["nvcc", "--version"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    match = re.search(r"release\s+(\d+\.\d+)", completed.stdout)
-    if match is None:
-        raise RuntimeError("could not attest the system CUDA toolkit version")
-    return match.group(1)
+        observed["version_json"] = _cuda_major_minor(
+            version, label="system CUDA version JSON value"
+        )
+    if set(observed.values()) != {expected_parent_version}:
+        raise RuntimeError(f"system CUDA evidence disagrees: {observed!r}")
+    return expected_parent_version
 
 
 def _site_packages_read_only() -> bool:

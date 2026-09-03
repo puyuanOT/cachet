@@ -48,6 +48,7 @@ from document_kv_cache.databricks_resource_ledger import (
 from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
 from document_kv_cache.gpu_qualification import (
     GPUQualificationSelection,
+    build_gpu_qualification_system_cuda_parent_attestation,
     canonical_gpu_qualification_json,
 )
 from document_kv_cache.gpu_qualification_v2 import (
@@ -255,6 +256,15 @@ def _runtime_attestation():
             runtime_artifact_closure.RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256
         ),
         "runtime_closure_file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "system_cuda_parent_attestation": (
+            build_gpu_qualification_system_cuda_parent_attestation(
+                distribution_root="/databricks/python/lib/python3.11/site-packages",
+                libcudart_path=(
+                    "/databricks/python/lib/python3.11/site-packages/"
+                    "nvidia/cuda_runtime/lib/libcudart.so.12"
+                ),
+            )
+        ),
         "unexpected_distributions": [],
         "vllm_direct_url": "file:///dbfs/runtime/patched-vllm.whl",
         "vllm_member_sha256": dict(gpu_qualification_v2._VLLM_PATCH_MEMBER_SHA256),

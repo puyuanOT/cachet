@@ -90,7 +90,7 @@ EXPECTED_PLAN_SHA256 = (
     "6de4ea6e5e2c8475e750bcb90e8eb3065ee05441cc59a936b26f9d77fd792a57"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
-    "90ce755585f0fdbf9d30470d2e846c9d13165dade85066dc7608179ea0ced848"
+    "dfce1688ae196916ead23dfa2eb70aed0a02036bf01d9c804c6c06a0b1b73cd3"
 )
 EXPECTED_VLLM_MEMBER_SHA256 = {
     "vllm/model_executor/layers/attention/attention.py": (
@@ -237,6 +237,15 @@ def _valid_attestation() -> dict[str, Any]:
         "runtime_closure_file_sha256": EXPECTED_ARTIFACT_SHA256[
             "runtime_closure_manifest_sha256"
         ],
+        "system_cuda_parent_attestation": (
+            qualification_v1.build_gpu_qualification_system_cuda_parent_attestation(
+                distribution_root="/databricks/python/lib/python3.11/site-packages",
+                libcudart_path=(
+                    "/databricks/python/lib/python3.11/site-packages/"
+                    "nvidia/cuda_runtime/lib/libcudart.so.12"
+                ),
+            )
+        ),
         "unexpected_distributions": [],
         "vllm_direct_url": "file:///runtime/vllm-0.27.1%2Bcu129.whl",
         "vllm_member_sha256": deepcopy(EXPECTED_VLLM_MEMBER_SHA256),
@@ -559,7 +568,7 @@ def test_v2_runtime_closure_freezes_install_order_counts_and_identities() -> Non
 def test_v2_runtime_attestation_accepts_only_the_exact_closed_contract() -> None:
     attestation = _valid_attestation()
 
-    assert len(attestation) == 26
+    assert len(attestation) == 27
     validate_gpu_qualification_v2_runtime_attestation(attestation)
 
 
@@ -610,6 +619,28 @@ def test_v2_runtime_attestation_rejects_tampered_member_digest() -> None:
     members["vllm/model_executor/layers/attention/attention.py"] = "0" * 64
 
     with pytest.raises(ValueError, match="vllm_member_sha256"):
+        validate_gpu_qualification_v2_runtime_attestation(attestation)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement"),
+    [
+        ("libcudart_sha256", "0" * 64),
+        ("libcudart_size_bytes", 679_263),
+        ("libcudart_path", "/tmp/libcudart.so.12"),
+        ("extra", "open-schema"),
+    ],
+)
+def test_v2_runtime_attestation_rejects_tampered_cuda_parent_provenance(
+    field_name: str,
+    replacement: Any,
+) -> None:
+    attestation = _valid_attestation()
+    parent = attestation["system_cuda_parent_attestation"]
+    assert isinstance(parent, dict)
+    parent[field_name] = replacement
+
+    with pytest.raises(ValueError, match="system CUDA parent attestation"):
         validate_gpu_qualification_v2_runtime_attestation(attestation)
 
 

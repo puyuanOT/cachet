@@ -1269,6 +1269,18 @@ def test_preflight_writes_exact_eight_children_and_parent_file_seals(
         "src/document_kv_cache/publication_campaign_tables.py"
         in freeze_v2._V2_STATIC_ANALYSIS_TARGETS
     )
+    assert (
+        "src/document_kv_cache/gpu_qualification_sentinels.py"
+        in freeze_v2._V2_STATIC_ANALYSIS_TARGETS
+    )
+    assert (
+        "src/document_kv_cache/_gpu_qualification_sentinels_v2.py"
+        in freeze_v2._V2_STATIC_ANALYSIS_TARGETS
+    )
+    assert (
+        "src/document_kv_cache/_gpu_qualification_sentinel_worker.py"
+        in freeze_v2._V2_STATIC_ANALYSIS_TARGETS
+    )
 
 
 def test_preflight_rejects_resealed_semantic_child_tamper(
