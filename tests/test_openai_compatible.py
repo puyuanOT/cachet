@@ -147,7 +147,7 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
             base_url="http://localhost:8000",
             api_key="token",
             max_tokens=32,
-            extra_body={"top_p": 0.9},
+            extra_body={"add_special_tokens": False, "top_p": 0.9},
             extra_headers={"X-Test": "yes"},
         ),
         response=response,
@@ -170,6 +170,7 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert generation.metadata["request_payload_endpoint"] == "/v1/completions"
     assert generation.metadata["request_payload_max_token_fields"] == "max_tokens"
     assert generation.metadata["request_payload_max_tokens"] == "32"
+    assert generation.metadata["request_payload_add_special_tokens"] == "false"
     assert generation.metadata["request_payload_prompt_chars"] == str(
         len(benchmark_request().logical_prompt_text)
     )
@@ -183,6 +184,7 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert request_body["stream"] is True
     assert request_body["stream_options"] == {"include_usage": True}
     assert request_body["top_p"] == 0.9
+    assert request_body["add_special_tokens"] is False
     assert "request_id" not in request_body
     assert "kv_transfer_params" not in request_body
     assert engine.headers["Authorization"] == "Bearer token"

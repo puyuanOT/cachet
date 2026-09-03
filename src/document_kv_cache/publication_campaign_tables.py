@@ -755,6 +755,7 @@ def _validated_estimands(
 def _validate_quality_protocol(protocol: Mapping[str, Any]) -> None:
     expected_keys = frozenset(
         {
+            "add_special_tokens",
             "complete_inventory_required",
             "input_length",
             "lifecycle",
@@ -762,6 +763,7 @@ def _validate_quality_protocol(protocol: Mapping[str, Any]) -> None:
             "methods",
             "natural_eos",
             "passes_per_method",
+            "prompt_text_mode",
             "protocol_id",
             "request_parallelism",
             "temperature",
@@ -781,6 +783,7 @@ def _validate_quality_protocol(protocol: Mapping[str, Any]) -> None:
         "full-score input-length protocol",
     )
     expected = {
+        "add_special_tokens": False,
         "complete_inventory_required": True,
         "lifecycle": [
             "generate_q8_kv",
@@ -794,7 +797,8 @@ def _validate_quality_protocol(protocol: Mapping[str, Any]) -> None:
         "methods": list(_METHODS),
         "natural_eos": True,
         "passes_per_method": 1,
-        "protocol_id": "cachet-vllm-0.27.1-complete-score-v1",
+        "prompt_text_mode": "logical",
+        "protocol_id": "cachet-vllm-0.27.1-complete-score-v2",
         "request_parallelism": 4,
         "temperature": 0.0,
     }

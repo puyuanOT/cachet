@@ -907,6 +907,13 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
             "benchmark_cache_runtime_prompt requires prepared dataset specs",
         ),
         (
+            {
+                "benchmark_cache_runtime_prompt": True,
+                "dataset_specs": DATASET_SPECS,
+            },
+            "benchmark_cache_runtime_prompt is unsupported for Cachet handoff arms",
+        ),
+        (
             {"benchmark_handoff_output_dir": "/Volumes/catalog/schema/volume/handoffs"},
             "requires benchmark_handoff_generator_factory",
         ),

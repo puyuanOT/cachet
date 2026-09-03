@@ -1214,9 +1214,10 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
 
 
 def _expected_full_score_protocol() -> dict[str, Any]:
-    """Mirror the exact worker protocol without changing the pinned plan."""
+    """Mirror the exact worker protocol at the finalization boundary."""
 
     return {
+        "add_special_tokens": False,
         "complete_inventory_required": True,
         "input_length": {
             "max_natural_prompt_tokens": FULL_SCORE_MAX_NATURAL_PROMPT_TOKENS,
@@ -1235,6 +1236,7 @@ def _expected_full_score_protocol() -> dict[str, Any]:
         "methods": list(FULL_SCORE_METHODS),
         "natural_eos": True,
         "passes_per_method": FULL_SCORE_PASSES_PER_METHOD,
+        "prompt_text_mode": "logical",
         "protocol_id": FULL_SCORE_PROTOCOL_ID,
         "request_parallelism": FULL_SCORE_REQUEST_PARALLELISM,
         "temperature": FULL_SCORE_TEMPERATURE,

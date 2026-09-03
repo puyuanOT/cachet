@@ -151,6 +151,40 @@ _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER: Final = (
     "bitsandbytes/libbitsandbytes_cuda129.so"
 )
 _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES: Final = {
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_cuda118.so",
+    ): frozenset(
+        {
+            "libcublas.so.11",
+            "libcublasLt.so.11",
+            "libcudart.so.11.0",
+            "libcusparse.so.11",
+        }
+    ),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_cuda130.so",
+    ): frozenset(
+        {
+            "libcublas.so.13",
+            "libcublasLt.so.13",
+            "libcudart.so.13",
+            "libnvJitLink.so.13",
+        }
+    ),
+    **{
+        ("bitsandbytes", f"bitsandbytes/libbitsandbytes_rocm{version}.so"): (
+            frozenset(
+                {
+                    "libhipblas.so.2",
+                    "libhipblaslt.so.0",
+                    "libhipsparse.so.1",
+                }
+            )
+        )
+        for version in ("62", "63", "64")
+    },
     **{
         ("bitsandbytes", f"bitsandbytes/libbitsandbytes_rocm{version}.so"): (
             frozenset(

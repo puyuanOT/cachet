@@ -162,7 +162,7 @@ class _SequentialOpener:
         return _FakeResponse(self._payloads.pop(0))
 
 
-def test_worker_uses_the_canonical_patched_wheel_environment_names(
+def test_worker_uses_canonical_wheel_environment_and_secure_model_inspection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -184,6 +184,120 @@ def test_worker_uses_the_canonical_patched_wheel_environment_names(
     )
 
     assert sentinel_worker._direct_url_matches_patched_wheel() is True
+
+    rpc_methods: list[str] = []
+    llm_init_kwargs: list[dict[str, Any]] = []
+    generate_calls: list[tuple[list[str], object, bool]] = []
+    shutdown_calls: list[None] = []
+
+    class LiveLLM:
+        def __init__(self, **kwargs: Any):
+            llm_init_kwargs.append(kwargs)
+            self.llm_engine = types.SimpleNamespace(
+                engine_core=types.SimpleNamespace(
+                    shutdown=lambda: shutdown_calls.append(None)
+                )
+            )
+
+        @staticmethod
+        def collective_rpc(method: str) -> list[str]:
+            rpc_methods.append(method)
+            return [
+                "Attention(head_size=128, backend=FlashInferImpl)",
+                (
+                    "Attention(head_size=128, backend=TritonAttentionImpl)\n"
+                    "Attention(head_size=128, backend=FlashAttentionImpl)"
+                ),
+            ]
+
+        @staticmethod
+        def generate(
+            prompts: list[str],
+            sampling_params: object,
+            *,
+            use_tqdm: bool,
+        ) -> list[object]:
+            generate_calls.append((prompts, sampling_params, use_tqdm))
+            return [object()]
+
+        @staticmethod
+        def apply_model(_function):
+            pytest.fail("secure backend inspection must not serialize a callable")
+
+    class SamplingParams:
+        def __init__(self, **kwargs: Any):
+            self.kwargs = kwargs
+
+    assert sentinel_worker._observed_attention_backends(LiveLLM()) == {
+        "FLASHINFER",
+        "FLASH_ATTN",
+        "TRITON_ATTN",
+    }
+    assert rpc_methods == ["get_model_inspection"]
+
+    monkeypatch.delenv("VLLM_ATTENTION_BACKEND", raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        types.SimpleNamespace(LLM=LiveLLM, SamplingParams=SamplingParams),
+    )
+    assert sentinel_worker._auto_backend_sentinel(
+        plan_record={},
+        planned_job={},
+        input_bundle=tmp_path,
+        work_dir=tmp_path,
+    ) == {
+        "backend_selection_mode": "auto",
+        "observed_backend": "FLASHINFER+FLASH_ATTN+TRITON_ATTN",
+        "publication_backend_changed": False,
+        "trust_remote_code": False,
+    }
+    assert llm_init_kwargs[-1] == {
+        "model": "Qwen/Qwen3-4B-Instruct-2507",
+        "revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+        "tokenizer_revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+        "dtype": "bfloat16",
+        "quantization": "bitsandbytes",
+        "kv_cache_dtype": "fp8_e5m2",
+        "max_model_len": 512,
+        "max_num_seqs": 1,
+        "gpu_memory_utilization": 0.70,
+        "trust_remote_code": False,
+        "seed": 17,
+        "enforce_eager": True,
+    }
+    assert len(generate_calls) == 1
+    prompts, sampling_params, use_tqdm = generate_calls[0]
+    assert prompts == ["Return the single word cachet."]
+    assert isinstance(sampling_params, SamplingParams)
+    assert sampling_params.kwargs == {
+        "temperature": 0.0,
+        "seed": 17,
+        "max_tokens": 1,
+    }
+    assert use_tqdm is False
+    assert rpc_methods == ["get_model_inspection", "get_model_inspection"]
+    assert shutdown_calls == [None]
+
+    class InvalidInspectionLLM:
+        def __init__(self, records: object):
+            self.records = records
+
+        def collective_rpc(self, method: str) -> object:
+            assert method == "get_model_inspection"
+            return self.records
+
+    for records in ([], "not-a-worker-sequence", [""], [b"binary"], [17]):
+        with pytest.raises(RuntimeError, match="nonempty worker records"):
+            sentinel_worker._observed_attention_backends(
+                InvalidInspectionLLM(records)
+            )
+    with pytest.raises(RuntimeError, match="no attention backend implementation"):
+        sentinel_worker._observed_attention_backends(
+            InvalidInspectionLLM(
+                ["Attention(backend=FlashInferImpl.extra), notbackend=FakeImpl"]
+            )
+        )
 
 
 def test_worker_requires_the_full_closed_runtime_lock_attestation(
@@ -6969,6 +7083,40 @@ def _owned_distribution_versions() -> dict[str, str]:
 _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES = {
     (
         "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_cuda118.so",
+    ): frozenset(
+        {
+            "libcublas.so.11",
+            "libcublasLt.so.11",
+            "libcudart.so.11.0",
+            "libcusparse.so.11",
+        }
+    ),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_cuda130.so",
+    ): frozenset(
+        {
+            "libcublas.so.13",
+            "libcublasLt.so.13",
+            "libcudart.so.13",
+            "libnvJitLink.so.13",
+        }
+    ),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm62.so",
+    ): frozenset({"libhipblas.so.2", "libhipblaslt.so.0", "libhipsparse.so.1"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm63.so",
+    ): frozenset({"libhipblas.so.2", "libhipblaslt.so.0", "libhipsparse.so.1"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm64.so",
+    ): frozenset({"libhipblas.so.2", "libhipblaslt.so.0", "libhipsparse.so.1"}),
+    (
+        "bitsandbytes",
         "bitsandbytes/libbitsandbytes_rocm70.so",
     ): frozenset({"libhipblas.so.3", "libhipblaslt.so.1", "libhipsparse.so.4"}),
     (
@@ -7214,6 +7362,33 @@ def test_native_shared_object_resolution_accepts_only_reviewed_platform_subsets(
         files_by_distribution=files_by_distribution,
     )
     missing_by_member = {
+        "bitsandbytes/libbitsandbytes_cuda118.so": (
+            "libcublas.so.11",
+            "libcublasLt.so.11",
+            "libcudart.so.11.0",
+            "libcusparse.so.11",
+        ),
+        "bitsandbytes/libbitsandbytes_cuda130.so": (
+            "libcublas.so.13",
+            "libcublasLt.so.13",
+            "libcudart.so.13",
+            "libnvJitLink.so.13",
+        ),
+        "bitsandbytes/libbitsandbytes_rocm62.so": (
+            "libhipblas.so.2",
+            "libhipblaslt.so.0",
+            "libhipsparse.so.1",
+        ),
+        "bitsandbytes/libbitsandbytes_rocm63.so": (
+            "libhipblas.so.2",
+            "libhipblaslt.so.0",
+            "libhipsparse.so.1",
+        ),
+        "bitsandbytes/libbitsandbytes_rocm64.so": (
+            "libhipblas.so.2",
+            "libhipblaslt.so.0",
+            "libhipsparse.so.1",
+        ),
         "bitsandbytes/libbitsandbytes_rocm70.so": ("libhipblas.so.3",),
         "bitsandbytes/libbitsandbytes_rocm71.so": (),
         "bitsandbytes/libbitsandbytes_rocm72.so": (
@@ -7256,7 +7431,7 @@ def test_native_shared_object_resolution_accepts_only_reviewed_platform_subsets(
     assert set(platform_evidence) == set(
         _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
     )
-    assert len(platform_evidence) == 7
+    assert len(platform_evidence) == 12
     assert all(
         {
             binding["soname"]

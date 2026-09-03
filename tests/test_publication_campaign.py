@@ -156,7 +156,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
             "consumer_timeout_upper_bound_gpu_hours": 960.0,
             "example_count": 83_653,
             "execution_plan_sha256": (
-                "f4e80b89bcb5153c20e7c9275dbc9d30282514cec76bdc72279262d5fca63b60"
+                "88315f8bcae2317659fea61c05b7e5c56e7e56dd1330368fdccfe816c453ad84"
             ),
             "generation_max_gpu_hours_at_min_throughput": (
                 PUBLICATION_CAMPAIGN_FULL_SCORE_GENERATION_MAX_GPU_HOURS_AT_GATE
@@ -985,7 +985,7 @@ def test_publication_campaign_preserves_predecessor_and_aligns_v2_authority(tmp_
     canonical = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
     assert len(canonical) == 80_378
     assert hashlib.sha256(canonical).hexdigest() == (
-        "353b8b3e77eca5347901232709a40c45a0f996be4fc6f25ed55511d38457dc85"
+        "5c4e90b63f6c44ef7a924c6ec5cea6ab3f31d70ca592b2395b55c56825c5170d"
     )
     assert (
         publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TASK_INTERVAL_EPOCH_MILLISECONDS_BY_JOB

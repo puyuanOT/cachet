@@ -15,6 +15,7 @@ import pytest
 
 import document_kv_cache.gpu_qualification_v2 as qualification_v2
 import document_kv_cache.publication_latency_execution as execution
+import document_kv_cache.vllm_smoke as vllm_smoke
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourLedger,
@@ -1436,6 +1437,18 @@ def test_one_arm_latency_configs_emit_component_evidence(monkeypatch, method_id)
     config = execution.publication_latency_vllm_config(job)
 
     assert config.benchmark_evidence_policy == "smoke"
+    runner_args = vllm_smoke.build_benchmark_runner_args(
+        config,
+        vllm_smoke.parse_dataset_specs(config.dataset_specs),
+    )
+    assert "--cache-runtime-prompt" not in runner_args
+    for flag in ("--baseline-extra-body-json", "--cache-extra-body-json"):
+        assert json.loads(runner_args[runner_args.index(flag) + 1])[
+            "add_special_tokens"
+        ] is False
+    assert execution.PUBLICATION_LATENCY_REQUEST_CUSTOMIZATION_DIGEST == (
+        execution.sha256(b'{"add_special_tokens":false}').hexdigest()
+    )
 
 
 def test_component_evidence_gate_recomputes_full_canonical_record(monkeypatch):

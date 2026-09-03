@@ -209,6 +209,9 @@ PUBLICATION_LATENCY_JOB_RESULT_RECORD_TYPE: Final = (
     "cachet.publication_latency_job_result.v2"
 )
 PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY: Final = "smoke"
+PUBLICATION_LATENCY_REQUEST_CUSTOMIZATION_DIGEST: Final = (
+    "440181b5f7930106194b542de751661bbd5662a071e7d10b64cf8172ac29774f"
+)
 PUBLICATION_LATENCY_SUBMISSION_RECORD_TYPE: Final = (
     "cachet.publication_latency_wave_submission.v2"
 )
@@ -9385,11 +9388,17 @@ def _validate_publication_latency_benchmark(
         or manifest.generation_seed != PUBLICATION_LATENCY_GENERATION_SEED
         or manifest.output_tokens_target != PUBLICATION_LATENCY_MAX_OUTPUT_TOKENS
         or manifest.decode_settings.get("ignore_eos") is not True
+        or len(manifest.arms) != 1
+        or manifest.arms[0].arm_id != expected_arm
+        or manifest.arms[0].request_customization_digest
+        != PUBLICATION_LATENCY_REQUEST_CUSTOMIZATION_DIGEST
     ):
         raise ValueError("benchmark fixed decoding contract drift")
     if any(
         not measurement.ok
         or measurement.arm_id != expected_arm
+        or measurement.metadata.get("prompt_text_mode") != "logical"
+        or measurement.metadata.get("request_payload_add_special_tokens") != "false"
         or measurement.completion_tokens != PUBLICATION_LATENCY_MAX_OUTPUT_TOKENS
         or measurement.ttft_seconds <= 0
         or measurement.time_to_completion_seconds < measurement.ttft_seconds

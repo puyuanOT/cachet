@@ -38,10 +38,7 @@ from document_kv_cache._benchmark_manifest import (
     _build_experiment_manifest,
     benchmark_experiment_manifest_to_record,
 )
-from document_kv_cache._benchmark_models import (
-    EMPTY_REQUEST_CUSTOMIZATION_DIGEST,
-    BenchmarkManifestContext,
-)
+from document_kv_cache._benchmark_models import BenchmarkManifestContext
 from document_kv_cache._hardware_targets import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     validate_aws_single_node_gpu_type,
@@ -227,8 +224,8 @@ FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE = (
 FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION = 1
 FULL_SCORE_AGGREGATE_RECORD_TYPE = "cachet.full_score_aggregate.v2"
 FULL_SCORE_AGGREGATE_SCHEMA_VERSION = 2
-FULL_SCORE_EXECUTION_PLAN_RECORD_TYPE = "cachet.full_score_execution_plan.v1"
-FULL_SCORE_EXECUTION_PLAN_SCHEMA_VERSION = 1
+FULL_SCORE_EXECUTION_PLAN_RECORD_TYPE = "cachet.full_score_execution_plan.v2"
+FULL_SCORE_EXECUTION_PLAN_SCHEMA_VERSION = 2
 FULL_SCORE_READY_SHARD_RECORD_TYPE = "cachet.full_score_ready_shard.v2"
 FULL_SCORE_READY_SHARD_SCHEMA_VERSION = 2
 FULL_SCORE_WAVE_COMPLETION_RECORD_TYPE = "cachet.full_score_wave_completion.v1"
@@ -249,7 +246,10 @@ FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE = "publication"
 FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE = "local_fixture_only"
 FULL_SCORE_LIVE_P90_SEED = 20_260_824
 FULL_SCORE_LIVE_P90_DRAWS = 10_000
-FULL_SCORE_PROTOCOL_ID = "cachet-vllm-0.27.1-complete-score-v1"
+FULL_SCORE_PROTOCOL_ID = "cachet-vllm-0.27.1-complete-score-v2"
+FULL_SCORE_REQUEST_CUSTOMIZATION_DIGEST = (
+    "440181b5f7930106194b542de751661bbd5662a071e7d10b64cf8172ac29774f"
+)
 FULL_SCORE_METHODS = ("baseline_prefill", "vanilla_prefill")
 FULL_SCORE_MAX_TOKENS = 64
 FULL_SCORE_REQUEST_PARALLELISM = 4
@@ -302,7 +302,7 @@ FULL_SCORE_PUBLICATION_SHARD_PLAN_SHA256 = (
     "605c15ef5317bb0b6d6f6a4057dbacbd97ae31af94a3d497585a88c138c9ba84"
 )
 FULL_SCORE_PUBLICATION_EXECUTION_PLAN_SHA256 = (
-    "f4e80b89bcb5153c20e7c9275dbc9d30282514cec76bdc72279262d5fca63b60"
+    "88315f8bcae2317659fea61c05b7e5c56e7e56dd1330368fdccfe816c453ad84"
 )
 FULL_SCORE_PUBLICATION_ITEM_COUNT = 83_653
 FULL_SCORE_PUBLICATION_SHARD_COUNT = 160
@@ -1333,6 +1333,7 @@ def build_full_score_execution_plan(
         "max_backlog_bytes": max_backlog_bytes,
         "max_live_gpu_tasks": FULL_SCORE_MAX_WORKERS,
         "next_wave_condition": "all_prior_wave_ready_shards_inferred_validated_and_deleted",
+        "protocol": _full_score_protocol_record(),
         "record_type": FULL_SCORE_EXECUTION_PLAN_RECORD_TYPE,
         "scheduling_mode": scheduling_mode,
         "schema_version": FULL_SCORE_EXECUTION_PLAN_SCHEMA_VERSION,
@@ -6209,7 +6210,7 @@ def _build_expected_full_score_benchmark_manifest(
         interleave_examples=False,
         baseline_arm_id=expected_arm.arm_id,
         request_customization_digests={
-            expected_arm.arm_id: EMPTY_REQUEST_CUSTOMIZATION_DIGEST
+            expected_arm.arm_id: FULL_SCORE_REQUEST_CUSTOMIZATION_DIGEST
         },
     )
 
@@ -9075,15 +9076,14 @@ def _validate_full_score_measurement_prompt_protocol(
     expected_logical_prompt_tokens: int,
 ) -> None:
     metadata = measurement.metadata
-    expected_prompt_mode = (
-        "logical" if method == "baseline_prefill" else "runtime"
-    )
+    expected_prompt_mode = "logical"
     expected_payload_keys = (
-        "cache_salt,max_tokens,model,prompt,stream,stream_options,temperature"
+        "add_special_tokens,cache_salt,max_tokens,model,prompt,stream,"
+        "stream_options,temperature"
         if method == "baseline_prefill"
         else (
-            "cache_salt,kv_transfer_params,max_tokens,model,prompt,request_id,"
-            "stream,stream_options,temperature"
+            "add_special_tokens,cache_salt,kv_transfer_params,max_tokens,model,"
+            "prompt,request_id,stream,stream_options,temperature"
         )
     )
     expected_metadata = {
@@ -9103,11 +9103,12 @@ def _validate_full_score_measurement_prompt_protocol(
         "prompt_token_source": "server_usage",
         "request_mode": "completion",
         "request_payload_endpoint": DEFAULT_OPENAI_COMPLETIONS_ENDPOINT,
+        "request_payload_add_special_tokens": "false",
         "request_payload_keys": expected_payload_keys,
         "request_payload_max_token_fields": "max_tokens",
         "request_payload_max_tokens": str(FULL_SCORE_MAX_TOKENS),
         "request_payload_prompt_chars": str(expected_request_prompt_chars),
-        "request_payload_prompt_sha256": expected_runtime_prompt_sha256,
+        "request_payload_prompt_sha256": expected_logical_prompt_sha256,
         "runtime_prompt_sha256": expected_runtime_prompt_sha256,
         "server": "openai-compatible",
         "server_usage_prompt_tokens_present": "true",
@@ -9144,7 +9145,7 @@ def _validate_full_score_measurement_prompt_protocol(
         or measurement.prompt_tokens != server_tokens
         or runtime_tokens != server_tokens
         or logical_tokens != expected_logical_prompt_tokens
-        or (method == "baseline_prefill" and logical_tokens != runtime_tokens)
+        or logical_tokens != runtime_tokens
     ):
         raise ValueError(f"{method} measurement prompt-token accounting drift")
 
@@ -9255,13 +9256,12 @@ def _validated_method_measurements(
             method=method,
             expected_logical_prompt_sha256=expected_logical_prompt_sha256,
             expected_runtime_prompt_sha256=expected_runtime_prompt_sha256,
-            expected_request_prompt_chars=len(runtime_prompt),
+            expected_request_prompt_chars=len(logical_prompt),
             expected_prefix_cache_salt=expected_prefix_cache_salt,
             expected_kv_parameter_keys=kv_parameter_keys,
-            expected_logical_prompt_tokens=(
-                _required_int(item, "natural_prompt_tokens")
-                if method == "baseline_prefill"
-                else len(logical_prompt.split())
+            expected_logical_prompt_tokens=_required_int(
+                item,
+                "natural_prompt_tokens",
             ),
         )
         scorer = registry.get(measurement.dataset)
@@ -9591,9 +9591,21 @@ def _benchmark_command(
         "--prefix-cache-salt-mode",
         "per_request",
         "--baseline-extra-body-json",
-        json.dumps({"cache_salt": f"{shard_id}:baseline"}, sort_keys=True),
+        json.dumps(
+            {
+                "add_special_tokens": False,
+                "cache_salt": f"{shard_id}:baseline",
+            },
+            sort_keys=True,
+        ),
         "--cache-extra-body-json",
-        json.dumps({"cache_salt": f"{shard_id}:vanilla"}, sort_keys=True),
+        json.dumps(
+            {
+                "add_special_tokens": False,
+                "cache_salt": f"{shard_id}:vanilla",
+            },
+            sort_keys=True,
+        ),
         "--runtime-id",
         f"{FULL_SCORE_PROTOCOL_ID}:{shard_id}",
         "--measurement-scope",
@@ -9608,7 +9620,6 @@ def _benchmark_command(
             [
                 "--arm-spec-json",
                 json.dumps(_vanilla_arm_spec(), separators=(",", ":"), sort_keys=True),
-                "--cache-runtime-prompt",
             ]
         )
     for dataset, path in sorted(dataset_paths.items()):
@@ -10473,6 +10484,7 @@ def _runtime_from_record(record: Mapping[str, Any]) -> FullScoreRuntimeConfig:
 
 def _full_score_protocol_record() -> dict[str, Any]:
     return {
+        "add_special_tokens": False,
         "complete_inventory_required": True,
         "input_length": {
             "max_natural_prompt_tokens": FULL_SCORE_MAX_NATURAL_PROMPT_TOKENS,
@@ -10491,6 +10503,7 @@ def _full_score_protocol_record() -> dict[str, Any]:
         "methods": list(FULL_SCORE_METHODS),
         "natural_eos": True,
         "passes_per_method": FULL_SCORE_PASSES_PER_METHOD,
+        "prompt_text_mode": "logical",
         "protocol_id": FULL_SCORE_PROTOCOL_ID,
         "request_parallelism": FULL_SCORE_REQUEST_PARALLELISM,
         "temperature": FULL_SCORE_TEMPERATURE,
@@ -10578,6 +10591,11 @@ def _validate_execution_plan(
         raise ValueError("full-score execution-plan inventory drift")
     if record.get("shard_plan_sha256") != shard_plan.get("closed_record_sha256"):
         raise ValueError("full-score execution-plan shard-plan drift")
+    if not _json_type_exact_equal(
+        record.get("protocol"),
+        _full_score_protocol_record(),
+    ):
+        raise ValueError("full-score execution-plan protocol drift")
     waves = record.get("waves")
     if not isinstance(waves, list) or not waves:
         raise ValueError("full-score execution plan must contain waves")
@@ -10800,6 +10818,11 @@ def _validate_budget_execution_plan(record: Mapping[str, Any]) -> None:
         raise ValueError("live P90 execution-plan schema drift")
     if record.get("closed_record_sha256") != _closed_record_sha256(record):
         raise ValueError("live P90 execution-plan closure drift")
+    if not _json_type_exact_equal(
+        record.get("protocol"),
+        _full_score_protocol_record(),
+    ):
+        raise ValueError("live P90 execution-plan protocol drift")
     waves = record.get("waves")
     if not isinstance(waves, list) or len(waves) < 2:
         raise ValueError("live P90 requires a multi-wave execution plan")
@@ -13676,6 +13699,7 @@ __all__ = [
     "FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN",
     "FULL_SCORE_READY_SHARD_RECORD_TYPE",
     "FULL_SCORE_READY_SHARD_SCHEMA_VERSION",
+    "FULL_SCORE_REQUEST_CUSTOMIZATION_DIGEST",
     "FULL_SCORE_REQUEST_PARALLELISM",
     "FULL_SCORE_RUNNER_SHA256",
     "FULL_SCORE_RUNNER_SCRIPT",

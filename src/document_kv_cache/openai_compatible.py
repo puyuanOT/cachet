@@ -637,6 +637,11 @@ def _payload_shape_metadata(
         )
     if "max_tokens" in payload:
         metadata["request_payload_max_tokens"] = str(payload["max_tokens"])
+    add_special_tokens = payload.get("add_special_tokens")
+    if type(add_special_tokens) is bool:
+        metadata["request_payload_add_special_tokens"] = (
+            "true" if add_special_tokens else "false"
+        )
     if "prompt" in payload:
         metadata["request_payload_prompt_chars"] = str(
             _json_content_char_count(payload["prompt"])

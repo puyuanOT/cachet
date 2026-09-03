@@ -1780,6 +1780,7 @@ def test_lmcache_pass_args_use_baseline_arm_without_cache_salt(tmp_path):
     assert "cache_salt" not in " ".join(args)
     # forced-decode parity with the Cachet arm
     assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {
+        "add_special_tokens": False,
         "ignore_eos": True
     }
 
@@ -2349,9 +2350,11 @@ def test_benchmark_runner_args_use_cold_hydrate_cache_prompt_for_prepared_datase
     assert args[args.index("--repeats") + 1] == "3"
     assert "--cache-runtime-prompt" not in args
     assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {
+        "add_special_tokens": False,
         "cache_salt": BASELINE_PREFIX_CACHE_SALT
     }
     assert json.loads(args[args.index("--cache-extra-body-json") + 1]) == {
+        "add_special_tokens": False,
         "cache_salt": CACHE_PREFIX_CACHE_SALT
     }
     assert args[args.index("--prefix-cache-salt-mode") + 1] == "per_request"
@@ -2394,10 +2397,12 @@ def test_benchmark_runner_args_can_force_max_tokens_for_latency_protocol(tmp_pat
     args = build_benchmark_runner_args(config, parse_dataset_specs(specs))
 
     assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {
+        "add_special_tokens": False,
         "cache_salt": BASELINE_PREFIX_CACHE_SALT,
         "ignore_eos": True,
     }
     assert json.loads(args[args.index("--cache-extra-body-json") + 1]) == {
+        "add_special_tokens": False,
         "cache_salt": CACHE_PREFIX_CACHE_SALT,
         "ignore_eos": True,
     }
@@ -2903,32 +2908,29 @@ def test_upstream_cache_arm_does_not_require_cachet_handoff_metadata(tmp_path):
                 "requires_cachet_handoff": False,
             },
         ),
+        cache_runtime_prompt=True,
     )
 
     assert config.runs_document_kv_cache_arm is False
     assert config.requires_prepared_handoff_metadata is False
+    assert config.cache_runtime_prompt is True
 
 
-def test_benchmark_runner_args_can_use_runtime_cache_prompt_for_prepared_datasets(
+def test_benchmark_runner_args_reject_runtime_cache_prompt_for_cachet_handoffs(
     tmp_path,
 ):
     specs = tuple(
         f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
     )
-    config = VLLMSmokeBenchmarkConfig(
-        benchmark_id="prepared-runtime-prompt",
-        output_dir=tmp_path / "out",
-        local_root=tmp_path / "local",
-        server_port=8123,
-        dataset_specs=specs,
-        cache_runtime_prompt=True,
-    )
-
-    args = build_benchmark_runner_args(config, parse_dataset_specs(specs))
-
-    assert args[args.index("--cache-base-url") + 1] == "http://127.0.0.1:8123"
-    assert "--cache-runtime-prompt" in args
-    assert args.index("--cache-runtime-prompt") < args.index("--dataset")
+    with pytest.raises(ValueError, match="unsupported.*full logical prompt"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="prepared-runtime-prompt",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            server_port=8123,
+            dataset_specs=specs,
+            cache_runtime_prompt=True,
+        )
 
 
 def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
@@ -3530,6 +3532,7 @@ def test_prewarm_cache_prefixes_posts_kv_aware_prefix_prompts(tmp_path, monkeypa
     assert first_url == f"{config.server_base_url}/v1/completions"
     assert first_timeout == 12.5
     assert first_body["model"] == SERVED_MODEL_NAME
+    assert first_body["add_special_tokens"] is False
     assert first_body["max_tokens"] == 1
     assert first_body["cache_salt"] == CACHE_PREFIX_CACHE_SALT
     assert first_body["request_id"].startswith("cachet-prewarm:prewarm-1:")
@@ -3599,6 +3602,7 @@ def test_prime_payload_cache_populates_then_verifies_every_prepared_artifact(
     assert len(calls) == 2 * len(SMOKE_DATASETS)
     assert all(call[0] == f"{config.server_base_url}/v1/completions" for call in calls)
     assert all(call[2] == 12.5 for call in calls)
+    assert all(call[1]["add_special_tokens"] is False for call in calls)
     request_ids = {call[1]["request_id"] for call in calls}
     cache_salts = {call[1]["cache_salt"] for call in calls}
     assert len(request_ids) == len(calls)
@@ -3673,6 +3677,7 @@ def test_prime_payload_cache_preserves_full_logical_prompt_token_contract(
     prime_payload_cache(config, dataset_paths)
 
     assert len(calls) == len(expected_prompts)
+    assert all(body["add_special_tokens"] is False for body in calls)
     assert [body["prompt"] for body in calls] == expected_prompts
     assert all(not body["prompt"].endswith("\n\nCache warmup.") for body in calls)
 
@@ -4211,7 +4216,9 @@ def test_validate_prepared_benchmark_handoffs_skips_baseline_only_prepared_run(
     assert not config.prepared_handoff_coverage_path.exists()
 
 
-def test_multi_mode_requires_prepared_handoff_metadata_for_baseline_only(tmp_path):
+def test_multi_mode_requires_prepared_handoff_metadata_for_baseline_only(
+    tmp_path, monkeypatch
+):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
     config = VLLMSmokeBenchmarkConfig(
@@ -4229,6 +4236,41 @@ def test_multi_mode_requires_prepared_handoff_metadata_for_baseline_only(tmp_pat
     assert config.requires_prepared_handoff_metadata is True
     with pytest.raises(ValueError, match="kv_transfer_params"):
         validate_prepared_benchmark_handoffs(config, dataset_paths)
+
+    live_paths = prepared_dataset_paths(tmp_path / "live", include_handoffs=True)
+    live_specs = tuple(
+        f"{dataset}={path}" for dataset, path in live_paths.items()
+    )
+    live_config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-multi-wire-contract",
+        output_dir=tmp_path / "live-output",
+        local_root=tmp_path / "live-local",
+        dataset_specs=live_specs,
+        benchmark_arms=("baseline_prefill",),
+        kv_connector_mode="multi",
+    )
+    bodies = []
+
+    def fake_stream_completion(url, body, *, timeout_seconds):
+        del url, timeout_seconds
+        bodies.append(dict(body))
+        return 0.01, " answer", {"prompt_tokens": 12}
+
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "_stream_completion_ttft",
+        fake_stream_completion,
+    )
+    public_vllm_smoke.run_multi_turn_hybrid_latency(live_config, live_paths)
+
+    assert len(bodies) == len(SMOKE_DATASETS) * 3
+    assert all(body["add_special_tokens"] is False for body in bodies)
+    assert all(
+        "kv_transfer_params" in body for body in bodies[: len(SMOKE_DATASETS)]
+    )
+    assert all(
+        "kv_transfer_params" not in body for body in bodies[len(SMOKE_DATASETS) :]
+    )
 
 
 def test_validate_prepared_benchmark_handoffs_writes_ok_artifact(tmp_path):
@@ -4784,6 +4826,16 @@ def test_metadata_records_runtime_cache_prompt_mode(tmp_path):
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
         dataset_specs=specs,
+        benchmark_arm_specs=(
+            {
+                "arm_id": "upstream:author",
+                "uses_cache": True,
+                "description": "Author implementation",
+                "cache_method": "author_method",
+                "implementation_kind": "upstream",
+                "requires_cachet_handoff": False,
+            },
+        ),
         cache_runtime_prompt=True,
     )
 
@@ -5005,7 +5057,6 @@ def test_parse_args_wires_strict_method_handoff_contract(tmp_path):
             "--benchmark-handoff-chunk-per-document",
             "--benchmark-handoff-cache-method",
             "vanilla_prefill",
-            "--benchmark-cache-runtime-prompt",
             *sum((["--dataset", spec] for spec in specs), []),
         ]
     )
@@ -5021,12 +5072,13 @@ def test_parse_args_wires_strict_method_handoff_contract(tmp_path):
         config,
         parse_dataset_specs(specs),
     )
-    assert "add_special_tokens" not in json.loads(
+    assert "--cache-runtime-prompt" not in runner_args
+    assert json.loads(
         runner_args[runner_args.index("--baseline-extra-body-json") + 1]
-    )
-    assert "add_special_tokens" not in json.loads(
+    )["add_special_tokens"] is False
+    assert json.loads(
         runner_args[runner_args.index("--cache-extra-body-json") + 1]
-    )
+    )["add_special_tokens"] is False
 
 
 def test_handoff_artifact_contract_is_strict_by_default_with_legacy_opt_out(tmp_path):

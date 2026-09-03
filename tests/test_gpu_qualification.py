@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import site
@@ -9,6 +10,7 @@ import sys
 import time
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -186,6 +188,32 @@ def _native_shared_object_evidence() -> list[dict[str, Any]]:
         ("vllm", GPU_QUALIFICATION_VLLM_VERSION, "vllm/_C.abi3.so"),
     )
     dormant_members = {
+        "bitsandbytes/libbitsandbytes_cuda118.so": frozenset(
+            {
+                "libcublas.so.11",
+                "libcublasLt.so.11",
+                "libcudart.so.11.0",
+                "libcusparse.so.11",
+            }
+        ),
+        "bitsandbytes/libbitsandbytes_cuda130.so": frozenset(
+            {
+                "libcublas.so.13",
+                "libcublasLt.so.13",
+                "libcudart.so.13",
+                "libnvJitLink.so.13",
+            }
+        ),
+        **{
+            f"bitsandbytes/libbitsandbytes_rocm{version}.so": frozenset(
+                {
+                    "libhipblas.so.2",
+                    "libhipblaslt.so.0",
+                    "libhipsparse.so.1",
+                }
+            )
+            for version in ("62", "63", "64")
+        },
         **{
             f"bitsandbytes/libbitsandbytes_rocm{version}.so": frozenset(
                 {
@@ -343,7 +371,7 @@ def _runtime_measurements(*, software_path: bool) -> dict[str, Any]:
             "triton_unified_attention",
         ],
         "triton_kernel_launch_count": 19,
-        "unresolved_native_shared_object_count": 7,
+        "unresolved_native_shared_object_count": 12,
         "unresolved_runtime_reachable_native_shared_object_count": 0,
         "weight_bits": 4,
         "weight_quantization": "bitsandbytes",
@@ -800,7 +828,9 @@ def test_worker_binary_capture_enforces_exact_tail_boundaries(
     assert result.stderr.tail == stderr[-stderr_tail_max_bytes:]
 
 
-def test_worker_nonzero_diagnostic_is_exact_and_utf8_safe(tmp_path: Path):
+def test_worker_nonzero_diagnostic_is_exact_and_utf8_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     stdout = b"\xffA"
     stderr = b"X\xe2\x82\xac"
     stderr_tail = stderr[-2:]
@@ -832,6 +862,518 @@ def test_worker_nonzero_diagnostic_is_exact_and_utf8_safe(tmp_path: Path):
         )
 
     assert str(captured.value) == expected
+
+    serialized_request: dict[str, Any] = {}
+
+    class _CompletionResponse:
+        def __enter__(self) -> "_CompletionResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _size: int = -1) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "logprobs": {"token_logprobs": [-0.25]},
+                            "token_ids": [7],
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def _urlopen(request: Any, *, timeout: int) -> _CompletionResponse:
+        serialized_request.update(json.loads(request.data.decode("utf-8")))
+        assert timeout == 600
+        return _CompletionResponse()
+
+    monkeypatch.setattr(sentinel_worker.urllib.request, "urlopen", _urlopen)
+    completion = sentinel_worker._completion_request(
+        endpoint="https://example.invalid/v1/completions",
+        model="qualification-model",
+        prompt="logical full prompt",
+        kv_transfer_params={"document_kv": {"prompt_text_mode": "logical"}},
+        cache_salt="qualification-capacity:test",
+        max_tokens=1,
+        request_id="gpuq-capacity-e00",
+        sentinel_phase="capacity",
+        arm_id="vanilla_prefill",
+        example_ordinal=0,
+        repeat_ordinal=0,
+    )
+    assert completion == {"token_ids": [7], "token_logprobs": [-0.25]}
+    assert serialized_request["add_special_tokens"] is False
+    assert serialized_request["prompt"] == "logical full prompt"
+    assert serialized_request["request_id"] == "gpuq-capacity-e00"
+
+    class _OversizedCompletionResponse(_CompletionResponse):
+        def read(self, size: int = -1) -> bytes:
+            return b"R" * size
+
+    monkeypatch.setattr(
+        sentinel_worker.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _OversizedCompletionResponse(),
+    )
+    with pytest.raises(
+        sentinel_worker._QualificationCompletionFailure
+    ) as oversized_failure:
+        sentinel_worker._completion_request(
+            endpoint="https://example.invalid/v1/completions",
+            model="qualification-model",
+            prompt="logical full prompt",
+            kv_transfer_params=None,
+            cache_salt="qualification-capacity:test",
+            max_tokens=1,
+            request_id="gpuq-capacity-e00",
+            sentinel_phase="capacity",
+            arm_id="vanilla_prefill",
+            example_ordinal=0,
+            repeat_ordinal=0,
+        )
+    oversized_diagnostic = oversized_failure.value.request_diagnostic
+    assert oversized_diagnostic["captured_byte_count"] == 256 * 1024
+    assert oversized_diagnostic["captured_truncated"] is True
+    assert oversized_diagnostic["kind"] == "response_too_large"
+
+    secret = b"private-prompt-fragment"
+    error_body = (
+        b"ValueError: request exposes 8158 token IDs, fewer than the cached "
+        b"prefix length 8192; "
+        + secret
+        + b"X" * 20_000
+    )
+    http_error = sentinel_worker.urllib.error.HTTPError(
+        "https://example.invalid/v1/completions",
+        500,
+        "Internal Server Error",
+        {},
+        io.BytesIO(error_body),
+    )
+    diagnostic = sentinel_worker._bounded_http_error_diagnostic(http_error)
+    captured_body = error_body[: 16 * 1024]
+    assert diagnostic == {
+        "captured_byte_count": len(captured_body),
+        "captured_sha256": hashlib.sha256(captured_body).hexdigest(),
+        "captured_truncated": True,
+        "category": "token_contract_shortfall",
+        "counts": {
+            "cached_prefix_token_count": 8192,
+            "visible_token_count": 8158,
+        },
+        "exception_type": "ValueError",
+        "http_status": 500,
+        "kind": "http_error",
+    }
+    nested_body = json.dumps(
+        {
+            "error": {
+                "message": secret.decode("ascii"),
+                "type": "InternalServerError",
+            }
+        }
+    ).encode("utf-8")
+    nested_error = sentinel_worker.urllib.error.HTTPError(
+        "https://example.invalid/v1/completions",
+        500,
+        "Internal Server Error",
+        {},
+        io.BytesIO(nested_body),
+    )
+    nested_diagnostic = sentinel_worker._bounded_http_error_diagnostic(nested_error)
+    assert nested_diagnostic["api_error_type"] == "InternalServerError"
+    assert secret.decode("ascii") not in json.dumps(nested_diagnostic)
+
+    request_id = "gpuq-matched-e00-vanilla-r0"
+    split = 13
+    log_bytes = (
+        b"L" * (1024 * 1024 - split)
+        + request_id[:split].encode("utf-8")
+        + request_id[split:].encode("utf-8")
+        + b" EngineDeadError enginecore failed "
+        + secret
+    )
+    log_path = tmp_path / "qualification-server.log"
+    log_path.write_bytes(log_bytes)
+    server_diagnostic = sentinel_worker._server_log_failure_diagnostic(
+        log_path,
+        known_request_ids=(request_id, "gpuq-matched-e00-baseline-r0"),
+    )
+    assert server_diagnostic == {
+        "available": True,
+        "byte_count": len(log_bytes),
+        "category": "engine_dead",
+        "exception_type": "EngineDeadError",
+        "request_ids_seen": [request_id],
+        "sha256": hashlib.sha256(log_bytes).hexdigest(),
+        "tail_inspected_byte_count": 256 * 1024,
+        "tail_truncated": True,
+    }
+    assert sentinel_worker._server_log_failure_diagnostic(
+        tmp_path / "missing-server.log",
+        known_request_ids=(request_id,),
+    ) == {
+        "available": False,
+        "category": "unknown",
+        "io_error_type": "FileNotFoundError",
+        "unavailable_reason": "io_error",
+    }
+    symlink_path = tmp_path / "symlink-server.log"
+    symlink_path.symlink_to(log_path)
+    assert sentinel_worker._server_log_failure_diagnostic(
+        symlink_path,
+        known_request_ids=(request_id,),
+    ) == {
+        "available": False,
+        "category": "unknown",
+        "io_error_type": "OSError",
+        "unavailable_reason": "io_error",
+    }
+
+    failure = sentinel_worker._QualificationCompletionFailure(
+        request_id=request_id,
+        context=sentinel_worker._qualification_completion_context(
+            request_id=request_id,
+            sentinel_phase="matched_token",
+            arm_id="vanilla_prefill",
+            example_ordinal=0,
+            repeat_ordinal=0,
+        ),
+        request_diagnostic=diagnostic,
+    )
+    with pytest.raises(RuntimeError) as bounded_failure:
+        sentinel_worker._raise_qualification_completion_failure(
+            (failure,),
+            server_log_path=log_path,
+            known_request_ids=(request_id, "gpuq-matched-e00-baseline-r0"),
+        )
+    failure_text = str(bounded_failure.value)
+    assert secret.decode("ascii") not in failure_text
+    assert "\n" not in failure_text
+    assert len(failure_text.encode("utf-8")) < 4 * 1024
+    failure_record = json.loads(
+        failure_text.removeprefix("qualification completion failure: ")
+    )
+    assert failure_record["requests"][0]["request_id"] == request_id
+
+    capacity_ids = tuple(
+        f"gpuq-capacity-e{ordinal:02d}" for ordinal in range(4)
+    )
+    real_completion_request = sentinel_worker._completion_request
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_completion_request",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("private failure")),
+    )
+    capacity_requests = [
+        {
+            "cache_salt": f"capacity:{ordinal}",
+            "example_ordinal": ordinal,
+            "kv_transfer_params": {"document_kv.request_id": request_id},
+            "prompt": "logical full prompt",
+            "request_id": request_id,
+        }
+        for ordinal, request_id in enumerate(capacity_ids)
+    ]
+    with pytest.raises(
+        sentinel_worker._QualificationCompletionBatchFailure
+    ) as capacity_batch:
+        sentinel_worker._run_capacity_requests_concurrently(
+            endpoint="https://example.invalid/v1/completions",
+            model="qualification-model",
+            requests=capacity_requests,
+        )
+    assert [failure.request_id for failure in capacity_batch.value.failures] == list(
+        capacity_ids
+    )
+    assert all(
+        failure.request_diagnostic
+        == {
+            "category": "unknown",
+            "exception_type": "RuntimeError",
+            "kind": "client_request_error",
+        }
+        for failure in capacity_batch.value.failures
+    )
+    capacity_loads = [
+        {
+            "benchmark_request_id": client_id,
+            "counts": {"layers_loaded": 36},
+            "request_id": f"cmpl-{client_id}-0",
+        }
+        for client_id in capacity_ids
+    ]
+    assert sentinel_worker._require_exact_connector_loads(
+        capacity_loads,
+        expected_client_request_ids=capacity_ids,
+        label="capacity",
+    ) == [36] * 4
+    matched_ids = tuple(
+        f"gpuq-matched-e{example:02d}-vanilla-r{repeat}"
+        for example in range(4)
+        for repeat in range(2)
+    )
+    matched_loads = [
+        {
+            "benchmark_request_id": client_id,
+            "counts": {"layers_loaded": 36},
+            "request_id": f"cmpl-{client_id}-0",
+        }
+        for client_id in matched_ids
+    ]
+    assert sentinel_worker._require_exact_connector_loads(
+        matched_loads,
+        expected_client_request_ids=matched_ids,
+        label="matched-token",
+    ) == [36] * 8
+    matched_loads[-1]["request_id"] = "cmpl-tampered-0"
+    with pytest.raises(RuntimeError, match="identity closure differs"):
+        sentinel_worker._require_exact_connector_loads(
+            matched_loads,
+            expected_client_request_ids=matched_ids,
+            label="matched-token",
+        )
+
+    from document_kv_cache import vllm_smoke
+    from document_kv_cache._benchmark_datasets import _example_from_record
+    from document_kv_cache.benchmarks import (
+        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
+        DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
+        DOCUMENT_KV_REQUEST_ID_PARAM,
+        DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
+        build_cache_prefix_text,
+        build_cache_suffix_text,
+        build_prefill_prompt,
+    )
+
+    protocol_records = [
+        {
+            "dataset": "biography",
+            "documents": [f"Qualification source document {ordinal}."],
+            "example_id": f"bio-{ordinal}",
+            "expected_answer": f"Person {ordinal}",
+            "query": f"Who is person {ordinal}?",
+        }
+        for ordinal in range(4)
+    ]
+    full_prompts: list[str] = []
+    prefix_prompts: list[str] = []
+    suffix_prompts: list[str] = []
+    token_ids_by_text: dict[str, list[int]] = {}
+    for ordinal, record in enumerate(protocol_records):
+        example = _example_from_record(
+            record,
+            default_dataset="biography",
+            record_index=ordinal + 1,
+            require_dataset=True,
+        )
+        full_prompt = build_prefill_prompt(example)
+        prefix_prompt = build_cache_prefix_text(example)
+        suffix_prompt = build_cache_suffix_text(example)
+        full_prompts.append(full_prompt)
+        prefix_prompts.append(prefix_prompt)
+        suffix_prompts.append(suffix_prompt)
+        base = ordinal * 10_000
+        prefix_ids = list(range(base, base + 8_000))
+        suffix_ids = list(range(base + 8_000, base + 8_192))
+        token_ids_by_text[prefix_prompt] = prefix_ids
+        token_ids_by_text[suffix_prompt] = suffix_ids
+        token_ids_by_text[full_prompt] = prefix_ids + suffix_ids
+
+    tokenizer_loads: list[tuple[str, str, bool]] = []
+    tokenizer_calls: list[tuple[str, bool]] = []
+
+    class _ProtocolTokenizer:
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            tokenizer_calls.append((text, add_special_tokens))
+            return list(token_ids_by_text[text])
+
+    class _ProtocolAutoTokenizer:
+        @staticmethod
+        def from_pretrained(
+            model_id: str,
+            *,
+            revision: str,
+            trust_remote_code: bool,
+        ) -> _ProtocolTokenizer:
+            tokenizer_loads.append((model_id, revision, trust_remote_code))
+            return _ProtocolTokenizer()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(AutoTokenizer=_ProtocolAutoTokenizer),
+    )
+    runtime_prefixes = [
+        f"preserved runtime-prefix metadata {ordinal}" for ordinal in range(4)
+    ]
+    params_by_key = {
+        ("biography", f"bio-{ordinal}"): {
+            DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM: f"stale-benchmark-{ordinal}",
+            DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
+            DOCUMENT_KV_REQUEST_ID_PARAM: f"handoff-source-{ordinal}",
+            DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM: runtime_prefixes[ordinal],
+        }
+        for ordinal in range(4)
+    }
+    built_capacity_requests = sentinel_worker._capacity_vanilla_requests(
+        protocol_records,
+        params_by_key=params_by_key,
+        input_context_tokens=8_192,
+    )
+    assert [request["request_id"] for request in built_capacity_requests] == list(
+        capacity_ids
+    )
+    for ordinal, request in enumerate(built_capacity_requests):
+        assert request["prompt"] == full_prompts[ordinal]
+        assert request["prompt"] != runtime_prefixes[ordinal]
+        runtime_params = request["kv_transfer_params"]
+        assert runtime_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] == capacity_ids[
+            ordinal
+        ]
+        assert runtime_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] == "logical"
+        assert (
+            runtime_params[DOCUMENT_KV_REQUEST_ID_PARAM]
+            == f"handoff-source-{ordinal}"
+        )
+        assert (
+            runtime_params[DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM]
+            == runtime_prefixes[ordinal]
+        )
+
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_completion_request",
+        real_completion_request,
+    )
+    matched_payloads: list[tuple[str, dict[str, Any]]] = []
+
+    class _MatchedCompletionResponse(_CompletionResponse):
+        def read(self, _size: int = -1) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "logprobs": {
+                                "token_logprobs": [-0.25] * 16,
+                            },
+                            "token_ids": list(range(16)),
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def _matched_urlopen(request: Any, *, timeout: int) -> _MatchedCompletionResponse:
+        assert timeout == 600
+        matched_payloads.append(
+            (request.full_url, json.loads(request.data.decode("utf-8")))
+        )
+        return _MatchedCompletionResponse()
+
+    monkeypatch.setattr(sentinel_worker.urllib.request, "urlopen", _matched_urlopen)
+    matched_results = sentinel_worker._run_matched_http_requests(
+        config=SimpleNamespace(server_base_url="https://example.invalid"),
+        selected_records=protocol_records,
+        params_by_key=params_by_key,
+        input_bundle_sha256="a" * 64,
+        served_model_name="qualification-model",
+    )
+    expected_matched_requests = [
+        (example_ordinal, arm_label, repeat_ordinal)
+        for example_ordinal in range(4)
+        for arm_label in ("baseline", "vanilla")
+        for repeat_ordinal in range(2)
+    ]
+    assert len(matched_results) == 4
+    assert [
+        payload["request_id"] for _endpoint, payload in matched_payloads
+    ] == [
+        (
+            f"gpuq-matched-e{example_ordinal:02d}-{arm_label}"
+            f"-r{repeat_ordinal}"
+        )
+        for example_ordinal, arm_label, repeat_ordinal in expected_matched_requests
+    ]
+    for (endpoint, payload), (
+        example_ordinal,
+        arm_label,
+        _repeat_ordinal,
+    ) in zip(matched_payloads, expected_matched_requests, strict=True):
+        assert endpoint == "https://example.invalid/v1/completions"
+        assert payload["add_special_tokens"] is False
+        assert payload["prompt"] == full_prompts[example_ordinal]
+        assert payload["prompt"] != runtime_prefixes[example_ordinal]
+        if arm_label == "baseline":
+            assert "kv_transfer_params" not in payload
+        else:
+            runtime_params = payload["kv_transfer_params"]
+            assert (
+                runtime_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM]
+                == payload["request_id"]
+            )
+            assert runtime_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] == "logical"
+            assert (
+                runtime_params[DOCUMENT_KV_REQUEST_ID_PARAM]
+                == f"handoff-source-{example_ordinal}"
+            )
+            assert (
+                runtime_params[DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM]
+                == runtime_prefixes[example_ordinal]
+            )
+    assert len(tokenizer_calls) == 24
+    assert {text for text, _flag in tokenizer_calls} == {
+        *full_prompts,
+        *prefix_prompts,
+        *suffix_prompts,
+    }
+    assert all(add_special_tokens is False for _text, add_special_tokens in tokenizer_calls)
+    assert tokenizer_loads == [
+        (
+            sentinel_worker.GPU_QUALIFICATION_MODEL_ID,
+            sentinel_worker.GPU_QUALIFICATION_MODEL_REVISION,
+            False,
+        )
+    ] * 2
+
+    server_log_path = tmp_path / "server-start" / "qualification.log"
+    server_config = SimpleNamespace(server_log_path=server_log_path)
+    popen_calls: list[tuple[list[str], dict[str, Any]]] = []
+    process = object()
+
+    def _build_server_args(config: Any, executable: Path) -> list[str]:
+        assert config is server_config
+        assert executable == Path(sys.executable)
+        return [
+            str(executable),
+            "-m",
+            "vllm.entrypoints.openai.api_server",
+            "--no-enable-log-requests",
+        ]
+
+    def _server_env(config: Any) -> dict[str, str]:
+        assert config is server_config
+        return {"QUALIFICATION_PROTOCOL": "v2"}
+
+    def _popen(argv: list[str], **kwargs: Any) -> object:
+        popen_calls.append((list(argv), kwargs))
+        return process
+
+    monkeypatch.setattr(vllm_smoke, "build_vllm_server_args", _build_server_args)
+    monkeypatch.setattr(vllm_smoke, "server_env", _server_env)
+    monkeypatch.setattr(sentinel_worker.subprocess, "Popen", _popen)
+    assert sentinel_worker._start_qualification_vllm_server(server_config) is process
+    assert len(popen_calls) == 1
+    server_argv, server_kwargs = popen_calls[0]
+    assert server_argv.count("--no-enable-log-requests") == 1
+    assert server_argv.count("--log-error-stack") == 1
+    assert "--trust-remote-code" not in server_argv
+    assert server_kwargs["stderr"] is subprocess.STDOUT
+    assert server_kwargs["text"] is True
+    assert server_kwargs["env"] == {"QUALIFICATION_PROTOCOL": "v2"}
+    assert server_kwargs["stdout"].closed is True
+    assert Path(server_kwargs["stdout"].name) == server_log_path
 
 
 def test_worker_simultaneous_noisy_streams_are_drained_without_deadlock(
@@ -1999,7 +2541,10 @@ def test_runtime_native_evidence_rejects_resealed_internal_contradictions(
         for job in evidence["cloud_gpu_evidence"]["jobs"]
         if job["job_id"].endswith("forced-triton-runtime-handoff")
     )
-    record = runtime_job["measurements"]["native_shared_object_evidence"][0]
+    record = _native_record(
+        runtime_job["measurements"],
+        "bitsandbytes/libbitsandbytes_cuda129.so",
+    )
     if mutation == "member":
         record["member"] = "bitsandbytes/libdifferent.so"
     elif mutation == "resolved":
@@ -2093,17 +2638,17 @@ def test_runtime_native_evidence_accepts_exact_platform_inapplicable_closure() -
     measurements = _forced_runtime_measurements(evidence)
     records = measurements["native_shared_object_evidence"]
 
-    assert len(records) == 11
+    assert len(records) == 16
     assert sum(
         any(binding["resolved_path"] is None for binding in record["soname_bindings"])
         for record in records
-    ) == 7
+    ) == 12
     assert sum(
         binding["resolved_path"] is None
         for record in records
         for binding in record["soname_bindings"]
-    ) == 17
-    assert measurements["unresolved_native_shared_object_count"] == 7
+    ) == 34
+    assert measurements["unresolved_native_shared_object_count"] == 12
     assert (
         measurements["unresolved_runtime_reachable_native_shared_object_count"] == 0
     )
@@ -2153,14 +2698,14 @@ def test_runtime_native_evidence_requires_complete_platform_member_closure() -> 
 @pytest.mark.parametrize(
     ("resolved_sonames", "expected_unresolved_count"),
     (
-        (("libhipblas.so.3",), 7),
+        (("libhipblas.so.3",), 12),
         (
             (
                 "libhipblas.so.3",
                 "libhipblaslt.so.1",
                 "libhipsparse.so.4",
             ),
-            6,
+            11,
         ),
     ),
 )
@@ -2237,7 +2782,7 @@ def test_runtime_native_evidence_rejects_member_policy_contradictions(
     elif mutation == "runtime-scope":
         selected_record["resolution_scope"] = "platform_inapplicable"
     elif mutation == "total-count":
-        measurements["unresolved_native_shared_object_count"] = 6
+        measurements["unresolved_native_shared_object_count"] = 11
     else:
         measurements["unresolved_runtime_reachable_native_shared_object_count"] = 1
     measurements["native_shared_object_evidence"].sort(

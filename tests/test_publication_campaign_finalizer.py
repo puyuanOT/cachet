@@ -1347,6 +1347,7 @@ def test_finalizer_replays_both_authorities_before_ledger_projection(
 def test_synthetic_projection_is_deterministic_and_emits_standard_gate() -> None:
     inputs = _synthetic_report_inputs()
     expected_protocol = {
+        "add_special_tokens": False,
         "complete_inventory_required": True,
         "input_length": {
             "max_natural_prompt_tokens": 32_768,
@@ -1365,7 +1366,8 @@ def test_synthetic_projection_is_deterministic_and_emits_standard_gate() -> None
         "methods": ["baseline_prefill", "vanilla_prefill"],
         "natural_eos": True,
         "passes_per_method": 1,
-        "protocol_id": "cachet-vllm-0.27.1-complete-score-v1",
+        "prompt_text_mode": "logical",
+        "protocol_id": "cachet-vllm-0.27.1-complete-score-v2",
         "request_parallelism": 4,
         "temperature": 0.0,
     }

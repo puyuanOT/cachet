@@ -1312,6 +1312,12 @@ class DocumentKVNativeProvider:
         self._loaded_load_identities.pop(request_id, None)
 
     def _load_for_request(self, request: object) -> DocumentKVHandoffLoad | None:
+        if _document_kv_prompt_text_mode(request) == "runtime":
+            raise ValueError(
+                "document_kv.prompt_text_mode='runtime' is unsupported by the "
+                "vLLM native provider; deliver the full logical prompt with "
+                "prompt_text_mode='logical'"
+            )
         request_id = _request_id(request)
         cached = self._loads.get(request_id)
         if cached is not None:
@@ -2608,7 +2614,6 @@ def _vllm_layer_indices_from_inspection(
 
 def _matchable_prefix_tokens(load: DocumentKVHandoffLoad, request: object) -> int:
     block_size = load.actions.reservation.layout.block_size
-    prompt_text_mode = _document_kv_prompt_text_mode(request)
     request_tokens = getattr(request, "num_tokens", None)
     # vLLM's V1 scheduler asserts ``num_computed_tokens <= request.num_tokens``: the
     # externally loaded document KV must be a strict prefix of the tokens the request
@@ -2617,7 +2622,7 @@ def _matchable_prefix_tokens(load: DocumentKVHandoffLoad, request: object) -> in
     # cached prefix while ignoring ``request.num_tokens``, so a suffix-only request could
     # claim more computed tokens than it held and kill EngineCore with an AssertionError.
     if isinstance(request_tokens, int):
-        if prompt_text_mode != "runtime" and request_tokens <= load.total_tokens:
+        if request_tokens <= load.total_tokens:
             raise ValueError(
                 "Document KV vLLM loads require the full logical prompt; "
                 "the visible vLLM request must be longer than the cached prefix"

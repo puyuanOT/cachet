@@ -79,6 +79,7 @@ _SANITIZED_FLOAT_METADATA_KEYS = frozenset(
 )
 _SANITIZED_BOOLEAN_METADATA_KEYS = frozenset(
     {
+        "request_payload_add_special_tokens",
         "stream",
         "kv_transfer_params_attached",
         "prefix_cache_salt_attached",

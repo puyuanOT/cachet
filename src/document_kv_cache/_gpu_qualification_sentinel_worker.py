@@ -23,12 +23,13 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
@@ -37,8 +38,10 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
     GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS,
     GPU_QUALIFICATION_CONNECTOR_SOURCE_SHA256,
+    GPU_QUALIFICATION_DETERMINISM_REPEATS,
     GPU_QUALIFICATION_MAX_E5M2_BF16_ERROR,
     GPU_QUALIFICATION_MAX_LOGIT_DRIFT,
+    GPU_QUALIFICATION_MATCHED_EXAMPLES,
     GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES,
     GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND,
     GPU_QUALIFICATION_MODEL_ID,
@@ -99,6 +102,14 @@ _NATIVE_SHARED_OBJECT_DISTRIBUTIONS: Final = (
 )
 _NATIVE_SHARED_OBJECT_NAME_RE: Final = re.compile(r".+\.so(?:\..+)?\Z")
 _NATIVE_LDD_MAX_STREAM_BYTES: Final = 256 * 1024
+_QUALIFICATION_HTTP_ERROR_MAX_BYTES: Final = 16 * 1024
+_QUALIFICATION_COMPLETION_RESPONSE_MAX_BYTES: Final = 256 * 1024
+_QUALIFICATION_SERVER_LOG_TAIL_MAX_BYTES: Final = 256 * 1024
+_QUALIFICATION_FAILURE_DIAGNOSTIC_MAX_BYTES: Final = 4 * 1024
+_QUALIFICATION_COMPLETION_PHASES: Final = frozenset({"capacity", "matched_token"})
+_QUALIFICATION_COMPLETION_ARMS: Final = frozenset(
+    {"baseline_prefill", "vanilla_prefill"}
+)
 _NATIVE_SELECTOR_ENVIRONMENT_NAMES: Final = (
     "BNB_CUDA_VERSION",
     "LLVM_PASS_PLUGIN_PATH",
@@ -110,6 +121,40 @@ _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER: Final = (
     "bitsandbytes/libbitsandbytes_cuda129.so"
 )
 _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES: Final = {
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_cuda118.so",
+    ): frozenset(
+        {
+            "libcublas.so.11",
+            "libcublasLt.so.11",
+            "libcudart.so.11.0",
+            "libcusparse.so.11",
+        }
+    ),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_cuda130.so",
+    ): frozenset(
+        {
+            "libcublas.so.13",
+            "libcublasLt.so.13",
+            "libcudart.so.13",
+            "libnvJitLink.so.13",
+        }
+    ),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm62.so",
+    ): frozenset({"libhipblas.so.2", "libhipblaslt.so.0", "libhipsparse.so.1"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm63.so",
+    ): frozenset({"libhipblas.so.2", "libhipblaslt.so.0", "libhipsparse.so.1"}),
+    (
+        "bitsandbytes",
+        "bitsandbytes/libbitsandbytes_rocm64.so",
+    ): frozenset({"libhipblas.so.2", "libhipblaslt.so.0", "libhipsparse.so.1"}),
     (
         "bitsandbytes",
         "bitsandbytes/libbitsandbytes_rocm70.so",
@@ -141,6 +186,32 @@ _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES: Final = {
         "triton/plugins/libTritonPluginsTestLib.so",
     ): frozenset({"libtriton.so"}),
 }
+
+
+class _QualificationCompletionFailure(RuntimeError):
+    """Carry only bounded, non-sensitive completion failure evidence."""
+
+    def __init__(
+        self,
+        *,
+        request_id: str,
+        context: Mapping[str, Any],
+        request_diagnostic: Mapping[str, Any],
+    ) -> None:
+        super().__init__("qualification completion request failed")
+        self.request_id = request_id
+        self.context = dict(context)
+        self.request_diagnostic = dict(request_diagnostic)
+
+
+class _QualificationCompletionBatchFailure(RuntimeError):
+    """Aggregate deterministic concurrent completion failures."""
+
+    def __init__(self, failures: Sequence[_QualificationCompletionFailure]) -> None:
+        super().__init__("qualification completion request batch failed")
+        self.failures = tuple(failures)
+
+
 _EXPECTED_SENTINELS: Final = frozenset(
     {
         "forced_triton_runtime_handoff",
@@ -281,9 +352,7 @@ def _triton_e5m2_probe(work_dir: Path) -> dict[str, Any]:
     key_cache = key_raw.view(torch.float8_e5m2)
     value_cache = value_raw.view(torch.float8_e5m2)
     cu_seqlens_q = torch.tensor([0, 1], device="cuda", dtype=torch.int32)
-    sequence_lengths = torch.tensor(
-        [token_count], device="cuda", dtype=torch.int32
-    )
+    sequence_lengths = torch.tensor([token_count], device="cuda", dtype=torch.int32)
     block_table = torch.tensor([[0]], device="cuda", dtype=torch.int32)
     descale = torch.ones((1, num_heads), device="cuda", dtype=torch.float32)
     softmax_scale = head_size**-0.5
@@ -315,14 +384,15 @@ def _triton_e5m2_probe(work_dir: Path) -> dict[str, Any]:
 
     decoded_key = key_cache[0, :token_count].to(torch.float32)
     decoded_value = value_cache[0, :token_count].to(torch.float32)
-    scores = torch.einsum(
-        "qhd,thd->qht", query.float(), decoded_key
-    ) * softmax_scale
+    scores = torch.einsum("qhd,thd->qht", query.float(), decoded_key) * softmax_scale
     reference = torch.einsum(
         "qht,thd->qhd", torch.softmax(scores, dim=-1), decoded_value
     )
     max_error = float((output.float() - reference).abs().max().item())
-    if not math.isfinite(max_error) or max_error > GPU_QUALIFICATION_MAX_E5M2_BF16_ERROR:
+    if (
+        not math.isfinite(max_error)
+        or max_error > GPU_QUALIFICATION_MAX_E5M2_BF16_ERROR
+    ):
         raise RuntimeError(f"E5M2 Triton probe exceeded BF16 error bound: {max_error}")
     if not bool(torch.isfinite(output).all().item()):
         raise RuntimeError("E5M2 Triton probe produced non-finite output")
@@ -462,14 +532,10 @@ def _packed_roundtrip_sentinel(
         query = values[-1, 0].unsqueeze(0)
         output = torch.empty_like(query)
         key_cache = (
-            destination[..., :head_size]
-            .permute(0, 2, 1, 3)
-            .view(torch.float8_e5m2)
+            destination[..., :head_size].permute(0, 2, 1, 3).view(torch.float8_e5m2)
         )
         value_cache = (
-            destination[..., head_size:]
-            .permute(0, 2, 1, 3)
-            .view(torch.float8_e5m2)
+            destination[..., head_size:].permute(0, 2, 1, 3).view(torch.float8_e5m2)
         )
         descale = torch.ones((1, heads), device="cuda", dtype=torch.float32)
         unified_attention(
@@ -479,9 +545,7 @@ def _packed_roundtrip_sentinel(
             out=output,
             cu_seqlens_q=torch.tensor([0, 1], device="cuda", dtype=torch.int32),
             max_seqlen_q=1,
-            seqused_k=torch.tensor(
-                [token_count], device="cuda", dtype=torch.int32
-            ),
+            seqused_k=torch.tensor([token_count], device="cuda", dtype=torch.int32),
             max_seqlen_k=token_count,
             softmax_scale=head_size**-0.5,
             causal=True,
@@ -496,9 +560,9 @@ def _packed_roundtrip_sentinel(
         torch.cuda.synchronize()
         decoded_key = values[:, 0].to(torch.float8_e5m2).float()
         decoded_value = values[:, 1].to(torch.float8_e5m2).float()
-        scores = torch.einsum(
-            "qhd,thd->qht", query.float(), decoded_key
-        ) * (head_size**-0.5)
+        scores = torch.einsum("qhd,thd->qht", query.float(), decoded_key) * (
+            head_size**-0.5
+        )
         reference = torch.einsum(
             "qht,thd->qhd", torch.softmax(scores, dim=-1), decoded_value
         )
@@ -578,8 +642,7 @@ def _runtime_handoff_sentinel(
     unresolved_runtime_reachable_count = sum(
         record["resolution_scope"] == "runtime_reachable"
         and any(
-            binding["resolved_path"] is None
-            for binding in record["soname_bindings"]
+            binding["resolved_path"] is None for binding in record["soname_bindings"]
         )
         for record in native_evidence
     )
@@ -688,9 +751,7 @@ def _runtime_lock_attestation() -> dict[str, Any]:
 def _runtime_lock_attestation_for_plan(
     plan_record: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if plan_record.get("record_type") != (
-        "cachet.vllm_0271_gpu_qualification_plan.v2"
-    ):
+    if plan_record.get("record_type") != ("cachet.vllm_0271_gpu_qualification_plan.v2"):
         return _runtime_lock_attestation()
     from document_kv_cache.gpu_qualification_v2 import (
         GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
@@ -701,8 +762,7 @@ def _runtime_lock_attestation_for_plan(
     if (
         plan_record.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE
         or type(plan_record.get("schema_version")) is not int
-        or plan_record.get("schema_version")
-        != GPU_QUALIFICATION_V2_SCHEMA_VERSION
+        or plan_record.get("schema_version") != GPU_QUALIFICATION_V2_SCHEMA_VERSION
     ):
         raise RuntimeError("full runtime-lock attestation has an open v2 plan schema")
     raw = os.environ.get(_RUNTIME_LOCK_ATTESTATION_ENV)
@@ -732,11 +792,7 @@ def _exercise_all_layer_handoff(work_dir: Path) -> dict[str, Any]:
     encoded = (
         (
             torch.arange(
-                tokens
-                * GPU_QUALIFICATION_MODEL_LAYER_COUNT
-                * 2
-                * heads
-                * head_size,
+                tokens * GPU_QUALIFICATION_MODEL_LAYER_COUNT * 2 * heads * head_size,
                 device="cuda",
                 dtype=torch.int64,
             )
@@ -989,8 +1045,7 @@ def _native_shared_object_resolution(
             _require_no_native_symlink_ancestors(
                 located_path,
                 label=(
-                    f"native distribution {distribution_name!r} member "
-                    f"{member_text!r}"
+                    f"native distribution {distribution_name!r} member {member_text!r}"
                 ),
                 include_leaf=False,
             )
@@ -1043,7 +1098,10 @@ def _native_shared_object_resolution(
             if item["is_symlink"] is False
         }
         for item in distribution_objects:
-            if item["is_symlink"] is True and item["resolved_path"] not in regular_targets:
+            if (
+                item["is_symlink"] is True
+                and item["resolved_path"] not in regular_targets
+            ):
                 raise RuntimeError(
                     f"native distribution {distribution_name!r} symlink member "
                     f"{item['member']!r} targets an unowned object: "
@@ -1058,9 +1116,7 @@ def _native_shared_object_resolution(
         (item["distribution"], item["member"]) for item in owned_objects
     }
     required_owned_members = {
-        key
-        for key in _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES
-        if key[0] in names
+        key for key in _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES if key[0] in names
     }
     if "bitsandbytes" in names:
         required_owned_members.add(
@@ -1121,17 +1177,13 @@ def _native_shared_object_resolution(
             "ldd_returncode": completed.returncode,
             "ldd_stderr": completed.stderr,
             "ldd_stderr_lines": sorted(
-                line.strip()
-                for line in completed.stderr.splitlines()
-                if line.strip()
+                line.strip() for line in completed.stderr.splitlines() if line.strip()
             ),
             "ldd_stderr_sha256": sha256(stderr_bytes).hexdigest(),
             "ldd_stderr_utf8_bytes": len(stderr_bytes),
             "ldd_stdout": completed.stdout,
             "ldd_stdout_lines": sorted(
-                line.strip()
-                for line in completed.stdout.splitlines()
-                if line.strip()
+                line.strip() for line in completed.stdout.splitlines() if line.strip()
             ),
             "ldd_stdout_sha256": sha256(stdout_bytes).hexdigest(),
             "ldd_stdout_utf8_bytes": len(stdout_bytes),
@@ -1149,18 +1201,13 @@ def _native_shared_object_resolution(
             for binding in bindings
             if binding["resolved_path"] is None
         }
-        permitted_missing_sonames = (
-            _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES.get(
-                (owned["distribution"], owned["member"])
-            )
+        permitted_missing_sonames = _PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES.get(
+            (owned["distribution"], owned["member"])
         )
         if (
             completed.returncode != 0
             or bool(completed.stderr)
-            or (
-                permitted_missing_sonames is None
-                and bool(missing_sonames)
-            )
+            or (permitted_missing_sonames is None and bool(missing_sonames))
             or (
                 permitted_missing_sonames is not None
                 and not missing_sonames.issubset(permitted_missing_sonames)
@@ -1275,8 +1322,7 @@ def _ldd_reported_absolute_path(value: Any, label: str) -> str:
         or value.endswith("/")
         or "\\" in value
         or any(
-            ord(character) < 32 or 127 <= ord(character) <= 159
-            for character in value
+            ord(character) < 32 or 127 <= ord(character) <= 159 for character in value
         )
         or any(component in {"", "."} for component in components[1:])
         or components[-1] == ".."
@@ -1286,9 +1332,7 @@ def _ldd_reported_absolute_path(value: Any, label: str) -> str:
     for component in components[1:]:
         if component == "..":
             if depth == 0:
-                raise ValueError(
-                    f"{label} must be a valid ldd-reported absolute path"
-                )
+                raise ValueError(f"{label} must be a valid ldd-reported absolute path")
             depth -= 1
         else:
             depth += 1
@@ -1317,7 +1361,9 @@ def _ldd_soname_bindings(stdout: str) -> list[dict[str, str | None]]:
         if resolution == "not found":
             resolved_path: str | None = None
         else:
-            match = re.fullmatch(r"(?P<path>/.*?)(?:\s+\(0x[0-9a-fA-F]+\))?", resolution)
+            match = re.fullmatch(
+                r"(?P<path>/.*?)(?:\s+\(0x[0-9a-fA-F]+\))?", resolution
+            )
             if match is None:
                 raise ValueError("ldd binding resolution is not an absolute path")
             resolved_path = _ldd_reported_absolute_path(
@@ -1400,7 +1446,9 @@ def _selected_bitsandbytes_native_library_path() -> Path:
         distribution_name=distribution_name,
     )
     if member is None:  # pragma: no cover - the package-owned constant is a .so
-        raise RuntimeError("selected bitsandbytes native library is not a shared object")
+        raise RuntimeError(
+            "selected bitsandbytes native library is not a shared object"
+        )
 
     root_path = _canonical_native_located_path(
         distribution.locate_file(""),
@@ -1431,7 +1479,9 @@ def _selected_bitsandbytes_native_library_path() -> Path:
         resolved_path = located_path.resolve(strict=True)
         status = located_path.stat()
     except OSError as exc:
-        raise RuntimeError("selected bitsandbytes native library is unavailable") from exc
+        raise RuntimeError(
+            "selected bitsandbytes native library is unavailable"
+        ) from exc
     if not resolved_root.is_dir():
         raise RuntimeError("bitsandbytes native distribution root is not a directory")
     if not stat.S_ISREG(status.st_mode) or resolved_path != located_path:
@@ -1457,7 +1507,9 @@ def _weight_quantizer_attestation() -> dict[str, Any]:
 
     native_library = bnb_cextension.lib
     if bnb_functional.lib is not native_library:
-        raise RuntimeError("bitsandbytes functional layer uses a different native library")
+        raise RuntimeError(
+            "bitsandbytes functional layer uses a different native library"
+        )
     if getattr(native_library, "compiled_with_cuda", None) is not True:
         raise RuntimeError("bitsandbytes native library was not compiled with CUDA")
     loaded_cdll = getattr(native_library, "_lib", None)
@@ -1473,7 +1525,9 @@ def _weight_quantizer_attestation() -> dict[str, Any]:
         raise RuntimeError("bitsandbytes ctypes.CDLL has no positive native handle")
     cuda_backend = sys.modules.get("bitsandbytes.backends.cuda.ops")
     if cuda_backend is None or getattr(cuda_backend, "lib", None) is not native_library:
-        raise RuntimeError("bitsandbytes CUDA quantizer uses a different native library")
+        raise RuntimeError(
+            "bitsandbytes CUDA quantizer uses a different native library"
+        )
 
     loader_hash = _installed_vllm_member_hashes(
         {
@@ -1550,9 +1604,7 @@ def _weight_quantizer_attestation() -> dict[str, Any]:
             "quant_type": "nf4",
         },
         "hf_generator_config": config_record,
-        "loaded_native_library_member": (
-            _SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER
-        ),
+        "loaded_native_library_member": (_SELECTED_BITSANDBYTES_NATIVE_LIBRARY_MEMBER),
         "loaded_native_library_path": str(selected_native_path),
     }
 
@@ -1719,7 +1771,12 @@ def _model_capacity_measurements(
         _selected_jsonl_record(path)
         for path in _bucket_dataset_paths(input_bundle, input_context_tokens)
     ]
-    selected_records.sort(key=lambda item: str(item.get("example_id", "")))
+    selected_records.sort(
+        key=lambda item: (
+            str(item.get("dataset", "")),
+            str(item.get("example_id", "")),
+        )
+    )
     selected_path = work_dir / "capacity-inputs.jsonl"
     _write_jsonl(selected_path, selected_records)
 
@@ -1800,6 +1857,8 @@ def _model_capacity_measurements(
     config.local_dir.mkdir(parents=True)
     server: subprocess.Popen[str] | None = None
     active_request_observation_count = 0
+    request_results: list[dict[str, Any]] = []
+    completion_failures: tuple[_QualificationCompletionFailure, ...] = ()
     with _NvidiaMemorySampler() as memory:
         server = _start_qualification_vllm_server(config)
         try:
@@ -1820,8 +1879,20 @@ def _model_capacity_measurements(
             active_request_observation_count = (
                 memory.observation_count - observations_before_requests
             )
+        except _QualificationCompletionBatchFailure as exc:
+            completion_failures = exc.failures
+        except _QualificationCompletionFailure as exc:
+            completion_failures = (exc,)
         finally:
             terminate_process(server)
+    if completion_failures:
+        _raise_qualification_completion_failure(
+            completion_failures,
+            server_log_path=config.server_log_path,
+            known_request_ids=tuple(
+                _required_string(request, "request_id") for request in capacity_requests
+            ),
+        )
     server = None
     gc.collect()
     torch.cuda.empty_cache()
@@ -1834,33 +1905,20 @@ def _model_capacity_measurements(
     headroom = memory.total_bytes - memory.peak_used_bytes
     if headroom <= 0:
         raise RuntimeError("capacity sentinel exhausted measured GPU memory")
-    successful_loads = _successful_connector_loads(config.connector_telemetry_path)
-    expected_request_ids = {
-        str(request["kv_transfer_params"]["document_kv.request_id"])
-        for request in capacity_requests
-    }
-    observed_by_request = {
-        str(record.get("request_id")): record
-        for record in successful_loads
-        if str(record.get("request_id")) in expected_request_ids
-    }
-    if set(observed_by_request) != expected_request_ids:
-        raise RuntimeError("capacity batch did not load all four Vanilla handoffs")
-    layer_counts: list[int] = []
-    for request_id in sorted(expected_request_ids):
-        counts = observed_by_request[request_id].get("counts")
-        layers = counts.get("layers_loaded") if isinstance(counts, Mapping) else None
-        if layers != GPU_QUALIFICATION_MODEL_LAYER_COUNT:
-            raise RuntimeError(
-                f"capacity connector request {request_id!r} did not load all layers"
-            )
-        layer_counts.append(int(layers))
+    expected_request_ids = tuple(
+        _required_string(request, "request_id") for request in capacity_requests
+    )
+    layer_counts = _require_exact_connector_loads(
+        _successful_connector_loads(config.connector_telemetry_path),
+        expected_client_request_ids=expected_request_ids,
+        label="capacity",
+    )
     return {
         "attention_backend_observed": "TRITON_ATTN",
         "attention_backend_requested": "TRITON_ATTN",
         "cold_disk_evicted_file_count": evicted_files,
         "connector_loaded_layer_counts": layer_counts,
-        "connector_successful_load_count": len(observed_by_request),
+        "connector_successful_load_count": len(layer_counts),
         "fatal_error_count": 0,
         "forced_decode_tokens": GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS,
         "gpu_memory_utilization": gpu_memory_utilization,
@@ -1869,9 +1927,7 @@ def _model_capacity_measurements(
         "max_model_len": max_model_len,
         "observed_peak_headroom_bytes": headroom,
         "observed_peak_used_memory_bytes": memory.peak_used_bytes,
-        "active_request_memory_observation_count": (
-            active_request_observation_count
-        ),
+        "active_request_memory_observation_count": (active_request_observation_count),
         "observed_total_memory_bytes": memory.total_bytes,
         "oom_count": 0,
         "q8_pre_rope_handoffs": True,
@@ -1903,6 +1959,8 @@ def _capacity_vanilla_requests(
 ) -> list[dict[str, Any]]:
     from document_kv_cache._benchmark_datasets import _example_from_record
     from document_kv_cache.benchmarks import (
+        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
+        DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
         DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
         build_cache_prefix_text,
         build_cache_suffix_text,
@@ -1916,7 +1974,7 @@ def _capacity_vanilla_requests(
         trust_remote_code=False,
     )
     result: list[dict[str, Any]] = []
-    for record in selected_records:
+    for example_ordinal, record in enumerate(selected_records):
         dataset = str(record["dataset"])
         example_id = str(record["example_id"])
         example = _example_from_record(
@@ -1925,9 +1983,8 @@ def _capacity_vanilla_requests(
             record_index=1,
             require_dataset=True,
         )
-        full_ids = tokenizer.encode(
-            build_prefill_prompt(example), add_special_tokens=False
-        )
+        full_prompt = build_prefill_prompt(example)
+        full_ids = tokenizer.encode(full_prompt, add_special_tokens=False)
         prefix_ids = tokenizer.encode(
             build_cache_prefix_text(example), add_special_tokens=False
         )
@@ -1946,11 +2003,17 @@ def _capacity_vanilla_requests(
         runtime_prefix = params.get(DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM)
         if not isinstance(runtime_prefix, str):
             raise RuntimeError("capacity handoff runtime prefix is missing")
+        request_id = _capacity_completion_request_id(example_ordinal)
+        runtime_params = dict(params)
+        runtime_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = request_id
+        runtime_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
         result.append(
             {
                 "cache_salt": f"qualification-capacity:{dataset}:{example_id}",
-                "kv_transfer_params": dict(params),
-                "prompt": f"{runtime_prefix}{suffix}",
+                "kv_transfer_params": runtime_params,
+                "prompt": full_prompt,
+                "example_ordinal": example_ordinal,
+                "request_id": request_id,
             }
         )
     if len(result) != GPU_QUALIFICATION_REQUEST_PARALLELISM:
@@ -1969,24 +2032,63 @@ def _run_capacity_requests_concurrently(
     barrier = threading.Barrier(GPU_QUALIFICATION_REQUEST_PARALLELISM)
 
     def execute(request: Mapping[str, Any]) -> dict[str, Any]:
-        barrier.wait(timeout=30)
         params = _mapping(
             request.get("kv_transfer_params"), "capacity kv_transfer_params"
         )
-        return _completion_request(
-            endpoint=endpoint,
-            model=model,
-            prompt=_required_string(request, "prompt"),
-            kv_transfer_params=params,
-            cache_salt=_required_string(request, "cache_salt"),
-            max_tokens=GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS,
+        example_ordinal = request.get("example_ordinal")
+        if type(example_ordinal) is not int or example_ordinal < 0:
+            raise RuntimeError("capacity request example ordinal is invalid")
+        request_id = _required_string(request, "request_id")
+        context = _qualification_completion_context(
+            request_id=request_id,
+            sentinel_phase="capacity",
+            arm_id="vanilla_prefill",
+            example_ordinal=example_ordinal,
+            repeat_ordinal=0,
         )
+        try:
+            barrier.wait(timeout=30)
+            return _completion_request(
+                endpoint=endpoint,
+                model=model,
+                prompt=_required_string(request, "prompt"),
+                kv_transfer_params=params,
+                cache_salt=_required_string(request, "cache_salt"),
+                max_tokens=GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS,
+                request_id=request_id,
+                sentinel_phase="capacity",
+                arm_id="vanilla_prefill",
+                example_ordinal=example_ordinal,
+                repeat_ordinal=0,
+            )
+        except _QualificationCompletionFailure:
+            raise
+        except Exception as exc:
+            raise _QualificationCompletionFailure(
+                request_id=request_id,
+                context=context,
+                request_diagnostic={
+                    "category": "unknown",
+                    "exception_type": _allowlisted_exception_type(exc),
+                    "kind": "client_request_error",
+                },
+            ) from None
 
     with ThreadPoolExecutor(
         max_workers=GPU_QUALIFICATION_REQUEST_PARALLELISM,
         thread_name_prefix="cachet-capacity-c4",
     ) as executor:
-        return list(executor.map(execute, requests))
+        futures = [executor.submit(execute, request) for request in requests]
+        results: list[dict[str, Any]] = []
+        failures: list[_QualificationCompletionFailure] = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except _QualificationCompletionFailure as exc:
+                failures.append(exc)
+        if failures:
+            raise _QualificationCompletionBatchFailure(failures)
+        return results
 
 
 def _server_kv_cache_capacity_tokens(log_path: Path) -> int:
@@ -2007,7 +2109,9 @@ def _server_kv_cache_capacity_tokens(log_path: Path) -> int:
 def _require_server_triton_backend(log_path: Path) -> None:
     text = log_path.read_text(encoding="utf-8", errors="replace")
     if re.search(r"Using\s+[^\n]*TRITON_ATTN\s+backend\.", text) is None:
-        raise RuntimeError("vLLM server log did not attest the forced TRITON_ATTN backend")
+        raise RuntimeError(
+            "vLLM server log did not attest the forced TRITON_ATTN backend"
+        )
 
 
 def _evict_tree_from_page_cache(root: Path) -> int:
@@ -2040,18 +2144,42 @@ def _kv_cache_capacity_tokens(llm: Any) -> int:
         cache = getattr(candidate, "cache_config", candidate)
         blocks = getattr(cache, "num_gpu_blocks", None)
         block_size = getattr(cache, "block_size", None)
-        if type(blocks) is int and blocks > 0 and type(block_size) is int and block_size > 0:
+        if (
+            type(blocks) is int
+            and blocks > 0
+            and type(block_size) is int
+            and block_size > 0
+        ):
             return blocks * block_size
     raise RuntimeError("vLLM did not expose measured GPU KV-block capacity")
 
 
 def _observed_attention_backends(llm: Any) -> set[str]:
-    records = llm.apply_model(_model_attention_backend_names)
+    records = llm.collective_rpc("get_model_inspection")
+    if (
+        not isinstance(records, Sequence)
+        or isinstance(records, (str, bytes))
+        or not records
+        or any(not isinstance(record, str) or not record for record in records)
+    ):
+        raise RuntimeError(
+            "vLLM model inspection returned no nonempty worker records"
+        )
     names = {
-        str(name)
+        match.group(1)
         for record in records
-        for name in (record if isinstance(record, Sequence) else ())
+        for match in re.finditer(
+            (
+                r"(?<![A-Za-z0-9_])backend="
+                r"([A-Za-z][A-Za-z0-9_]*)(?=[,\s)])"
+            ),
+            record,
+        )
     }
+    if not names:
+        raise RuntimeError(
+            "vLLM model inspection exposed no attention backend implementation"
+        )
     normalized: set[str] = set()
     for name in names:
         upper = name.upper()
@@ -2059,26 +2187,15 @@ def _observed_attention_backends(llm: Any) -> set[str]:
             normalized.add("TRITON_ATTN")
         elif "FLASHINFER" in upper:
             normalized.add("FLASHINFER")
-        elif "FLASH_ATTN" in upper or "FLASHATTN" in upper:
+        elif (
+            "FLASH_ATTN" in upper
+            or "FLASHATTN" in upper
+            or "FLASHATTENTION" in upper
+        ):
             normalized.add("FLASH_ATTN")
         else:
             normalized.add(name)
     return normalized
-
-
-def _model_attention_backend_names(model: Any) -> list[str]:
-    names: set[str] = set()
-    for module in model.modules():
-        cls = type(module)
-        qualified = f"{cls.__module__}.{cls.__name__}"
-        upper = qualified.upper()
-        if "ATTENTION" in upper or "TRITON_ATTN" in upper or "FLASHINFER" in upper:
-            names.add(qualified)
-        impl = getattr(module, "impl", None)
-        if impl is not None:
-            impl_cls = type(impl)
-            names.add(f"{impl_cls.__module__}.{impl_cls.__name__}")
-    return sorted(names)
 
 
 def _shutdown_llm(llm: Any | None) -> None:
@@ -2262,8 +2379,7 @@ def _throughput_sentinel(
         prefix_tokens = bucket_prefix_tokens
         rate = prefix_tokens / wall_seconds
         if (
-            _required_string(planned_job, "hardware_id")
-            == "aws-g6e-l40s"
+            _required_string(planned_job, "hardware_id") == "aws-g6e-l40s"
             and rate < GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND
         ):
             raise RuntimeError(
@@ -2337,9 +2453,7 @@ def _configure_transformers_generator(*, pre_rope: bool) -> None:
         CACHET_TRANSFORMERS_MODEL_ID_ENV: GPU_QUALIFICATION_MODEL_ID,
         CACHET_TRANSFORMERS_MODEL_REVISION_ENV: GPU_QUALIFICATION_MODEL_REVISION,
         CACHET_TRANSFORMERS_TOKENIZER_ID_ENV: GPU_QUALIFICATION_MODEL_ID,
-        CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV: (
-            GPU_QUALIFICATION_MODEL_REVISION
-        ),
+        CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV: (GPU_QUALIFICATION_MODEL_REVISION),
         CACHET_TRANSFORMERS_DEVICE_ENV: "cuda",
         CACHET_TRANSFORMERS_DEVICE_MAP_ENV: "auto",
         CACHET_TRANSFORMERS_TORCH_DTYPE_ENV: "bfloat16",
@@ -2453,7 +2567,12 @@ def _matched_token_sentinel(
         _selected_jsonl_record(path)
         for path in _bucket_dataset_paths(input_bundle, 8_192)
     ]
-    selected_records.sort(key=lambda item: str(item.get("example_id", "")))
+    selected_records.sort(
+        key=lambda item: (
+            str(item.get("dataset", "")),
+            str(item.get("example_id", "")),
+        )
+    )
     _write_jsonl(selected_path, selected_records)
 
     _configure_transformers_generator(pre_rope=True)
@@ -2525,6 +2644,8 @@ def _matched_token_sentinel(
     config.output_dir.mkdir(parents=True)
     config.local_dir.mkdir(parents=True)
     server = _start_qualification_vllm_server(config)
+    results: list[dict[str, Any]] = []
+    completion_failures: tuple[_QualificationCompletionFailure, ...] = ()
     try:
         wait_for_server(
             server,
@@ -2536,30 +2657,45 @@ def _matched_token_sentinel(
             config=config,
             selected_records=selected_records,
             params_by_key=params_by_key,
-            input_bundle_sha256=_plan_artifact_pin(
-                plan_record, "input_bundle_sha256"
-            ),
+            input_bundle_sha256=_plan_artifact_pin(plan_record, "input_bundle_sha256"),
             served_model_name=SERVED_MODEL_NAME,
         )
+    except _QualificationCompletionBatchFailure as exc:
+        completion_failures = exc.failures
+    except _QualificationCompletionFailure as exc:
+        completion_failures = (exc,)
     finally:
         terminate_process(server)
-    successful_loads = _successful_connector_loads(config.connector_telemetry_path)
-    expected_request_ids = {
-        str(params["document_kv.request_id"]) for params in params_by_key.values()
-    }
-    observed_request_ids = {
-        str(record.get("request_id")) for record in successful_loads
-    }
-    if not expected_request_ids.issubset(observed_request_ids):
-        raise RuntimeError(
-            "Vanilla HTTP requests did not produce successful connector loads for "
-            f"{sorted(expected_request_ids - observed_request_ids)!r}"
+    known_request_ids = tuple(
+        _matched_completion_request_id(
+            example_ordinal,
+            arm_id=arm_id,
+            repeat_ordinal=repeat_ordinal,
         )
-    for record in successful_loads:
-        counts = record.get("counts")
-        if isinstance(counts, Mapping) and record.get("request_id") in expected_request_ids:
-            if counts.get("layers_loaded") != GPU_QUALIFICATION_MODEL_LAYER_COUNT:
-                raise RuntimeError("connector load did not inject all model layers")
+        for example_ordinal in range(len(selected_records))
+        for arm_id in ("baseline_prefill", "vanilla_prefill")
+        for repeat_ordinal in range(GPU_QUALIFICATION_DETERMINISM_REPEATS)
+    )
+    if completion_failures:
+        _raise_qualification_completion_failure(
+            completion_failures,
+            server_log_path=config.server_log_path,
+            known_request_ids=known_request_ids,
+        )
+    expected_vanilla_request_ids = tuple(
+        _matched_completion_request_id(
+            example_ordinal,
+            arm_id="vanilla_prefill",
+            repeat_ordinal=repeat_ordinal,
+        )
+        for example_ordinal in range(len(selected_records))
+        for repeat_ordinal in range(GPU_QUALIFICATION_DETERMINISM_REPEATS)
+    )
+    _require_exact_connector_loads(
+        _successful_connector_loads(config.connector_telemetry_path),
+        expected_client_request_ids=expected_vanilla_request_ids,
+        label="matched-token",
+    )
     return {
         "attention_backend_observed": "TRITON_ATTN",
         "attention_backend_requested": "TRITON_ATTN",
@@ -2583,6 +2719,13 @@ def _start_qualification_vllm_server(config: Any) -> subprocess.Popen[str]:
     argv = build_vllm_server_args(config, Path(sys.executable))
     if "--trust-remote-code" in argv:
         raise RuntimeError("vLLM server args unexpectedly enabled trust_remote_code")
+    if argv.count("--no-enable-log-requests") != 1:
+        raise RuntimeError("qualification server must disable request logging")
+    if "--log-error-stack" in argv:
+        raise RuntimeError("qualification server error-stack flag was already present")
+    argv.append("--log-error-stack")
+    if argv.count("--log-error-stack") != 1:
+        raise RuntimeError("qualification server error-stack flag is not unique")
     config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = config.server_log_path.open("w", encoding="utf-8")
     try:
@@ -2607,6 +2750,8 @@ def _run_matched_http_requests(
 ) -> list[dict[str, Any]]:
     from document_kv_cache._benchmark_datasets import _example_from_record
     from document_kv_cache.benchmarks import (
+        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
+        DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
         DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
         build_cache_prefix_text,
         build_cache_suffix_text,
@@ -2621,7 +2766,7 @@ def _run_matched_http_requests(
     )
     endpoint = f"{config.server_base_url}/v1/completions"
     results: list[dict[str, Any]] = []
-    for record in selected_records:
+    for example_ordinal, record in enumerate(selected_records):
         dataset = str(record["dataset"])
         example_id = str(record["example_id"])
         example = _example_from_record(
@@ -2655,27 +2800,40 @@ def _run_matched_http_requests(
         runtime_prefix = params.get(DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM, "")
         if not isinstance(runtime_prefix, str):
             raise RuntimeError("handoff runtime prefix text is not a string")
-        vanilla_prompt = f"{runtime_prefix}{cache_suffix}"
         position_hash = _integer_sequence_sha256(
             range(len(full_ids), len(full_ids) + 16)
         )
         arms: list[dict[str, Any]] = []
-        for arm_id, prompt, handoff_params in (
-            ("baseline_prefill", full_prompt, None),
-            ("vanilla_prefill", vanilla_prompt, params),
-        ):
-            repeats = [
-                _completion_request(
-                    endpoint=endpoint,
-                    model=served_model_name,
-                    prompt=prompt,
-                    kv_transfer_params=handoff_params,
-                    cache_salt=(
-                        f"qualification:{dataset}:{example_id}:{arm_id}:repeat-{repeat}"
-                    ),
+        for arm_id in ("baseline_prefill", "vanilla_prefill"):
+            repeats: list[dict[str, Any]] = []
+            for repeat in range(GPU_QUALIFICATION_DETERMINISM_REPEATS):
+                request_id = _matched_completion_request_id(
+                    example_ordinal,
+                    arm_id=arm_id,
+                    repeat_ordinal=repeat,
                 )
-                for repeat in range(2)
-            ]
+                handoff_params: Mapping[str, Any] | None = None
+                if arm_id == "vanilla_prefill":
+                    runtime_params = dict(params)
+                    runtime_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = request_id
+                    runtime_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
+                    handoff_params = runtime_params
+                repeats.append(
+                    _completion_request(
+                        endpoint=endpoint,
+                        model=served_model_name,
+                        prompt=full_prompt,
+                        kv_transfer_params=handoff_params,
+                        cache_salt=(
+                            f"qualification:{dataset}:{example_id}:{arm_id}:repeat-{repeat}"
+                        ),
+                        request_id=request_id,
+                        sentinel_phase="matched_token",
+                        arm_id=arm_id,
+                        example_ordinal=example_ordinal,
+                        repeat_ordinal=repeat,
+                    )
+                )
             token_hashes = [
                 _integer_sequence_sha256(item["token_ids"]) for item in repeats
             ]
@@ -2708,7 +2866,7 @@ def _run_matched_http_requests(
                     "max_abs_logit_drift": drift,
                     "output_token_count": len(repeats[0]["token_ids"]),
                     "output_token_ids_repeat_sha256": token_hashes,
-                    "repeat_count": 2,
+                    "repeat_count": GPU_QUALIFICATION_DETERMINISM_REPEATS,
                 }
             )
         token_hash = _integer_sequence_sha256(full_ids)
@@ -2728,6 +2886,40 @@ def _run_matched_http_requests(
     return results
 
 
+def _capacity_completion_request_id(example_ordinal: int) -> str:
+    if (
+        type(example_ordinal) is not int
+        or example_ordinal < 0
+        or example_ordinal >= GPU_QUALIFICATION_REQUEST_PARALLELISM
+    ):
+        raise ValueError("capacity example ordinal is outside the closed domain")
+    return f"gpuq-capacity-e{example_ordinal:02d}"
+
+
+def _matched_completion_request_id(
+    example_ordinal: int,
+    *,
+    arm_id: str,
+    repeat_ordinal: int,
+) -> str:
+    if (
+        type(example_ordinal) is not int
+        or example_ordinal < 0
+        or example_ordinal >= GPU_QUALIFICATION_MATCHED_EXAMPLES
+    ):
+        raise ValueError("matched-token example ordinal is outside the closed domain")
+    if arm_id not in _QUALIFICATION_COMPLETION_ARMS:
+        raise ValueError("matched-token arm is outside the closed domain")
+    if (
+        type(repeat_ordinal) is not int
+        or repeat_ordinal < 0
+        or repeat_ordinal >= GPU_QUALIFICATION_DETERMINISM_REPEATS
+    ):
+        raise ValueError("matched-token repeat ordinal is outside the closed domain")
+    arm_label = "baseline" if arm_id == "baseline_prefill" else "vanilla"
+    return f"gpuq-matched-e{example_ordinal:02d}-{arm_label}-r{repeat_ordinal}"
+
+
 def _completion_request(
     *,
     endpoint: str,
@@ -2736,8 +2928,21 @@ def _completion_request(
     kv_transfer_params: Mapping[str, Any] | None,
     cache_salt: str,
     max_tokens: int = 16,
+    request_id: str,
+    sentinel_phase: str,
+    arm_id: str,
+    example_ordinal: int,
+    repeat_ordinal: int,
 ) -> dict[str, Any]:
+    context = _qualification_completion_context(
+        request_id=request_id,
+        sentinel_phase=sentinel_phase,
+        arm_id=arm_id,
+        example_ordinal=example_ordinal,
+        repeat_ordinal=repeat_ordinal,
+    )
     body: dict[str, Any] = {
+        "add_special_tokens": False,
         "model": model,
         "prompt": prompt,
         "max_tokens": max_tokens,
@@ -2747,6 +2952,7 @@ def _completion_request(
         "logprobs": 1,
         "return_token_ids": True,
         "cache_salt": cache_salt,
+        "request_id": request_id,
     }
     if kv_transfer_params is not None:
         body["kv_transfer_params"] = dict(kv_transfer_params)
@@ -2756,14 +2962,95 @@ def _completion_request(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=600) as response:
-        record = json.loads(response.read().decode("utf-8"))
+    response_evidence: dict[str, Any] = {}
+
+    def fail_response_contract(
+        kind: str,
+        *,
+        exception: BaseException | None = None,
+        counts: Mapping[str, int] | None = None,
+    ) -> NoReturn:
+        diagnostic: dict[str, Any] = {
+            **response_evidence,
+            "category": "unknown",
+            "kind": kind,
+        }
+        if exception is not None:
+            diagnostic["exception_type"] = _allowlisted_exception_type(exception)
+        if counts:
+            diagnostic["counts"] = dict(counts)
+        raise _QualificationCompletionFailure(
+            request_id=request_id,
+            context=context,
+            request_diagnostic=diagnostic,
+        ) from None
+
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            try:
+                observed = response.read(
+                    _QUALIFICATION_COMPLETION_RESPONSE_MAX_BYTES + 1
+                )
+            except Exception as exc:
+                fail_response_contract("response_read_error", exception=exc)
+        captured = observed[:_QUALIFICATION_COMPLETION_RESPONSE_MAX_BYTES]
+        response_evidence = {
+            "captured_byte_count": len(captured),
+            "captured_sha256": sha256(captured).hexdigest(),
+            "captured_truncated": len(observed) > len(captured),
+        }
+        if len(observed) > len(captured):
+            fail_response_contract("response_too_large")
+        try:
+            record = json.loads(captured.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            fail_response_contract("response_decode_error", exception=exc)
+    except urllib.error.HTTPError as exc:
+        diagnostic = _bounded_http_error_diagnostic(exc)
+        raise _QualificationCompletionFailure(
+            request_id=request_id,
+            context=context,
+            request_diagnostic=diagnostic,
+        ) from None
+    except urllib.error.URLError as exc:
+        raise _QualificationCompletionFailure(
+            request_id=request_id,
+            context=context,
+            request_diagnostic={
+                "category": "unknown",
+                "kind": "transport_error",
+                "transport_error_type": _allowlisted_exception_type(exc.reason),
+            },
+        ) from None
+    except TimeoutError as exc:
+        raise _QualificationCompletionFailure(
+            request_id=request_id,
+            context=context,
+            request_diagnostic={
+                "category": "unknown",
+                "kind": "timeout",
+                "transport_error_type": _allowlisted_exception_type(exc),
+            },
+        ) from None
+    except OSError as exc:
+        raise _QualificationCompletionFailure(
+            request_id=request_id,
+            context=context,
+            request_diagnostic={
+                "category": "unknown",
+                "kind": "transport_error",
+                "transport_error_type": _allowlisted_exception_type(exc),
+            },
+        ) from None
     choices = record.get("choices") if isinstance(record, Mapping) else None
     if not isinstance(choices, list) or len(choices) != 1:
-        raise RuntimeError(f"completion response has invalid choices: {record!r}")
+        fail_response_contract(
+            "response_contract_error",
+            counts={"choice_count": len(choices) if isinstance(choices, list) else 0},
+        )
     choice = choices[0]
     if not isinstance(choice, Mapping):
-        raise RuntimeError("completion choice is not an object")
+        fail_response_contract("response_contract_error")
     token_ids = choice.get("token_ids")
     logprobs = choice.get("logprobs")
     token_logprobs = (
@@ -2774,8 +3061,12 @@ def _completion_request(
         or len(token_ids) != max_tokens
         or any(type(item) is not int for item in token_ids)
     ):
-        raise RuntimeError(
-            f"completion did not return exactly {max_tokens} token IDs"
+        fail_response_contract(
+            "response_contract_error",
+            counts={
+                "expected_token_id_count": max_tokens,
+                "token_id_count": len(token_ids) if isinstance(token_ids, list) else 0,
+            },
         )
     if (
         not isinstance(token_logprobs, list)
@@ -2787,11 +3078,343 @@ def _completion_request(
             for item in token_logprobs
         )
     ):
-        raise RuntimeError("completion logprobs are missing or non-finite")
+        fail_response_contract(
+            "response_contract_error",
+            counts={
+                "token_id_count": len(token_ids),
+                "token_logprob_count": (
+                    len(token_logprobs) if isinstance(token_logprobs, list) else 0
+                ),
+            },
+        )
     return {
         "token_ids": token_ids,
         "token_logprobs": [float(item) for item in token_logprobs],
     }
+
+
+def _qualification_completion_context(
+    *,
+    request_id: str,
+    sentinel_phase: str,
+    arm_id: str,
+    example_ordinal: int,
+    repeat_ordinal: int,
+) -> dict[str, Any]:
+    if sentinel_phase not in _QUALIFICATION_COMPLETION_PHASES:
+        raise ValueError("qualification completion phase is outside the closed domain")
+    if arm_id not in _QUALIFICATION_COMPLETION_ARMS:
+        raise ValueError("qualification completion arm is outside the closed domain")
+    if sentinel_phase == "capacity":
+        if arm_id != "vanilla_prefill" or repeat_ordinal != 0:
+            raise ValueError("capacity completion context is invalid")
+        expected_request_id = _capacity_completion_request_id(example_ordinal)
+    else:
+        expected_request_id = _matched_completion_request_id(
+            example_ordinal,
+            arm_id=arm_id,
+            repeat_ordinal=repeat_ordinal,
+        )
+    if request_id != expected_request_id:
+        raise ValueError("qualification completion request identity drift")
+    return {
+        "arm_id": arm_id,
+        "example_ordinal": example_ordinal,
+        "repeat_ordinal": repeat_ordinal,
+        "sentinel_phase": sentinel_phase,
+    }
+
+
+def _bounded_http_error_diagnostic(
+    error: urllib.error.HTTPError,
+) -> dict[str, Any]:
+    try:
+        try:
+            observed = error.read(_QUALIFICATION_HTTP_ERROR_MAX_BYTES + 1)
+        except Exception as exc:
+            return {
+                "body_read_error_type": _allowlisted_exception_type(exc),
+                "category": "unknown",
+                "http_status": int(error.code),
+                "kind": "http_error_body_unavailable",
+            }
+    finally:
+        error.close()
+    captured = observed[:_QUALIFICATION_HTTP_ERROR_MAX_BYTES]
+    diagnostic: dict[str, Any] = {
+        "captured_byte_count": len(captured),
+        "captured_sha256": sha256(captured).hexdigest(),
+        "captured_truncated": len(observed) > len(captured),
+        "http_status": int(error.code),
+        "kind": "http_error",
+    }
+    diagnostic.update(_qualification_error_evidence(captured))
+    try:
+        decoded = json.loads(captured.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        decoded = None
+    if isinstance(decoded, Mapping):
+        error_record = decoded.get("error")
+        api_error_type = (
+            error_record.get("type")
+            if isinstance(error_record, Mapping)
+            else decoded.get("type")
+        )
+        if api_error_type in {
+            "BadRequestError",
+            "EngineDeadError",
+            "Internal Server Error",
+            "InternalServerError",
+            "RuntimeError",
+            "ValueError",
+        }:
+            diagnostic["api_error_type"] = api_error_type
+    return diagnostic
+
+
+def _qualification_error_evidence(content: bytes) -> dict[str, Any]:
+    text = content.decode("utf-8", errors="replace")
+    lower = text.lower()
+    if "fewer than the cached prefix length" in lower:
+        category = "token_contract_shortfall"
+    elif "token contract" in lower and any(
+        marker in lower for marker in ("differ", "mismatch", "does not match")
+    ):
+        category = "token_contract_mismatch"
+    elif "num_computed_tokens" in lower and "num_tokens" in lower:
+        category = "scheduler_visible_token_invariant"
+    elif "unknown" in lower and "kv" in lower and "layer" in lower:
+        category = "unknown_kv_layer"
+    elif any(
+        marker in lower
+        for marker in ("cuda out of memory", "outofmemoryerror", "cudaerroroutofmemory")
+    ):
+        category = "cuda_oom"
+    elif "triton" in lower and any(
+        marker in lower for marker in ("compile", "compilation", "kernel launch")
+    ):
+        category = "triton_compile_or_launch"
+    elif "enginedeaderror" in lower or (
+        "enginecore" in lower
+        and any(marker in lower for marker in ("dead", "failed", "error"))
+    ):
+        category = "engine_dead"
+    else:
+        category = "unknown"
+    evidence: dict[str, Any] = {"category": category}
+    exception_type = _allowlisted_exception_type_from_text(text)
+    if exception_type != "unknown":
+        evidence["exception_type"] = exception_type
+    counts: dict[str, int] = {}
+    shortfall = re.search(
+        r"exposes\s+([0-9]+)\s+token ids,\s+fewer than\s+the cached prefix length\s+([0-9]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if shortfall is not None:
+        counts["visible_token_count"] = int(shortfall.group(1))
+        counts["cached_prefix_token_count"] = int(shortfall.group(2))
+    for field_name in ("num_computed_tokens", "num_tokens"):
+        match = re.search(
+            rf"\b{field_name}\b\s*(?:=|:)\s*([0-9]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match is not None:
+            counts[field_name] = int(match.group(1))
+    if counts:
+        evidence["counts"] = counts
+    return evidence
+
+
+def _allowlisted_exception_type(value: object) -> str:
+    return _allowlisted_exception_type_from_text(type(value).__name__)
+
+
+def _allowlisted_exception_type_from_text(text: str) -> str:
+    for name in (
+        "EngineDeadError",
+        "JSONDecodeError",
+        "UnicodeDecodeError",
+        "IncompleteRead",
+        "FileNotFoundError",
+        "PermissionError",
+        "IsADirectoryError",
+        "RemoteDisconnected",
+        "OutOfMemoryError",
+        "AssertionError",
+        "BrokenBarrierError",
+        "ConnectionRefusedError",
+        "ConnectionResetError",
+        "TimeoutError",
+        "HTTPError",
+        "RuntimeError",
+        "ValueError",
+        "OSError",
+    ):
+        if re.search(rf"\b{re.escape(name)}\b", text) is not None:
+            return name
+    return "unknown"
+
+
+def _server_log_failure_diagnostic(
+    path: Path,
+    *,
+    known_request_ids: Sequence[str],
+) -> dict[str, Any]:
+    request_ids = tuple(sorted(set(known_request_ids)))
+    if len(request_ids) != len(known_request_ids) or any(
+        not request_id or "\n" in request_id for request_id in request_ids
+    ):
+        raise ValueError("qualification diagnostic request identities are invalid")
+    needles = {request_id: request_id.encode("utf-8") for request_id in request_ids}
+    overlap_size = max((len(needle) for needle in needles.values()), default=1) - 1
+    overlap = b""
+    tail = bytearray()
+    digest = sha256()
+    byte_count = 0
+    seen: set[str] = set()
+    descriptor = -1
+    try:
+        _require_no_native_symlink_ancestors(
+            path,
+            label="qualification server log",
+            include_leaf=False,
+        )
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return {
+                "available": False,
+                "category": "unknown",
+                "io_error_type": "unknown",
+                "unavailable_reason": "non_regular_file",
+            }
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                byte_count += len(chunk)
+                digest.update(chunk)
+                searchable = overlap + chunk
+                for request_id, needle in needles.items():
+                    if request_id not in seen and needle in searchable:
+                        seen.add(request_id)
+                overlap = searchable[-overlap_size:] if overlap_size else b""
+                tail.extend(chunk)
+                if len(tail) > _QUALIFICATION_SERVER_LOG_TAIL_MAX_BYTES:
+                    del tail[:-_QUALIFICATION_SERVER_LOG_TAIL_MAX_BYTES]
+    except (OSError, RuntimeError) as exc:
+        return {
+            "available": False,
+            "category": "unknown",
+            "io_error_type": _allowlisted_exception_type(exc),
+            "unavailable_reason": "io_error",
+        }
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    diagnostic: dict[str, Any] = {
+        "available": True,
+        "byte_count": byte_count,
+        "request_ids_seen": sorted(seen),
+        "sha256": digest.hexdigest(),
+        "tail_inspected_byte_count": len(tail),
+        "tail_truncated": byte_count > len(tail),
+    }
+    diagnostic.update(_qualification_error_evidence(bytes(tail)))
+    return diagnostic
+
+
+def _raise_qualification_completion_failure(
+    failures: Sequence[_QualificationCompletionFailure],
+    *,
+    server_log_path: Path,
+    known_request_ids: Sequence[str],
+) -> None:
+    if not failures:
+        raise ValueError("qualification completion failure set is empty")
+    known_id_set = set(known_request_ids)
+    if len(known_id_set) != len(known_request_ids):
+        raise ValueError("qualification diagnostic request identities are duplicated")
+    closed_context_keys = {
+        "arm_id",
+        "example_ordinal",
+        "repeat_ordinal",
+        "request_id",
+        "sentinel_phase",
+    }
+    for failure in failures:
+        if failure.request_id not in known_id_set:
+            raise ValueError("qualification failure request identity is not known")
+        if set(failure.request_diagnostic).intersection(closed_context_keys):
+            raise ValueError("qualification request diagnostic overlaps its context")
+        sentinel_phase = failure.context.get("sentinel_phase")
+        arm_id = failure.context.get("arm_id")
+        example_ordinal = failure.context.get("example_ordinal")
+        repeat_ordinal = failure.context.get("repeat_ordinal")
+        if (
+            not isinstance(sentinel_phase, str)
+            or not isinstance(arm_id, str)
+            or type(example_ordinal) is not int
+            or type(repeat_ordinal) is not int
+        ):
+            raise ValueError("qualification failure request context is invalid")
+        expected_context = _qualification_completion_context(
+            request_id=failure.request_id,
+            sentinel_phase=sentinel_phase,
+            arm_id=arm_id,
+            example_ordinal=example_ordinal,
+            repeat_ordinal=repeat_ordinal,
+        )
+        if failure.context != expected_context:
+            raise ValueError("qualification failure request context differs")
+    ordered = sorted(
+        failures,
+        key=lambda failure: (
+            str(failure.context.get("sentinel_phase")),
+            int(failure.context.get("example_ordinal", -1)),
+            str(failure.context.get("arm_id")),
+            int(failure.context.get("repeat_ordinal", -1)),
+        ),
+    )
+    request_diagnostics = [
+        {
+            **failure.request_diagnostic,
+            **failure.context,
+            "request_id": failure.request_id,
+        }
+        for failure in ordered
+    ]
+    server_log = _server_log_failure_diagnostic(
+        server_log_path,
+        known_request_ids=known_request_ids,
+    )
+    categories = [
+        str(record.get("category", "unknown"))
+        for record in (*request_diagnostics, server_log)
+    ]
+    category = next(
+        (candidate for candidate in categories if candidate != "unknown"),
+        "unknown",
+    )
+    record = {
+        "category": category,
+        "record_type": "cachet.gpu_qualification_completion_failure.v1",
+        "requests": request_diagnostics,
+        "schema_version": 1,
+        "server_log": server_log,
+    }
+    payload = json.dumps(record, separators=(",", ":"), sort_keys=True)
+    message = f"qualification completion failure: {payload}"
+    if "\n" in message or len(message.encode("utf-8")) >= (
+        _QUALIFICATION_FAILURE_DIAGNOSTIC_MAX_BYTES
+    ):
+        raise RuntimeError(
+            "qualification completion failure diagnostic exceeded its closed bound"
+        ) from None
+    raise RuntimeError(message) from None
 
 
 def _successful_connector_loads(path: Path) -> list[Mapping[str, Any]]:
@@ -2802,8 +3425,7 @@ def _successful_connector_loads(path: Path) -> list[Mapping[str, Any]]:
         value = json.loads(line)
         if (
             isinstance(value, Mapping)
-            and value.get("record_type")
-            == "document_kv.vllm_native_provider_load.v1"
+            and value.get("record_type") == "document_kv.vllm_native_provider_load.v1"
             and value.get("event") == "load_request"
             and value.get("success") is True
         ):
@@ -2813,14 +3435,63 @@ def _successful_connector_loads(path: Path) -> list[Mapping[str, Any]]:
     return records
 
 
+def _require_exact_connector_loads(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    expected_client_request_ids: Sequence[str],
+    label: str,
+) -> list[int]:
+    expected_ids = tuple(sorted(expected_client_request_ids))
+    expected_count = 4 if label == "capacity" else 8 if label == "matched-token" else 0
+    if (
+        expected_count == 0
+        or len(expected_ids) != expected_count
+        or len(set(expected_ids)) != expected_count
+        or len(records) != expected_count
+    ):
+        raise RuntimeError(f"{label} connector load closure is not exact")
+    expected_pairs = {
+        (request_id, f"cmpl-{request_id}-0") for request_id in expected_ids
+    }
+    observed_pairs: list[tuple[str, str]] = []
+    layers_by_client_id: dict[str, int] = {}
+    for record in records:
+        benchmark_request_id = record.get("benchmark_request_id")
+        runtime_request_id = record.get("request_id")
+        if not isinstance(benchmark_request_id, str) or not isinstance(
+            runtime_request_id, str
+        ):
+            raise RuntimeError(f"{label} connector load identity is invalid")
+        observed_pairs.append((benchmark_request_id, runtime_request_id))
+        counts = record.get("counts")
+        layers = counts.get("layers_loaded") if isinstance(counts, Mapping) else None
+        if layers != GPU_QUALIFICATION_MODEL_LAYER_COUNT:
+            raise RuntimeError(
+                f"{label} connector load did not inject all model layers"
+            )
+        if benchmark_request_id in layers_by_client_id:
+            raise RuntimeError(f"{label} connector load identity is duplicated")
+        layers_by_client_id[benchmark_request_id] = int(layers)
+    if (
+        len(set(observed_pairs)) != expected_count
+        or set(observed_pairs) != expected_pairs
+    ):
+        raise RuntimeError(f"{label} connector load identity closure differs")
+    return [layers_by_client_id[request_id] for request_id in expected_ids]
+
+
 def _bucket_dataset_paths(input_bundle: Path, length: int) -> list[Path]:
     directory = input_bundle / str(length)
     if not directory.is_dir() or directory.is_symlink():
         raise RuntimeError(f"input bundle is missing the {length} bucket")
-    paths = [directory / f"{dataset}.jsonl" for dataset in GPU_QUALIFICATION_INPUT_DATASETS]
+    paths = [
+        directory / f"{dataset}.jsonl" for dataset in GPU_QUALIFICATION_INPUT_DATASETS
+    ]
     observed = {path.name for path in directory.glob("*.jsonl")}
     expected = {path.name for path in paths}
-    if observed != expected or any(not path.is_file() or path.is_symlink() for path in paths):
+    if observed != expected or any(
+        not path.is_file() or path.is_symlink() for path in paths
+    ):
         raise RuntimeError(
             f"input bucket {length} must contain exactly {sorted(expected)!r}"
         )
@@ -2922,7 +3593,7 @@ def _distribution_exists(name: str) -> bool:
 
 
 def _torch() -> Any:
-    import torch  # type: ignore[import-not-found]
+    import torch
 
     return torch
 
@@ -2935,9 +3606,7 @@ def _required_string(value: Mapping[str, Any], key: str) -> str:
 
 
 def _mapping(value: Any, field_name: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or any(
-        not isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
         raise ValueError(f"{field_name} must be an object")
     return value
 

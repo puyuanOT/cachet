@@ -549,22 +549,28 @@ class DatabricksVLLMSmokeJobConfig:
                 "benchmark_prewarm_payload_cache and benchmark_prewarm_cache_prefix "
                 "are mutually exclusive"
             )
-        if self.benchmark_prewarm_payload_cache:
-            runs_cache_arm = (
-                any(
-                    _arm_spec_requires_cachet_handoff(spec)
-                    for spec in self.benchmark_arm_specs
-                )
-                if self.benchmark_arm_specs
-                else not self.benchmark_arms
-                or CACHE_REUSE_ARM in self.benchmark_arms
+        runs_cache_arm = (
+            any(
+                _arm_spec_requires_cachet_handoff(spec)
+                for spec in self.benchmark_arm_specs
             )
+            if self.benchmark_arm_specs
+            else not self.benchmark_arms
+            or CACHE_REUSE_ARM in self.benchmark_arms
+        )
+        if self.benchmark_prewarm_payload_cache:
             if not runs_cache_arm:
                 raise ValueError(
                     "benchmark_prewarm_payload_cache requires a Cachet handoff benchmark arm"
                 )
         if self.benchmark_cache_runtime_prompt and not self.dataset_specs:
             raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
+        if self.benchmark_cache_runtime_prompt and runs_cache_arm:
+            raise ValueError(
+                "benchmark_cache_runtime_prompt is unsupported for Cachet handoff "
+                "arms because the vLLM native provider requires the full logical "
+                "prompt"
+            )
         if self.benchmark_prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
             raise ValueError("benchmark_prefix_cache_salt_mode must be 'static' or 'per_request'")
         if self.benchmark_prewarm_cache_prefix and self.benchmark_prefix_cache_salt_mode != "static":

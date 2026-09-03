@@ -710,11 +710,9 @@ def test_native_provider_rejects_suffix_only_prompt_length():
         provider.get_num_new_matched_tokens(request, 0)
 
 
-def test_native_provider_caps_runtime_prefix_to_visible_request_length():
-    # Regression: a suffix-only runtime request must never report more externally
-    # computed tokens than it carries. Returning the full cached prefix here used to
-    # violate vLLM's ``num_computed_tokens <= request.num_tokens`` invariant and crash
-    # EngineCore with an AssertionError on every request.
+def test_native_provider_rejects_runtime_prompt_mode_fail_closed():
+    # vLLM's scheduler can only accept external KV for a prefix visible in the request.
+    # A suffix-only runtime prompt cannot preserve that positional/token contract.
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
     request = SimpleNamespace(
@@ -723,22 +721,17 @@ def test_native_provider_caps_runtime_prefix_to_visible_request_length():
         kv_transfer_params={DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime"},
     )
 
-    matched, load_async = provider.get_num_new_matched_tokens(request, 0)
-    assert load_async is False
-    assert matched < request.num_tokens
-    assert matched == 0
+    with pytest.raises(ValueError, match="runtime.*unsupported.*full logical prompt"):
+        provider.get_num_new_matched_tokens(request, 0)
 
 
-def test_native_provider_matches_aligned_external_prefix_for_runtime_prompt_mode():
-    # When the runtime-mode request carries the full token sequence, the connector
-    # still matches the block-aligned cached prefix (here 2 of 3 cached tokens), and
-    # the matched count stays strictly below the visible request length.
+def test_native_provider_matches_aligned_external_prefix_for_logical_prompt_mode():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
     request = SimpleNamespace(
         request_id="req-1",
         num_tokens=5,
-        kv_transfer_params={DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime"},
+        kv_transfer_params={DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "logical"},
     )
 
     matched, load_async = provider.get_num_new_matched_tokens(request, 0)
@@ -2420,11 +2413,23 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
     entry = result.manifest.entries[0]
     runtime_request_id = f"cmpl-{entry.request_id}-0"
     connector = DocumentKVConnector(provider=DocumentKVNativeProvider())
+    runtime_params = entry.kv_transfer_params()
+    runtime_request = SimpleNamespace(
+        request_id=runtime_request_id,
+        num_tokens=3,
+        prompt_token_ids=(1, 2, 3),
+        kv_transfer_params=runtime_params,
+    )
+    with pytest.raises(ValueError, match="runtime.*unsupported.*full logical prompt"):
+        connector.get_num_new_matched_tokens(runtime_request, 0)
+    logical_params = dict(runtime_params)
+    logical_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
+    logical_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = entry.request_id
     request = SimpleNamespace(
         request_id=runtime_request_id,
         num_tokens=3,
         prompt_token_ids=(1, 2, 3),
-        kv_transfer_params=entry.kv_transfer_params(),
+        kv_transfer_params=logical_params,
     )
     layer_0 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
     layer_1 = torch.zeros((8, 1, 2, 4), dtype=torch.int8)
@@ -2434,6 +2439,10 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
     meta = connector.build_connector_meta(scheduler_output([4], request_id=runtime_request_id))
     assert meta.loads[0].request_id == runtime_request_id
     assert meta.loads[0].actions.reservation.request_id == runtime_request_id
+    assert (
+        meta.loads[0].actions.bind.metadata[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM]
+        == entry.request_id
+    )
     assert meta.loads[0].payload is None
     assert meta.loads[0].payload_uri == entry.payload_uri
     connector.register_kv_caches(

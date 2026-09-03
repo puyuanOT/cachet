@@ -1183,6 +1183,20 @@ def test_publication_path_rejects_a_reclosed_but_reordered_execution_plan(
         shard_plan,
         execution_plan,
     )
+    assert execution_plan["record_type"] == "cachet.full_score_execution_plan.v2"
+    assert execution_plan["schema_version"] == 2
+    assert execution_plan["protocol"] == full_score._full_score_protocol_record()
+    protocol_drift = copy.deepcopy(execution_plan)
+    protocol_drift["protocol"]["add_special_tokens"] = True
+    _close(protocol_drift)
+    with pytest.raises(ValueError, match="execution-plan protocol drift"):
+        full_score._validate_execution_plan(
+            protocol_drift,
+            inventory=inventory,
+            shard_plan=shard_plan,
+        )
+    with pytest.raises(ValueError, match="execution-plan protocol drift"):
+        full_score._validate_budget_execution_plan(protocol_drift)
     reordered = copy.deepcopy(execution_plan)
     reordered["waves"][0]["shards"].reverse()
     reordered["waves"][0]["shard_ids"].reverse()
@@ -1229,6 +1243,14 @@ def test_worker_payloads_are_token_balanced_closed_and_persistent(
         assert command[command.index("--max-tokens") + 1] == "64"
         assert command[command.index("--temperature") + 1] == "0"
         assert command[command.index("--repeats") + 1] == "1"
+        extra_body_flag = (
+            "--baseline-extra-body-json"
+            if method == "baseline"
+            else "--cache-extra-body-json"
+        )
+        extra_body = json.loads(command[command.index(extra_body_flag) + 1])
+        assert extra_body["add_special_tokens"] is False
+        assert "--cache-runtime-prompt" not in command
         assert not any("trunc" in argument or "padding" in argument for argument in command)
     environment = full_score._worker_environment(campaign["bundle"].runtime)
     assert (
@@ -1473,6 +1495,9 @@ def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
     }
     for method in full_score.FULL_SCORE_METHODS:
         result = protocol_result(method)
+        assert result.experiment_manifest.arms[0].request_customization_digest == (
+            "440181b5f7930106194b542de751661bbd5662a071e7d10b64cf8172ac29774f"
+        )
         full_score._validate_full_score_benchmark_protocol(
             result,
             method=method,
@@ -1543,35 +1568,36 @@ def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
             "physical_transform_version": "1",
             "prefix_cache_salt": expected_cache_salt,
             "prefix_cache_salt_attached": "true",
-            "prompt_text_mode": "runtime",
+            "prompt_text_mode": "logical",
             "prompt_token_source": "server_usage",
             "request_id": "request-1",
             "request_mode": "completion",
             "request_payload_endpoint": "/v1/completions",
+            "request_payload_add_special_tokens": "false",
             "request_payload_keys": (
-                "cache_salt,kv_transfer_params,max_tokens,model,prompt,request_id,"
-                "stream,stream_options,temperature"
+                "add_special_tokens,cache_salt,kv_transfer_params,max_tokens,"
+                "model,prompt,request_id,stream,stream_options,temperature"
             ),
             "request_payload_kv_transfer_param_keys": "document_kv.request_id",
             "request_payload_max_token_fields": "max_tokens",
             "request_payload_max_tokens": "64",
-            "request_payload_prompt_chars": "12",
-            "request_payload_prompt_sha256": runtime_prompt_sha256,
+            "request_payload_prompt_chars": "24",
+            "request_payload_prompt_sha256": logical_prompt_sha256,
             "runtime_prompt_sha256": runtime_prompt_sha256,
-            "runtime_prompt_tokens": "4",
+            "runtime_prompt_tokens": "20",
             "server": "openai-compatible",
-            "server_usage_prompt_tokens": "4",
+            "server_usage_prompt_tokens": "20",
             "server_usage_prompt_tokens_present": "true",
             "stream": "true",
         },
-        prompt_tokens=4,
+        prompt_tokens=20,
         request_id="request-1",
     )
     prompt_protocol = {
         "method": "vanilla_prefill",
         "expected_logical_prompt_sha256": logical_prompt_sha256,
         "expected_runtime_prompt_sha256": runtime_prompt_sha256,
-        "expected_request_prompt_chars": 12,
+        "expected_request_prompt_chars": 24,
         "expected_prefix_cache_salt": expected_cache_salt,
         "expected_kv_parameter_keys": "document_kv.request_id",
         "expected_logical_prompt_tokens": 20,
@@ -1580,20 +1606,27 @@ def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
         vanilla_prompt_measurement,
         **prompt_protocol,
     )
-    missing_runtime_flag = copy.deepcopy(vanilla_prompt_measurement)
-    missing_runtime_flag.metadata["prompt_text_mode"] = "logical"
+    enabled_special_tokens = copy.deepcopy(vanilla_prompt_measurement)
+    enabled_special_tokens.metadata["request_payload_add_special_tokens"] = "true"
     with pytest.raises(ValueError, match="prompt-delivery protocol drift"):
         full_score._validate_full_score_measurement_prompt_protocol(
-            missing_runtime_flag,
+            enabled_special_tokens,
             **prompt_protocol,
         )
-    sent_logical_prompt = copy.deepcopy(vanilla_prompt_measurement)
-    sent_logical_prompt.metadata[
-        "request_payload_prompt_sha256"
-    ] = logical_prompt_sha256
+    runtime_delivery = copy.deepcopy(vanilla_prompt_measurement)
+    runtime_delivery.metadata["prompt_text_mode"] = "runtime"
     with pytest.raises(ValueError, match="prompt-delivery protocol drift"):
         full_score._validate_full_score_measurement_prompt_protocol(
-            sent_logical_prompt,
+            runtime_delivery,
+            **prompt_protocol,
+        )
+    sent_runtime_prompt = copy.deepcopy(vanilla_prompt_measurement)
+    sent_runtime_prompt.metadata[
+        "request_payload_prompt_sha256"
+    ] = runtime_prompt_sha256
+    with pytest.raises(ValueError, match="prompt-delivery protocol drift"):
+        full_score._validate_full_score_measurement_prompt_protocol(
+            sent_runtime_prompt,
             **prompt_protocol,
         )
     noncanonical_usage = copy.deepcopy(vanilla_prompt_measurement)

@@ -319,6 +319,7 @@ def _niah_grid() -> dict[str, Any]:
 
 def _protocol() -> dict[str, Any]:
     return {
+        "add_special_tokens": False,
         "complete_inventory_required": True,
         "input_length": {
             "max_natural_prompt_tokens": 32_768,
@@ -337,7 +338,8 @@ def _protocol() -> dict[str, Any]:
         "methods": ["baseline_prefill", "vanilla_prefill"],
         "natural_eos": True,
         "passes_per_method": 1,
-        "protocol_id": "cachet-vllm-0.27.1-complete-score-v1",
+        "prompt_text_mode": "logical",
+        "protocol_id": "cachet-vllm-0.27.1-complete-score-v2",
         "request_parallelism": 4,
         "temperature": 0.0,
     }

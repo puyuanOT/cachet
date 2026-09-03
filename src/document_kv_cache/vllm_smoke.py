@@ -1260,6 +1260,12 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError(
                 "benchmark_cache_runtime_prompt requires prepared dataset specs"
             )
+        if self.cache_runtime_prompt and self.runs_document_kv_cache_arm:
+            raise ValueError(
+                "benchmark_cache_runtime_prompt is unsupported for Cachet handoff "
+                "arms because the vLLM native provider requires the full logical "
+                "prompt"
+            )
         if self.prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
             raise ValueError("prefix_cache_salt_mode must be 'static' or 'per_request'")
         if self.prewarm_cache_prefix and self.prefix_cache_salt_mode != "static":
@@ -3552,13 +3558,16 @@ def _build_lmcache_pass_args(
     ]
     if config.generation_seed is not None:
         args.extend(["--generation-seed", str(config.generation_seed)])
-    if config.force_max_tokens:
-        args.extend(
-            [
-                "--baseline-extra-body-json",
-                json.dumps({"ignore_eos": True}, sort_keys=True),
-            ]
-        )
+    extra_body = _benchmark_extra_body(
+        cache_salt=None,
+        force_max_tokens=config.force_max_tokens,
+    )
+    args.extend(
+        [
+            "--baseline-extra-body-json",
+            json.dumps(extra_body, sort_keys=True),
+        ]
+    )
     args.extend(dataset_args(dataset_paths))
     return args
 
@@ -3712,6 +3721,7 @@ def prewarm_cache_prefixes(
         kv_transfer_params = dict(example.kv_transfer_params)
         kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
         body = {
+            "add_special_tokens": False,
             "model": SERVED_MODEL_NAME,
             "prompt": _prewarm_prompt_text(example),
             "max_tokens": 1,
@@ -3806,6 +3816,7 @@ def prime_payload_cache(
             kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
             kv_transfer_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = request_id
             body = {
+                "add_special_tokens": False,
                 "model": SERVED_MODEL_NAME,
                 # The handoff's per-segment token contracts were generated from the
                 # exact logical benchmark prompt. A shortened warmup suffix can
@@ -4341,6 +4352,7 @@ def run_multi_turn_hybrid_latency(
                     kv_transfer_params = dict(example.kv_transfer_params)
                     kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
                     body: dict[str, object] = {
+                        "add_special_tokens": False,
                         "model": SERVED_MODEL_NAME,
                         "prompt": conv["prompt"],
                         "max_tokens": config.max_tokens,
@@ -4354,6 +4366,7 @@ def run_multi_turn_hybrid_latency(
                         conv["prompt"], conv["output"], followups[turn_index - 2]
                     )
                     body = {
+                        "add_special_tokens": False,
                         "model": SERVED_MODEL_NAME,
                         "prompt": conv["prompt"],
                         "max_tokens": config.max_tokens,
@@ -5982,7 +5995,7 @@ def _benchmark_extra_body(
     cache_salt: str | None,
     force_max_tokens: bool,
 ) -> dict[str, object]:
-    extra_body: dict[str, object] = {}
+    extra_body: dict[str, object] = {"add_special_tokens": False}
     if cache_salt:
         extra_body["cache_salt"] = cache_salt
     if force_max_tokens:
