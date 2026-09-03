@@ -1233,6 +1233,25 @@ def test_v2_executor_requires_closed_sentinel_wrapper_and_publishes_result(
     )
     assert record["record_type"] == "cachet.vllm_0271_gpu_job_result.v2"
     assert json.loads(output_path.read_text(encoding="utf-8")) == record
+    monkeypatch.setattr(
+        databricks_v1,
+        "download_databricks_volume_file_bytes",
+        lambda *_args, **_kwargs: output_path.read_bytes(),
+    )
+    reread = databricks_v1._read_gpu_qualification_result(
+        databricks_v1.DatabricksWorkspaceConfig(
+            "https://dbc.example", "secret-token"
+        ),
+        output_uri,
+        label="GPU v2 result",
+        closed_record_convention="field_blank",
+    )
+    databricks_v2.validate_gpu_job_result_v2_record(
+        reread,
+        plan_record=plan,
+        expected_artifact_pins=pins,
+    )
+    assert reread == record
     assert not work_dir.exists()
 
 

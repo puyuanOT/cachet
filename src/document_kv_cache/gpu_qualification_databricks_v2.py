@@ -2642,7 +2642,7 @@ def _terminal_receipt_record_v2(
     receipt["record_type"] = GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE
     receipt["schema_version"] = 2
     receipt["closed_record_sha256"] = ""
-    databricks_v1._seal_record(receipt)
+    _seal_controller_record_v2(receipt)
     return receipt
 
 
@@ -2786,6 +2786,7 @@ def collect_gpu_qualification_evidence_v2(
             config,
             str(contract["output_json"]),
             label=f"GPU v2 result {contract['job_id']}",
+            closed_record_convention="field_blank",
         )
         validate_gpu_job_result_v2_record(
             result,
@@ -2815,7 +2816,7 @@ def collect_gpu_qualification_evidence_v2(
     for receipt in terminal_receipts:
         receipt["phase_terminal_prefix"] = terminal_prefix.to_record()
         receipt["closed_record_sha256"] = ""
-        databricks_v1._seal_record(receipt)
+        _seal_controller_record_v2(receipt)
     databricks_v1._validate_collected_identity_closure(
         terminal_receipts,
         contracts=contracts,

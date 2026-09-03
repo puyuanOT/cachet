@@ -577,10 +577,21 @@ def _install_minimal_governed_evidence_stubs(
     results: Mapping[str, dict[str, Any]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> qualification_v1.GPUQualificationSelection:
+    def read_result(
+        _config: Any,
+        output_json: str,
+        *,
+        label: str,
+        closed_record_convention: str,
+    ) -> dict[str, Any]:
+        assert label.startswith("GPU v2 result ")
+        assert closed_record_convention == "field_blank"
+        return deepcopy(results[output_json])
+
     monkeypatch.setattr(
         databricks_v1,
         "_read_gpu_qualification_result",
-        lambda _config, output_json, *, label: deepcopy(results[output_json]),
+        read_result,
     )
     monkeypatch.setattr(
         databricks_v2,
@@ -1785,6 +1796,20 @@ def test_v2_collector_atomically_publishes_exact14_and_replay_is_read_only(
         ),
     }
     assert len(list(evidence_root.glob("*.terminal-receipt-v2.json"))) == 14
+    results_by_job_id = {str(result["job_id"]): result for result in results.values()}
+    for planned_job in case.plan["cloud_qualification"]["jobs"]:
+        job_id = str(planned_job["job_id"])
+        receipt = _json(evidence_root / f"{job_id}.terminal-receipt-v2.json")
+        _assert_v2_seal(receipt)
+        assert (
+            qualification_v2._validate_terminal_receipt_v2_original(
+                receipt,
+                result=results_by_job_id[job_id],
+                planned_job=planned_job,
+                plan_record=case.plan,
+            )
+            == receipt
+        )
     assert _json(
         evidence_root / databricks_v2.GPU_QUALIFICATION_V2_EVIDENCE_FILENAME
     ) == evidence

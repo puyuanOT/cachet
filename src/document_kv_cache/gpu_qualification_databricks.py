@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 from urllib.parse import unquote, urlsplit
 
 from document_kv_cache._hardware_targets import (
@@ -4400,6 +4400,7 @@ def collect_gpu_qualification_evidence(
             config,
             str(contract["output_json"]),
             label=f"GPU result {contract['job_id']}",
+            closed_record_convention="field_omitted",
         )
         validate_gpu_job_result_record(
             result,
@@ -6671,7 +6672,10 @@ def _read_gpu_qualification_result(
     output_json: str,
     *,
     label: str,
+    closed_record_convention: Literal["field_omitted", "field_blank"],
 ) -> dict[str, Any]:
+    if closed_record_convention not in ("field_omitted", "field_blank"):
+        raise ValueError(f"{label} closed-record convention is unsupported")
     if output_json.startswith("dbfs:/Volumes/"):
         content = download_databricks_volume_file_bytes(
             config,
@@ -6683,7 +6687,17 @@ def _read_gpu_qualification_result(
         record = _read_canonical_json_object_file(
             _cluster_file_path(output_json), label
         )
-    _require_closed_record_digest(record, label)
+    if closed_record_convention == "field_omitted":
+        _require_closed_record_digest(record, label)
+    elif closed_record_convention == "field_blank":
+        observed = _required_sha256(
+            record.get("closed_record_sha256"),
+            f"{label}.closed_record_sha256",
+        )
+        unsigned = dict(record)
+        unsigned["closed_record_sha256"] = ""
+        if _canonical_json_sha256(unsigned) != observed:
+            raise ValueError(f"{label} closed_record_sha256 mismatch")
     return record
 
 
