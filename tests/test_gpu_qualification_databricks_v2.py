@@ -175,25 +175,27 @@ def _payloads() -> tuple[dict[str, Any], ...]:
 
 def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256 == (
-        "8b49cf836efb00904fa8cf8ee93d18769afb32a7ab71908dc89011fbc8e77c47"
+        "322606772efcfc5209bd4c7426f5f05605f7c0fd5ff5ea541128b0a36eb93493"
     )
-    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 25732
+    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 25315
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "1fe01775d9fe76bae9aa32ac52c040974adc6ca155da31395386fc2a3a5ebf4f"
+        "62f60cc02501665fad9a1d8220fad0a8d016de4ac62ccebe9357f25cdcd64e2b"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 17307
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 128521
+    assert len(payload_bytes) == 116047
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "742f0ba6146720800f09cab15b40a6511c20906650c6ef17756521ea13dbea07"
+        "c77ac89bf66534c901452d5734a41fd69b9de5fee599ab2a23ae7666647f8003"
     )
 
 
-def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> None:
+def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom() -> (
+    None
+):
     payloads = _payloads()
     assert len(payloads) == 14
     sizes = []
@@ -210,9 +212,9 @@ def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> 
                 ).encode("utf-8")
             )
         )
-        assert len(parameters) == 50
+        assert len(parameters) == 34
         assert parameters.count("--artifact-uri") == 8
-        assert parameters.count("--artifact-sha256") == 8
+        assert "--artifact-sha256" not in parameters
         assert "--runner-uri" not in parameters
         assert "--package-wheel-uri" not in parameters
         assert "--patched-vllm-wheel-uri" not in parameters
@@ -221,10 +223,108 @@ def test_v2_renderer_uses_only_eight_role_maps_with_safe_argument_headroom() -> 
             == (_artifact_uris()["runner_sha256"])
         )
         assert "spark_env_vars" not in task["new_cluster"]
-    assert min(sizes) == 8095
-    assert max(sizes) == 8167
+    assert min(sizes) == 7204
+    assert max(sizes) == 7276
     assert (
         max(sizes) < databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
+    )
+
+    def production_hash(label: str) -> str:
+        return hashlib.sha256(label.encode("ascii")).hexdigest()
+
+    production_pins = GPUQualificationArtifactPinsV2(
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        package_wheel_sha256=production_hash("production-package"),
+        cachet_source_tree_sha256=production_hash("production-source"),
+        runner_sha256=databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256,
+        input_bundle_sha256=GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+    )
+    production_plan = build_gpu_qualification_plan_v2(
+        campaign_id=PUBLICATION_CAMPAIGN_ID,
+        campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+        campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+        campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+        campaign_opening_terminal_gpu_hours=(
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+        ),
+        artifact_pins=production_pins,
+    )
+    production_base = (
+        "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/"
+        "kv_cache_storage_benchmark/vllm_0271_publication_v2"
+    )
+    production_uris = {
+        "cachet_source_tree_sha256": (
+            f"{production_base}/inputs/cachet-source-v2/"
+            f"{production_pins.cachet_source_tree_sha256}/cachet-source-closure.json"
+        ),
+        "input_bundle_sha256": (
+            f"{production_base}/inputs/main-latency/"
+            f"{production_pins.input_bundle_sha256}"
+        ),
+        "package_wheel_sha256": (
+            f"{production_base}/inputs/cachet-wheel/"
+            f"{production_pins.package_wheel_sha256}/"
+            "cachet_kv-0.2.0-py3-none-any.whl"
+        ),
+        "patched_flashinfer_wheel_sha256": (
+            f"{production_base}/inputs/flashinfer-wheel/"
+            f"{production_pins.patched_flashinfer_wheel_sha256}/"
+            "flashinfer_python-0.6.16.post3-1cachetpy31104e032c70234e876-"
+            "py3-none-any.whl"
+        ),
+        "patched_vllm_wheel_sha256": (
+            f"{production_base}/inputs/vllm-wheel/"
+            f"{production_pins.patched_vllm_wheel_sha256}/"
+            "vllm-0.27.1+cu129-1cachete5m265120c48a9352b9e-cp38-abi3-"
+            "manylinux_2_28_x86_64.whl"
+        ),
+        "runner_sha256": (
+            f"{production_base}/inputs/runner/"
+            f"{production_plan['closed_record_sha256']}/"
+            "gpu-qualification-bootstrap-v2.py"
+        ),
+        "runtime_closure_manifest_sha256": (
+            f"{production_base}/inputs/runtime-closure/"
+            f"{production_pins.runtime_closure_manifest_sha256}/"
+            "vllm-0.27.1-flashinfer-0.6.16.post3-runtime-closure.json"
+        ),
+        "runtime_lock_sha256": (
+            f"{production_base}/inputs/runtime-lock/"
+            f"{production_pins.runtime_lock_sha256}/"
+            "vllm-0.27.1-cu129-py311-manylinux_2_35-flashinfer-direct.lock"
+        ),
+    }
+    production_output_root = (
+        f"{production_base}/qualification-results-v2-"
+        f"{production_hash('production-commit')[:12]}-"
+        f"{production_pins.cachet_source_tree_sha256[:16]}"
+    )
+    production_payloads = databricks_v2.render_gpu_qualification_submit_payloads_v2(
+        production_plan,
+        single_user_name="pliu@opentable.com",
+        artifact_uris=production_uris,
+        output_root=production_output_root,
+    )
+    production_sizes = [
+        len(
+            json.dumps(
+                payload["tasks"][0]["spark_python_task"]["parameters"],
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        for payload in production_payloads
+    ]
+    assert min(production_sizes) == 8765
+    assert max(production_sizes) == 8837
+    assert max(production_sizes) <= (
+        databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES - 600
     )
 
 
@@ -442,7 +542,6 @@ def _bootstrap_case(
             f"{plan_digest}/{job_id}"
         ),
         artifact_uris={key: path.as_uri() for key, path in paths.items()},
-        artifact_pins=pins,
     )
     reviewed_fixed = {
         "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
@@ -496,9 +595,7 @@ def _set_sanitized_child_environment(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PYTHONNOUSERSITE", "1")
     monkeypatch.setenv("PYTHONSAFEPATH", "1")
-    monkeypatch.setenv(
-        "FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
-    )
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL)
     monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
     monkeypatch.setattr(
         sys,
@@ -582,8 +679,9 @@ def test_v2_bootstrap_runner_and_emitted_child_stub_compile_exactly() -> None:
             text=True,
         )
         assert completed.returncode != 0
-        assert f"RuntimeError: GPU qualification v2 child lacks its {expected_error}" in (
-            completed.stderr
+        assert (
+            f"RuntimeError: GPU qualification v2 child lacks its {expected_error}"
+            in (completed.stderr)
         )
         assert "ModuleNotFoundError" not in completed.stderr
 
@@ -670,9 +768,7 @@ def test_v2_bootstrap_validates_transport_and_snapshots_package_before_install(
     assert not Path(calls[0][-1]).exists()
 
     namespace["_spark_cluster_id"] = lambda: "Cluster-ID_Exact.Case"
-    remaining, spark_only_handoff, spark_only_env = namespace["_bootstrap"](
-        argv, {}
-    )
+    remaining, spark_only_handoff, spark_only_env = namespace["_bootstrap"](argv, {})
     assert remaining == argv
     assert json.loads(spark_only_handoff)["sources"] == [
         "spark.databricks.clusterUsageTags.clusterId"
@@ -692,7 +788,7 @@ def test_v2_bootstrap_validates_transport_and_snapshots_package_before_install(
         "missing",
         "unknown",
         "plan",
-        "pin",
+        "uri",
         "retry",
         "output",
         "work",
@@ -713,7 +809,7 @@ def test_v2_bootstrap_rejects_transport_tamper_before_install(
         tampered[0] = "--unknown-plan"
     elif mutation == "plan":
         tampered[1] = tampered[1][:-1] + ("A" if tampered[1][-1] != "A" else "B")
-    elif mutation == "pin":
+    elif mutation == "uri":
         index = next(
             index
             for index, value in enumerate(tampered)
@@ -805,14 +901,10 @@ def test_v2_bootstrap_handoff_uses_one_snapshot_and_isolates_private_env(
     assert "PIP_INDEX_URL" not in pip_env
     assert "PYTHONPATH" not in pip_env
     assert pip_env["PIP_CONFIG_FILE"] == os.devnull
-    assert (
-        pip_env["FLASHINFER_LOGGING_LEVEL"]
-        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
-    )
+    assert pip_env["FLASHINFER_LOGGING_LEVEL"] == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
     assert pip_env["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert {
-        key: child_env[key]
-        for key in ("FLASHINFER_LOGGING_LEVEL", "PYTHONWARNINGS")
+        key: child_env[key] for key in ("FLASHINFER_LOGGING_LEVEL", "PYTHONWARNINGS")
     } == {
         "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
         "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
@@ -828,22 +920,26 @@ def test_v2_bootstrap_handoff_uses_one_snapshot_and_isolates_private_env(
     assert handoff["runner_sha256"] == (
         databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256
     )
-    assert handoff["argv_sha256"] == hashlib.sha256(
-        namespace["_canonical_json"](argv).encode("utf-8")
-    ).hexdigest()
+    assert (
+        handoff["argv_sha256"]
+        == hashlib.sha256(
+            namespace["_canonical_json"](argv).encode("utf-8")
+        ).hexdigest()
+    )
     assert len(raw_handoff.encode("utf-8")) <= namespace["_HANDOFF_MAX_BYTES"]
     with pytest.raises(ValueError, match="handoff exceeds its size cap"):
         namespace["_sealed_handoff"](
             argv,
             cluster_id="x" * (namespace["_HANDOFF_MAX_BYTES"] + 1),
             sources=("DATABRICKS_CLUSTER_ID",),
-            runner_sha256=(
-                databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256
-            ),
+            runner_sha256=(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256),
         )
-    assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT.count(
-        "dict(os.environ)"
-    ) == 1
+    assert (
+        databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT.count(
+            "dict(os.environ)"
+        )
+        == 1
+    )
 
 
 @pytest.mark.parametrize(
@@ -878,9 +974,7 @@ def test_v2_bootstrap_cluster_identity_fails_before_subprocess(
     if case == "inherited-private-empty":
         base_env[namespace["_HANDOFF_ENV"]] = ""
     elif case == "inherited-private-sealed":
-        base_env[namespace["_HANDOFF_ENV"]] = _valid_runner_handoff(
-            namespace, argv
-        )
+        base_env[namespace["_HANDOFF_ENV"]] = _valid_runner_handoff(namespace, argv)
     elif case == "missing":
         base_env = {}
     elif case == "environment-conflict":
@@ -949,6 +1043,13 @@ def test_v2_private_handoff_cross_codec_consumes_without_spark(
     assert private_name not in os.environ
     assert len(observed) == 1
     assert observed[0]["cloud_cluster_id"] == cluster_id
+    decoded_plan = databricks_v2._decode_plan_parameter(
+        argv[argv.index("--plan-record-zlib-base64") + 1],
+        expected_plan_sha256=argv[argv.index("--expected-plan-sha256") + 1],
+    )
+    assert observed[0]["artifact_sha256"] == (
+        databricks_v2.pins_from_gpu_qualification_plan_v2(decoded_plan).to_record()
+    )
 
     public_calls: list[str] = []
 
@@ -1042,9 +1143,7 @@ def test_v2_private_handoff_rejects_strict_or_resealed_tamper(
 ) -> None:
     namespace, argv, _paths = _bootstrap_case(tmp_path)
     cluster_id = "Cluster-ID_Exact.Case"
-    raw_handoff: object = _valid_runner_handoff(
-        namespace, argv, cluster_id=cluster_id
-    )
+    raw_handoff: object = _valid_runner_handoff(namespace, argv, cluster_id=cluster_id)
     record = json.loads(str(raw_handoff))
     candidate_argv = list(argv)
     private_name = databricks_v2._V2_BOOTSTRAP_HANDOFF_ENV
@@ -1265,9 +1364,7 @@ def test_v2_executor_publishes_valid_result_and_logs_rejected_measurements(
         lambda *_args, **_kwargs: output_path.read_bytes(),
     )
     reread = databricks_v1._read_gpu_qualification_result(
-        databricks_v1.DatabricksWorkspaceConfig(
-            "https://dbc.example", "secret-token"
-        ),
+        databricks_v1.DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
         output_uri,
         label="GPU v2 result",
         closed_record_convention="field_blank",

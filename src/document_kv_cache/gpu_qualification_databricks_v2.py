@@ -3,7 +3,9 @@
 The retained v1 renderer and executor remain unchanged.  This module binds the
 parallel v2 plan to eight artifact roles, installs only the Cachet launcher in
 the Databricks driver, and delegates the four-step isolated runtime creation to
-the package-owned v2 sentinel dispatcher.
+the package-owned v2 sentinel dispatcher. Artifact pins travel once in the
+sealed plan; task arguments carry only their URIs to preserve the enforced
+Databricks parameter headroom.
 """
 
 from __future__ import annotations
@@ -88,9 +90,7 @@ _PLAN_ZLIB_LEVEL: Final = 9
 _PLAN_MAX_CANONICAL_BYTES: Final = 64 * 1024
 _PLAN_MAX_ENCODED_CHARS: Final = GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
 _DATABRICKS_RUN_ID_TEMPLATE: Final = "{{job.run_id}}"
-_V2_BOOTSTRAP_HANDOFF_ENV: Final = (
-    "_CACHET_GPU_QUALIFICATION_V2_BOOTSTRAP_HANDOFF"
-)
+_V2_BOOTSTRAP_HANDOFF_ENV: Final = "_CACHET_GPU_QUALIFICATION_V2_BOOTSTRAP_HANDOFF"
 _V2_BOOTSTRAP_HANDOFF_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_qualification_bootstrap_handoff.v2"
 )
@@ -115,9 +115,7 @@ _V2_CLUSTER_ID_ENV_NAMES: Final = (
     "DATABRICKS_CLUSTER_ID",
     "DB_CLUSTER_ID",
 )
-_V2_CLUSTER_ID_SPARK_CONF_KEY: Final = (
-    "spark.databricks.clusterUsageTags.clusterId"
-)
+_V2_CLUSTER_ID_SPARK_CONF_KEY: Final = "spark.databricks.clusterUsageTags.clusterId"
 _V2_CLUSTER_ID_SOURCE_ORDER: Final = (
     *_V2_CLUSTER_ID_ENV_NAMES,
     _V2_CLUSTER_ID_SPARK_CONF_KEY,
@@ -294,9 +292,9 @@ def _reject_json_constant(value: str) -> object:
 
 def _parse_transport(
     argv: list[str],
-) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
-    if len(argv) != 2 * len(_SINGLETON_OPTIONS) + 4 * len(_KEYS):
-        raise ValueError("bootstrap requires the exact 50-value transport closure")
+) -> tuple[dict[str, str], dict[str, str]]:
+    if len(argv) != 2 * len(_SINGLETON_OPTIONS) + 2 * len(_KEYS):
+        raise ValueError("bootstrap requires the exact 34-value transport closure")
     values = {}
     index = 0
     for option_name in _SINGLETON_OPTIONS:
@@ -308,28 +306,19 @@ def _parse_transport(
         values[option_name] = value
         index += 2
     uris = {}
-    pins = {}
     for expected_key in _KEYS:
         if argv[index] != "--artifact-uri":
             raise ValueError("bootstrap expected canonical --artifact-uri ordering")
         uri_key, separator, uri = argv[index + 1].partition("=")
         if not separator or uri_key != expected_key or not uri:
             raise ValueError("bootstrap artifact URI closure differs")
-        if argv[index + 2] != "--artifact-sha256":
-            raise ValueError(
-                "bootstrap expected canonical --artifact-sha256 ordering"
-            )
-        pin_key, separator, pin = argv[index + 3].partition("=")
-        if not separator or pin_key != expected_key:
-            raise ValueError("bootstrap artifact SHA-256 closure differs")
         uris[expected_key] = uri
-        pins[expected_key] = _required_sha256(pin, expected_key)
-        index += 4
+        index += 2
     if index != len(argv):
         raise ValueError("bootstrap transport has an unexpected trailing value")
     if len(set(uris.values())) != len(_KEYS):
         raise ValueError("bootstrap artifact URI roles must be distinct")
-    return values, uris, pins
+    return values, uris
 
 
 def _decode_plan(encoded_plan: str, expected_digest: str) -> dict[str, object]:
@@ -452,7 +441,7 @@ def _cluster_path(value: str) -> str:
 def _validate_transport(
     argv: list[str],
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
-    values, uris, pins = _parse_transport(argv)
+    values, uris = _parse_transport(argv)
     plan = _decode_plan(
         values["--plan-record-zlib-base64"],
         values["--expected-plan-sha256"],
@@ -461,12 +450,12 @@ def _validate_transport(
     if not isinstance(runtime_contract, dict):
         raise ValueError("decoded v2 plan lacks its runtime contract")
     plan_pins = runtime_contract.get("artifact_sha256")
-    if (
-        not isinstance(plan_pins, dict)
-        or tuple(plan_pins) != _KEYS
-        or plan_pins != pins
-    ):
-        raise ValueError("bootstrap artifact pins differ from the decoded v2 plan")
+    if not isinstance(plan_pins, dict) or tuple(plan_pins) != _KEYS:
+        raise ValueError("decoded v2 plan lacks its artifact pin closure")
+    pins = {
+        key: _required_sha256(plan_pins[key], f"plan artifact {key}")
+        for key in _KEYS
+    }
     for key, expected_pin in _FIXED_PINS.items():
         if pins[key] != expected_pin:
             raise ValueError(f"bootstrap reviewed artifact pin differs for {key}")
@@ -851,7 +840,7 @@ def render_gpu_qualification_submit_payloads_v2(
 ) -> tuple[dict[str, Any], ...]:
     """Render one exact attempt-zero payload for every v2 planned job."""
 
-    plan, pins = _validated_plan_and_pins_v2(plan_record)
+    plan, _pins = _validated_plan_and_pins_v2(plan_record)
     principal = databricks_v1._validated_single_user_name(single_user_name)
     uris = _validated_artifact_uris_v2(artifact_uris)
     normalized_output_root = databricks_v1._validated_output_root(output_root)
@@ -895,7 +884,6 @@ def render_gpu_qualification_submit_payloads_v2(
             output_json=output_json,
             work_dir=work_dir,
             artifact_uris=uris,
-            artifact_pins=pins,
         )
         cluster = databricks_v1._qualification_cluster(
             hardware_id=hardware_id,
@@ -1181,7 +1169,6 @@ def _runner_parameters_v2(
     output_json: str,
     work_dir: str,
     artifact_uris: Mapping[str, str],
-    artifact_pins: GPUQualificationArtifactPinsV2,
 ) -> list[str]:
     parameters = [
         _PLAN_PARAMETER_OPTION,
@@ -1203,11 +1190,11 @@ def _runner_parameters_v2(
         "--work-dir",
         work_dir,
     ]
-    pins = artifact_pins.to_record()
+    # The sealed plan is the canonical pin transport. Duplicating its eight
+    # digests here consumes nearly a kilobyte of the 9,500-byte task limit.
     for key in GPU_QUALIFICATION_V2_ARTIFACT_KEYS:
         parameters.extend(("--artifact-uri", f"{key}={artifact_uris[key]}"))
-        parameters.extend(("--artifact-sha256", f"{key}={pins[key]}"))
-    if len(parameters) != 50:
+    if len(parameters) != 34:
         raise RuntimeError("v2 runner argument closure differs")
     observed_bytes = databricks_v1._qualification_parameters_json_bytes(parameters)
     if observed_bytes > GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES:
@@ -1408,7 +1395,6 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--attempt-number", type=int, required=True)
     parser.add_argument("--retry-count", type=int, required=True)
     parser.add_argument("--artifact-uri", action="append", default=[])
-    parser.add_argument("--artifact-sha256", action="append", default=[])
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--work-dir", required=True)
     return parser.parse_args(argv)
@@ -1458,24 +1444,26 @@ def _staggered_batch_progress_v2(
         raise ValueError("v2 staggered receipt/terminal counts are not canonical")
     if receipt_count - terminal_count > 1:
         raise ValueError("v2 staggered batch has more than one active cloud run")
-    receipts = ledger.submission_receipts[
-        predecessor.submission_receipt_count :
-    ]
+    receipts = ledger.submission_receipts[predecessor.submission_receipt_count :]
     terminals = ledger.terminal_actuals[predecessor.terminal_actual_count :]
-    if tuple(item.attempt_id for item in receipts) != (
-        authorization.attempt_ids[:receipt_count]
+    if (
+        tuple(item.attempt_id for item in receipts)
+        != (authorization.attempt_ids[:receipt_count])
     ):
         raise ValueError("v2 staggered receipt suffix is not the canonical job prefix")
-    if tuple(item.submit_payload_sha256 for item in receipts) != (
-        authorization.submit_payload_sha256s[:receipt_count]
+    if (
+        tuple(item.submit_payload_sha256 for item in receipts)
+        != (authorization.submit_payload_sha256s[:receipt_count])
     ):
         raise ValueError("v2 staggered receipt suffix payload digest drift")
-    if tuple(item.attempt_id for item in terminals) != (
-        authorization.attempt_ids[:terminal_count]
+    if (
+        tuple(item.attempt_id for item in terminals)
+        != (authorization.attempt_ids[:terminal_count])
     ):
         raise ValueError("v2 staggered terminal suffix is not the canonical job prefix")
-    if tuple(item.submit_payload_sha256 for item in terminals) != (
-        authorization.submit_payload_sha256s[:terminal_count]
+    if (
+        tuple(item.submit_payload_sha256 for item in terminals)
+        != (authorization.submit_payload_sha256s[:terminal_count])
     ):
         raise ValueError("v2 staggered terminal suffix payload digest drift")
     return receipt_count, terminal_count
@@ -1494,7 +1482,9 @@ def _wait_and_record_staggered_terminal_v2(
     try:
         member_index = batch_authorization.attempt_ids.index(attempt_id)
     except ValueError as exc:
-        raise ValueError("v2 terminal barrier attempt is outside the atomic batch") from exc
+        raise ValueError(
+            "v2 terminal barrier attempt is outside the atomic batch"
+        ) from exc
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     receipt_count, terminal_count = _staggered_batch_progress_v2(
         ledger, batch_authorization
@@ -1504,8 +1494,7 @@ def _wait_and_record_staggered_terminal_v2(
     if receipt_count != member_index + 1 or terminal_count != member_index:
         raise ValueError("v2 terminal barrier is not the sole active batch member")
     receipt = ledger.submission_receipts[
-        batch_authorization.predecessor_prefix.submission_receipt_count
-        + member_index
+        batch_authorization.predecessor_prefix.submission_receipt_count + member_index
     ]
     deadline = time.monotonic() + _V2_TERMINAL_WAIT_SECONDS
     while True:
@@ -1637,13 +1626,11 @@ def submit_gpu_qualification_jobs_v2(
     lease_path = receipt_root / _V2_PHASE_LEASE_FILENAME
     databricks_v1._write_canonical_exclusive(lease, lease_path)
     try:
-        _ledger, authorization = (
-            reserve_databricks_run_attempt_batch_authorized_json(
-                ledger_path,
-                requests,
-                expected_predecessor_prefix=predecessor,
-                batch_validator=validate_batch,
-            )
+        _ledger, authorization = reserve_databricks_run_attempt_batch_authorized_json(
+            ledger_path,
+            requests,
+            expected_predecessor_prefix=predecessor,
+            batch_validator=validate_batch,
         )
     except BaseException:
         if _v2_batch_reservation_provably_absent(
@@ -1674,9 +1661,7 @@ def submit_gpu_qualification_jobs_v2(
             read_databricks_cluster_hour_ledger_json(ledger_path), authorization
         ) != (member_index, member_index):
             raise ValueError("fresh v2 batch progress changed before its next POST")
-        payload = databricks_v1._required_mapping(
-            contract.get("payload"), "v2 payload"
-        )
+        payload = databricks_v1._required_mapping(contract.get("payload"), "v2 payload")
         attempt_id = str(contract["reservation_attempt_id"])
         intent_path = receipt_root / f"{contract['job_id']}.post-intent-v2"
         intent = _post_intent_record_v2(
@@ -1779,15 +1764,11 @@ def resume_gpu_qualification_job_submissions_v2(
     for contract in contracts:
         job_id = str(contract["job_id"])
         attempt_id = str(contract["reservation_attempt_id"])
-        payload = databricks_v1._required_mapping(
-            contract.get("payload"), "v2 payload"
-        )
+        payload = databricks_v1._required_mapping(contract.get("payload"), "v2 payload")
         receipt_path = root / f"{job_id}.json"
         intent_path = root / f"{job_id}.post-intent-v2"
         if receipt_path.exists() or receipt_path.is_symlink():
-            ledger = read_databricks_cluster_hour_ledger_json(
-                ledger_path
-            )
+            ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
             receipt = databricks_v1._read_canonical_json_object_file(
                 receipt_path,
                 f"v2 submit receipt {job_id}",
@@ -1825,9 +1806,7 @@ def resume_gpu_qualification_job_submissions_v2(
             ) != canonical_gpu_qualification_json(expected_intent):
                 raise ValueError(f"v2 post intent {job_id!r} drift")
         else:
-            databricks_v1._write_canonical_exclusive(
-                expected_intent, intent_path
-            )
+            databricks_v1._write_canonical_exclusive(expected_intent, intent_path)
         resume_pre_reserved_databricks_run(
             config,
             payload,
@@ -1918,14 +1897,12 @@ def _validated_controller_contract_v2(
             not isinstance(item, str) for item in parameters
         ):
             raise ValueError("v2 rendered parameters are invalid")
-        output_json = databricks_v1._one_parameter(
-            parameters, "--output-json"
-        )
+        output_json = databricks_v1._one_parameter(parameters, "--output-json")
         attempt_id = databricks_v1.gpu_qualification_reservation_attempt_id(
             str(plan["closed_record_sha256"]), job_id
         )
-        snapshot, canonical_payload = (
-            canonical_databricks_submit_payload_snapshot(payload)
+        snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(
+            payload
         )
         contracts.append(
             {
@@ -2127,8 +2104,7 @@ def _batch_requests_v2(
         DatabricksRunAttemptReservationRequest(
             attempt_id=str(contract["reservation_attempt_id"]),
             workload_id=(
-                f"gpuq-v2/{plan['closed_record_sha256'][:16]}/"
-                f"{contract['job_id']}"
+                f"gpuq-v2/{plan['closed_record_sha256'][:16]}/{contract['job_id']}"
             ),
             submit_payload=databricks_v1._required_mapping(
                 contract.get("payload"), "v2 payload"
@@ -2183,9 +2159,7 @@ def _batch_marker_record_v2(
         "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
         "record_type": GPU_QUALIFICATION_V2_BATCH_MARKER_RECORD_TYPE,
         "schema_version": 2,
-        "submit_payload_sha256": list(
-            batch_authorization.submit_payload_sha256s
-        ),
+        "submit_payload_sha256": list(batch_authorization.submit_payload_sha256s),
     }
     _seal_controller_record_v2(record)
     return record
@@ -2258,9 +2232,10 @@ def _validate_submit_receipt_v2(
 ) -> None:
     if receipt.get("record_type") != GPU_QUALIFICATION_V2_SUBMIT_RECEIPT_RECORD_TYPE:
         raise ValueError("v2 submit receipt record type differs")
-    if type(receipt.get("schema_version")) is not int or receipt.get(
-        "schema_version"
-    ) != 2:
+    if (
+        type(receipt.get("schema_version")) is not int
+        or receipt.get("schema_version") != 2
+    ):
         raise ValueError("v2 submit receipt schema version differs")
     _require_controller_record_seal_v2(receipt, "v2 submit receipt")
     expected = _submit_receipt_record_v2(
@@ -2324,8 +2299,7 @@ def _replay_batch_marker_v2(
     requests = _batch_requests_v2(plan, contracts)
     if (
         len(live.reservations) == phase_predecessor.reservation_count
-        and len(live.submission_receipts)
-        == phase_predecessor.submission_receipt_count
+        and len(live.submission_receipts) == phase_predecessor.submission_receipt_count
         and len(live.terminal_actuals) == phase_predecessor.terminal_actual_count
     ):
         if {item.name for item in root.iterdir()} != {_V2_PHASE_LEASE_FILENAME}:
@@ -2359,9 +2333,7 @@ def _replay_batch_marker_v2(
             expected_predecessor_prefix=phase_predecessor,
         )
     live = read_databricks_cluster_hour_ledger_json(ledger_path)
-    receipt_count, terminal_count = _staggered_batch_progress_v2(
-        live, authorization
-    )
+    receipt_count, terminal_count = _staggered_batch_progress_v2(live, authorization)
     require_databricks_publication_batch_admission(
         live,
         authorization,
@@ -2426,12 +2398,15 @@ def _validated_resume_evidence_prefix_v2(
         allowed_receipt_counts.add(receipt_count - 1)
     if controller_receipt_count not in allowed_receipt_counts:
         raise ValueError("v2 controller receipts differ from the ledger prefix")
-    if not (
-        terminal_count
-        <= controller_receipt_count
-        <= receipt_count
-        <= len(contracts)
-    ) or controller_receipt_count - terminal_count > 1:
+    if (
+        not (
+            terminal_count
+            <= controller_receipt_count
+            <= receipt_count
+            <= len(contracts)
+        )
+        or controller_receipt_count - terminal_count > 1
+    ):
         raise ValueError("v2 controller receipt/terminal progress is not canonical")
     intent_indices = tuple(
         index for index, name in enumerate(intent_names) if name in names
@@ -2594,9 +2569,7 @@ def _replay_completed_batch_v2(
         expected_predecessor_prefix=phase_predecessor,
     )
     require_databricks_publication_batch_admission(ledger, authorization)
-    receipt_count, terminal_count = _staggered_batch_progress_v2(
-        ledger, authorization
-    )
+    receipt_count, terminal_count = _staggered_batch_progress_v2(ledger, authorization)
     if receipt_count != len(contracts) or terminal_count not in {
         len(contracts) - 1,
         len(contracts),
@@ -2730,9 +2703,7 @@ def collect_gpu_qualification_evidence_v2(
             plan=plan,
             contracts=contracts,
             ledger_path=ledger_path,
-            expected_phase_predecessor_prefix=(
-                expected_phase_predecessor_prefix
-            ),
+            expected_phase_predecessor_prefix=(expected_phase_predecessor_prefix),
             submit_receipt_root=submit_receipt_root,
             local_preflight_binding=preflight_binding,
         )
@@ -3067,8 +3038,10 @@ def _require_controller_record_seal_v2(
 
 
 def _required_sha256_v2(value: Any, label: str) -> str:
-    if not isinstance(value, str) or len(value) != 64 or any(
-        character not in "0123456789abcdef" for character in value
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
     ):
         raise ValueError(f"{label} must be a lowercase SHA-256")
     return value
@@ -3115,15 +3088,16 @@ def _exact_bootstrap_argv_v2(
         raise TypeError("v2 bootstrap argv values must be exact strings")
     if len(normalized) != (
         2 * len(_V2_BOOTSTRAP_SINGLETON_OPTIONS)
-        + 4 * len(GPU_QUALIFICATION_V2_ARTIFACT_KEYS)
+        + 2 * len(GPU_QUALIFICATION_V2_ARTIFACT_KEYS)
     ):
-        raise ValueError("v2 bootstrap requires the exact 50-value argv closure")
+        raise ValueError("v2 bootstrap requires the exact 34-value argv closure")
     index = 0
+    values: dict[str, str] = {}
     for option_name in _V2_BOOTSTRAP_SINGLETON_OPTIONS:
         if normalized[index] != option_name or not normalized[index + 1]:
             raise ValueError("v2 bootstrap singleton argv ordering differs")
+        values[option_name] = normalized[index + 1]
         index += 2
-    runner_pin = ""
     uris: list[str] = []
     for expected_key in GPU_QUALIFICATION_V2_ARTIFACT_KEYS:
         if normalized[index] != "--artifact-uri":
@@ -3132,17 +3106,14 @@ def _exact_bootstrap_argv_v2(
         if not separator or uri_key != expected_key or not uri:
             raise ValueError("v2 bootstrap artifact URI argv closure differs")
         uris.append(uri)
-        if normalized[index + 2] != "--artifact-sha256":
-            raise ValueError("v2 bootstrap artifact SHA-256 argv ordering differs")
-        pin_key, separator, pin = normalized[index + 3].partition("=")
-        if not separator or pin_key != expected_key:
-            raise ValueError("v2 bootstrap artifact SHA-256 argv closure differs")
-        pin = _required_sha256_v2(pin, f"artifact_sha256.{expected_key}")
-        if expected_key == "runner_sha256":
-            runner_pin = pin
-        index += 4
-    if index != len(normalized) or len(set(uris)) != len(uris) or not runner_pin:
+        index += 2
+    if index != len(normalized) or len(set(uris)) != len(uris):
         raise ValueError("v2 bootstrap argv closure differs")
+    plan = _decode_plan_parameter(
+        values[_PLAN_PARAMETER_OPTION],
+        expected_plan_sha256=values["--expected-plan-sha256"],
+    )
+    runner_pin = pins_from_gpu_qualification_plan_v2(plan).runner_sha256
     return normalized, runner_pin
 
 
@@ -3188,7 +3159,10 @@ def _decode_bootstrap_handoff_v2(
         )
     except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError("v2 bootstrap handoff is not strict JSON") from exc
-    if type(decoded) is not dict or _canonical_bootstrap_json_v2(decoded) != raw_handoff:
+    if (
+        type(decoded) is not dict
+        or _canonical_bootstrap_json_v2(decoded) != raw_handoff
+    ):
         raise ValueError("v2 bootstrap handoff is not one canonical JSON object")
     if set(decoded) != _V2_BOOTSTRAP_HANDOFF_KEYS:
         raise ValueError("v2 bootstrap handoff does not use its exact schema")
@@ -3230,9 +3204,7 @@ def _decode_bootstrap_handoff_v2(
     if argv_sha256 != expected_argv_sha256:
         raise ValueError("v2 bootstrap handoff argv binding differs")
     if not (
-        runner_sha256
-        == runner_pin
-        == GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256
+        runner_sha256 == runner_pin == GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256
     ):
         raise ValueError("v2 bootstrap handoff runner binding differs")
     raw_sources = decoded.get("sources")
@@ -3244,9 +3216,7 @@ def _decode_bootstrap_handoff_v2(
     if (
         not sources
         or len(set(sources)) != len(sources)
-        or tuple(
-            source for source in _V2_CLUSTER_ID_SOURCE_ORDER if source in sources
-        )
+        or tuple(source for source in _V2_CLUSTER_ID_SOURCE_ORDER if source in sources)
         != sources
     ):
         raise ValueError("v2 bootstrap handoff source ordering differs")
@@ -3280,9 +3250,7 @@ def _validated_main_inputs_v2(
     artifact_uris = databricks_v1._parse_key_value_args(
         args.artifact_uri, option_name="--artifact-uri"
     )
-    artifact_sha256 = databricks_v1._parse_key_value_args(
-        args.artifact_sha256, option_name="--artifact-sha256"
-    )
+    artifact_sha256 = pins_from_gpu_qualification_plan_v2(plan).to_record()
     return args, plan, artifact_uris, artifact_sha256
 
 
