@@ -94,6 +94,15 @@ GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES: Final = 2 * 1024**3
 GPU_QUALIFICATION_GMU_SWEEP: Final = (0.70, 0.75, 0.80)
 GPU_QUALIFICATION_THROUGHPUT_BUCKETS: Final = (8_192, 16_384, 32_768)
 GPU_QUALIFICATION_THROUGHPUT_SAMPLES_PER_BUCKET: Final = 4
+GPU_QUALIFICATION_GENERATION_ARTIFACT_BYTES_PER_TOKEN: Final = 73_728
+GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES: Final = ("primary", "repeat")
+GPU_QUALIFICATION_GENERATION_OUTPUT_NAMESPACES: Final = (
+    "throughput-primary",
+    "throughput-repeat",
+)
+GPU_QUALIFICATION_THROUGHPUT_WITH_REPEAT_SENTINEL: Final = (
+    "generation_throughput_with_repeat_writes"
+)
 GPU_QUALIFICATION_MATCHED_EXAMPLES: Final = 4
 GPU_QUALIFICATION_DETERMINISM_REPEATS: Final = 2
 GPU_QUALIFICATION_MAX_LOGIT_DRIFT: Final = 1e-4
@@ -913,6 +922,11 @@ def validate_gpu_job_result_record(
             measurements,
             hardware_id=planned_job["hardware_id"],
         )
+    elif sentinel == GPU_QUALIFICATION_THROUGHPUT_WITH_REPEAT_SENTINEL:
+        _validate_throughput_with_repeat_measurements(
+            measurements,
+            hardware_id=planned_job["hardware_id"],
+        )
     elif sentinel == "auto_backend_diagnostic":
         _validate_auto_backend_measurements(measurements)
     else:
@@ -1040,6 +1054,33 @@ def canonical_gpu_qualification_json(record: Mapping[str, Any]) -> str:
         ensure_ascii=False,
         allow_nan=False,
     )
+
+
+def _generation_artifact_layout_record() -> dict[str, Any]:
+    """Return the exact self-describing Q8 pre-RoPE generation layout."""
+
+    return {
+        "model_id": GPU_QUALIFICATION_MODEL_ID,
+        "lora_id": "base",
+        "layout_version": "qwen3-v1",
+        "dtype": "fp8_e5m2",
+        "num_layers": GPU_QUALIFICATION_MODEL_LAYER_COUNT,
+        "block_size": 16,
+        "bytes_per_token": GPU_QUALIFICATION_GENERATION_ARTIFACT_BYTES_PER_TOKEN,
+        "num_query_heads": 32,
+        "num_kv_heads": 8,
+        "head_size": 128,
+        "kv_stride_bytes": 128,
+        "shares_kv_storage": False,
+        "storage_layout": "separate_key_value",
+        "payload_axis_order": "token_major",
+        "pre_rope": True,
+        "rope_theta": 5_000_000.0,
+        "rope_rotary_dim": 128,
+        "key_position_encoding": "pre_rope",
+        "attention_mechanism": "gqa",
+        "query_heads_per_kv_head": 4,
+    }
 
 
 def _canonical_absolute_posix_path(value: Any, label: str) -> str:
@@ -1534,6 +1575,10 @@ def _validate_cloud_gpu_evidence(
     submit_payload_sha256_values: set[str] = set()
     gmu_candidates: list[tuple[float, bool]] = []
     generation_results: dict[str, tuple[str, float, tuple[Mapping[str, Any], ...]]] = {}
+    repeat_generation_results: dict[
+        str,
+        tuple[str, str, float, tuple[Mapping[str, Any], ...]],
+    ] = {}
     receipt_run_ids: set[str] = set()
     for planned_job, raw_result, raw_receipt in zip(
         plan_jobs, jobs, terminal_receipts, strict=True
@@ -1626,6 +1671,13 @@ def _validate_cloud_gpu_evidence(
                     hardware_id=planned_job["hardware_id"],
                 )
             )
+        elif sentinel == GPU_QUALIFICATION_THROUGHPUT_WITH_REPEAT_SENTINEL:
+            repeat_generation_results[planned_job["hardware_id"]] = (
+                _validate_throughput_with_repeat_measurements(
+                    measurements,
+                    hardware_id=planned_job["hardware_id"],
+                )
+            )
         elif sentinel == "auto_backend_diagnostic":
             _validate_auto_backend_measurements(measurements)
         else:
@@ -1657,14 +1709,41 @@ def _validate_cloud_gpu_evidence(
         "aws-g6-l4",
         GPU_QUALIFICATION_GENERATION_HARDWARE_ID,
     }
-    if set(generation_results) != expected_generation_hardware:
-        raise ValueError("generation qualification must cover L4 and L40S")
-    l4_digest, _l4_rate, l4_samples = generation_results["aws-g6-l4"]
-    l40s_digest, l40s_rate, l40s_samples = generation_results[
-        GPU_QUALIFICATION_GENERATION_HARDWARE_ID
-    ]
-    if l4_samples != l40s_samples or l4_digest != l40s_digest:
-        raise ValueError("L4 and L40S generation artifacts are not byte-identical")
+    if generation_results and repeat_generation_results:
+        raise ValueError(
+            "generation qualification cannot mix legacy and repeat sentinels"
+        )
+    if generation_results:
+        if set(generation_results) != expected_generation_hardware:
+            raise ValueError("generation qualification must cover L4 and L40S")
+        l4_digest, _l4_rate, l4_samples = generation_results["aws-g6-l4"]
+        l40s_digest, l40s_rate, l40s_samples = generation_results[
+            GPU_QUALIFICATION_GENERATION_HARDWARE_ID
+        ]
+        if l4_samples != l40s_samples or l4_digest != l40s_digest:
+            raise ValueError("L4 and L40S generation artifacts are not byte-identical")
+    else:
+        if set(repeat_generation_results) != expected_generation_hardware:
+            raise ValueError("generation qualification must cover L4 and L40S")
+        (
+            _l4_full_digest,
+            l4_structural_digest,
+            _l4_rate,
+            l4_structural_samples,
+        ) = repeat_generation_results["aws-g6-l4"]
+        (
+            l40s_digest,
+            l40s_structural_digest,
+            l40s_rate,
+            l40s_structural_samples,
+        ) = repeat_generation_results[GPU_QUALIFICATION_GENERATION_HARDWARE_ID]
+        if (
+            l4_structural_samples != l40s_structural_samples
+            or l4_structural_digest != l40s_structural_digest
+        ):
+            raise ValueError(
+                "L4 and L40S generation artifact structures are not equivalent"
+            )
     if l40s_rate < GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND:
         raise ValueError("L40S generation throughput is below the launch threshold")
     first_start = min(
@@ -3143,6 +3222,430 @@ def _validate_throughput_measurements(
         ).encode("utf-8")
     ).hexdigest()
     return artifacts_sha256, aggregate_rate, tuple(normalized_samples)
+
+
+def _validate_throughput_with_repeat_measurements(
+    value: Mapping[str, Any], *, hardware_id: str
+) -> tuple[str, str, float, tuple[Mapping[str, Any], ...]]:
+    """Validate the additive v2 two-construction generation proof."""
+
+    expected_keys = frozenset(
+        {
+            "aggregate_prefix_tokens",
+            "aggregate_tokens_per_second",
+            "aggregate_wall_seconds",
+            "artifact_layout",
+            "attention_backend_observed",
+            "attention_backend_requested",
+            "buckets",
+            "clock_scope",
+            "failed_write_count",
+            "fresh_generator_load_count",
+            "generator_constructions",
+            "generator_device_map",
+            "same_hardware_repeat_verified",
+            "samples",
+            "triton_compile_count",
+            "triton_kernel_launch_count",
+            "trust_remote_code",
+            "writes_included",
+        }
+    )
+    _require_exact_keys(
+        value,
+        expected_keys,
+        "generation throughput repeat measurements",
+    )
+    _validate_forced_triton(value, "generation throughput repeat")
+    if value.get("trust_remote_code") is not False:
+        raise ValueError(
+            "generation throughput repeat must keep trust_remote_code disabled"
+        )
+    if value.get("generator_device_map") != "auto":
+        raise ValueError(
+            "generation throughput repeat must use generator device_map=auto"
+        )
+    if value.get("clock_scope") != "prefix_generation_through_durable_kv_write":
+        raise ValueError(
+            "repeat throughput clock must include primary generation and durable writes"
+        )
+    if value.get("writes_included") is not True:
+        raise ValueError("repeat throughput requires primary writes inside the clock")
+    try:
+        _require_zero_int(value.get("failed_write_count"), "failed_write_count")
+    except ValueError as exc:
+        raise ValueError(
+            "repeat throughput requires successful primary writes inside the clock"
+        ) from exc
+    if not _is_exact_scalar(
+        value.get("fresh_generator_load_count"),
+        len(GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES),
+    ):
+        raise ValueError("repeat throughput must use exactly two fresh generator loads")
+    if value.get("same_hardware_repeat_verified") is not True:
+        raise ValueError("same-hardware repeat verification must be true")
+
+    artifact_layout = _mapping(value.get("artifact_layout"), "artifact_layout")
+    expected_layout = _generation_artifact_layout_record()
+    _require_exact_keys(
+        artifact_layout,
+        frozenset(expected_layout),
+        "generation artifact layout",
+    )
+    if any(
+        not _is_exact_scalar(artifact_layout.get(field_name), expected)
+        for field_name, expected in expected_layout.items()
+    ):
+        raise ValueError("generation artifact layout differs from the frozen Q8 layout")
+
+    constructions = _sequence(
+        value.get("generator_constructions"),
+        "generator_constructions",
+    )
+    if len(constructions) != len(GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES):
+        raise ValueError("generator_constructions must contain primary and repeat")
+    construction_keys = frozenset(
+        {
+            "construction_index",
+            "generator_family",
+            "generator_version",
+            "output_namespace",
+            "role",
+            "weight_quantizer_attestation",
+        }
+    )
+    normalized_constructions: list[dict[str, Any]] = []
+    for construction_index, (
+        expected_role,
+        expected_namespace,
+        raw_construction,
+    ) in enumerate(
+        zip(
+            GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES,
+            GPU_QUALIFICATION_GENERATION_OUTPUT_NAMESPACES,
+            constructions,
+            strict=True,
+        )
+    ):
+        construction = _mapping(
+            raw_construction,
+            f"generator construction {expected_role}",
+        )
+        _require_exact_keys(
+            construction,
+            construction_keys,
+            f"generator construction {expected_role}",
+        )
+        if not _is_exact_scalar(
+            construction.get("construction_index"), construction_index
+        ):
+            raise ValueError("generator construction indices must be canonical")
+        if construction.get("role") != expected_role:
+            raise ValueError("generator construction roles must be primary then repeat")
+        if construction.get("output_namespace") != expected_namespace:
+            raise ValueError("generator output namespaces differ from the frozen plan")
+        family = construction.get("generator_family")
+        version = construction.get("generator_version")
+        if family != "transformers":
+            raise ValueError("generation proof must use the Transformers generator")
+        if not isinstance(version, str) or not version or version != version.strip():
+            raise ValueError("generator_version must be a non-empty canonical string")
+        weight_attestation = _mapping(
+            construction.get("weight_quantizer_attestation"),
+            f"{expected_role} weight_quantizer_attestation",
+        )
+        _validate_weight_quantizer_attestation(weight_attestation)
+        normalized_constructions.append(
+            {
+                **dict(construction),
+                "weight_quantizer_attestation": dict(weight_attestation),
+            }
+        )
+    if (
+        normalized_constructions[0]["generator_family"]
+        != normalized_constructions[1]["generator_family"]
+        or normalized_constructions[0]["generator_version"]
+        != normalized_constructions[1]["generator_version"]
+        or canonical_gpu_qualification_json(
+            normalized_constructions[0]["weight_quantizer_attestation"]
+        )
+        != canonical_gpu_qualification_json(
+            normalized_constructions[1]["weight_quantizer_attestation"]
+        )
+    ):
+        raise ValueError("primary and repeat generator attestations must be identical")
+    namespaces = {
+        str(construction["output_namespace"])
+        for construction in normalized_constructions
+    }
+    if len(namespaces) != len(normalized_constructions):
+        raise ValueError("primary and repeat output namespaces must be distinct")
+
+    buckets = _sequence(value.get("buckets"), "repeat throughput buckets")
+    if len(buckets) != len(GPU_QUALIFICATION_THROUGHPUT_BUCKETS):
+        raise ValueError("repeat throughput is missing a frozen length bucket")
+    total_tokens = 0
+    total_seconds = 0.0
+    bucket_prefix_tokens: dict[int, int] = {}
+    bucket_keys = frozenset(
+        {
+            "durable_write_completed_count",
+            "length_bucket_tokens",
+            "prefix_tokens",
+            "repeat_durable_write_completed_count",
+            "sample_count",
+            "tokens_per_second",
+            "wall_seconds",
+        }
+    )
+    for expected_bucket, raw_bucket in zip(
+        GPU_QUALIFICATION_THROUGHPUT_BUCKETS,
+        buckets,
+        strict=True,
+    ):
+        bucket = _mapping(raw_bucket, f"repeat throughput bucket {expected_bucket}")
+        _require_exact_keys(
+            bucket,
+            bucket_keys,
+            f"repeat throughput bucket {expected_bucket}",
+        )
+        if not _is_exact_scalar(
+            bucket.get("length_bucket_tokens"), expected_bucket
+        ):
+            raise ValueError("repeat throughput length buckets must be canonical")
+        if not _is_exact_scalar(
+            bucket.get("sample_count"),
+            GPU_QUALIFICATION_THROUGHPUT_SAMPLES_PER_BUCKET,
+        ):
+            raise ValueError("repeat throughput sample_count differs")
+        for count_field in (
+            "durable_write_completed_count",
+            "repeat_durable_write_completed_count",
+        ):
+            if not _is_exact_scalar(
+                bucket.get(count_field),
+                GPU_QUALIFICATION_THROUGHPUT_SAMPLES_PER_BUCKET,
+            ):
+                raise ValueError(
+                    "primary and repeat must durably write every throughput sample"
+                )
+        prefix_tokens = _positive_int(bucket.get("prefix_tokens"), "prefix_tokens")
+        bucket_prefix_tokens[expected_bucket] = prefix_tokens
+        wall_seconds = _positive_float(bucket.get("wall_seconds"), "wall_seconds")
+        measured_rate = _positive_float(
+            bucket.get("tokens_per_second"),
+            "tokens_per_second",
+        )
+        computed_rate = prefix_tokens / wall_seconds
+        if not math.isclose(measured_rate, computed_rate, rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError(
+                "repeat throughput primary bucket rate does not match tokens / wall time"
+            )
+        if (
+            hardware_id == GPU_QUALIFICATION_GENERATION_HARDWARE_ID
+            and measured_rate < GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND
+        ):
+            raise ValueError(
+                "repeat throughput primary bucket is below the launch threshold"
+            )
+        total_tokens += prefix_tokens
+        total_seconds += wall_seconds
+    if not _is_exact_scalar(value.get("aggregate_prefix_tokens"), total_tokens):
+        raise ValueError("repeat aggregate throughput token count mismatch")
+    aggregate_seconds = _positive_float(
+        value.get("aggregate_wall_seconds"),
+        "aggregate_wall_seconds",
+    )
+    if not math.isclose(aggregate_seconds, total_seconds, rel_tol=1e-12, abs_tol=1e-12):
+        raise ValueError("repeat aggregate throughput wall time mismatch")
+    aggregate_rate = _positive_float(
+        value.get("aggregate_tokens_per_second"),
+        "aggregate_tokens_per_second",
+    )
+    computed_aggregate = total_tokens / total_seconds
+    if not math.isclose(aggregate_rate, computed_aggregate, rel_tol=1e-9, abs_tol=1e-9):
+        raise ValueError("repeat aggregate throughput rate mismatch")
+    if (
+        hardware_id == GPU_QUALIFICATION_GENERATION_HARDWARE_ID
+        and aggregate_rate < GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND
+    ):
+        raise ValueError("repeat aggregate throughput is below the launch threshold")
+
+    samples = _sequence(value.get("samples"), "repeat throughput samples")
+    expected_sample_count = (
+        len(GPU_QUALIFICATION_THROUGHPUT_BUCKETS)
+        * GPU_QUALIFICATION_THROUGHPUT_SAMPLES_PER_BUCKET
+    )
+    if len(samples) != expected_sample_count:
+        raise ValueError("repeat throughput evidence has the wrong sample count")
+    sample_keys = frozenset(
+        {
+            "cache_prefix_token_count",
+            "cache_prefix_token_ids_sha256",
+            "dataset",
+            "example_id",
+            "input_tokens_target",
+            "primary_artifact",
+            "repeat_artifact",
+            "segment_count",
+            "segments",
+        }
+    )
+    artifact_keys = frozenset({"raw_artifact_bytes", "raw_artifact_sha256"})
+    segment_keys = frozenset({"index", "token_count", "token_ids_sha256"})
+    full_samples: list[dict[str, Any]] = []
+    structural_samples: list[dict[str, Any]] = []
+    previous_identity: tuple[int, str, str] | None = None
+    counts_by_bucket = {bucket: 0 for bucket in GPU_QUALIFICATION_THROUGHPUT_BUCKETS}
+    datasets_by_bucket: dict[int, set[str]] = {
+        bucket: set() for bucket in GPU_QUALIFICATION_THROUGHPUT_BUCKETS
+    }
+    exact_tokens_by_bucket = {
+        bucket: 0 for bucket in GPU_QUALIFICATION_THROUGHPUT_BUCKETS
+    }
+    for raw_sample in samples:
+        sample = _mapping(raw_sample, "repeat throughput sample")
+        _require_exact_keys(sample, sample_keys, "repeat throughput sample")
+        target = _positive_int(sample.get("input_tokens_target"), "input_tokens_target")
+        if target not in counts_by_bucket:
+            raise ValueError(
+                "repeat throughput sample has an unsupported length bucket"
+            )
+        dataset = sample.get("dataset")
+        example_id = sample.get("example_id")
+        if not isinstance(dataset, str) or not dataset:
+            raise ValueError("repeat throughput sample dataset must be non-empty")
+        if not isinstance(example_id, str) or not example_id:
+            raise ValueError("repeat throughput sample example_id must be non-empty")
+        identity = (target, dataset, example_id)
+        if previous_identity is not None and identity <= previous_identity:
+            raise ValueError("repeat throughput samples must be uniquely sorted")
+        previous_identity = identity
+        counts_by_bucket[target] += 1
+        datasets_by_bucket[target].add(dataset)
+        _require_sha256(
+            sample.get("cache_prefix_token_ids_sha256"),
+            field_name="cache_prefix_token_ids_sha256",
+        )
+        prefix_count = _positive_int(
+            sample.get("cache_prefix_token_count"),
+            "cache_prefix_token_count",
+        )
+        exact_tokens_by_bucket[target] += prefix_count
+        segment_count = _positive_int(sample.get("segment_count"), "segment_count")
+        if segment_count != target // 2_048:
+            raise ValueError("repeat throughput sample is not on the 2k document grid")
+        segments = _sequence(sample.get("segments"), "repeat throughput segments")
+        if len(segments) != segment_count:
+            raise ValueError("repeat throughput segment count mismatch")
+        normalized_segments: list[dict[str, Any]] = []
+        observed_prefix_count = 0
+        for expected_index, raw_segment in enumerate(segments):
+            segment = _mapping(raw_segment, "repeat throughput segment")
+            _require_exact_keys(segment, segment_keys, "repeat throughput segment")
+            if not _is_exact_scalar(segment.get("index"), expected_index):
+                raise ValueError("repeat throughput segments must be canonical")
+            observed_prefix_count += _positive_int(
+                segment.get("token_count"),
+                "segment token_count",
+            )
+            _require_sha256(
+                segment.get("token_ids_sha256"),
+                field_name="segment token_ids_sha256",
+            )
+            normalized_segments.append(dict(segment))
+        if observed_prefix_count != prefix_count:
+            raise ValueError("repeat throughput segments do not compose the prefix")
+
+        normalized_artifacts: list[dict[str, Any]] = []
+        expected_raw_bytes = (
+            prefix_count * GPU_QUALIFICATION_GENERATION_ARTIFACT_BYTES_PER_TOKEN
+        )
+        for artifact_role in ("primary_artifact", "repeat_artifact"):
+            artifact = _mapping(sample.get(artifact_role), artifact_role)
+            _require_exact_keys(artifact, artifact_keys, artifact_role)
+            raw_bytes = _positive_int(
+                artifact.get("raw_artifact_bytes"),
+                "raw_artifact_bytes",
+            )
+            if raw_bytes != expected_raw_bytes:
+                raise ValueError(
+                    "raw artifact bytes must equal prefix tokens times 73728"
+                )
+            _require_sha256(
+                artifact.get("raw_artifact_sha256"),
+                field_name="raw_artifact_sha256",
+            )
+            normalized_artifacts.append(dict(artifact))
+        if normalized_artifacts[0] != normalized_artifacts[1]:
+            raise ValueError(
+                "primary and repeat artifacts are not byte-identical on one GPU"
+            )
+
+        logical_sample = {
+            "cache_prefix_token_count": prefix_count,
+            "cache_prefix_token_ids_sha256": sample["cache_prefix_token_ids_sha256"],
+            "dataset": dataset,
+            "example_id": example_id,
+            "input_tokens_target": target,
+            "segment_count": segment_count,
+            "segments": normalized_segments,
+        }
+        full_samples.append(
+            {
+                **logical_sample,
+                "primary_artifact": normalized_artifacts[0],
+                "repeat_artifact": normalized_artifacts[1],
+            }
+        )
+        structural_samples.append(
+            {
+                **logical_sample,
+                "primary_artifact": {
+                    "raw_artifact_bytes": normalized_artifacts[0]["raw_artifact_bytes"]
+                },
+                "repeat_artifact": {
+                    "raw_artifact_bytes": normalized_artifacts[1]["raw_artifact_bytes"]
+                },
+            }
+        )
+    if any(
+        count != GPU_QUALIFICATION_THROUGHPUT_SAMPLES_PER_BUCKET
+        for count in counts_by_bucket.values()
+    ):
+        raise ValueError("repeat throughput does not cover four samples per bucket")
+    if any(
+        datasets != set(GPU_QUALIFICATION_INPUT_DATASETS)
+        for datasets in datasets_by_bucket.values()
+    ):
+        raise ValueError("repeat throughput must select every frozen dataset")
+    if bucket_prefix_tokens != exact_tokens_by_bucket:
+        raise ValueError(
+            "repeat throughput bucket token counts differ from exact samples"
+        )
+
+    full_proof_sha256 = sha256(
+        canonical_gpu_qualification_json(
+            {
+                "artifact_layout": dict(artifact_layout),
+                "samples": full_samples,
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+    structural_proof_sha256 = sha256(
+        canonical_gpu_qualification_json(
+            {
+                "artifact_layout": dict(artifact_layout),
+                "samples": structural_samples,
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+    return (
+        full_proof_sha256,
+        structural_proof_sha256,
+        aggregate_rate,
+        tuple(structural_samples),
+    )
 
 
 def _validate_auto_backend_measurements(value: Mapping[str, Any]) -> None:

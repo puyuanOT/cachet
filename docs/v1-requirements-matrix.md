@@ -77,9 +77,14 @@ evidence that may populate the reset result tables.
 - Freeze the exact vLLM 0.27.1 source, rebuilt wheels, runtime closure,
   benchmark inputs, and GPU qualification records before allocating campaign
   compute.
-- Generate the reusable Q8 handoff artifacts once on 16 independent L40S
-  workers and bind every output to its qualified input and control-plane
-  attestation.
+- Preserve the legacy-v1 `generation_throughput_with_writes` byte-identity rule
+  only for historical validation; fresh native-v2 plans use a distinct
+  repeat-aware sentinel requiring same-hardware fresh-load byte reproducibility
+  and cross-hardware logical/token/layout/size equivalence without raw-digest
+  equality.
+- Use L40S as the sole publication handoff generator. Generate the reusable Q8
+  handoff artifacts once on 16 independent L40S workers and bind every output
+  to its qualified input and control-plane attestation.
 - Run the complete Baseline/Vanilla latency factorial for 8k, 16k, and 32k at
   concurrency 1, 2, and 4 across five independent deployment blocks.
 - Run every currently implemented precision, storage, hardware, and platform

@@ -87,10 +87,10 @@ EXPECTED_JOB_IDS = (
     "aws-g5-a10g-auto-backend-diagnostic",
 )
 EXPECTED_PLAN_SHA256 = (
-    "6ccee0f3819b1793b55d212ff0e5173ab719536217931694d7e7d19add0f6c31"
+    "bf6ead26bdf5561ab461cfae1b31737cde9f666a3b928190976394d16fc21d87"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
-    "1cb1247d7060a4a98592169dd5b5fd2c4da46bfc86c664989301d905da1dd87c"
+    "668b501def4eb52ca9cf1514d1a1f228e2ca277b252eac69d3b6f3816af560de"
 )
 EXPECTED_VLLM_MEMBER_SHA256 = {
     "vllm/model_executor/layers/attention/attention.py": (
@@ -256,6 +256,127 @@ def _valid_attestation() -> dict[str, Any]:
     }
 
 
+def _weight_quantizer_attestation() -> dict[str, Any]:
+    return {
+        "bitsandbytes_loader_sha256": (
+            qualification_v1.GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256
+        ),
+        "bitsandbytes_version": "0.49.2",
+        "dynamic_quant_call": {
+            "compress_statistics": True,
+            "input_dtype": "bfloat16",
+            "nested_state": True,
+            "packed_dtype": "uint8",
+            "quant_type": "nf4",
+        },
+        "hf_generator_config": {
+            "bnb_4bit_compute_dtype": "bfloat16",
+            "bnb_4bit_quant_storage": "uint8",
+            "bnb_4bit_quant_type": "nf4",
+            "bnb_4bit_use_double_quant": True,
+            "load_in_4bit": True,
+        },
+        "loaded_native_library_member": "bitsandbytes/libbitsandbytes_cuda129.so",
+        "loaded_native_library_path": (
+            "/runtime/lib/python3.11/site-packages/"
+            "bitsandbytes/libbitsandbytes_cuda129.so"
+        ),
+    }
+
+
+def _repeat_throughput_measurements(artifact_label: str) -> dict[str, Any]:
+    buckets: list[dict[str, Any]] = []
+    samples: list[dict[str, Any]] = []
+    total_tokens = 0
+    total_seconds = 0.0
+    for length in qualification_v1.GPU_QUALIFICATION_THROUGHPUT_BUCKETS:
+        prefix_count = length - 1
+        bucket_tokens = prefix_count * 4
+        wall_seconds = bucket_tokens / 40.0
+        buckets.append(
+            {
+                "durable_write_completed_count": 4,
+                "length_bucket_tokens": length,
+                "prefix_tokens": bucket_tokens,
+                "repeat_durable_write_completed_count": 4,
+                "sample_count": 4,
+                "tokens_per_second": 40.0,
+                "wall_seconds": wall_seconds,
+            }
+        )
+        total_tokens += bucket_tokens
+        total_seconds += wall_seconds
+        for dataset in qualification_v1.GPU_QUALIFICATION_INPUT_DATASETS:
+            segments = [
+                {
+                    "index": index,
+                    "token_count": 2047 if index == length // 2_048 - 1 else 2_048,
+                    "token_ids_sha256": sha256(
+                        f"{length}-{dataset}-segment-{index}".encode()
+                    ).hexdigest(),
+                }
+                for index in range(length // 2_048)
+            ]
+            artifact = {
+                "raw_artifact_bytes": prefix_count * 73_728,
+                "raw_artifact_sha256": sha256(
+                    f"{artifact_label}-{length}-{dataset}".encode()
+                ).hexdigest(),
+            }
+            samples.append(
+                {
+                    "cache_prefix_token_count": prefix_count,
+                    "cache_prefix_token_ids_sha256": sha256(
+                        f"{length}-{dataset}-prefix".encode()
+                    ).hexdigest(),
+                    "dataset": dataset,
+                    "example_id": f"{dataset}-{length}",
+                    "input_tokens_target": length,
+                    "primary_artifact": dict(artifact),
+                    "repeat_artifact": dict(artifact),
+                    "segment_count": len(segments),
+                    "segments": segments,
+                }
+            )
+    weight = _weight_quantizer_attestation()
+    return {
+        "aggregate_prefix_tokens": total_tokens,
+        "aggregate_tokens_per_second": total_tokens / total_seconds,
+        "aggregate_wall_seconds": total_seconds,
+        "artifact_layout": qualification_v1._generation_artifact_layout_record(),
+        "attention_backend_observed": "TRITON_ATTN",
+        "attention_backend_requested": "TRITON_ATTN",
+        "buckets": buckets,
+        "clock_scope": "prefix_generation_through_durable_kv_write",
+        "failed_write_count": 0,
+        "fresh_generator_load_count": 2,
+        "generator_constructions": [
+            {
+                "construction_index": index,
+                "generator_family": "transformers",
+                "generator_version": "5.0.0",
+                "output_namespace": namespace,
+                "role": role,
+                "weight_quantizer_attestation": deepcopy(weight),
+            }
+            for index, (role, namespace) in enumerate(
+                zip(
+                    qualification_v1.GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES,
+                    qualification_v1.GPU_QUALIFICATION_GENERATION_OUTPUT_NAMESPACES,
+                    strict=True,
+                )
+            )
+        ],
+        "generator_device_map": "auto",
+        "same_hardware_repeat_verified": True,
+        "samples": samples,
+        "triton_compile_count": 1,
+        "triton_kernel_launch_count": 100,
+        "trust_remote_code": False,
+        "writes_included": True,
+    }
+
+
 def _valid_runtime_verification() -> tuple[dict[str, Any], dict[str, Any], str]:
     plan = _valid_plan()
     job_id = plan["cloud_qualification"]["jobs"][0]["job_id"]
@@ -270,6 +391,7 @@ def _valid_runtime_verification() -> tuple[dict[str, Any], dict[str, Any], str]:
 
 def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[str, Any]:
     duration_seconds = 60.0
+    node_type_id = qualification_v1._expected_node_type(result["hardware_id"])
     record: dict[str, Any] = {
         "authorization_source": "direct_databricks_runs_get",
         "closed_record_sha256": "",
@@ -279,7 +401,7 @@ def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[st
         "control_plane_status_sha256": sha256(
             f"control-plane-{index}".encode()
         ).hexdigest(),
-        "driver_node_type_id": "test-node-type",
+        "driver_node_type_id": node_type_id,
         "end_time_ms": 1_777_000_120_000,
         "job_id": result["job_id"],
         "ledger_actual_cluster_duration_seconds": duration_seconds,
@@ -288,7 +410,7 @@ def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[st
             f"terminal-{index}".encode()
         ).hexdigest(),
         "life_cycle_state": "TERMINATED",
-        "node_type_id": "test-node-type",
+        "node_type_id": node_type_id,
         "output_json": result["output_json"],
         "phase_batch_record_sha256": sha256(f"batch-{index}".encode()).hexdigest(),
         "phase_terminal_prefix": (
@@ -302,7 +424,10 @@ def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[st
         ).hexdigest(),
         "result_record_sha256": result["closed_record_sha256"],
         "result_state": "SUCCESS",
-        "run_name": f"test-run-{index}",
+        "run_name": qualification_v1._expected_run_name(
+            PUBLICATION_CAMPAIGN_ID,
+            result["job_id"],
+        ),
         "schema_version": GPU_QUALIFICATION_V2_SCHEMA_VERSION,
         "start_time_ms": 1_777_000_000_000,
         "submit_payload_sha256": sha256(f"submit-{index}".encode()).hexdigest(),
@@ -343,6 +468,8 @@ def _valid_aggregate_evidence_v2() -> tuple[dict[str, Any], dict[str, Any]]:
         measurements: dict[str, Any] = {}
         if job["sentinel"] == "forced_triton_runtime_handoff":
             measurements["runtime_lock_attestation"] = _valid_attestation()
+        elif job["sentinel"] == "generation_throughput_with_repeat_writes":
+            measurements = _repeat_throughput_measurements(job["hardware_id"])
         result = build_gpu_job_result_v2(
             plan_record=plan,
             job_id=job_id,
@@ -432,6 +559,50 @@ def test_v2_plan_is_deterministic_and_closes_exactly_fourteen_jobs() -> None:
     assert all(job["attempt_number"] == 0 for job in jobs)
     assert all(job["max_retries"] == 0 for job in jobs)
     assert first["runtime_contract"]["artifact_sha256"] == (EXPECTED_ARTIFACT_SHA256)
+    v1_jobs = _valid_v1_plan()["cloud_qualification"]["jobs"]
+    generation_ids = {
+        "aws-g6-l4-generation-throughput",
+        "aws-g6e-l40s-generation-throughput",
+    }
+    for v1_job, v2_job in zip(v1_jobs, jobs, strict=True):
+        if v2_job["job_id"] not in generation_ids:
+            assert v2_job == v1_job
+            continue
+        assert v1_job["sentinel"] == "generation_throughput_with_writes"
+        assert v2_job["sentinel"] == "generation_throughput_with_repeat_writes"
+        requirements = v2_job["requirements"]
+        assert requirements["fresh_generator_load_count"] == 2
+        assert requirements["generator_construction_roles"] == ["primary", "repeat"]
+        assert requirements["generator_output_namespaces"] == [
+            "throughput-primary",
+            "throughput-repeat",
+        ]
+        assert requirements["artifact_bytes_per_prefix_token"] == 73_728
+        assert tuple(requirements["artifact_layout"]) == (
+            "model_id",
+            "lora_id",
+            "layout_version",
+            "dtype",
+            "num_layers",
+            "block_size",
+            "bytes_per_token",
+            "num_query_heads",
+            "num_kv_heads",
+            "head_size",
+            "kv_stride_bytes",
+            "shares_kv_storage",
+            "storage_layout",
+            "payload_axis_order",
+            "pre_rope",
+            "rope_theta",
+            "rope_rotary_dim",
+            "key_position_encoding",
+            "attention_mechanism",
+            "query_heads_per_kv_head",
+        )
+        assert requirements["artifact_layout"]["model_id"] == (
+            "Qwen/Qwen3-4B-Instruct-2507"
+        )
     validate_gpu_qualification_plan_v2_record(
         first,
         expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
@@ -439,14 +610,14 @@ def test_v2_plan_is_deterministic_and_closes_exactly_fourteen_jobs() -> None:
     )
 
 
-def test_v2_opening_authority_includes_the_reconciled_diagnostic() -> None:
-    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.reservation_count == 265
-    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.submission_receipt_count == 127
-    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.terminal_actual_count == 265
+def test_v2_opening_authority_includes_the_reconciled_exact14_attempt() -> None:
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.reservation_count == 430
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.submission_receipt_count == 292
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.terminal_actual_count == 430
     assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.prefix_sha256 == (
-        "e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"
+        "116251d3ca5fce37ce5749565e1059fdf65b30ce17fd12ebc50b877835f9772b"
     )
-    assert GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS == 77.50443361111115
+    assert GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS == 116.12134277777776
 
 
 def test_v2_plan_rejects_rebased_opening_authority() -> None:
@@ -912,6 +1083,107 @@ def test_v2_aggregate_validates_native_records_before_behavior_projection(
         expected_artifact_pins=_pins(),
     )
     assert selection == expected_selection
+
+
+def test_v2_aggregate_projects_repeat_generation_and_selects_full_l40s_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, evidence = _valid_aggregate_evidence_v2()
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_runtime_handoff_measurements_with_attestation",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_packed_roundtrip_measurements",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_token_determinism_measurements",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def validate_gmu(_measurements, *, expected_gmu):
+        gmu = float(expected_gmu)
+        return gmu, gmu <= 0.75
+
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_gmu_measurements",
+        validate_gmu,
+    )
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_a10g_capacity_measurements",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_auto_backend_measurements",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        qualification_v1,
+        "_validate_terminal_receipt",
+        lambda *_args, **_kwargs: None,
+    )
+
+    selection = validate_gpu_qualification_evidence_v2_record(
+        evidence,
+        plan_record=plan,
+        expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+        expected_artifact_pins=_pins(),
+    )
+    jobs = evidence["cloud_gpu_evidence"]["jobs"]
+    l4 = next(
+        job
+        for job in jobs
+        if job["hardware_id"] == "aws-g6-l4" and "samples" in job["measurements"]
+    )
+    l40s = next(job for job in jobs if job["hardware_id"] == "aws-g6e-l40s")
+    l4_full, l4_structural, _, l4_samples = (
+        qualification_v1._validate_throughput_with_repeat_measurements(
+            l4["measurements"],
+            hardware_id="aws-g6-l4",
+        )
+    )
+    l40s_full, l40s_structural, l40s_rate, l40s_samples = (
+        qualification_v1._validate_throughput_with_repeat_measurements(
+            l40s["measurements"],
+            hardware_id="aws-g6e-l40s",
+        )
+    )
+
+    assert l4_full != l40s_full
+    assert l4_structural == l40s_structural
+    assert l4_samples == l40s_samples
+    assert selection.generation_artifacts_sha256 == l40s_full
+    assert selection.generation_prefix_tokens_per_second == l40s_rate == 40.0
+    assert selection.plan_sha256 == plan["closed_record_sha256"]
+
+    l40s["measurements"]["samples"][0]["cache_prefix_token_ids_sha256"] = sha256(
+        b"cross-hardware-logical-mismatch"
+    ).hexdigest()
+    _seal_v2(l40s)
+    l40s_index = jobs.index(l40s)
+    receipt = evidence["cloud_gpu_evidence"]["terminal_receipts"][l40s_index]
+    receipt["result_record_sha256"] = l40s["closed_record_sha256"]
+    receipt["result_file_sha256"] = sha256(
+        (qualification_v1.canonical_gpu_qualification_json(l40s) + "\n").encode()
+    ).hexdigest()
+    _seal_v2(receipt)
+    _seal_v2(evidence["cloud_gpu_evidence"])
+    _seal_v2(evidence)
+
+    with pytest.raises(ValueError, match="structures are not equivalent"):
+        validate_gpu_qualification_evidence_v2_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+            expected_artifact_pins=_pins(),
+        )
 
 
 @pytest.mark.parametrize("malformation", ["job_record_type", "receipt_record_type"])

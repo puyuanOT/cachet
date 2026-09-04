@@ -105,6 +105,14 @@ _RETAINED_LEDGER_REVIEWED_SUCCESSOR_PREFIX = DatabricksLedgerPrefix(
         "7bdfab96021910df7a06ac1cf87604eefe7c1f4181f49a242212f699c443ca1a"
     ),
 )
+_RETAINED_LEDGER_V2_OPENING_PREFIX = DatabricksLedgerPrefix(
+    ledger_id=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.ledger_id,
+    cap_cluster_hours=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.cap_cluster_hours,
+    reservation_count=265,
+    submission_receipt_count=127,
+    terminal_actual_count=265,
+    prefix_sha256=("e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"),
+)
 
 
 @pytest.fixture(autouse=True)
@@ -378,7 +386,7 @@ def _current_live_and_prior_receipt_ledgers() -> tuple[
     assert reviewed_successor.active_reserved_task_count == 0
     assert reviewed_successor.active_reserved_cluster_hours == 0
     assert databricks_ledger_prefix(reviewed_successor) == successor_prefix
-    opening_prefix = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    opening_prefix = _RETAINED_LEDGER_V2_OPENING_PREFIX
     resource_ledger.require_databricks_ledger_prefix(
         reviewed_successor,
         opening_prefix,
@@ -8409,6 +8417,214 @@ def test_all_pre_rope_qualification_paths_accept_the_exact_second_layout_bind(
     assert final_layout.pre_rope is True
     assert final_layout.shares_kv_storage is False
     assert final_layout.storage_layout.value == "separate_key_value"
+
+
+def test_repeat_throughput_uses_two_fresh_generators_and_one_logical_sample_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import document_kv_cache._benchmark_datasets as benchmark_datasets
+    import document_kv_cache.benchmark_handoffs as benchmark_handoffs
+    import document_kv_cache.benchmarks as benchmarks
+    from document_kv_cache.model_profiles import (
+        QWEN3_4B_ROPE_ROTARY_DIM,
+        QWEN3_4B_ROPE_THETA,
+        layout_for_model,
+    )
+
+    layout = layout_for_model(
+        "Qwen/Qwen3-4B-Instruct-2507",
+        dtype="fp8_e5m2",
+        block_size=16,
+        lora_id="base",
+        pre_rope=True,
+        rope_theta=QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+        shares_kv_storage=False,
+    )
+
+    class Generator:
+        generator_family = "transformers"
+        generator_version = "5.0.0"
+
+        def __init__(self) -> None:
+            self.model = object()
+
+    generators = [Generator(), Generator()]
+    generator_calls: list[Generator] = []
+    factory_empty_cache_counts: list[int] = []
+
+    def build_generator():
+        factory_empty_cache_counts.append(fake_cuda.empty_cache_count)
+        generator = generators[len(generator_calls)]
+        generator_calls.append(generator)
+        return layout, generator
+
+    class Cuda:
+        def __init__(self) -> None:
+            self.empty_cache_count = 0
+
+        def empty_cache(self) -> None:
+            self.empty_cache_count += 1
+
+    fake_cuda = Cuda()
+    gc_calls: list[int] = []
+    monkeypatch.setattr(
+        sentinel_worker.gc,
+        "collect",
+        lambda: gc_calls.append(len(gc_calls)),
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_torch",
+        lambda: types.SimpleNamespace(cuda=fake_cuda),
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_triton_e5m2_probe",
+        lambda _work_dir: {
+            "triton_compile_count": 1,
+            "triton_kernel_launch_count": 2,
+        },
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_configure_transformers_generator",
+        lambda *, pre_rope: None,
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_pre_rope_handoff_layout_and_generator",
+        build_generator,
+    )
+    weight_attestation = {"weight": "attested"}
+    weight_calls: list[int] = []
+
+    def attest_weight():
+        weight_calls.append(len(weight_calls))
+        return dict(weight_attestation)
+
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_weight_quantizer_attestation",
+        attest_weight,
+    )
+    datasets = ("biography", "hotpotqa", "musique", "niah")
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_bucket_dataset_paths",
+        lambda _bundle, length: tuple(
+            Path(f"{length}-{dataset}.jsonl") for dataset in datasets
+        ),
+    )
+
+    def selected_record(path: Path):
+        length, dataset = path.stem.split("-", maxsplit=1)
+        return {
+            "dataset": dataset,
+            "example_id": f"{dataset}-{length}",
+            "input_tokens_target": int(length),
+        }
+
+    monkeypatch.setattr(sentinel_worker, "_selected_jsonl_record", selected_record)
+    monkeypatch.setattr(sentinel_worker, "_write_jsonl", lambda *_args: None)
+    monkeypatch.setattr(
+        benchmark_datasets,
+        "_example_from_record",
+        lambda record, **_kwargs: record,
+    )
+    monkeypatch.setattr(
+        benchmarks,
+        "benchmark_cache_prefix_segments",
+        lambda example: tuple(
+            (f"chunk-{index}", f"token-{index}")
+            for index in range(example["input_tokens_target"] // 2_048)
+        ),
+    )
+    tokenization_generators: list[Generator] = []
+
+    def generator_token_ids(generator: Generator, _text: str) -> list[int]:
+        tokenization_generators.append(generator)
+        return [1]
+
+    monkeypatch.setattr(
+        sentinel_worker,
+        "_generator_token_ids",
+        generator_token_ids,
+    )
+
+    output_dirs: list[Path] = []
+    bundle_generators: list[Generator] = []
+
+    def generate_bundle(_input, *, output_dir: Path, **kwargs):
+        output_dirs.append(output_dir)
+        bundle_generators.append(kwargs["generator"])
+        output_dir.mkdir()
+        length = int(output_dir.name.split("-", maxsplit=1)[0])
+        segment_count = length // 2_048
+        raw = output_dir / "payload.raw"
+        raw.write_bytes(b"x" * (segment_count * 73_728))
+        return types.SimpleNamespace(
+            payload_uris=(str(raw),),
+            cache_refs=tuple(
+                types.SimpleNamespace(token_count=1) for _ in range(segment_count)
+            ),
+        )
+
+    monkeypatch.setattr(
+        benchmark_handoffs,
+        "generate_benchmark_handoff_bundles",
+        generate_bundle,
+    )
+    clocks = iter((0.0, 1.0, 1.0, 2.0, 2.0, 3.0))
+    monkeypatch.setattr(sentinel_worker.time, "perf_counter", lambda: next(clocks))
+
+    measured = sentinel_worker._throughput_with_repeat_sentinel(
+        plan_record={},
+        planned_job={"hardware_id": "aws-g6-l4"},
+        input_bundle=tmp_path / "input-bundle",
+        work_dir=tmp_path,
+    )
+
+    assert generator_calls == generators
+    assert factory_empty_cache_counts[0] == 0
+    assert factory_empty_cache_counts[1] > factory_empty_cache_counts[0]
+    assert generators[0] is not generators[1]
+    assert generators[0].model is not generators[1].model
+    assert weight_calls == [0, 1]
+    assert measured["fresh_generator_load_count"] == 2
+    assert measured["same_hardware_repeat_verified"] is True
+    assert [item["role"] for item in measured["generator_constructions"]] == [
+        "primary",
+        "repeat",
+    ]
+    assert [
+        item["output_namespace"] for item in measured["generator_constructions"]
+    ] == ["throughput-primary", "throughput-repeat"]
+    assert {
+        output_dir.relative_to(tmp_path).parts[0] for output_dir in output_dirs[:12]
+    } == {"throughput-primary"}
+    assert {
+        output_dir.relative_to(tmp_path).parts[0] for output_dir in output_dirs[12:]
+    } == {"throughput-repeat"}
+    assert bundle_generators[:12] == [generators[0]] * 12
+    assert bundle_generators[12:] == [generators[1]] * 12
+    assert tokenization_generators[:112] == [generators[0]] * 112
+    assert tokenization_generators[112:] == [generators[1]] * 112
+    assert len(measured["samples"]) == 12
+    assert all(
+        sample["primary_artifact"] == sample["repeat_artifact"]
+        for sample in measured["samples"]
+    )
+    assert all(
+        bucket["repeat_durable_write_completed_count"] == 4
+        for bucket in measured["buckets"]
+    )
+    assert measured["aggregate_prefix_tokens"] == 112
+    assert measured["aggregate_wall_seconds"] == 3.0
+    assert measured["aggregate_tokens_per_second"] == pytest.approx(112 / 3)
+    assert len(gc_calls) >= 26
+    assert fake_cuda.empty_cache_count >= 26
 
 
 def test_pre_rope_qualification_layout_is_final_separate_kv_before_first_bind(

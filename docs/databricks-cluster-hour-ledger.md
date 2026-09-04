@@ -399,6 +399,61 @@ and 81.16875222222224 terminal GPU-hours. These are immutable successor
 snapshots, not permission to reuse a stale controller freeze; a new freeze must
 bind the then-current complete predecessor.
 
+The later native-v2 14-job batch is retained as a cross-hardware raw-byte
+identity gate failure. Its plan is
+`7f8b82e271794501a86f61134f73c47519d9fa2d7f1d3d1202ee5b10e0d3653a`,
+its source closure is
+`59f2d25e4cb75adc13189ecd9c8617e5c29eb1e965ef8360e44cb32ce1dbfc47`,
+and its phase batch is
+`7efac847c9bfe3f42d9a2bf289035a7c10454276fb350aeb727b37034b0c1a6d`.
+All fourteen attempt-zero, no-retry jobs reached terminal success. Their
+3.5296394444444443 GPU-hours closed the exact 428/290/428 ledger prefix
+`7e0d3fedba07a6ed0f7dd4ef23d4f0c82912626043586e54547a59016a195222`
+at 115.43377555555554 terminal GPU-hours. Terminal job success did not
+constitute global qualification success: collection correctly failed closed
+with `ValueError: L4 and L40S generation artifacts are not byte-identical`.
+The collector failure record closes as
+`e103ca7dc7bbb630404013873a0c9a7909d6ac8f052ed5acf42050dd106930da`;
+its exact file SHA-256 is
+`81d597ef57c85d109cad7f19c23da849566a39e581dd48d3113a49622dc1926b`.
+
+The L4 generation result closes as
+`9d120142ff462d92b86ccd694c31acb0b19690dd682185d196b8bcae22c20bc4`
+and measured 922.8792245248601 tokens/s. The L40S result closes as
+`8e64f0f98fe88f97391cb182ed9bc60229ee9cf8798762856a938c4375d01f7c`
+and measured 949.9742346119579 tokens/s. Zero of twelve corresponding raw
+artifact SHA-256 values matched across L4 and L40S, while all twelve records
+matched after omitting only `raw_artifact_sha256`: dataset/example identity,
+input target, cache-prefix token count and token digest, segment order/counts
+and token digests, and raw byte length were equal. The native-v2 envelope had
+inherited the legacy-v1 aggregate byte-identity rule, so this batch remains
+`FAILED`. It must not be relabeled, resealed as passing evidence, or admitted
+under a successor contract.
+
+Two subsequent one-job repeats are retained only as diagnostic,
+non-authorizing evidence; they neither repair that failed batch nor grant
+publication qualification. L40S run `506950471100618` reproduced all twelve
+original L40S raw artifact digests from an independent fresh load and measured
+946.4833749604393 tokens/s. Its result closes as
+`26616b95cfe5efab2527e28eade5fad9dedb48f12e76c7eb41e5bd7f4ab081ca`,
+its terminal evidence closes as
+`51c72161bb2dff2d359ce03419a47f7415a7d1bd1659a2d6444450eba717bcdd`,
+and its 1,204.212 terminal seconds add 0.3345033333333333 GPU-hours at the
+exact 429/291/429 prefix
+`2ef0f0d30b40b164fd157627ed55ae881b15e28fdb9143ea35a3b599b334feb4`.
+L4 run `71783401971590` likewise reproduced all twelve original L4 raw
+artifact digests and measured 920.6639135510926 tokens/s. Its result closes as
+`e78d2e5bc7b6cdc9e217f7d6cb821bbd763e8b7e290d1037d4a95b4308bbd2cf`,
+its terminal evidence closes as
+`19e8a6a6c5bbfeb8736d8fe61204262a6a367bf37a30cae0e6d7b15e5c26a9ab`,
+and its 1,271.03 terminal seconds add 0.3530638888888889 GPU-hours. The final
+diagnostic prefix is the exact 430/292/430 prefix
+`116251d3ca5fce37ce5749565e1059fdf65b30ce17fd12ebc50b877835f9772b`,
+with 116.12134277777776 terminal GPU-hours, zero active reservations, and
+907.8786572222223 hours remaining under the cap. These diagnostics support a
+fresh repeat-aware native-v2 protocol; they cannot be combined with the old
+fourteen results to manufacture a pass.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local
@@ -433,13 +488,17 @@ input-token slots), so the 35-token/GPU-s gate permits at most 58.1268 actual
 GPU-hours. Sixteen separately submitted, no-retry L40S producer jobs reserve at
 most 80 GPU-hours (five hours each). The exact 16-member wave is reserved
 atomically before any POST, then each attempt is reconciled from its own
-terminal control-plane record. Charged time is the sum of their one-GPU terminal lifecycles,
-including bootstrap, generation, hashing, and durable writes. A CPU coordinator
-then verifies every file and closes the shared-root bundles using metadata
-renames, with zero payload copies and zero coordinator GPU charge. L40S is
-eligible only after the sealed L4/L40S artifact-equivalence and >=35-token/s
-qualification passes. Timed L4/A10G serving jobs stage the closed 8k/16k/32k
-bundle they need to node-local NVMe and never regenerate it.
+terminal control-plane record. Charged time is the sum of their one-GPU
+terminal lifecycles, including bootstrap, generation, hashing, and durable
+writes. A CPU coordinator then verifies every file and closes the shared-root
+bundles using metadata renames, with zero payload copies and zero coordinator
+GPU charge. L40S is the sole publication handoff generator. Fresh native-v2
+eligibility requires same-hardware fresh-load byte reproducibility separately
+on L4 and L40S, cross-hardware logical/token/layout/size equivalence without
+raw-digest equality, exact raw artifact length of 73,728 bytes per cache-prefix
+token, and L40S throughput of at least 35 tokens/GPU-second. Timed L4/A10G
+serving jobs stage the closed 8k/16k/32k bundle they need to node-local NVMe and
+never regenerate it.
 
 The auxiliary precision arm has a separate prerequisite with the same launch
 discipline: 128 exact 16k rows are sharded across 16 independent no-retry L40S

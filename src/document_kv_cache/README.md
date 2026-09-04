@@ -124,15 +124,24 @@ return as a production dependency.
 - `flashinfer_wheel_repack.py` validates the exact pristine FlashInfer wheel,
   applies the CPython 3.11 postponed-annotation patch, and produces a sealed,
   byte-deterministic patched wheel and manifest.
-- `gpu_qualification.py` defines the closed L4/A10G/L40S vLLM 0.27.1
-  qualification plan and validates local inputs, cloud execution records,
-  safe 32k GPU-memory-utilization selection, and byte-identical segmented
-  generation artifacts across SM89 GPUs.
+- `gpu_qualification.py` defines the closed legacy-v1 L4/A10G/L40S vLLM
+  0.27.1 qualification plan and validates local inputs, cloud execution
+  records, safe 32k GPU-memory-utilization selection, and its historical
+  cross-hardware raw-byte identity rule. The retained
+  `generation_throughput_with_writes` sentinel and v1 evidence validator remain
+  unchanged so historical records cannot be reinterpreted.
 - `gpu_qualification_databricks.py` renders the fourteen single-task,
   no-retry qualification jobs and provides the hash-locked bootstrap and
   fail-closed GPU result executor.
 - `gpu_qualification_v2.py` defines the additive eight-artifact qualification
-  records for the separately patched FlashInfer runtime closure.
+  records for the separately patched FlashInfer runtime closure. Fresh
+  native-v2 plans use a distinct repeat-aware generation sentinel: each L4 and
+  L40S job performs two isolated fresh generator/model loads and requires
+  same-hardware fresh-load byte reproducibility. Across hardware, the gate
+  requires logical/token/layout/size equivalence and does not compare L4 and
+  L40S raw artifact digests. Every Q8 artifact must contain exactly 73,728 raw
+  bytes per cache-prefix token. L40S is the sole publication handoff generator
+  and must independently pass the 35-token/GPU-second throughput gate.
 - `gpu_qualification_databricks_v2.py` renders and executes the isolated v2
   bootstrap contract without reinterpreting retained v1 records.
 - `kvpack.py` writes and reads packed KV shard byte ranges.

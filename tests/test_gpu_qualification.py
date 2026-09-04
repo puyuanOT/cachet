@@ -565,6 +565,101 @@ def _throughput_measurements(rate: float = 40.0) -> dict[str, Any]:
     }
 
 
+def _throughput_with_repeat_measurements(
+    rate: float = 40.0,
+    *,
+    artifact_label: str = "shared",
+) -> dict[str, Any]:
+    buckets = []
+    samples = []
+    total_tokens = 0
+    total_seconds = 0.0
+    for length in (8192, 16384, 32768):
+        exact_tokens_per_sample = length - 1
+        tokens = exact_tokens_per_sample * 4
+        wall_seconds = tokens / rate
+        buckets.append(
+            {
+                "durable_write_completed_count": 4,
+                "length_bucket_tokens": length,
+                "prefix_tokens": tokens,
+                "repeat_durable_write_completed_count": 4,
+                "sample_count": 4,
+                "tokens_per_second": rate,
+                "wall_seconds": wall_seconds,
+            }
+        )
+        total_tokens += tokens
+        total_seconds += wall_seconds
+        for dataset in ("biography", "hotpotqa", "musique", "niah"):
+            segments = [
+                {
+                    "index": index,
+                    "token_count": 2047 if index == length // 2048 - 1 else 2048,
+                    "token_ids_sha256": _digest(f"{length}-{dataset}-segment-{index}"),
+                }
+                for index in range(length // 2048)
+            ]
+            artifact = {
+                "raw_artifact_bytes": exact_tokens_per_sample * 73_728,
+                "raw_artifact_sha256": _digest(
+                    f"{artifact_label}-{length}-{dataset}-artifact"
+                ),
+            }
+            samples.append(
+                {
+                    "cache_prefix_token_count": exact_tokens_per_sample,
+                    "cache_prefix_token_ids_sha256": _digest(
+                        f"{length}-{dataset}-prefix"
+                    ),
+                    "dataset": dataset,
+                    "example_id": f"{dataset}-{length}",
+                    "input_tokens_target": length,
+                    "primary_artifact": dict(artifact),
+                    "repeat_artifact": dict(artifact),
+                    "segment_count": len(segments),
+                    "segments": segments,
+                }
+            )
+    attestation = _weight_quantizer_attestation()
+    return {
+        "aggregate_prefix_tokens": total_tokens,
+        "aggregate_tokens_per_second": total_tokens / total_seconds,
+        "aggregate_wall_seconds": total_seconds,
+        "artifact_layout": qualification_protocol._generation_artifact_layout_record(),
+        "attention_backend_observed": "TRITON_ATTN",
+        "attention_backend_requested": "TRITON_ATTN",
+        "buckets": buckets,
+        "clock_scope": "prefix_generation_through_durable_kv_write",
+        "failed_write_count": 0,
+        "fresh_generator_load_count": 2,
+        "generator_constructions": [
+            {
+                "construction_index": index,
+                "generator_family": "transformers",
+                "generator_version": "5.0.0",
+                "output_namespace": namespace,
+                "role": role,
+                "weight_quantizer_attestation": deepcopy(attestation),
+            }
+            for index, (role, namespace) in enumerate(
+                zip(
+                    qualification_protocol.GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES,
+                    qualification_protocol.GPU_QUALIFICATION_GENERATION_OUTPUT_NAMESPACES,
+                    strict=True,
+                )
+            )
+        ],
+        "generator_device_map": "auto",
+        "same_hardware_repeat_verified": True,
+        "samples": samples,
+        "trust_remote_code": False,
+        "triton_compile_count": 1,
+        "triton_kernel_launch_count": 100,
+        "writes_included": True,
+    }
+
+
 def _a10g_capacity_measurements() -> dict[str, Any]:
     total = 24 * 1024**3
     headroom = 3 * 1024**3
@@ -3388,6 +3483,214 @@ def test_throughput_gate_binds_production_generator_device_map():
             plan_record=plan,
             expected_campaign_id=CAMPAIGN_ID,
             expected_artifact_pins=PINS,
+        )
+
+
+def test_repeat_throughput_accepts_cross_gpu_raw_differences_but_binds_structure():
+    l4 = _throughput_with_repeat_measurements(artifact_label="l4")
+    l40s = _throughput_with_repeat_measurements(artifact_label="l40s")
+
+    l4_full, l4_structural, _, l4_samples = (
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            l4,
+            hardware_id="aws-g6-l4",
+        )
+    )
+    l40s_full, l40s_structural, _, l40s_samples = (
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            l40s,
+            hardware_id="aws-g6e-l40s",
+        )
+    )
+
+    assert l4_full != l40s_full
+    assert l4_structural == l40s_structural
+    assert l4_samples == l40s_samples
+
+    l40s["samples"][0]["cache_prefix_token_ids_sha256"] = _digest(
+        "different-logical-prefix"
+    )
+    _, changed_structural, _, changed_samples = (
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            l40s,
+            hardware_id="aws-g6e-l40s",
+        )
+    )
+    assert changed_structural != l4_structural
+    assert changed_samples != l4_samples
+
+
+def test_legacy_throughput_still_rejects_cross_gpu_raw_artifact_mismatch():
+    plan, evidence = _valid_evidence()
+    l40s = next(
+        job
+        for job in evidence["cloud_gpu_evidence"]["jobs"]
+        if job["job_id"] == "aws-g6e-l40s-generation-throughput"
+    )
+    l40s["measurements"]["samples"][0]["raw_artifact_sha256"] = _digest(
+        "legacy-cross-hardware-mismatch"
+    )
+    _reseal_evidence(evidence)
+
+    with pytest.raises(ValueError, match="not byte-identical"):
+        validate_gpu_qualification_evidence_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=CAMPAIGN_ID,
+            expected_artifact_pins=PINS,
+        )
+
+
+def test_repeat_throughput_full_proof_binds_raw_sha_but_structure_excludes_it():
+    measurements = _throughput_with_repeat_measurements(artifact_label="first")
+    first_full, first_structural, _, _ = (
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            measurements,
+            hardware_id="aws-g6e-l40s",
+        )
+    )
+    replacement = _digest("replacement-same-hardware-artifact")
+    sample = measurements["samples"][0]
+    sample["primary_artifact"]["raw_artifact_sha256"] = replacement
+    sample["repeat_artifact"]["raw_artifact_sha256"] = replacement
+
+    second_full, second_structural, _, _ = (
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            measurements,
+            hardware_id="aws-g6e-l40s",
+        )
+    )
+
+    assert second_full != first_full
+    assert second_structural == first_structural
+
+
+def test_repeat_throughput_rejects_same_gpu_raw_mismatch_and_wrong_exact_size():
+    measurements = _throughput_with_repeat_measurements()
+    measurements["samples"][0]["repeat_artifact"]["raw_artifact_sha256"] = _digest(
+        "repeat-mismatch"
+    )
+    with pytest.raises(ValueError, match="not byte-identical on one GPU"):
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            measurements,
+            hardware_id="aws-g6-l4",
+        )
+
+    measurements = _throughput_with_repeat_measurements()
+    wrong_size = measurements["samples"][0]["input_tokens_target"] * 73_728
+    measurements["samples"][0]["primary_artifact"]["raw_artifact_bytes"] = wrong_size
+    measurements["samples"][0]["repeat_artifact"]["raw_artifact_bytes"] = wrong_size
+    with pytest.raises(ValueError, match="prefix tokens times 73728"):
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            measurements,
+            hardware_id="aws-g6-l4",
+        )
+
+
+def test_repeat_throughput_enforces_l40s_primary_bucket_threshold():
+    measurements = _throughput_with_repeat_measurements()
+    bucket = measurements["buckets"][0]
+    bucket["tokens_per_second"] = 34.0
+    bucket["wall_seconds"] = bucket["prefix_tokens"] / 34.0
+    aggregate_seconds = sum(item["wall_seconds"] for item in measurements["buckets"])
+    measurements["aggregate_wall_seconds"] = aggregate_seconds
+    measurements["aggregate_tokens_per_second"] = (
+        measurements["aggregate_prefix_tokens"] / aggregate_seconds
+    )
+
+    with pytest.raises(ValueError, match="primary bucket is below"):
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            measurements,
+            hardware_id="aws-g6e-l40s",
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda value: value.__setitem__("fresh_generator_load_count", 1),
+            "exactly two fresh generator loads",
+        ),
+        (
+            lambda value: value.__setitem__(
+                "aggregate_prefix_tokens",
+                float(value["aggregate_prefix_tokens"]),
+            ),
+            "aggregate throughput token count mismatch",
+        ),
+        (
+            lambda value: value["generator_constructions"][0].__setitem__(
+                "construction_index",
+                False,
+            ),
+            "indices must be canonical",
+        ),
+        (
+            lambda value: value["generator_constructions"][1].__setitem__(
+                "output_namespace",
+                "throughput-primary",
+            ),
+            "output namespaces",
+        ),
+        (
+            lambda value: value["generator_constructions"][1].__setitem__(
+                "generator_version",
+                "different",
+            ),
+            "attestations must be identical",
+        ),
+        (
+            lambda value: value["artifact_layout"].__setitem__(
+                "model_id",
+                "qwen3:4b-instruct",
+            ),
+            "frozen Q8 layout",
+        ),
+        (
+            lambda value: value["artifact_layout"].__setitem__("pre_rope", 1),
+            "frozen Q8 layout",
+        ),
+        (
+            lambda value: value["artifact_layout"].__setitem__(
+                "shares_kv_storage",
+                0,
+            ),
+            "frozen Q8 layout",
+        ),
+        (
+            lambda value: value["artifact_layout"].__setitem__(
+                "rope_theta",
+                5_000_000,
+            ),
+            "frozen Q8 layout",
+        ),
+        (
+            lambda value: value["buckets"][0].__setitem__(
+                "repeat_durable_write_completed_count",
+                3,
+            ),
+            "durably write every",
+        ),
+        (
+            lambda value: value["buckets"][0].__setitem__(
+                "repeat_durable_write_completed_count",
+                4.0,
+            ),
+            "durably write every",
+        ),
+    ],
+)
+def test_repeat_throughput_rejects_construction_or_layout_malformation(
+    mutate,
+    message: str,
+):
+    measurements = _throughput_with_repeat_measurements()
+    mutate(measurements)
+    with pytest.raises(ValueError, match=message):
+        qualification_protocol._validate_throughput_with_repeat_measurements(
+            measurements,
+            hardware_id="aws-g6-l4",
         )
 
 

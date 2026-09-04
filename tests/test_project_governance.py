@@ -393,6 +393,7 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     text = (REPO_ROOT / "src" / "document_kv_cache" / "README.md").read_text(
         encoding="utf-8"
     )
+    compact_text = " ".join(text.split())
     package_dir = REPO_ROOT / "src" / "document_kv_cache"
     package_modules = {
         path.stem
@@ -448,6 +449,18 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "merged-branch cleanup" in text
     assert "wrappers over implementation modules in `restaurant_kv_serving`" not in text
     assert "real wrapper modules" not in text
+    assert (
+        "`generation_throughput_with_writes` sentinel and v1 evidence validator "
+        "remain unchanged so historical records cannot be reinterpreted"
+        in compact_text
+    )
+    assert "same-hardware fresh-load byte reproducibility" in compact_text
+    assert "logical/token/layout/size equivalence" in compact_text
+    assert "73,728 raw bytes per cache-prefix token" in compact_text
+    assert "L40S is the sole publication handoff generator" in compact_text
+    assert "byte-identical segmented generation artifacts across SM89 GPUs" not in (
+        compact_text
+    )
 
 
 def test_method_docs_keep_custom_scorers_programmatic_and_remote_plans_v1_closed():
@@ -1129,6 +1142,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
 
     for required_gate in (
         "Freeze the exact vLLM 0.27.1 source",
+        "same-hardware fresh-load byte reproducibility",
+        "L40S as the sole publication handoff generator",
         "16 independent L40S workers",
         "concurrency 1, 2, and 4",
         "Unsupported methods remain explicit",
@@ -1383,6 +1398,11 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     main_table = _markdown_section(root_readme, "Main Latency And Resource Table")
     estimand_table = _markdown_section(root_readme, "Paired Latency Estimands")
     score_table = _markdown_section(root_readme, "Benchmark Dataset Score Table")
+    compact_root_readme = " ".join(root_readme.split())
+
+    assert "L40S is the sole publication handoff generator" in compact_root_readme
+    assert "same-hardware fresh-load byte reproducibility" in compact_root_readme
+    assert "cross-hardware logical/token/layout/size equivalence" in compact_root_readme
 
     base_files = {
         "README.md",
@@ -1793,6 +1813,44 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert (
         "not permission to reuse a stale controller freeze" in compact_ledger_doc
     )
+    assert (
+        "later native-v2 14-job batch is retained as a cross-hardware raw-byte "
+        "identity gate failure" in compact_ledger_doc
+    )
+    assert (
+        "Terminal job success did not constitute global qualification success"
+        in compact_ledger_doc
+    )
+    assert (
+        "ValueError: L4 and L40S generation artifacts are not byte-identical"
+        in compact_ledger_doc
+    )
+    assert "Zero of twelve corresponding raw artifact SHA-256 values matched" in (
+        compact_ledger_doc
+    )
+    assert "this batch remains `FAILED`" in compact_ledger_doc
+    assert (
+        "diagnostic, non-authorizing evidence; they neither repair that failed "
+        "batch nor grant publication qualification" in compact_ledger_doc
+    )
+    assert "L40S run `506950471100618` reproduced all twelve" in compact_ledger_doc
+    assert "L4 run `71783401971590` likewise reproduced all twelve" in (
+        compact_ledger_doc
+    )
+    assert "exact 430/292/430 prefix" in compact_ledger_doc
+    assert "116.12134277777776 terminal GPU-hours" in compact_ledger_doc
+    assert (
+        "L40S is the sole publication handoff generator. Fresh native-v2 "
+        "eligibility requires same-hardware fresh-load byte reproducibility"
+        in compact_ledger_doc
+    )
+    assert "cross-hardware logical/token/layout/size equivalence" in (
+        compact_ledger_doc
+    )
+    assert "73,728 bytes per cache-prefix token" in compact_ledger_doc
+    assert "eligible only after the sealed L4/L40S artifact-equivalence" not in (
+        compact_ledger_doc
+    )
     for provenance_sha256 in (
         "694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830",
         "7455fa1e30356bb79ccb75a8dbe24df32f33a365141505e0270eb13c7f39b71d",
@@ -1801,6 +1859,16 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d",
         "2d35875107c709d71e6f558d2a029afb53ee371d851e83a18fe0d194f6fc0e0c",
         "353b8b3e77eca5347901232709a40c45a0f996be4fc6f25ed55511d38457dc85",
+        "7f8b82e271794501a86f61134f73c47519d9fa2d7f1d3d1202ee5b10e0d3653a",
+        "7e0d3fedba07a6ed0f7dd4ef23d4f0c82912626043586e54547a59016a195222",
+        "e103ca7dc7bbb630404013873a0c9a7909d6ac8f052ed5acf42050dd106930da",
+        "81d597ef57c85d109cad7f19c23da849566a39e581dd48d3113a49622dc1926b",
+        "26616b95cfe5efab2527e28eade5fad9dedb48f12e76c7eb41e5bd7f4ab081ca",
+        "51c72161bb2dff2d359ce03419a47f7415a7d1bd1659a2d6444450eba717bcdd",
+        "2ef0f0d30b40b164fd157627ed55ae881b15e28fdb9143ea35a3b599b334feb4",
+        "e78d2e5bc7b6cdc9e217f7d6cb821bbd763e8b7e290d1037d4a95b4308bbd2cf",
+        "19e8a6a6c5bbfeb8736d8fe61204262a6a367bf37a30cae0e6d7b15e5c26a9ab",
+        "116251d3ca5fce37ce5749565e1059fdf65b30ce17fd12ebc50b877835f9772b",
     ):
         assert provenance_sha256 in compact_ledger_doc
 

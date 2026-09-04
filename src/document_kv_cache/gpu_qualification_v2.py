@@ -114,12 +114,12 @@ GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION: Final = (
 GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX: Final = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.ledger_id,
     cap_cluster_hours=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.cap_cluster_hours,
-    reservation_count=265,
-    submission_receipt_count=127,
-    terminal_actual_count=265,
-    prefix_sha256=("e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"),
+    reservation_count=430,
+    submission_receipt_count=292,
+    terminal_actual_count=430,
+    prefix_sha256=("116251d3ca5fce37ce5749565e1059fdf65b30ce17fd12ebc50b877835f9772b"),
 )
-GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 77.50443361111115
+GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 116.12134277777776
 
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_KEYS: Final = frozenset(
@@ -419,6 +419,77 @@ def gpu_qualification_v2_runtime_closure() -> dict[str, Any]:
     return value
 
 
+def _gpu_qualification_v2_jobs_with_repeat_generation(
+    cloud_qualification: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Upgrade only the two native-v2 generation jobs to the repeat contract."""
+
+    cloud = _mapping_copy(cloud_qualification, "cloud_qualification")
+    raw_jobs = cloud.get("jobs")
+    if isinstance(raw_jobs, (str, bytes, bytearray)) or not isinstance(
+        raw_jobs, Sequence
+    ):
+        raise ValueError("cloud_qualification.jobs must be an array")
+    generation_job_ids = {
+        "aws-g6-l4-generation-throughput",
+        "aws-g6e-l40s-generation-throughput",
+    }
+    upgraded: list[dict[str, Any]] = []
+    upgraded_ids: set[str] = set()
+    for raw_job in raw_jobs:
+        job = _mapping_copy(raw_job, "cloud qualification job")
+        job_id = job.get("job_id")
+        if job_id not in generation_job_ids:
+            upgraded.append(job)
+            continue
+        requirements = _mapping_copy(
+            job.get("requirements"),
+            f"{job_id} requirements",
+        )
+        peer_hardware_id = requirements.pop(
+            "artifact_identity_peer_hardware_id",
+            None,
+        )
+        if not isinstance(peer_hardware_id, str) or not peer_hardware_id:
+            raise ValueError("v2 generation job lacks its peer hardware identity")
+        requirements.update(
+            {
+                "artifact_bytes_per_prefix_token": (
+                    qualification_v1.GPU_QUALIFICATION_GENERATION_ARTIFACT_BYTES_PER_TOKEN
+                ),
+                "artifact_layout": (
+                    qualification_v1._generation_artifact_layout_record()  # noqa: SLF001
+                ),
+                "artifact_structure_peer_hardware_id": peer_hardware_id,
+                "cross_hardware_equivalence": (
+                    "artifact_layout_and_logical_structure_"
+                    "excluding_raw_artifact_sha256"
+                ),
+                "fresh_generator_load_count": 2,
+                "generator_construction_roles": list(
+                    qualification_v1.GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES
+                ),
+                "generator_output_namespaces": list(
+                    qualification_v1.GPU_QUALIFICATION_GENERATION_OUTPUT_NAMESPACES
+                ),
+                "primary_throughput_timing_only": True,
+                "repeat_durable_write_census_required": True,
+                "same_hardware_repeat_artifact_identity_required": True,
+                "threshold_applies_to": ("l40s_primary_every_bucket_and_aggregate"),
+            }
+        )
+        job["requirements"] = requirements
+        job["sentinel"] = (
+            qualification_v1.GPU_QUALIFICATION_THROUGHPUT_WITH_REPEAT_SENTINEL
+        )
+        upgraded.append(job)
+        upgraded_ids.add(str(job_id))
+    if upgraded_ids != generation_job_ids:
+        raise ValueError("v2 plan must upgrade both generation jobs exactly once")
+    cloud["jobs"] = upgraded
+    return cloud
+
+
 def build_gpu_qualification_plan_v2(
     *,
     campaign_id: str,
@@ -460,6 +531,9 @@ def build_gpu_qualification_plan_v2(
             PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
         ),
         artifact_pins=artifact_pins.v1_projection(),
+    )
+    record["cloud_qualification"] = _gpu_qualification_v2_jobs_with_repeat_generation(
+        _mapping_copy(record["cloud_qualification"], "cloud_qualification")
     )
     record["campaign_ledger_prefix"] = campaign_ledger_prefix.to_record()
     record["campaign_opening_terminal_gpu_hours"] = float(
@@ -903,6 +977,13 @@ def _validate_gpu_job_result_v2_behavior(
     elif sentinel == "generation_throughput_with_writes":
         qualification_v1._validate_throughput_measurements(  # noqa: SLF001
             measurements, hardware_id=str(job["hardware_id"])
+        )
+    elif sentinel == (
+        qualification_v1.GPU_QUALIFICATION_THROUGHPUT_WITH_REPEAT_SENTINEL
+    ):
+        qualification_v1._validate_throughput_with_repeat_measurements(  # noqa: SLF001
+            measurements,
+            hardware_id=str(job["hardware_id"]),
         )
     elif sentinel == "auto_backend_diagnostic":
         qualification_v1._validate_auto_backend_measurements(  # noqa: SLF001

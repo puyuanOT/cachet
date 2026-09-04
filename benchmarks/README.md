@@ -28,7 +28,7 @@ production job is submitted.
 | Model weights | bitsandbytes 4-bit runtime weights; the model identifier is not itself a prequantized 4-bit checkpoint |
 | Serving engine | vLLM `0.27.1` |
 | Core serving hardware | AWS g6/L4, `g6.8xlarge` |
-| Handoff generation hardware | Qualified AWS g6e/L40S producers only; generated bundles are reused by timed serving jobs |
+| Handoff generation hardware | AWS g6e/L40S; L40S is the sole publication handoff generator, and generated bundles are reused by timed serving jobs |
 | Default document/runtime KV | Q8, `fp8_e5m2`, pre-RoPE keys with absolute-position injection |
 | Input contexts | 8k, 16k, and 32k prepared prompts |
 | Closed-loop request concurrency | 1, 2, and 4; zero think time |
@@ -47,6 +47,13 @@ production job is submitted.
 | Budget | 1,024 aggregate GPU-hours, 900 active reserved hours, 124 hours unreserved headroom, at most 16 parallel jobs |
 | Retained ledger opening | 71.390128 reconciled GPU-hours; exact 236/98/236 post-migration append-only prefix is campaign-bound; zero active reservations |
 | Frozen generation workload | 72,871,510 cache-prefix tokens across Q8 latency, BF16 latency, and complete full-score handoffs; 578.345317 GPU-hours at the 35 token/GPU-s gate |
+
+Retained legacy-v1 qualification records keep their historical cross-hardware
+raw-byte identity rule and are never reinterpreted. Fresh native-v2
+qualification uses a distinct repeat-aware sentinel: it requires same-hardware
+fresh-load byte reproducibility on L4 and L40S, cross-hardware
+logical/token/layout/size equivalence without raw-digest equality, and an
+independent L40S throughput pass.
 
 `Baseline` sends the complete logical prompt to vLLM and computes all KV at
 request time. `Vanilla KV` reuses independently generated document KV, stores

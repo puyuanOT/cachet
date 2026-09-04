@@ -40,6 +40,9 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS,
     GPU_QUALIFICATION_CONNECTOR_SOURCE_SHA256,
     GPU_QUALIFICATION_DETERMINISM_REPEATS,
+    GPU_QUALIFICATION_GENERATION_ARTIFACT_BYTES_PER_TOKEN,
+    GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES,
+    GPU_QUALIFICATION_GENERATION_OUTPUT_NAMESPACES,
     GPU_QUALIFICATION_MAX_E5M2_BF16_ERROR,
     GPU_QUALIFICATION_MAX_LOGIT_DRIFT,
     GPU_QUALIFICATION_MATCHED_EXAMPLES,
@@ -57,7 +60,9 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_MAX_MODEL_LEN,
     GPU_QUALIFICATION_THROUGHPUT_BUCKETS,
     GPU_QUALIFICATION_THROUGHPUT_SAMPLES_PER_BUCKET,
+    GPU_QUALIFICATION_THROUGHPUT_WITH_REPEAT_SENTINEL,
     GPU_QUALIFICATION_VLLM_VERSION,
+    _generation_artifact_layout_record,
     canonical_gpu_qualification_json,
 )
 from document_kv_cache.serving_env import (
@@ -222,6 +227,7 @@ _EXPECTED_SENTINELS: Final = frozenset(
         "l4_32k_c4_gmu_sweep",
         "a10g_16k_c4_capacity",
         "generation_throughput_with_writes",
+        GPU_QUALIFICATION_THROUGHPUT_WITH_REPEAT_SENTINEL,
         "auto_backend_diagnostic",
     }
 )
@@ -261,6 +267,9 @@ def execute_planned_sentinel(
         "l4_32k_c4_gmu_sweep": _gmu_sentinel,
         "a10g_16k_c4_capacity": _a10g_capacity_sentinel,
         "generation_throughput_with_writes": _throughput_sentinel,
+        GPU_QUALIFICATION_THROUGHPUT_WITH_REPEAT_SENTINEL: (
+            _throughput_with_repeat_sentinel
+        ),
         "auto_backend_diagnostic": _auto_backend_sentinel,
     }
     measured = dispatch[sentinel](
@@ -2488,6 +2497,311 @@ def _throughput_sentinel(
         "trust_remote_code": False,
         "weight_quantizer_attestation": weight_attestation,
         "writes_included": True,
+    }
+
+
+def _throughput_with_repeat_sentinel(
+    *,
+    plan_record: Mapping[str, Any],
+    planned_job: Mapping[str, Any],
+    input_bundle: Path,
+    work_dir: Path,
+) -> dict[str, Any]:
+    """Run primary timing plus a fresh-model same-GPU byte repeat."""
+
+    del plan_record
+    torch = _torch()
+    probe = _triton_e5m2_probe(work_dir)
+    _configure_transformers_generator(pre_rope=True)
+    from document_kv_cache._benchmark_datasets import _example_from_record
+    from document_kv_cache.benchmark_handoffs import (
+        generate_benchmark_handoff_bundles,
+    )
+    from document_kv_cache.benchmarks import (
+        DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        benchmark_cache_prefix_segments,
+    )
+    from document_kv_cache.models import CacheGenerationMethod
+    from document_kv_cache.storage import local_path
+
+    sample_records: dict[tuple[int, str, str], dict[str, Any]] = {}
+    bucket_records: dict[int, dict[str, Any]] = {}
+    construction_records: list[dict[str, Any]] = []
+    observed_layout: dict[str, Any] | None = None
+    total_tokens = 0
+    total_seconds = 0.0
+    hardware_id = _required_string(planned_job, "hardware_id")
+
+    for construction_index, (role, output_namespace) in enumerate(
+        zip(
+            GPU_QUALIFICATION_GENERATION_CONSTRUCTION_ROLES,
+            GPU_QUALIFICATION_GENERATION_OUTPUT_NAMESPACES,
+            strict=True,
+        )
+    ):
+        weight_attestation = _weight_quantizer_attestation()
+        layout, generator = _pre_rope_handoff_layout_and_generator()
+        layout_record = _throughput_artifact_layout_record(layout)
+        if layout_record != _generation_artifact_layout_record():
+            raise RuntimeError("generated artifact layout differs from qualification")
+        if observed_layout is None:
+            observed_layout = layout_record
+        elif layout_record != observed_layout:
+            raise RuntimeError("primary and repeat artifact layouts differ")
+        generator_family = getattr(generator, "generator_family", None)
+        generator_version = getattr(generator, "generator_version", None)
+        if not isinstance(generator_family, str) or not generator_family:
+            raise RuntimeError("generator family attestation is missing")
+        if not isinstance(generator_version, str) or not generator_version:
+            raise RuntimeError("generator version attestation is missing")
+        construction_records.append(
+            {
+                "construction_index": construction_index,
+                "generator_family": generator_family,
+                "generator_version": generator_version,
+                "output_namespace": output_namespace,
+                "role": role,
+                "weight_quantizer_attestation": weight_attestation,
+            }
+        )
+        writes_dir = work_dir / output_namespace
+        writes_dir.mkdir()
+
+        for length in GPU_QUALIFICATION_THROUGHPUT_BUCKETS:
+            paths = _bucket_dataset_paths(input_bundle, length)
+            if len(paths) != GPU_QUALIFICATION_THROUGHPUT_SAMPLES_PER_BUCKET:
+                raise RuntimeError(f"throughput bucket {length} lacks four samples")
+            start = time.perf_counter() if role == "primary" else None
+            completed_writes = 0
+            bucket_prefix_tokens = 0
+            for sample_index, path in enumerate(paths):
+                record = _selected_jsonl_record(path)
+                dataset = str(record["dataset"])
+                example_id = str(record["example_id"])
+                example = _example_from_record(
+                    record,
+                    default_dataset=dataset,
+                    record_index=1,
+                    require_dataset=True,
+                )
+                segments = benchmark_cache_prefix_segments(example)
+                if len(segments) != length // 2_048:
+                    raise RuntimeError(
+                        f"{dataset}:{example_id} has {len(segments)} segments; "
+                        f"expected {length // 2_048} on the 2k document grid"
+                    )
+                segment_contracts: list[dict[str, Any]] = []
+                prefix_token_ids: list[int] = []
+                for segment_index, (_chunk_id, text) in enumerate(segments):
+                    token_ids = _generator_token_ids(generator, text)
+                    prefix_token_ids.extend(token_ids)
+                    segment_contracts.append(
+                        {
+                            "index": segment_index,
+                            "token_count": len(token_ids),
+                            "token_ids_sha256": _integer_sequence_sha256(token_ids),
+                        }
+                    )
+                sample_input = writes_dir / f"{length}-{sample_index}.jsonl"
+                _write_jsonl(sample_input, (record,))
+                sample_dir = writes_dir / f"{length}-{sample_index}-bundle"
+                bundle = generate_benchmark_handoff_bundles(
+                    sample_input,
+                    output_dir=sample_dir,
+                    generator=generator,
+                    layout=layout,
+                    model_id=layout.model_id,
+                    lora_id=layout.lora_id,
+                    prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+                    cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+                    model_revision=GPU_QUALIFICATION_MODEL_REVISION,
+                    tokenizer_id=GPU_QUALIFICATION_MODEL_ID,
+                    tokenizer_revision=GPU_QUALIFICATION_MODEL_REVISION,
+                    generator_family=generator.generator_family,
+                    generator_version=generator.generator_version,
+                    segment_per_document=True,
+                    require_artifact_contract=True,
+                    manifest_json=sample_dir / "manifest.json",
+                )
+                if len(bundle.payload_uris) != 1:
+                    raise RuntimeError("segmented pilot must produce one raw shard")
+                if len(bundle.cache_refs) != len(segments):
+                    raise RuntimeError("generated refs do not match document segments")
+                if [ref.token_count for ref in bundle.cache_refs] != [
+                    segment["token_count"] for segment in segment_contracts
+                ]:
+                    raise RuntimeError("generated token contracts differ from inputs")
+                raw_artifact = Path(local_path(bundle.payload_uris[0]))
+                _fsync_tree(sample_dir)
+                prefix_count = len(prefix_token_ids)
+                artifact = {
+                    "raw_artifact_bytes": raw_artifact.stat().st_size,
+                    "raw_artifact_sha256": _file_sha256(raw_artifact),
+                }
+                if artifact["raw_artifact_bytes"] != (
+                    prefix_count * GPU_QUALIFICATION_GENERATION_ARTIFACT_BYTES_PER_TOKEN
+                ):
+                    raise RuntimeError(
+                        "raw artifact bytes do not equal prefix tokens times 73728"
+                    )
+                identity = (length, dataset, example_id)
+                logical_sample = {
+                    "cache_prefix_token_count": prefix_count,
+                    "cache_prefix_token_ids_sha256": (
+                        _integer_sequence_sha256(prefix_token_ids)
+                    ),
+                    "dataset": dataset,
+                    "example_id": example_id,
+                    "input_tokens_target": length,
+                    "segment_count": len(segment_contracts),
+                    "segments": segment_contracts,
+                }
+                if role == "primary":
+                    if identity in sample_records:
+                        raise RuntimeError(
+                            "primary throughput sample identity is duplicated"
+                        )
+                    sample_records[identity] = {
+                        **logical_sample,
+                        "primary_artifact": artifact,
+                    }
+                else:
+                    primary_sample = sample_records.get(identity)
+                    if primary_sample is None:
+                        raise RuntimeError("repeat throughput sample lacks a primary")
+                    observed_primary_logical = {
+                        key: value
+                        for key, value in primary_sample.items()
+                        if key not in {"primary_artifact", "repeat_artifact"}
+                    }
+                    if observed_primary_logical != logical_sample:
+                        raise RuntimeError(
+                            "primary and repeat logical sample contracts differ"
+                        )
+                    primary_sample["repeat_artifact"] = artifact
+                bucket_prefix_tokens += prefix_count
+                completed_writes += 1
+                del bundle
+                gc.collect()
+                torch.cuda.empty_cache()
+
+            if role == "primary":
+                assert start is not None
+                wall_seconds = time.perf_counter() - start
+                rate = bucket_prefix_tokens / wall_seconds
+                if (
+                    hardware_id == "aws-g6e-l40s"
+                    and rate < GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND
+                ):
+                    raise RuntimeError(
+                        f"throughput bucket {length} measured {rate:.3f} tokens/s, "
+                        f"below {GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND:.3f}"
+                    )
+                bucket_records[length] = {
+                    "durable_write_completed_count": completed_writes,
+                    "length_bucket_tokens": length,
+                    "prefix_tokens": bucket_prefix_tokens,
+                    "repeat_durable_write_completed_count": 0,
+                    "sample_count": len(paths),
+                    "tokens_per_second": rate,
+                    "wall_seconds": wall_seconds,
+                }
+                total_tokens += bucket_prefix_tokens
+                total_seconds += wall_seconds
+            else:
+                primary_bucket = bucket_records.get(length)
+                if primary_bucket is None:
+                    raise RuntimeError("repeat throughput bucket lacks a primary")
+                if primary_bucket["prefix_tokens"] != bucket_prefix_tokens:
+                    raise RuntimeError("primary and repeat bucket token counts differ")
+                primary_bucket["repeat_durable_write_completed_count"] = (
+                    completed_writes
+                )
+        del generator
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    if observed_layout is None:
+        raise RuntimeError("generation artifact layout was not observed")
+    if len(construction_records) != 2:
+        raise RuntimeError("repeat throughput did not build two generators")
+    if (
+        construction_records[0]["generator_family"]
+        != construction_records[1]["generator_family"]
+        or construction_records[0]["generator_version"]
+        != construction_records[1]["generator_version"]
+        or canonical_gpu_qualification_json(
+            construction_records[0]["weight_quantizer_attestation"]
+        )
+        != canonical_gpu_qualification_json(
+            construction_records[1]["weight_quantizer_attestation"]
+        )
+    ):
+        raise RuntimeError("primary and repeat generator attestations differ")
+    normalized_samples = [sample_records[key] for key in sorted(sample_records)]
+    same_hardware_repeat_verified = all(
+        sample.get("primary_artifact") == sample.get("repeat_artifact")
+        for sample in normalized_samples
+    )
+    if not same_hardware_repeat_verified:
+        raise RuntimeError("primary and repeat raw artifacts differ on one GPU")
+    aggregate_rate = total_tokens / total_seconds
+    if (
+        hardware_id == "aws-g6e-l40s"
+        and aggregate_rate < GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND
+    ):
+        raise RuntimeError("aggregate generation throughput is below threshold")
+    return {
+        "aggregate_prefix_tokens": total_tokens,
+        "aggregate_tokens_per_second": aggregate_rate,
+        "aggregate_wall_seconds": total_seconds,
+        "artifact_layout": observed_layout,
+        "attention_backend_observed": "TRITON_ATTN",
+        "attention_backend_requested": "TRITON_ATTN",
+        "buckets": [
+            bucket_records[length] for length in GPU_QUALIFICATION_THROUGHPUT_BUCKETS
+        ],
+        "clock_scope": "prefix_generation_through_durable_kv_write",
+        "failed_write_count": 0,
+        "fresh_generator_load_count": len(construction_records),
+        "generator_constructions": construction_records,
+        "generator_device_map": "auto",
+        "same_hardware_repeat_verified": same_hardware_repeat_verified,
+        "samples": normalized_samples,
+        "triton_compile_count": int(probe["triton_compile_count"]),
+        "triton_kernel_launch_count": int(probe["triton_kernel_launch_count"]),
+        "trust_remote_code": False,
+        "writes_included": True,
+    }
+
+
+def _throughput_artifact_layout_record(layout: Any) -> dict[str, Any]:
+    """Project an observed KVLayout into the qualification-owned 20-key schema."""
+
+    attention_mechanism = layout.attention_mechanism
+    return {
+        "model_id": layout.model_id,
+        "lora_id": layout.lora_id,
+        "layout_version": layout.layout_version,
+        "dtype": layout.dtype,
+        "num_layers": layout.num_layers,
+        "block_size": layout.block_size,
+        "bytes_per_token": layout.bytes_per_token,
+        "num_query_heads": layout.num_query_heads,
+        "num_kv_heads": layout.num_kv_heads,
+        "head_size": layout.head_size,
+        "kv_stride_bytes": layout.kv_stride_bytes,
+        "shares_kv_storage": layout.shares_kv_storage,
+        "storage_layout": layout.storage_layout.value,
+        "payload_axis_order": layout.payload_axis_order.value,
+        "pre_rope": layout.pre_rope,
+        "rope_theta": layout.rope_theta,
+        "rope_rotary_dim": layout.rope_rotary_dim,
+        "key_position_encoding": layout.key_position_encoding.value,
+        "attention_mechanism": (
+            attention_mechanism.value if attention_mechanism is not None else None
+        ),
+        "query_heads_per_kv_head": layout.query_heads_per_kv_head,
     }
 
 

@@ -59,16 +59,6 @@ _RETAINED_LEDGER_PATH = (
 )
 _SINGLE_USER_NAME = "v2-controller@example.com"
 _OUTPUT_ROOT = "dbfs:/Volumes/catalog/schema/volume/gpuq-v2-results"
-_SUCCESSOR_LEDGER_PREFIX = ledger_api.DatabricksLedgerPrefix(
-    ledger_id=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.ledger_id,
-    cap_cluster_hours=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.cap_cluster_hours,
-    reservation_count=279,
-    submission_receipt_count=141,
-    terminal_actual_count=279,
-    prefix_sha256=(
-        "7bdfab96021910df7a06ac1cf87604eefe7c1f4181f49a242212f699c443ca1a"
-    ),
-)
 
 
 def _digest(value: str) -> str:
@@ -203,24 +193,34 @@ def _copy_retained_live_ledger(
     retained = ledger_api.read_databricks_cluster_hour_ledger_json(
         _RETAINED_LEDGER_PATH
     )
-    historical = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
-    ledger_api.require_databricks_ledger_prefix(retained, historical)
-    ledger_api.require_databricks_ledger_prefix(retained, _SUCCESSOR_LEDGER_PREFIX)
-    successor = replace(
-        retained,
-        reservations=retained.reservations[
-            : _SUCCESSOR_LEDGER_PREFIX.reservation_count
-        ],
-        submission_receipts=retained.submission_receipts[
-            : _SUCCESSOR_LEDGER_PREFIX.submission_receipt_count
-        ],
-        terminal_actuals=retained.terminal_actuals[
-            : _SUCCESSOR_LEDGER_PREFIX.terminal_actual_count
-        ],
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    ledger_api.require_databricks_ledger_prefix(retained, opening)
+    assert ledger_api.databricks_ledger_prefix(retained) == opening
+    _write_ledger(destination, retained)
+    payload = databricks_v2.render_gpu_qualification_submit_payloads_v2(
+        _plan(),
+        single_user_name=_SINGLE_USER_NAME,
+        artifact_uris=_artifact_uris(),
+        output_root=_OUTPUT_ROOT,
+    )[0]
+    attempt_id = "v2-test-completed-live-successor"
+    ledger_api.reserve_databricks_run_attempt_json(
+        destination,
+        payload,
+        attempt_id=attempt_id,
+        workload_id="v2-test-completed-live-successor",
     )
-    assert ledger_api.databricks_ledger_prefix(successor) == _SUCCESSOR_LEDGER_PREFIX
-    assert _SUCCESSOR_LEDGER_PREFIX != historical
-    _write_ledger(destination, successor)
+    successor = ledger_api.record_databricks_run_terminal_actual_json(
+        destination,
+        attempt_id=attempt_id,
+        terminal_state="succeeded",
+        actual_cluster_duration_seconds=0.0,
+    )
+    assert successor.active_reserved_task_count == 0
+    assert successor.active_reserved_cluster_hours == 0.0
+    assert len(successor.reservations) == opening.reservation_count + 1
+    assert len(successor.submission_receipts) == opening.submission_receipt_count
+    assert len(successor.terminal_actuals) == opening.terminal_actual_count + 1
     assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
     assert _stable_stat(_RETAINED_LEDGER_PATH) == retained_stat
     _bind_isolated_ledger_path(monkeypatch)
@@ -824,7 +824,7 @@ def test_terminal_barrier_timeout_stops_before_next_post_and_resume_closes_first
     assert first_terminal_get < second_post
 
 
-def test_successor_fresh_submit_uses_complete_live_predecessor_after_historical_prefix(
+def test_successor_fresh_submit_uses_complete_live_opening_predecessor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -837,12 +837,12 @@ def test_successor_fresh_submit_uses_complete_live_predecessor_after_historical_
         historical.reservation_count,
         historical.submission_receipt_count,
         historical.terminal_actual_count,
-    ) == (265, 127, 265)
+    ) == (430, 292, 430)
     assert (
         live_predecessor.reservation_count,
         live_predecessor.submission_receipt_count,
         live_predecessor.terminal_actual_count,
-    ) == (279, 141, 279)
+    ) == (431, 292, 431)
 
     receipts = databricks_v2.submit_gpu_qualification_jobs_v2(
         case.config,
