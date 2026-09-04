@@ -108,6 +108,9 @@ PUBLICATION_FREEZE_LATENCY_HANDOFF_WORKERS_SHA256: Final = (
     "d36983604b4de91446635d47918fe914b98872623615066aa335b8cb1ba31663"
 )
 PUBLICATION_FREEZE_MAX_ARTIFACT_BYTES: Final = 16 * 1024 * 1024
+# Clean Git tar streams are uncompressed build inputs; emitted artifacts retain
+# the tighter cap above.
+PUBLICATION_FREEZE_MAX_GIT_ARCHIVE_BYTES: Final = 32 * 1024 * 1024
 PUBLICATION_FREEZE_MAX_JSON_BYTES: Final = 16 * 1024 * 1024
 PUBLICATION_FREEZE_MAX_CHECK_RECORD_BYTES: Final = 2 * 1024 * 1024
 PUBLICATION_FREEZE_MAX_COMMAND_OUTPUT_BYTES: Final = 1024 * 1024
@@ -2521,7 +2524,7 @@ def _run_isolated_package_build(
     _require_bounded_bytes(
         archive.stdout,
         "package build git archive",
-        max_bytes=PUBLICATION_FREEZE_MAX_ARTIFACT_BYTES,
+        max_bytes=PUBLICATION_FREEZE_MAX_GIT_ARCHIVE_BYTES,
     )
     _require_bounded_bytes(archive.stderr, "package build git archive stderr")
     if archive.returncode != 0 or archive.stderr:
@@ -2676,7 +2679,7 @@ def _write_deterministic_git_archive(
     _require_bounded_bytes(
         archive.stdout,
         "git source archive",
-        max_bytes=PUBLICATION_FREEZE_MAX_ARTIFACT_BYTES,
+        max_bytes=PUBLICATION_FREEZE_MAX_GIT_ARCHIVE_BYTES,
     )
     _require_bounded_bytes(archive.stderr, "git source archive stderr")
     if archive.returncode != 0 or archive.stderr:
@@ -2841,7 +2844,7 @@ def _validate_git_archive(
     _require_bounded_bytes(
         archive.stdout,
         "git archive",
-        max_bytes=PUBLICATION_FREEZE_MAX_ARTIFACT_BYTES,
+        max_bytes=PUBLICATION_FREEZE_MAX_GIT_ARCHIVE_BYTES,
     )
     compressed = subprocess.run(
         (str(_GZIP_EXECUTABLE), "-n"),
