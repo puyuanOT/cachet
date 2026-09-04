@@ -187,9 +187,9 @@ def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 121627
+    assert len(payload_bytes) == 121633
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "ed255b0d70939e56bb7a2cf09b469733a2b136b1211b1af018f74305467f1873"
+        "9f192a281451b77d4a5f4e90baf6965d13d6ec7ee5c2531a2ce7dae711805335"
     )
 
 

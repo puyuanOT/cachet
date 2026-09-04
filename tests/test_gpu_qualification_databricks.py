@@ -1023,6 +1023,63 @@ def test_structural_validator_rejects_missing_or_drifted_principal_and_none_mode
         qualification_job._validated_qualification_payloads(plan, payloads)
 
 
+def test_l40s_zone_validation_separates_live_and_reviewed_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+    live_payloads = json.loads(json.dumps(_render(plan, _artifact_uris())))
+    historical_payloads = json.loads(json.dumps(live_payloads))
+    l40s_index, l40s_payload = next(
+        (index, payload)
+        for index, payload in enumerate(historical_payloads)
+        if payload["tasks"][0]["new_cluster"]["node_type_id"] == "g6e.4xlarge"
+    )
+    l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = "auto"
+    l40s_payload.pop("idempotency_token")
+    historical_payloads[l40s_index] = (
+        qualification_job.bind_databricks_run_idempotency_token(
+            l40s_payload,
+            attempt_id=gpu_qualification_reservation_attempt_id(
+                plan["closed_record_sha256"],
+                plan["cloud_qualification"]["jobs"][l40s_index]["job_id"],
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="cluster specification differs"):
+        qualification_job._validated_qualification_payloads(plan, historical_payloads)
+    with pytest.raises(ValueError, match="not source-reviewed"):
+        qualification_job._validated_qualification_payloads(
+            plan,
+            historical_payloads,
+            historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
+        )
+    monkeypatch.setattr(
+        qualification_job,
+        "_GPU_QUALIFICATION_REVIEWED_HISTORICAL_AUTO_ZONE_PLAN_SHA256S",
+        frozenset({plan["closed_record_sha256"]}),
+    )
+    with pytest.raises(ValueError, match="cluster specification differs"):
+        qualification_job._validated_qualification_payloads(
+            plan,
+            live_payloads,
+            historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
+        )
+    with pytest.raises(ValueError, match="not the reviewed plan"):
+        qualification_job._validated_qualification_payloads(
+            plan,
+            historical_payloads,
+            historical_l40s_auto_plan_sha256="0" * 64,
+        )
+    assert len(
+        qualification_job._validated_qualification_payloads(
+            plan,
+            historical_payloads,
+            historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
+        )
+    ) == 14
+
+
 def test_current_plan_production_parameters_stay_below_databricks_safety_cap():
     plan = _plan()
     uris = _publication_artifact_uris()
@@ -1608,6 +1665,7 @@ def test_submitter_rejects_incomplete_or_mutated_job_closure_before_post(
         ("oversize", "9500-byte safety cap"),
         ("corrupt-encoded-plan", "parameters differ from the renderer"),
         ("alternate-valid-encoding", "parameters differ from the renderer"),
+        ("l40s-auto", "cluster specification differs"),
     ],
 )
 def test_invalid_plan_transport_rejects_before_ledger_or_post(
@@ -1628,6 +1686,23 @@ def test_invalid_plan_transport_rejects_before_ledger_or_post(
         parameters[plan_option_index + 1] = canonical_gpu_qualification_json(plan)
     elif case == "oversize":
         parameters.extend(("--unexpected", "x" * 10_000))
+    elif case == "l40s-auto":
+        l40s_index, l40s_payload = next(
+            (index, payload)
+            for index, payload in enumerate(mutated)
+            if payload["tasks"][0]["new_cluster"]["node_type_id"] == "g6e.4xlarge"
+        )
+        l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"][
+            "zone_id"
+        ] = "auto"
+        l40s_payload.pop("idempotency_token")
+        mutated[l40s_index] = qualification_job.bind_databricks_run_idempotency_token(
+            l40s_payload,
+            attempt_id=gpu_qualification_reservation_attempt_id(
+                plan["closed_record_sha256"],
+                plan["cloud_qualification"]["jobs"][l40s_index]["job_id"],
+            ),
+        )
     else:
         encoded = parameters[plan_option_index + 1]
         if case == "alternate-valid-encoding":
@@ -3579,6 +3654,16 @@ def _cluster_identity_failure_replay_fixture(
     return plan_root, evidence_root, plan, payloads, manifest, ledger_path
 
 
+def _validated_retained_historical_contracts(
+    plan: Mapping[str, Any], payloads: list[dict[str, Any]]
+) -> tuple[dict[str, Any], ...]:
+    return qualification_job._validated_qualification_payloads(
+        plan,
+        payloads,
+        historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
+    )
+
+
 def _reconcile_cluster_identity_failure(
     *,
     plan_root: Path,
@@ -3663,7 +3748,7 @@ def test_reviewed_cluster_identity_wrapper_reconciles_exact_historical_closure(
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_TERMINAL_PREFIX_SHA256
     )
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
         for contract in sorted(contracts, key=lambda item: item["job_id"])
@@ -3747,7 +3832,7 @@ def test_cluster_identity_reconciliation_resumes_canonical_partial_append(
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert len(partial.terminal_actuals) == 171
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
         for contract in sorted(contracts, key=lambda item: item["job_id"])
@@ -3900,7 +3985,7 @@ def test_runtime_lock_index_failure_source_pins_normalize_exact_retained_outputs
     evidence_root = plan_root / "failed-attempt-runtime-lock-index-v2"
     plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
     payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_error_sha256 = dict(
         qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB
     )
@@ -4098,7 +4183,7 @@ def test_runtime_lock_index_wrapper_is_deterministic_idempotent_and_source_pinne
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256
     )
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
         for contract in sorted(contracts, key=lambda item: item["job_id"])
@@ -4180,7 +4265,7 @@ def test_runtime_lock_index_reconciliation_resumes_canonical_partial_append(
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert len(partial.terminal_actuals) == 185
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
         for contract in sorted(contracts, key=lambda item: item["job_id"])
@@ -4361,7 +4446,7 @@ def test_site_packages_path_failure_source_pins_exact_retained_closure():
     evidence_root = plan_root / "failed-attempt-site-packages-path-v2"
     plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
     payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_error_sha256 = dict(
         qualification_job.GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_ERROR_SHA256_BY_JOB
     )
@@ -4571,7 +4656,7 @@ def test_site_packages_path_wrapper_is_deterministic_idempotent_and_source_pinne
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_TERMINAL_PREFIX_SHA256
     )
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
         for contract in sorted(contracts, key=lambda item: item["job_id"])
@@ -4653,7 +4738,7 @@ def test_site_packages_path_reconciliation_resumes_canonical_partial_append(
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert len(partial.terminal_actuals) == 199
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
         for contract in sorted(contracts, key=lambda item: item["job_id"])
@@ -4938,7 +5023,7 @@ def test_runtime_observation_and_worker_subprocess_failure_source_pins_exact_clo
     )
     plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
     payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_error_sha256 = dict(
         qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
     )
@@ -5090,7 +5175,7 @@ def test_runtime_observation_and_worker_subprocess_wrapper_is_deterministic_idem
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_TERMINAL_PREFIX_SHA256
     )
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
         for contract in sorted(contracts, key=lambda item: item["job_id"])
@@ -5197,7 +5282,7 @@ def test_runtime_observation_and_worker_subprocess_reconciliation_resumes_canoni
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert len(partial.terminal_actuals) == 213
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
         for contract in sorted(contracts, key=lambda item: item["job_id"])
@@ -5540,7 +5625,7 @@ def test_mixed_sentinel_and_result_validation_failure_source_pins_exact_closure(
     payloads = json.loads((plan_root / "submit-payloads.json").read_text())
     manifest_path = evidence_root / "reconciliation-manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     error_sha256_by_job = dict(
         qualification_job.GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_SHA256_BY_JOB
     )
@@ -5684,7 +5769,7 @@ def test_mixed_sentinel_and_result_validation_wrapper_is_deterministic_and_idemp
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
     )
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     assert [item.attempt_id for item in reconciled.terminal_actuals[-14:]] == [
         str(contract["reservation_attempt_id"])
         for contract in sorted(contracts, key=lambda item: str(item["job_id"]))
@@ -5781,7 +5866,7 @@ def test_mixed_sentinel_and_result_validation_reconciliation_resumes_five_append
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert len(partial.terminal_actuals) == 227
-    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         str(contract["reservation_attempt_id"])
         for contract in sorted(contracts, key=lambda item: str(item["job_id"]))
@@ -5831,7 +5916,7 @@ def test_mixed_sentinel_and_result_validation_rejects_noncanonical_partial_prefi
         tmp_path, monkeypatch
     )
     contracts = sorted(
-        qualification_job._validated_qualification_payloads(plan, payloads),
+        _validated_retained_historical_contracts(plan, payloads),
         key=lambda item: str(item["job_id"]),
     )
     second = contracts[1]

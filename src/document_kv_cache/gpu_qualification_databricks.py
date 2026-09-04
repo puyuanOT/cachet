@@ -473,6 +473,16 @@ GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_UTF8_B
 GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PLAN_SHA256: Final = (
     "694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830"
 )
+_GPU_QUALIFICATION_REVIEWED_HISTORICAL_AUTO_ZONE_PLAN_SHA256S: Final = frozenset(
+    {
+        GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_PLAN_SHA256,
+        GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_PLAN_SHA256,
+        GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256,
+        GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256,
+        GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256,
+        GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PLAN_SHA256,
+    }
+)
 GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_RUNNER_SHA256: Final = (
     "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
 )
@@ -1963,6 +1973,7 @@ def _validated_qualification_payloads(
     submit_payloads: Sequence[Mapping[str, Any]],
     *,
     require_legacy_uc_broken_security_shape: bool = False,
+    historical_l40s_auto_plan_sha256: str | None = None,
 ) -> tuple[dict[str, Any], ...]:
     if isinstance(submit_payloads, (str, bytes, bytearray)) or not isinstance(
         submit_payloads, Sequence
@@ -1975,6 +1986,26 @@ def _validated_qualification_payloads(
         )
     if type(require_legacy_uc_broken_security_shape) is not bool:
         raise TypeError("require_legacy_uc_broken_security_shape must be a bool")
+    if (
+        require_legacy_uc_broken_security_shape
+        and historical_l40s_auto_plan_sha256 is not None
+    ):
+        raise ValueError("legacy UC and historical L40S payload modes are exclusive")
+    historical_l40s_auto = historical_l40s_auto_plan_sha256 is not None
+    if historical_l40s_auto:
+        # Private, non-authorizing compatibility for source-reviewed incidents.
+        # Live submit/resume/collection callers never pass this parameter.
+        reviewed_historical_plan_sha256 = _required_sha256(
+            historical_l40s_auto_plan_sha256,
+            "historical_l40s_auto_plan_sha256",
+        )
+        _require_closed_record_digest(plan, "historical GPU qualification plan")
+        if plan.get("closed_record_sha256") != reviewed_historical_plan_sha256:
+            raise ValueError("historical L40S payload plan is not the reviewed plan")
+        if reviewed_historical_plan_sha256 not in (
+            _GPU_QUALIFICATION_REVIEWED_HISTORICAL_AUTO_ZONE_PLAN_SHA256S
+        ):
+            raise ValueError("historical L40S payload plan is not source-reviewed")
     single_user_name = (
         None
         if require_legacy_uc_broken_security_shape
@@ -2041,6 +2072,11 @@ def _validated_qualification_payloads(
                 hardware_id=hardware_id,
                 single_user_name=cast(str, single_user_name),
                 custom_tags=custom_tags,
+                l40s_zone_id=(
+                    "auto"
+                    if historical_l40s_auto
+                    else GPU_QUALIFICATION_L40S_AWS_ZONE_ID
+                ),
             )
         )
         if task.get("new_cluster") != expected_cluster:
@@ -3548,7 +3584,11 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         or pins.runner_sha256 != reviewed_runner_sha256
     ):
         raise ValueError("failed-attempt reconciliation plan is not reviewed")
-    contracts = _validated_qualification_payloads(plan, submit_payloads)
+    contracts = _validated_qualification_payloads(
+        plan,
+        submit_payloads,
+        historical_l40s_auto_plan_sha256=reviewed_plan_sha256,
+    )
     mixed_failure_categories = (
         _mixed_sentinel_and_result_validation_failure_categories()
         if expected_mixed_sentinel_and_result_validation_failure
@@ -5550,10 +5590,13 @@ def _qualification_cluster(
     hardware_id: str,
     single_user_name: str,
     custom_tags: Mapping[str, str],
+    l40s_zone_id: str = GPU_QUALIFICATION_L40S_AWS_ZONE_ID,
 ) -> dict[str, Any]:
     """Build a closed single-node cluster without widening V1 serving targets."""
 
     principal = _validated_single_user_name(single_user_name)
+    if l40s_zone_id not in {GPU_QUALIFICATION_L40S_AWS_ZONE_ID, "auto"}:
+        raise ValueError("L40S zone must be the live pin or historical auto value")
     if hardware_id != GPU_QUALIFICATION_GENERATION_HARDWARE_ID:
         return build_single_node_gpu_cluster(
             DatabricksSingleNodeGPUClusterConfig(
@@ -5586,7 +5629,7 @@ def _qualification_cluster(
         "custom_tags": tags,
         "aws_attributes": {
             "availability": "ON_DEMAND",
-            "zone_id": GPU_QUALIFICATION_L40S_AWS_ZONE_ID,
+            "zone_id": l40s_zone_id,
         },
     }
 
