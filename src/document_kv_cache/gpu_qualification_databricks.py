@@ -3584,10 +3584,16 @@ def _reconcile_reviewed_gpu_qualification_failed_attempt_evidence_v2(
         or pins.runner_sha256 != reviewed_runner_sha256
     ):
         raise ValueError("failed-attempt reconciliation plan is not reviewed")
+    historical_l40s_auto_plan_sha256 = (
+        reviewed_plan_sha256
+        if reviewed_plan_sha256
+        in _GPU_QUALIFICATION_REVIEWED_HISTORICAL_AUTO_ZONE_PLAN_SHA256S
+        else None
+    )
     contracts = _validated_qualification_payloads(
         plan,
         submit_payloads,
-        historical_l40s_auto_plan_sha256=reviewed_plan_sha256,
+        historical_l40s_auto_plan_sha256=historical_l40s_auto_plan_sha256,
     )
     mixed_failure_categories = (
         _mixed_sentinel_and_result_validation_failure_categories()
