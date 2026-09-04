@@ -188,15 +188,8 @@ def _copy_retained_live_ledger(
     destination: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
-    retained_stat = _stable_stat(_RETAINED_LEDGER_PATH)
-    retained = ledger_api.read_databricks_cluster_hour_ledger_json(
-        _RETAINED_LEDGER_PATH
-    )
+    _copy_opening_ledger(destination, monkeypatch)
     opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
-    ledger_api.require_databricks_ledger_prefix(retained, opening)
-    assert ledger_api.databricks_ledger_prefix(retained) == opening
-    _write_ledger(destination, retained)
     payload = databricks_v2.render_gpu_qualification_submit_payloads_v2(
         _plan(),
         single_user_name=_SINGLE_USER_NAME,
@@ -221,9 +214,6 @@ def _copy_retained_live_ledger(
     assert len(successor.reservations) == opening.reservation_count + 1
     assert len(successor.submission_receipts) == opening.submission_receipt_count
     assert len(successor.terminal_actuals) == opening.terminal_actual_count + 1
-    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
-    assert _stable_stat(_RETAINED_LEDGER_PATH) == retained_stat
-    _bind_isolated_ledger_path(monkeypatch)
 
 
 def _install_preflight_stub(
