@@ -41,11 +41,13 @@ from document_kv_cache.databricks_resource_ledger import (
     require_databricks_ledger_prefix,
 )
 from document_kv_cache.databricks_runs import (
+    DatabricksURLOpener,
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
     databricks_run_status_record,
     download_databricks_volume_file_bytes,
     get_databricks_run,
+    require_databricks_current_user_name,
     submit_databricks_run,
     summarize_databricks_run,
     upload_databricks_volume_file_bytes_exclusive,
@@ -131,8 +133,9 @@ PUBLICATION_HANDOFF_CLOSURE_RESULT_RECORD_TYPE: Final = (
     "cachet.publication_handoff_closure_result.v2"
 )
 PUBLICATION_HANDOFF_CLOSURE_RESERVATION_RECORD_TYPE: Final = (
-    "cachet.publication_handoff_closure_reservation.v2"
+    "cachet.publication_handoff_closure_reservation.v3"
 )
+PUBLICATION_HANDOFF_CLOSURE_RESERVATION_SCHEMA_VERSION: Final = 3
 PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION: Final = 2
 PUBLICATION_HANDOFF_CLOSURE_RUNNER_FILENAME: Final = (
     "publication_handoff_closure_coordinator_runner.py"
@@ -215,9 +218,7 @@ class PublicationHandoffClosureCoordinatorConfig:
             "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
             "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
             "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
-            "runtime_closure_manifest_sha256": (
-                RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
-            ),
+            "runtime_closure_manifest_sha256": (RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
         }
         for field_name, expected in expected_runtime_artifacts.items():
             if getattr(self, field_name) != expected:
@@ -261,9 +262,7 @@ class PublicationHandoffClosureCoordinatorConfig:
             "package_wheel_uri": self.package_wheel_uri,
             "patched_vllm_wheel_sha256": self.patched_vllm_wheel_sha256,
             "patched_vllm_wheel_uri": self.patched_vllm_wheel_uri,
-            "patched_flashinfer_wheel_sha256": (
-                self.patched_flashinfer_wheel_sha256
-            ),
+            "patched_flashinfer_wheel_sha256": (self.patched_flashinfer_wheel_sha256),
             "patched_flashinfer_wheel_uri": self.patched_flashinfer_wheel_uri,
             "record_type": PUBLICATION_HANDOFF_CLOSURE_CONFIG_RECORD_TYPE,
             "request_root_uri": self.request_root_uri,
@@ -271,9 +270,7 @@ class PublicationHandoffClosureCoordinatorConfig:
             "runner_sha256": self.runner_sha256,
             "runtime_lock_sha256": self.runtime_lock_sha256,
             "runtime_lock_uri": self.runtime_lock_uri,
-            "runtime_closure_manifest_sha256": (
-                self.runtime_closure_manifest_sha256
-            ),
+            "runtime_closure_manifest_sha256": (self.runtime_closure_manifest_sha256),
             "runtime_closure_manifest_uri": self.runtime_closure_manifest_uri,
             "runtime_venv_dir": self.runtime_venv_dir,
             "schema_version": PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION,
@@ -311,6 +308,8 @@ class PublicationHandoffClosureRequestAuthorization:
     ledger_prefix: DatabricksLedgerPrefix
     input_bundle_sha256: str
     qualification_closed_record_sha256: str
+    workspace_host_sha256: str | None
+    user_name_sha256: str | None
     _request_canonical_bytes: bytes
 
     def __init__(
@@ -322,6 +321,7 @@ class PublicationHandoffClosureRequestAuthorization:
         qualification_authorization_binding: Mapping[str, Any],
         controller_lease_root: str | Path,
         _issuer: object,
+        workspace_identity: Mapping[str, Any] | None = None,
     ) -> None:
         if _issuer is not _REQUEST_AUTHORIZATION_ISSUER:
             raise TypeError(
@@ -338,14 +338,10 @@ class PublicationHandoffClosureRequestAuthorization:
             raise ValueError("closure request qualification artifact pins drift")
         coordinator = _required_mapping(request, "coordinator")
         expected_pins = {
-            "cachet_source_tree_sha256": coordinator.get(
-                "cachet_source_tree_sha256"
-            ),
+            "cachet_source_tree_sha256": coordinator.get("cachet_source_tree_sha256"),
             "input_bundle_sha256": request.get("input_bundle_sha256"),
             "package_wheel_sha256": coordinator.get("package_wheel_sha256"),
-            "patched_vllm_wheel_sha256": coordinator.get(
-                "patched_vllm_wheel_sha256"
-            ),
+            "patched_vllm_wheel_sha256": coordinator.get("patched_vllm_wheel_sha256"),
             "patched_flashinfer_wheel_sha256": coordinator.get(
                 "patched_flashinfer_wheel_sha256"
             ),
@@ -402,12 +398,9 @@ class PublicationHandoffClosureRequestAuthorization:
             != _required_mapping(singleton, "phase_evidence")
             or singleton.get("batch_identity_sha256")
             != _closure_batch_identity_sha256(batch)
-            or batch.get("ledger_path_sha256")
-            != lineage.get("ledger_path_sha256")
-            or batch.get("predecessor_prefix")
-            != lineage.get("predecessor_prefix")
-            or batch.get("batch_prefix")
-            != lineage.get("producer_batch_prefix")
+            or batch.get("ledger_path_sha256") != lineage.get("ledger_path_sha256")
+            or batch.get("predecessor_prefix") != lineage.get("predecessor_prefix")
+            or batch.get("batch_prefix") != lineage.get("producer_batch_prefix")
             or batch.get("attempt_ids")
             != [item["attempt_id"] for item in request_worker_evidence]
         ):
@@ -420,16 +413,12 @@ class PublicationHandoffClosureRequestAuthorization:
             qualification_binding
         )
         stage = _required_stage(request.get("stage"))
-        request_closed_record_sha256 = _required_string(
-            request, "closed_record_sha256"
-        )
+        request_closed_record_sha256 = _required_string(request, "closed_record_sha256")
         authorization_sha256 = _canonical_sha256(
             {
                 "batch_evidence_sha256": batch_evidence_sha256,
-                "domain": "cachet.publication.handoff_closure.request_authority.v2",
-                "qualified_artifact_pins_sha256": (
-                    qualified_artifact_pins_sha256
-                ),
+                "domain": "cachet.publication.handoff_closure.request_authority.v3",
+                "qualified_artifact_pins_sha256": (qualified_artifact_pins_sha256),
                 "qualification_authorization_binding_sha256": (
                     qualification_authorization_binding_sha256
                 ),
@@ -437,19 +426,25 @@ class PublicationHandoffClosureRequestAuthorization:
                 "request_closed_record_sha256": request_closed_record_sha256,
                 "request_file_sha256": request_file_sha256,
                 "stage": stage,
+                "workspace_host_sha256": (
+                    None
+                    if workspace_identity is None
+                    else workspace_identity.get("workspace_host_sha256")
+                ),
+                "user_name_sha256": (
+                    None
+                    if workspace_identity is None
+                    else workspace_identity.get("user_name_sha256")
+                ),
             }
         )
         object.__setattr__(self, "stage", stage)
-        object.__setattr__(
-            self, "attempt_id", _required_string(request, "attempt_id")
-        )
+        object.__setattr__(self, "attempt_id", _required_string(request, "attempt_id"))
         object.__setattr__(
             self, "request_closed_record_sha256", request_closed_record_sha256
         )
         object.__setattr__(self, "request_file_sha256", request_file_sha256)
-        object.__setattr__(
-            self, "batch_evidence_sha256", batch_evidence_sha256
-        )
+        object.__setattr__(self, "batch_evidence_sha256", batch_evidence_sha256)
         object.__setattr__(
             self,
             "qualified_artifact_pins_sha256",
@@ -461,10 +456,27 @@ class PublicationHandoffClosureRequestAuthorization:
             qualification_authorization_binding_sha256,
         )
         object.__setattr__(self, "controller_lease_root", lease_root)
-        object.__setattr__(
-            self, "controller_lease_root_sha256", lease_root_sha256
-        )
+        object.__setattr__(self, "controller_lease_root_sha256", lease_root_sha256)
         object.__setattr__(self, "authorization_sha256", authorization_sha256)
+        object.__setattr__(
+            self,
+            "workspace_host_sha256",
+            None
+            if workspace_identity is None
+            else _require_sha256(
+                workspace_identity.get("workspace_host_sha256"),
+                "workspace_host_sha256",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "user_name_sha256",
+            None
+            if workspace_identity is None
+            else _require_sha256(
+                workspace_identity.get("user_name_sha256"), "user_name_sha256"
+            ),
+        )
         object.__setattr__(self, "ledger_id", _required_string(lineage, "ledger_id"))
         object.__setattr__(
             self,
@@ -500,9 +512,7 @@ class PublicationHandoffClosureRequestAuthorization:
         object.__setattr__(
             self,
             "qualification_closed_record_sha256",
-            _required_string(
-                request, "expected_qualification_closed_record_sha256"
-            ),
+            _required_string(request, "expected_qualification_closed_record_sha256"),
         )
         object.__setattr__(self, "_request_canonical_bytes", request_bytes)
 
@@ -538,7 +548,10 @@ class PublicationHandoffRemoteClosureAuthorization:
     predecessor_prefix: DatabricksLedgerPrefix
     producer_batch_prefix: DatabricksLedgerPrefix
     ledger_prefix: DatabricksLedgerPrefix
+    workspace_host_sha256: str
+    user_name_sha256: str
     causal_closure_sha256: str
+    workspace_authority_closure_sha256: str
     request_record: Mapping[str, Any]
     result_record: Mapping[str, Any]
     execution_record: Mapping[str, Any]
@@ -552,6 +565,8 @@ class PublicationHandoffRemoteClosureAuthorization:
         result_file_sha256: str,
         coordinator_run_id: str,
         control_plane_status_sha256: str,
+        workspace_host_sha256: str,
+        user_name_sha256: str,
         _issuer: object,
     ) -> None:
         if _issuer is not _AUTHORIZATION_ISSUER:
@@ -564,6 +579,12 @@ class PublicationHandoffRemoteClosureAuthorization:
         )
         normalized_control_sha256 = _require_sha256(
             control_plane_status_sha256, "control_plane_status_sha256"
+        )
+        normalized_workspace_host_sha256 = _require_sha256(
+            workspace_host_sha256, "workspace_host_sha256"
+        )
+        normalized_user_name_sha256 = _require_sha256(
+            user_name_sha256, "user_name_sha256"
         )
         if (
             _required_string(_required_mapping(result, "coordinator"), "run_id")
@@ -638,7 +659,22 @@ class PublicationHandoffRemoteClosureAuthorization:
         object.__setattr__(self, "predecessor_prefix", predecessor)
         object.__setattr__(self, "producer_batch_prefix", producer)
         object.__setattr__(self, "ledger_prefix", terminal)
+        object.__setattr__(
+            self, "workspace_host_sha256", normalized_workspace_host_sha256
+        )
+        object.__setattr__(self, "user_name_sha256", normalized_user_name_sha256)
         object.__setattr__(self, "causal_closure_sha256", causal)
+        object.__setattr__(
+            self,
+            "workspace_authority_closure_sha256",
+            _canonical_sha256(
+                {
+                    "causal_closure_sha256": causal,
+                    "user_name_sha256": normalized_user_name_sha256,
+                    "workspace_host_sha256": normalized_workspace_host_sha256,
+                }
+            ),
+        )
         object.__setattr__(self, "request_record", MappingProxyType(dict(request)))
         object.__setattr__(self, "result_record", MappingProxyType(dict(result)))
         object.__setattr__(
@@ -661,13 +697,15 @@ def build_q8_handoff_closure_request(
     execution_contract: Mapping[str, Any],
     ledger_path: str | Path,
     attempt_ids_by_worker: Mapping[int, str],
-    attestations_by_worker: Mapping[
-        int, _q8.PublicationLatencyHandoffDatabricksAttestationBinding
+    worker_authorizations: Mapping[
+        int, _q8.PublicationLatencyHandoffWorkerAuthorization
     ],
     submission_authorization: _q8.PublicationLatencyHandoffSubmissionAuthorization,
     hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualificationV2,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     expected_qualification_closed_record_sha256: str,
+    local_evidence_mirror_root: str | Path | None = None,
+    collection_workspace: DatabricksWorkspaceConfig | None = None,
 ) -> PublicationHandoffClosureRequestAuthorization:
     """Build a CPU closure request from the exact terminal Q8 worker batch."""
 
@@ -702,25 +740,59 @@ def build_q8_handoff_closure_request(
         output_root_uri=output_root_uri,
         controller_lease_root=controller_lease_root,
     )
-    evidence: list[dict[str, Any]] = []
     expected_workers = set(range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS))
     if (
-        set(attempt_ids_by_worker) != expected_workers
-        or set(attestations_by_worker) != expected_workers
+        any(type(key) is not int for key in attempt_ids_by_worker)
+        or any(type(key) is not int for key in worker_authorizations)
+        or set(attempt_ids_by_worker) != expected_workers
+        or set(worker_authorizations) != expected_workers
     ):
         raise ValueError("Q8 closure request requires workers 0..15 exactly")
+    if any(
+        type(authority) is not _q8.PublicationLatencyHandoffWorkerAuthorization
+        for authority in worker_authorizations.values()
+    ):
+        raise TypeError("Q8 closure requires live worker authorizations")
+    evidence: list[dict[str, Any]] = []
+    if not isinstance(collection_workspace, DatabricksWorkspaceConfig):
+        raise TypeError("Q8 closure requires collection_workspace")
+    collection_identity = require_databricks_current_user_name(
+        collection_workspace,
+        expected_user_name=coordinator_config.single_user_name,
+    )
+    if (
+        collection_identity.get("workspace_host_sha256")
+        != submission_authorization.workspace_host_sha256
+        or collection_identity.get("user_name_sha256")
+        != submission_authorization.user_name_sha256
+    ):
+        raise ValueError("Q8 closure workspace/principal differs from submission")
     for worker_index in sorted(expected_workers):
-        binding = attestations_by_worker[worker_index]
-        if not isinstance(
-            binding, _q8.PublicationLatencyHandoffDatabricksAttestationBinding
+        evidence_authority = worker_authorizations[worker_index]
+        if (
+            evidence_authority.attempt_id != attempt_ids_by_worker[worker_index]
+            or evidence_authority.ledger_id != batch.batch_prefix.ledger_id
+            or evidence_authority.ledger_path_sha256 != batch.ledger_path_sha256
+            or evidence_authority.producer_batch_prefix != batch.batch_prefix
+            or evidence_authority.workspace_host_sha256
+            != collection_identity["workspace_host_sha256"]
+            or evidence_authority.user_name_sha256
+            != collection_identity["user_name_sha256"]
         ):
-            raise TypeError("Q8 closure requires attestation bindings")
+            raise ValueError("Q8 worker authorization batch/ledger drift")
+        binding = evidence_authority.binding
+        if binding.worker_index != worker_index:
+            raise ValueError("Q8 attestation binding worker mapping drift")
         _require_handoff_attestation_path(
             binding.path,
             output_root_uri,
             directory=_q8.PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY,
             worker_index=worker_index,
             stage=PUBLICATION_HANDOFF_CLOSURE_Q8_STAGE,
+            local_mirror_root=local_evidence_mirror_root,
+            expected_file_sha256=binding.file_sha256,
+            expected_closed_record_sha256=binding.closed_record_sha256,
+            collection_workspace=collection_workspace,
         )
         evidence.append(
             {
@@ -732,6 +804,13 @@ def build_q8_handoff_closure_request(
                 "worker_index": worker_index,
             }
         )
+    _q8.publication_latency_handoff_terminal_actual_gpu_seconds_from_ledger(
+        ledger_path,
+        attempt_ids_by_worker=attempt_ids_by_worker,
+        durable_output_root=output_root_uri,
+        attestations_by_worker=worker_authorizations,
+        local_evidence_mirror_root=local_evidence_mirror_root,
+    )
     request = _build_closure_request(
         stage=PUBLICATION_HANDOFF_CLOSURE_Q8_STAGE,
         attempt_id=attempt_id,
@@ -760,6 +839,7 @@ def build_q8_handoff_closure_request(
         qualification_authorization_binding=qualification_binding,
         controller_lease_root=controller_lease_root,
         worker_evidence=evidence,
+        workspace_identity=collection_identity,
     )
 
 
@@ -782,6 +862,8 @@ def build_bf16_handoff_closure_request(
     hardware_qualification: _q8.PublicationLatencyGeneratorHardwareQualificationV2,
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     expected_qualification_closed_record_sha256: str,
+    local_evidence_mirror_root: str | Path | None = None,
+    collection_workspace: DatabricksWorkspaceConfig | None = None,
 ) -> PublicationHandoffClosureRequestAuthorization:
     """Build a CPU closure request from issuer-bound BF16 worker evidence."""
 
@@ -818,26 +900,60 @@ def build_bf16_handoff_closure_request(
     )
     expected_workers = set(range(_bf16.PUBLICATION_BF16_HANDOFF_WORKER_COUNT))
     if (
-        set(attempt_ids_by_worker) != expected_workers
+        any(type(key) is not int for key in attempt_ids_by_worker)
+        or any(type(key) is not int for key in worker_authorizations)
+        or set(attempt_ids_by_worker) != expected_workers
         or set(worker_authorizations) != expected_workers
     ):
         raise ValueError("BF16 closure request requires workers 0..15 exactly")
+    if any(
+        type(authority) is not _bf16.PublicationBF16HandoffWorkerAuthorization
+        for authority in worker_authorizations.values()
+    ):
+        raise TypeError("BF16 closure requires live worker authorizations")
+    if not isinstance(collection_workspace, DatabricksWorkspaceConfig):
+        raise TypeError("BF16 closure requires collection_workspace")
+    collection_identity = require_databricks_current_user_name(
+        collection_workspace,
+        expected_user_name=coordinator_config.single_user_name,
+    )
+    if (
+        collection_identity.get("workspace_host_sha256")
+        != submission_authorization.workspace_host_sha256
+        or collection_identity.get("user_name_sha256")
+        != submission_authorization.user_name_sha256
+    ):
+        raise ValueError("BF16 closure workspace/principal differs from submission")
     evidence: list[dict[str, Any]] = []
     for worker_index in sorted(expected_workers):
         authority = worker_authorizations[worker_index]
-        if not isinstance(authority, _bf16.PublicationBF16HandoffWorkerAuthorization):
-            raise TypeError("BF16 closure requires live worker authorizations")
+        if authority.binding.worker_index != worker_index:
+            raise ValueError("BF16 attestation binding worker mapping drift")
         _require_handoff_attestation_path(
             authority.binding.path,
             output_root_uri,
             directory=_bf16.PUBLICATION_BF16_HANDOFF_ATTESTATION_DIRECTORY,
             worker_index=worker_index,
             stage=PUBLICATION_HANDOFF_CLOSURE_BF16_STAGE,
+            local_mirror_root=local_evidence_mirror_root,
+            expected_file_sha256=authority.binding.file_sha256,
+            expected_closed_record_sha256=authority.binding.closed_record_sha256,
+            collection_workspace=collection_workspace,
         )
         if authority.attempt_id != attempt_ids_by_worker[worker_index]:
             raise ValueError("BF16 worker authorization attempt mapping drift")
         if authority.producer_batch_prefix != batch.batch_prefix:
             raise ValueError("BF16 workers bind a different producer batch")
+        if authority.ledger_path_sha256 != batch.ledger_path_sha256:
+            raise ValueError("BF16 workers bind a different ledger path")
+        if authority.ledger_id != batch.batch_prefix.ledger_id:
+            raise ValueError("BF16 workers bind a different ledger")
+        if (
+            authority.workspace_host_sha256
+            != collection_identity["workspace_host_sha256"]
+            or authority.user_name_sha256 != collection_identity["user_name_sha256"]
+        ):
+            raise ValueError("BF16 worker workspace/principal authority drift")
         evidence.append(
             {
                 "attempt_id": authority.attempt_id,
@@ -847,6 +963,13 @@ def build_bf16_handoff_closure_request(
                 "worker_index": worker_index,
             }
         )
+    _bf16.publication_bf16_handoff_terminal_actual_gpu_seconds_from_ledger(
+        ledger_path,
+        attempt_ids_by_worker=attempt_ids_by_worker,
+        durable_output_root=output_root_uri,
+        worker_authorizations=worker_authorizations,
+        local_evidence_mirror_root=local_evidence_mirror_root,
+    )
     request = _build_closure_request(
         stage=PUBLICATION_HANDOFF_CLOSURE_BF16_STAGE,
         attempt_id=attempt_id,
@@ -875,6 +998,7 @@ def build_bf16_handoff_closure_request(
         qualification_authorization_binding=qualification_binding,
         controller_lease_root=controller_lease_root,
         worker_evidence=evidence,
+        workspace_identity=collection_identity,
     )
 
 
@@ -887,6 +1011,7 @@ def _issue_closure_request_authorization(
     qualification_authorization_binding: Mapping[str, Any],
     controller_lease_root: Path,
     worker_evidence: Sequence[Mapping[str, Any]],
+    workspace_identity: Mapping[str, Any] | None = None,
 ) -> PublicationHandoffClosureRequestAuthorization:
     phase_evidence = _submission_phase_evidence(submission_authorization)
     batch_evidence = {
@@ -894,12 +1019,8 @@ def _issue_closure_request_authorization(
             "attempt_ids": list(batch_authorization.attempt_ids),
             "batch_prefix": batch_authorization.batch_prefix.to_record(),
             "ledger_path_sha256": batch_authorization.ledger_path_sha256,
-            "predecessor_prefix": (
-                batch_authorization.predecessor_prefix.to_record()
-            ),
-            "submit_payload_sha256s": list(
-                batch_authorization.submit_payload_sha256s
-            ),
+            "predecessor_prefix": (batch_authorization.predecessor_prefix.to_record()),
+            "submit_payload_sha256s": list(batch_authorization.submit_payload_sha256s),
         },
         "phase_evidence": phase_evidence,
         "worker_evidence": [dict(item) for item in worker_evidence],
@@ -910,6 +1031,7 @@ def _issue_closure_request_authorization(
         qualified_artifact_pins=hardware_qualification.expected_artifact_pins,
         qualification_authorization_binding=qualification_authorization_binding,
         controller_lease_root=controller_lease_root,
+        workspace_identity=workspace_identity,
         _issuer=_REQUEST_AUTHORIZATION_ISSUER,
     )
 
@@ -949,9 +1071,7 @@ def _handoff_closure_singleton(
             "batch_prefix": batch_authorization.batch_prefix.to_record(),
             "ledger_path_sha256": batch_authorization.ledger_path_sha256,
             "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
-            "submit_payload_sha256s": list(
-                batch_authorization.submit_payload_sha256s
-            ),
+            "submit_payload_sha256s": list(batch_authorization.submit_payload_sha256s),
         }
     )
     lease_sha256 = _controller_path_sha256(
@@ -991,9 +1111,7 @@ def _closure_batch_identity_sha256(batch: Mapping[str, Any]) -> str:
                 _required_string(batch, "ledger_path_sha256"),
                 "batch ledger_path_sha256",
             ),
-            "predecessor_prefix": dict(
-                _required_mapping(batch, "predecessor_prefix")
-            ),
+            "predecessor_prefix": dict(_required_mapping(batch, "predecessor_prefix")),
             "submit_payload_sha256s": list(
                 _required_sequence(batch, "submit_payload_sha256s")
             ),
@@ -1046,9 +1164,7 @@ def _validate_handoff_closure_singleton(
         _require_sha256(_nonempty(digest, name), name)
     identity = {
         "batch_identity_sha256": singleton["batch_identity_sha256"],
-        "controller_lease_root_sha256": singleton[
-            "controller_lease_root_sha256"
-        ],
+        "controller_lease_root_sha256": singleton["controller_lease_root_sha256"],
         "durable_output_root_uri": output_root,
         "phase_evidence": dict(phase_evidence),
         "stage": stage,
@@ -1097,20 +1213,82 @@ def _require_handoff_attestation_path(
     directory: str,
     worker_index: int,
     stage: str,
+    local_mirror_root: str | Path | None = None,
+    expected_file_sha256: str | None = None,
+    expected_closed_record_sha256: str | None = None,
+    collection_workspace: DatabricksWorkspaceConfig | None = None,
 ) -> None:
-    output_root = Path(
-        local_path(
-            _canonical_volume_directory_uri(
-                output_root_uri, f"{stage} durable_output_root_uri"
+    remote_output_root = (
+        Path(
+            local_path(
+                _canonical_volume_directory_uri(
+                    output_root_uri, f"{stage} durable_output_root_uri"
+                )
             )
         )
-    ).expanduser().absolute()
-    expected = output_root / directory / f"worker-{worker_index:02d}.json"
+        .expanduser()
+        .absolute()
+    )
+    expected = remote_output_root / directory / f"worker-{worker_index:02d}.json"
     observed = Path(path).expanduser().absolute()
     if observed != expected:
         raise ValueError(
             f"{stage} attestation path differs from the producer phase output root"
         )
+    pinned_sha256 = _require_sha256(
+        expected_file_sha256, f"{stage} attestation file SHA-256"
+    )
+    if local_mirror_root is None:
+        content = (
+            _q8._read_q8_stable_regular_file(expected, require_mode_0600=False)
+            if stage == PUBLICATION_HANDOFF_CLOSURE_Q8_STAGE
+            else _bf16._read_bf16_stable_regular_file(expected, require_mode_0600=False)
+        )
+    else:
+        if not isinstance(collection_workspace, DatabricksWorkspaceConfig):
+            raise TypeError(f"{stage} mirror collection workspace has the wrong type")
+        mirror = (
+            _q8._require_q8_local_evidence_mirror_root(local_mirror_root)
+            if stage == PUBLICATION_HANDOFF_CLOSURE_Q8_STAGE
+            else _bf16._require_bf16_local_evidence_mirror_root(local_mirror_root)
+        )
+        mirror_file = mirror / directory / f"worker-{worker_index:02d}.json"
+        content = (
+            _q8._read_q8_stable_regular_file(mirror_file, mirror_root=mirror)
+            if stage == PUBLICATION_HANDOFF_CLOSURE_Q8_STAGE
+            else _bf16._read_bf16_stable_regular_file(mirror_file, mirror_root=mirror)
+        )
+    if not content or sha256(content).hexdigest() != pinned_sha256:
+        raise ValueError(f"{stage} local attestation mirror content drift")
+    if local_mirror_root is not None:
+        assert collection_workspace is not None
+        remote_uri = (
+            _canonical_volume_directory_uri(
+                output_root_uri, f"{stage} durable_output_root_uri"
+            )
+            + f"/{directory}/worker-{worker_index:02d}.json"
+        )
+        if (
+            download_databricks_volume_file_bytes(collection_workspace, remote_uri)
+            != content
+        ):
+            raise ValueError(
+                f"{stage} remote attestation bytes differ from local mirror"
+            )
+    record = _canonical_json_object_from_bytes(content, f"{stage} mirrored attestation")
+    if stage == PUBLICATION_HANDOFF_CLOSURE_Q8_STAGE:
+        _q8._validate_publication_latency_handoff_databricks_attestation_record(record)
+        attempt = _mapping(record.get("attempt"), "Q8 mirrored attestation attempt")
+    else:
+        _bf16._validate_attestation_record(record)
+        attempt = _mapping(record.get("attempt"), "BF16 mirrored attestation attempt")
+    if attempt.get("worker_index") != worker_index or record.get(
+        "closed_record_sha256"
+    ) != _require_sha256(
+        expected_closed_record_sha256,
+        f"{stage} attestation closed-record SHA-256",
+    ):
+        raise ValueError(f"{stage} mirrored attestation record binding drift")
 
 
 def _handoff_closure_request_root_uri(output_root_uri: str, *, stage: str) -> str:
@@ -1186,9 +1364,10 @@ def _require_matching_qualified_producer(
         expected_qualification_closed_record_sha256,
         "expected_qualification_closed_record_sha256",
     )
-    if hardware_qualification.evidence_record.get(
-        "closed_record_sha256"
-    ) != expected_qualification:
+    if (
+        hardware_qualification.evidence_record.get("closed_record_sha256")
+        != expected_qualification
+    ):
         raise ValueError("handoff closure qualification evidence binding drift")
     selection = require_gpu_qualification_launch_authorization(
         qualification_launch_authorization,
@@ -1210,9 +1389,7 @@ def _require_matching_qualified_producer(
             expected_input_bundle_sha256, "expected_input_bundle_sha256"
         ),
         "package_wheel_sha256": coordinator_config.package_wheel_sha256,
-        "patched_vllm_wheel_sha256": (
-            coordinator_config.patched_vllm_wheel_sha256
-        ),
+        "patched_vllm_wheel_sha256": (coordinator_config.patched_vllm_wheel_sha256),
         "patched_flashinfer_wheel_sha256": (
             coordinator_config.patched_flashinfer_wheel_sha256
         ),
@@ -1302,17 +1479,12 @@ def _validate_qualification_authorization_binding(
         "plan_file_sha256",
     ):
         _require_sha256(_required_string(binding, name), name)
-    if (
-        binding.get("artifact_pins_sha256")
-        != _require_sha256(
-            expected_artifact_pins_sha256,
-            "expected_artifact_pins_sha256",
-        )
-        or binding.get("evidence_closed_record_sha256")
-        != _require_sha256(
-            expected_qualification_closed_record_sha256,
-            "expected_qualification_closed_record_sha256",
-        )
+    if binding.get("artifact_pins_sha256") != _require_sha256(
+        expected_artifact_pins_sha256,
+        "expected_artifact_pins_sha256",
+    ) or binding.get("evidence_closed_record_sha256") != _require_sha256(
+        expected_qualification_closed_record_sha256,
+        "expected_qualification_closed_record_sha256",
     ):
         raise ValueError("qualification launch authorization identity drift")
     ledger_id = _nonempty(
@@ -1347,9 +1519,7 @@ def require_publication_handoff_closure_request_authorization(
 ) -> PublicationHandoffClosureRequestAuthorization:
     """Replay the exact canonical request behind issuer-only batch authority."""
 
-    if not isinstance(
-        authorization, PublicationHandoffClosureRequestAuthorization
-    ):
+    if type(authorization) is not PublicationHandoffClosureRequestAuthorization:
         raise TypeError(
             "handoff closure launch requires "
             "PublicationHandoffClosureRequestAuthorization"
@@ -1360,7 +1530,7 @@ def require_publication_handoff_closure_request_authorization(
     expected_authorization_sha256 = _canonical_sha256(
         {
             "batch_evidence_sha256": authorization.batch_evidence_sha256,
-            "domain": "cachet.publication.handoff_closure.request_authority.v2",
+            "domain": "cachet.publication.handoff_closure.request_authority.v3",
             "qualified_artifact_pins_sha256": (
                 authorization.qualified_artifact_pins_sha256
             ),
@@ -1373,6 +1543,8 @@ def require_publication_handoff_closure_request_authorization(
             "request_closed_record_sha256": request["closed_record_sha256"],
             "request_file_sha256": sha256(request_bytes).hexdigest(),
             "stage": request["stage"],
+            "workspace_host_sha256": authorization.workspace_host_sha256,
+            "user_name_sha256": authorization.user_name_sha256,
         }
     )
     lineage = _required_mapping(request, "ledger_lineage")
@@ -1395,8 +1567,7 @@ def require_publication_handoff_closure_request_authorization(
         or authorization.producer_batch_prefix.to_record()
         != lineage.get("producer_batch_prefix")
         or authorization.ledger_prefix.to_record() != lineage.get("terminal_prefix")
-        or authorization.input_bundle_sha256
-        != request.get("input_bundle_sha256")
+        or authorization.input_bundle_sha256 != request.get("input_bundle_sha256")
         or authorization.qualification_closed_record_sha256
         != request.get("expected_qualification_closed_record_sha256")
     ):
@@ -1500,10 +1671,34 @@ def _render_publication_handoff_closure_submit_payload(
         ],
         "timeout_seconds": PUBLICATION_HANDOFF_CLOSURE_TIMEOUT_SECONDS,
     }
-    return bind_databricks_run_idempotency_token(
+    bound_payload: dict[str, Any] = bind_databricks_run_idempotency_token(
         payload,
         attempt_id=_required_string(request, "attempt_id"),
     )
+    return bound_payload
+
+
+def _require_handoff_closure_workspace_identity(
+    workspace: DatabricksWorkspaceConfig,
+    authorization: PublicationHandoffClosureRequestAuthorization,
+) -> None:
+    if authorization.workspace_host_sha256 is None:
+        if authorization.user_name_sha256 is not None:
+            raise ValueError("partial handoff closure workspace authority")
+        raise ValueError("handoff closure workspace authority is missing")
+    if authorization.user_name_sha256 is None:
+        raise ValueError("partial handoff closure workspace authority")
+    request = authorization.request_record
+    coordinator = _required_mapping(request, "coordinator")
+    identity = require_databricks_current_user_name(
+        workspace,
+        expected_user_name=_required_string(coordinator, "single_user_name"),
+    )
+    if (
+        identity.get("workspace_host_sha256") != authorization.workspace_host_sha256
+        or identity.get("user_name_sha256") != authorization.user_name_sha256
+    ):
+        raise ValueError("handoff closure workspace/principal authority drift")
 
 
 def reserve_and_submit_publication_handoff_closure(
@@ -1519,6 +1714,7 @@ def reserve_and_submit_publication_handoff_closure(
     authorization = require_publication_handoff_closure_request_authorization(
         request_authorization
     )
+    _require_handoff_closure_workspace_identity(workspace, authorization)
     _require_handoff_controller_lease_root(authorization, reservation_root)
     request = dict(authorization.request_record)
     payload = _render_publication_handoff_closure_submit_payload(request)
@@ -1582,6 +1778,7 @@ def collect_publication_handoff_closure(
     authorization = require_publication_handoff_closure_request_authorization(
         request_authorization
     )
+    _require_handoff_closure_workspace_identity(workspace, authorization)
     _require_handoff_controller_lease_root(authorization, reservation_root)
     root = _existing_local_reservation_root(
         reservation_root,
@@ -1644,6 +1841,12 @@ def collect_publication_handoff_closure(
         result_file_sha256=sha256(result_bytes).hexdigest(),
         coordinator_run_id=run_id,
         control_plane_status_sha256=control_plane_status_sha256,
+        workspace_host_sha256=_require_sha256(
+            authorization.workspace_host_sha256, "workspace_host_sha256"
+        ),
+        user_name_sha256=_require_sha256(
+            authorization.user_name_sha256, "user_name_sha256"
+        ),
         _issuer=_AUTHORIZATION_ISSUER,
     )
 
@@ -1679,10 +1882,9 @@ def require_q8_handoff_remote_closure_predecessor_authorization(
 ) -> PublicationHandoffRemoteClosureAuthorization:
     """Require the exact remote Q8 terminal closure used to open BF16."""
 
-    if not isinstance(authorization, PublicationHandoffRemoteClosureAuthorization):
+    if type(authorization) is not PublicationHandoffRemoteClosureAuthorization:
         raise TypeError(
-            "BF16 predecessor requires "
-            "PublicationHandoffRemoteClosureAuthorization"
+            "BF16 predecessor requires PublicationHandoffRemoteClosureAuthorization"
         )
     resolved = require_q8_handoff_remote_closure_authorization(
         authorization,
@@ -1708,6 +1910,46 @@ def require_q8_handoff_remote_closure_predecessor_authorization(
     ):
         raise ValueError("remote Q8 closure ledger predecessor binding drift")
     return resolved
+
+
+def require_publication_handoff_remote_closure_workspace_identity(
+    workspace: DatabricksWorkspaceConfig,
+    q8_authorization: PublicationHandoffRemoteClosureAuthorization,
+    bf16_authorization: PublicationHandoffRemoteClosureAuthorization,
+    *,
+    expected_user_name: str,
+    opener: DatabricksURLOpener | None = None,
+) -> Mapping[str, str]:
+    """Authenticate the one workspace shared by both producer closures."""
+
+    if type(q8_authorization) is not PublicationHandoffRemoteClosureAuthorization:
+        raise TypeError("Q8 remote closure authorization has the wrong type")
+    if type(bf16_authorization) is not PublicationHandoffRemoteClosureAuthorization:
+        raise TypeError("BF16 remote closure authorization has the wrong type")
+    if q8_authorization.stage != PUBLICATION_HANDOFF_CLOSURE_Q8_STAGE:
+        raise ValueError("Q8 remote closure authorization has the wrong stage")
+    if bf16_authorization.stage != PUBLICATION_HANDOFF_CLOSURE_BF16_STAGE:
+        raise ValueError("BF16 remote closure authorization has the wrong stage")
+    if (
+        q8_authorization.workspace_host_sha256
+        != bf16_authorization.workspace_host_sha256
+        or q8_authorization.user_name_sha256 != bf16_authorization.user_name_sha256
+    ):
+        raise ValueError("Q8 and BF16 remote closures bind different workspaces")
+    identity = require_databricks_current_user_name(
+        workspace, expected_user_name=expected_user_name, opener=opener
+    )
+    if (
+        identity.get("workspace_host_sha256") != q8_authorization.workspace_host_sha256
+        or identity.get("user_name_sha256") != q8_authorization.user_name_sha256
+    ):
+        raise ValueError("remote closure workspace/principal authority drift")
+    return MappingProxyType(
+        {
+            "workspace_host_sha256": q8_authorization.workspace_host_sha256,
+            "user_name_sha256": q8_authorization.user_name_sha256,
+        }
+    )
 
 
 def require_bf16_handoff_remote_closure_authorization(
@@ -2116,9 +2358,7 @@ def _validate_closure_request(record: Mapping[str, Any]) -> None:
         raise ValueError(
             "qualification runner must remain distinct from the closure runner"
         )
-    expected_request_root = _handoff_closure_request_root_uri(
-        output_root, stage=stage
-    )
+    expected_request_root = _handoff_closure_request_root_uri(output_root, stage=stage)
     if coordinator_config.request_root_uri != expected_request_root:
         raise ValueError("coordinator request root is not singleton-derived")
     expected_request = _join_volume_uri(expected_request_root, "request.json")
@@ -2562,7 +2802,7 @@ def _require_remote_closure_authorization(
     expected_input_bundle_sha256: str,
     expected_qualification_closed_record_sha256: str,
 ) -> PublicationHandoffRemoteClosureAuthorization:
-    if not isinstance(authorization, PublicationHandoffRemoteClosureAuthorization):
+    if type(authorization) is not PublicationHandoffRemoteClosureAuthorization:
         raise TypeError("remote handoff closure authorization has the wrong type")
     _validate_closure_result(
         dict(authorization.result_record),
@@ -2605,6 +2845,14 @@ def _require_remote_closure_authorization(
     )
     if expected_causal != authorization.causal_closure_sha256:
         raise ValueError("remote handoff closure causal binding drift")
+    if authorization.workspace_authority_closure_sha256 != _canonical_sha256(
+        {
+            "causal_closure_sha256": authorization.causal_closure_sha256,
+            "user_name_sha256": authorization.user_name_sha256,
+            "workspace_host_sha256": authorization.workspace_host_sha256,
+        }
+    ):
+        raise ValueError("remote handoff closure workspace authority drift")
     return authorization
 
 
@@ -2694,8 +2942,7 @@ def _verify_source_closure(coordinator: Mapping[str, Any]) -> None:
     normalized["closed_record_sha256"] = ""
     if (
         record.get("record_type") != _PUBLICATION_SOURCE_CLOSURE_V2_RECORD_TYPE
-        or record.get("schema_version")
-        != _PUBLICATION_SOURCE_CLOSURE_V2_SCHEMA_VERSION
+        or record.get("schema_version") != _PUBLICATION_SOURCE_CLOSURE_V2_SCHEMA_VERSION
         or record.get("closed_record_sha256") != _canonical_sha256(normalized)
         or _required_mapping(record, "git").get("commit")
         != coordinator.get("source_revision")
@@ -2796,9 +3043,7 @@ def _reserve_closure_attempt(
         "attempt_id": request["attempt_id"],
         "batch_evidence_sha256": authorization.batch_evidence_sha256,
         "closed_record_sha256": "",
-        "controller_lease_root_sha256": (
-            authorization.controller_lease_root_sha256
-        ),
+        "controller_lease_root_sha256": (authorization.controller_lease_root_sha256),
         "qualified_artifact_pins_sha256": (
             authorization.qualified_artifact_pins_sha256
         ),
@@ -2812,10 +3057,12 @@ def _reserve_closure_attempt(
         "request_authorization_sha256": authorization.authorization_sha256,
         "request_closed_record_sha256": request["closed_record_sha256"],
         "request_file_sha256": sha256(request_bytes).hexdigest(),
-        "schema_version": PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION,
+        "schema_version": PUBLICATION_HANDOFF_CLOSURE_RESERVATION_SCHEMA_VERSION,
         "submit_payload_sha256": sha256(
             canonical_databricks_submit_payload_snapshot(payload)[1]
         ).hexdigest(),
+        "workspace_host_sha256": authorization.workspace_host_sha256,
+        "user_name_sha256": authorization.user_name_sha256,
     }
     reservation["closed_record_sha256"] = _closed_record_sha256(reservation)
     _write_or_require_exact(root / "request.json", request_bytes)
@@ -2844,7 +3091,7 @@ def _existing_local_reservation_root(
         reservation.get("record_type")
         != PUBLICATION_HANDOFF_CLOSURE_RESERVATION_RECORD_TYPE
         or reservation.get("schema_version")
-        != PUBLICATION_HANDOFF_CLOSURE_SCHEMA_VERSION
+        != PUBLICATION_HANDOFF_CLOSURE_RESERVATION_SCHEMA_VERSION
         or reservation.get("closed_record_sha256") != _closed_record_sha256(reservation)
     ):
         raise ValueError("coordinator reservation envelope drift")
@@ -2878,6 +3125,9 @@ def _existing_local_reservation_root(
         or reservation.get("request_file_sha256") != sha256(request_bytes).hexdigest()
         or reservation.get("submit_payload_sha256")
         != sha256(canonical_payload).hexdigest()
+        or reservation.get("workspace_host_sha256")
+        != authorization.workspace_host_sha256
+        or reservation.get("user_name_sha256") != authorization.user_name_sha256
     ):
         raise ValueError("coordinator reservation source binding drift")
     if request != dict(authorization.request_record):
@@ -3002,8 +3252,63 @@ def _join_volume_uri(root: str, relative: str) -> str:
 
 
 def _read_verified_file_bytes(path: Path, expected_sha256: str, label: str) -> bytes:
-    _require_regular_file_no_follow(path, label)
-    content = path.read_bytes()
+    if not all(
+        hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    ):
+        raise RuntimeError("verified file reads require no-follow descriptor support")
+    absolute = path.expanduser().absolute()
+    if not absolute.is_absolute() or len(absolute.parts) < 2:
+        raise ValueError(f"{label} path must be absolute")
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in absolute.parts[1:-1]:
+            next_directory = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+            os.close(directory)
+            directory = next_directory
+        descriptor = os.open(
+            absolute.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory,
+        )
+        try:
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != os.getuid()
+                or before.st_nlink != 1
+            ):
+                raise ValueError(f"{label} must be a current-UID single-link file")
+            with os.fdopen(os.dup(descriptor), "rb") as handle:
+                content = handle.read(16 * 1024 * 1024 + 1)
+            if len(content) > 16 * 1024 * 1024:
+                raise ValueError(f"{label} exceeds the 16 MiB input cap")
+            after = os.fstat(descriptor)
+            identity_fields = (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_uid",
+                "st_nlink",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+            if (
+                any(
+                    getattr(before, name) != getattr(after, name)
+                    for name in identity_fields
+                )
+                or len(content) != before.st_size
+            ):
+                raise ValueError(f"{label} changed while being read")
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
     if not hmac.compare_digest(
         sha256(content).hexdigest(),
         _require_sha256(expected_sha256, f"{label} SHA-256"),
@@ -3287,6 +3592,7 @@ __all__ = [
     "render_publication_handoff_closure_submit_payload",
     "require_bf16_handoff_remote_closure_authorization",
     "require_publication_handoff_closure_request_authorization",
+    "require_publication_handoff_remote_closure_workspace_identity",
     "require_q8_handoff_remote_closure_authorization",
     "require_q8_handoff_remote_closure_predecessor_authorization",
     "reserve_and_submit_publication_handoff_closure",

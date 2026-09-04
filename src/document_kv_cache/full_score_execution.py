@@ -283,9 +283,8 @@ FULL_SCORE_VLLM_BNB_LOADER_SHA256 = (
 )
 FULL_SCORE_PRODUCER_HARDWARE_TARGET = GPU_QUALIFICATION_GENERATION_HARDWARE_ID
 FULL_SCORE_PRODUCER_GPU_NAME = GPU_QUALIFICATION_GENERATION_GPU
-FULL_SCORE_PRODUCER_NODE_TYPE_ID = (
-    GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE
-)
+FULL_SCORE_PRODUCER_NODE_TYPE_ID = GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE
+FULL_SCORE_PRODUCER_ZONE_ID = "us-west-2a"
 FULL_SCORE_CONSUMER_NODE_TYPE_ID = "g6.8xlarge"
 FULL_SCORE_KV_DTYPE = "fp8_e5m2"
 FULL_SCORE_ATTENTION_BACKEND = "TRITON_ATTN"
@@ -582,9 +581,7 @@ class FullScoreRuntimeConfig:
     server_port: int = 8000
     server_start_timeout_seconds: float = 900.0
     request_timeout_seconds: float = 900.0
-    generator_timeout_seconds: float = float(
-        FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS
-    )
+    generator_timeout_seconds: float = float(FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS)
     telemetry_interval_seconds: float = 1.0
     generator_factory: str = FULL_SCORE_GENERATOR_FACTORY
     generator_version: str = FULL_SCORE_GENERATOR_VERSION
@@ -715,7 +712,9 @@ class FullScoreRuntimeConfig:
             if _install_spec_uri(install_spec) != (
                 _cluster_artifact_file_uri(artifact_uri)
             ):
-                raise ValueError(f"{label} install spec URI differs from staged artifact")
+                raise ValueError(
+                    f"{label} install spec URI differs from staged artifact"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -743,9 +742,9 @@ class FullScoreGPUQualificationConfig:
             raise TypeError("artifact_pins must be GPUQualificationArtifactPinsV2")
         plan = _json_mapping(self.plan_record, "GPU qualification plan")
         evidence = _json_mapping(self.evidence_record, "GPU qualification evidence")
-        canonical_evidence = (
-            canonical_gpu_qualification_json(evidence) + "\n"
-        ).encode("utf-8")
+        canonical_evidence = (canonical_gpu_qualification_json(evidence) + "\n").encode(
+            "utf-8"
+        )
         if sha256(canonical_evidence).hexdigest() != self.evidence_file_sha256:
             raise ValueError("GPU qualification evidence raw file SHA-256 drift")
         selection = validate_gpu_qualification_evidence_v2_record(
@@ -804,7 +803,9 @@ class FullScoreWorkerBundleConfig:
             raise ValueError("unsupported full-score worker authorization_scope")
         sources = dict(self.source_jsonl_uris)
         if set(sources) != set(SUPPORTED_V1_DATASETS):
-            raise ValueError("source_jsonl_uris must contain exactly all score datasets")
+            raise ValueError(
+                "source_jsonl_uris must contain exactly all score datasets"
+            )
         for dataset, uri in sources.items():
             _require_nonempty(uri, f"source_jsonl_uris.{dataset}")
         if not isinstance(self.runtime, FullScoreRuntimeConfig):
@@ -843,9 +844,7 @@ class FullScoreWorkerBundleConfig:
             self.gpu_qualification,
             FullScoreGPUQualificationConfig,
         ):
-            raise TypeError(
-                "gpu_qualification must be FullScoreGPUQualificationConfig"
-            )
+            raise TypeError("gpu_qualification must be FullScoreGPUQualificationConfig")
         if self.runtime.gpu_memory_utilization != (
             self.gpu_qualification.selection.gpu_memory_utilization
         ):
@@ -899,6 +898,7 @@ class DatabricksFullScoreJobConfig:
     run_timeout_seconds: int = FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS
     task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
     producer_node_type_id: str = FULL_SCORE_PRODUCER_NODE_TYPE_ID
+    producer_zone_id: str = FULL_SCORE_PRODUCER_ZONE_ID
     consumer_node_type_id: str = FULL_SCORE_CONSUMER_NODE_TYPE_ID
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
@@ -963,9 +963,7 @@ class DatabricksFullScoreJobConfig:
             self.gpu_qualification,
             FullScoreGPUQualificationConfig,
         ):
-            raise TypeError(
-                "gpu_qualification must be FullScoreGPUQualificationConfig"
-            )
+            raise TypeError("gpu_qualification must be FullScoreGPUQualificationConfig")
         pins = self.gpu_qualification.artifact_pins
         if (
             pins.package_wheel_sha256 != self.package_wheel_sha256
@@ -989,6 +987,8 @@ class DatabricksFullScoreJobConfig:
             raise ValueError("full-score publication tasks are no-retry/idempotent")
         if self.producer_node_type_id != FULL_SCORE_PRODUCER_NODE_TYPE_ID:
             raise ValueError("full-score producers require g6e.4xlarge/L40S")
+        if self.producer_zone_id != FULL_SCORE_PRODUCER_ZONE_ID:
+            raise ValueError("full-score producers require the reviewed L40S zone")
         validate_aws_single_node_gpu_type(self.consumer_node_type_id)
         if self.consumer_node_type_id != DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE:
             raise ValueError("full-score consumers require g6.8xlarge/L4")
@@ -1023,6 +1023,8 @@ class FullScorePhaseSubmissionAuthorization:
     attempt_id: str
     submit_payload_sha256: str
     intent_record_sha256: str
+    workspace_host_sha256: str
+    user_name_sha256: str
 
     def __init__(
         self,
@@ -1036,6 +1038,8 @@ class FullScorePhaseSubmissionAuthorization:
         attempt_id: str,
         submit_payload_sha256: str,
         intent_record_sha256: str,
+        workspace_host_sha256: str,
+        user_name_sha256: str,
         _issuer: object,
     ) -> None:
         if _issuer is not _FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER:
@@ -1063,16 +1067,13 @@ class FullScorePhaseSubmissionAuthorization:
         )
         if not isinstance(predecessor_prefix, DatabricksLedgerPrefix):
             raise TypeError("predecessor_prefix has the wrong type")
-        if not isinstance(
-            batch_authorization, DatabricksBatchReservationAuthorization
-        ):
+        if type(batch_authorization) is not DatabricksBatchReservationAuthorization:
             raise TypeError("batch_authorization has the wrong type")
         if (
             batch_authorization.predecessor_prefix != predecessor_prefix
             or batch_authorization.ledger_path_sha256 != ledger_path_sha256
             or batch_authorization.attempt_ids != (attempt_id,)
-            or batch_authorization.submit_payload_sha256s
-            != (submit_payload_sha256,)
+            or batch_authorization.submit_payload_sha256s != (submit_payload_sha256,)
         ):
             raise ValueError("full-score atomic batch authority binding drift")
         _require_nonempty(attempt_id, "attempt_id")
@@ -1089,6 +1090,16 @@ class FullScorePhaseSubmissionAuthorization:
         object.__setattr__(self, "attempt_id", attempt_id)
         object.__setattr__(self, "submit_payload_sha256", submit_payload_sha256)
         object.__setattr__(self, "intent_record_sha256", intent_record_sha256)
+        object.__setattr__(
+            self,
+            "workspace_host_sha256",
+            _require_sha256(workspace_host_sha256, field_name="workspace_host_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "user_name_sha256",
+            _require_sha256(user_name_sha256, field_name="user_name_sha256"),
+        )
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -1104,6 +1115,9 @@ class FullScorePhaseAuthorization:
     phase_lease_root: Path
     terminal_record_sha256: str
     causal_closure_sha256: str
+    workspace_authority_closure_sha256: str
+    workspace_host_sha256: str
+    user_name_sha256: str
 
     def __init__(
         self,
@@ -1117,6 +1131,8 @@ class FullScorePhaseAuthorization:
         phase_lease_root: str | Path,
         terminal_record_sha256: str,
         causal_closure_sha256: str,
+        workspace_host_sha256: str,
+        user_name_sha256: str,
         _issuer: object,
     ) -> None:
         if _issuer is not _FULL_SCORE_PHASE_AUTHORIZATION_ISSUER:
@@ -1166,8 +1182,7 @@ class FullScorePhaseAuthorization:
             include_leaf=True,
         )
         if normalized_lease_root.exists() and (
-            normalized_lease_root.is_symlink()
-            or not normalized_lease_root.is_dir()
+            normalized_lease_root.is_symlink() or not normalized_lease_root.is_dir()
         ):
             raise ValueError("full-score phase lease root must be a real directory")
         object.__setattr__(self, "phase_lease_root", normalized_lease_root)
@@ -1185,6 +1200,33 @@ class FullScorePhaseAuthorization:
             _require_sha256(
                 causal_closure_sha256,
                 field_name="causal_closure_sha256",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "workspace_host_sha256",
+            _require_sha256(workspace_host_sha256, field_name="workspace_host_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "user_name_sha256",
+            _require_sha256(user_name_sha256, field_name="user_name_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "workspace_authority_closure_sha256",
+            _canonical_sha256(
+                {
+                    "causal_closure_sha256": self.causal_closure_sha256,
+                    "phase_lease_root_sha256": _canonical_sha256(
+                        {
+                            "domain": "cachet.full_score_phase_lease_root_authority.v1",
+                            "phase_lease_root": str(self.phase_lease_root),
+                        }
+                    ),
+                    "user_name_sha256": self.user_name_sha256,
+                    "workspace_host_sha256": self.workspace_host_sha256,
+                }
             ),
         )
 
@@ -1256,13 +1298,19 @@ def build_full_score_execution_plan(
     ):
         if type(value) is not int or value <= 0:
             raise ValueError(f"{name} must be a positive integer")
-    if producer_workers > FULL_SCORE_MAX_WORKERS or consumer_workers > FULL_SCORE_MAX_WORKERS:
+    if (
+        producer_workers > FULL_SCORE_MAX_WORKERS
+        or consumer_workers > FULL_SCORE_MAX_WORKERS
+    ):
         raise ValueError("producer and consumer pools are each capped at sixteen")
     if max_shards_per_wave > FULL_SCORE_MAX_WORKERS:
         raise ValueError("a publication wave may contain at most sixteen shards")
     if scheduling_mode not in {"phased", "split"}:
         raise ValueError("scheduling_mode must be phased or split")
-    if scheduling_mode == "split" and producer_workers + consumer_workers > FULL_SCORE_MAX_WORKERS:
+    if (
+        scheduling_mode == "split"
+        and producer_workers + consumer_workers > FULL_SCORE_MAX_WORKERS
+    ):
         raise ValueError("split producer+consumer concurrency cannot exceed sixteen")
     raw_shards = shard_plan.get("shards")
     if not isinstance(raw_shards, list) or not raw_shards:
@@ -1577,8 +1625,7 @@ def validate_full_score_worker_payload(
         for shard in cast(list[Mapping[str, Any]], shard_plan["shards"])
     }
     expected_shards = [
-        shard_by_id[shard_id]
-        for shard_id in cast(list[str], assignment["shard_ids"])
+        shard_by_id[shard_id] for shard_id in cast(list[str], assignment["shard_ids"])
     ]
     observed_shards = record.get("shards")
     if observed_shards != expected_shards:
@@ -1589,9 +1636,7 @@ def validate_full_score_worker_payload(
             runtime.generator_factory != FULL_SCORE_GENERATOR_FACTORY
             or runtime.generator_version != FULL_SCORE_GENERATOR_VERSION
         ):
-            raise ValueError(
-                "publication generator implementation/version is frozen"
-            )
+            raise ValueError("publication generator implementation/version is frozen")
         _require_shared_dbfs_path(
             _required_string(inventory_binding, "uri"),
             "worker inventory URI",
@@ -1913,9 +1958,7 @@ def _build_databricks_full_score_run_submit_payload(
             raise ValueError("producer phase cannot consume its own completion record")
     else:
         if producer_phase_completion_uri is None:
-            raise ValueError(
-                "consumer phase requires a producer-phase completion URI"
-            )
+            raise ValueError("consumer phase requires a producer-phase completion URI")
         completion_uri = _require_nonempty(
             producer_phase_completion_uri,
             "producer_phase_completion_uri",
@@ -1957,8 +2000,7 @@ def _build_databricks_full_score_run_submit_payload(
             )
 
             durable_roots = {
-                _required_string(payload, "durable_output_root")
-                for payload in payloads
+                _required_string(payload, "durable_output_root") for payload in payloads
             }
             if len(durable_roots) != 1:
                 raise ValueError("consumer payloads do not share one durable root")
@@ -1968,9 +2010,7 @@ def _build_databricks_full_score_run_submit_payload(
                 wave_index=wave_index,
                 durable_output_root=next(iter(durable_roots)),
                 completion_uri=completion_uri,
-                completion_record=cast(
-                    Mapping[str, Any], producer_phase_completion
-                ),
+                completion_record=cast(Mapping[str, Any], producer_phase_completion),
             )
     tasks = []
     ordered_payloads = sorted(
@@ -2189,9 +2229,7 @@ def _build_governed_full_score_live_p90_submit_candidate(
     """
 
     payloads = tuple(worker_payloads)
-    wave_indices = {
-        _required_int(payload, "wave_index") for payload in payloads
-    }
+    wave_indices = {_required_int(payload, "wave_index") for payload in payloads}
     if wave_indices == {0}:
         raise ValueError("wave zero does not use a live P90 submit candidate")
     if len(wave_indices) != 1:
@@ -2286,9 +2324,7 @@ def prepare_governed_full_score_live_p90_phase_submission(
         raise ValueError("one P90 preparation requires exactly one phase")
     if wave_indices == {0}:
         raise ValueError("wave zero does not use a live P90 admission")
-    if (compact_artifact_resolver is None) != (
-        compact_artifact_publisher is None
-    ):
+    if (compact_artifact_resolver is None) != (compact_artifact_publisher is None):
         raise TypeError("P90 compact publication requires publisher and resolver")
     candidate = _build_governed_full_score_live_p90_submit_candidate(
         config,
@@ -2373,9 +2409,7 @@ def build_databricks_full_score_run_submit_payload(
     """Render from a governed P90 file; caller mappings cannot authorize it."""
 
     payloads = tuple(worker_payloads)
-    wave_indices = {
-        _required_int(payload, "wave_index") for payload in payloads
-    }
+    wave_indices = {_required_int(payload, "wave_index") for payload in payloads}
     if len(wave_indices) != 1:
         raise ValueError("one runs/submit payload may contain exactly one wave")
     wave_index = next(iter(wave_indices))
@@ -2545,7 +2579,7 @@ def _build_full_score_role_cluster(
     # The shared serving target registry deliberately excludes qualification-only
     # L40S. Build the reviewed single-node shape through the L4 validator, then
     # substitute only the two node identity fields for a sealed producer task.
-    cluster = build_single_node_gpu_cluster(
+    cluster: dict[str, Any] = build_single_node_gpu_cluster(
         DatabricksSingleNodeGPUClusterConfig(
             purpose=purpose,
             node_type_id=config.consumer_node_type_id,
@@ -2553,7 +2587,7 @@ def _build_full_score_role_cluster(
             data_security_mode=config.data_security_mode,
             single_user_name=config.single_user_name,
             availability=config.availability,
-            zone_id=config.zone_id,
+            zone_id=(config.producer_zone_id if role == "producer" else config.zone_id),
             custom_tags=config.custom_tags,
         )
     )
@@ -2610,9 +2644,7 @@ def build_full_score_producer_phase_completion_record(
         if any(ready.get(key) != value for key, value in expected.items()):
             raise ValueError("producer completion ready-shard identity drift")
         lifecycle = ready.get("lifecycle")
-        if not isinstance(lifecycle, list) or lifecycle[-1:] != [
-            "commit_ready_shard"
-        ]:
+        if not isinstance(lifecycle, list) or lifecycle[-1:] != ["commit_ready_shard"]:
             raise ValueError("producer completion shard was not durably committed")
         ready_bytes = ready.get("ready_bytes")
         upper_bound = ready.get("ready_bytes_upper_bound")
@@ -2640,9 +2672,7 @@ def build_full_score_producer_phase_completion_record(
         ):
             raise ValueError("producer completion generator contract drift")
         observed[shard_id] = {
-            "generator_artifact_contract_sha256": _canonical_sha256(
-                generator_contract
-            ),
+            "generator_artifact_contract_sha256": _canonical_sha256(generator_contract),
             "ready_bytes": ready_bytes,
             "ready_record_sha256": ready.get("closed_record_sha256"),
             "shard_id": shard_id,
@@ -2650,7 +2680,9 @@ def build_full_score_producer_phase_completion_record(
         }
     if set(observed) != expected_ids:
         raise ValueError("producer phase must close every wave shard exactly once")
-    total_ready_bytes = sum(cast(int, item["ready_bytes"]) for item in observed.values())
+    total_ready_bytes = sum(
+        cast(int, item["ready_bytes"]) for item in observed.values()
+    )
     if total_ready_bytes > cast(int, wave["max_backlog_bytes"]):
         raise ValueError("producer completion exceeds the hard durable-backlog cap")
     record: dict[str, Any] = {
@@ -2751,11 +2783,19 @@ def build_full_score_wave_completion_record(
     observed: dict[str, Mapping[str, Any]] = {}
     for raw in deletion_attestations:
         attestation = _json_mapping(raw, "deletion attestation")
-        if attestation.get("record_type") != FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE:
+        if (
+            attestation.get("record_type")
+            != FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE
+        ):
             raise ValueError("wave completion requires deletion attestations")
-        if attestation.get("schema_version") != FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION:
+        if (
+            attestation.get("schema_version")
+            != FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION
+        ):
             raise ValueError("unsupported deletion-attestation schema")
-        if attestation.get("closed_record_sha256") != _closed_record_sha256(attestation):
+        if attestation.get("closed_record_sha256") != _closed_record_sha256(
+            attestation
+        ):
             raise ValueError("deletion-attestation closure drift")
         if attestation.get("wave_index") != wave_index:
             raise ValueError("deletion attestation belongs to a different wave")
@@ -2767,7 +2807,9 @@ def build_full_score_wave_completion_record(
         if shard_id in observed:
             raise ValueError("duplicate deletion attestation")
         lifecycle = attestation.get("lifecycle")
-        if not isinstance(lifecycle, list) or lifecycle[-1:] != ["delete_ephemeral_q8_kv"]:
+        if not isinstance(lifecycle, list) or lifecycle[-1:] != [
+            "delete_ephemeral_q8_kv"
+        ]:
             raise ValueError("deletion attestation lacks the terminal delete state")
         observed[shard_id] = attestation
     if set(observed) != expected_ids:
@@ -2904,9 +2946,7 @@ def _validate_full_score_raw_task_configuration(
             "raw Databricks terminal spark_python_task",
         )
         if observed != expected:
-            raise ValueError(
-                "Databricks raw terminal spark_python_task binding drift"
-            )
+            raise ValueError("Databricks raw terminal spark_python_task binding drift")
     if observed_keys != set(submitted_by_key):
         raise ValueError("Databricks raw terminal task coverage drift")
 
@@ -2990,9 +3030,7 @@ def build_governed_full_score_phase_terminal_record(
     submit_sha256 = sha256(submit_bytes).hexdigest()
     ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
     if submission_authorization is not None:
-        if not isinstance(
-            submission_authorization, FullScorePhaseSubmissionAuthorization
-        ):
+        if type(submission_authorization) is not FullScorePhaseSubmissionAuthorization:
             raise TypeError("phase terminal submission authority has the wrong type")
         if (
             submission_authorization.execution_plan_sha256
@@ -3001,8 +3039,7 @@ def build_governed_full_score_phase_terminal_record(
             or submission_authorization.phase != phase
             or submission_authorization.attempt_id != attempt_id
             or submission_authorization.submit_payload_sha256 != submit_sha256
-            or submission_authorization.ledger_path_sha256
-            != ledger_path_sha256
+            or submission_authorization.ledger_path_sha256 != ledger_path_sha256
         ):
             raise ValueError("phase terminal submission authority binding drift")
         predecessor_prefix = submission_authorization.predecessor_prefix
@@ -3016,19 +3053,17 @@ def build_governed_full_score_phase_terminal_record(
             ledger_path,
             submission_authorization,
         )
-        intent_record_sha256 = (
-            submission_authorization.intent_record_sha256
-        )
+        intent_record_sha256 = submission_authorization.intent_record_sha256
         phase_lease_record_sha256 = _required_string(
             _full_score_phase_lease_record(submission_authorization),
             "closed_record_sha256",
         )
+        workspace_host_sha256 = submission_authorization.workspace_host_sha256
+        user_name_sha256 = submission_authorization.user_name_sha256
         expected_terminal_prefix: DatabricksLedgerPrefix | None = None
     else:
         if not isinstance(_replay_ledger_lineage, Mapping):
-            raise TypeError(
-                "phase terminal build requires atomic submission authority"
-            )
+            raise TypeError("phase terminal build requires atomic submission authority")
         if _replay_ledger_lineage.get("ledger_path_sha256") != ledger_path_sha256:
             raise ValueError("phase terminal replay ledger path binding drift")
         predecessor_prefix = databricks_ledger_prefix_from_record(
@@ -3045,9 +3080,38 @@ def build_governed_full_score_phase_terminal_record(
             _replay_ledger_lineage.get("phase_lease_record_sha256"),
             field_name="phase terminal phase_lease_record_sha256",
         )
+        replay_lease_path = _full_score_phase_lease_candidate_path(
+            ledger_path,
+            execution_plan_sha256=_required_string(
+                execution_plan, "closed_record_sha256"
+            ),
+            wave_index=wave_index,
+            phase=phase,
+        )
+        replay_sidecar = _read_full_score_workspace_authority(
+            _full_score_workspace_authority_path(replay_lease_path),
+            label="full-score replay workspace authority",
+        )
         if (
-            batch_prefix.reservation_count
-            != predecessor_prefix.reservation_count + 1
+            replay_sidecar.get("record_type")
+            != "cachet.full_score_phase_workspace_authority.v1"
+            or replay_sidecar.get("schema_version") != 1
+            or replay_sidecar.get("closed_record_sha256")
+            != _closed_record_sha256(replay_sidecar)
+            or replay_sidecar.get("intent_record_sha256") != intent_record_sha256
+            or replay_sidecar.get("phase_lease_record_sha256")
+            != phase_lease_record_sha256
+        ):
+            raise ValueError("phase terminal workspace authority replay drift")
+        workspace_host_sha256 = _require_sha256(
+            replay_sidecar.get("workspace_host_sha256"),
+            field_name="workspace_host_sha256",
+        )
+        user_name_sha256 = _require_sha256(
+            replay_sidecar.get("user_name_sha256"), field_name="user_name_sha256"
+        )
+        if (
+            batch_prefix.reservation_count != predecessor_prefix.reservation_count + 1
             or batch_prefix.submission_receipt_count
             != predecessor_prefix.submission_receipt_count
             or batch_prefix.terminal_actual_count
@@ -3058,16 +3122,13 @@ def build_governed_full_score_phase_terminal_record(
             _required_mapping(_replay_ledger_lineage, "terminal_prefix")
         )
         if (
-            expected_terminal_prefix.reservation_count
-            != batch_prefix.reservation_count
+            expected_terminal_prefix.reservation_count != batch_prefix.reservation_count
             or expected_terminal_prefix.submission_receipt_count
             != batch_prefix.submission_receipt_count + 1
             or expected_terminal_prefix.terminal_actual_count
             != batch_prefix.terminal_actual_count + 1
         ):
-            raise ValueError(
-                "phase terminal replay terminal-prefix transition drift"
-            )
+            raise ValueError("phase terminal replay terminal-prefix transition drift")
         request = DatabricksRunAttemptReservationRequest(
             attempt_id=attempt_id,
             workload_id=_full_score_phase_workload_id(
@@ -3086,33 +3147,34 @@ def build_governed_full_score_phase_terminal_record(
         )
         if replayed_batch_authorization.batch_prefix != batch_prefix:
             raise ValueError("phase terminal replay batch authority drift")
-        replayed_submission_authorization = (
-            FullScorePhaseSubmissionAuthorization(
-                execution_plan_sha256=_required_string(
-                    execution_plan,
-                    "closed_record_sha256",
-                ),
-                wave_index=wave_index,
-                phase=phase,
-                ledger_path_sha256=ledger_path_sha256,
-                predecessor_prefix=predecessor_prefix,
-                batch_authorization=replayed_batch_authorization,
-                attempt_id=attempt_id,
-                submit_payload_sha256=submit_sha256,
-                intent_record_sha256=intent_record_sha256,
-                _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
-            )
+        replayed_submission_authorization = FullScorePhaseSubmissionAuthorization(
+            execution_plan_sha256=_required_string(
+                execution_plan,
+                "closed_record_sha256",
+            ),
+            wave_index=wave_index,
+            phase=phase,
+            ledger_path_sha256=ledger_path_sha256,
+            predecessor_prefix=predecessor_prefix,
+            batch_authorization=replayed_batch_authorization,
+            attempt_id=attempt_id,
+            submit_payload_sha256=submit_sha256,
+            intent_record_sha256=intent_record_sha256,
+            workspace_host_sha256=workspace_host_sha256,
+            user_name_sha256=user_name_sha256,
+            _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
         )
         _require_full_score_phase_lease(
             ledger_path,
             replayed_submission_authorization,
         )
-        if _required_string(
-            _full_score_phase_lease_record(
-                replayed_submission_authorization
-            ),
-            "closed_record_sha256",
-        ) != phase_lease_record_sha256:
+        if (
+            _required_string(
+                _full_score_phase_lease_record(replayed_submission_authorization),
+                "closed_record_sha256",
+            )
+            != phase_lease_record_sha256
+        ):
             raise ValueError("phase terminal replay lease record drift")
     submit_summary = _required_mapping(status_record, "submit_payload")
     if submit_summary.get("sha256") != submit_sha256:
@@ -3125,9 +3187,7 @@ def build_governed_full_score_phase_terminal_record(
     observed_task_keys: set[str] = set()
     observed_task_run_ids: set[str] = set()
     observed_cluster_ids: set[str] = set()
-    expected_by_key = {
-        binding["task_key"]: binding for binding in task_bindings
-    }
+    expected_by_key = {binding["task_key"]: binding for binding in task_bindings}
     for raw_task in status_tasks:
         task = _json_mapping(raw_task, "Databricks terminal task")
         task_key = _required_string(task, "task_key")
@@ -3171,12 +3231,8 @@ def build_governed_full_score_phase_terminal_record(
                 "task_key": task_key,
                 "task_run_id": task_run_id,
                 "worker_index": binding["worker_index"],
-                "worker_payload_file_sha256": binding[
-                    "worker_payload_file_sha256"
-                ],
-                "worker_payload_record_sha256": binding[
-                    "worker_payload_record_sha256"
-                ],
+                "worker_payload_file_sha256": binding["worker_payload_file_sha256"],
+                "worker_payload_record_sha256": binding["worker_payload_record_sha256"],
                 "worker_payload_uri": binding["worker_payload_uri"],
             }
         )
@@ -3279,8 +3335,7 @@ def build_governed_full_score_phase_terminal_record(
             terminal_state.reservations != batch_state.reservations
             or terminal_state.submission_receipts[:-1]
             != batch_state.submission_receipts
-            or terminal_state.terminal_actuals[:-1]
-            != batch_state.terminal_actuals
+            or terminal_state.terminal_actuals[:-1] != batch_state.terminal_actuals
             or terminal_state.submission_receipts[-1] != receipt
             or terminal_state.terminal_actuals[-1] != terminal
             or terminal_state.active_reserved_cluster_hours != 0
@@ -3338,9 +3393,7 @@ def write_governed_full_score_phase_terminal_record(
         None,
     )
     compact_artifact_resolver = kwargs.get("compact_artifact_resolver")
-    if (compact_artifact_publisher is None) != (
-        compact_artifact_resolver is None
-    ):
+    if (compact_artifact_publisher is None) != (compact_artifact_resolver is None):
         raise TypeError("phase terminal compact publication requires publisher and CAS")
     record = build_governed_full_score_phase_terminal_record(
         execution_plan,
@@ -3463,9 +3516,7 @@ def replay_governed_full_score_phase_authorization(
             terminal_actual_count=expected.terminal_actual_count,
         )
         if observed != expected:
-            raise ValueError(
-                f"phase authorization replay {label} prefix binding drift"
-            )
+            raise ValueError(f"phase authorization replay {label} prefix binding drift")
     terminal_state = _full_score_ledger_prefix_state(ledger, terminal_prefix)
     if (
         terminal_state.active_reserved_cluster_hours != 0
@@ -3482,11 +3533,39 @@ def replay_governed_full_score_phase_authorization(
         wave_index=_required_int(record, "wave_index"),
         phase=_required_string(record, "phase"),
     ).parent
+    replay_lease_path = _full_score_phase_lease_candidate_path(
+        live_path,
+        execution_plan_sha256=_required_string(record, "execution_plan_sha256"),
+        wave_index=_required_int(record, "wave_index"),
+        phase=_required_string(record, "phase"),
+    )
+    workspace_sidecar = _read_full_score_workspace_authority(
+        _full_score_workspace_authority_path(replay_lease_path),
+        label="full-score replay workspace authority",
+    )
+    if (
+        workspace_sidecar.get("record_type")
+        != "cachet.full_score_phase_workspace_authority.v1"
+        or workspace_sidecar.get("schema_version") != 1
+        or workspace_sidecar.get("closed_record_sha256")
+        != _closed_record_sha256(workspace_sidecar)
+        or workspace_sidecar.get("phase_lease_record_sha256")
+        != ledger_binding.get("phase_lease_record_sha256")
+        or workspace_sidecar.get("intent_record_sha256")
+        != ledger_binding.get("intent_record_sha256")
+    ):
+        raise ValueError("phase authorization workspace sidecar drift")
+    workspace_host_sha256 = _require_sha256(
+        workspace_sidecar.get("workspace_host_sha256"),
+        field_name="workspace_host_sha256",
+    )
+    user_name_sha256 = _require_sha256(
+        workspace_sidecar.get("user_name_sha256"), field_name="user_name_sha256"
+    )
     causal_closure_sha256 = _canonical_sha256(
         {
             "batch_prefix": batch_prefix.to_record(),
             "ledger_path_sha256": path_sha256,
-            "phase_lease_root": str(phase_lease_root),
             "terminal_prefix": terminal_prefix.to_record(),
             "terminal_record_sha256": terminal_record_sha256,
         }
@@ -3504,6 +3583,8 @@ def replay_governed_full_score_phase_authorization(
         phase_lease_root=phase_lease_root,
         terminal_record_sha256=terminal_record_sha256,
         causal_closure_sha256=causal_closure_sha256,
+        workspace_host_sha256=workspace_host_sha256,
+        user_name_sha256=user_name_sha256,
         _issuer=_FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
     )
 
@@ -3525,17 +3606,13 @@ def collect_governed_full_score_phase_attempt(
 ) -> tuple[dict[str, Any], FullScorePhaseAuthorization]:
     """Collect one phase directly from runs/get and issue its successor token."""
 
-    if not isinstance(
-        submission_authorization, FullScorePhaseSubmissionAuthorization
-    ):
+    if type(submission_authorization) is not FullScorePhaseSubmissionAuthorization:
         raise TypeError(
             "phase collection requires FullScorePhaseSubmissionAuthorization"
         )
     if terminal_record_path is None:
         raise ValueError("phase collection requires a durable terminal record path")
-    if (compact_artifact_publisher is None) != (
-        compact_artifact_resolver is None
-    ):
+    if (compact_artifact_publisher is None) != (compact_artifact_resolver is None):
         raise TypeError("phase collection compact I/O requires publisher and CAS")
     submit_file = _governed_compact_file(
         submit_payload_path,
@@ -3546,8 +3623,8 @@ def collect_governed_full_score_phase_attempt(
         submit_file.read_bytes(),
         "full-score submit payload",
     )
-    _submit_snapshot, canonical_submit = (
-        canonical_databricks_submit_payload_snapshot(submit_payload)
+    _submit_snapshot, canonical_submit = canonical_databricks_submit_payload_snapshot(
+        submit_payload
     )
     if sha256(canonical_submit).hexdigest() != (
         submission_authorization.submit_payload_sha256
@@ -3567,17 +3644,16 @@ def collect_governed_full_score_phase_attempt(
     _require_full_score_phase_lease(live_path, submission_authorization)
     batch_prefix = require_databricks_batch_reservation_authorization(
         submission_authorization.batch_authorization,
-        expected_predecessor_prefix=(
-            submission_authorization.predecessor_prefix
-        ),
+        expected_predecessor_prefix=(submission_authorization.predecessor_prefix),
         expected_attempt_ids=(submission_authorization.attempt_id,),
         expected_submit_payload_sha256s=(
             submission_authorization.submit_payload_sha256,
         ),
     )
-    require_databricks_current_user_name(
+    _require_full_score_bound_workspace_identity(
         workspace,
-        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        authorization=submission_authorization,
+        submit_payload=submit_payload,
         opener=opener,
     )
     before = read_databricks_cluster_hour_ledger_json(live_path)
@@ -3607,9 +3683,7 @@ def collect_governed_full_score_phase_attempt(
     ):
         raise ValueError("phase collection submit receipt payload drift")
     resolved_opener = (
-        cast(DatabricksURLOpener, urllib.request.urlopen)
-        if opener is None
-        else opener
+        cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
     )
     run_record = get_databricks_run(
         workspace,
@@ -3777,9 +3851,7 @@ def build_full_score_matched_billing_block(
     if any(deletion.get(key) != value for key, value in deletion_expected.items()):
         raise ValueError("matched block deletion/evidence identity drift")
     lifecycle = deletion.get("lifecycle")
-    if not isinstance(lifecycle, list) or lifecycle[-1:] != [
-        "delete_ephemeral_q8_kv"
-    ]:
+    if not isinstance(lifecycle, list) or lifecycle[-1:] != ["delete_ephemeral_q8_kv"]:
         raise ValueError("matched block deletion is not terminal")
     billed_seconds = {
         "producer": _positive_finite_float(
@@ -3840,7 +3912,9 @@ def build_full_score_matched_billing_block(
         for item in cast(list[Mapping[str, Any]], planned["items"])
     }
     if observed_ids != planned_ids:
-        raise ValueError("matched block paired evidence has partial planned-ID coverage")
+        raise ValueError(
+            "matched block paired evidence has partial planned-ID coverage"
+        )
     record: dict[str, Any] = {
         "authorization_scope": FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE,
         "billed_gpu_seconds": billed_seconds,
@@ -3972,7 +4046,9 @@ def build_governed_full_score_matched_billing_block(
             if isinstance(item, Mapping) and item.get("shard_id") == shard_id
         ]
         if len(matching) != 1:
-            raise ValueError("matched billing requires exactly one task per shard/phase")
+            raise ValueError(
+                "matched billing requires exactly one task per shard/phase"
+            )
         billed[role] = _positive_finite_float(
             matching[0].get("billed_gpu_seconds"),
             f"{role} billed GPU seconds",
@@ -3984,8 +4060,7 @@ def build_governed_full_score_matched_billing_block(
             ).rstrip("/")
         )
     expected_evidence_directories = {
-        f"{root}/evidence/wave-{wave_index:03d}/{shard_id}"
-        for root in durable_roots
+        f"{root}/evidence/wave-{wave_index:03d}/{shard_id}" for root in durable_roots
     }
     if len(durable_roots) != 1 or expected_evidence_directories != {
         evidence_directory_uri.rstrip("/")
@@ -4037,11 +4112,10 @@ def build_governed_full_score_matched_billing_block(
     record["authorization_scope"] = FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
     producer_lineage = _required_mapping(producer, "ledger")
     consumer_lineage = _required_mapping(consumer, "ledger")
-    if (
-        producer_lineage.get("ledger_path_sha256")
-        != consumer_lineage.get("ledger_path_sha256")
-        or consumer_lineage.get("predecessor_prefix")
-        != producer_lineage.get("terminal_prefix")
+    if producer_lineage.get("ledger_path_sha256") != consumer_lineage.get(
+        "ledger_path_sha256"
+    ) or consumer_lineage.get("predecessor_prefix") != producer_lineage.get(
+        "terminal_prefix"
     ):
         raise ValueError("matched billing phase ledger lineage is not contiguous")
     record["ledger_lineage"] = {
@@ -4083,10 +4157,10 @@ def write_governed_full_score_matched_billing_block(
         None,
     )
     compact_artifact_resolver = kwargs.get("compact_artifact_resolver")
-    if (compact_artifact_publisher is None) != (
-        compact_artifact_resolver is None
-    ):
-        raise TypeError("matched billing compact publication requires publisher and CAS")
+    if (compact_artifact_publisher is None) != (compact_artifact_resolver is None):
+        raise TypeError(
+            "matched billing compact publication requires publisher and CAS"
+        )
     record = build_governed_full_score_matched_billing_block(
         execution_plan,
         **kwargs,
@@ -4103,9 +4177,7 @@ def write_governed_full_score_matched_billing_block(
         inventory=kwargs["inventory"],
         shard_plan=kwargs["shard_plan"],
         ledger_path=kwargs["ledger_path"],
-        remote_consumer_authorization=kwargs.get(
-            "remote_consumer_authorization"
-        ),
+        remote_consumer_authorization=kwargs.get("remote_consumer_authorization"),
         compact_artifact_resolver=kwargs.get("compact_artifact_resolver"),
     )
 
@@ -4225,27 +4297,32 @@ def build_full_score_live_p90_budget_admission(
         observed_ids.add(shard_id)
         normalized_blocks.append(block)
     if observed_ids != expected_completed_ids:
-        raise ValueError("live P90 requires every prior-wave matched block exactly once")
+        raise ValueError(
+            "live P90 requires every prior-wave matched block exactly once"
+        )
     wave_zero_count = sum(block["wave_index"] == 0 for block in normalized_blocks)
     if wave_zero_count != FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE:
         raise ValueError("wave zero lacks sixteen complete matched blocks")
     normalized_blocks.sort(key=lambda block: (block["wave_index"], block["shard_id"]))
-    completed_billed_hours = sum(
-        sum(cast(Mapping[str, float], block["billed_gpu_seconds"]).values())
-        for block in normalized_blocks
-    ) / 3600.0
+    completed_billed_hours = (
+        sum(
+            sum(cast(Mapping[str, float], block["billed_gpu_seconds"]).values())
+            for block in normalized_blocks
+        )
+        / 3600.0
+    )
     if terminal_actual + 1e-12 < completed_billed_hours:
         raise ValueError("terminal ledger omits matched full-score billed GPU-hours")
     remaining_cache_tokens = sum(
-        cast(int, shard["cache_prefix_tokens"])
-        for shard in remaining_producer_shards
+        cast(int, shard["cache_prefix_tokens"]) for shard in remaining_producer_shards
     )
     remaining_natural_tokens = sum(
-        cast(int, shard["natural_prompt_tokens"])
-        for shard in remaining_consumer_shards
+        cast(int, shard["natural_prompt_tokens"]) for shard in remaining_consumer_shards
     )
     if remaining_cache_tokens < 0 or remaining_natural_tokens <= 0:
-        raise ValueError("live P90 requires nonnegative producer and positive consumer work")
+        raise ValueError(
+            "live P90 requires nonnegative producer and positive consumer work"
+        )
     strata: dict[int, list[int]] = defaultdict(list)
     for index, block in enumerate(normalized_blocks):
         strata[cast(int, block["wave_index"])].append(index)
@@ -4259,7 +4336,9 @@ def build_full_score_live_p90_budget_admission(
             draw_indices.extend(rng.choices(indices, k=len(indices)))
         sample_indices.append(draw_indices)
         sampled = [normalized_blocks[index] for index in draw_indices]
-        sampled_cache_tokens = sum(cast(int, block["cache_prefix_tokens"]) for block in sampled)
+        sampled_cache_tokens = sum(
+            cast(int, block["cache_prefix_tokens"]) for block in sampled
+        )
         sampled_natural_tokens = sum(
             cast(int, block["natural_prompt_tokens"]) for block in sampled
         )
@@ -4272,19 +4351,14 @@ def build_full_score_live_p90_budget_admission(
             for block in sampled
         )
         projected_seconds = (
-            (
-                producer_seconds / sampled_cache_tokens * remaining_cache_tokens
-                if remaining_cache_tokens
-                else 0.0
-            )
-            + consumer_seconds / sampled_natural_tokens * remaining_natural_tokens
-        )
+            producer_seconds / sampled_cache_tokens * remaining_cache_tokens
+            if remaining_cache_tokens
+            else 0.0
+        ) + consumer_seconds / sampled_natural_tokens * remaining_natural_tokens
         projected_hours.append(projected_seconds / 3600.0)
     p90_remaining = _type7_quantile(sorted(projected_hours), 0.90)
     projected_with_headroom = (
-        terminal_actual
-        + p90_remaining
-        + PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
+        terminal_actual + p90_remaining + PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
     )
     projected_live_reserved = active_reserved + next_reserved
     aggregate_gate_passed = (
@@ -4338,9 +4412,7 @@ def build_full_score_live_p90_budget_admission(
             "live_reservation_gate_passed": live_reservation_gate_passed,
             "p90_remaining_unsubmitted_gpu_hours": p90_remaining,
             "projected_live_reserved_gpu_hours": projected_live_reserved,
-            "projected_terminal_plus_p90_gpu_hours": (
-                terminal_actual + p90_remaining
-            ),
+            "projected_terminal_plus_p90_gpu_hours": (terminal_actual + p90_remaining),
             "projected_with_required_headroom_gpu_hours": projected_with_headroom,
             "required_unreserved_headroom_gpu_hours": (
                 PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
@@ -4358,13 +4430,9 @@ def build_full_score_live_p90_budget_admission(
         "remaining_work": {
             "cache_prefix_tokens": remaining_cache_tokens,
             "natural_prompt_tokens": remaining_natural_tokens,
-            "consumer_planned_sha256": _canonical_sha256(
-                remaining_consumer_shards
-            ),
+            "consumer_planned_sha256": _canonical_sha256(remaining_consumer_shards),
             "consumer_shard_count": len(remaining_consumer_shards),
-            "producer_planned_sha256": _canonical_sha256(
-                remaining_producer_shards
-            ),
+            "producer_planned_sha256": _canonical_sha256(remaining_producer_shards),
             "producer_shard_count": len(remaining_producer_shards),
         },
         "schema_version": FULL_SCORE_LIVE_P90_SCHEMA_VERSION,
@@ -4418,6 +4486,12 @@ def build_governed_full_score_live_p90_budget_admission(
             latency_execution_plan_record=latency_execution_plan_record,
             require_latest=_require_latest_predecessor,
         )
+    )
+    _require_full_score_remote_workspace_lineage(
+        predecessor_authorization,
+        execution_plan=execution_plan,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
     )
     ledger_path_sha256 = databricks_ledger_path_sha256(live_path)
     ledger = read_databricks_cluster_hour_ledger_json(live_path)
@@ -4559,9 +4633,7 @@ def write_governed_full_score_live_p90_budget_admission(
         None,
     )
     compact_artifact_resolver = kwargs.get("compact_artifact_resolver")
-    if (compact_artifact_publisher is None) != (
-        compact_artifact_resolver is None
-    ):
+    if (compact_artifact_publisher is None) != (compact_artifact_resolver is None):
         raise TypeError("live P90 compact publication requires publisher and CAS")
     record = build_governed_full_score_live_p90_budget_admission(
         execution_plan,
@@ -4581,13 +4653,9 @@ def write_governed_full_score_live_p90_budget_admission(
         next_submit_payload=kwargs["next_submit_payload"],
         ledger_path=kwargs["ledger_path"],
         predecessor_authorization=kwargs["predecessor_authorization"],
-        latency_execution_plan_record=kwargs.get(
-            "latency_execution_plan_record"
-        ),
+        latency_execution_plan_record=kwargs.get("latency_execution_plan_record"),
         remote_ready_authorization=kwargs.get("remote_ready_authorization"),
-        remote_consumer_authorizations=kwargs.get(
-            "remote_consumer_authorizations"
-        ),
+        remote_consumer_authorizations=kwargs.get("remote_consumer_authorizations"),
         compact_artifact_resolver=kwargs.get("compact_artifact_resolver"),
     )
 
@@ -4609,6 +4677,12 @@ def load_governed_full_score_live_p90_budget_admission(
 ) -> dict[str, Any]:
     """Reread and replay a publication P90 gate from immutable source files."""
 
+    _require_full_score_remote_workspace_lineage(
+        predecessor_authorization,
+        execution_plan=execution_plan,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+    )
     admission_file = _governed_compact_file(
         path,
         "live P90 admission",
@@ -4707,6 +4781,12 @@ def _require_full_score_phase_predecessor_authorization(
         execution_plan.get("closed_record_sha256"),
         field_name="full-score execution-plan SHA-256",
     )
+    if (
+        not (wave_index == 0 and phase == "producer")
+        and type(authorization) is not FullScorePhaseAuthorization
+    ):
+        raise TypeError("full-score phase launch requires FullScorePhaseAuthorization")
+    _full_score_predecessor_workspace_identity(authorization)
     path_sha256 = databricks_ledger_path_sha256(ledger_path)
     live = read_databricks_cluster_hour_ledger_json(ledger_path)
     _require_full_score_ledger_caps(live)
@@ -4723,20 +4803,16 @@ def _require_full_score_phase_predecessor_authorization(
                 ledger_path=ledger_path,
             )
         else:
-            if not isinstance(
-                authorization, PublicationLatencyCollectionAuthorization
-            ):
-                raise TypeError(
-                    "wave-zero replay requires "
-                    "PublicationLatencyCollectionAuthorization"
-                )
+            latency_authorization = cast(
+                PublicationLatencyCollectionAuthorization, authorization
+            )
             validate_publication_latency_collection_record(
-                authorization.collection,
+                latency_authorization.collection,
                 execution_plan_record=latency_execution_plan_record,
             )
-            if authorization.ledger_path_sha256 != path_sha256:
+            if latency_authorization.ledger_path_sha256 != path_sha256:
                 raise ValueError("latency collection ledger path binding drift")
-            prefix = authorization.ledger_prefix
+            prefix = latency_authorization.ledger_prefix
             require_databricks_ledger_prefix(live, prefix)
         collection_sha256 = _require_sha256(
             getattr(authorization, "collection_sha256", None),
@@ -4749,37 +4825,137 @@ def _require_full_score_phase_predecessor_authorization(
             "ledger_prefix": prefix.to_record(),
         }
     else:
-        if not isinstance(authorization, FullScorePhaseAuthorization):
-            raise TypeError(
-                "full-score phase launch requires FullScorePhaseAuthorization"
-            )
+        phase_authorization = cast(FullScorePhaseAuthorization, authorization)
         expected_wave_index = wave_index if phase == "consumer" else wave_index - 1
         expected_phase = "producer" if phase == "consumer" else "consumer"
         if (
-            authorization.execution_plan_sha256 != plan_sha256
-            or authorization.wave_index != expected_wave_index
-            or authorization.phase != expected_phase
-            or authorization.ledger_path_sha256 != path_sha256
+            phase_authorization.execution_plan_sha256 != plan_sha256
+            or phase_authorization.wave_index != expected_wave_index
+            or phase_authorization.phase != expected_phase
+            or phase_authorization.ledger_path_sha256 != path_sha256
         ):
-            raise ValueError(
-                "full-score phase predecessor ordering/path binding drift"
-            )
-        prefix = authorization.ledger_prefix
+            raise ValueError("full-score phase predecessor ordering/path binding drift")
+        expected_causal = _canonical_sha256(
+            {
+                "batch_prefix": databricks_ledger_prefix_at_counts(
+                    live,
+                    reservation_count=phase_authorization.predecessor_prefix.reservation_count
+                    + 1,
+                    submission_receipt_count=phase_authorization.predecessor_prefix.submission_receipt_count,
+                    terminal_actual_count=phase_authorization.predecessor_prefix.terminal_actual_count,
+                ).to_record(),
+                "ledger_path_sha256": phase_authorization.ledger_path_sha256,
+                "terminal_prefix": phase_authorization.ledger_prefix.to_record(),
+                "terminal_record_sha256": phase_authorization.terminal_record_sha256,
+            }
+        )
+        if phase_authorization.causal_closure_sha256 != expected_causal:
+            raise ValueError("full-score predecessor causal workspace binding drift")
+        expected_workspace_causal = _canonical_sha256(
+            {
+                "causal_closure_sha256": phase_authorization.causal_closure_sha256,
+                "phase_lease_root_sha256": _canonical_sha256(
+                    {
+                        "domain": "cachet.full_score_phase_lease_root_authority.v1",
+                        "phase_lease_root": str(phase_authorization.phase_lease_root),
+                    }
+                ),
+                "user_name_sha256": phase_authorization.user_name_sha256,
+                "workspace_host_sha256": phase_authorization.workspace_host_sha256,
+            }
+        )
+        if (
+            phase_authorization.workspace_authority_closure_sha256
+            != expected_workspace_causal
+        ):
+            raise ValueError("full-score predecessor workspace authority drift")
+        prefix = phase_authorization.ledger_prefix
         require_databricks_ledger_prefix(live, prefix)
         lineage = {
-            "authorization_sha256": authorization.causal_closure_sha256,
+            "authorization_sha256": phase_authorization.causal_closure_sha256,
             "kind": "full_score_phase_terminal",
             "ledger_path_sha256": path_sha256,
             "ledger_prefix": prefix.to_record(),
-            "phase": authorization.phase,
-            "terminal_record_sha256": authorization.terminal_record_sha256,
-            "wave_index": authorization.wave_index,
+            "phase": phase_authorization.phase,
+            "terminal_record_sha256": phase_authorization.terminal_record_sha256,
+            "wave_index": phase_authorization.wave_index,
         }
     if require_latest and databricks_ledger_prefix(live) != prefix:
         raise ValueError(
             "full-score predecessor is not the complete current ledger prefix"
         )
     return prefix, lineage
+
+
+def _full_score_predecessor_workspace_identity(
+    authorization: object,
+) -> tuple[str, str]:
+    if type(authorization) is PublicationLatencyCollectionAuthorization:
+        latency_authorization = authorization
+        return (
+            latency_authorization.workspace_host_sha256,
+            latency_authorization.user_name_sha256,
+        )
+    if type(authorization) is FullScorePhaseAuthorization:
+        return (
+            authorization.workspace_host_sha256,
+            authorization.user_name_sha256,
+        )
+    raise TypeError("full-score predecessor lacks workspace authority")
+
+
+def _require_full_score_remote_workspace_lineage(
+    predecessor_authorization: object,
+    *,
+    execution_plan: Mapping[str, Any],
+    remote_ready_authorization: object | None,
+    remote_consumer_authorizations: Sequence[object] | None,
+) -> None:
+    expected = _full_score_predecessor_workspace_identity(predecessor_authorization)
+    if remote_ready_authorization is not None:
+        from document_kv_cache.full_score_remote_control import (
+            _require_remote_tree_workspace_pair,
+        )
+
+        if (
+            _require_remote_tree_workspace_pair(
+                remote_ready_authorization,
+                expected_action="producer_ready",
+            )
+            != expected
+        ):
+            raise ValueError("full-score remote ready workspace lineage drift")
+    remote_by_wave = _remote_consumer_authorizations_by_wave(
+        ()
+        if remote_consumer_authorizations is None
+        else remote_consumer_authorizations,
+        execution_plan=execution_plan,
+    )
+    if any(
+        (authorization.workspace_host_sha256, authorization.user_name_sha256)
+        != expected
+        for authorization in remote_by_wave.values()
+    ):
+        raise ValueError("full-score remote consumer workspace lineage drift")
+
+
+def _require_full_score_bound_workspace_identity(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    authorization: FullScorePhaseSubmissionAuthorization,
+    submit_payload: Mapping[str, Any],
+    opener: DatabricksURLOpener | None,
+) -> None:
+    identity = require_databricks_current_user_name(
+        workspace,
+        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        opener=opener,
+    )
+    if (
+        identity.get("workspace_host_sha256") != authorization.workspace_host_sha256
+        or identity.get("user_name_sha256") != authorization.user_name_sha256
+    ):
+        raise ValueError("full-score phase workspace/principal authority drift")
 
 
 def _governed_full_score_phase_reservation_validator(
@@ -4835,15 +5011,19 @@ def _governed_full_score_phase_reservation_validator(
         qualification_launch_authorization,
     )
     live_path = Path(ledger_path).expanduser().absolute()
-    predecessor_prefix, _lineage = (
-        _require_full_score_phase_predecessor_authorization(
-            predecessor_authorization,
-            execution_plan=execution_plan,
-            ledger_path=live_path,
-            wave_index=wave_index,
-            phase=phase,
-            latency_execution_plan_record=latency_execution_plan_record,
-        )
+    predecessor_prefix, _lineage = _require_full_score_phase_predecessor_authorization(
+        predecessor_authorization,
+        execution_plan=execution_plan,
+        ledger_path=live_path,
+        wave_index=wave_index,
+        phase=phase,
+        latency_execution_plan_record=latency_execution_plan_record,
+    )
+    _require_full_score_remote_workspace_lineage(
+        predecessor_authorization,
+        execution_plan=execution_plan,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
     )
     path_sha256 = databricks_ledger_path_sha256(live_path)
     if getattr(qualification_launch_authorization, "ledger_id", None) != (
@@ -4931,9 +5111,7 @@ def _governed_full_score_phase_reservation_validator(
             snapshot,
             attempt_id=attempt_id,
         )
-        if current_ledger.cap_cluster_hours != (
-            MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-        ):
+        if current_ledger.cap_cluster_hours != (MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS):
             raise ValueError("full-score publication requires the 1024-hour ledger")
         if current_ledger.ledger_id != predecessor_prefix.ledger_id:
             raise ValueError("full-score campaign ledger identity drift")
@@ -5037,6 +5215,27 @@ def _full_score_phase_lease_record(
     }
     record["closed_record_sha256"] = _closed_record_sha256(record)
     return record
+
+
+def _full_score_workspace_authority_record(
+    authorization: FullScorePhaseSubmissionAuthorization,
+) -> dict[str, Any]:
+    lease = _full_score_phase_lease_record(authorization)
+    record: dict[str, Any] = {
+        "closed_record_sha256": "",
+        "intent_record_sha256": authorization.intent_record_sha256,
+        "phase_lease_record_sha256": lease["closed_record_sha256"],
+        "record_type": "cachet.full_score_phase_workspace_authority.v1",
+        "schema_version": 1,
+        "user_name_sha256": authorization.user_name_sha256,
+        "workspace_host_sha256": authorization.workspace_host_sha256,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
+def _full_score_workspace_authority_path(lease_path: Path) -> Path:
+    return lease_path.with_name(lease_path.name + ".workspace-authority.json")
 
 
 def _full_score_phase_intent_path(
@@ -5204,6 +5403,14 @@ def _write_or_require_full_score_phase_lease(
     except FileExistsError:
         if path.is_symlink() or path.read_bytes() != content:
             raise ValueError("full-score phase lease binding drift") from None
+    sidecar = _full_score_workspace_authority_record(authorization)
+    sidecar_path = _full_score_workspace_authority_path(path)
+    sidecar_content = _canonical_pretty_json_bytes(sidecar)
+    _write_or_require_local_authority_bytes(
+        sidecar_path,
+        sidecar_content,
+        label="full-score workspace authority",
+    )
     return path
 
 
@@ -5224,19 +5431,15 @@ def _require_full_score_phase_lease(
     if (
         intent.get("record_type") != "cachet.full_score_phase_intent.v1"
         or intent.get("closed_record_sha256") != _closed_record_sha256(intent)
-        or intent.get("closed_record_sha256")
-        != authorization.intent_record_sha256
-        or intent.get("execution_plan_sha256")
-        != authorization.execution_plan_sha256
+        or intent.get("closed_record_sha256") != authorization.intent_record_sha256
+        or intent.get("execution_plan_sha256") != authorization.execution_plan_sha256
         or intent.get("wave_index") != authorization.wave_index
         or intent.get("phase") != authorization.phase
-        or intent.get("ledger_path_sha256")
-        != authorization.ledger_path_sha256
+        or intent.get("ledger_path_sha256") != authorization.ledger_path_sha256
         or intent.get("predecessor_prefix")
         != authorization.predecessor_prefix.to_record()
         or intent.get("attempt_id") != authorization.attempt_id
-        or intent.get("submit_payload_sha256")
-        != authorization.submit_payload_sha256
+        or intent.get("submit_payload_sha256") != authorization.submit_payload_sha256
         or intent_bytes != _canonical_pretty_json_bytes(intent)
     ):
         raise ValueError("full-score phase intent authority binding drift")
@@ -5251,6 +5454,16 @@ def _require_full_score_phase_lease(
         raise ValueError("full-score phase replay requires the post-batch lease")
     if path.read_bytes() != _canonical_pretty_json_bytes(record):
         raise ValueError("full-score phase lease binding drift")
+    sidecar = _full_score_workspace_authority_record(authorization)
+    sidecar_path = _full_score_workspace_authority_path(path)
+    if (
+        _read_full_score_workspace_authority(
+            sidecar_path,
+            label="full-score workspace authority",
+        )
+        != sidecar
+    ):
+        raise ValueError("full-score workspace authority sidecar drift")
     return path
 
 
@@ -5272,19 +5485,20 @@ def _require_full_score_historical_reservation_policy(
         raise ValueError(
             "full-score ledger differs from the campaign qualification ledger"
         )
-    if getattr(
-        qualification_launch_authorization,
-        "ledger_path_sha256",
-        path_sha256,
-    ) != path_sha256:
+    if (
+        getattr(
+            qualification_launch_authorization,
+            "ledger_path_sha256",
+            path_sha256,
+        )
+        != path_sha256
+    ):
         raise ValueError("full-score qualification ledger path binding drift")
     predecessor_state = _full_score_ledger_prefix_state(
         ledger,
         predecessor_prefix,
     )
-    if predecessor_state.cap_cluster_hours != (
-        MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-    ):
+    if predecessor_state.cap_cluster_hours != (MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS):
         raise ValueError("full-score publication requires the 1024-hour ledger")
     if predecessor_state.ledger_id != predecessor_prefix.ledger_id:
         raise ValueError("full-score campaign ledger identity drift")
@@ -5306,8 +5520,7 @@ def _require_full_score_historical_reservation_policy(
         > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
     ):
         raise ValueError(
-            "full-score reservation would consume the 124 GPU-hour "
-            "campaign headroom"
+            "full-score reservation would consume the 124 GPU-hour campaign headroom"
         )
     if admission is not None:
         ledger_binding = _required_mapping(admission, "ledger")
@@ -5357,9 +5570,7 @@ def reserve_governed_full_score_phase_attempt(
             wave_index=wave_index,
             phase=phase,
             attempt_id=attempt_id,
-            qualification_launch_authorization=(
-                qualification_launch_authorization
-            ),
+            qualification_launch_authorization=(qualification_launch_authorization),
             predecessor_authorization=predecessor_authorization,
             latency_execution_plan_record=latency_execution_plan_record,
             budget_admission_path=budget_admission_path,
@@ -5396,21 +5607,17 @@ def reserve_governed_full_score_phase_attempt(
         compact_artifact_resolver=compact_artifact_resolver,
     )
     _write_or_require_full_score_phase_intent(live_path, intent)
-    updated, batch_authorization = (
-        reserve_databricks_run_attempt_batch_authorized_json(
-            live_path,
-            (request,),
-            expected_predecessor_prefix=predecessor_prefix,
-            batch_validator=validate_batch,
-        )
+    updated, batch_authorization = reserve_databricks_run_attempt_batch_authorized_json(
+        live_path,
+        (request,),
+        expected_predecessor_prefix=predecessor_prefix,
+        batch_validator=validate_batch,
     )
     _require_full_score_ledger_caps(updated)
     if not any(item.attempt_id == attempt_id for item in updated.reservations):
         raise RuntimeError("full-score reservation was not durably recorded")
     authorization = FullScorePhaseSubmissionAuthorization(
-        execution_plan_sha256=_required_string(
-            execution_plan, "closed_record_sha256"
-        ),
+        execution_plan_sha256=_required_string(execution_plan, "closed_record_sha256"),
         wave_index=wave_index,
         phase=phase,
         ledger_path_sha256=databricks_ledger_path_sha256(live_path),
@@ -5422,6 +5629,12 @@ def reserve_governed_full_score_phase_attempt(
             intent,
             "closed_record_sha256",
         ),
+        workspace_host_sha256=_full_score_predecessor_workspace_identity(
+            predecessor_authorization
+        )[0],
+        user_name_sha256=_full_score_predecessor_workspace_identity(
+            predecessor_authorization
+        )[1],
         _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
     )
     _write_or_require_full_score_phase_lease(live_path, authorization)
@@ -5438,9 +5651,7 @@ def submit_governed_full_score_phase_attempt(
 ) -> dict[str, Any]:
     """POST one exact atomically reserved phase through its O_EXCL claim."""
 
-    if not isinstance(
-        submission_authorization, FullScorePhaseSubmissionAuthorization
-    ):
+    if type(submission_authorization) is not FullScorePhaseSubmissionAuthorization:
         raise TypeError(
             "full-score submit requires FullScorePhaseSubmissionAuthorization"
         )
@@ -5457,24 +5668,23 @@ def submit_governed_full_score_phase_attempt(
     payload_sha256 = sha256(canonical_submit).hexdigest()
     require_databricks_batch_reservation_authorization(
         submission_authorization.batch_authorization,
-        expected_predecessor_prefix=(
-            submission_authorization.predecessor_prefix
-        ),
+        expected_predecessor_prefix=(submission_authorization.predecessor_prefix),
         expected_attempt_ids=(submission_authorization.attempt_id,),
         expected_submit_payload_sha256s=(payload_sha256,),
     )
     if payload_sha256 != submission_authorization.submit_payload_sha256:
         raise ValueError("full-score submission payload binding drift")
-    require_databricks_current_user_name(
+    _require_full_score_bound_workspace_identity(
         workspace,
-        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        authorization=submission_authorization,
+        submit_payload=submit_payload,
         opener=opener,
     )
     _require_full_score_phase_lease(
         ledger_path,
         submission_authorization,
     )
-    return submit_pre_reserved_databricks_run(
+    response: dict[str, Any] = submit_pre_reserved_databricks_run(
         workspace,
         submit_payload,
         ledger_path=ledger_path,
@@ -5482,6 +5692,7 @@ def submit_governed_full_score_phase_attempt(
         batch_authorization=submission_authorization.batch_authorization,
         opener=opener,
     )
+    return response
 
 
 def _replay_governed_full_score_phase_submission_authorization(
@@ -5531,16 +5742,20 @@ def _replay_governed_full_score_phase_submission_authorization(
         qualification_launch_authorization,
     )
     live_path = Path(ledger_path).expanduser().absolute()
-    predecessor_prefix, _lineage = (
-        _require_full_score_phase_predecessor_authorization(
-            predecessor_authorization,
-            execution_plan=execution_plan,
-            ledger_path=live_path,
-            wave_index=wave_index,
-            phase=phase,
-            latency_execution_plan_record=latency_execution_plan_record,
-            require_latest=False,
-        )
+    predecessor_prefix, _lineage = _require_full_score_phase_predecessor_authorization(
+        predecessor_authorization,
+        execution_plan=execution_plan,
+        ledger_path=live_path,
+        wave_index=wave_index,
+        phase=phase,
+        latency_execution_plan_record=latency_execution_plan_record,
+        require_latest=False,
+    )
+    _require_full_score_remote_workspace_lineage(
+        predecessor_authorization,
+        execution_plan=execution_plan,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
     )
     admission: dict[str, Any] | None
     if wave_index == 0:
@@ -5606,12 +5821,10 @@ def _replay_governed_full_score_phase_submission_authorization(
         compact_artifact_resolver=compact_artifact_resolver,
     )
     _require_full_score_phase_intent(live_path, intent)
-    batch_authorization = (
-        replay_databricks_run_attempt_batch_authorization_json(
-            live_path,
-            (request,),
-            expected_predecessor_prefix=predecessor_prefix,
-        )
+    batch_authorization = replay_databricks_run_attempt_batch_authorization_json(
+        live_path,
+        (request,),
+        expected_predecessor_prefix=predecessor_prefix,
     )
     live = read_databricks_cluster_hour_ledger_json(live_path)
     _require_full_score_historical_reservation_policy(
@@ -5648,9 +5861,7 @@ def _replay_governed_full_score_phase_submission_authorization(
         ):
             raise ValueError("full-score replay terminal tail binding drift")
     authorization = FullScorePhaseSubmissionAuthorization(
-        execution_plan_sha256=_required_string(
-            execution_plan, "closed_record_sha256"
-        ),
+        execution_plan_sha256=_required_string(execution_plan, "closed_record_sha256"),
         wave_index=wave_index,
         phase=phase,
         ledger_path_sha256=databricks_ledger_path_sha256(live_path),
@@ -5662,6 +5873,12 @@ def _replay_governed_full_score_phase_submission_authorization(
             intent,
             "closed_record_sha256",
         ),
+        workspace_host_sha256=_full_score_predecessor_workspace_identity(
+            predecessor_authorization
+        )[0],
+        user_name_sha256=_full_score_predecessor_workspace_identity(
+            predecessor_authorization
+        )[1],
         _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
     )
     if _finalize_missing_lease is True:
@@ -5676,12 +5893,8 @@ def _replay_governed_full_score_phase_submission_authorization(
             phase=authorization.phase,
         )
         lease_root = lease_path.parent
-        if lease_root.exists() and (
-            not lease_root.is_dir() or lease_root.is_symlink()
-        ):
-            raise ValueError(
-                "full-score phase lease root must be a real directory"
-            )
+        if lease_root.exists() and (not lease_root.is_dir() or lease_root.is_symlink()):
+            raise ValueError("full-score phase lease root must be a real directory")
         if lease_path.exists() or lease_path.is_symlink():
             expected_lease = _canonical_pretty_json_bytes(
                 _full_score_phase_lease_record(authorization)
@@ -5817,9 +6030,10 @@ def resume_governed_full_score_phase_attempt(
         compact_artifact_resolver=compact_artifact_resolver,
         _finalize_missing_lease=None,
     )
-    require_databricks_current_user_name(
+    _require_full_score_bound_workspace_identity(
         workspace,
-        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        authorization=authorization,
+        submit_payload=submit_payload,
         opener=opener,
     )
     recovered_authorization = recover_governed_full_score_phase_reservation(
@@ -5844,11 +6058,7 @@ def resume_governed_full_score_phase_attempt(
     authorization = recovered_authorization
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     receipt = next(
-        (
-            item
-            for item in ledger.submission_receipts
-            if item.attempt_id == attempt_id
-        ),
+        (item for item in ledger.submission_receipts if item.attempt_id == attempt_id),
         None,
     )
     if receipt is not None:
@@ -5887,9 +6097,7 @@ def recover_governed_full_score_phase_attempt(
 ) -> dict[str, Any]:
     """Recover an accepted/lost phase POST with its exact token and claim."""
 
-    if not isinstance(
-        submission_authorization, FullScorePhaseSubmissionAuthorization
-    ):
+    if type(submission_authorization) is not FullScorePhaseSubmissionAuthorization:
         raise TypeError(
             "full-score recovery requires FullScorePhaseSubmissionAuthorization"
         )
@@ -5911,16 +6119,17 @@ def recover_governed_full_score_phase_attempt(
         submit_payload,
         attempt_id=submission_authorization.attempt_id,
     )
-    require_databricks_current_user_name(
+    _require_full_score_bound_workspace_identity(
         workspace,
-        expected_user_name=_full_score_phase_single_user_name(submit_payload),
+        authorization=submission_authorization,
+        submit_payload=submit_payload,
         opener=opener,
     )
     _require_full_score_phase_lease(
         ledger_path,
         submission_authorization,
     )
-    return recover_pre_reserved_databricks_run(
+    response: dict[str, Any] = recover_pre_reserved_databricks_run(
         workspace,
         submit_payload,
         ledger_path=ledger_path,
@@ -5928,6 +6137,7 @@ def recover_governed_full_score_phase_attempt(
         batch_authorization=submission_authorization.batch_authorization,
         opener=opener,
     )
+    return response
 
 
 def reserve_and_submit_governed_full_score_phase_attempt(
@@ -5969,31 +6179,35 @@ def reserve_and_submit_governed_full_score_phase_attempt(
         remote_consumer_authorizations=remote_consumer_authorizations,
         compact_artifact_resolver=compact_artifact_resolver,
     )
-    require_databricks_current_user_name(
+    predecessor_workspace_host_sha256, predecessor_user_name_sha256 = (
+        _full_score_predecessor_workspace_identity(predecessor_authorization)
+    )
+    identity = require_databricks_current_user_name(
         workspace,
         expected_user_name=_full_score_phase_single_user_name(submit_payload),
         opener=opener,
     )
-    _updated, submission_authorization = (
-        reserve_governed_full_score_phase_attempt(
-            ledger_path,
-            submit_payload,
-            execution_plan=execution_plan,
-            inventory=inventory,
-            shard_plan=shard_plan,
-            wave_index=wave_index,
-            phase=phase,
-            attempt_id=attempt_id,
-            qualification_launch_authorization=(
-                qualification_launch_authorization
-            ),
-            predecessor_authorization=predecessor_authorization,
-            latency_execution_plan_record=latency_execution_plan_record,
-            budget_admission_path=budget_admission_path,
-            remote_ready_authorization=remote_ready_authorization,
-            remote_consumer_authorizations=remote_consumer_authorizations,
-            compact_artifact_resolver=compact_artifact_resolver,
-        )
+    if (
+        identity.get("workspace_host_sha256") != predecessor_workspace_host_sha256
+        or identity.get("user_name_sha256") != predecessor_user_name_sha256
+    ):
+        raise ValueError("full-score predecessor workspace/principal drift")
+    _updated, submission_authorization = reserve_governed_full_score_phase_attempt(
+        ledger_path,
+        submit_payload,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_id=attempt_id,
+        qualification_launch_authorization=(qualification_launch_authorization),
+        predecessor_authorization=predecessor_authorization,
+        latency_execution_plan_record=latency_execution_plan_record,
+        budget_admission_path=budget_admission_path,
+        remote_ready_authorization=remote_ready_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
     response = submit_governed_full_score_phase_attempt(
         workspace,
@@ -6134,12 +6348,8 @@ def validate_paired_full_score_outputs(
                 "example_id": key[1],
                 "identity_sha256": item["identity_sha256"],
                 "methods": {
-                    "baseline_prefill": _measurement_score_record(
-                        baseline_measurement
-                    ),
-                    "vanilla_prefill": _measurement_score_record(
-                        vanilla_measurement
-                    ),
+                    "baseline_prefill": _measurement_score_record(baseline_measurement),
+                    "vanilla_prefill": _measurement_score_record(vanilla_measurement),
                 },
                 "niah_cell_id": niah_cell_id or None,
                 "natural_prompt_sha256": item["natural_prompt_sha256"],
@@ -6420,7 +6630,9 @@ def build_full_score_connector_proof(
         pair = _json_mapping(raw_pair, "paired connector example")
         key = (_required_string(pair, "dataset"), _required_string(pair, "example_id"))
         if key in observed_pair_keys or key not in planned_items:
-            raise ValueError("connector proof has duplicate or unplanned paired example")
+            raise ValueError(
+                "connector proof has duplicate or unplanned paired example"
+            )
         observed_pair_keys.add(key)
         methods = _required_mapping(pair, "methods")
         baseline = _required_mapping(methods, "baseline_prefill")
@@ -6482,7 +6694,10 @@ def build_full_score_connector_proof(
             "layers_loaded": FULL_SCORE_MODEL_NUM_LAYERS,
             "token_count": tokens,
         }
-        if any(counts.get(key) != expected_value for key, expected_value in required_counts.items()):
+        if any(
+            counts.get(key) != expected_value
+            for key, expected_value in required_counts.items()
+        ):
             raise ValueError("connector telemetry count/layout coverage drift")
         required_layout = {
             "bytes_per_token": FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN,
@@ -6490,7 +6705,10 @@ def build_full_score_connector_proof(
             "model_id": FULL_SCORE_MODEL_ID,
             "num_layers": FULL_SCORE_MODEL_NUM_LAYERS,
         }
-        if any(layout.get(key) != expected_value for key, expected_value in required_layout.items()):
+        if any(
+            layout.get(key) != expected_value
+            for key, expected_value in required_layout.items()
+        ):
             raise ValueError("connector telemetry model layout drift")
         required_attestation = {
             "artifact_id": expected_request["artifact_id"],
@@ -6540,7 +6758,7 @@ def _require_full_score_final_consumer_aggregation_authorization(
 ) -> dict[str, Any]:
     """Require the terminal consumer of the final frozen publication wave."""
 
-    if not isinstance(authorization, FullScorePhaseAuthorization):
+    if type(authorization) is not FullScorePhaseAuthorization:
         raise TypeError(
             "publication aggregation requires final-consumer "
             "FullScorePhaseAuthorization"
@@ -6597,8 +6815,7 @@ def _require_full_score_final_consumer_aggregation_authorization(
     )
     if (
         batch_prefix.ledger_id != predecessor_prefix.ledger_id
-        or batch_prefix.cap_cluster_hours
-        != predecessor_prefix.cap_cluster_hours
+        or batch_prefix.cap_cluster_hours != predecessor_prefix.cap_cluster_hours
     ):
         raise ValueError("publication aggregate final batch prefix drift")
     expected_causal_closure = _canonical_sha256(
@@ -6611,6 +6828,21 @@ def _require_full_score_final_consumer_aggregation_authorization(
     )
     if authorization.causal_closure_sha256 != expected_causal_closure:
         raise ValueError("publication aggregate final authority closure drift")
+    expected_workspace_closure = _canonical_sha256(
+        {
+            "causal_closure_sha256": authorization.causal_closure_sha256,
+            "phase_lease_root_sha256": _canonical_sha256(
+                {
+                    "domain": "cachet.full_score_phase_lease_root_authority.v1",
+                    "phase_lease_root": str(authorization.phase_lease_root),
+                }
+            ),
+            "user_name_sha256": authorization.user_name_sha256,
+            "workspace_host_sha256": authorization.workspace_host_sha256,
+        }
+    )
+    if authorization.workspace_authority_closure_sha256 != expected_workspace_closure:
+        raise ValueError("publication aggregate final workspace authority drift")
     return {
         "authorization_sha256": authorization.causal_closure_sha256,
         "batch_prefix": batch_prefix.to_record(),
@@ -6663,10 +6895,7 @@ def aggregate_full_score_shard_evidence(
         if execution_plan is None:
             raise ValueError("publication aggregation requires the execution plan")
         _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
-        if not isinstance(
-            final_consumer_authorization,
-            FullScorePhaseAuthorization,
-        ):
+        if type(final_consumer_authorization) is not FullScorePhaseAuthorization:
             raise TypeError(
                 "publication aggregation requires final-consumer "
                 "FullScorePhaseAuthorization"
@@ -6700,6 +6929,20 @@ def aggregate_full_score_shard_evidence(
                 execution_plan=execution_plan,
             )
         )
+        if any(
+            (
+                authorization.workspace_host_sha256,
+                authorization.user_name_sha256,
+            )
+            != (
+                final_consumer_authorization.workspace_host_sha256,
+                final_consumer_authorization.user_name_sha256,
+            )
+            for authorization in consumer_authorizations
+        ):
+            raise ValueError(
+                "publication aggregation workspace authority lineage drift"
+            )
         if (
             not consumer_authorizations
             or consumer_authorizations[-1].wave_index
@@ -6768,7 +7011,9 @@ def aggregate_full_score_shard_evidence(
                 )
                 shard_id = _required_string(evidence, "shard_id")
                 if shard_id != binding["shard_id"]:
-                    raise ValueError("publication aggregate evidence shard binding drift")
+                    raise ValueError(
+                        "publication aggregate evidence shard binding drift"
+                    )
                 _validate_full_score_deletion_attestation(
                     deletion,
                     evidence_record=evidence,
@@ -6866,10 +7111,10 @@ def aggregate_full_score_shard_evidence(
             pair_methods = pair_record.get("methods")
             if not isinstance(pair_methods, Mapping) or tuple(
                 sorted(pair_methods)
-            ) != tuple(
-                sorted(FULL_SCORE_METHODS)
-            ):
-                raise ValueError("paired example must contain both methods exactly once")
+            ) != tuple(sorted(FULL_SCORE_METHODS)):
+                raise ValueError(
+                    "paired example must contain both methods exactly once"
+                )
             scorer = scorer_registry.get(key[0])
             for method in FULL_SCORE_METHODS:
                 method_record = _required_mapping(pair_methods, method)
@@ -6902,7 +7147,9 @@ def aggregate_full_score_shard_evidence(
                             "Baseline paired evidence request ID must be empty"
                         )
                     if artifact_id is not None:
-                        raise ValueError("Baseline paired evidence declares an artifact")
+                        raise ValueError(
+                            "Baseline paired evidence declares an artifact"
+                        )
                 else:
                     _require_nonempty(
                         request_id,
@@ -6958,9 +7205,7 @@ def aggregate_full_score_shard_evidence(
     invalid_parser_sums: dict[tuple[str, str, str], float] = defaultdict(float)
     parser_counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
     niah_cells: dict[tuple[str, str, str], list[float]] = defaultdict(list)
-    niah_invalid_parser_sums: dict[tuple[str, str, str], float] = defaultdict(
-        float
-    )
+    niah_invalid_parser_sums: dict[tuple[str, str, str], float] = defaultdict(float)
     for (dataset, _example_id), pair in per_example.items():
         pair_methods = cast(Mapping[str, Mapping[str, Any]], pair["methods"])
         for method in FULL_SCORE_METHODS:
@@ -6969,13 +7214,13 @@ def aggregate_full_score_shard_evidence(
             if not isinstance(quality_scores, Mapping):
                 raise ValueError("per-example quality_scores must be an object")
             for metric, raw_value in quality_scores.items():
-                if not isinstance(metric, str) or not isinstance(raw_value, (int, float)):
+                if not isinstance(metric, str) or not isinstance(
+                    raw_value, (int, float)
+                ):
                     raise ValueError("per-example score is invalid")
                 accumulators[(dataset, method, metric)].append(float(raw_value))
                 if method_record.get("parser_valid") is not True:
-                    invalid_parser_sums[(dataset, method, metric)] += float(
-                        raw_value
-                    )
+                    invalid_parser_sums[(dataset, method, metric)] += float(raw_value)
                 if dataset == "niah" and pair.get("niah_cell_id"):
                     niah_cells[
                         (cast(str, pair["niah_cell_id"]), method, metric)
@@ -6990,7 +7235,9 @@ def aggregate_full_score_shard_evidence(
 
     niah_identity_count = sum(1 for key in per_example if key[0] == "niah")
     if niah_identity_count != 1000:
-        raise ValueError("the corrected full NIAH score requires exactly 1,000 examples")
+        raise ValueError(
+            "the corrected full NIAH score requires exactly 1,000 examples"
+        )
     observed_niah_cells = {
         cast(str, pair.get("niah_cell_id"))
         for (dataset, _example_id), pair in per_example.items()
@@ -7019,7 +7266,9 @@ def aggregate_full_score_shard_evidence(
                 )
                 if candidate_dataset == dataset and candidate_method == method
             }
-            if not metrics or any(value["example_count"] != count for value in metrics.values()):
+            if not metrics or any(
+                value["example_count"] != count for value in metrics.values()
+            ):
                 raise ValueError("dataset metric coverage is incomplete")
             status_counts = {
                 status: parser_counts[(dataset, method)][status]
@@ -7033,11 +7282,7 @@ def aggregate_full_score_shard_evidence(
                 "parser_status_counts": status_counts,
             }
         paired_deltas = _paired_delta_summaries(
-            {
-                key: pair
-                for key, pair in per_example.items()
-                if key[0] == dataset
-            },
+            {key: pair for key, pair in per_example.items() if key[0] == dataset},
             dataset=dataset,
             inventory_sha256=inventory.inventory_sha256,
             shard_plan_sha256=expected_plan_sha,
@@ -7113,8 +7358,7 @@ def aggregate_full_score_shard_evidence(
         )
         if rechecked_lineage != publication_lineage:
             raise ValueError(
-                "publication aggregate final ledger lineage changed during "
-                "aggregation"
+                "publication aggregate final ledger lineage changed during aggregation"
             )
         publication_lineage = rechecked_lineage
         publication_lineage["evidence"] = sorted(
@@ -7130,9 +7374,7 @@ def aggregate_full_score_shard_evidence(
             "closed_record_sha256",
         )
         aggregate_record["publication_lineage"] = publication_lineage
-    aggregate_record["closed_record_sha256"] = _closed_record_sha256(
-        aggregate_record
-    )
+    aggregate_record["closed_record_sha256"] = _closed_record_sha256(aggregate_record)
     validate_full_score_aggregate_record(
         aggregate_record,
         inventory=inventory,
@@ -7251,21 +7493,15 @@ def validate_full_score_aggregate_record(
     raw_shards = shard_plan.get("shards")
     if not isinstance(raw_shards, list):
         raise ValueError("full-score aggregate shard plan has no shard array")
-    if (
-        _required_int(record, "identity_count") != len(inventory.items)
-        or _required_int(record, "shard_count") != len(raw_shards)
-    ):
+    if _required_int(record, "identity_count") != len(inventory.items) or _required_int(
+        record, "shard_count"
+    ) != len(raw_shards):
         raise ValueError("full-score aggregate inventory/shard count drift")
-    if record.get("aggregation_unit") != (
-        "per_example_once_never_shard_means"
-    ):
+    if record.get("aggregation_unit") != ("per_example_once_never_shard_means"):
         raise ValueError("full-score aggregate aggregation-unit drift")
     if record.get("methods") != list(FULL_SCORE_METHODS):
         raise ValueError("full-score aggregate method contract drift")
-    if (
-        _required_int(record, "passes_per_method")
-        != FULL_SCORE_PASSES_PER_METHOD
-    ):
+    if _required_int(record, "passes_per_method") != FULL_SCORE_PASSES_PER_METHOD:
         raise ValueError("full-score aggregate pass contract drift")
     if not _json_type_exact_equal(
         record.get("protocol"),
@@ -7288,9 +7524,7 @@ def validate_full_score_aggregate_record(
         SUPPORTED_V1_DATASETS
     ):
         raise ValueError("full-score aggregate dataset coverage drift")
-    dataset_method_summaries: dict[
-        str, dict[str, dict[str, tuple[float, float]]]
-    ] = {}
+    dataset_method_summaries: dict[str, dict[str, dict[str, tuple[float, float]]]] = {}
     dataset_paired_means: dict[str, dict[str, float]] = {}
     bootstrap_draws = _required_int(
         _required_mapping(record, "bootstrap"),
@@ -7340,21 +7574,15 @@ def validate_full_score_aggregate_record(
                 "parser_status_counts",
             )
             if set(parser_counts) != set(FINAL_ANSWER_PARSER_STATUSES):
-                raise ValueError(
-                    "full-score aggregate parser-status schema drift"
-                )
+                raise ValueError("full-score aggregate parser-status schema drift")
             observed_parser_count = 0
             for status in FINAL_ANSWER_PARSER_STATUSES:
                 status_count = parser_counts.get(status)
                 if type(status_count) is not int or status_count < 0:
-                    raise ValueError(
-                        "full-score aggregate parser-status count drift"
-                    )
+                    raise ValueError("full-score aggregate parser-status count drift")
                 observed_parser_count += status_count
             if observed_parser_count != expected_count:
-                raise ValueError(
-                    "full-score aggregate parser-status coverage drift"
-                )
+                raise ValueError("full-score aggregate parser-status coverage drift")
             valid_parse_count = parser_counts["ok"]
             if any(
                 total > valid_parse_count
@@ -7364,25 +7592,21 @@ def validate_full_score_aggregate_record(
                 )
                 for _mean, total in method_summaries[method].values()
             ):
-                raise ValueError(
-                    "full-score aggregate credits invalid parsed answers"
-                )
+                raise ValueError("full-score aggregate credits invalid parsed answers")
         dataset_method_summaries[dataset] = method_summaries
-        dataset_paired_means[dataset] = (
-            _validate_full_score_aggregate_paired_deltas(
-                _required_mapping(
-                    dataset_record,
-                    "paired_vanilla_minus_baseline",
-                ),
-                dataset_stratum=dataset,
-                expected_count=expected_count,
-                metric_names=metric_names,
-                method_summaries=method_summaries,
-                inventory_sha256=inventory.inventory_sha256,
-                shard_plan_sha256=shard_plan_sha256,
-                bootstrap_draws=bootstrap_draws,
-                label=f"datasets.{dataset}.paired",
-            )
+        dataset_paired_means[dataset] = _validate_full_score_aggregate_paired_deltas(
+            _required_mapping(
+                dataset_record,
+                "paired_vanilla_minus_baseline",
+            ),
+            dataset_stratum=dataset,
+            expected_count=expected_count,
+            metric_names=metric_names,
+            method_summaries=method_summaries,
+            inventory_sha256=inventory.inventory_sha256,
+            shard_plan_sha256=shard_plan_sha256,
+            bootstrap_draws=bootstrap_draws,
+            label=f"datasets.{dataset}.paired",
         )
 
     _validate_full_score_aggregate_niah_grid(
@@ -7515,9 +7739,7 @@ def _validate_full_score_aggregate_niah_grid(
     *,
     expected_count: int,
     metric_names: Sequence[str],
-    dataset_method_summaries: Mapping[
-        str, Mapping[str, tuple[float, float]]
-    ],
+    dataset_method_summaries: Mapping[str, Mapping[str, tuple[float, float]]],
     dataset_paired_means: Mapping[str, float],
     inventory_sha256: str,
     shard_plan_sha256: str,
@@ -7640,11 +7862,14 @@ def _validate_full_score_aggregate_publication_lineage(
         _required_mapping(lineage, "terminal_prefix")
     )
     if (
-        {prefix.ledger_id for prefix in (
-            predecessor_prefix,
-            batch_prefix,
-            terminal_prefix,
-        )}
+        {
+            prefix.ledger_id
+            for prefix in (
+                predecessor_prefix,
+                batch_prefix,
+                terminal_prefix,
+            )
+        }
         != {ledger_id}
         or len(
             {
@@ -7657,8 +7882,7 @@ def _validate_full_score_aggregate_publication_lineage(
             }
         )
         != 1
-        or batch_prefix.reservation_count
-        != predecessor_prefix.reservation_count + 1
+        or batch_prefix.reservation_count != predecessor_prefix.reservation_count + 1
         or batch_prefix.submission_receipt_count
         != predecessor_prefix.submission_receipt_count
         or batch_prefix.terminal_actual_count
@@ -7715,8 +7939,7 @@ def _validate_full_score_aggregate_publication_lineage(
             or not normalized_shard_ids
             or len(set(normalized_shard_ids)) != len(normalized_shard_ids)
             or any(
-                shard_id in expected_wave_by_shard
-                for shard_id in normalized_shard_ids
+                shard_id in expected_wave_by_shard for shard_id in normalized_shard_ids
             )
         ):
             raise ValueError("aggregate remote execution wave/shard lineage drift")
@@ -7736,9 +7959,7 @@ def _validate_full_score_aggregate_publication_lineage(
     if set(expected_wave_by_shard) != expected_shard_ids:
         raise ValueError("aggregate remote execution-plan shard lineage drift")
     final_wave_index = len(waves) - 1
-    if (
-        _required_int(lineage, "wave_index") != final_wave_index
-    ):
+    if _required_int(lineage, "wave_index") != final_wave_index:
         raise ValueError("full-score aggregate final-wave lineage drift")
 
     raw_authorizations = lineage.get("remote_consumer_authorizations")
@@ -7795,9 +8016,10 @@ def _validate_full_score_aggregate_publication_lineage(
             }
         ) != len(waves):
             raise ValueError("aggregate remote authorization identity reuse")
-    if authorization_by_wave[final_wave_index].get(
-        "phase_terminal_record_sha256"
-    ) != terminal_record_sha256:
+    if (
+        authorization_by_wave[final_wave_index].get("phase_terminal_record_sha256")
+        != terminal_record_sha256
+    ):
         raise ValueError("aggregate remote/final terminal lineage drift")
 
     raw_evidence = lineage.get("evidence")
@@ -7871,29 +8093,21 @@ def _validate_full_score_aggregate_publication_lineage(
         if not evidence_uri.endswith(evidence_suffix):
             raise ValueError("aggregate remote evidence URI lineage drift")
         durable_root = evidence_uri[: -len(evidence_suffix)]
-        if (
-            evidence_uri
-            != _consumer_evidence_artifact_uri(
-                durable_root,
-                wave_index=binding_wave_index,
-                shard_id=shard_id,
-                filename="evidence.json",
-            )
-            or binding.get("deletion_uri")
-            != _consumer_evidence_artifact_uri(
-                durable_root,
-                wave_index=binding_wave_index,
-                shard_id=shard_id,
-                filename="deletion-attestation.json",
-            )
+        if evidence_uri != _consumer_evidence_artifact_uri(
+            durable_root,
+            wave_index=binding_wave_index,
+            shard_id=shard_id,
+            filename="evidence.json",
+        ) or binding.get("deletion_uri") != _consumer_evidence_artifact_uri(
+            durable_root,
+            wave_index=binding_wave_index,
+            shard_id=shard_id,
+            filename="deletion-attestation.json",
         ):
             raise ValueError("aggregate remote evidence URI lineage drift")
         durable_roots.add(durable_root)
         observed_shards.append(shard_id)
-    if (
-        observed_shards != sorted(expected_shard_ids)
-        or len(durable_roots) != 1
-    ):
+    if observed_shards != sorted(expected_shard_ids) or len(durable_roots) != 1:
         raise ValueError("aggregate remote evidence ordered coverage drift")
 
 
@@ -7922,12 +8136,16 @@ def _paired_delta_summaries(
     for key in sorted(per_example):
         pair = per_example[key]
         methods = cast(Mapping[str, Mapping[str, Any]], pair["methods"])
-        baseline = cast(Mapping[str, Any], methods["baseline_prefill"]["quality_scores"])
+        baseline = cast(
+            Mapping[str, Any], methods["baseline_prefill"]["quality_scores"]
+        )
         vanilla = cast(Mapping[str, Any], methods["vanilla_prefill"]["quality_scores"])
         if set(baseline) != set(vanilla):
             raise ValueError("paired arms expose different metric sets")
         for metric in sorted(baseline):
-            metric_values[metric].append(float(vanilla[metric]) - float(baseline[metric]))
+            metric_values[metric].append(
+                float(vanilla[metric]) - float(baseline[metric])
+            )
     summaries = {}
     for metric, values in sorted(metric_values.items()):
         seed_sha256 = _full_score_paired_bootstrap_seed_sha256(
@@ -8079,10 +8297,10 @@ def run_full_score_worker(
         "locked_runtime_identity_sha256",
     )
     if os.environ.get("CACHET_FULL_SCORE_LOCKED_RUNTIME") != expected_runtime_identity:
-        raise RuntimeError("worker is not executing in its payload-bound locked runtime")
-    if os.path.realpath(sys.executable) != os.path.realpath(
-        runtime.python_executable
-    ):
+        raise RuntimeError(
+            "worker is not executing in its payload-bound locked runtime"
+        )
+    if os.path.realpath(sys.executable) != os.path.realpath(runtime.python_executable):
         raise RuntimeError("worker Python does not match the payload-bound runtime")
     _verify_runtime_contract(runtime)
     runner = command_runner or _subprocess_command_runner
@@ -8230,12 +8448,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             records = run_full_score_worker(
                 args.worker_payload_json,
-                expected_worker_payload_sha256=(
-                    args.expected_worker_payload_sha256
-                ),
-                producer_phase_completion_path=(
-                    args.producer_phase_completion_json
-                ),
+                expected_worker_payload_sha256=(args.expected_worker_payload_sha256),
+                producer_phase_completion_path=(args.producer_phase_completion_json),
                 expected_producer_phase_completion_sha256=(
                     args.expected_producer_phase_completion_sha256
                 ),
@@ -8279,7 +8493,9 @@ def _run_producer_worker(
     """Load the generator once and emit all assigned closed ready shards."""
 
     env = _worker_environment(runtime)
-    os.environ.update({key: value for key, value in env.items() if key.startswith("CACHET_")})
+    os.environ.update(
+        {key: value for key, value in env.items() if key.startswith("CACHET_")}
+    )
     producer_hardware = _observe_producer_hardware()
     generator = load_benchmark_kv_chunk_generator(runtime.generator_factory)
     if getattr(generator, "pre_rope", None) is not True:
@@ -8537,7 +8753,9 @@ def _run_consumer_worker(
     transfer_config = json.loads(json.dumps(runtime.kv_transfer_config, sort_keys=True))
     extra_config = transfer_config.get("kv_connector_extra_config")
     if not isinstance(extra_config, dict):
-        raise ValueError("kv_transfer_config.kv_connector_extra_config must be an object")
+        raise ValueError(
+            "kv_transfer_config.kv_connector_extra_config must be an object"
+        )
     extra_config["document_kv.telemetry_jsonl"] = str(connector_telemetry)
     log_handle = server_log.open("w", encoding="utf-8")
     server = subprocess.Popen(
@@ -8631,14 +8849,16 @@ def _consume_ready_shard(
     completion_ready = next(
         (
             item
-            for item in cast(list[Mapping[str, Any]], producer_completion["ready_shards"])
+            for item in cast(
+                list[Mapping[str, Any]], producer_completion["ready_shards"]
+            )
             if item.get("shard_id") == shard_id
         ),
         None,
     )
-    if completion_ready is None or completion_ready.get("ready_record_sha256") != ready.get(
-        "closed_record_sha256"
-    ):
+    if completion_ready is None or completion_ready.get(
+        "ready_record_sha256"
+    ) != ready.get("closed_record_sha256"):
         raise ValueError("consumer ready shard differs from producer completion")
     lifecycle = FullScoreShardLifecycle("consumer")
     lifecycle.advance("verify_ready_shard")
@@ -8650,9 +8870,14 @@ def _consume_ready_shard(
     )
     shard_local.mkdir()
     datasets = sorted(
-        {cast(str, item["dataset"]) for item in cast(list[Mapping[str, Any]], shard["items"])}
+        {
+            cast(str, item["dataset"])
+            for item in cast(list[Mapping[str, Any]], shard["items"])
+        }
     )
-    inputs = {dataset: ready_dir / "inputs" / f"{dataset}.jsonl" for dataset in datasets}
+    inputs = {
+        dataset: ready_dir / "inputs" / f"{dataset}.jsonl" for dataset in datasets
+    }
     enriched = {
         dataset: ready_dir / "enriched" / f"{dataset}.jsonl" for dataset in datasets
     }
@@ -8857,7 +9082,9 @@ def _write_or_validate_deletion_attestation(
     if path.exists():
         observed = _json_object(path.read_bytes(), "deletion attestation")
         if observed != deletion:
-            raise ValueError("existing deletion attestation differs from recovery state")
+            raise ValueError(
+                "existing deletion attestation differs from recovery state"
+            )
         return deletion
     _exclusive_write_bytes(path, _canonical_pretty_json_bytes(deletion))
     if _json_object(path.read_bytes(), "deletion attestation") != deletion:
@@ -8945,7 +9172,9 @@ def _recover_committed_consumer_shard(
     evidence_path = durable_dir / "evidence.json"
     if not evidence_path.exists():
         if durable_dir.exists():
-            raise ValueError("published durable shard directory lacks committed evidence")
+            raise ValueError(
+                "published durable shard directory lacks committed evidence"
+            )
         return None
     evidence, deletion = load_governed_full_score_shard_evidence(
         durable_dir,
@@ -8986,7 +9215,9 @@ def _recover_committed_consumer_shard(
             ],
         )
     elif ready_dir.exists() or ready_dir.is_symlink():
-        raise ValueError("terminal deletion attestation conflicts with live ready shard")
+        raise ValueError(
+            "terminal deletion attestation conflicts with live ready shard"
+        )
     # Re-run the full governed check after recovery published its terminal record.
     evidence, _deletion = load_governed_full_score_shard_evidence(
         durable_dir,
@@ -9159,7 +9390,9 @@ def _validated_method_measurements(
     examples: Mapping[tuple[str, str], Any],
 ) -> dict[tuple[str, str], Any]:
     expected_arm = (
-        BASELINE_PREFILL_ARM if method == "baseline_prefill" else FULL_SCORE_VANILLA_ARM_ID
+        BASELINE_PREFILL_ARM
+        if method == "baseline_prefill"
+        else FULL_SCORE_VANILLA_ARM_ID
     )
     observed: dict[tuple[str, str], Any] = {}
     registry = default_dataset_scorer_registry()
@@ -9179,7 +9412,10 @@ def _validated_method_measurements(
             raise ValueError("baseline output unexpectedly declares a cache method")
         if method == "baseline_prefill" and measurement.artifact_id != "":
             raise ValueError("baseline output unexpectedly declares an artifact ID")
-        if method == "vanilla_prefill" and measurement.cache_method != "vanilla_prefill":
+        if (
+            method == "vanilla_prefill"
+            and measurement.cache_method != "vanilla_prefill"
+        ):
             raise ValueError("Vanilla output does not declare vanilla_prefill")
         if method == "baseline_prefill" and measurement.request_id != "":
             raise ValueError("Baseline output unexpectedly declares a request ID")
@@ -9211,9 +9447,7 @@ def _validated_method_measurements(
             kv_parameter_keys,
             expected_handoff_request_id,
             expected_artifact_id,
-        ) = (
-            _full_score_expected_prompt_delivery(example, method=method)
-        )
+        ) = _full_score_expected_prompt_delivery(example, method=method)
         expected_logical_prompt_sha256 = sha256(
             logical_prompt.encode("utf-8")
         ).hexdigest()
@@ -9231,8 +9465,7 @@ def _validated_method_measurements(
         expected_suite_id = f"{FULL_SCORE_PROTOCOL_ID}:{shard_id}:{method}"
         if method == "vanilla_prefill":
             if (
-                expected_handoff_request_id is None
-                or expected_artifact_id is None
+                expected_handoff_request_id is None or expected_artifact_id is None
             ):  # pragma: no cover - validated by the prompt-delivery helper.
                 raise AssertionError("Vanilla handoff identity was not returned")
             expected_measurement_request_id = (
@@ -9350,9 +9583,9 @@ def _load_and_validate_worker_source_records(
             f"{dataset} full-score source",
         )
         raw = path.read_bytes()
-        if len(raw) != source.get("byte_count") or sha256(raw).hexdigest() != source.get(
-            "source_jsonl_sha256"
-        ):
+        if len(raw) != source.get("byte_count") or sha256(
+            raw
+        ).hexdigest() != source.get("source_jsonl_sha256"):
             raise ValueError(f"{dataset} full-score source hash drift")
         if not raw.endswith(b"\n"):
             raise ValueError(f"{dataset} source must be newline-terminated JSONL")
@@ -9365,7 +9598,9 @@ def _load_and_validate_worker_source_records(
                 raise ValueError(f"{dataset} source row must be an object")
             record = cast(Mapping[str, Any], value)
             if _TRANSFER_FIELDS.intersection(record):
-                raise ValueError("full-score source unexpectedly contains transfer fields")
+                raise ValueError(
+                    "full-score source unexpectedly contains transfer fields"
+                )
             example = _example_from_record(
                 record,
                 default_dataset=dataset,
@@ -9401,10 +9636,14 @@ def _validate_natural_prompt_item(
         for _segment_id, segment in benchmark_cache_prefix_segments(example)
     )
     checks = {
-        "natural_prompt_sha256": sha256(prompt.prefill_prompt.encode("utf-8")).hexdigest(),
+        "natural_prompt_sha256": sha256(
+            prompt.prefill_prompt.encode("utf-8")
+        ).hexdigest(),
         "natural_prompt_token_ids_sha256": _token_ids_sha256(natural_ids),
         "natural_prompt_tokens": len(natural_ids),
-        "cache_prefix_sha256": sha256(prompt.cache_prefix_text.encode("utf-8")).hexdigest(),
+        "cache_prefix_sha256": sha256(
+            prompt.cache_prefix_text.encode("utf-8")
+        ).hexdigest(),
         "cache_prefix_token_ids_sha256": _token_ids_sha256(cache_ids),
         "cache_prefix_tokens": len(cache_ids),
         "segment_count": len(segment_ids),
@@ -9836,9 +10075,7 @@ def _validate_runtime_verification_binding(value: Any) -> dict[str, Any]:
         "runtime_closure_manifest_uri",
         "runtime_lock_uri",
     }
-    expected_artifact_keys = (
-        expected_artifact_sha256_keys | expected_artifact_uri_keys
-    )
+    expected_artifact_keys = expected_artifact_sha256_keys | expected_artifact_uri_keys
     if set(artifacts) != expected_artifact_keys:
         raise ValueError("runtime artifact binding keys drift")
     for field_name in expected_artifact_sha256_keys:
@@ -9966,7 +10203,10 @@ def _run_runtime_verifier(
             "existing runtime verifier evidence differs from current verification"
         )
     closed_raw = output_path.read_bytes()
-    if closed_raw != stdout_raw or sha256(closed_raw).hexdigest() != binding["file_sha256"]:
+    if (
+        closed_raw != stdout_raw
+        or sha256(closed_raw).hexdigest() != binding["file_sha256"]
+    ):
         raise RuntimeError("runtime verifier evidence durable write drift")
     return binding
 
@@ -9998,7 +10238,9 @@ def _worker_environment(runtime: FullScoreRuntimeConfig) -> dict[str, str]:
     for key, value in fixed.items():
         observed = env.get(key)
         if observed is not None and observed != value:
-            raise ValueError(f"runtime environment {key} conflicts with full-score protocol")
+            raise ValueError(
+                f"runtime environment {key} conflicts with full-score protocol"
+            )
         env[key] = value
     return env
 
@@ -10087,7 +10329,9 @@ def _verify_runtime_contract(runtime: FullScoreRuntimeConfig) -> None:
         try:
             loader_source = archive.read(FULL_SCORE_VLLM_BNB_LOADER_MEMBER)
         except KeyError as exc:
-            raise ValueError("patched wheel lacks the bound BitsAndBytes loader") from exc
+            raise ValueError(
+                "patched wheel lacks the bound BitsAndBytes loader"
+            ) from exc
     if sha256(loader_source).hexdigest() != FULL_SCORE_VLLM_BNB_LOADER_SHA256:
         raise ValueError("vLLM BitsAndBytes loader source hash drift")
 
@@ -10170,10 +10414,7 @@ def _validate_full_score_gpu_selection(
         raise ValueError("GPU qualification did not select forced TRITON_ATTN")
     if selection.generation_hardware_id != FULL_SCORE_PRODUCER_HARDWARE_TARGET:
         raise ValueError("GPU qualification did not select the L40S producer")
-    if (
-        selection.generation_databricks_node_type_id
-        != FULL_SCORE_PRODUCER_NODE_TYPE_ID
-    ):
+    if selection.generation_databricks_node_type_id != FULL_SCORE_PRODUCER_NODE_TYPE_ID:
         raise ValueError("GPU qualification producer node type drift")
     _require_sha256(
         selection.generation_artifacts_sha256,
@@ -10360,7 +10601,13 @@ def _wait_for_server(
             if runtime.served_model_name in served:
                 return
             last_error = f"served models were {sorted(str(item) for item in served)}"
-        except (urllib.error.URLError, TimeoutError, ValueError, KeyError, RuntimeError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ValueError,
+            KeyError,
+            RuntimeError,
+        ) as exc:
             last_error = str(exc)
         time.sleep(5)
     raise TimeoutError(
@@ -10471,9 +10718,7 @@ def _runtime_from_record(record: Mapping[str, Any]) -> FullScoreRuntimeConfig:
             record, "server_start_timeout_seconds"
         ),
         request_timeout_seconds=_required_number(record, "request_timeout_seconds"),
-        generator_timeout_seconds=_required_number(
-            record, "generator_timeout_seconds"
-        ),
+        generator_timeout_seconds=_required_number(record, "generator_timeout_seconds"),
         telemetry_interval_seconds=_required_number(
             record, "telemetry_interval_seconds"
         ),
@@ -10557,7 +10802,11 @@ def _validate_source_bindings(
     bindings = record.get("source_jsonls")
     if not isinstance(bindings, list):
         raise ValueError("worker source_jsonls must be an array")
-    observed = {binding.get("dataset"): binding for binding in bindings if isinstance(binding, Mapping)}
+    observed = {
+        binding.get("dataset"): binding
+        for binding in bindings
+        if isinstance(binding, Mapping)
+    }
     if set(observed) != set(SUPPORTED_V1_DATASETS):
         raise ValueError("worker source bindings have incomplete dataset coverage")
     for source in inventory.sources:
@@ -10618,7 +10867,10 @@ def _validate_execution_plan(
             raise ValueError("execution wave scheduling_mode is invalid")
         producers = cast(list[Mapping[str, Any]], wave["producer_assignments"])
         consumers = cast(list[Mapping[str, Any]], wave["consumer_assignments"])
-        if len(producers) > FULL_SCORE_MAX_WORKERS or len(consumers) > FULL_SCORE_MAX_WORKERS:
+        if (
+            len(producers) > FULL_SCORE_MAX_WORKERS
+            or len(consumers) > FULL_SCORE_MAX_WORKERS
+        ):
             raise ValueError("execution wave phase exceeds sixteen workers")
         if mode == "split" and len(producers) + len(consumers) > FULL_SCORE_MAX_WORKERS:
             raise ValueError("split execution wave exceeds sixteen live workers")
@@ -10684,15 +10936,11 @@ def _validate_publication_full_score_inputs(
         FULL_SCORE_PUBLICATION_EXECUTION_PLAN_SHA256
     ):
         raise ValueError("publication full-score execution-plan closure drift")
-    if shard_plan.get("inventory_sha256") != (
-        FULL_SCORE_PUBLICATION_INVENTORY_SHA256
-    ):
+    if shard_plan.get("inventory_sha256") != (FULL_SCORE_PUBLICATION_INVENTORY_SHA256):
         raise ValueError("publication shard plan binds a different inventory")
     if len(inventory.items) != FULL_SCORE_PUBLICATION_ITEM_COUNT:
         raise ValueError("publication full-score inventory count drift")
-    inventory_prefix_tokens = sum(
-        item.cache_prefix_tokens for item in inventory.items
-    )
+    inventory_prefix_tokens = sum(item.cache_prefix_tokens for item in inventory.items)
     inventory_natural_tokens = sum(
         item.natural_prompt_tokens for item in inventory.items
     )
@@ -10727,13 +10975,15 @@ def _validate_publication_full_score_inputs(
         FULL_SCORE_PUBLICATION_ITEM_COUNT
     ):
         raise ValueError("publication shard-plan item count drift")
-    if sum(
-        _required_int(shard, "cache_prefix_tokens") for shard in plan_shards
-    ) != FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS:
+    if (
+        sum(_required_int(shard, "cache_prefix_tokens") for shard in plan_shards)
+        != FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS
+    ):
         raise ValueError("publication shard-plan cache-prefix token total drift")
-    if sum(
-        _required_int(shard, "natural_prompt_tokens") for shard in plan_shards
-    ) != FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS:
+    if (
+        sum(_required_int(shard, "natural_prompt_tokens") for shard in plan_shards)
+        != FULL_SCORE_PUBLICATION_NATURAL_PROMPT_TOKENS
+    ):
         raise ValueError("publication shard-plan natural-prompt token total drift")
 
     if execution_plan.get("scheduling_mode") != "phased":
@@ -10863,15 +11113,11 @@ def _validate_matched_billing_block(
         FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE,
     }:
         raise ValueError("live P90 matched-block authorization scope drift")
-    if block.get("execution_plan_sha256") != execution_plan.get(
-        "closed_record_sha256"
-    ):
+    if block.get("execution_plan_sha256") != execution_plan.get("closed_record_sha256"):
         raise ValueError("live P90 matched-block execution-plan drift")
     if block.get("matched_status") != "success_error_free":
         raise ValueError("live P90 rejects a non-successful matched block")
-    if block.get("protocol_sha256") != _canonical_sha256(
-        _full_score_protocol_record()
-    ):
+    if block.get("protocol_sha256") != _canonical_sha256(_full_score_protocol_record()):
         raise ValueError("live P90 matched-block protocol drift")
     shard_id = _required_string(block, "shard_id")
     planned_entry = planned_by_id.get(shard_id)
@@ -10938,7 +11184,10 @@ def _validate_matched_billing_block(
     item_count = cast(int, planned["item_count"])
     for method in FULL_SCORE_METHODS:
         value = output_tokens.get(method)
-        if type(value) is not int or not 0 <= value <= item_count * FULL_SCORE_MAX_TOKENS:
+        if (
+            type(value) is not int
+            or not 0 <= value <= item_count * FULL_SCORE_MAX_TOKENS
+        ):
             raise ValueError("live P90 matched block output-token evidence is invalid")
 
 
@@ -10958,13 +11207,11 @@ def _remote_consumer_evidence_records(
         require_full_score_remote_consumer_evidence_authorization,
     )
 
-    remote_authorization = (
-        require_full_score_remote_consumer_evidence_authorization(
-            authorization,
-            execution_plan=execution_plan,
-            expected_wave_index=expected_wave_index,
-            completion_record=completion_record,
-        )
+    remote_authorization = require_full_score_remote_consumer_evidence_authorization(
+        authorization,
+        execution_plan=execution_plan,
+        expected_wave_index=expected_wave_index,
+        completion_record=completion_record,
     )
     records: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
     for raw_binding in remote_authorization.evidence_bindings:
@@ -10992,12 +11239,10 @@ def _remote_consumer_evidence_records(
         if (
             evidence_bytes != _canonical_pretty_json_bytes(evidence)
             or deletion_bytes != _canonical_pretty_json_bytes(deletion)
-            or sha256(evidence_bytes).hexdigest()
-            != binding.get("evidence_file_sha256")
+            or sha256(evidence_bytes).hexdigest() != binding.get("evidence_file_sha256")
             or evidence.get("closed_record_sha256")
             != binding.get("evidence_record_sha256")
-            or sha256(deletion_bytes).hexdigest()
-            != binding.get("deletion_file_sha256")
+            or sha256(deletion_bytes).hexdigest() != binding.get("deletion_file_sha256")
             or deletion.get("closed_record_sha256")
             != binding.get("deletion_record_sha256")
         ):
@@ -11115,9 +11360,7 @@ def _validate_prior_wave_completion(
                 "prior-wave deletion path",
             )
             if evidence_file.parent != deletion_file.parent:
-                raise ValueError(
-                    "prior-wave evidence/deletion directory binding drift"
-                )
+                raise ValueError("prior-wave evidence/deletion directory binding drift")
             evidence_bytes = evidence_file.read_bytes()
             deletion_bytes = deletion_file.read_bytes()
             if sha256(evidence_bytes).hexdigest() != binding.get(
@@ -11134,9 +11377,7 @@ def _validate_prior_wave_completion(
             try:
                 evidence, deletion = remote_records[shard_id]
             except KeyError as exc:
-                raise ValueError(
-                    "prior-wave remote evidence coverage drift"
-                ) from exc
+                raise ValueError("prior-wave remote evidence coverage drift") from exc
             remote_binding = remote_bindings[shard_id]
             if (
                 binding.get("evidence_path") != remote_binding["evidence_uri"]
@@ -11153,8 +11394,7 @@ def _validate_prior_wave_completion(
             or evidence.get("closed_record_sha256") != _closed_record_sha256(evidence)
             or evidence.get("shard_id") != shard_id
             or evidence.get("wave_index") != expected_wave_index
-            or evidence.get("execution_plan_sha256")
-            != expected_execution_plan_sha256
+            or evidence.get("execution_plan_sha256") != expected_execution_plan_sha256
             or deletion.get("authorization_scope")
             != FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
             or deletion.get("closed_record_sha256") != _closed_record_sha256(deletion)
@@ -11175,9 +11415,7 @@ def _validate_prior_wave_completion(
                     )
                 )
                 if replayed_evidence != evidence or replayed_deletion != deletion:
-                    raise ValueError(
-                        "prior-wave raw/deletion evidence does not replay"
-                    )
+                    raise ValueError("prior-wave raw/deletion evidence does not replay")
             else:
                 _validate_shard_evidence_record(
                     evidence,
@@ -11245,7 +11483,10 @@ def _validate_producer_phase_completion(
         if type(ready_bytes) is not int or ready_bytes <= 0:
             raise ValueError("producer-phase completion ready bytes are invalid")
         observed_bytes += ready_bytes
-    if observed_ids != expected_ids or record.get("total_ready_bytes") != observed_bytes:
+    if (
+        observed_ids != expected_ids
+        or record.get("total_ready_bytes") != observed_bytes
+    ):
         raise ValueError("producer-phase completion compact projection drift")
     if observed_bytes > cast(
         int,
@@ -11257,7 +11498,8 @@ def _validate_producer_phase_completion(
         raise ValueError("producer-phase completion lacks ready-record file bindings")
     file_ids: list[str] = []
     ready_by_id = {
-        _required_string(item, "shard_id"): item for item in cast(list[Mapping[str, Any]], ready_shards)
+        _required_string(item, "shard_id"): item
+        for item in cast(list[Mapping[str, Any]], ready_shards)
     }
     for raw_file in ready_files:
         file_record = _json_mapping(raw_file, "producer ready-record file")
@@ -11339,8 +11581,7 @@ def _validate_governed_producer_ready_phase(
                 raise ValueError("consumer phase lacks a governed ready-shard binding")
             ready_record_path = ready_dir / "ready-record.json"
             if (
-                compact.get("ready_record_sha256")
-                != ready.get("closed_record_sha256")
+                compact.get("ready_record_sha256") != ready.get("closed_record_sha256")
                 or _cluster_path(_required_string(file_binding, "path"))
                 != ready_record_path
                 or sha256(ready_record_path.read_bytes()).hexdigest()
@@ -11426,8 +11667,7 @@ def _validate_live_p90_budget_admission(
     )
     lineage = _required_mapping(record, "predecessor_lineage")
     if (
-        lineage.get("ledger_path_sha256")
-        != ledger_binding.get("ledger_path_sha256")
+        lineage.get("ledger_path_sha256") != ledger_binding.get("ledger_path_sha256")
         or lineage.get("ledger_prefix") != prefix.to_record()
     ):
         raise ValueError("live P90 predecessor lineage drift")
@@ -11500,8 +11740,7 @@ def _validate_complete_phase_payload_set(
         if not isinstance(shard_ids, list) or not shard_ids:
             raise ValueError("wave assignment shard_ids must be non-empty")
         expected[(phase, worker_index)] = tuple(
-            _require_nonempty(shard_id, "assignment shard_id")
-            for shard_id in shard_ids
+            _require_nonempty(shard_id, "assignment shard_id") for shard_id in shard_ids
         )
     observed: dict[tuple[str, int], tuple[str, ...]] = {}
     execution_sha = _required_string(
@@ -11511,10 +11750,13 @@ def _validate_complete_phase_payload_set(
     for payload in payloads:
         if _json_mapping(payload.get("wave"), "worker wave") != reference_wave:
             raise ValueError("worker payloads disagree on their execution wave")
-        if _required_string(
-            _required_mapping(payload, "execution_plan"),
-            "closed_record_sha256",
-        ) != execution_sha:
+        if (
+            _required_string(
+                _required_mapping(payload, "execution_plan"),
+                "closed_record_sha256",
+            )
+            != execution_sha
+        ):
             raise ValueError("worker payloads disagree on execution-plan identity")
         role = _required_string(payload, "role")
         if role != phase:
@@ -11594,7 +11836,9 @@ def _wait_for_complete_ready_wave(
     """Apply backpressure and wait only for this consumer's assigned ready set."""
 
     wave = _required_mapping(payload, "wave")
-    if cast(int, wave["ready_bytes_upper_bound"]) > cast(int, wave["max_backlog_bytes"]):
+    if cast(int, wave["ready_bytes_upper_bound"]) > cast(
+        int, wave["max_backlog_bytes"]
+    ):
         raise RuntimeError("planned wave exceeds the durable backlog cap")
     runtime = _runtime_from_record(_required_mapping(payload, "runtime"))
     deadline = time.monotonic() + runtime.generator_timeout_seconds
@@ -11678,15 +11922,16 @@ def _validate_ready_shard(
         "node_type_id": FULL_SCORE_PRODUCER_NODE_TYPE_ID,
     }
     if any(
-        producer_hardware.get(key) != value
-        for key, value in expected_hardware.items()
+        producer_hardware.get(key) != value for key, value in expected_hardware.items()
     ):
         raise ValueError("ready-shard producer hardware drift")
     total_memory = producer_hardware.get("total_memory_bytes")
     if type(total_memory) is not int or total_memory < 40 * 1024**3:
         raise ValueError("ready-shard L40S memory evidence is invalid")
     files = _closed_file_tree(ready_dir, exclude={"ready-record.json"})
-    if files != record.get("files") or _canonical_sha256(files) != record.get("files_sha256"):
+    if files != record.get("files") or _canonical_sha256(files) != record.get(
+        "files_sha256"
+    ):
         raise ValueError("ready-shard file closure drift")
     actual_bytes = sum(cast(int, item["byte_count"]) for item in files)
     if actual_bytes != record.get("ready_bytes"):
@@ -11714,7 +11959,11 @@ def _closed_file_tree(
             continue
         raw = path.read_bytes()
         files.append(
-            {"byte_count": len(raw), "relative_path": relative, "sha256": sha256(raw).hexdigest()}
+            {
+                "byte_count": len(raw),
+                "relative_path": relative,
+                "sha256": sha256(raw).hexdigest(),
+            }
         )
     if not files:
         raise ValueError("ready-shard file closure is empty")
@@ -11745,14 +11994,20 @@ def _rewrite_json_tree_paths(root: Path, *, old_root: Path, new_root: Path) -> N
         if not path.is_file() or path.suffix not in {".json", ".jsonl"}:
             continue
         if path.suffix == ".jsonl":
-            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+            rows = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+            ]
             payload = "".join(
                 json.dumps(rewrite(row), ensure_ascii=False, sort_keys=True) + "\n"
                 for row in rows
             ).encode("utf-8")
         else:
             payload = _canonical_pretty_json_bytes(
-                cast(Mapping[str, Any], rewrite(json.loads(path.read_text(encoding="utf-8"))))
+                cast(
+                    Mapping[str, Any],
+                    rewrite(json.loads(path.read_text(encoding="utf-8"))),
+                )
             )
         path.write_bytes(payload)
 
@@ -11760,7 +12015,9 @@ def _rewrite_json_tree_paths(root: Path, *, old_root: Path, new_root: Path) -> N
 def _load_ready_examples(paths: Mapping[str, Path]) -> dict[tuple[str, str], Any]:
     examples = {}
     for dataset, path in sorted(paths.items()):
-        for index, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for index, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             record = json.loads(line)
             if not isinstance(record, Mapping):
                 raise ValueError("ready input row must be an object")
@@ -11968,8 +12225,7 @@ def _validate_governed_ready_manifest_replay(
         "node_type_id": FULL_SCORE_PRODUCER_NODE_TYPE_ID,
     }
     if any(
-        producer_hardware.get(key) != value
-        for key, value in expected_hardware.items()
+        producer_hardware.get(key) != value for key, value in expected_hardware.items()
     ):
         raise ValueError("governed ready-shard producer hardware drift")
     total_memory = producer_hardware.get("total_memory_bytes")
@@ -12081,7 +12337,9 @@ def _load_governed_ready_source_records(
                 raise ValueError("governed ready input contains invalid JSON") from exc
             record = _json_mapping(value, "governed ready input row")
             if _TRANSFER_FIELDS.intersection(record):
-                raise ValueError("governed source input unexpectedly contains transfer fields")
+                raise ValueError(
+                    "governed source input unexpectedly contains transfer fields"
+                )
             example = _example_from_record(
                 record,
                 default_dataset=dataset,
@@ -12148,9 +12406,7 @@ def _validate_governed_handoff_replay(
             raise ValueError("governed handoff manifest coverage is incomplete")
         manifest = read_benchmark_handoff_manifest_json(manifest_path)
         entries = {entry.key: entry for entry in manifest.entries}
-        expected_dataset_keys = {
-            key for key in source_records if key[0] == dataset
-        }
+        expected_dataset_keys = {key for key in source_records if key[0] == dataset}
         if set(entries) != expected_dataset_keys:
             raise ValueError("governed handoff manifest identity coverage drift")
         enriched_rows = _read_governed_jsonl_rows(
@@ -12186,13 +12442,17 @@ def _validate_governed_handoff_replay(
                 "governed enriched Vanilla handoff",
             )
             if actual_params != expected_params:
-                raise ValueError("governed enriched input differs from handoff manifest")
+                raise ValueError(
+                    "governed enriched input differs from handoff manifest"
+                )
             expected_source = dict(source_records[key])
             expected_source.setdefault("dataset", dataset)
             if enriched != expected_source:
                 raise ValueError("governed enriched input differs from source row")
             if pair_artifacts[key] != entry.artifact_id:
-                raise ValueError("measured Vanilla artifact differs from handoff manifest")
+                raise ValueError(
+                    "measured Vanilla artifact differs from handoff manifest"
+                )
             observed.add(key)
     if set(manifest_paths) != set(enriched_paths) or observed != set(source_records):
         raise ValueError("governed handoff replay has partial dataset coverage")
@@ -12226,7 +12486,10 @@ def load_governed_full_score_shard_evidence(
         inventory_sha256=inventory.inventory_sha256,
         shard_plan_sha256=_required_string(shard_plan, "closed_record_sha256"),
     )
-    if evidence.get("authorization_scope") != FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE:
+    if (
+        evidence.get("authorization_scope")
+        != FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+    ):
         raise ValueError("publication aggregation rejects local-fixture shard evidence")
     execution_sha = _required_string(execution_plan, "closed_record_sha256")
     if evidence.get("execution_plan_sha256") != execution_sha:
@@ -12247,7 +12510,10 @@ def load_governed_full_score_shard_evidence(
     if shard is None or evidence.get("shard_items_sha256") != shard.get("items_sha256"):
         raise ValueError("governed shard evidence is not planned")
     datasets = sorted(
-        {cast(str, item["dataset"]) for item in cast(list[Mapping[str, Any]], shard["items"])}
+        {
+            cast(str, item["dataset"])
+            for item in cast(list[Mapping[str, Any]], shard["items"])
+        }
     )
     required_preserved = {
         "baseline_raw_output",
@@ -12289,9 +12555,7 @@ def load_governed_full_score_shard_evidence(
         resolved_files=resolved_files,
         datasets=datasets,
     )
-    input_paths = {
-        dataset: resolved_files[f"input_{dataset}"] for dataset in datasets
-    }
+    input_paths = {dataset: resolved_files[f"input_{dataset}"] for dataset in datasets}
     enriched_paths = {
         dataset: resolved_files[f"enriched_{dataset}"] for dataset in datasets
     }
@@ -12447,7 +12711,10 @@ def _durable_copy(source: Path, destination: Path) -> None:
         replace_existing=False,
     )
     _fsync_directory(destination.parent)
-    if sha256(source.read_bytes()).hexdigest() != sha256(destination.read_bytes()).hexdigest():
+    if (
+        sha256(source.read_bytes()).hexdigest()
+        != sha256(destination.read_bytes()).hexdigest()
+    ):
         raise RuntimeError("durable evidence copy checksum mismatch")
 
 
@@ -12554,7 +12821,9 @@ def _fsync_file_tree(root: Path) -> None:
             directories.add(path.parent)
         elif path.is_dir():
             directories.add(path)
-    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+    for directory in sorted(
+        directories, key=lambda item: len(item.parts), reverse=True
+    ):
         _fsync_directory(directory)
 
 
@@ -12576,7 +12845,9 @@ def _encoded_ids(tokenizer: MainLatencyTokenizer, text: str) -> tuple[int, ...]:
     if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
         raise TypeError("tokenizer.encode() must return a sequence")
     token_ids = tuple(values)
-    if not token_ids or any(type(value) is not int or not 0 <= value < 2**64 for value in token_ids):
+    if not token_ids or any(
+        type(value) is not int or not 0 <= value < 2**64 for value in token_ids
+    ):
         raise ValueError("tokenizer returned invalid token IDs")
     return token_ids
 
@@ -12688,8 +12959,7 @@ def _validated_full_score_single_user_name(value: Any) -> str:
         or not value
         or value.strip() != value
         or any(
-            ord(character) < 32 or 127 <= ord(character) <= 159
-            for character in value
+            ord(character) < 32 or 127 <= ord(character) <= 159 for character in value
         )
     ):
         raise ValueError(
@@ -12821,11 +13091,7 @@ def _open_directory_no_symlinks(path: Path) -> int:
     """Open an absolute directory one non-following component at a time."""
 
     absolute = _absolute_path_without_symlink_resolution(path)
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open("/", flags)
     try:
@@ -12843,6 +13109,205 @@ def _open_directory_no_symlinks(path: Path) -> int:
     except Exception:
         os.close(descriptor)
         raise
+
+
+def _read_stable_local_authority_bytes(
+    path: Path,
+    *,
+    label: str,
+    max_bytes: int = 1024 * 1024,
+) -> bytes:
+    """Read one local authority file through held no-follow descriptors."""
+
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise RuntimeError("secure local authority reads require no-follow support")
+    parent_fd = _open_directory_no_symlinks(path.parent)
+    try:
+        parent_status = os.fstat(parent_fd)
+        if (
+            parent_status.st_uid != os.getuid()
+            or stat.S_IMODE(parent_status.st_mode) != 0o700
+        ):
+            raise ValueError(f"{label} parent must be current-UID mode 0700")
+        return _read_stable_local_authority_bytes_at(
+            parent_fd, path.name, label=label, max_bytes=max_bytes
+        )
+    finally:
+        os.close(parent_fd)
+
+
+def _read_stable_local_authority_bytes_at(
+    parent_fd: int,
+    leaf: str,
+    *,
+    label: str,
+    max_bytes: int = 1024 * 1024,
+    allowed_nlinks: tuple[int, ...] = (1,),
+) -> bytes:
+    fd = os.open(
+        leaf,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=parent_fd,
+    )
+    try:
+        before = os.fstat(fd)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink not in allowed_nlinks
+            or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size < 0
+            or before.st_size > max_bytes
+        ):
+            raise ValueError(f"{label} must be a bounded single-link regular file")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        after = os.fstat(fd)
+
+        def identity(item: os.stat_result) -> tuple[int, ...]:
+            return (
+                item.st_dev,
+                item.st_ino,
+                item.st_mode,
+                item.st_uid,
+                item.st_nlink,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            )
+
+        if len(content) > max_bytes or identity(before) != identity(after):
+            raise ValueError(f"{label} changed during secure read")
+        return content
+    finally:
+        os.close(fd)
+
+
+def _read_full_score_workspace_authority(
+    path: Path,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    content = _read_stable_local_authority_bytes(path, label=label)
+    record = _json_object(content, label)
+    if set(record) != {
+        "closed_record_sha256",
+        "intent_record_sha256",
+        "phase_lease_record_sha256",
+        "record_type",
+        "schema_version",
+        "user_name_sha256",
+        "workspace_host_sha256",
+    } or content != _canonical_pretty_json_bytes(record):
+        raise ValueError(f"{label} must be exact canonical JSON")
+    return record
+
+
+def _write_or_require_local_authority_bytes(
+    path: Path,
+    content: bytes,
+    *,
+    label: str,
+) -> None:
+    """Publish one mode-0600 authority beneath a held mode-0700 directory."""
+
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise RuntimeError("secure local authority writes require no-follow support")
+    parent_fd = _open_directory_no_symlinks(path.parent)
+    temporary = f".{path.name}.pending-{os.getpid()}-{time.time_ns()}"
+    descriptor = -1
+    try:
+        parent_status = os.fstat(parent_fd)
+        if (
+            parent_status.st_uid != os.getuid()
+            or stat.S_IMODE(parent_status.st_mode) != 0o700
+        ):
+            raise ValueError(f"{label} parent must be current-UID mode 0700")
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=parent_fd,
+        )
+        offset = 0
+        while offset < len(content):
+            offset += os.write(descriptor, content[offset:])
+        os.fsync(descriptor)
+        staged = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(staged.st_mode)
+            or staged.st_uid != os.getuid()
+            or staged.st_nlink != 1
+            or stat.S_IMODE(staged.st_mode) != 0o600
+            or staged.st_size != len(content)
+        ):
+            raise ValueError(f"{label} staging identity drift")
+        try:
+            os.link(
+                temporary,
+                path.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            observed = _read_stable_local_authority_bytes_at(
+                parent_fd,
+                path.name,
+                label=label,
+                allowed_nlinks=(1, 2),
+            )
+            if observed != content:
+                raise ValueError(f"{label} binding drift") from None
+            final_status = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if final_status.st_nlink == 2:
+                prefix = f".{path.name}.pending-"
+                linked_temps: list[str] = []
+                for candidate in os.listdir(parent_fd):
+                    if not candidate.startswith(prefix):
+                        continue
+                    suffix = candidate.removeprefix(prefix).split("-")
+                    if len(suffix) != 2 or any(not part.isdigit() for part in suffix):
+                        continue
+                    candidate_status = os.stat(
+                        candidate, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if (
+                        candidate_status.st_dev == final_status.st_dev
+                        and candidate_status.st_ino == final_status.st_ino
+                    ):
+                        linked_temps.append(candidate)
+                if len(linked_temps) != 1:
+                    raise ValueError(f"{label} has ambiguous crash-recovery links")
+                os.unlink(linked_temps[0], dir_fd=parent_fd)
+                os.fsync(parent_fd)
+                recovered = _read_stable_local_authority_bytes_at(
+                    parent_fd, path.name, label=label
+                )
+                if recovered != content:
+                    raise ValueError(f"{label} crash recovery binding drift")
+        os.fsync(parent_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        else:
+            os.fsync(parent_fd)
+        os.close(parent_fd)
 
 
 def _rename_directory_no_follow(source: Path, destination: Path) -> None:
@@ -13054,8 +13519,7 @@ def _validate_full_score_l40s_terminal_status(
     submit = _required_mapping(status, "submit_payload")
     if (
         submit.get("node_type_ids") != [FULL_SCORE_PRODUCER_NODE_TYPE_ID]
-        or submit.get("driver_node_type_ids")
-        != [FULL_SCORE_PRODUCER_NODE_TYPE_ID]
+        or submit.get("driver_node_type_ids") != [FULL_SCORE_PRODUCER_NODE_TYPE_ID]
         or submit.get("single_node") is not True
     ):
         raise ValueError("L40S producer submit summary topology drift")
@@ -13070,7 +13534,9 @@ def _ledger_mapping_sha256(value: Mapping[str, Any]) -> str:
             sort_keys=True,
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
-        raise ValueError("Databricks control-plane record is not canonical JSON") from exc
+        raise ValueError(
+            "Databricks control-plane record is not canonical JSON"
+        ) from exc
     return sha256(raw).hexdigest()
 
 
@@ -13117,9 +13583,7 @@ def _validated_full_score_phase_submit_payload(
         raise TypeError("full-score submit payload must be a mapping")
     if frozenset(submit_payload) not in {
         frozenset({"run_name", "tasks", "timeout_seconds"}),
-        frozenset(
-            {"idempotency_token", "run_name", "tasks", "timeout_seconds"}
-        ),
+        frozenset({"idempotency_token", "run_name", "tasks", "timeout_seconds"}),
     }:
         raise ValueError("full-score submit payload schema drift")
     run_timeout_seconds = _validated_databricks_run_timeout_seconds(
@@ -13176,9 +13640,7 @@ def _validated_full_score_phase_submit_payload(
         matching_workers = [
             worker_index
             for worker_index in expected_by_worker
-            if task_key.endswith(
-                f"_wave_{wave_index:03d}_{phase}_{worker_index:02d}"
-            )
+            if task_key.endswith(f"_wave_{wave_index:03d}_{phase}_{worker_index:02d}")
         ]
         if len(matching_workers) != 1:
             raise ValueError("full-score task_key does not bind one planned worker")
@@ -13219,7 +13681,12 @@ def _validated_full_score_phase_submit_payload(
                 "spark.master": "local[*]",
             }
             or cluster.get("aws_attributes")
-            != {"availability": "ON_DEMAND", "zone_id": "auto"}
+            != {
+                "availability": "ON_DEMAND",
+                "zone_id": (
+                    FULL_SCORE_PRODUCER_ZONE_ID if phase == "producer" else "auto"
+                ),
+            }
         ):
             raise ValueError("full-score phase task node topology drift")
         tags = _required_mapping(cluster, "custom_tags")
@@ -13590,9 +14057,9 @@ def _full_score_task_parameter_bindings(
 
 def _canonical_sha256(value: Any) -> str:
     return sha256(
-        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
-            "utf-8"
-        )
+        json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
     ).hexdigest()
 
 
@@ -13685,6 +14152,7 @@ __all__ = [
     "FULL_SCORE_PHASE_TERMINAL_SCHEMA_VERSION",
     "FULL_SCORE_PRODUCER_HARDWARE_TARGET",
     "FULL_SCORE_PRODUCER_NODE_TYPE_ID",
+    "FULL_SCORE_PRODUCER_ZONE_ID",
     "FULL_SCORE_PRODUCER_PHASE_COMPLETION_RECORD_TYPE",
     "FULL_SCORE_PRODUCER_PHASE_COMPLETION_SCHEMA_VERSION",
     "FULL_SCORE_PROTOCOL_ID",

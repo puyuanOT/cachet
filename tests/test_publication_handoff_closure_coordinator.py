@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import os
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -45,10 +46,28 @@ from document_kv_cache.runtime_artifact_closure import (
 
 
 VOLUME_ROOT = "dbfs:/Volumes/catalog/schema/volume"
+TEST_WORKSPACE_HOST = "https://workspace.example"
+TEST_WORKSPACE_USER = "publication@example.com"
 
 
 def _digest(label: str) -> str:
     return sha256(label.encode("utf-8")).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_test_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    def authenticate(workspace: DatabricksWorkspaceConfig, *, expected_user_name: str):
+        assert expected_user_name == TEST_WORKSPACE_USER
+        return {
+            "workspace_host_sha256": sha256(
+                workspace.normalized_host.encode("utf-8")
+            ).hexdigest(),
+            "user_name_sha256": sha256(expected_user_name.encode("utf-8")).hexdigest(),
+        }
+
+    monkeypatch.setattr(
+        coordinator, "require_databricks_current_user_name", authenticate
+    )
 
 
 def _config(
@@ -68,16 +87,12 @@ def _config(
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
         patched_flashinfer_wheel_uri=f"{VOLUME_ROOT}/inputs/flashinfer.whl",
         patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
-        runtime_closure_manifest_uri=(
-            f"{VOLUME_ROOT}/inputs/runtime-closure.json"
-        ),
+        runtime_closure_manifest_uri=(f"{VOLUME_ROOT}/inputs/runtime-closure.json"),
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         source_closure_uri=f"{VOLUME_ROOT}/inputs/cachet-source-closure.json",
         cachet_source_tree_sha256=_digest("source-closure-file"),
         request_root_uri=(
-            coordinator._handoff_closure_request_root_uri(
-                output_root, stage=stage
-            )
+            coordinator._handoff_closure_request_root_uri(output_root, stage=stage)
             if request_root_uri is None
             else request_root_uri
         ),
@@ -96,9 +111,7 @@ def _qualified_pins(
         runtime_lock_sha256=config.runtime_lock_sha256,
         patched_vllm_wheel_sha256=config.patched_vllm_wheel_sha256,
         patched_flashinfer_wheel_sha256=config.patched_flashinfer_wheel_sha256,
-        runtime_closure_manifest_sha256=(
-            config.runtime_closure_manifest_sha256
-        ),
+        runtime_closure_manifest_sha256=(config.runtime_closure_manifest_sha256),
         package_wheel_sha256=config.package_wheel_sha256,
         cachet_source_tree_sha256=config.cachet_source_tree_sha256,
         runner_sha256=runner_sha256 or _digest("qualified-producer-runner"),
@@ -197,9 +210,7 @@ def _request(*, stage: str = "q8", large: bool = False) -> dict[str, Any]:
         "prepared_input_root_uri": f"{VOLUME_ROOT}/prepared/main-latency",
         "qualified_artifact_pins": _qualified_pins(config).to_record(),
         "record_type": coordinator.PUBLICATION_HANDOFF_CLOSURE_REQUEST_RECORD_TYPE,
-        "request_uri": (
-            f"{config.request_root_uri}/request.json"
-        ),
+        "request_uri": (f"{config.request_root_uri}/request.json"),
         "result_uri": coordinator._handoff_closure_result_uri(
             output_root_uri, stage=stage
         ),
@@ -216,17 +227,15 @@ def _test_controller_lease_root(stage: str) -> Path:
     return Path.cwd() / ".test-handoff-controller" / stage
 
 
-def _rebind_request_controller_lease(
-    request: dict[str, Any], root: str | Path
-) -> None:
+def _rebind_request_controller_lease(request: dict[str, Any], root: str | Path) -> None:
     singleton = request["controller_singleton"]
-    singleton["controller_lease_root_sha256"] = (
-        coordinator._controller_path_sha256(
-            root,
-            domain="cachet.publication.handoff_closure.controller_lease.v2",
-        )
+    singleton["controller_lease_root_sha256"] = coordinator._controller_path_sha256(
+        root,
+        domain="cachet.publication.handoff_closure.controller_lease.v2",
     )
-    identity = {key: value for key, value in singleton.items() if key != "identity_sha256"}
+    identity = {
+        key: value for key, value in singleton.items() if key != "identity_sha256"
+    }
     singleton["identity_sha256"] = coordinator._canonical_sha256(
         {
             "domain": "cachet.publication.handoff_closure.singleton.v2",
@@ -263,9 +272,7 @@ def _authorize_request(
                 "attempt_ids": [item["attempt_id"] for item in evidence],
                 "batch_prefix": copy.deepcopy(lineage["producer_batch_prefix"]),
                 "ledger_path_sha256": lineage["ledger_path_sha256"],
-                "predecessor_prefix": copy.deepcopy(
-                    lineage["predecessor_prefix"]
-                ),
+                "predecessor_prefix": copy.deepcopy(lineage["predecessor_prefix"]),
                 "submit_payload_sha256s": [
                     _digest(f"{batch_label}-{index}") for index in range(16)
                 ],
@@ -285,9 +292,7 @@ def _authorize_request(
             ),
             "authorization_ledger_id": lineage["ledger_id"],
             "authorization_ledger_path_sha256": lineage["ledger_path_sha256"],
-            "authorization_ledger_prefix": copy.deepcopy(
-                lineage["predecessor_prefix"]
-            ),
+            "authorization_ledger_prefix": copy.deepcopy(lineage["predecessor_prefix"]),
             "evidence_closed_record_sha256": request[
                 "expected_qualification_closed_record_sha256"
             ],
@@ -307,6 +312,10 @@ def _authorize_request(
             },
         },
         controller_lease_root=lease_root,
+        workspace_identity={
+            "workspace_host_sha256": _digest(TEST_WORKSPACE_HOST),
+            "user_name_sha256": _digest(TEST_WORKSPACE_USER),
+        },
         _issuer=coordinator._REQUEST_AUTHORIZATION_ISSUER,
     )
 
@@ -746,9 +755,9 @@ def test_renderer_uses_one_cpu_task_and_a_bounded_request_pointer() -> None:
             "runtime_closure_manifest_sha256",
         ),
     ):
-        assert parameters[parameters.index(flag) + 1] == request["coordinator"][
-            field_name
-        ]
+        assert (
+            parameters[parameters.index(flag) + 1] == request["coordinator"][field_name]
+        )
     assert "--request-json-b64" not in parameters
     assert parameters[parameters.index("--request-uri") + 1] == request["request_uri"]
     assert (
@@ -806,19 +815,15 @@ def test_closure_request_rejects_v1_exact8_tamper_and_runner_conflation() -> Non
             pins["downstream_runner_sha256"] = _digest("extra")
         else:
             pins["patched_flashinfer_wheel_sha256"] = _digest("tampered-fi")
-        tampered["closed_record_sha256"] = coordinator._closed_record_sha256(
-            tampered
-        )
+        tampered["closed_record_sha256"] = coordinator._closed_record_sha256(tampered)
         with pytest.raises(ValueError):
             coordinator._validate_closure_request(tampered)
 
     conflated = copy.deepcopy(request)
-    conflated["qualified_artifact_pins"]["runner_sha256"] = conflated[
-        "coordinator"
-    ]["runner_sha256"]
-    conflated["closed_record_sha256"] = coordinator._closed_record_sha256(
-        conflated
-    )
+    conflated["qualified_artifact_pins"]["runner_sha256"] = conflated["coordinator"][
+        "runner_sha256"
+    ]
+    conflated["closed_record_sha256"] = coordinator._closed_record_sha256(conflated)
     with pytest.raises(ValueError, match="runner must remain distinct"):
         coordinator._validate_closure_request(conflated)
 
@@ -879,9 +884,10 @@ def test_raw_or_resealed_package_request_cannot_authorize_launch(
         authorization
     )
     parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
-    assert parameters[parameters.index("--package-wheel-sha256") + 1] == request[
-        "coordinator"
-    ]["package_wheel_sha256"]
+    assert (
+        parameters[parameters.index("--package-wheel-sha256") + 1]
+        == request["coordinator"]["package_wheel_sha256"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -983,7 +989,7 @@ def test_caller_resealed_qualification_and_arbitrary_pins_cannot_issue_request(
     builders = (
         (
             coordinator.build_q8_handoff_closure_request,
-            {"attestations_by_worker": {}},
+            {"worker_authorizations": {}},
         ),
         (
             coordinator.build_bf16_handoff_closure_request,
@@ -1016,9 +1022,7 @@ def test_caller_resealed_qualification_and_arbitrary_pins_cannot_issue_request(
         evidence_file_sha256=_digest("caller-resealed-evidence-file"),
     )
     for builder, stage_args in builders:
-        with pytest.raises(
-            ValueError, match="authorization evidence binding differs"
-        ):
+        with pytest.raises(ValueError, match="authorization evidence binding differs"):
             builder(
                 **common,
                 **stage_args,
@@ -1090,9 +1094,7 @@ def test_reserve_stages_exact_request_before_post_and_replays_safely(
 ) -> None:
     request = _request()
     root = tmp_path / "reservation"
-    request_authorization = _authorize_request(
-        request, controller_lease_root=root
-    )
+    request_authorization = _authorize_request(request, controller_lease_root=root)
     calls = {"put": 0, "post": 0}
 
     def upload(_workspace, uri, content, *, max_bytes):
@@ -1168,13 +1170,6 @@ def test_handoff_singleton_rejects_alternate_attempt_output_and_attestation_root
         / directory
         / "worker-00.json"
     )
-    coordinator._require_handoff_attestation_path(
-        canonical_path,
-        request["output_root_uri"],
-        directory=directory,
-        worker_index=0,
-        stage=stage,
-    )
     with pytest.raises(ValueError, match="attestation path differs"):
         coordinator._require_handoff_attestation_path(
             canonical_path.parent.parent / "alternate" / "worker-00.json",
@@ -1191,9 +1186,7 @@ def test_mac_collector_never_resolves_dbfs_and_issues_live_authority(
     _allow_synthetic_manifests(monkeypatch)
     request = _request()
     root = tmp_path / "reservation"
-    request_authorization = _authorize_request(
-        request, controller_lease_root=root
-    )
+    request_authorization = _authorize_request(request, controller_lease_root=root)
     result = _result(request)
     coordinator._validate_closure_result(result, request=request)
     payload = _write_collection_reservation(root, request_authorization)
@@ -1248,9 +1241,7 @@ def test_collector_rejects_raw_python_task_substitution_before_download(
 ) -> None:
     request = _request()
     root = tmp_path / "reservation"
-    request_authorization = _authorize_request(
-        request, controller_lease_root=root
-    )
+    request_authorization = _authorize_request(request, controller_lease_root=root)
     payload = _write_collection_reservation(root, request_authorization)
     monkeypatch.setattr(
         coordinator,
@@ -1287,9 +1278,7 @@ def test_collector_rejects_resealed_tampered_result(
     _allow_synthetic_manifests(monkeypatch)
     request = _request()
     root = tmp_path / "reservation"
-    request_authorization = _authorize_request(
-        request, controller_lease_root=root
-    )
+    request_authorization = _authorize_request(request, controller_lease_root=root)
     result = _result(request)
     result["coordinator"]["close_function"] = "forged_close"
     result["closed_record_sha256"] = coordinator._closed_record_sha256(result)
@@ -1349,9 +1338,7 @@ def test_failed_run_cannot_fetch_or_authorize_result(
 ) -> None:
     request = _request()
     root = tmp_path / "reservation"
-    request_authorization = _authorize_request(
-        request, controller_lease_root=root
-    )
+    request_authorization = _authorize_request(request, controller_lease_root=root)
     payload = _write_collection_reservation(root, request_authorization)
     monkeypatch.setattr(
         coordinator,
@@ -1382,9 +1369,7 @@ def test_nonzero_or_boolean_attempt_number_cannot_authorize_result(
 ) -> None:
     request = _request()
     root = tmp_path / "reservation"
-    request_authorization = _authorize_request(
-        request, controller_lease_root=root
-    )
+    request_authorization = _authorize_request(request, controller_lease_root=root)
     payload = _write_collection_reservation(root, request_authorization)
     terminal = _terminal(payload)
     terminal["tasks"][0]["attempt_number"] = attempt_number
@@ -1417,9 +1402,7 @@ def test_noncanonical_or_parent_equal_task_run_id_cannot_authorize_result(
 ) -> None:
     request = _request()
     root = tmp_path / "reservation"
-    request_authorization = _authorize_request(
-        request, controller_lease_root=root
-    )
+    request_authorization = _authorize_request(request, controller_lease_root=root)
     payload = _write_collection_reservation(root, request_authorization)
     terminal = _terminal(payload)
     terminal["tasks"][0]["run_id"] = task_run_id
@@ -1452,6 +1435,8 @@ def test_remote_authority_constructor_is_issuer_only() -> None:
             result_file_sha256="0" * 64,
             coordinator_run_id="12345",
             control_plane_status_sha256="1" * 64,
+            workspace_host_sha256="2" * 64,
+            user_name_sha256="3" * 64,
             _issuer=object(),
         )
 
@@ -1639,7 +1624,9 @@ def test_mounted_recovery_runs_full_post_close_replay(
             lambda *_args, **_kwargs: pytest.fail("recovery must not close again"),
         )
     else:
-        execution_path = root / coordinator._bf16.PUBLICATION_BF16_HANDOFF_EXECUTION_FILENAME
+        execution_path = (
+            root / coordinator._bf16.PUBLICATION_BF16_HANDOFF_EXECUTION_FILENAME
+        )
         monkeypatch.setattr(
             coordinator._bf16,
             "_execution_config_from_record",
@@ -1668,16 +1655,21 @@ def test_mounted_recovery_runs_full_post_close_replay(
         lambda _request, *, closed, coordinator_run_id: compact,
     )
 
-    assert coordinator.run_publication_handoff_closure_coordinator(
-        request, coordinator_run_id="12345"
-    ) == compact
+    assert (
+        coordinator.run_publication_handoff_closure_coordinator(
+            request, coordinator_run_id="12345"
+        )
+        == compact
+    )
     assert captured["ledger_snapshot"].ledger_id == "campaign-ledger"
-    assert captured["ledger_path_sha256"] == request["ledger_lineage"][
-        "ledger_path_sha256"
-    ]
-    assert captured["expected_producer_batch_prefix"].to_record() == request[
-        "ledger_lineage"
-    ]["producer_batch_prefix"]
+    assert (
+        captured["ledger_path_sha256"]
+        == request["ledger_lineage"]["ledger_path_sha256"]
+    )
+    assert (
+        captured["expected_producer_batch_prefix"].to_record()
+        == request["ledger_lineage"]["producer_batch_prefix"]
+    )
     issuer = (
         coordinator._q8._POST_CLOSE_REPLAY_ISSUER
         if stage == "q8"
@@ -1779,3 +1771,416 @@ def test_post_close_replay_helpers_are_coordinator_issuer_only(
             coordinator._bf16._replay_closed_publication_bf16_handoff_generation(
                 {}, worker_authorizations={}, **common
             )
+
+
+def test_mirror_closure_path_requires_workspace_and_remote_byte_equality(
+    tmp_path, monkeypatch
+):
+    mirror = tmp_path / "mirror"
+    mirror.mkdir(mode=0o700)
+    directory = (
+        coordinator._q8.PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY
+    )
+    record = {"attempt": {"worker_index": 0}, "closed_record_sha256": "a" * 64}
+    content = coordinator._canonical_json_bytes(record, pretty=True)
+    local = mirror / directory / "worker-00.json"
+    coordinator._q8._write_q8_exact_mirror_bytes(
+        mirror, f"{directory}/worker-00.json", content
+    )
+    canonical = (
+        Path("/dbfs/Volumes/catalog/schema/volume/output")
+        / directory
+        / "worker-00.json"
+    )
+    monkeypatch.setattr(
+        coordinator._q8,
+        "_validate_publication_latency_handoff_databricks_attestation_record",
+        lambda _record: None,
+    )
+    with pytest.raises(TypeError, match="workspace"):
+        coordinator._require_handoff_attestation_path(
+            canonical,
+            "dbfs:/Volumes/catalog/schema/volume/output",
+            directory=directory,
+            worker_index=0,
+            stage="q8",
+            local_mirror_root=mirror,
+            expected_file_sha256=sha256(content).hexdigest(),
+            expected_closed_record_sha256="a" * 64,
+        )
+    workspace = coordinator.DatabricksWorkspaceConfig("https://example.com", "token")
+    monkeypatch.setattr(
+        coordinator, "download_databricks_volume_file_bytes", lambda *_a, **_k: b"bad"
+    )
+    with pytest.raises(ValueError, match="remote attestation bytes"):
+        coordinator._require_handoff_attestation_path(
+            canonical,
+            "dbfs:/Volumes/catalog/schema/volume/output",
+            directory=directory,
+            worker_index=0,
+            stage="q8",
+            local_mirror_root=mirror,
+            expected_file_sha256=sha256(content).hexdigest(),
+            expected_closed_record_sha256="a" * 64,
+            collection_workspace=workspace,
+        )
+    assert local.is_file()
+
+
+@pytest.mark.parametrize(
+    ("module", "root_helper", "writer", "reader"),
+    [
+        (
+            coordinator._q8,
+            "_require_q8_local_evidence_mirror_root",
+            "_write_q8_exact_mirror_bytes",
+            "_read_q8_stable_regular_file",
+        ),
+        (
+            coordinator._bf16,
+            "_require_bf16_local_evidence_mirror_root",
+            "_write_bf16_exact_mirror_bytes",
+            "_read_bf16_stable_regular_file",
+        ),
+    ],
+)
+def test_mirror_io_rejects_fifo_hardlink_symlink_and_permissive_descendant(
+    tmp_path: Path,
+    module: Any,
+    root_helper: str,
+    writer: str,
+    reader: str,
+) -> None:
+    root = getattr(module, root_helper)(
+        tmp_path / module.__name__.rsplit(".", 1)[-1], create=True
+    )
+    fifo = root / "fifo"
+    os.mkfifo(fifo, 0o600)
+    with pytest.raises(ValueError, match="single-link regular file"):
+        getattr(module, reader)(fifo, mirror_root=root)
+
+    regular = root / "regular"
+    regular.write_bytes(b"same")
+    regular.chmod(0o600)
+    os.link(regular, root / "second-link")
+    with pytest.raises(ValueError, match="single-link regular file"):
+        getattr(module, reader)(regular, mirror_root=root)
+
+    target = root / "target"
+    target.mkdir(mode=0o700)
+    (root / "linked-dir").symlink_to(target, target_is_directory=True)
+    with pytest.raises(OSError):
+        getattr(module, writer)(root, "linked-dir/value.json", b"value")
+
+    permissive = root / "permissive"
+    permissive.mkdir(mode=0o755)
+    with pytest.raises(ValueError, match="current-UID mode 0700"):
+        getattr(module, writer)(root, "permissive/value.json", b"value")
+
+    root.chmod(0o755)
+    with pytest.raises(ValueError, match="mirror root must be current-UID mode 0700"):
+        getattr(module, writer)(root, "value.json", b"value")
+
+
+@pytest.mark.parametrize(
+    ("module", "root_helper", "writer"),
+    [
+        (
+            coordinator._q8,
+            "_require_q8_local_evidence_mirror_root",
+            "_write_q8_exact_mirror_bytes",
+        ),
+        (
+            coordinator._bf16,
+            "_require_bf16_local_evidence_mirror_root",
+            "_write_bf16_exact_mirror_bytes",
+        ),
+    ],
+)
+def test_mirror_writer_rejects_staging_path_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module: Any,
+    root_helper: str,
+    writer: str,
+) -> None:
+    root = getattr(module, root_helper)(
+        tmp_path / module.__name__.rsplit(".", 1)[-1], create=True
+    )
+    original_link = os.link
+
+    def substitute(source: str, destination: str, **kwargs: Any) -> None:
+        source_dir_fd = kwargs["src_dir_fd"]
+        os.unlink(source, dir_fd=source_dir_fd)
+        replacement = os.open(
+            source,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=source_dir_fd,
+        )
+        try:
+            os.write(replacement, b"evil!")
+            os.fsync(replacement)
+        finally:
+            os.close(replacement)
+        original_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(module.os, "link", substitute)
+    with pytest.raises(RuntimeError, match="staging identity changed"):
+        getattr(module, writer)(root, "nested/value.json", b"right")
+    assert not (root / "nested" / "value.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("module", "root_helper", "writer"),
+    [
+        (
+            coordinator._q8,
+            "_require_q8_local_evidence_mirror_root",
+            "_write_q8_exact_mirror_bytes",
+        ),
+        (
+            coordinator._bf16,
+            "_require_bf16_local_evidence_mirror_root",
+            "_write_bf16_exact_mirror_bytes",
+        ),
+    ],
+)
+def test_mirror_writer_recovers_only_one_exact_crash_link(
+    tmp_path: Path,
+    module: Any,
+    root_helper: str,
+    writer: str,
+) -> None:
+    root = getattr(module, root_helper)(
+        tmp_path / f"crash-{module.__name__.rsplit('.', 1)[-1]}", create=True
+    )
+    nested = root / "nested"
+    nested.mkdir(mode=0o700)
+    final = nested / "value.json"
+    final.write_bytes(b"exact")
+    final.chmod(0o600)
+    stale = nested / ".value.json.tmp-0123456789abcdef0123456789abcdef"
+    os.link(final, stale)
+    assert final.stat().st_nlink == 2
+    assert getattr(module, writer)(root, "nested/value.json", b"exact") == final
+    assert final.stat().st_nlink == 1
+    assert not stale.exists()
+
+    ambiguous = nested / ".value.json.tmp-fedcba9876543210fedcba9876543210"
+    second = nested / ".value.json.tmp-11111111111111111111111111111111"
+    os.link(final, ambiguous)
+    os.link(final, second)
+    with pytest.raises(ValueError, match="recovery is ambiguous"):
+        getattr(module, writer)(root, "nested/value.json", b"exact")
+
+
+@pytest.mark.parametrize(
+    ("module", "root_helper", "reader_at"),
+    [
+        (
+            coordinator._q8,
+            "_require_q8_local_evidence_mirror_root",
+            "_read_q8_stable_regular_file_at",
+        ),
+        (
+            coordinator._bf16,
+            "_require_bf16_local_evidence_mirror_root",
+            "_read_bf16_stable_regular_file_at",
+        ),
+    ],
+)
+def test_stable_reader_rejects_same_size_metadata_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module: Any,
+    root_helper: str,
+    reader_at: str,
+) -> None:
+    root = getattr(module, root_helper)(
+        tmp_path / f"race-{module.__name__.rsplit('.', 1)[-1]}", create=True
+    )
+    leaf = root / "value"
+    leaf.write_bytes(b"same")
+    leaf.chmod(0o600)
+    parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    original_fstat = os.fstat
+    calls = 0
+
+    def raced_fstat(descriptor: int) -> Any:
+        nonlocal calls
+        observed = original_fstat(descriptor)
+        calls += 1
+        if calls == 2:
+            values = {
+                name: getattr(observed, name)
+                for name in (
+                    "st_dev",
+                    "st_ino",
+                    "st_mode",
+                    "st_uid",
+                    "st_nlink",
+                    "st_size",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                )
+            }
+            values["st_ctime_ns"] += 1
+            return SimpleNamespace(**values)
+        return observed
+
+    monkeypatch.setattr(module.os, "fstat", raced_fstat)
+    try:
+        with pytest.raises(ValueError, match="changed while being read"):
+            getattr(module, reader_at)(parent_fd, "value", require_mode_0600=True)
+    finally:
+        os.close(parent_fd)
+
+
+def test_verified_publication_input_reader_rejects_special_links_and_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"publication input"
+    digest = sha256(content).hexdigest()
+    regular = tmp_path / "regular"
+    regular.write_bytes(content)
+    assert coordinator._read_verified_file_bytes(regular, digest, "input") == content
+
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="single-link"):
+        coordinator._read_verified_file_bytes(fifo, digest, "input")
+
+    linked = tmp_path / "linked"
+    os.link(regular, linked)
+    with pytest.raises(ValueError, match="single-link"):
+        coordinator._read_verified_file_bytes(regular, digest, "input")
+    linked.unlink()
+
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    nested = directory / "nested"
+    nested.write_bytes(content)
+    alias = tmp_path / "alias"
+    alias.symlink_to(directory, target_is_directory=True)
+    with pytest.raises(OSError):
+        coordinator._read_verified_file_bytes(alias / "nested", digest, "input")
+
+    original_fstat = os.fstat
+    calls = 0
+
+    def raced_fstat(descriptor: int) -> Any:
+        nonlocal calls
+        observed = original_fstat(descriptor)
+        calls += 1
+        if calls == 2:
+            values = {
+                name: getattr(observed, name)
+                for name in (
+                    "st_dev",
+                    "st_ino",
+                    "st_mode",
+                    "st_uid",
+                    "st_nlink",
+                    "st_size",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                )
+            }
+            values["st_mtime_ns"] += 1
+            return SimpleNamespace(**values)
+        return observed
+
+    monkeypatch.setattr(coordinator.os, "fstat", raced_fstat)
+    with pytest.raises(ValueError, match="changed while being read"):
+        coordinator._read_verified_file_bytes(regular, digest, "input")
+
+
+def test_workspace_identity_is_ephemeral_and_subclass_authority_is_rejected() -> None:
+    request = _request()
+
+    def assert_no_workspace_identity(value: Any) -> None:
+        if isinstance(value, dict):
+            assert "workspace_host_sha256" not in value
+            assert "user_name_sha256" not in value
+            for nested in value.values():
+                assert_no_workspace_identity(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                assert_no_workspace_identity(nested)
+
+    assert_no_workspace_identity(request)
+
+    class ForgedAuthorization(
+        coordinator.PublicationHandoffClosureRequestAuthorization
+    ):
+        pass
+
+    forged = object.__new__(ForgedAuthorization)
+    with pytest.raises(
+        TypeError, match="PublicationHandoffClosureRequestAuthorization"
+    ):
+        coordinator.require_publication_handoff_closure_request_authorization(forged)
+
+    class ForgedQ8Submission(
+        coordinator._q8.PublicationLatencyHandoffSubmissionAuthorization
+    ):
+        pass
+
+    with pytest.raises(
+        TypeError, match="PublicationLatencyHandoffSubmissionAuthorization"
+    ):
+        coordinator._q8.require_publication_latency_handoff_submission_authorization(
+            object.__new__(ForgedQ8Submission)
+        )
+
+    class ForgedBF16Submission(
+        coordinator._bf16.PublicationBF16HandoffSubmissionAuthorization
+    ):
+        pass
+
+    with pytest.raises(
+        TypeError, match="PublicationBF16HandoffSubmissionAuthorization"
+    ):
+        coordinator._bf16.require_publication_bf16_handoff_submission_authorization(
+            object.__new__(ForgedBF16Submission)
+        )
+
+
+def test_closure_reserve_and_collect_reject_workspace_and_principal_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _request()
+    root = tmp_path / "reservation"
+    authorization = _authorize_request(request, controller_lease_root=root)
+    other_workspace = DatabricksWorkspaceConfig("https://other.example", "token")
+    with pytest.raises(ValueError, match="workspace/principal authority drift"):
+        coordinator.reserve_and_submit_publication_handoff_closure(
+            other_workspace,
+            authorization,
+            reservation_root=root,
+        )
+    assert not root.exists()
+
+    _write_collection_reservation(root, authorization)
+    with pytest.raises(ValueError, match="workspace/principal authority drift"):
+        coordinator.collect_publication_handoff_closure(
+            other_workspace,
+            reservation_root=root,
+            request_authorization=authorization,
+        )
+
+    monkeypatch.setattr(
+        coordinator,
+        "require_databricks_current_user_name",
+        lambda _workspace, *, expected_user_name: {
+            "workspace_host_sha256": _digest(TEST_WORKSPACE_HOST),
+            "user_name_sha256": _digest("other-principal@example.com"),
+        },
+    )
+    with pytest.raises(ValueError, match="workspace/principal authority drift"):
+        coordinator.collect_publication_handoff_closure(
+            DatabricksWorkspaceConfig(TEST_WORKSPACE_HOST, "refreshed-token"),
+            reservation_root=root,
+            request_authorization=authorization,
+        )

@@ -18,10 +18,11 @@ def _digest(label):
 
 @pytest.fixture(autouse=True)
 def _bind_remote_current_user(monkeypatch):
-    def bind_current_user(_workspace, *, expected_user_name, opener=None):
+    def bind_current_user(workspace, *, expected_user_name, opener=None):
         return {
             "authenticated": True,
             "user_name_sha256": _digest(expected_user_name),
+            "workspace_host_sha256": _digest(workspace.normalized_host),
         }
 
     monkeypatch.setattr(
@@ -76,6 +77,8 @@ def _phase_authorization(
     phase="producer",
     terminal_record_sha256=None,
     phase_lease_root=None,
+    workspace_host="https://dbc.example",
+    user_name="researcher@example.com",
 ):
     predecessor = DatabricksLedgerPrefix(
         ledger_id="publication-full-score",
@@ -111,6 +114,8 @@ def _phase_authorization(
             else terminal_record_sha256
         ),
         causal_closure_sha256=_digest("phase-causal-closure"),
+        workspace_host_sha256=_digest(workspace_host),
+        user_name_sha256=_digest(user_name),
         _issuer=remote.full_score._FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
     )
 
@@ -291,6 +296,7 @@ def _rebuild_request(
     runner_python_file=None,
     package_wheel_uri="dbfs:/Volumes/catalog/schema/volume/runtime/cachet.whl",
     package_wheel_sha256=None,
+    phase_authorization=None,
 ):
     coordinator_config = case.coordinator_config
     if runner_python_file is not None:
@@ -330,7 +336,9 @@ def _rebuild_request(
             else attestation_uri
         ),
         coordinator_config=coordinator_config,
-        phase_authorization=case.phase,
+        phase_authorization=(
+            case.phase if phase_authorization is None else phase_authorization
+        ),
         phase_terminal_record=case.phase_terminal,
     )
 
@@ -576,6 +584,59 @@ def test_remote_request_and_cpu_payload_are_closed_and_c5d_only():
             ).encode("utf-8")
         )
         <= remote.FULL_SCORE_REMOTE_COORDINATOR_PARAMETERS_MAX_BYTES
+    )
+
+
+def test_remote_request_authority_is_immutable_before_io(monkeypatch):
+    case = _request_case()
+    external_calls = []
+    monkeypatch.setattr(
+        remote,
+        "upload_databricks_volume_file_bytes_exclusive",
+        lambda *args, **kwargs: external_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(AttributeError, match="immutable"):
+        case.request.workspace_host_sha256 = _digest("other-host")
+    with pytest.raises(AttributeError, match="immutable"):
+        case.request._request_bytes = b"{}\n"
+    assert external_calls == []
+
+
+def test_remote_workspace_identity_is_auth_only_and_preserves_canonical_bytes():
+    first = _request_case()
+    second_phase = _phase_authorization(
+        first.execution["closed_record_sha256"],
+        terminal_record_sha256=first.phase.terminal_record_sha256,
+        phase_lease_root=first.phase.phase_lease_root,
+        workspace_host="https://dbc-second.example",
+        user_name="second-researcher@example.com",
+    )
+    second = _rebuild_request(first, phase_authorization=second_phase)
+
+    assert second.to_record() == first.request.to_record()
+    assert second.authorization_record() == first.request.authorization_record()
+    assert second.workspace_host_sha256 != first.request.workspace_host_sha256
+    assert second.user_name_sha256 != first.request.user_name_sha256
+    assert remote.render_full_score_remote_coordinator_submit_payload(
+        first.coordinator_config,
+        _request_uri(first),
+        second,
+    ) == remote.render_full_score_remote_coordinator_submit_payload(
+        first.coordinator_config,
+        _request_uri(first),
+        first.request,
+    )
+    first_result, first_attestation = _result_and_attestation(first)
+    second_case_values = vars(first).copy()
+    second_case_values["request"] = second
+    second_case = SimpleNamespace(**second_case_values)
+    second_result, second_attestation = _result_and_attestation(second_case)
+    assert remote._pretty_json_bytes(second_result) == remote._pretty_json_bytes(
+        first_result
+    )
+    assert remote._pretty_json_bytes(second_attestation) == remote._pretty_json_bytes(
+        first_attestation
     )
 
 
@@ -1043,6 +1104,7 @@ def test_controller_concurrent_submission_uploads_and_posts_once(tmp_path, monke
         "runner-upload-receipt.json",
         "post-intent.json",
         "submit-response.json",
+        "workspace-authority.json",
     }.issubset(path.name for path in controller_root.iterdir())
 
 
@@ -1317,6 +1379,48 @@ def test_controller_recovery_rejects_tampered_local_request(tmp_path, monkeypatc
             controller_root=root,
             request_authorization=case.request,
         )
+
+
+@pytest.mark.parametrize("mutation", ["tamper", "missing", "fifo"])
+def test_controller_recovery_requires_exact_workspace_authority(
+    tmp_path, monkeypatch, mutation
+):
+    case = _request_case(phase_lease_root=tmp_path / "phase-leases")
+    submit = remote.render_full_score_remote_coordinator_submit_payload(
+        _coordinator_config(),
+        _request_uri(case),
+        case.request,
+    )
+    root = _persist_submission(
+        tmp_path,
+        monkeypatch,
+        case=case,
+        submit_payload=submit,
+    )
+    sidecar = root / "workspace-authority.json"
+    if mutation == "tamper":
+        record = remote.json.loads(sidecar.read_text(encoding="utf-8"))
+        record["workspace_host_sha256"] = _digest("other-workspace")
+        record["closed_record_sha256"] = remote._closed_record_sha256(record)
+        sidecar.write_bytes(remote._pretty_json_bytes(record))
+    else:
+        sidecar.unlink()
+        if mutation == "fifo":
+            remote.os.mkfifo(sidecar, 0o600)
+    post_calls = []
+    monkeypatch.setattr(
+        remote,
+        "submit_databricks_run",
+        lambda *args, **kwargs: post_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises((ValueError, FileNotFoundError)):
+        remote.recover_full_score_remote_coordinator_submission(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret"),
+            controller_root=root,
+            request_authorization=case.request,
+        )
+    assert post_calls == []
 
 
 def test_controller_recovery_requires_durable_request_authorization(
@@ -1629,21 +1733,6 @@ def test_mac_collection_uses_runs_get_files_api_cas_and_no_dbfs_mount(
     assert cas.resolve(case.request["result_uri"]).is_file()
     assert all(item[1].startswith("dbfs:/Volumes/") for item in observed_uris)
     assert all("/dbfs" not in item[1] for item in observed_uris)
-    monkeypatch.setattr(
-        remote,
-        "get_databricks_run",
-        lambda *_args, **_kwargs: pytest.fail("replay must not call Databricks"),
-    )
-    monkeypatch.setattr(
-        remote,
-        "download_databricks_volume_file_bytes",
-        lambda *_args, **_kwargs: pytest.fail("replay must not download"),
-    )
-    monkeypatch.setattr(
-        remote,
-        "list_databricks_volume_directory",
-        lambda *_args, **_kwargs: pytest.fail("replay must not list"),
-    )
     replayed = remote.replay_full_score_remote_coordinator_authorization(
         DatabricksWorkspaceConfig("https://dbc.example", "secret"),
         controller_root=controller_root,
@@ -1655,6 +1744,21 @@ def test_mac_collection_uses_runs_get_files_api_cas_and_no_dbfs_mount(
         replayed.controller_authorization_record_sha256
         == authority.controller_authorization_record_sha256
     )
+
+    monkeypatch.setattr(
+        remote,
+        "get_databricks_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("authenticated remote run unavailable")
+        ),
+    )
+    with pytest.raises(ValueError, match="authenticated remote run unavailable"):
+        remote.replay_full_score_remote_coordinator_authorization(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret"),
+            controller_root=controller_root,
+            cas=cas,
+            request_authorization=case.request,
+        )
 
 
 def test_failed_coordinator_cannot_issue_remote_authority(tmp_path, monkeypatch):
@@ -2031,8 +2135,10 @@ def test_consumer_authority_requires_exact_ten_wave_160_shard_coverage():
                 ),
                 runs_get_receipt_record_sha256=_digest(f"receipt-{wave_index}"),
                 phase_terminal_record_sha256=_digest(f"terminal-{wave_index}"),
-                evidence_bindings=bindings,
-                _issuer=remote._REMOTE_AUTHORIZATION_ISSUER,
+                    evidence_bindings=bindings,
+                    workspace_host_sha256=_digest("https://dbc.example"),
+                    user_name_sha256=_digest("researcher@example.com"),
+                    _issuer=remote._REMOTE_AUTHORIZATION_ISSUER,
             )
         )
 
@@ -2090,3 +2196,23 @@ def test_consumer_authority_requires_exact_ten_wave_160_shard_coverage():
         authorizations,
         execution_plan=execution,
     ) == required
+    mixed = authorizations[-1]
+    object.__setattr__(mixed, "workspace_host_sha256", _digest("other-workspace"))
+    object.__setattr__(
+        mixed,
+        "workspace_authority_closure_sha256",
+        remote._canonical_sha256(
+            {
+                "controller_authorization_record_sha256": (
+                    mixed.controller_authorization_record_sha256
+                ),
+                "user_name_sha256": mixed.user_name_sha256,
+                "workspace_host_sha256": mixed.workspace_host_sha256,
+            }
+        ),
+    )
+    with pytest.raises(ValueError, match="different workspaces"):
+        remote.require_full_score_remote_consumer_evidence_authorizations(
+            authorizations,
+            execution_plan=execution,
+        )

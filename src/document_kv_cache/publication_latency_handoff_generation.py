@@ -17,7 +17,10 @@ import importlib
 import json
 import math
 import os
+import re
+import secrets
 import shutil
+import stat
 import tempfile
 import time
 from collections import Counter
@@ -93,12 +96,15 @@ from document_kv_cache.databricks_runs import (
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
     databricks_run_status_record,
+    download_databricks_volume_file_bytes,
     get_databricks_run,
     reserve_and_submit_databricks_run,
     require_databricks_run_idempotency_token,
+    require_databricks_current_user_name,
     resume_pre_reserved_databricks_run,
     submit_pre_reserved_databricks_run,
     summarize_databricks_run,
+    upload_databricks_volume_file_path_exclusive,
 )
 from document_kv_cache.model_profiles import (
     QWEN3_4B_INSTRUCT_HF_MODEL_ID,
@@ -233,6 +239,7 @@ PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_RECORD_TYPE = (
 PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_SCHEMA_VERSION = 2
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_HARDWARE_TARGET = "aws-g6e-l40s"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID = "g6e.4xlarge"
+PUBLICATION_LATENCY_HANDOFF_GENERATOR_ZONE_ID = "us-west-2a"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_GPU_MODEL = "NVIDIA L40S"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_QUANTIZATION = "bitsandbytes-4bit"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_MODEL_DTYPE = "bfloat16"
@@ -546,6 +553,7 @@ _SUBMISSION_AUTHORIZATION_ISSUER = object()
 _SERVING_AUTHORIZATION_ISSUER = object()
 _REMOTE_CLOSURE_LEDGER_ISSUER = object()
 _POST_CLOSE_REPLAY_ISSUER = object()
+_WORKER_AUTHORIZATION_ISSUER = object()
 
 
 class PublicationLatencyGeneratorFactory(Protocol):
@@ -737,9 +745,7 @@ class PublicationLatencyGeneratorHardwareQualificationV2:
             self.expected_campaign_id
         ):
             raise ValueError("expected_campaign_id must be non-empty")
-        if not isinstance(
-            self.expected_artifact_pins, GPUQualificationArtifactPinsV2
-        ):
+        if not isinstance(self.expected_artifact_pins, GPUQualificationArtifactPinsV2):
             raise TypeError("expected_artifact_pins must be native v2")
         if hmac.compare_digest(
             self.expected_artifact_pins.runner_sha256,
@@ -817,7 +823,7 @@ class DatabricksPublicationLatencyHandoffJobConfig:
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
     availability: str = "ON_DEMAND"
-    zone_id: str = "auto"
+    zone_id: str = PUBLICATION_LATENCY_HANDOFF_GENERATOR_ZONE_ID
     custom_tags: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -860,15 +866,15 @@ class DatabricksPublicationLatencyHandoffJobConfig:
             "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
             "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
             "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
-            "runtime_closure_manifest_sha256": (
-                RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
-            ),
+            "runtime_closure_manifest_sha256": (RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
         }
         for field_name, expected in expected_runtime_artifacts.items():
             if getattr(self, field_name) != expected:
                 raise ValueError(f"latency handoff {field_name} drift")
         if self.node_type_id != PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID:
             raise ValueError("publication handoff producers require g6e.4xlarge")
+        if self.zone_id != PUBLICATION_LATENCY_HANDOFF_GENERATOR_ZONE_ID:
+            raise ValueError("publication handoff L40S producers require us-west-2a")
         if self.task_key_prefix != "latency_handoff_worker":
             raise ValueError("latency handoff task_key_prefix is frozen")
         if self.run_timeout_seconds != (
@@ -950,6 +956,8 @@ class PublicationLatencyHandoffSubmissionAuthorization:
     job_config_sha256: str
     runner_python_file: str
     runner_sha256: str
+    workspace_host_sha256: str
+    user_name_sha256: str
 
     def __init__(
         self,
@@ -960,15 +968,12 @@ class PublicationLatencyHandoffSubmissionAuthorization:
         job_config_sha256: str,
         runner_python_file: str,
         runner_sha256: str,
+        workspace_identity: Mapping[str, Any],
         _issuer: object,
     ) -> None:
         if _issuer is not _SUBMISSION_AUTHORIZATION_ISSUER:
-            raise TypeError(
-                "Q8 submission authority requires the durable phase issuer"
-            )
-        if not isinstance(
-            batch_authorization, DatabricksBatchReservationAuthorization
-        ):
+            raise TypeError("Q8 submission authority requires the durable phase issuer")
+        if type(batch_authorization) is not DatabricksBatchReservationAuthorization:
             raise TypeError("batch_authorization has the wrong type")
         root = Path(phase_lease_root).expanduser().absolute()
         output_root = _normalized_q8_durable_output_root(durable_output_root)
@@ -989,6 +994,7 @@ class PublicationLatencyHandoffSubmissionAuthorization:
             job_config_sha256=reviewed_job_config_sha256,
             runner_python_file=reviewed_runner,
             runner_sha256=runner_sha256,
+            workspace_identity=workspace_identity,
         )
         root = root.resolve(strict=True)
         object.__setattr__(self, "batch_authorization", batch_authorization)
@@ -1022,6 +1028,22 @@ class PublicationLatencyHandoffSubmissionAuthorization:
         object.__setattr__(self, "job_config_sha256", reviewed_job_config_sha256)
         object.__setattr__(self, "runner_python_file", reviewed_runner)
         object.__setattr__(self, "runner_sha256", runner_sha256)
+        object.__setattr__(
+            self,
+            "workspace_host_sha256",
+            _require_sha256(
+                workspace_identity.get("workspace_host_sha256"),
+                field_name="workspace_host_sha256",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "user_name_sha256",
+            _require_sha256(
+                workspace_identity.get("user_name_sha256"),
+                field_name="user_name_sha256",
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -1118,6 +1140,75 @@ class PublicationLatencyHandoffDatabricksAttestationBinding:
         _require_sha256(
             self.closed_record_sha256,
             field_name="attestation closed_record_sha256",
+        )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PublicationLatencyHandoffWorkerAuthorization:
+    """Issuer-only authority for one remotely verified Q8 worker attestation."""
+
+    binding: PublicationLatencyHandoffDatabricksAttestationBinding
+    attempt_id: str
+    ledger_id: str
+    ledger_path_sha256: str
+    producer_batch_prefix: DatabricksLedgerPrefix
+    control_plane_status_sha256: str
+    workspace_host_sha256: str
+    user_name_sha256: str
+
+    def __init__(
+        self,
+        *,
+        binding: PublicationLatencyHandoffDatabricksAttestationBinding,
+        attempt_id: str,
+        ledger_id: str,
+        ledger_path_sha256: str,
+        producer_batch_prefix: DatabricksLedgerPrefix,
+        control_plane_status_sha256: str,
+        workspace_host_sha256: str,
+        user_name_sha256: str,
+        _issuer: object,
+    ) -> None:
+        if _issuer is not _WORKER_AUTHORIZATION_ISSUER:
+            raise TypeError("Q8 worker authority requires the high-level collector")
+        if not isinstance(
+            binding, PublicationLatencyHandoffDatabricksAttestationBinding
+        ):
+            raise TypeError("Q8 worker attestation binding has the wrong type")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            raise ValueError("Q8 worker attempt_id must be non-empty")
+        if not isinstance(ledger_id, str) or not ledger_id:
+            raise ValueError("Q8 worker ledger_id must be non-empty")
+        if not isinstance(producer_batch_prefix, DatabricksLedgerPrefix):
+            raise TypeError("Q8 worker producer batch prefix has the wrong type")
+        if producer_batch_prefix.ledger_id != ledger_id:
+            raise ValueError("Q8 worker producer batch ledger identity drift")
+        object.__setattr__(self, "binding", binding)
+        object.__setattr__(self, "attempt_id", attempt_id)
+        object.__setattr__(self, "ledger_id", ledger_id)
+        object.__setattr__(
+            self,
+            "ledger_path_sha256",
+            _require_sha256(ledger_path_sha256, field_name="ledger_path_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "workspace_host_sha256",
+            _require_sha256(workspace_host_sha256, field_name="workspace_host_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "user_name_sha256",
+            _require_sha256(user_name_sha256, field_name="user_name_sha256"),
+        )
+        object.__setattr__(self, "producer_batch_prefix", producer_batch_prefix)
+        object.__setattr__(
+            self,
+            "control_plane_status_sha256",
+            _require_sha256(
+                control_plane_status_sha256,
+                field_name="control_plane_status_sha256",
+            ),
         )
 
 
@@ -1643,13 +1734,9 @@ def build_databricks_publication_latency_handoff_worker_submit_payloads(
         expected_qualified_artifacts = {
             "cachet_source_tree_sha256": config.cachet_source_tree_sha256,
             "package_wheel_sha256": config.package_wheel_sha256,
-            "patched_flashinfer_wheel_sha256": (
-                config.patched_flashinfer_wheel_sha256
-            ),
+            "patched_flashinfer_wheel_sha256": (config.patched_flashinfer_wheel_sha256),
             "patched_vllm_wheel_sha256": config.patched_vllm_wheel_sha256,
-            "runtime_closure_manifest_sha256": (
-                config.runtime_closure_manifest_sha256
-            ),
+            "runtime_closure_manifest_sha256": (config.runtime_closure_manifest_sha256),
             "runtime_lock_sha256": config.runtime_lock_sha256,
             "input_bundle_sha256": payload.get("input_bundle_sha256"),
         }
@@ -1783,7 +1870,7 @@ def _require_matching_qualification_ledger(
     ledger_path: str | Path,
     authorization: GPUQualificationLaunchAuthorization,
 ) -> DatabricksClusterHourLedger:
-    if not isinstance(authorization, GPUQualificationLaunchAuthorization):
+    if type(authorization) is not GPUQualificationLaunchAuthorization:
         raise TypeError(
             "qualification_launch_authorization must be a "
             "GPUQualificationLaunchAuthorization"
@@ -2033,13 +2120,28 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
 
     if not isinstance(job_config, DatabricksPublicationLatencyHandoffJobConfig):
         raise TypeError("job_config has the wrong type")
+    if (
+        type(qualification_launch_authorization)
+        is not GPUQualificationLaunchAuthorization
+    ):
+        raise TypeError(
+            "qualification_launch_authorization must be a "
+            "GPUQualificationLaunchAuthorization"
+        )
     submissions = tuple(submit_payloads)
     workers = tuple(worker_payloads)
     worker_indexes = tuple(range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS))
     if len(submissions) != len(worker_indexes) or len(workers) != len(worker_indexes):
         raise ValueError("Q8 production wave requires exactly sixteen members")
-    if set(attempt_ids_by_worker) != set(worker_indexes):
+    if any(type(key) is not int for key in attempt_ids_by_worker) or set(
+        attempt_ids_by_worker
+    ) != set(worker_indexes):
         raise ValueError("Q8 attempt IDs must cover workers 0..15 exactly")
+    workspace_identity = require_databricks_current_user_name(
+        workspace,
+        expected_user_name=cast(str, job_config.single_user_name),
+        opener=opener,
+    )
     durable_output_root = _common_q8_durable_output_root(workers)
     predecessor = qualification_launch_authorization.ledger_prefix
     live = _require_matching_qualification_ledger(
@@ -2116,6 +2218,18 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
     }
     lease_record["closed_record_sha256"] = _closed_record_sha256(lease_record)
     _write_canonical_json_exclusive(lease_record, lease_root / "phase-lease.json")
+    workspace_record = {
+        "closed_record_sha256": "",
+        "phase_lease_record_sha256": lease_record["closed_record_sha256"],
+        "record_type": "cachet.publication_q8_handoff_workspace_authority.v1",
+        "schema_version": 1,
+        "user_name_sha256": workspace_identity["user_name_sha256"],
+        "workspace_host_sha256": workspace_identity["workspace_host_sha256"],
+    }
+    workspace_record["closed_record_sha256"] = _closed_record_sha256(workspace_record)
+    _write_q8_workspace_authority_exclusive(
+        workspace_record, lease_root / "workspace-authority.json"
+    )
     _sync_file(lease_root / "phase-lease.json")
     _sync_directory(lease_root)
 
@@ -2162,6 +2276,7 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
         lease_root,
         durable_output_root=durable_output_root,
         job_config=job_config,
+        workspace_identity=workspace_identity,
     )
 
     responses: list[dict[str, Any]] = []
@@ -2180,9 +2295,11 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
             "attempt_id": attempts[index],
             "batch_prefix": batch_authorization.batch_prefix.to_record(),
             "closed_record_sha256": "",
-            "record_type": "cachet.publication_q8_handoff_post_intent.v1",
+            "record_type": "cachet.publication_q8_handoff_post_intent.v2",
             "submit_payload_sha256": payload_digests[index],
             "worker_index": index,
+            "workspace_host_sha256": workspace_identity["workspace_host_sha256"],
+            "user_name_sha256": workspace_identity["user_name_sha256"],
         }
         intent["closed_record_sha256"] = _closed_record_sha256(intent)
         _write_canonical_json_exclusive(intent, intent_path)
@@ -2218,11 +2335,13 @@ def reserve_and_submit_publication_latency_handoff_worker_wave(
         receipt_record = {
             "attempt_id": attempts[index],
             "closed_record_sha256": "",
-            "record_type": "cachet.publication_q8_handoff_submit_receipt.v1",
+            "record_type": "cachet.publication_q8_handoff_submit_receipt.v2",
             "run_id": receipt.run_id,
             "submit_payload_sha256": receipt.submit_payload_sha256,
             "submit_response_sha256": receipt.submit_response_sha256,
             "worker_index": index,
+            "workspace_host_sha256": workspace_identity["workspace_host_sha256"],
+            "user_name_sha256": workspace_identity["user_name_sha256"],
         }
         receipt_record["closed_record_sha256"] = _closed_record_sha256(receipt_record)
         _write_canonical_json_exclusive(
@@ -2255,13 +2374,28 @@ def resume_publication_latency_handoff_worker_wave(
 
     if not isinstance(job_config, DatabricksPublicationLatencyHandoffJobConfig):
         raise TypeError("job_config has the wrong type")
+    if (
+        type(qualification_launch_authorization)
+        is not GPUQualificationLaunchAuthorization
+    ):
+        raise TypeError(
+            "qualification_launch_authorization must be a "
+            "GPUQualificationLaunchAuthorization"
+        )
     submissions = tuple(submit_payloads)
     workers = tuple(worker_payloads)
     indexes = tuple(range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS))
     if len(submissions) != len(indexes) or len(workers) != len(indexes):
         raise ValueError("Q8 production wave requires exactly sixteen members")
-    if set(attempt_ids_by_worker) != set(indexes):
+    if any(type(key) is not int for key in attempt_ids_by_worker) or set(
+        attempt_ids_by_worker
+    ) != set(indexes):
         raise ValueError("Q8 attempt IDs must cover workers 0..15 exactly")
+    workspace_identity = require_databricks_current_user_name(
+        workspace,
+        expected_user_name=cast(str, job_config.single_user_name),
+        opener=opener,
+    )
     durable_output_root = _common_q8_durable_output_root(workers)
     predecessor = qualification_launch_authorization.ledger_prefix
     live = _require_matching_qualification_ledger(
@@ -2339,6 +2473,38 @@ def resume_publication_latency_handoff_worker_wave(
         != expected_lease
     ):
         raise ValueError("Q8 phase lease differs from the frozen wave")
+    workspace_content = _read_q8_stable_regular_file(
+        lease_root / "workspace-authority.json", mirror_root=lease_root
+    )
+    workspace_record = json.loads(workspace_content)
+    if (
+        not isinstance(workspace_record, dict)
+        or set(workspace_record)
+        != {
+            "closed_record_sha256",
+            "phase_lease_record_sha256",
+            "record_type",
+            "schema_version",
+            "user_name_sha256",
+            "workspace_host_sha256",
+        }
+        or workspace_content != _canonical_json_bytes(workspace_record, pretty=True)
+    ):
+        raise ValueError("Q8 workspace authority is not canonical JSON")
+    if (
+        workspace_record.get("record_type")
+        != "cachet.publication_q8_handoff_workspace_authority.v1"
+        or workspace_record.get("schema_version") != 1
+        or workspace_record.get("closed_record_sha256")
+        != _closed_record_sha256(workspace_record)
+        or workspace_record.get("phase_lease_record_sha256")
+        != expected_lease["closed_record_sha256"]
+        or workspace_record.get("workspace_host_sha256")
+        != workspace_identity["workspace_host_sha256"]
+        or workspace_record.get("user_name_sha256")
+        != workspace_identity["user_name_sha256"]
+    ):
+        raise ValueError("Q8 workspace authority sidecar drift")
     if databricks_ledger_prefix(live) == predecessor:
         _batch_ledger, batch_authorization = (
             reserve_databricks_run_attempt_batch_authorized_json(
@@ -2395,6 +2561,7 @@ def resume_publication_latency_handoff_worker_wave(
         lease_root,
         durable_output_root=durable_output_root,
         job_config=job_config,
+        workspace_identity=workspace_identity,
     )
     responses: list[dict[str, Any]] = []
     for index, submit_payload in zip(indexes, submissions, strict=True):
@@ -2413,9 +2580,11 @@ def resume_publication_latency_handoff_worker_wave(
             "attempt_id": attempts[index],
             "batch_prefix": batch_authorization.batch_prefix.to_record(),
             "closed_record_sha256": "",
-            "record_type": "cachet.publication_q8_handoff_post_intent.v1",
+            "record_type": "cachet.publication_q8_handoff_post_intent.v2",
             "submit_payload_sha256": payload_digests[index],
             "worker_index": index,
+            "workspace_host_sha256": workspace_identity["workspace_host_sha256"],
+            "user_name_sha256": workspace_identity["user_name_sha256"],
         }
         expected_intent["closed_record_sha256"] = _closed_record_sha256(expected_intent)
         if intent_path.exists() or intent_path.is_symlink():
@@ -2460,11 +2629,13 @@ def resume_publication_latency_handoff_worker_wave(
         expected_receipt: dict[str, Any] = {
             "attempt_id": attempts[index],
             "closed_record_sha256": "",
-            "record_type": "cachet.publication_q8_handoff_submit_receipt.v1",
+            "record_type": "cachet.publication_q8_handoff_submit_receipt.v2",
             "run_id": receipt.run_id,
             "submit_payload_sha256": receipt.submit_payload_sha256,
             "submit_response_sha256": receipt.submit_response_sha256,
             "worker_index": index,
+            "workspace_host_sha256": workspace_identity["workspace_host_sha256"],
+            "user_name_sha256": workspace_identity["user_name_sha256"],
         }
         expected_receipt["closed_record_sha256"] = _closed_record_sha256(
             expected_receipt
@@ -2482,9 +2653,11 @@ def resume_publication_latency_handoff_worker_wave(
             intent_path.unlink()
         _sync_directory(lease_root)
         responses.append(response)
-    expected_names = {"phase-lease.json", "batch-reserved.json"} | {
-        f"worker-{index:02d}.receipt.json" for index in indexes
-    }
+    expected_names = {
+        "phase-lease.json",
+        "batch-reserved.json",
+        "workspace-authority.json",
+    } | {f"worker-{index:02d}.receipt.json" for index in indexes}
     if {item.name for item in lease_root.iterdir()} != expected_names:
         raise ValueError("resumed Q8 phase lease directory is not closed")
     return tuple(responses), submission_authorization
@@ -2495,9 +2668,7 @@ def require_publication_latency_handoff_submission_authorization(
 ) -> DatabricksBatchReservationAuthorization:
     """Replay the Q8 phase lease and marker behind submission authority."""
 
-    if not isinstance(
-        authorization, PublicationLatencyHandoffSubmissionAuthorization
-    ):
+    if type(authorization) is not PublicationLatencyHandoffSubmissionAuthorization:
         raise TypeError(
             "Q8 publication collection requires "
             "PublicationLatencyHandoffSubmissionAuthorization"
@@ -2509,6 +2680,10 @@ def require_publication_latency_handoff_submission_authorization(
         job_config_sha256=authorization.job_config_sha256,
         runner_python_file=authorization.runner_python_file,
         runner_sha256=authorization.runner_sha256,
+        workspace_identity={
+            "workspace_host_sha256": authorization.workspace_host_sha256,
+            "user_name_sha256": authorization.user_name_sha256,
+        },
     )
     observed = (
         _q8_phase_lease_root_sha256(authorization.phase_lease_root),
@@ -2535,6 +2710,7 @@ def _issue_q8_submission_authorization(
     *,
     durable_output_root: str,
     job_config: DatabricksPublicationLatencyHandoffJobConfig,
+    workspace_identity: Mapping[str, Any],
 ) -> PublicationLatencyHandoffSubmissionAuthorization:
     return PublicationLatencyHandoffSubmissionAuthorization(
         batch_authorization=batch_authorization,
@@ -2543,6 +2719,7 @@ def _issue_q8_submission_authorization(
         job_config_sha256=_q8_job_config_sha256(job_config),
         runner_python_file=job_config.runner_python_file,
         runner_sha256=job_config.runner_sha256,
+        workspace_identity=workspace_identity,
         _issuer=_SUBMISSION_AUTHORIZATION_ISSUER,
     )
 
@@ -2555,8 +2732,9 @@ def _validate_q8_submission_phase_files(
     job_config_sha256: str,
     runner_python_file: str,
     runner_sha256: str,
+    workspace_identity: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not isinstance(batch_authorization, DatabricksBatchReservationAuthorization):
+    if type(batch_authorization) is not DatabricksBatchReservationAuthorization:
         raise TypeError("Q8 phase batch authorization has the wrong type")
     reviewed_runner_sha256 = _require_sha256(
         runner_sha256,
@@ -2571,15 +2749,11 @@ def _validate_q8_submission_phase_files(
     _reject_q8_symlink_ancestors(root, "Q8 phase lease")
     if not root.is_dir() or root.is_symlink():
         raise ValueError("Q8 submission authority requires a real phase lease")
-    lease = _read_q8_controller_record(
-        root / "phase-lease.json", "Q8 phase lease"
-    )
+    lease = _read_q8_controller_record(root / "phase-lease.json", "Q8 phase lease")
     expected_lease: dict[str, Any] = {
         "attempt_ids": list(batch_authorization.attempt_ids),
         "closed_record_sha256": "",
-        "durable_output_root": _normalized_q8_durable_output_root(
-            durable_output_root
-        ),
+        "durable_output_root": _normalized_q8_durable_output_root(durable_output_root),
         "job_config_sha256": _require_sha256(
             job_config_sha256,
             field_name="job_config_sha256",
@@ -2587,28 +2761,49 @@ def _validate_q8_submission_phase_files(
         "ledger_path_sha256": batch_authorization.ledger_path_sha256,
         "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
         "record_type": _Q8_PHASE_LEASE_RECORD_TYPE,
-        "runner_python_file": _validated_q8_runner_python_file(
-            runner_python_file
-        ),
+        "runner_python_file": _validated_q8_runner_python_file(runner_python_file),
         "runner_sha256": reviewed_runner_sha256,
-        "submit_payload_sha256": list(
-            batch_authorization.submit_payload_sha256s
-        ),
+        "submit_payload_sha256": list(batch_authorization.submit_payload_sha256s),
     }
     expected_lease["closed_record_sha256"] = _closed_record_sha256(expected_lease)
     if lease != expected_lease:
         raise ValueError("Q8 phase lease differs from the authorized atomic batch")
-    marker = _read_q8_controller_record(
-        root / "batch-reserved.json", "Q8 batch marker"
+    workspace_content = _read_q8_stable_regular_file(
+        root / "workspace-authority.json", mirror_root=root
     )
+    workspace_record = json.loads(workspace_content)
+    if (
+        not isinstance(workspace_record, dict)
+        or set(workspace_record)
+        != {
+            "closed_record_sha256",
+            "phase_lease_record_sha256",
+            "record_type",
+            "schema_version",
+            "user_name_sha256",
+            "workspace_host_sha256",
+        }
+        or workspace_content != _canonical_json_bytes(workspace_record, pretty=True)
+        or workspace_record.get("record_type")
+        != "cachet.publication_q8_handoff_workspace_authority.v1"
+        or workspace_record.get("schema_version") != 1
+        or workspace_record.get("closed_record_sha256")
+        != _closed_record_sha256(workspace_record)
+        or workspace_record.get("phase_lease_record_sha256")
+        != expected_lease["closed_record_sha256"]
+        or workspace_record.get("workspace_host_sha256")
+        != workspace_identity.get("workspace_host_sha256")
+        or workspace_record.get("user_name_sha256")
+        != workspace_identity.get("user_name_sha256")
+    ):
+        raise ValueError("Q8 workspace authority sidecar drift")
+    marker = _read_q8_controller_record(root / "batch-reserved.json", "Q8 batch marker")
     expected_marker: dict[str, Any] = {
         "batch_prefix": batch_authorization.batch_prefix.to_record(),
         "closed_record_sha256": "",
         "record_type": "cachet.publication_q8_handoff_batch_reserved.v1",
     }
-    expected_marker["closed_record_sha256"] = _closed_record_sha256(
-        expected_marker
-    )
+    expected_marker["closed_record_sha256"] = _closed_record_sha256(expected_marker)
     if marker != expected_marker:
         raise ValueError("Q8 batch marker differs from the authorized atomic batch")
     return lease, marker
@@ -2618,6 +2813,302 @@ def _normalized_q8_durable_output_root(value: object) -> str:
     if not isinstance(value, str) or not value.rstrip("/"):
         raise ValueError("Q8 durable_output_root must be a non-empty string")
     return value.rstrip("/")
+
+
+def _require_q8_canonical_volume_root(value: str | Path) -> str:
+    raw = str(value)
+    if not raw.startswith("dbfs:/Volumes/") or raw.endswith("/"):
+        raise ValueError("Q8 durable_output_root must be a canonical dbfs:/Volumes URI")
+    suffix = raw.removeprefix("dbfs:")
+    parsed = PurePosixPath(suffix)
+    if (
+        parsed.as_posix() != suffix
+        or parsed.parts[:2] != ("/", "Volumes")
+        or len(parsed.parts) < 5
+        or any(part in {"", ".", ".."} for part in parsed.parts[1:])
+    ):
+        raise ValueError("Q8 durable_output_root is not canonical or confined")
+    return raw
+
+
+def _require_q8_local_evidence_mirror_root(
+    value: str | Path, *, create: bool = False
+) -> Path:
+    raw = str(value)
+    root = Path(value)
+    if not root.is_absolute() or ".." in root.parts or str(root) != raw:
+        raise ValueError(
+            "Q8 local evidence mirror root must be absolute and normalized"
+        )
+    descriptor = _open_q8_absolute_directory(root, create=create)
+    try:
+        identity = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(identity.st_mode)
+            or identity.st_uid != os.getuid()
+            or stat.S_IMODE(identity.st_mode) != 0o700
+        ):
+            raise ValueError(
+                "Q8 local evidence mirror root must be current-UID mode 0700"
+            )
+    finally:
+        os.close(descriptor)
+    return root
+
+
+def _open_q8_absolute_directory(path: Path, *, create: bool) -> int:
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("Q8 mirror safety requires O_DIRECTORY and O_NOFOLLOW")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open("/", flags)
+    try:
+        for part in path.parts[1:]:
+            if part in {"", ".", ".."}:
+                raise ValueError("Q8 mirror directory path is not normalized")
+            if create:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_q8_absolute_parent(path: Path, *, create: bool) -> tuple[int, str]:
+    if not path.is_absolute() or len(path.parts) < 2:
+        raise ValueError("Q8 mirror file path must be absolute")
+    return _open_q8_absolute_directory(path.parent, create=create), path.name
+
+
+def _open_q8_mirror_parent(
+    root: Path, relative: PurePosixPath, *, create: bool
+) -> tuple[int, str]:
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError("Q8 mirror file must be a confined relative path")
+    descriptor = _open_q8_absolute_directory(root, create=False)
+    try:
+        root_identity = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(root_identity.st_mode)
+            or root_identity.st_uid != os.getuid()
+            or stat.S_IMODE(root_identity.st_mode) != 0o700
+        ):
+            raise ValueError("Q8 mirror root must be current-UID mode 0700")
+        for part in relative.parts[:-1]:
+            if create:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+            next_descriptor = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            identity = os.fstat(next_descriptor)
+            if (
+                not stat.S_ISDIR(identity.st_mode)
+                or identity.st_uid != os.getuid()
+                or stat.S_IMODE(identity.st_mode) != 0o700
+            ):
+                os.close(next_descriptor)
+                raise ValueError(
+                    "Q8 mirror descendants must be current-UID mode 0700 directories"
+                )
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor, relative.parts[-1]
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_q8_stable_regular_file_at(
+    parent_descriptor: int,
+    leaf: str,
+    *,
+    require_mode_0600: bool,
+    allowed_nlinks: tuple[int, ...] = (1,),
+) -> bytes:
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        raise RuntimeError("Q8 mirror safety requires O_NOFOLLOW and O_NONBLOCK")
+    descriptor = os.open(
+        leaf,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+        dir_fd=parent_descriptor,
+    )
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink not in allowed_nlinks
+            or before.st_uid != os.getuid()
+            or (require_mode_0600 and stat.S_IMODE(before.st_mode) != 0o600)
+        ):
+            raise ValueError("Q8 mirrored evidence must be a single-link regular file")
+        with os.fdopen(os.dup(descriptor), "rb") as handle:
+            content = handle.read(16 * 1024 * 1024 + 1)
+        if len(content) > 16 * 1024 * 1024:
+            raise ValueError("Q8 mirrored evidence exceeds the 16 MiB cap")
+        after = os.fstat(descriptor)
+        fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if (
+            any(getattr(before, name) != getattr(after, name) for name in fields)
+            or len(content) != before.st_size
+        ):
+            raise ValueError("Q8 mirrored evidence changed while being read")
+        return content
+    finally:
+        os.close(descriptor)
+
+
+def _read_or_recover_q8_published_file(
+    parent_descriptor: int, leaf: str, content: bytes
+) -> bytes:
+    identity = os.stat(leaf, dir_fd=parent_descriptor, follow_symlinks=False)
+    if identity.st_nlink == 1:
+        return _read_q8_stable_regular_file_at(
+            parent_descriptor, leaf, require_mode_0600=True
+        )
+    pattern = re.compile(rf"^\.{re.escape(leaf)}\.tmp-[0-9a-f]{{32}}$")
+    candidates = []
+    for name in os.listdir(parent_descriptor):
+        if pattern.fullmatch(name) is None:
+            continue
+        candidate = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if (candidate.st_dev, candidate.st_ino) == (identity.st_dev, identity.st_ino):
+            candidates.append(name)
+    if identity.st_nlink != 2 or len(candidates) != 1:
+        raise ValueError("Q8 mirror crash-link recovery is ambiguous")
+    observed = _read_q8_stable_regular_file_at(
+        parent_descriptor,
+        leaf,
+        require_mode_0600=True,
+        allowed_nlinks=(2,),
+    )
+    if observed != content:
+        return observed
+    os.unlink(candidates[0], dir_fd=parent_descriptor)
+    os.fsync(parent_descriptor)
+    return _read_q8_stable_regular_file_at(
+        parent_descriptor, leaf, require_mode_0600=True
+    )
+
+
+def _read_q8_stable_regular_file(
+    path: Path, *, require_mode_0600: bool = True, mirror_root: Path | None = None
+) -> bytes:
+    if mirror_root is None:
+        parent_descriptor, leaf = _open_q8_absolute_parent(path, create=False)
+    else:
+        try:
+            relative = PurePosixPath(path.relative_to(mirror_root).as_posix())
+        except ValueError as exc:
+            raise ValueError("Q8 mirror file escapes its root") from exc
+        parent_descriptor, leaf = _open_q8_mirror_parent(
+            mirror_root, relative, create=False
+        )
+    try:
+        return _read_q8_stable_regular_file_at(
+            parent_descriptor, leaf, require_mode_0600=require_mode_0600
+        )
+    finally:
+        os.close(parent_descriptor)
+
+
+def _write_q8_exact_mirror_bytes(root: Path, relative: str, content: bytes) -> Path:
+    relative_path = PurePosixPath(relative)
+    if relative_path.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative_path.parts
+    ):
+        raise ValueError("Q8 mirror file must be a confined relative path")
+    destination = root.joinpath(*relative_path.parts)
+    parent_descriptor, leaf = _open_q8_mirror_parent(root, relative_path, create=True)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("Q8 mirror safety requires O_NOFOLLOW")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    temporary = f".{leaf}.tmp-{secrets.token_hex(16)}"
+    try:
+        try:
+            descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_descriptor)
+        except FileExistsError as exc:
+            raise RuntimeError("Q8 mirror staging name collision") from exc
+        try:
+            with os.fdopen(os.dup(descriptor), "wb") as handle:
+                handle.write(content)
+                handle.flush()
+            os.fsync(descriptor)
+            staged_identity = os.fstat(descriptor)
+            try:
+                os.link(
+                    temporary,
+                    leaf,
+                    src_dir_fd=parent_descriptor,
+                    dst_dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                if (
+                    _read_or_recover_q8_published_file(parent_descriptor, leaf, content)
+                    != content
+                ):
+                    raise FileExistsError(
+                        "Q8 mirror file contains different bytes"
+                    ) from None
+            else:
+                published = os.stat(
+                    leaf, dir_fd=parent_descriptor, follow_symlinks=False
+                )
+                if (
+                    (published.st_dev, published.st_ino)
+                    != (staged_identity.st_dev, staged_identity.st_ino)
+                    or not stat.S_ISREG(published.st_mode)
+                    or published.st_uid != os.getuid()
+                    or stat.S_IMODE(published.st_mode) != 0o600
+                    or published.st_size != len(content)
+                ):
+                    try:
+                        os.unlink(leaf, dir_fd=parent_descriptor)
+                    except OSError:
+                        pass
+                    raise RuntimeError(
+                        "Q8 mirror staging identity changed before publish"
+                    )
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+            os.close(descriptor)
+        if (
+            _read_q8_stable_regular_file_at(
+                parent_descriptor, leaf, require_mode_0600=True
+            )
+            != content
+        ):
+            raise RuntimeError("Q8 mirror publication verification failed")
+        os.fsync(parent_descriptor)
+        return destination
+    finally:
+        os.close(parent_descriptor)
 
 
 def _common_q8_durable_output_root(
@@ -2723,6 +3214,39 @@ def build_publication_latency_handoff_databricks_attestation(
 ) -> dict[str, Any]:
     """Sanitize and close one direct attempt-0 ``runs/get`` response."""
 
+    return _build_publication_latency_handoff_databricks_attestation_core(
+        submit_payload,
+        submit_response,
+        terminal_run,
+        ledger_path=ledger_path,
+        durable_output_root=durable_output_root,
+        worker_index=worker_index,
+        attempt_id=attempt_id,
+        qualification_launch_authorization=qualification_launch_authorization,
+        submission_authorization=submission_authorization,
+        local_evidence_mirror_root=None,
+        allow_closed_attempt_replay=False,
+        worker_result_content=None,
+    )
+
+
+def _build_publication_latency_handoff_databricks_attestation_core(
+    submit_payload: Mapping[str, Any],
+    submit_response: Mapping[str, Any],
+    terminal_run: Mapping[str, Any],
+    *,
+    ledger_path: str | Path,
+    durable_output_root: str | Path,
+    worker_index: int,
+    attempt_id: str,
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
+    submission_authorization: PublicationLatencyHandoffSubmissionAuthorization,
+    local_evidence_mirror_root: str | Path | None = None,
+    allow_closed_attempt_replay: bool,
+    worker_result_content: bytes | None,
+) -> dict[str, Any]:
+    """Sanitize and close one direct attempt-0 ``runs/get`` response."""
+
     _validate_producer_worker_index(worker_index)
     batch_reservation_authorization = (
         require_publication_latency_handoff_submission_authorization(
@@ -2791,7 +3315,7 @@ def build_publication_latency_handoff_databricks_attestation(
         raise ValueError(
             "Databricks attestation has no exact reservation/submission receipt"
         )
-    if attempt_id in ledger.closed_attempt_ids:
+    if attempt_id in ledger.closed_attempt_ids and not allow_closed_attempt_replay:
         raise ValueError("Databricks attestation must precede ledger reconciliation")
 
     parent_run_id = _databricks_cloud_id(
@@ -2905,14 +3429,26 @@ def build_publication_latency_handoff_databricks_attestation(
     ):
         raise ValueError("Databricks task duration exceeds its five-hour bound")
 
-    root = Path(local_path(str(durable_output_root))).expanduser().resolve()
-    result_relative_path = f"worker-results/worker-{worker_index:02d}.json"
-    result_path = _confined_relative_path(
-        root,
-        result_relative_path,
-        field_name="attested worker result",
+    if local_evidence_mirror_root is not None and (
+        _normalized_q8_durable_output_root(str(durable_output_root))
+        != submission_authorization.durable_output_root
+    ):
+        raise ValueError("Q8 attestation durable output root differs from submission")
+    root = (
+        Path(local_path(str(durable_output_root))).expanduser().resolve()
+        if local_evidence_mirror_root is None
+        else _require_q8_local_evidence_mirror_root(local_evidence_mirror_root)
     )
-    worker_result = _read_worker_result(result_path)
+    result_relative_path = f"worker-results/worker-{worker_index:02d}.json"
+    result_path = (
+        root / result_relative_path
+        if local_evidence_mirror_root is not None
+        else _confined_relative_path(
+            root, result_relative_path, field_name="attested worker result"
+        )
+    )
+    result_content = worker_result_content
+    worker_result = _read_worker_result(result_path, _content=result_content)
     _require_v2_worker_result_envelope(worker_result)
     if worker_result.get("worker_index") != worker_index:
         raise ValueError("attested worker result belongs to another worker")
@@ -2957,13 +3493,194 @@ def build_publication_latency_handoff_databricks_attestation(
         ),
         "worker_result": {
             "closed_record_sha256": worker_result["closed_record_sha256"],
-            "file_sha256": _file_sha256(result_path),
+            "file_sha256": (
+                _file_sha256(result_path)
+                if result_content is None
+                else sha256(result_content).hexdigest()
+            ),
             "relative_path": result_relative_path,
         },
     }
     record["closed_record_sha256"] = _closed_record_sha256(record)
     _validate_publication_latency_handoff_databricks_attestation_record(record)
     return record
+
+
+def collect_publication_latency_handoff_worker_attestation(
+    workspace: DatabricksWorkspaceConfig,
+    submit_payload: Mapping[str, Any],
+    submit_response: Mapping[str, Any],
+    *,
+    ledger_path: str | Path,
+    durable_output_root: str | Path,
+    worker_index: int,
+    attempt_id: str,
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
+    submission_authorization: PublicationLatencyHandoffSubmissionAuthorization,
+    local_evidence_mirror_root: str | Path | None = None,
+) -> PublicationLatencyHandoffWorkerAuthorization:
+    """Collect, mirror, remotely publish, and reconcile one Q8 attestation."""
+
+    if not isinstance(workspace, DatabricksWorkspaceConfig):
+        raise TypeError("workspace has the wrong type")
+    _validate_producer_worker_index(worker_index)
+    batch_authorization = require_publication_latency_handoff_submission_authorization(
+        submission_authorization
+    )
+    if (
+        type(qualification_launch_authorization)
+        is not GPUQualificationLaunchAuthorization
+    ):
+        raise TypeError("qualification launch authorization has the wrong type")
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    if (
+        batch_authorization.predecessor_prefix
+        != qualification_launch_authorization.ledger_prefix
+        or batch_authorization.ledger_path_sha256
+        != qualification_launch_authorization.ledger_path_sha256
+        or databricks_ledger_path_sha256(ledger_path)
+        != qualification_launch_authorization.ledger_path_sha256
+    ):
+        raise ValueError("Q8 collector batch/ledger authority drift")
+    require_databricks_ledger_prefix(ledger, batch_authorization.batch_prefix)
+    _validate_single_producer_submit_payload(
+        submit_payload,
+        worker_index=worker_index,
+        expected_runner_python_file=submission_authorization.runner_python_file,
+    )
+    submitted_task = _mapping_sequence(submit_payload.get("tasks"), field_name="tasks")[
+        0
+    ]
+    submitted_cluster = _required_mapping(submitted_task, "new_cluster")
+    principal_binding = require_databricks_current_user_name(
+        workspace,
+        expected_user_name=_required_string(submitted_cluster, "single_user_name"),
+    )
+    if (
+        principal_binding.get("workspace_host_sha256")
+        != submission_authorization.workspace_host_sha256
+        or principal_binding.get("user_name_sha256")
+        != submission_authorization.user_name_sha256
+    ):
+        raise ValueError("Q8 collector workspace/principal differs from submission")
+    durable_root = _require_q8_canonical_volume_root(durable_output_root)
+    if durable_root != submission_authorization.durable_output_root:
+        raise ValueError("Q8 collector durable output root differs from submission")
+    mirror: Path | None = None
+    if local_evidence_mirror_root is not None:
+        mirror = _require_q8_local_evidence_mirror_root(
+            local_evidence_mirror_root, create=True
+        )
+    response_snapshot, _ = canonical_databricks_submit_payload_snapshot(submit_response)
+    parent_run_id = _databricks_cloud_id(
+        response_snapshot.get("run_id"), field_name="submit response run_id"
+    )
+    terminal_run = get_databricks_run(workspace, parent_run_id)
+    if local_evidence_mirror_root is None:
+        record = _build_publication_latency_handoff_databricks_attestation_core(
+            submit_payload,
+            submit_response,
+            terminal_run,
+            ledger_path=ledger_path,
+            durable_output_root=durable_root,
+            worker_index=worker_index,
+            attempt_id=attempt_id,
+            qualification_launch_authorization=qualification_launch_authorization,
+            submission_authorization=submission_authorization,
+            local_evidence_mirror_root=None,
+            allow_closed_attempt_replay=True,
+            worker_result_content=None,
+        )
+        root = Path(local_path(durable_root)).expanduser().resolve()
+        binding = write_publication_latency_handoff_databricks_attestation(
+            record,
+            root
+            / PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY
+            / f"worker-{worker_index:02d}.json",
+        )
+    else:
+        assert mirror is not None
+        result_relative = f"worker-results/worker-{worker_index:02d}.json"
+        result_uri = f"{durable_root}/{result_relative}"
+        result_bytes = download_databricks_volume_file_bytes(workspace, result_uri)
+        record = _build_publication_latency_handoff_databricks_attestation_core(
+            submit_payload,
+            submit_response,
+            terminal_run,
+            ledger_path=ledger_path,
+            durable_output_root=durable_root,
+            worker_index=worker_index,
+            attempt_id=attempt_id,
+            qualification_launch_authorization=qualification_launch_authorization,
+            submission_authorization=submission_authorization,
+            local_evidence_mirror_root=mirror,
+            allow_closed_attempt_replay=True,
+            worker_result_content=result_bytes,
+        )
+        _write_q8_exact_mirror_bytes(mirror, result_relative, result_bytes)
+        attestation_relative = (
+            f"{PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY}/"
+            f"worker-{worker_index:02d}.json"
+        )
+        local_attestation = mirror / attestation_relative
+        canonical_attestation_bytes = _canonical_json_bytes(record, pretty=True)
+        _write_q8_exact_mirror_bytes(
+            mirror, attestation_relative, canonical_attestation_bytes
+        )
+        attestation_bytes = _read_q8_stable_regular_file(
+            local_attestation, mirror_root=mirror
+        )
+        attestation_sha256 = sha256(attestation_bytes).hexdigest()
+        attestation_uri = f"{durable_root}/{attestation_relative}"
+        upload_databricks_volume_file_path_exclusive(
+            workspace,
+            attestation_uri,
+            local_attestation,
+            expected_sha256=attestation_sha256,
+            expected_size=len(attestation_bytes),
+        )
+        if (
+            download_databricks_volume_file_bytes(workspace, attestation_uri)
+            != attestation_bytes
+        ):
+            raise RuntimeError(
+                "Q8 remote attestation readback differs from local bytes"
+            )
+        binding = PublicationLatencyHandoffDatabricksAttestationBinding(
+            worker_index=worker_index,
+            path=(
+                Path(local_path(durable_root))
+                / PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY
+                / f"worker-{worker_index:02d}.json"
+            ),
+            file_sha256=attestation_sha256,
+            closed_record_sha256=_required_string(record, "closed_record_sha256"),
+        )
+    updated = reconcile_publication_latency_handoff_worker_attempt_json(
+        ledger_path,
+        worker_index=worker_index,
+        attempt_id=attempt_id,
+        durable_output_root=durable_root,
+        attestation=binding,
+        terminal_run=terminal_run,
+        local_evidence_mirror_root=local_evidence_mirror_root,
+    )
+    cloud = _required_mapping(record, "cloud_execution")
+    return PublicationLatencyHandoffWorkerAuthorization(
+        binding=binding,
+        attempt_id=attempt_id,
+        ledger_id=updated.ledger_id,
+        ledger_path_sha256=batch_authorization.ledger_path_sha256,
+        producer_batch_prefix=batch_authorization.batch_prefix,
+        control_plane_status_sha256=_required_string(
+            cloud, "control_plane_status_sha256"
+        ),
+        workspace_host_sha256=_required_string(
+            principal_binding, "workspace_host_sha256"
+        ),
+        user_name_sha256=_required_string(principal_binding, "user_name_sha256"),
+        _issuer=_WORKER_AUTHORIZATION_ISSUER,
+    )
 
 
 def write_publication_latency_handoff_databricks_attestation(
@@ -2997,25 +3714,37 @@ def read_publication_latency_handoff_databricks_attestation(
     binding: PublicationLatencyHandoffDatabricksAttestationBinding,
     *,
     durable_output_root: str | Path,
+    local_evidence_mirror_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Re-authenticate an attestation and its exact worker-result file join."""
 
-    if not isinstance(
-        binding,
-        PublicationLatencyHandoffDatabricksAttestationBinding,
-    ):
+    if type(binding) is not PublicationLatencyHandoffDatabricksAttestationBinding:
         raise TypeError("binding has the wrong type")
-    root = Path(local_path(str(durable_output_root))).expanduser().resolve()
+    durable_root_value = str(durable_output_root)
+    if local_evidence_mirror_root is not None:
+        durable_root_value = _require_q8_canonical_volume_root(durable_output_root)
+    canonical_root = Path(local_path(durable_root_value)).expanduser().absolute()
+    expected_binding_path = (
+        canonical_root
+        / PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY
+        / (f"worker-{binding.worker_index:02d}.json")
+    )
+    if binding.path.expanduser().absolute() != expected_binding_path.absolute():
+        raise ValueError("Databricks attestation path is not the canonical worker path")
+    root = (
+        canonical_root
+        if local_evidence_mirror_root is None
+        else _require_q8_local_evidence_mirror_root(local_evidence_mirror_root)
+    )
     expected_path = (
         root
         / PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY
         / (f"worker-{binding.worker_index:02d}.json")
     )
-    if binding.path.expanduser().resolve() != expected_path.resolve():
-        raise ValueError("Databricks attestation path is not the canonical worker path")
-    if not expected_path.is_file() or expected_path.is_symlink():
-        raise ValueError("Databricks attestation must be a real file")
-    content = expected_path.read_bytes()
+    if local_evidence_mirror_root is None:
+        content = _read_q8_stable_regular_file(expected_path, require_mode_0600=False)
+    else:
+        content = _read_q8_stable_regular_file(expected_path, mirror_root=root)
     if not hmac.compare_digest(sha256(content).hexdigest(), binding.file_sha256):
         raise ValueError("Databricks attestation file SHA-256 drift")
     record = _json_object(content, field_name="Databricks execution attestation")
@@ -3031,12 +3760,18 @@ def read_publication_latency_handoff_databricks_attestation(
     expected_result_relative = f"worker-results/worker-{binding.worker_index:02d}.json"
     if worker_binding.get("relative_path") != expected_result_relative:
         raise ValueError("Databricks attestation worker-result path drift")
-    result_path = _confined_relative_path(
-        root,
-        expected_result_relative,
-        field_name="attested worker result",
+    result_relative = PurePosixPath(expected_result_relative)
+    if result_relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in result_relative.parts
+    ):
+        raise ValueError("attested worker result must be a confined relative path")
+    result_path = root.joinpath(*result_relative.parts)
+    result_content = _read_q8_stable_regular_file(
+        result_path,
+        require_mode_0600=local_evidence_mirror_root is not None,
+        mirror_root=root if local_evidence_mirror_root is not None else None,
     )
-    result = _read_worker_result(result_path)
+    result = _read_worker_result(result_path, _content=result_content)
     if record.get("schema_version") == (
         PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION
     ):
@@ -3046,7 +3781,9 @@ def read_publication_latency_handoff_databricks_attestation(
     if result.get("closed_record_sha256") != worker_binding.get(
         "closed_record_sha256"
     ) or not hmac.compare_digest(
-        _file_sha256(result_path),
+        sha256(result_content).hexdigest()
+        if result_content is not None
+        else _file_sha256(result_path),
         _required_string(worker_binding, "file_sha256"),
     ):
         raise ValueError("Databricks attestation worker-result file binding drift")
@@ -3071,6 +3808,7 @@ def reconcile_publication_latency_handoff_worker_attempt_json(
     durable_output_root: str | Path,
     attestation: PublicationLatencyHandoffDatabricksAttestationBinding,
     terminal_run: Mapping[str, Any],
+    local_evidence_mirror_root: str | Path | None = None,
 ) -> DatabricksClusterHourLedger:
     """Derive terminal state and duration from one closed cloud attestation."""
 
@@ -3080,6 +3818,7 @@ def reconcile_publication_latency_handoff_worker_attempt_json(
     record = read_publication_latency_handoff_databricks_attestation(
         attestation,
         durable_output_root=durable_output_root,
+        local_evidence_mirror_root=local_evidence_mirror_root,
     )
     _require_v2_databricks_attestation_record(record)
     attempt = _required_mapping(record, "attempt")
@@ -3137,10 +3876,8 @@ def publication_latency_handoff_terminal_actual_gpu_seconds_from_ledger(
     *,
     attempt_ids_by_worker: Mapping[int, str],
     durable_output_root: str | Path,
-    attestations_by_worker: Mapping[
-        int,
-        PublicationLatencyHandoffDatabricksAttestationBinding,
-    ],
+    attestations_by_worker: Mapping[int, PublicationLatencyHandoffWorkerAuthorization],
+    local_evidence_mirror_root: str | Path | None = None,
 ) -> dict[int, float]:
     """Extract all sixteen successful one-GPU terminal actuals for closure."""
 
@@ -3149,6 +3886,7 @@ def publication_latency_handoff_terminal_actual_gpu_seconds_from_ledger(
         attempt_ids_by_worker=attempt_ids_by_worker,
         durable_output_root=durable_output_root,
         attestations_by_worker=attestations_by_worker,
+        local_evidence_mirror_root=local_evidence_mirror_root,
     )
     durations = {
         _required_int(item, "worker_index"): _required_positive_number(
@@ -3173,17 +3911,40 @@ def _publication_latency_handoff_ledger_reconciliation(
     durable_output_root: str | Path,
     attestations_by_worker: Mapping[
         int,
-        PublicationLatencyHandoffDatabricksAttestationBinding,
+        PublicationLatencyHandoffDatabricksAttestationBinding
+        | PublicationLatencyHandoffWorkerAuthorization,
     ],
+    local_evidence_mirror_root: str | Path | None = None,
     _ledger: DatabricksClusterHourLedger | None = None,
     _ledger_path_sha256: str | None = None,
     _expected_producer_batch_prefix: DatabricksLedgerPrefix | None = None,
+    _raw_binding_issuer: object | None = None,
 ) -> dict[str, Any]:
     expected_workers = set(range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS))
-    if set(attempt_ids_by_worker) != expected_workers:
+    if (
+        any(type(key) is not int for key in attempt_ids_by_worker)
+        or set(attempt_ids_by_worker) != expected_workers
+    ):
         raise ValueError("attempt IDs must cover producer workers 0..15 exactly")
-    if set(attestations_by_worker) != expected_workers:
+    if (
+        any(type(key) is not int for key in attestations_by_worker)
+        or set(attestations_by_worker) != expected_workers
+    ):
         raise ValueError("cloud attestations must cover producer workers 0..15 exactly")
+    if _raw_binding_issuer is None:
+        if any(
+            type(authority) is not PublicationLatencyHandoffWorkerAuthorization
+            for authority in attestations_by_worker.values()
+        ):
+            raise TypeError("Q8 public reconciliation requires worker authorizations")
+    else:
+        if _raw_binding_issuer is not _REMOTE_CLOSURE_LEDGER_ISSUER:
+            raise TypeError("raw Q8 bindings require the coordinator issuer")
+        if _expected_producer_batch_prefix is None or any(
+            type(binding) is not PublicationLatencyHandoffDatabricksAttestationBinding
+            for binding in attestations_by_worker.values()
+        ):
+            raise TypeError("coordinator reconciliation requires raw Q8 bindings")
     ledger = (
         read_databricks_cluster_hour_ledger_json(ledger_path)
         if _ledger is None
@@ -3221,12 +3982,34 @@ def _publication_latency_handoff_ledger_reconciliation(
             or actual.terminal_state != "succeeded"
         ):
             raise ValueError("producer ledger reconciliation identity is invalid")
-        binding = attestations_by_worker[worker_index]
+        evidence_authority = attestations_by_worker[worker_index]
+        if type(evidence_authority) is PublicationLatencyHandoffWorkerAuthorization:
+            if (
+                evidence_authority.attempt_id != attempt_id
+                or evidence_authority.ledger_id != ledger.ledger_id
+                or evidence_authority.ledger_path_sha256 != ledger_path_binding
+            ):
+                raise ValueError("Q8 worker authority ledger identity drift")
+            require_databricks_ledger_prefix(
+                ledger, evidence_authority.producer_batch_prefix
+            )
+            binding = evidence_authority.binding
+        else:
+            if (
+                type(evidence_authority)
+                is not (PublicationLatencyHandoffDatabricksAttestationBinding)
+                or _raw_binding_issuer is not _REMOTE_CLOSURE_LEDGER_ISSUER
+            ):
+                raise TypeError(
+                    "Q8 public reconciliation requires worker authorizations"
+                )
+            binding = evidence_authority
         if binding.worker_index != worker_index:
             raise ValueError("cloud attestation mapping has the wrong worker index")
         attestation = read_publication_latency_handoff_databricks_attestation(
             binding,
-            durable_output_root=root,
+            durable_output_root=durable_output_root,
+            local_evidence_mirror_root=local_evidence_mirror_root,
         )
         attested_attempt = _required_mapping(attestation, "attempt")
         attested_batch_prefix = databricks_ledger_prefix_from_record(
@@ -3235,6 +4018,12 @@ def _publication_latency_handoff_ledger_reconciliation(
         require_databricks_ledger_prefix(ledger, attested_batch_prefix)
         producer_batch_prefixes.add(attested_batch_prefix.prefix_sha256)
         cloud = _required_mapping(attestation, "cloud_execution")
+        if (
+            type(evidence_authority) is PublicationLatencyHandoffWorkerAuthorization
+            and evidence_authority.control_plane_status_sha256
+            != cloud.get("control_plane_status_sha256")
+        ):
+            raise ValueError("Q8 worker authority control-plane binding drift")
         worker_result = _required_mapping(attestation, "worker_result")
         if (
             attested_attempt.get("attempt_id") != attempt_id
@@ -3544,8 +4333,7 @@ def close_publication_latency_handoff_generation_from_workers(
     ledger_path: str | Path,
     attempt_ids_by_worker: Mapping[int, str],
     attestations_by_worker: Mapping[
-        int,
-        PublicationLatencyHandoffDatabricksAttestationBinding,
+        int, PublicationLatencyHandoffDatabricksAttestationBinding
     ],
     source_paths: Mapping[str, str | Path] | None = None,
     clock: Callable[[], float] = time.perf_counter,
@@ -3556,22 +4344,21 @@ def close_publication_latency_handoff_generation_from_workers(
 ) -> PublicationLatencyHandoffGenerationResult:
     """Verify sixteen worker closures and close three bundles without copying KV."""
 
+    if _remote_ledger_issuer is not _REMOTE_CLOSURE_LEDGER_ISSUER:
+        raise TypeError("Q8 close requires the remote coordinator issuer")
     if (
-        _ledger_snapshot is not None
-        or _ledger_path_sha256 is not None
-        or _expected_producer_batch_prefix is not None
-        or _remote_ledger_issuer is not None
+        not isinstance(_ledger_snapshot, DatabricksClusterHourLedger)
+        or (_ledger_path_sha256 is None)
+        or not isinstance(_expected_producer_batch_prefix, DatabricksLedgerPrefix)
     ):
-        if _remote_ledger_issuer is not _REMOTE_CLOSURE_LEDGER_ISSUER:
-            raise TypeError("remote ledger snapshot requires the coordinator issuer")
-        if (
-            not isinstance(_ledger_snapshot, DatabricksClusterHourLedger)
-            or (_ledger_path_sha256 is None)
-            or not isinstance(_expected_producer_batch_prefix, DatabricksLedgerPrefix)
-        ):
-            raise ValueError(
-                "remote ledger snapshot, path digest, and batch prefix are required"
-            )
+        raise ValueError(
+            "remote ledger snapshot, path digest, and batch prefix are required"
+        )
+    if any(
+        type(value) is not PublicationLatencyHandoffDatabricksAttestationBinding
+        for value in attestations_by_worker.values()
+    ):
+        raise TypeError("remote mounted close requires raw attestation bindings")
 
     validate_publication_latency_handoff_generation_plan(
         record,
@@ -3593,14 +4380,6 @@ def close_publication_latency_handoff_generation_from_workers(
         target = root / reserved
         if target.exists() or target.is_symlink():
             raise FileExistsError(f"coordinator output is not fresh: {target}")
-    actuals: dict[int, float]
-    if _ledger_snapshot is None:
-        actuals = publication_latency_handoff_terminal_actual_gpu_seconds_from_ledger(
-            ledger_path,
-            attempt_ids_by_worker=attempt_ids_by_worker,
-            durable_output_root=root,
-            attestations_by_worker=attestations_by_worker,
-        )
     ledger_reconciliation = _publication_latency_handoff_ledger_reconciliation(
         ledger_path,
         attempt_ids_by_worker=attempt_ids_by_worker,
@@ -3609,22 +4388,22 @@ def close_publication_latency_handoff_generation_from_workers(
         _ledger=_ledger_snapshot,
         _ledger_path_sha256=_ledger_path_sha256,
         _expected_producer_batch_prefix=_expected_producer_batch_prefix,
+        _raw_binding_issuer=_REMOTE_CLOSURE_LEDGER_ISSUER,
     )
-    if _ledger_snapshot is not None:
-        actuals = {
-            _required_int(item, "worker_index"): _required_positive_number(
-                item,
-                "actual_gpu_duration_seconds",
-            )
-            for item in _mapping_sequence(
-                ledger_reconciliation.get("attempts"),
-                field_name="ledger reconciliation attempts",
-            )
-        }
-        actuals = _validated_terminal_actual_gpu_seconds(
-            actuals,
-            worker_count=PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS,
+    actuals = {
+        _required_int(item, "worker_index"): _required_positive_number(
+            item,
+            "actual_gpu_duration_seconds",
         )
+        for item in _mapping_sequence(
+            ledger_reconciliation.get("attempts"),
+            field_name="ledger reconciliation attempts",
+        )
+    }
+    actuals = _validated_terminal_actual_gpu_seconds(
+        actuals,
+        worker_count=PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS,
+    )
     coordinator_start = clock()
     worker_results: list[dict[str, Any]] = []
     all_batches: list[_WorkerBatchResult] = []
@@ -3889,6 +4668,7 @@ def _replay_closed_publication_latency_handoff_generation(
         _ledger=ledger_snapshot,
         _ledger_path_sha256=path_digest,
         _expected_producer_batch_prefix=expected_producer_batch_prefix,
+        _raw_binding_issuer=_REMOTE_CLOSURE_LEDGER_ISSUER,
     )
     if dict(_required_mapping(execution, "ledger_reconciliation")) != reconciliation:
         raise ValueError("post-close Q8 ledger reconciliation drift")
@@ -3896,9 +4676,7 @@ def _replay_closed_publication_latency_handoff_generation(
         reconciliation.get("attempts"),
         field_name="post-close Q8 reconciliation attempts",
     )
-    attempt_by_worker = {
-        _required_int(item, "worker_index"): item for item in attempts
-    }
+    attempt_by_worker = {_required_int(item, "worker_index"): item for item in attempts}
     if set(attempt_by_worker) != set(
         range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS)
     ):
@@ -4020,7 +4798,9 @@ def _replay_closed_publication_latency_handoff_generation(
             != _execution_config_record(config)
         ):
             raise ValueError("post-close Q8 worker source/config binding drift")
-        planned_items = _mapping_sequence(worker.get("items"), field_name="worker.items")
+        planned_items = _mapping_sequence(
+            worker.get("items"), field_name="worker.items"
+        )
         expected_task_ids = sorted(
             _required_string(item, "task_id") for item in planned_items
         )
@@ -4115,7 +4895,10 @@ def _replay_closed_publication_latency_handoff_generation(
                 if item.get("context_tokens") == context_tokens
             )
             expected_identities = {
-                (_required_string(item, "dataset"), _required_string(item, "example_id"))
+                (
+                    _required_string(item, "dataset"),
+                    _required_string(item, "example_id"),
+                )
                 for item in items
             }
             observed_identities = {
@@ -4129,7 +4912,10 @@ def _replay_closed_publication_latency_handoff_generation(
             ):
                 raise ValueError("post-close Q8 worker-record identity drift")
             plan_by_identity = {
-                (_required_string(item, "dataset"), _required_string(item, "example_id")): item
+                (
+                    _required_string(item, "dataset"),
+                    _required_string(item, "example_id"),
+                ): item
                 for item in items
             }
             for row in rows:
@@ -4157,10 +4943,11 @@ def _replay_closed_publication_latency_handoff_generation(
                 if (
                     _handoff_total_tokens(rebased)
                     != _required_int(planned, "cache_prefix_tokens")
-                    or _handoff_segment_token_contracts(rebased)
-                    != expected_contracts
+                    or _handoff_segment_token_contracts(rebased) != expected_contracts
                 ):
-                    raise ValueError("post-close Q8 handoff differs from the exact plan")
+                    raise ValueError(
+                        "post-close Q8 handoff differs from the exact plan"
+                    )
                 rows_by_context[context_tokens].append(dict(row))
             seen_contexts.add(context_tokens)
             worker_record_bytes += _required_int(file_record, "byte_count")
@@ -4202,8 +4989,7 @@ def _replay_closed_publication_latency_handoff_generation(
             _file_sha256(result_path) != attempt.get("worker_result_file_sha256")
             or worker_result.get("closed_record_sha256")
             != attempt.get("worker_result_closed_record_sha256")
-            or _required_positive_number(attempt, "actual_gpu_duration_seconds")
-            + 1e-12
+            or _required_positive_number(attempt, "actual_gpu_duration_seconds") + 1e-12
             < metered
         ):
             raise ValueError("post-close Q8 worker/ledger evidence drift")
@@ -4273,9 +5059,10 @@ def _replay_closed_publication_latency_handoff_generation(
         or actual_bundle_paths != expected_bundle_paths
     ):
         raise ValueError("post-close Q8 durable file inventory drift")
-    if len(qualification_closures) != 1 or len(
-        {_canonical_sha256(item) for item in qualification_records}
-    ) != 1:
+    if (
+        len(qualification_closures) != 1
+        or len({_canonical_sha256(item) for item in qualification_records}) != 1
+    ):
         raise ValueError("post-close Q8 hardware qualification drift")
     _verify_bound_hardware_qualification_file(qualification_records[0])
 
@@ -4536,9 +5323,7 @@ def _require_v2_hardware_qualification_record(record: Mapping[str, Any]) -> None
     plan = _required_mapping(record, "plan_record")
     if plan.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE:
         raise ValueError("Q8 binding requires a native-v2 qualification plan")
-    if plan.get("closed_record_sha256") != record.get(
-        "plan_closed_record_sha256"
-    ):
+    if plan.get("closed_record_sha256") != record.get("plan_closed_record_sha256"):
         raise ValueError("Q8 qualification plan record closure binding drift")
     validate_gpu_qualification_plan_v2_record(
         plan,
@@ -4639,7 +5424,7 @@ def _require_authorized_worker_payload(
             "evidence_file_sha256",
         ),
     )
-    if not isinstance(authorization, GPUQualificationLaunchAuthorization):
+    if type(authorization) is not GPUQualificationLaunchAuthorization:
         raise TypeError(
             "publication launch requires GPUQualificationLaunchAuthorization"
         )
@@ -4725,9 +5510,7 @@ def _q8_job_config_record(
         "node_type_id": config.node_type_id,
         "package_wheel_sha256": config.package_wheel_sha256,
         "package_wheel_uri": config.package_wheel_uri,
-        "patched_flashinfer_wheel_sha256": (
-            config.patched_flashinfer_wheel_sha256
-        ),
+        "patched_flashinfer_wheel_sha256": (config.patched_flashinfer_wheel_sha256),
         "patched_flashinfer_wheel_uri": config.patched_flashinfer_wheel_uri,
         "patched_vllm_wheel_sha256": config.patched_vllm_wheel_sha256,
         "patched_vllm_wheel_uri": config.patched_vllm_wheel_uri,
@@ -4735,9 +5518,7 @@ def _q8_job_config_record(
         "run_timeout_seconds": config.run_timeout_seconds,
         "runner_python_file": config.runner_python_file,
         "runner_sha256": config.runner_sha256,
-        "runtime_closure_manifest_sha256": (
-            config.runtime_closure_manifest_sha256
-        ),
+        "runtime_closure_manifest_sha256": (config.runtime_closure_manifest_sha256),
         "runtime_closure_manifest_uri": config.runtime_closure_manifest_uri,
         "runtime_lock_sha256": config.runtime_lock_sha256,
         "runtime_lock_uri": config.runtime_lock_uri,
@@ -4792,13 +5573,9 @@ def _validate_worker_payload_submit_binding(
     expected_qualified_artifacts = {
         "cachet_source_tree_sha256": job_config.cachet_source_tree_sha256,
         "package_wheel_sha256": job_config.package_wheel_sha256,
-        "patched_flashinfer_wheel_sha256": (
-            job_config.patched_flashinfer_wheel_sha256
-        ),
+        "patched_flashinfer_wheel_sha256": (job_config.patched_flashinfer_wheel_sha256),
         "patched_vllm_wheel_sha256": job_config.patched_vllm_wheel_sha256,
-        "runtime_closure_manifest_sha256": (
-            job_config.runtime_closure_manifest_sha256
-        ),
+        "runtime_closure_manifest_sha256": (job_config.runtime_closure_manifest_sha256),
         "runtime_lock_sha256": job_config.runtime_lock_sha256,
     }
     if any(
@@ -4834,8 +5611,7 @@ def _validate_worker_payload_submit_binding(
     if (
         submit_payload.get("run_name") != expected_run_name
         or submit_payload.get("timeout_seconds") != job_config.run_timeout_seconds
-        or task.get("task_key")
-        != f"{job_config.task_key_prefix}_{worker_index:02d}"
+        or task.get("task_key") != f"{job_config.task_key_prefix}_{worker_index:02d}"
         or task.get("timeout_seconds") != job_config.run_timeout_seconds
         or task.get("max_retries") != job_config.task_max_retries
         or task.get("new_cluster") != _build_l40s_single_node_cluster(job_config)
@@ -5077,9 +5853,7 @@ def _validate_single_producer_submit_payload(
     if cluster.get("num_workers") != 0:
         raise ValueError("producer task must use a single-node cluster")
     spark_python_task = _required_mapping(task, "spark_python_task")
-    reviewed_runner = _validated_q8_runner_python_file(
-        expected_runner_python_file
-    )
+    reviewed_runner = _validated_q8_runner_python_file(expected_runner_python_file)
     if spark_python_task.get("python_file") != reviewed_runner:
         raise ValueError("producer python_file differs from the reviewed Q8 runner")
     if not hmac.compare_digest(
@@ -5665,10 +6439,11 @@ def _worker_bundle_file_records(
     return records
 
 
-def _read_worker_result(path: Path) -> dict[str, Any]:
-    if not path.is_file() or path.is_symlink():
-        raise ValueError(f"worker result is missing: {path}")
-    content = path.read_bytes()
+def _read_worker_result(path: Path, *, _content: bytes | None = None) -> dict[str, Any]:
+    if _content is None:
+        content = _read_q8_stable_regular_file(path, require_mode_0600=False)
+    else:
+        content = _content
     record = _json_object(content, field_name="worker result")
     if content != _canonical_json_bytes(record, pretty=True):
         raise ValueError("worker result is not canonical JSON")
@@ -5721,7 +6496,8 @@ def _read_worker_result(path: Path) -> dict[str, Any]:
 
 def _require_v2_worker_result_envelope(record: Mapping[str, Any]) -> None:
     if (
-        record.get("record_type") != PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE
+        record.get("record_type")
+        != PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE
         or record.get("schema_version")
         != PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION
     ):
@@ -6786,10 +7562,8 @@ def authorize_publication_latency_handoff_serving(
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     submission_authorization: PublicationLatencyHandoffSubmissionAuthorization,
     attempt_ids_by_worker: Mapping[int, str],
-    attestations_by_worker: Mapping[
-        int,
-        PublicationLatencyHandoffDatabricksAttestationBinding,
-    ],
+    worker_authorizations: Mapping[int, PublicationLatencyHandoffWorkerAuthorization],
+    single_user_name: str,
 ) -> PublicationLatencyHandoffServingAuthorization:
     """Replay all 16 runs directly and issue ephemeral serving authority."""
 
@@ -6797,6 +7571,62 @@ def authorize_publication_latency_handoff_serving(
         raise TypeError("workspace has the wrong type")
     if not isinstance(result, PublicationLatencyHandoffGenerationResult):
         raise TypeError("result must be a PublicationLatencyHandoffGenerationResult")
+    if (
+        type(qualification_launch_authorization)
+        is not GPUQualificationLaunchAuthorization
+    ):
+        raise TypeError("qualification launch authorization has the wrong type")
+    expected_workers = set(range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS))
+    if (
+        any(type(key) is not int for key in attempt_ids_by_worker)
+        or any(type(key) is not int for key in worker_authorizations)
+        or set(attempt_ids_by_worker) != expected_workers
+        or set(worker_authorizations) != expected_workers
+    ):
+        raise ValueError("Q8 serving worker authority must cover workers 0..15")
+    if (
+        type(submission_authorization)
+        is not PublicationLatencyHandoffSubmissionAuthorization
+    ):
+        raise TypeError("Q8 serving requires submission authorization")
+    bindings_by_worker: dict[
+        int, PublicationLatencyHandoffDatabricksAttestationBinding
+    ] = {}
+    for worker_index in sorted(expected_workers):
+        authority = worker_authorizations[worker_index]
+        if type(authority) is not PublicationLatencyHandoffWorkerAuthorization:
+            raise TypeError("Q8 serving requires live worker authorizations")
+        if (
+            authority.binding.worker_index != worker_index
+            or authority.attempt_id != attempt_ids_by_worker[worker_index]
+            or authority.ledger_id
+            != submission_authorization.batch_authorization.batch_prefix.ledger_id
+            or authority.ledger_path_sha256
+            != submission_authorization.batch_authorization.ledger_path_sha256
+            or authority.producer_batch_prefix
+            != submission_authorization.batch_authorization.batch_prefix
+            or authority.workspace_host_sha256
+            != submission_authorization.workspace_host_sha256
+            or authority.user_name_sha256 != submission_authorization.user_name_sha256
+        ):
+            raise ValueError("Q8 serving worker authority binding drift")
+        bindings_by_worker[worker_index] = authority.binding
+    batch_reservation_authorization = (
+        require_publication_latency_handoff_submission_authorization(
+            submission_authorization
+        )
+    )
+    workspace_identity = require_databricks_current_user_name(
+        workspace,
+        expected_user_name=single_user_name,
+    )
+    if (
+        workspace_identity.get("workspace_host_sha256")
+        != submission_authorization.workspace_host_sha256
+        or workspace_identity.get("user_name_sha256")
+        != submission_authorization.user_name_sha256
+    ):
+        raise ValueError("Q8 serving workspace/principal authority drift")
     authenticated = read_publication_latency_handoff_generation_result(result.root)
     _require_v2_generation_execution_record(authenticated.record)
     if (
@@ -6820,7 +7650,7 @@ def authorize_publication_latency_handoff_serving(
         ledger_path,
         attempt_ids_by_worker=attempt_ids_by_worker,
         durable_output_root=authenticated.root,
-        attestations_by_worker=attestations_by_worker,
+        attestations_by_worker=worker_authorizations,
     )
     if dict(_required_mapping(authenticated.record, "ledger_reconciliation")) != (
         reconciliation
@@ -6836,11 +7666,6 @@ def authorize_publication_latency_handoff_serving(
     expected_payload_digests = tuple(
         _required_string(item, "submit_payload_sha256")
         for item in reconciliation_attempts
-    )
-    batch_reservation_authorization = (
-        require_publication_latency_handoff_submission_authorization(
-            submission_authorization
-        )
     )
     batch_prefix = require_databricks_batch_reservation_authorization(
         batch_reservation_authorization,
@@ -6864,7 +7689,7 @@ def authorize_publication_latency_handoff_serving(
             canonical_databricks_submit_payload_snapshot(terminal)
         )
         attestation = read_publication_latency_handoff_databricks_attestation(
-            attestations_by_worker[worker_index],
+            bindings_by_worker[worker_index],
             durable_output_root=authenticated.root,
         )
         cloud = _required_mapping(attestation, "cloud_execution")
@@ -6890,7 +7715,7 @@ def authorize_publication_latency_handoff_serving(
         ledger_path,
         attempt_ids_by_worker=attempt_ids_by_worker,
         durable_output_root=authenticated.root,
-        attestations_by_worker=attestations_by_worker,
+        attestations_by_worker=worker_authorizations,
         _ledger=final_ledger,
     )
     if final_reconciliation != reconciliation:
@@ -6924,7 +7749,7 @@ def authorize_publication_latency_handoff_serving(
 def _resolve_authorized_publication_latency_handoff_result(
     authorization: object,
 ) -> PublicationLatencyHandoffGenerationResult:
-    if not isinstance(authorization, PublicationLatencyHandoffServingAuthorization):
+    if type(authorization) is not PublicationLatencyHandoffServingAuthorization:
         raise TypeError(
             "Q8 serving requires PublicationLatencyHandoffServingAuthorization"
         )
@@ -7107,7 +7932,7 @@ def require_publication_latency_full_launch_ready(
         "end_to_end_cache_prefix_tokens_per_gpu_second",
     )
     generation_hours = _required_positive_number(accounting, "charged_gpu_hours")
-    return publication_campaign_full_launch_budget_projection(
+    projection: dict[str, Any] = publication_campaign_full_launch_budget_projection(
         latency_handoff_generation_tokens_per_second=observed,
         latency_handoff_generation_gpu_hours=generation_hours,
         other_terminal_gpu_hours=other_terminal_gpu_hours,
@@ -7116,6 +7941,7 @@ def require_publication_latency_full_launch_ready(
             proposed_full_launch_reserved_gpu_hours
         ),
     )
+    return projection
 
 
 def _generation_items(
@@ -7857,14 +8683,18 @@ def _create_q8_phase_lease_root(path: str | Path) -> Path:
         raise FileExistsError(f"Q8 phase lease already exists: {root}")
     if not root.parent.is_dir():
         raise ValueError("Q8 phase lease parent must already be a real directory")
-    root.mkdir()
+    root.mkdir(mode=0o700)
     _sync_directory(root.parent)
     return root
 
 
 def _remove_empty_q8_phase_lease_root(root: Path) -> None:
     for path in tuple(root.iterdir()):
-        if path.name == "phase-lease.json" and path.is_file() and not path.is_symlink():
+        if (
+            path.name in {"phase-lease.json", "workspace-authority.json"}
+            and path.is_file()
+            and not path.is_symlink()
+        ):
             path.unlink()
     if root.is_dir() and not root.is_symlink() and not any(root.iterdir()):
         root.rmdir()
@@ -7949,6 +8779,26 @@ def _write_canonical_json_exclusive(record: Mapping[str, Any], path: Path) -> No
         raise FileExistsError(f"refusing to overwrite JSON: {path}")
     with path.open("xb") as handle:
         handle.write(_canonical_json_bytes(record, pretty=True))
+
+
+def _write_q8_workspace_authority_exclusive(
+    record: Mapping[str, Any], path: Path
+) -> None:
+    parent_descriptor, leaf = _open_q8_mirror_parent(
+        path.parent, PurePosixPath(path.name), create=False
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptor = os.open(leaf, flags, 0o600, dir_fd=parent_descriptor)
+    try:
+        content = _canonical_json_bytes(record, pretty=True)
+        offset = 0
+        while offset < len(content):
+            offset += os.write(descriptor, content[offset:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+        os.fsync(parent_descriptor)
+        os.close(parent_descriptor)
 
 
 def _read_q8_controller_record(path: Path, field_name: str) -> dict[str, Any]:
@@ -8252,6 +9102,7 @@ __all__ = [
     "PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION",
     "PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_RECORD_TYPE",
     "PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_SCHEMA_VERSION",
+    "PUBLICATION_LATENCY_HANDOFF_GENERATOR_ZONE_ID",
     "PUBLICATION_LATENCY_HANDOFF_PLAN_RECORD_TYPE",
     "PUBLICATION_LATENCY_HANDOFF_PLAN_SCHEMA_VERSION",
     "PUBLICATION_LATENCY_HANDOFF_RUNNER_FILENAME",
@@ -8270,6 +9121,7 @@ __all__ = [
     "PublicationLatencyHandoffDatabricksAttestationBinding",
     "PublicationLatencyHandoffGenerationResult",
     "PublicationLatencyHandoffSubmissionAuthorization",
+    "PublicationLatencyHandoffWorkerAuthorization",
     "PublicationLatencyHandoffServingAuthorization",
     "PublicationLatencyServingHandoffBundle",
     "authorize_publication_latency_handoff_serving",
@@ -8279,6 +9131,7 @@ __all__ = [
     "build_publication_latency_handoff_worker_payloads",
     "build_databricks_publication_latency_handoff_worker_submit_payloads",
     "close_publication_latency_handoff_generation_from_workers",
+    "collect_publication_latency_handoff_worker_attestation",
     "execute_publication_latency_handoff_generation_plan_local_test_helper",
     "gpu_qualification_artifact_pins_v2_from_record",
     "publication_latency_generator_hardware_qualification_v2_record",

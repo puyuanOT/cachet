@@ -149,6 +149,9 @@ FULL_SCORE_REMOTE_CONTROLLER_RUN_RECEIPT_RECORD_TYPE: Final = (
 FULL_SCORE_REMOTE_CONTROLLER_AUTHORIZATION_RECORD_TYPE: Final = (
     "cachet.full_score_remote_controller_authorization.v1"
 )
+FULL_SCORE_REMOTE_CONTROLLER_WORKSPACE_AUTHORITY_RECORD_TYPE: Final = (
+    "cachet.full_score_remote_controller_workspace_authority.v1"
+)
 FULL_SCORE_REMOTE_CONTROLLER_SCHEMA_VERSION: Final = 1
 FULL_SCORE_REMOTE_COORDINATOR_RUNNER_SCRIPT = r"""from __future__ import annotations
 
@@ -346,7 +349,14 @@ class FullScoreRemoteCoordinatorRequestAuthorization(Mapping[str, Any]):
         "_authorization_bytes",
         "_controller_lease_root",
         "_request_bytes",
+        "workspace_host_sha256",
+        "user_name_sha256",
     )
+    _authorization_bytes: bytes
+    _controller_lease_root: Path
+    _request_bytes: bytes
+    workspace_host_sha256: str
+    user_name_sha256: str
 
     def __init__(
         self,
@@ -354,6 +364,8 @@ class FullScoreRemoteCoordinatorRequestAuthorization(Mapping[str, Any]):
         request: Mapping[str, Any],
         authorization_record: Mapping[str, Any],
         controller_lease_root: str | Path,
+        workspace_host_sha256: str,
+        user_name_sha256: str,
         _issuer: object,
     ) -> None:
         if _issuer is not _REMOTE_AUTHORIZATION_ISSUER:
@@ -376,9 +388,26 @@ class FullScoreRemoteCoordinatorRequestAuthorization(Mapping[str, Any]):
             _controller_lease_root_sha256(lease_root)
         ):
             raise ValueError("remote coordinator controller lease root binding drift")
-        self._request_bytes = _pretty_json_bytes(canonical_request)
-        self._authorization_bytes = _pretty_json_bytes(canonical_authorization)
-        self._controller_lease_root = lease_root
+        object.__setattr__(self, "_request_bytes", _pretty_json_bytes(canonical_request))
+        object.__setattr__(
+            self,
+            "_authorization_bytes",
+            _pretty_json_bytes(canonical_authorization),
+        )
+        object.__setattr__(self, "_controller_lease_root", lease_root)
+        object.__setattr__(
+            self,
+            "workspace_host_sha256",
+            _require_sha256(workspace_host_sha256, "workspace_host_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "user_name_sha256",
+            _require_sha256(user_name_sha256, "user_name_sha256"),
+        )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("remote coordinator request authority is immutable")
 
     def __getitem__(self, key: str) -> Any:
         return self.to_record()[key]
@@ -429,6 +458,9 @@ class FullScoreRemoteTreeAuthorization:
     runs_get_receipt_record_sha256: str
     phase_terminal_record_sha256: str
     _evidence_bindings_bytes: bytes = field(repr=False)
+    workspace_host_sha256: str
+    user_name_sha256: str
+    workspace_authority_closure_sha256: str
 
     def __init__(
         self,
@@ -451,6 +483,8 @@ class FullScoreRemoteTreeAuthorization:
         runs_get_receipt_record_sha256: str,
         phase_terminal_record_sha256: str,
         evidence_bindings: Sequence[Mapping[str, Any]],
+        workspace_host_sha256: str,
+        user_name_sha256: str,
         _issuer: object,
     ) -> None:
         if _issuer is not _REMOTE_AUTHORIZATION_ISSUER:
@@ -537,6 +571,9 @@ class FullScoreRemoteTreeAuthorization:
                 + "\n"
             ).encode("utf-8"),
         )
+        object.__setattr__(self, "workspace_host_sha256", _require_sha256(workspace_host_sha256, "workspace_host_sha256"))
+        object.__setattr__(self, "user_name_sha256", _require_sha256(user_name_sha256, "user_name_sha256"))
+        object.__setattr__(self, "workspace_authority_closure_sha256", _canonical_sha256({"controller_authorization_record_sha256": self.controller_authorization_record_sha256, "user_name_sha256": self.user_name_sha256, "workspace_host_sha256": self.workspace_host_sha256}))
 
     @property
     def result_record(self) -> Mapping[str, Any]:
@@ -895,25 +932,29 @@ def collect_governed_full_score_remote_phase_attempt(
 ) -> tuple[dict[str, Any], full_score.FullScorePhaseAuthorization]:
     """Collect a GPU phase on Mac through Files/CAS with a local ledger only."""
 
-    if not isinstance(
-        submission_authorization,
-        full_score.FullScorePhaseSubmissionAuthorization,
-    ):
+    if type(submission_authorization) is not full_score.FullScorePhaseSubmissionAuthorization:
         raise TypeError("remote phase collection requires submission authority")
+    expected_single_user_name = full_score._validated_full_score_single_user_name(
+        single_user_name
+    )
+    identity = require_databricks_current_user_name(
+        workspace,
+        expected_user_name=expected_single_user_name,
+        opener=opener,
+    )
+    if (
+        identity.get("workspace_host_sha256")
+        != submission_authorization.workspace_host_sha256
+        or identity.get("user_name_sha256")
+        != submission_authorization.user_name_sha256
+    ):
+        raise ValueError("remote phase collection workspace/principal authority drift")
     compact_io = FullScoreRemoteCompactArtifactIO(workspace, cas)
     submit_uri = _volume_file_uri(submit_payload_uri, "submit_payload_uri")
     run_uri = _volume_file_uri(control_plane_run_uri, "control_plane_run_uri")
     terminal_uri = _volume_file_uri(terminal_record_uri, "terminal_record_uri")
     if len({submit_uri, run_uri, terminal_uri}) != 3:
         raise ValueError("remote phase compact artifact URIs must be distinct")
-    expected_single_user_name = full_score._validated_full_score_single_user_name(
-        single_user_name
-    )
-    require_databricks_current_user_name(
-        workspace,
-        expected_user_name=expected_single_user_name,
-        opener=opener,
-    )
     submit_file = compact_io.download(submit_uri)
     submit_record = _json_object(
         submit_file.read_bytes(),
@@ -1016,9 +1057,22 @@ def write_governed_full_score_remote_matched_billing_block(
     consumer_terminal_uri: str,
     ledger_path: str | Path,
     remote_consumer_authorization: object,
+    single_user_name: str,
+    opener: Any | None = None,
 ) -> dict[str, Any]:
     """Publish one matched billing record with no mounted controller paths."""
 
+    remote_authorization = require_full_score_remote_consumer_evidence_authorization(
+        remote_consumer_authorization,
+        execution_plan=execution_plan,
+    )
+    _require_live_workspace_pair(
+        workspace,
+        expected_user_name=single_user_name,
+        workspace_host_sha256=remote_authorization.workspace_host_sha256,
+        user_name_sha256=remote_authorization.user_name_sha256,
+        opener=opener,
+    )
     compact_io = FullScoreRemoteCompactArtifactIO(workspace, cas)
     output_uri = _volume_file_uri(path, "matched billing output URI")
     producer_uri = _volume_file_uri(
@@ -1039,7 +1093,7 @@ def write_governed_full_score_remote_matched_billing_block(
     compact_io.download(consumer_uri)
     _download_remote_consumer_evidence_bindings(
         compact_io,
-        remote_consumer_authorization,
+        remote_authorization,
         execution_plan=execution_plan,
         evidence_directory_uri=evidence_directory_uri,
     )
@@ -1052,7 +1106,7 @@ def write_governed_full_score_remote_matched_billing_block(
         producer_terminal_path=producer_uri,
         consumer_terminal_path=consumer_uri,
         ledger_path=ledger_path,
-        remote_consumer_authorization=remote_consumer_authorization,
+        remote_consumer_authorization=remote_authorization,
         compact_artifact_resolver=compact_io.resolve,
         compact_artifact_publisher=compact_io.publish,
     )
@@ -1066,10 +1120,35 @@ def write_governed_full_score_remote_live_p90_budget_admission(
     execution_plan: Mapping[str, Any],
     completed_block_paths: Sequence[str],
     remote_consumer_authorizations: Sequence[object],
+    single_user_name: str,
+    opener: Any | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Publish and replay the wave-boundary P90 gate through Files/CAS."""
 
+    remote_authorizations = require_full_score_remote_consumer_evidence_authorizations(
+        remote_consumer_authorizations,
+        execution_plan=execution_plan,
+    )
+    workspace_pairs = {
+        (authorization.workspace_host_sha256, authorization.user_name_sha256)
+        for authorization in remote_authorizations
+    }
+    if len(workspace_pairs) != 1:
+        raise ValueError("remote consumer authorities bind different workspaces")
+    workspace_host_sha256, user_name_sha256 = next(iter(workspace_pairs))
+    predecessor_pair = full_score._full_score_predecessor_workspace_identity(
+        kwargs.get("predecessor_authorization")
+    )
+    if (workspace_host_sha256, user_name_sha256) != predecessor_pair:
+        raise ValueError("live P90 remote/predecessor workspace lineage drift")
+    _require_live_workspace_pair(
+        workspace,
+        expected_user_name=single_user_name,
+        workspace_host_sha256=workspace_host_sha256,
+        user_name_sha256=user_name_sha256,
+        opener=opener,
+    )
     compact_io = FullScoreRemoteCompactArtifactIO(workspace, cas)
     output_uri = _volume_file_uri(path, "live P90 output URI")
     block_uris = [
@@ -1082,7 +1161,7 @@ def write_governed_full_score_remote_live_p90_budget_admission(
         raise ValueError("live P90 output collides with a matched block")
     for block_uri in block_uris:
         compact_io.download(block_uri)
-    for authorization in remote_consumer_authorizations:
+    for authorization in remote_authorizations:
         _download_remote_consumer_evidence_bindings(
             compact_io,
             authorization,
@@ -1092,7 +1171,7 @@ def write_governed_full_score_remote_live_p90_budget_admission(
         output_uri,
         execution_plan,
         completed_block_paths=block_uris,
-        remote_consumer_authorizations=remote_consumer_authorizations,
+        remote_consumer_authorizations=remote_authorizations,
         compact_artifact_resolver=compact_io.resolve,
         compact_artifact_publisher=compact_io.publish,
         **kwargs,
@@ -1120,9 +1199,22 @@ def prepare_governed_full_score_remote_live_p90_phase_submission(
     remote_ready_authorization: object | None = None,
     remote_consumer_authorizations: Sequence[object] | None = None,
     latency_execution_plan_record: Mapping[str, Any] | None = None,
+    opener: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Download, gate, and re-render one nonzero phase through Files/CAS."""
 
+    expected_host_sha256, expected_user_sha256 = (
+        full_score._full_score_predecessor_workspace_identity(
+            predecessor_authorization
+        )
+    )
+    _require_live_workspace_pair(
+        workspace,
+        expected_user_name=cast(str, config.single_user_name),
+        workspace_host_sha256=expected_host_sha256,
+        user_name_sha256=expected_user_sha256,
+        opener=opener,
+    )
     payloads = tuple(worker_payloads)
     for payload in payloads:
         full_score.validate_full_score_worker_payload(
@@ -1142,6 +1234,28 @@ def prepare_governed_full_score_remote_live_p90_phase_submission(
         raise ValueError(
             "remote consumer P90 preparation requires producer-ready authority"
         )
+    if remote_ready_authorization is not None:
+        ready_pair = _require_remote_tree_workspace_pair(
+            remote_ready_authorization,
+            expected_action="producer_ready",
+        )
+        if ready_pair != (expected_host_sha256, expected_user_sha256):
+            raise ValueError("remote ready authority workspace lineage drift")
+    remote_authorizations = tuple(
+        ()
+        if remote_consumer_authorizations is None
+        else remote_consumer_authorizations
+    )
+    for authorization in remote_authorizations:
+        validated = require_full_score_remote_consumer_evidence_authorization(
+            authorization,
+            execution_plan=execution_plan,
+        )
+        if (
+            validated.workspace_host_sha256,
+            validated.user_name_sha256,
+        ) != (expected_host_sha256, expected_user_sha256):
+            raise ValueError("remote consumer authority workspace lineage drift")
     compact_io = FullScoreRemoteCompactArtifactIO(workspace, cas)
     output_uri = _volume_file_uri(path, "live P90 output URI")
     block_uris = [
@@ -1167,11 +1281,6 @@ def prepare_governed_full_score_remote_live_p90_phase_submission(
         raise ValueError("live P90 compact input/output URI collision")
     for worker_uri in worker_uris:
         compact_io.download(worker_uri)
-    remote_authorizations = tuple(
-        ()
-        if remote_consumer_authorizations is None
-        else remote_consumer_authorizations
-    )
     for authorization in remote_authorizations:
         _download_remote_consumer_evidence_bindings(
             compact_io,
@@ -1485,11 +1594,15 @@ def _issue_full_score_remote_coordinator_request_authorization(
     request: Mapping[str, Any],
     *,
     controller_lease_root: str | Path,
+    workspace_host_sha256: str,
+    user_name_sha256: str,
 ) -> FullScoreRemoteCoordinatorRequestAuthorization:
     return FullScoreRemoteCoordinatorRequestAuthorization(
         request=request,
         authorization_record=_remote_coordinator_request_authorization_record(request),
         controller_lease_root=controller_lease_root,
+        workspace_host_sha256=workspace_host_sha256,
+        user_name_sha256=user_name_sha256,
         _issuer=_REMOTE_AUTHORIZATION_ISSUER,
     )
 
@@ -1497,7 +1610,7 @@ def _issue_full_score_remote_coordinator_request_authorization(
 def _require_full_score_remote_coordinator_request_authorization(
     value: object,
 ) -> FullScoreRemoteCoordinatorRequestAuthorization:
-    if not isinstance(value, FullScoreRemoteCoordinatorRequestAuthorization):
+    if type(value) is not FullScoreRemoteCoordinatorRequestAuthorization:
         raise TypeError(
             "remote coordinator requires builder-issued request authorization"
         )
@@ -1512,6 +1625,23 @@ def _require_full_score_remote_coordinator_request_authorization(
     ):
         raise ValueError("remote coordinator controller lease authority drift")
     return value
+
+
+def _require_remote_request_workspace_identity(
+    workspace: DatabricksWorkspaceConfig,
+    authorization: FullScoreRemoteCoordinatorRequestAuthorization,
+    *,
+    expected_user_name: str,
+) -> None:
+    identity = require_databricks_current_user_name(
+        workspace, expected_user_name=expected_user_name
+    )
+    if (
+        identity.get("workspace_host_sha256")
+        != authorization.workspace_host_sha256
+        or identity.get("user_name_sha256") != authorization.user_name_sha256
+    ):
+        raise ValueError("remote coordinator workspace/principal authority drift")
 
 
 def _normalized_controller_lease_root(value: str | Path) -> Path:
@@ -1543,8 +1673,22 @@ def _full_score_remote_controller_lease_root(
     action: str,
     wave_index: int,
 ) -> Path:
-    if not isinstance(phase_authorization, full_score.FullScorePhaseAuthorization):
+    if type(phase_authorization) is not full_score.FullScorePhaseAuthorization:
         raise TypeError("remote coordinator requires full-score phase authority")
+    if phase_authorization.workspace_authority_closure_sha256 != _canonical_sha256(
+        {
+            "causal_closure_sha256": phase_authorization.causal_closure_sha256,
+            "phase_lease_root_sha256": _canonical_sha256(
+                {
+                    "domain": "cachet.full_score_phase_lease_root_authority.v1",
+                    "phase_lease_root": str(phase_authorization.phase_lease_root),
+                }
+            ),
+            "user_name_sha256": phase_authorization.user_name_sha256,
+            "workspace_host_sha256": phase_authorization.workspace_host_sha256,
+        }
+    ):
+        raise ValueError("remote coordinator phase workspace authority drift")
     expected_phase = "producer" if action == "producer_ready" else "consumer"
     if (
         action not in FULL_SCORE_REMOTE_COORDINATOR_ACTIONS
@@ -1608,7 +1752,7 @@ def build_full_score_remote_coordinator_request(
         raise ValueError("remote coordinator action is unsupported")
     if type(wave_index) is not int or wave_index < 0:
         raise ValueError("wave_index must be a non-negative integer")
-    if not isinstance(phase_authorization, full_score.FullScorePhaseAuthorization):
+    if type(phase_authorization) is not full_score.FullScorePhaseAuthorization:
         raise TypeError("remote coordinator requires full-score phase authority")
     if not isinstance(coordinator_config, FullScoreRemoteCoordinatorJobConfig):
         raise TypeError(
@@ -1752,6 +1896,8 @@ def build_full_score_remote_coordinator_request(
     return _issue_full_score_remote_coordinator_request_authorization(
         record,
         controller_lease_root=controller_lease_root,
+        workspace_host_sha256=phase_authorization.workspace_host_sha256,
+        user_name_sha256=phase_authorization.user_name_sha256,
     )
 
 
@@ -2035,7 +2181,7 @@ def render_full_score_remote_coordinator_submit_payload(
         "tasks": [task],
         "timeout_seconds": config.timeout_seconds,
     }
-    bound_payload = bind_databricks_run_idempotency_token(
+    bound_payload: dict[str, Any] = bind_databricks_run_idempotency_token(
         payload,
         attempt_id=cast(str, canonical_request["attempt_id"]),
     )
@@ -2100,13 +2246,25 @@ def submit_full_score_remote_coordinator(
     coordinator = _full_score_remote_coordinator_job_config_from_record(
         _required_mapping(canonical_request, "coordinator")
     )
-    require_databricks_current_user_name(
+    workspace_identity = require_databricks_current_user_name(
         workspace,
         expected_user_name=coordinator.single_user_name,
     )
+    if (
+        workspace_identity.get("workspace_host_sha256")
+        != request_authorization.workspace_host_sha256
+        or workspace_identity.get("user_name_sha256")
+        != request_authorization.user_name_sha256
+    ):
+        raise ValueError("remote coordinator workspace/principal authority drift")
     root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
         paths = _full_score_remote_controller_paths(root)
+        _write_or_require_remote_workspace_authority(
+            paths["workspace_authority"],
+            request_authorization=request_authorization,
+            controller_root=root,
+        )
         request_bytes = _pretty_json_bytes(canonical_request)
         payload_bytes = _pretty_json_bytes(canonical_payload)
         _write_or_require_bytes(
@@ -2221,9 +2379,10 @@ def recover_full_score_remote_coordinator_submission(
     coordinator = _full_score_remote_coordinator_job_config_from_record(
         _required_mapping(request_authorization.to_record(), "coordinator")
     )
-    require_databricks_current_user_name(
+    _require_remote_request_workspace_identity(
         workspace,
         expected_user_name=coordinator.single_user_name,
+        authorization=request_authorization,
     )
     root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
@@ -2672,9 +2831,10 @@ def collect_full_score_remote_coordinator(
         request_authorization,
         controller_root,
     )
-    require_databricks_current_user_name(
+    _require_remote_request_workspace_identity(
         workspace,
         expected_user_name=coordinator.single_user_name,
+        authorization=request_authorization,
     )
     root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
@@ -2812,9 +2972,10 @@ def replay_full_score_remote_coordinator_authorization(
         request_authorization,
         controller_root,
     )
-    require_databricks_current_user_name(
+    _require_remote_request_workspace_identity(
         workspace,
         expected_user_name=coordinator.single_user_name,
+        authorization=request_authorization,
     )
     root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
@@ -2837,8 +2998,16 @@ def require_full_score_remote_ready_authorization(
 ) -> FullScoreRemoteTreeAuthorization:
     """Require the exact producer-ready authority used by a consumer phase."""
 
-    if not isinstance(authorization, FullScoreRemoteTreeAuthorization):
+    if type(authorization) is not FullScoreRemoteTreeAuthorization:
         raise TypeError("consumer launch requires remote ready-tree authority")
+    if authorization.workspace_authority_closure_sha256 != _canonical_sha256(
+        {
+            "controller_authorization_record_sha256": authorization.controller_authorization_record_sha256,
+            "user_name_sha256": authorization.user_name_sha256,
+            "workspace_host_sha256": authorization.workspace_host_sha256,
+        }
+    ):
+        raise ValueError("remote ready-tree workspace authority drift")
     completion_sha = _require_sha256(
         completion_record.get("closed_record_sha256"),
         "completion_record_sha256",
@@ -2898,6 +3067,12 @@ def require_full_score_remote_consumer_evidence_authorizations(
         raise ValueError("remote consumer authority omits an execution wave")
     if len(durable_roots) != 1:
         raise ValueError("remote consumer authorities bind different durable roots")
+    workspace_pairs = {
+        (authorization.workspace_host_sha256, authorization.user_name_sha256)
+        for authorization in observed.values()
+    }
+    if len(workspace_pairs) != 1:
+        raise ValueError("remote consumer authorities bind different workspaces")
     if (
         len(all_shards) != full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
         or len(set(all_shards)) != full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
@@ -2915,8 +3090,16 @@ def require_full_score_remote_consumer_evidence_authorization(
 ) -> FullScoreRemoteTreeAuthorization:
     """Require one issuer-only consumer-evidence wave capability."""
 
-    if not isinstance(authorization, FullScoreRemoteTreeAuthorization):
+    if type(authorization) is not FullScoreRemoteTreeAuthorization:
         raise TypeError("publication workflow requires remote consumer authority")
+    if authorization.workspace_authority_closure_sha256 != _canonical_sha256(
+        {
+            "controller_authorization_record_sha256": authorization.controller_authorization_record_sha256,
+            "user_name_sha256": authorization.user_name_sha256,
+            "workspace_host_sha256": authorization.workspace_host_sha256,
+        }
+    ):
+        raise ValueError("remote consumer workspace authority drift")
     execution_sha = _require_sha256(
         execution_plan.get("closed_record_sha256"),
         "execution_plan_sha256",
@@ -2954,6 +3137,51 @@ def require_full_score_remote_consumer_evidence_authorization(
     ):
         raise ValueError("remote consumer authority result/evidence coverage drift")
     return authorization
+
+
+def _require_remote_tree_workspace_pair(
+    authorization: object,
+    *,
+    expected_action: str | None = None,
+) -> tuple[str, str]:
+    if type(authorization) is not FullScoreRemoteTreeAuthorization:
+        raise TypeError("remote workspace lineage requires remote tree authority")
+    if expected_action is not None and authorization.action != expected_action:
+        raise ValueError("remote tree workspace action drift")
+    expected = _canonical_sha256(
+        {
+            "controller_authorization_record_sha256": (
+                authorization.controller_authorization_record_sha256
+            ),
+            "user_name_sha256": authorization.user_name_sha256,
+            "workspace_host_sha256": authorization.workspace_host_sha256,
+        }
+    )
+    if authorization.workspace_authority_closure_sha256 != expected:
+        raise ValueError("remote tree workspace authority drift")
+    return authorization.workspace_host_sha256, authorization.user_name_sha256
+
+
+def _require_live_workspace_pair(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    expected_user_name: str,
+    workspace_host_sha256: str,
+    user_name_sha256: str,
+    opener: Any | None,
+) -> None:
+    identity = require_databricks_current_user_name(
+        workspace,
+        expected_user_name=full_score._validated_full_score_single_user_name(
+            expected_user_name
+        ),
+        opener=opener,
+    )
+    if (
+        identity.get("workspace_host_sha256") != workspace_host_sha256
+        or identity.get("user_name_sha256") != user_name_sha256
+    ):
+        raise ValueError("remote full-score workspace/principal authority drift")
 
 
 def build_full_score_remote_final_coverage_record(
@@ -3055,6 +3283,9 @@ def _prepare_full_score_remote_controller_root(value: str | Path) -> Path:
     )
     if root.is_symlink() or not root.is_dir():
         raise ValueError("remote controller root must be a real local directory")
+    identity = os.stat(root, follow_symlinks=False)
+    if identity.st_uid != os.getuid() or stat.S_IMODE(identity.st_mode) != 0o700:
+        raise ValueError("remote controller root must be current-UID mode 0700")
     return root
 
 
@@ -3070,7 +3301,69 @@ def _full_score_remote_controller_paths(root: Path) -> dict[str, Path]:
         "submit_payload": root / "submit-payload.json",
         "submit_response": root / "submit-response.json",
         "upload_receipt": root / "request-upload-receipt.json",
+        "workspace_authority": root / "workspace-authority.json",
     }
+
+
+def _remote_workspace_authority_record(
+    request_authorization: FullScoreRemoteCoordinatorRequestAuthorization,
+    *,
+    controller_root: Path,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "closed_record_sha256": "",
+        "controller_lease_root_sha256": _controller_lease_root_sha256(
+            controller_root
+        ),
+        "record_type": FULL_SCORE_REMOTE_CONTROLLER_WORKSPACE_AUTHORITY_RECORD_TYPE,
+        "request_authorization_record_sha256": (
+            request_authorization.authorization_record_sha256
+        ),
+        "schema_version": 1,
+        "user_name_sha256": request_authorization.user_name_sha256,
+        "workspace_host_sha256": request_authorization.workspace_host_sha256,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
+def _write_or_require_remote_workspace_authority(
+    path: Path,
+    *,
+    request_authorization: FullScoreRemoteCoordinatorRequestAuthorization,
+    controller_root: Path,
+) -> None:
+    expected = _remote_workspace_authority_record(
+        request_authorization, controller_root=controller_root
+    )
+    full_score._write_or_require_local_authority_bytes(
+        path,
+        _pretty_json_bytes(expected),
+        label="remote controller workspace authority",
+    )
+
+
+def _require_remote_workspace_authority(
+    path: Path,
+    *,
+    request_authorization: FullScoreRemoteCoordinatorRequestAuthorization,
+    controller_root: Path,
+) -> dict[str, Any]:
+    content = full_score._read_stable_local_authority_bytes(
+        path,
+        label="remote controller workspace authority",
+    )
+    record = _json_object(content, "remote controller workspace authority")
+    expected = _remote_workspace_authority_record(
+        request_authorization, controller_root=controller_root
+    )
+    if (
+        set(record) != set(expected)
+        or content != _pretty_json_bytes(record)
+        or record != expected
+    ):
+        raise ValueError("remote controller workspace authority binding drift")
+    return record
 
 
 @contextmanager
@@ -3386,6 +3679,11 @@ def _read_full_score_remote_prepost_closure(
         _require_full_score_remote_coordinator_request_authorization(
             request_authorization
         )
+    )
+    _require_remote_workspace_authority(
+        paths["workspace_authority"],
+        request_authorization=request_authorization,
+        controller_root=root,
     )
     request = _read_closed_controller_record(paths["request"], "request snapshot")
     validate_full_score_remote_coordinator_request(request)
@@ -3874,6 +4172,68 @@ def _replay_full_score_remote_coordinator_authorization_locked(
         )
         if replayed_binding != binding:
             raise ValueError("remote controller authorization evidence CAS drift")
+    remote_run = _json_mapping(
+        get_databricks_run(
+            workspace,
+            cast(str, authorization["coordinator_run_id"]),
+        ),
+        "replayed remote coordinator runs/get response",
+    )
+    remote_run_id = _validate_successful_remote_coordinator_run(
+        remote_run,
+        submit_payload=submit_payload,
+    )
+    if remote_run_id != authorization.get("coordinator_run_id"):
+        raise ValueError("replayed remote coordinator run identity drift")
+    corroborated_run_receipt = _controller_run_receipt(
+        run=remote_run,
+        run_id=remote_run_id,
+        request=request,
+        submit_payload=submit_payload,
+        post_intent=post_intent,
+        submit_response=submit_response,
+    )
+    if corroborated_run_receipt != run_receipt:
+        raise ValueError("replayed remote coordinator runs/get receipt drift")
+    remote_result_bytes = download_databricks_volume_file_bytes(
+        workspace,
+        result_uri,
+        max_bytes=FULL_SCORE_REMOTE_COORDINATOR_OUTPUT_MAX_BYTES,
+    )
+    remote_attestation_bytes = download_databricks_volume_file_bytes(
+        workspace,
+        attestation_uri,
+        max_bytes=FULL_SCORE_REMOTE_COORDINATOR_OUTPUT_MAX_BYTES,
+    )
+    if remote_result_bytes != result_bytes or remote_attestation_bytes != attestation_bytes:
+        raise ValueError("replayed remote coordinator output corroboration drift")
+    ready_parent_uri = (
+        f"{request['durable_output_root']}/ready/"
+        f"wave-{cast(int, request['wave_index']):03d}"
+    )
+    remote_metadata = list_databricks_volume_directory(
+        workspace,
+        ready_parent_uri,
+        max_entries=full_score.FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE,
+    )
+    expected_names = (
+        sorted(cast(list[str], attestation["shard_ids"]))
+        if request["action"] == "producer_ready"
+        else []
+    )
+    observed_names = sorted(cast(str, entry["name"]) for entry in remote_metadata)
+    if observed_names != expected_names or any(
+        entry.get("is_directory") is not True for entry in remote_metadata
+    ):
+        raise ValueError("replayed remote ready-tree metadata corroboration drift")
+    corroborated_evidence = _collect_consumer_evidence_bindings(
+        workspace,
+        request=request,
+        attestation=attestation,
+        cas=cas,
+    )
+    if corroborated_evidence != evidence_bindings:
+        raise ValueError("replayed remote consumer evidence corroboration drift")
     return FullScoreRemoteTreeAuthorization(
         action=cast(str, authorization["action"]),
         execution_plan_sha256=cast(str, authorization["execution_plan_sha256"]),
@@ -3899,6 +4259,8 @@ def _replay_full_score_remote_coordinator_authorization_locked(
             str, authorization["phase_terminal_record_sha256"]
         ),
         evidence_bindings=evidence_bindings,
+        workspace_host_sha256=request_authorization.workspace_host_sha256,
+        user_name_sha256=request_authorization.user_name_sha256,
         _issuer=_REMOTE_AUTHORIZATION_ISSUER,
     )
 

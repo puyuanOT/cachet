@@ -804,6 +804,26 @@ def test_batch_terminal_closure_rejects_unrelated_live_suffix(tmp_path):
     terminal_prefix = require_databricks_batch_terminal_closure(terminal, authorization)
     assert terminal_prefix == databricks_ledger_prefix(terminal)
 
+    class SmuggledBatchAuthorization(
+        resource_ledger.DatabricksBatchReservationAuthorization
+    ):
+        pass
+
+    smuggled = object.__new__(SmuggledBatchAuthorization)
+    with pytest.raises(TypeError, match="authorization has the wrong type"):
+        require_databricks_batch_terminal_closure(terminal, smuggled)
+    with pytest.raises(TypeError, match="DatabricksBatchReservationAuthorization"):
+        resource_ledger.require_databricks_batch_reservation_authorization(
+            smuggled,
+            expected_predecessor_prefix=authorization.predecessor_prefix,
+            expected_attempt_ids=authorization.attempt_ids,
+            expected_submit_payload_sha256s=authorization.submit_payload_sha256s,
+        )
+    with pytest.raises(TypeError, match="authorization has the wrong type"):
+        resource_ledger.require_databricks_publication_batch_admission(
+            terminal, smuggled
+        )
+
     reserve_databricks_run_attempt_json(
         ledger_path,
         _submit_payload(timeout_seconds=3600),

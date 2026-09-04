@@ -142,11 +142,12 @@ class _AcceptedButResponseLostOpener:
 
 @pytest.fixture(autouse=True)
 def _bind_full_score_current_user(monkeypatch):
-    def require_current_user(_workspace, *, expected_user_name, opener=None):
+    def require_current_user(workspace, *, expected_user_name, opener=None):
         assert expected_user_name == "researcher@example.com"
         return {
             "authenticated": True,
             "user_name_sha256": _digest(expected_user_name),
+            "workspace_host_sha256": _digest(workspace.normalized_host),
         }
 
     monkeypatch.setattr(
@@ -206,10 +207,7 @@ def _close(record):
         full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE,
     }:
         record.setdefault("runtime_verification", _runtime_verification())
-    if (
-        record.get("record_type")
-        == full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE
-    ):
+    if record.get("record_type") == full_score.FULL_SCORE_SHARD_EVIDENCE_RECORD_TYPE:
         record.setdefault("protocol", full_score._full_score_protocol_record())
     record["closed_record_sha256"] = full_score._closed_record_sha256(record)
     return record
@@ -393,7 +391,18 @@ def campaign(tmp_path, monkeypatch):
         ledger_id="publication-full-score"
     )
     latency_collection_authorization = SimpleNamespace(
-        collection_sha256=_digest("latency-collection")
+        collection_sha256=_digest("latency-collection"),
+        workspace_host_sha256=_digest("https://dbc.example"),
+        user_name_sha256=_digest("researcher@example.com"),
+    )
+
+    monkeypatch.setattr(
+        full_score,
+        "_full_score_predecessor_workspace_identity",
+        lambda _authorization: (
+            _digest("https://dbc.example"),
+            _digest("researcher@example.com"),
+        ),
     )
 
     def require_test_latency_collection(value, **kwargs):
@@ -559,9 +568,7 @@ def campaign(tmp_path, monkeypatch):
         "latency_collection_authorization": latency_collection_authorization,
         "latency_execution_plan_record": {"test": "latency-plan"},
         "payloads": payloads,
-        "qualification_launch_authorization": (
-            qualification_launch_authorization
-        ),
+        "qualification_launch_authorization": (qualification_launch_authorization),
         "shard_plan": shard_plan,
         "tmp_path": tmp_path,
         "worker_files": worker_files,
@@ -828,16 +835,12 @@ def _remote_wave_completion_authorization(campaign, wave_index):
                     full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
                 ),
                 "closed_record_sha256": "",
-                "evidence_closed_record_sha256": evidence[
-                    "closed_record_sha256"
-                ],
+                "evidence_closed_record_sha256": evidence["closed_record_sha256"],
                 "execution_plan_sha256": campaign["execution_plan"][
                     "closed_record_sha256"
                 ],
                 "lifecycle": ["delete_ephemeral_q8_kv"],
-                "record_type": (
-                    full_score.FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE
-                ),
+                "record_type": (full_score.FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE),
                 "schema_version": (
                     full_score.FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION
                 ),
@@ -847,12 +850,8 @@ def _remote_wave_completion_authorization(campaign, wave_index):
         )
         evidence_path = cas_root / f"{shard_id}-evidence.json"
         deletion_path = cas_root / f"{shard_id}-deletion.json"
-        evidence_path.write_bytes(
-            full_score._canonical_pretty_json_bytes(evidence)
-        )
-        deletion_path.write_bytes(
-            full_score._canonical_pretty_json_bytes(deletion)
-        )
+        evidence_path.write_bytes(full_score._canonical_pretty_json_bytes(evidence))
+        deletion_path.write_bytes(full_score._canonical_pretty_json_bytes(deletion))
         evidence_uri = full_score_remote._consumer_evidence_artifact_uri(
             durable_root,
             wave_index=wave_index,
@@ -869,14 +868,10 @@ def _remote_wave_completion_authorization(campaign, wave_index):
         compact_files[deletion_uri] = deletion_path
         bindings.append(
             {
-                "deletion_file_sha256": sha256(
-                    deletion_path.read_bytes()
-                ).hexdigest(),
+                "deletion_file_sha256": sha256(deletion_path.read_bytes()).hexdigest(),
                 "deletion_record_sha256": deletion["closed_record_sha256"],
                 "deletion_uri": deletion_uri,
-                "evidence_file_sha256": sha256(
-                    evidence_path.read_bytes()
-                ).hexdigest(),
+                "evidence_file_sha256": sha256(evidence_path.read_bytes()).hexdigest(),
                 "evidence_record_sha256": evidence["closed_record_sha256"],
                 "evidence_uri": evidence_uri,
                 "shard_id": shard_id,
@@ -895,15 +890,11 @@ def _remote_wave_completion_authorization(campaign, wave_index):
     _close(completion)
     authorization = full_score_remote.FullScoreRemoteTreeAuthorization(
         action="consumer_evidence",
-        execution_plan_sha256=campaign["execution_plan"][
-            "closed_record_sha256"
-        ],
+        execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
         wave_index=wave_index,
         durable_output_root=durable_root,
         request_sha256=_digest(f"remote-request-{wave_index}"),
-        result_uri=(
-            f"{durable_root}/control/wave-{wave_index:03d}-completion.json"
-        ),
+        result_uri=(f"{durable_root}/control/wave-{wave_index:03d}-completion.json"),
         result_file_sha256=sha256(
             full_score._canonical_pretty_json_bytes(completion)
         ).hexdigest(),
@@ -913,21 +904,17 @@ def _remote_wave_completion_authorization(campaign, wave_index):
             f"{durable_root}/control/wave-{wave_index:03d}-attestation.json"
         ),
         attestation_file_sha256=_digest(f"remote-attestation-file-{wave_index}"),
-        attestation_record_sha256=_digest(
-            f"remote-attestation-record-{wave_index}"
-        ),
+        attestation_record_sha256=_digest(f"remote-attestation-record-{wave_index}"),
         coordinator_run_id=str(98_000 + wave_index),
         coordinator_run_record_sha256=_digest(f"remote-run-{wave_index}"),
         controller_authorization_record_sha256=_digest(
             f"remote-controller-authorization-{wave_index}"
         ),
-        runs_get_receipt_record_sha256=_digest(
-            f"remote-runs-get-{wave_index}"
-        ),
-        phase_terminal_record_sha256=_digest(
-            f"remote-consumer-terminal-{wave_index}"
-        ),
+        runs_get_receipt_record_sha256=_digest(f"remote-runs-get-{wave_index}"),
+        phase_terminal_record_sha256=_digest(f"remote-consumer-terminal-{wave_index}"),
         evidence_bindings=bindings,
+        workspace_host_sha256=_digest("https://dbc.example"),
+        user_name_sha256=_digest("researcher@example.com"),
         _issuer=full_score_remote._REMOTE_AUTHORIZATION_ISSUER,
     )
     return completion, authorization, compact_files
@@ -947,10 +934,7 @@ def _producer_completion(campaign, wave_index):
     bindings = []
     for item in record["ready_shards"]:
         ready_path = (
-            campaign["tmp_path"]
-            / "ready"
-            / item["shard_id"]
-            / "ready-record.json"
+            campaign["tmp_path"] / "ready" / item["shard_id"] / "ready-record.json"
         )
         ready_path.parent.mkdir(parents=True)
         ready_path.write_text(
@@ -996,9 +980,7 @@ def _matched_blocks(campaign, through_wave):
                     },
                     "shared_or_unattributed_seconds": 6.0,
                 },
-                "deletion_attestation_sha256": _digest(
-                    f"deletion-{shard['shard_id']}"
-                ),
+                "deletion_attestation_sha256": _digest(f"deletion-{shard['shard_id']}"),
                 "evidence_sha256": _digest(f"evidence-{shard['shard_id']}"),
                 "execution_plan_sha256": campaign["execution_plan"][
                     "closed_record_sha256"
@@ -1040,10 +1022,10 @@ def _reserve_wave_zero_producer(campaign, *, label):
         ledger_path,
         ledger_id="publication-full-score",
     )
-    campaign["latency_collection_authorization"].ledger_prefix = (
-        databricks_ledger_prefix(
-            read_databricks_cluster_hour_ledger_json(ledger_path)
-        )
+    campaign[
+        "latency_collection_authorization"
+    ].ledger_prefix = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
     )
     submit_path = campaign["tmp_path"] / f"{label}-submit.json"
     submit_path.write_bytes(full_score._canonical_pretty_json_bytes(submit_payload))
@@ -1054,9 +1036,7 @@ def _reserve_wave_zero_producer(campaign, *, label):
     )
     response, submission_authorization = (
         full_score.reserve_and_submit_governed_full_score_phase_attempt(
-            DatabricksWorkspaceConfig(
-                "https://dbc.example/", "secret-token"
-            ),
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
             submit_payload,
             ledger_path=ledger_path,
             execution_plan=campaign["execution_plan"],
@@ -1068,12 +1048,8 @@ def _reserve_wave_zero_producer(campaign, *, label):
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
             opener=opener,
         )
     )
@@ -1093,9 +1069,7 @@ def _collect_wave_zero_producer(campaign, *, label):
     reserved = _reserve_wave_zero_producer(campaign, label=label)
     terminal, phase_authorization = (
         full_score.collect_governed_full_score_phase_attempt(
-            DatabricksWorkspaceConfig(
-                "https://dbc.example/", "secret-token"
-            ),
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
             execution_plan=campaign["execution_plan"],
             inventory=campaign["inventory"],
             shard_plan=campaign["shard_plan"],
@@ -1261,11 +1235,12 @@ def test_worker_payloads_are_token_balanced_closed_and_persistent(
         extra_body = json.loads(command[command.index(extra_body_flag) + 1])
         assert extra_body["add_special_tokens"] is False
         assert "--cache-runtime-prompt" not in command
-        assert not any("trunc" in argument or "padding" in argument for argument in command)
+        assert not any(
+            "trunc" in argument or "padding" in argument for argument in command
+        )
     environment = full_score._worker_environment(campaign["bundle"].runtime)
     assert (
-        environment["FLASHINFER_LOGGING_LEVEL"]
-        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        environment["FLASHINFER_LOGGING_LEVEL"] == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
     )
     assert environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     assert environment["CACHET_TRANSFORMERS_DEVICE_MAP"] == "auto"
@@ -1340,9 +1315,7 @@ def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
             }
         )
         tokens = item["cache_prefix_tokens"]
-        runtime_bytes = (
-            tokens * full_score.FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN
-        )
+        runtime_bytes = tokens * full_score.FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN
         telemetry.append(
             {
                 "benchmark_request_id": vanilla_request_id,
@@ -1374,8 +1347,7 @@ def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
                 },
                 "record_type": "document_kv.vllm_native_provider_load.v1",
                 "provider_factory": (
-                    "vllm_kv_injection.vllm_native_provider:"
-                    "build_document_kv_provider"
+                    "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"
                 ),
                 "success": True,
             }
@@ -1432,9 +1404,7 @@ def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
             [measurement],
             method="baseline_prefill",
             shard_id="shard-000",
-            expected_items={
-                key: {"natural_prompt_sha256": _digest("natural-prompt")}
-            },
+            expected_items={key: {"natural_prompt_sha256": _digest("natural-prompt")}},
             examples={key: example},
         )
 
@@ -1445,9 +1415,7 @@ def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
             [injected_baseline_artifact],
             method="baseline_prefill",
             shard_id="shard-000",
-            expected_items={
-                key: {"natural_prompt_sha256": _digest("natural-prompt")}
-            },
+            expected_items={key: {"natural_prompt_sha256": _digest("natural-prompt")}},
             examples={key: example},
         )
 
@@ -1492,9 +1460,7 @@ def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
                 examples=(object(),),
                 hardware_target="aws-g6-l4",
                 model_id=full_score.FULL_SCORE_SERVED_MODEL_NAME,
-                suite_id=(
-                    f"{full_score.FULL_SCORE_PROTOCOL_ID}:shard-000:{method}"
-                ),
+                suite_id=(f"{full_score.FULL_SCORE_PROTOCOL_ID}:shard-000:{method}"),
             ),
             warmups=0,
         )
@@ -1631,9 +1597,9 @@ def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
             **prompt_protocol,
         )
     sent_runtime_prompt = copy.deepcopy(vanilla_prompt_measurement)
-    sent_runtime_prompt.metadata[
-        "request_payload_prompt_sha256"
-    ] = runtime_prompt_sha256
+    sent_runtime_prompt.metadata["request_payload_prompt_sha256"] = (
+        runtime_prompt_sha256
+    )
     with pytest.raises(ValueError, match="prompt-delivery protocol drift"):
         full_score._validate_full_score_measurement_prompt_protocol(
             sent_runtime_prompt,
@@ -1740,9 +1706,7 @@ def test_governed_ready_and_handoff_replay_bind_source_artifact_and_files(
     ready = _close(
         {
             "closed_record_sha256": "",
-            "execution_plan_sha256": campaign["execution_plan"][
-                "closed_record_sha256"
-            ],
+            "execution_plan_sha256": campaign["execution_plan"]["closed_record_sha256"],
             "files": ready_files,
             "files_sha256": full_score._canonical_sha256(ready_files),
             "generator_artifact_contract": campaign["payloads"][0][
@@ -1924,12 +1888,17 @@ def test_databricks_renders_two_independent_bounded_phases(campaign, monkeypatch
         "g6e.4xlarge"
     }
     assert {
-        task["new_cluster"]["data_security_mode"]
+        task["new_cluster"]["aws_attributes"]["zone_id"]
         for task in producer_run["tasks"]
+    } == {"us-west-2a"}
+    assert campaign["job"].producer_zone_id == full_score.FULL_SCORE_PRODUCER_ZONE_ID
+    with pytest.raises(ValueError, match="reviewed L40S zone"):
+        replace(campaign["job"], producer_zone_id="auto")
+    assert {
+        task["new_cluster"]["data_security_mode"] for task in producer_run["tasks"]
     } == {"SINGLE_USER"}
     assert {
-        task["new_cluster"]["single_user_name"]
-        for task in producer_run["tasks"]
+        task["new_cluster"]["single_user_name"] for task in producer_run["tasks"]
     } == {"researcher@example.com"}
     assert all("depends_on" not in task for task in producer_run["tasks"])
     assert all(
@@ -2017,10 +1986,13 @@ def test_databricks_renders_two_independent_bounded_phases(campaign, monkeypatch
     assert {task["new_cluster"]["node_type_id"] for task in consumer_run["tasks"]} == {
         "g6.8xlarge"
     }
+    assert {
+        task["new_cluster"]["aws_attributes"]["zone_id"]
+        for task in consumer_run["tasks"]
+    } == {"auto"}
     assert all("depends_on" not in task for task in consumer_run["tasks"])
     assert all(
-        "--producer-phase-completion-json"
-        in task["spark_python_task"]["parameters"]
+        "--producer-phase-completion-json" in task["spark_python_task"]["parameters"]
         for task in consumer_run["tasks"]
     )
     consumer_reservation = databricks_submit_payload_reservation(
@@ -2047,12 +2019,18 @@ def test_full_score_freezes_six_hour_task_and_run_timeout(campaign):
     assert full_score.FULL_SCORE_DATABRICKS_TASK_TIMEOUT_SECONDS == 21_600
     assert campaign["job"].run_timeout_seconds == 21_600
     assert campaign["bundle"].runtime.generator_timeout_seconds == 21_600.0
-    assert full_score._command_timeout(
-        ["python", "-m", "document_kv_cache.benchmark_runner"]
-    ) == 21_600.0
-    assert full_score.full_score_wave_worst_case_gpu_hours(
-        _phase_payloads(campaign, 0, "producer")
-    ) == 96.0
+    assert (
+        full_score._command_timeout(
+            ["python", "-m", "document_kv_cache.benchmark_runner"]
+        )
+        == 21_600.0
+    )
+    assert (
+        full_score.full_score_wave_worst_case_gpu_hours(
+            _phase_payloads(campaign, 0, "producer")
+        )
+        == 96.0
+    )
     with pytest.raises(ValueError, match="six hours"):
         replace(campaign["job"], run_timeout_seconds=14_400)
     with pytest.raises(ValueError, match="six hours"):
@@ -2117,9 +2095,9 @@ def test_consumer_reservation_replays_completion_instead_of_trusting_closure(
     completion_path.write_bytes(full_score._canonical_pretty_json_bytes(forged))
     for task in submit_payload["tasks"]:
         parameters = task["spark_python_task"]["parameters"]
-        digest_index = parameters.index(
-            "--expected-producer-phase-completion-sha256"
-        ) + 1
+        digest_index = (
+            parameters.index("--expected-producer-phase-completion-sha256") + 1
+        )
         parameters[digest_index] = forged["closed_record_sha256"]
     ledger_path = campaign["tmp_path"] / "forged-consumer-ledger.json"
     create_databricks_cluster_hour_ledger_json(
@@ -2323,12 +2301,8 @@ def test_governed_terminal_billing_and_wave_zero_reservation_are_file_bound(
         qualification_launch_authorization=campaign[
             "qualification_launch_authorization"
         ],
-        predecessor_authorization=campaign[
-            "latency_collection_authorization"
-        ],
-        latency_execution_plan_record=campaign[
-            "latency_execution_plan_record"
-        ],
+        predecessor_authorization=campaign["latency_collection_authorization"],
+        latency_execution_plan_record=campaign["latency_execution_plan_record"],
     )
     assert reserved[0].active_reserved_cluster_hours == 96.0
     with pytest.raises(ValueError, match="already reserved|intent binding drift"):
@@ -2344,14 +2318,9 @@ def test_governed_terminal_billing_and_wave_zero_reservation_are_file_bound(
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
         )
-
 
     run_id = 42001
     record_databricks_run_submission_receipt_json(
@@ -2513,12 +2482,8 @@ def test_wave_zero_reservation_requires_campaign_ledger_and_headroom(campaign):
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
         )
 
     reservations = tuple(
@@ -2563,12 +2528,8 @@ def test_wave_zero_reservation_requires_campaign_ledger_and_headroom(campaign):
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
         )
     before_generic = headroom_path.read_bytes()
     with pytest.raises(ValueError, match="124.*headroom"):
@@ -2603,10 +2564,10 @@ def test_phase_reservations_require_active_zero_and_exact_one_shot_success(campa
         ledger_path,
         ledger_id="publication-full-score",
     )
-    campaign["latency_collection_authorization"].ledger_prefix = (
-        databricks_ledger_prefix(
-            read_databricks_cluster_hour_ledger_json(ledger_path)
-        )
+    campaign[
+        "latency_collection_authorization"
+    ].ledger_prefix = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
     )
     common = {
         "execution_plan": campaign["execution_plan"],
@@ -2617,12 +2578,8 @@ def test_phase_reservations_require_active_zero_and_exact_one_shot_success(campa
         "qualification_launch_authorization": campaign[
             "qualification_launch_authorization"
         ],
-        "predecessor_authorization": campaign[
-            "latency_collection_authorization"
-        ],
-        "latency_execution_plan_record": campaign[
-            "latency_execution_plan_record"
-        ],
+        "predecessor_authorization": campaign["latency_collection_authorization"],
+        "latency_execution_plan_record": campaign["latency_execution_plan_record"],
     }
     full_score.reserve_governed_full_score_phase_attempt(
         ledger_path,
@@ -2705,9 +2662,7 @@ def test_governed_submit_couples_reservation_exact_wire_and_receipt(campaign):
                 "qualification_launch_authorization"
             ],
             predecessor_authorization={},
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
             opener=opener,
         )
     with pytest.raises(
@@ -2725,12 +2680,8 @@ def test_governed_submit_couples_reservation_exact_wire_and_receipt(campaign):
             phase="producer",
             attempt_id=attempt_id,
             qualification_launch_authorization={},
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
             opener=opener,
         )
     assert not read_databricks_cluster_hour_ledger_json(ledger_path).reservations
@@ -2748,12 +2699,8 @@ def test_governed_submit_couples_reservation_exact_wire_and_receipt(campaign):
         qualification_launch_authorization=campaign[
             "qualification_launch_authorization"
         ],
-        predecessor_authorization=campaign[
-            "latency_collection_authorization"
-        ],
-        latency_execution_plan_record=campaign[
-            "latency_execution_plan_record"
-        ],
+        predecessor_authorization=campaign["latency_collection_authorization"],
+        latency_execution_plan_record=campaign["latency_execution_plan_record"],
         opener=opener,
     )
     assert response[0] == {"run_id": 74001}
@@ -2781,12 +2728,8 @@ def test_governed_submit_couples_reservation_exact_wire_and_receipt(campaign):
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
             opener=opener,
         )
     assert len(opener.requests) == 1
@@ -2840,12 +2783,8 @@ def test_full_score_live_identity_fails_before_reservation_state(
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
         )
 
     assert ledger_path.read_bytes() == ledger_before
@@ -2859,6 +2798,183 @@ def test_full_score_live_identity_fails_before_reservation_state(
     assert observed == [("researcher@example.com", None)]
 
 
+@pytest.mark.parametrize(
+    ("label", "live_host", "live_user"),
+    (
+        (
+            "cross-host",
+            "https://dbc.other",
+            "researcher@example.com",
+        ),
+        (
+            "cross-principal",
+            "https://dbc.example",
+            "other-researcher@example.com",
+        ),
+    ),
+)
+def test_full_score_submission_authority_rejects_cross_identity_before_post(
+    campaign,
+    monkeypatch,
+    label,
+    live_host,
+    live_user,
+):
+    reserved = _reserve_wave_zero_producer(campaign, label=label)
+    authorization = reserved["submission_authorization"]
+    ledger_before = reserved["ledger_path"].read_bytes()
+    request_count = len(reserved["opener"].requests)
+
+    monkeypatch.setattr(
+        full_score,
+        "require_databricks_current_user_name",
+        lambda workspace, *, expected_user_name, opener=None: {
+            "authenticated": True,
+            "user_name_sha256": _digest(live_user),
+            "workspace_host_sha256": _digest(workspace.normalized_host),
+        },
+    )
+    with pytest.raises(ValueError, match="phase workspace/principal authority drift"):
+        full_score.submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig(live_host, "refreshed-token"),
+            reserved["submit_payload"],
+            ledger_path=reserved["ledger_path"],
+            submission_authorization=authorization,
+            opener=reserved["opener"],
+        )
+
+    assert reserved["ledger_path"].read_bytes() == ledger_before
+    assert len(reserved["opener"].requests) == request_count
+
+
+def test_full_score_workspace_sidecar_replays_without_changing_canonical_records(
+    campaign,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        full_score,
+        "PublicationLatencyCollectionAuthorization",
+        SimpleNamespace,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "validate_publication_latency_collection_record",
+        lambda *_args, **_kwargs: None,
+    )
+    campaign["latency_collection_authorization"].collection = {}
+    reserved = _reserve_wave_zero_producer(campaign, label="workspace-sidecar-replay")
+    authorization = reserved["submission_authorization"]
+    ledger_path = reserved["ledger_path"]
+    campaign[
+        "latency_collection_authorization"
+    ].ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
+    lease_path = full_score._full_score_phase_lease_candidate_path(
+        ledger_path,
+        execution_plan_sha256=authorization.execution_plan_sha256,
+        wave_index=authorization.wave_index,
+        phase=authorization.phase,
+    )
+    intent_path = full_score._full_score_phase_intent_candidate_path(
+        ledger_path,
+        execution_plan_sha256=authorization.execution_plan_sha256,
+        wave_index=authorization.wave_index,
+        phase=authorization.phase,
+    )
+    sidecar_path = full_score._full_score_workspace_authority_path(lease_path)
+    intent_bytes = intent_path.read_bytes()
+    lease_bytes = lease_path.read_bytes()
+    sidecar_bytes = sidecar_path.read_bytes()
+    intent = json.loads(intent_bytes)
+    lease = json.loads(lease_bytes)
+    sidecar = json.loads(sidecar_bytes)
+
+    assert intent_bytes == full_score._canonical_pretty_json_bytes(intent)
+    assert lease_bytes == full_score._canonical_pretty_json_bytes(lease)
+    assert sidecar_bytes == full_score._canonical_pretty_json_bytes(sidecar)
+    assert "workspace_host_sha256" not in intent
+    assert "user_name_sha256" not in intent
+    assert "workspace_host_sha256" not in lease
+    assert "user_name_sha256" not in lease
+    assert sidecar["workspace_host_sha256"] == (authorization.workspace_host_sha256)
+    assert sidecar["user_name_sha256"] == authorization.user_name_sha256
+    assert lease == full_score._full_score_phase_lease_record(authorization)
+    assert sidecar == full_score._full_score_workspace_authority_record(authorization)
+
+    other_identity = full_score.FullScorePhaseSubmissionAuthorization(
+        execution_plan_sha256=authorization.execution_plan_sha256,
+        wave_index=authorization.wave_index,
+        phase=authorization.phase,
+        ledger_path_sha256=authorization.ledger_path_sha256,
+        predecessor_prefix=authorization.predecessor_prefix,
+        batch_authorization=authorization.batch_authorization,
+        attempt_id=authorization.attempt_id,
+        submit_payload_sha256=authorization.submit_payload_sha256,
+        intent_record_sha256=authorization.intent_record_sha256,
+        workspace_host_sha256=_digest("https://dbc.other"),
+        user_name_sha256=authorization.user_name_sha256,
+        _issuer=full_score._FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
+    )
+    assert full_score._full_score_phase_lease_record(other_identity) == lease
+    assert full_score._full_score_workspace_authority_record(other_identity) != sidecar
+
+    replayed = full_score.replay_governed_full_score_phase_submission_authorization(
+        ledger_path,
+        reserved["submit_payload"],
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=0,
+        phase="producer",
+        attempt_id=authorization.attempt_id,
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        predecessor_authorization=campaign["latency_collection_authorization"],
+        latency_execution_plan_record=campaign["latency_execution_plan_record"],
+    )
+    assert replayed == authorization
+    assert intent_path.read_bytes() == intent_bytes
+    assert lease_path.read_bytes() == lease_bytes
+    assert sidecar_path.read_bytes() == sidecar_bytes
+
+    with pytest.raises(
+        TypeError,
+        match="FullScorePhaseSubmissionAuthorization",
+    ):
+        full_score.submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example", "refreshed-token"),
+            reserved["submit_payload"],
+            ledger_path=ledger_path,
+            submission_authorization=SimpleNamespace(),
+            opener=lambda *_args, **_kwargs: pytest.fail(
+                "structural authority must fail before HTTP"
+            ),
+        )
+
+    tampered_sidecar = copy.deepcopy(sidecar)
+    tampered_sidecar["user_name_sha256"] = _digest("other-researcher@example.com")
+    _close(tampered_sidecar)
+    sidecar_path.write_bytes(full_score._canonical_pretty_json_bytes(tampered_sidecar))
+    with pytest.raises(ValueError, match="workspace authority"):
+        full_score.replay_governed_full_score_phase_submission_authorization(
+            ledger_path,
+            reserved["submit_payload"],
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=authorization.attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
+        )
+    assert intent_path.read_bytes() == intent_bytes
+    assert lease_path.read_bytes() == lease_bytes
+
+
 def test_direct_collection_issues_ordered_path_bound_phase_authority(campaign):
     collected = _collect_wave_zero_producer(campaign, label="phase-chain")
     authorization = collected["phase_authorization"]
@@ -2868,14 +2984,12 @@ def test_direct_collection_issues_ordered_path_bound_phase_authority(campaign):
     assert terminal["ledger"]["ledger_path_sha256"] == (
         databricks_ledger_path_sha256(ledger_path)
     )
-    prefix, _lineage = (
-        full_score._require_full_score_phase_predecessor_authorization(
-            authorization,
-            execution_plan=campaign["execution_plan"],
-            ledger_path=ledger_path,
-            wave_index=0,
-            phase="consumer",
-        )
+    prefix, _lineage = full_score._require_full_score_phase_predecessor_authorization(
+        authorization,
+        execution_plan=campaign["execution_plan"],
+        ledger_path=ledger_path,
+        wave_index=0,
+        phase="consumer",
     )
     assert prefix == authorization.ledger_prefix
     with pytest.raises(TypeError, match="FullScorePhaseAuthorization"):
@@ -2904,15 +3018,15 @@ def test_direct_collection_issues_ordered_path_bound_phase_authority(campaign):
             wave_index=0,
             phase="consumer",
         )
-    fresh_same_id = DatabricksClusterHourLedger(
-        ledger_id="publication-full-score"
-    )
+    fresh_same_id = DatabricksClusterHourLedger(ledger_id="publication-full-score")
     ledger_path.write_bytes(
         full_score._canonical_pretty_json_bytes(
             databricks_cluster_hour_ledger_to_record(fresh_same_id)
         )
     )
-    with pytest.raises(ValueError, match="shorter than its authorized prefix"):
+    with pytest.raises(
+        ValueError, match="shorter than its authorized prefix|closed ledger range"
+    ):
         full_score._require_full_score_phase_predecessor_authorization(
             authorization,
             execution_plan=campaign["execution_plan"],
@@ -2928,6 +3042,154 @@ def test_direct_collection_issues_ordered_path_bound_phase_authority(campaign):
             wave_index=0,
             phase="consumer",
         )
+
+
+def test_genuine_producer_authority_chains_only_to_same_workspace_consumer(
+    campaign,
+    monkeypatch,
+):
+    collected = _collect_wave_zero_producer(campaign, label="consumer-workspace-chain")
+    producer_authorization = collected["phase_authorization"]
+    assert producer_authorization.workspace_authority_closure_sha256 == (
+        full_score._canonical_sha256(
+            {
+                "causal_closure_sha256": (producer_authorization.causal_closure_sha256),
+                "phase_lease_root_sha256": full_score._canonical_sha256(
+                    {
+                        "domain": "cachet.full_score_phase_lease_root_authority.v1",
+                        "phase_lease_root": str(
+                            producer_authorization.phase_lease_root
+                        ),
+                    }
+                ),
+                "user_name_sha256": producer_authorization.user_name_sha256,
+                "workspace_host_sha256": (producer_authorization.workspace_host_sha256),
+            }
+        )
+    )
+    alternate_root = campaign["tmp_path"] / "alternate-valid-phase-lease-root"
+    alternate_root.mkdir(mode=0o700)
+    alternate = full_score.FullScorePhaseAuthorization(
+        execution_plan_sha256=producer_authorization.execution_plan_sha256,
+        wave_index=producer_authorization.wave_index,
+        phase=producer_authorization.phase,
+        ledger_path_sha256=producer_authorization.ledger_path_sha256,
+        predecessor_prefix=producer_authorization.predecessor_prefix,
+        ledger_prefix=producer_authorization.ledger_prefix,
+        phase_lease_root=alternate_root,
+        terminal_record_sha256=producer_authorization.terminal_record_sha256,
+        causal_closure_sha256=producer_authorization.causal_closure_sha256,
+        workspace_host_sha256=producer_authorization.workspace_host_sha256,
+        user_name_sha256=producer_authorization.user_name_sha256,
+        _issuer=full_score._FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
+    )
+    assert alternate.causal_closure_sha256 == (
+        producer_authorization.causal_closure_sha256
+    )
+    assert alternate.workspace_authority_closure_sha256 != (
+        producer_authorization.workspace_authority_closure_sha256
+    )
+    completion = _producer_completion(campaign, 0)
+    completion_path = campaign["tmp_path"] / "consumer-workspace-chain-completion.json"
+    completion_path.write_bytes(full_score._canonical_pretty_json_bytes(completion))
+    monkeypatch.setattr(
+        full_score,
+        "_validate_governed_producer_ready_phase",
+        lambda *_args, **_kwargs: None,
+    )
+    attempt_id = "wave-000-consumer-workspace-chain"
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "consumer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+        producer_phase_completion=completion,
+        producer_phase_completion_uri=str(completion_path),
+    )
+    intent_path = full_score._full_score_phase_intent_candidate_path(
+        collected["ledger_path"],
+        execution_plan_sha256=producer_authorization.execution_plan_sha256,
+        wave_index=0,
+        phase="consumer",
+    )
+    lease_path = full_score._full_score_phase_lease_candidate_path(
+        collected["ledger_path"],
+        execution_plan_sha256=producer_authorization.execution_plan_sha256,
+        wave_index=0,
+        phase="consumer",
+    )
+
+    for live_host, live_user in (
+        ("https://dbc.other", "researcher@example.com"),
+        ("https://dbc.example", "other-researcher@example.com"),
+    ):
+        ledger_before = collected["ledger_path"].read_bytes()
+        rejected_opener = _FakeDatabricksOpener({"run_id": 82_000})
+        with monkeypatch.context() as identity_patch:
+            identity_patch.setattr(
+                full_score,
+                "require_databricks_current_user_name",
+                lambda workspace, *, expected_user_name, opener=None, _user=live_user: {
+                    "authenticated": True,
+                    "user_name_sha256": _digest(_user),
+                    "workspace_host_sha256": _digest(workspace.normalized_host),
+                },
+            )
+            with pytest.raises(
+                ValueError, match="predecessor workspace/principal drift"
+            ):
+                full_score.reserve_and_submit_governed_full_score_phase_attempt(
+                    DatabricksWorkspaceConfig(live_host, "refreshed-token"),
+                    submit_payload,
+                    ledger_path=collected["ledger_path"],
+                    execution_plan=campaign["execution_plan"],
+                    inventory=campaign["inventory"],
+                    shard_plan=campaign["shard_plan"],
+                    wave_index=0,
+                    phase="consumer",
+                    attempt_id=attempt_id,
+                    qualification_launch_authorization=campaign[
+                        "qualification_launch_authorization"
+                    ],
+                    predecessor_authorization=producer_authorization,
+                    opener=rejected_opener,
+                )
+        assert collected["ledger_path"].read_bytes() == ledger_before
+        assert rejected_opener.requests == []
+        assert not intent_path.exists()
+        assert not lease_path.exists()
+
+    accepted_opener = _FakeDatabricksOpener({"run_id": 82_001})
+    response, consumer_authorization = (
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example", "refreshed-token"),
+            submit_payload,
+            ledger_path=collected["ledger_path"],
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="consumer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=producer_authorization,
+            opener=accepted_opener,
+        )
+    )
+    assert response == {"run_id": 82_001}
+    assert consumer_authorization.workspace_host_sha256 == (
+        producer_authorization.workspace_host_sha256
+    )
+    assert consumer_authorization.user_name_sha256 == (
+        producer_authorization.user_name_sha256
+    )
 
 
 def test_terminal_replay_rejects_unrelated_batch_and_extended_prefix(campaign):
@@ -2963,8 +3225,7 @@ def test_terminal_replay_rejects_unrelated_batch_and_extended_prefix(campaign):
         ledger_id=original.ledger_id,
         cap_cluster_hours=original.cap_cluster_hours,
         reservations=original.reservations + (unrelated_reservation,),
-        submission_receipts=original.submission_receipts
-        + (unrelated_receipt,),
+        submission_receipts=original.submission_receipts + (unrelated_receipt,),
         terminal_actuals=original.terminal_actuals + (unrelated_terminal,),
     )
     ledger_path.write_bytes(
@@ -2973,17 +3234,20 @@ def test_terminal_replay_rejects_unrelated_batch_and_extended_prefix(campaign):
         )
     )
     # A genuine terminal record remains replayable from its historical slice.
-    assert full_score.load_governed_full_score_phase_terminal_record(
-        collected["terminal_path"],
-        execution_plan=campaign["execution_plan"],
-        inventory=campaign["inventory"],
-        shard_plan=campaign["shard_plan"],
-        ledger_path=ledger_path,
-    ) == terminal_record
-    extended_prefix_forgery = copy.deepcopy(terminal_record)
-    extended_prefix_forgery["ledger"]["terminal_prefix"] = (
-        databricks_ledger_prefix(extended).to_record()
+    assert (
+        full_score.load_governed_full_score_phase_terminal_record(
+            collected["terminal_path"],
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+        )
+        == terminal_record
     )
+    extended_prefix_forgery = copy.deepcopy(terminal_record)
+    extended_prefix_forgery["ledger"]["terminal_prefix"] = databricks_ledger_prefix(
+        extended
+    ).to_record()
     _close(extended_prefix_forgery)
     extended_path = campaign["tmp_path"] / "extended-terminal-forgery.json"
     extended_path.write_bytes(
@@ -3023,9 +3287,7 @@ def test_terminal_replay_rejects_unrelated_batch_and_extended_prefix(campaign):
     unrelated_batch_forgery["ledger"].update(
         {
             "predecessor_prefix": databricks_ledger_prefix(empty).to_record(),
-            "batch_prefix": databricks_ledger_prefix(
-                unrelated_batch
-            ).to_record(),
+            "batch_prefix": databricks_ledger_prefix(unrelated_batch).to_record(),
             "terminal_prefix": databricks_ledger_prefix(
                 target_after_unrelated
             ).to_record(),
@@ -3056,22 +3318,18 @@ def test_terminal_phase_authority_reissues_after_controller_restart(campaign):
         ledger_path=collected["ledger_path"],
     )
     assert replayed == collected["phase_authorization"]
-    prefix, lineage = (
-        full_score._require_full_score_phase_predecessor_authorization(
-            replayed,
-            execution_plan=campaign["execution_plan"],
-            ledger_path=collected["ledger_path"],
-            wave_index=0,
-            phase="consumer",
-        )
+    prefix, lineage = full_score._require_full_score_phase_predecessor_authorization(
+        replayed,
+        execution_plan=campaign["execution_plan"],
+        ledger_path=collected["ledger_path"],
+        wave_index=0,
+        phase="consumer",
     )
     assert prefix == replayed.ledger_prefix
     assert lineage["authorization_sha256"] == replayed.causal_closure_sha256
     intent_path = full_score._full_score_phase_intent_path(
         collected["ledger_path"],
-        execution_plan_sha256=campaign["execution_plan"][
-            "closed_record_sha256"
-        ],
+        execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
         wave_index=0,
         phase="producer",
     )
@@ -3111,15 +3369,11 @@ def test_publication_aggregate_requires_current_final_consumer_authority(campaig
             "batch_prefix": batch_prefix.to_record(),
             "ledger_path_sha256": databricks_ledger_path_sha256(ledger_path),
             "terminal_prefix": producer_authorization.ledger_prefix.to_record(),
-            "terminal_record_sha256": (
-                producer_authorization.terminal_record_sha256
-            ),
+            "terminal_record_sha256": (producer_authorization.terminal_record_sha256),
         }
     )
     final_authorization = full_score.FullScorePhaseAuthorization(
-        execution_plan_sha256=campaign["execution_plan"][
-            "closed_record_sha256"
-        ],
+        execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
         wave_index=len(campaign["execution_plan"]["waves"]) - 1,
         phase="consumer",
         ledger_path_sha256=databricks_ledger_path_sha256(ledger_path),
@@ -3128,25 +3382,38 @@ def test_publication_aggregate_requires_current_final_consumer_authority(campaig
         phase_lease_root=(
             ledger_path.with_name(f"{ledger_path.name}.full-score-phase-leases")
         ),
-        terminal_record_sha256=(
-            producer_authorization.terminal_record_sha256
-        ),
+        terminal_record_sha256=(producer_authorization.terminal_record_sha256),
         causal_closure_sha256=causal_closure,
+        workspace_host_sha256=producer_authorization.workspace_host_sha256,
+        user_name_sha256=producer_authorization.user_name_sha256,
         _issuer=full_score._FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
     )
-    lineage = (
-        full_score._require_full_score_final_consumer_aggregation_authorization(
-            campaign["execution_plan"],
-            final_authorization,
-            ledger_path=ledger_path,
-        )
+    lineage = full_score._require_full_score_final_consumer_aggregation_authorization(
+        campaign["execution_plan"],
+        final_authorization,
+        ledger_path=ledger_path,
     )
     assert lineage["predecessor_prefix"] == (
         final_authorization.predecessor_prefix.to_record()
     )
     assert lineage["batch_prefix"] == batch_prefix.to_record()
-    assert lineage["terminal_prefix"] == (
-        final_authorization.ledger_prefix.to_record()
+    assert lineage["terminal_prefix"] == (final_authorization.ledger_prefix.to_record())
+    workspace_closure = final_authorization.workspace_authority_closure_sha256
+    object.__setattr__(
+        final_authorization,
+        "workspace_authority_closure_sha256",
+        _digest("tampered-final-workspace-authority"),
+    )
+    with pytest.raises(ValueError, match="workspace authority drift"):
+        full_score._require_full_score_final_consumer_aggregation_authorization(
+            campaign["execution_plan"],
+            final_authorization,
+            ledger_path=ledger_path,
+        )
+    object.__setattr__(
+        final_authorization,
+        "workspace_authority_closure_sha256",
+        workspace_closure,
     )
     with pytest.raises(TypeError, match="FullScorePhaseAuthorization"):
         full_score._require_full_score_final_consumer_aggregation_authorization(
@@ -3236,9 +3503,7 @@ def test_terminal_collection_resumes_exact_crash_boundaries_and_races(
         )
         with pytest.raises(ValueError, match="current-user identity differs"):
             collect(wrong_identity)
-    assert observed_principals == [
-        ("researcher@example.com", wrong_identity["opener"])
-    ]
+    assert observed_principals == [("researcher@example.com", wrong_identity["opener"])]
     assert len(wrong_identity["opener"].requests) == wrong_identity_request_count
     assert wrong_identity["ledger_path"].read_bytes() == wrong_identity_ledger
     assert not wrong_identity["run_path"].exists()
@@ -3311,18 +3576,16 @@ def test_concurrent_duplicate_phase_launch_opens_exactly_once(campaign):
         ledger_path,
         ledger_id="publication-full-score",
     )
-    campaign["latency_collection_authorization"].ledger_prefix = (
-        databricks_ledger_prefix(
-            read_databricks_cluster_hour_ledger_json(ledger_path)
-        )
+    campaign[
+        "latency_collection_authorization"
+    ].ledger_prefix = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
     )
     opener = _FakeDatabricksOpener({"run_id": 91_001})
 
     def launch():
         return full_score.reserve_and_submit_governed_full_score_phase_attempt(
-            DatabricksWorkspaceConfig(
-                "https://dbc.example/", "secret-token"
-            ),
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
             submit_payload,
             ledger_path=ledger_path,
             execution_plan=campaign["execution_plan"],
@@ -3334,12 +3597,8 @@ def test_concurrent_duplicate_phase_launch_opens_exactly_once(campaign):
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
             opener=opener,
         )
 
@@ -3376,10 +3635,10 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
         ledger_path,
         ledger_id="publication-full-score",
     )
-    campaign["latency_collection_authorization"].ledger_prefix = (
-        databricks_ledger_prefix(
-            read_databricks_cluster_hour_ledger_json(ledger_path)
-        )
+    campaign[
+        "latency_collection_authorization"
+    ].ledger_prefix = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
     )
     _ledger, submission_authorization = (
         full_score.reserve_governed_full_score_phase_attempt(
@@ -3394,12 +3653,8 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
         )
     )
     rejected_opener = _FakeDatabricksOpener({"run_id": 91_999})
@@ -3417,9 +3672,7 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
         )
         with pytest.raises(ValueError, match="current-user identity differs"):
             full_score.submit_governed_full_score_phase_attempt(
-                DatabricksWorkspaceConfig(
-                    "https://dbc.example/", "secret-token"
-                ),
+                DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
                 submit_payload,
                 ledger_path=ledger_path,
                 submission_authorization=submission_authorization,
@@ -3427,9 +3680,7 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
             )
         with pytest.raises(ValueError, match="current-user identity differs"):
             full_score.recover_governed_full_score_phase_attempt(
-                DatabricksWorkspaceConfig(
-                    "https://dbc.example/", "secret-token"
-                ),
+                DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
                 submit_payload,
                 ledger_path=ledger_path,
                 submission_authorization=submission_authorization,
@@ -3445,9 +3696,7 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
     lost = _AcceptedButResponseLostOpener()
     with pytest.raises(TimeoutError, match="response was lost"):
         full_score.submit_governed_full_score_phase_attempt(
-            DatabricksWorkspaceConfig(
-                "https://dbc.example/", "secret-token"
-            ),
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
             submit_payload,
             ledger_path=ledger_path,
             submission_authorization=submission_authorization,
@@ -3476,9 +3725,7 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
     missing_token.pop("idempotency_token")
     with pytest.raises(ValueError, match="payload binding drift"):
         full_score.recover_governed_full_score_phase_attempt(
-            DatabricksWorkspaceConfig(
-                "https://dbc.example/", "secret-token"
-            ),
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
             missing_token,
             ledger_path=ledger_path,
             submission_authorization=submission_authorization,
@@ -3487,18 +3734,14 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
     changed_payload["tasks"][0]["timeout_seconds"] -= 1
     with pytest.raises(ValueError, match="payload binding drift"):
         full_score.recover_governed_full_score_phase_attempt(
-            DatabricksWorkspaceConfig(
-                "https://dbc.example/", "secret-token"
-            ),
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
             changed_payload,
             ledger_path=ledger_path,
             submission_authorization=submission_authorization,
         )
     intent_path = full_score._full_score_phase_intent_path(
         ledger_path,
-        execution_plan_sha256=campaign["execution_plan"][
-            "closed_record_sha256"
-        ],
+        execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
         wave_index=0,
         phase="producer",
     )
@@ -3556,14 +3799,14 @@ def test_reserved_phase_resumes_after_controller_restart(
             ledger_path,
             ledger_id="publication-full-score",
         )
-        campaign["latency_collection_authorization"].ledger_prefix = (
-            databricks_ledger_prefix(
-                read_databricks_cluster_hour_ledger_json(ledger_path)
-            )
+        campaign[
+            "latency_collection_authorization"
+        ].ledger_prefix = databricks_ledger_prefix(
+            read_databricks_cluster_hour_ledger_json(ledger_path)
         )
-        campaign["latency_collection_authorization"].ledger_path_sha256 = (
-            databricks_ledger_path_sha256(ledger_path)
-        )
+        campaign[
+            "latency_collection_authorization"
+        ].ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
         _ledger, original_authorization = (
             full_score.reserve_governed_full_score_phase_attempt(
                 ledger_path,
@@ -3577,12 +3820,8 @@ def test_reserved_phase_resumes_after_controller_restart(
                 qualification_launch_authorization=campaign[
                     "qualification_launch_authorization"
                 ],
-                predecessor_authorization=campaign[
-                    "latency_collection_authorization"
-                ],
-                latency_execution_plan_record=campaign[
-                    "latency_execution_plan_record"
-                ],
+                predecessor_authorization=campaign["latency_collection_authorization"],
+                latency_execution_plan_record=campaign["latency_execution_plan_record"],
             )
         )
         if lose_first_response:
@@ -3606,6 +3845,7 @@ def test_reserved_phase_resumes_after_controller_restart(
                 phase="producer",
             )
             lease_path.unlink()
+            full_score._full_score_workspace_authority_path(lease_path).unlink()
             lease_root = lease_path.parent
             lease_root.rmdir()
             with pytest.raises(ValueError, match="post-batch lease"):
@@ -3673,15 +3913,11 @@ def test_reserved_phase_resumes_after_controller_restart(
                         ],
                         opener=rejected_opener,
                     )
-            assert observed_principals == [
-                ("researcher@example.com", rejected_opener)
-            ]
+            assert observed_principals == [("researcher@example.com", rejected_opener)]
             assert rejected_opener.requests == []
             assert ledger_path.read_bytes() == ledger_before_wrong_identity
             assert not lease_root.exists()
-            assert not ledger_path.with_name(
-                f"{ledger_path.name}.post-claims"
-            ).exists()
+            assert not ledger_path.with_name(f"{ledger_path.name}.post-claims").exists()
 
             intent_path = full_score._full_score_phase_intent_path(
                 ledger_path,
@@ -3706,6 +3942,7 @@ def test_reserved_phase_resumes_after_controller_restart(
                 return {
                     "authenticated": True,
                     "user_name_sha256": _digest(expected_user_name),
+                    "workspace_host_sha256": _digest(_workspace.normalized_host),
                 }
 
             with monkeypatch.context() as identity_patch:
@@ -3742,9 +3979,7 @@ def test_reserved_phase_resumes_after_controller_restart(
             assert race_opener.requests == []
             assert ledger_path.read_bytes() == ledger_before_wrong_identity
             assert not lease_root.exists()
-            assert not ledger_path.with_name(
-                f"{ledger_path.name}.post-claims"
-            ).exists()
+            assert not ledger_path.with_name(f"{ledger_path.name}.post-claims").exists()
             intent_path.write_bytes(intent_bytes)
 
             replayed = full_score.recover_governed_full_score_phase_reservation(
@@ -3759,12 +3994,8 @@ def test_reserved_phase_resumes_after_controller_restart(
                 qualification_launch_authorization=campaign[
                     "qualification_launch_authorization"
                 ],
-                predecessor_authorization=campaign[
-                    "latency_collection_authorization"
-                ],
-                latency_execution_plan_record=campaign[
-                    "latency_execution_plan_record"
-                ],
+                predecessor_authorization=campaign["latency_collection_authorization"],
+                latency_execution_plan_record=campaign["latency_execution_plan_record"],
             )
         else:
             replayed = (
@@ -3806,18 +4037,12 @@ def test_reserved_phase_resumes_after_controller_restart(
                 qualification_launch_authorization=campaign[
                     "qualification_launch_authorization"
                 ],
-                predecessor_authorization=campaign[
-                    "latency_collection_authorization"
-                ],
-                latency_execution_plan_record=campaign[
-                    "latency_execution_plan_record"
-                ],
+                predecessor_authorization=campaign["latency_collection_authorization"],
+                latency_execution_plan_record=campaign["latency_execution_plan_record"],
                 opener=recovery,
             )
         )
-        assert response == {
-            "run_id": "93001" if not lose_first_response else "93002"
-        }
+        assert response == {"run_id": "93001" if not lose_first_response else "93002"}
         assert resumed_authorization == original_authorization
         assert len(recovery.requests) == 1
         no_second_post = _AcceptedButResponseLostOpener()
@@ -3835,12 +4060,8 @@ def test_reserved_phase_resumes_after_controller_restart(
                 qualification_launch_authorization=campaign[
                     "qualification_launch_authorization"
                 ],
-                predecessor_authorization=campaign[
-                    "latency_collection_authorization"
-                ],
-                latency_execution_plan_record=campaign[
-                    "latency_execution_plan_record"
-                ],
+                predecessor_authorization=campaign["latency_collection_authorization"],
+                latency_execution_plan_record=campaign["latency_execution_plan_record"],
                 opener=no_second_post,
             )
         )
@@ -3887,9 +4108,7 @@ def test_governed_reservation_rejects_projected_max16_before_write(campaign):
     )
     before = ledger_path.read_bytes()
     assert (
-        read_databricks_cluster_hour_ledger_json(
-            ledger_path
-        ).active_reserved_task_count
+        read_databricks_cluster_hour_ledger_json(ledger_path).active_reserved_task_count
         == 1
     )
     with pytest.raises(ValueError, match="active task concurrency guard"):
@@ -3905,21 +4124,15 @@ def test_governed_reservation_rejects_projected_max16_before_write(campaign):
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
         )
     assert ledger_path.read_bytes() == before
 
 
 def test_live_p90_gate_replays_matched_blocks_and_authorizes_next_phase(campaign):
     wave_one_producers = _phase_payloads(campaign, 1, "producer")
-    reservation = full_score.full_score_wave_worst_case_gpu_hours(
-        wave_one_producers
-    )
+    reservation = full_score.full_score_wave_worst_case_gpu_hours(wave_one_producers)
     assert reservation == 24.0
     blocks = _matched_blocks(campaign, 0)
     gate = full_score.build_full_score_live_p90_budget_admission(
@@ -4039,8 +4252,8 @@ def test_remote_prior_wave_replay_uses_only_issuer_cas_on_mac(
     campaign,
     monkeypatch,
 ):
-    completion, authorization, compact_files = (
-        _remote_wave_completion_authorization(campaign, 0)
+    completion, authorization, compact_files = _remote_wave_completion_authorization(
+        campaign, 0
     )
     monkeypatch.setattr(
         full_score,
@@ -4232,9 +4445,7 @@ def test_remote_cas_threads_wave0_into_wave1_render_reserve_and_replay(
         "load_governed_full_score_phase_terminal_record",
         load_terminal,
     )
-    local_blocks = {
-        block["shard_id"]: block for block in _matched_blocks(campaign, 0)
-    }
+    local_blocks = {block["shard_id"]: block for block in _matched_blocks(campaign, 0)}
 
     def build_matched(_execution_plan, *, shard_id, **_kwargs):
         return copy.deepcopy(local_blocks[shard_id])
@@ -4247,9 +4458,7 @@ def test_remote_cas_threads_wave0_into_wave1_render_reserve_and_replay(
     block_uris = []
     for shard in wave_zero_shards:
         shard_id = shard["shard_id"]
-        evidence_directory = (
-            f"{durable_root}/evidence/wave-000/{shard_id}"
-        )
+        evidence_directory = f"{durable_root}/evidence/wave-000/{shard_id}"
         block = full_score.build_governed_full_score_matched_billing_block(
             campaign["execution_plan"],
             inventory=campaign["inventory"],
@@ -4437,10 +4646,10 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
         ledger_path,
         ledger_id="publication-full-score",
     )
-    campaign["latency_collection_authorization"].ledger_prefix = (
-        databricks_ledger_prefix(
-            read_databricks_cluster_hour_ledger_json(ledger_path)
-        )
+    campaign[
+        "latency_collection_authorization"
+    ].ledger_prefix = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
     )
     durable_root = campaign["bundle"].durable_output_root
     before_malformed = len(download_calls)
@@ -4496,27 +4705,19 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
             qualification_launch_authorization=campaign[
                 "qualification_launch_authorization"
             ],
-            predecessor_authorization=campaign[
-                "latency_collection_authorization"
-            ],
-            latency_execution_plan_record=campaign[
-                "latency_execution_plan_record"
-            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
             compact_artifact_resolver=cas.resolve,
             opener=producer_opener,
         )
     )
-    producer_submit_uri = (
-        f"{durable_root}/control/phase/wave-000-producer-submit.json"
-    )
-    producer_run_uri = (
-        f"{durable_root}/control/phase/wave-000-producer-runs-get.json"
-    )
+    producer_submit_uri = f"{durable_root}/control/phase/wave-000-producer-submit.json"
+    producer_run_uri = f"{durable_root}/control/phase/wave-000-producer-runs-get.json"
     producer_terminal_uri = (
         f"{durable_root}/control/phase/wave-000-producer-terminal.json"
     )
-    remote_files[producer_submit_uri] = (
-        full_score._canonical_pretty_json_bytes(producer_submit)
+    remote_files[producer_submit_uri] = full_score._canonical_pretty_json_bytes(
+        producer_submit
     )
     downloads_before_wrong_identity = list(download_calls)
     producer_requests_before_wrong_identity = len(producer_opener.requests)
@@ -4556,6 +4757,37 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
     assert len(producer_opener.requests) == producer_requests_before_wrong_identity
     with pytest.raises(ValueError, match="missing"):
         cas.resolve(producer_submit_uri)
+
+    def wrong_host_same_user(_workspace, *, expected_user_name, opener=None):
+        assert expected_user_name == "researcher@example.com"
+        return {
+            "workspace_host_sha256": _digest("https://other.dbc.example"),
+            "user_name_sha256": _digest(expected_user_name),
+        }
+
+    with monkeypatch.context() as identity_patch:
+        identity_patch.setattr(
+            full_score_remote,
+            "require_databricks_current_user_name",
+            wrong_host_same_user,
+        )
+        with pytest.raises(ValueError, match="workspace/principal authority drift"):
+            full_score_remote.collect_governed_full_score_remote_phase_attempt(
+                workspace,
+                cas=cas,
+                execution_plan=campaign["execution_plan"],
+                inventory=campaign["inventory"],
+                shard_plan=campaign["shard_plan"],
+                ledger_path=ledger_path,
+                submission_authorization=producer_submission_authorization,
+                submit_payload_uri=producer_submit_uri,
+                control_plane_run_uri=producer_run_uri,
+                terminal_record_uri=producer_terminal_uri,
+                single_user_name="researcher@example.com",
+                opener=producer_opener,
+            )
+    assert download_calls == downloads_before_wrong_identity
+    assert len(producer_opener.requests) == producer_requests_before_wrong_identity
     producer_terminal, producer_authorization = (
         full_score_remote.collect_governed_full_score_remote_phase_attempt(
             workspace,
@@ -4584,9 +4816,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
     compact_io.download(producer_completion_uri)
     ready_authorization = full_score_remote.FullScoreRemoteTreeAuthorization(
         action="producer_ready",
-        execution_plan_sha256=campaign["execution_plan"][
-            "closed_record_sha256"
-        ],
+        execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
         wave_index=0,
         durable_output_root=durable_root,
         request_sha256=_digest("stock-mac-producer-request"),
@@ -4598,21 +4828,17 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
             f"{durable_root}/control/producer-ready/wave-000-attestation.json"
         ),
         attestation_file_sha256=_digest("stock-mac-producer-attestation-file"),
-        attestation_record_sha256=_digest(
-            "stock-mac-producer-attestation-record"
-        ),
+        attestation_record_sha256=_digest("stock-mac-producer-attestation-record"),
         coordinator_run_id="91001",
         coordinator_run_record_sha256=_digest("stock-mac-producer-run"),
         controller_authorization_record_sha256=_digest(
             "stock-mac-producer-controller-authorization"
         ),
-        runs_get_receipt_record_sha256=_digest(
-            "stock-mac-producer-runs-get"
-        ),
-        phase_terminal_record_sha256=producer_terminal[
-            "closed_record_sha256"
-        ],
+        runs_get_receipt_record_sha256=_digest("stock-mac-producer-runs-get"),
+        phase_terminal_record_sha256=producer_terminal["closed_record_sha256"],
         evidence_bindings=(),
+        workspace_host_sha256=_digest("https://dbc.example"),
+        user_name_sha256=_digest("researcher@example.com"),
         _issuer=full_score_remote._REMOTE_AUTHORIZATION_ISSUER,
     )
 
@@ -4656,17 +4882,13 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
             opener=consumer_opener,
         )
     )
-    consumer_submit_uri = (
-        f"{durable_root}/control/phase/wave-000-consumer-submit.json"
-    )
-    consumer_run_uri = (
-        f"{durable_root}/control/phase/wave-000-consumer-runs-get.json"
-    )
+    consumer_submit_uri = f"{durable_root}/control/phase/wave-000-consumer-submit.json"
+    consumer_run_uri = f"{durable_root}/control/phase/wave-000-consumer-runs-get.json"
     consumer_terminal_uri = (
         f"{durable_root}/control/phase/wave-000-consumer-terminal.json"
     )
-    remote_files[consumer_submit_uri] = (
-        full_score._canonical_pretty_json_bytes(consumer_submit)
+    remote_files[consumer_submit_uri] = full_score._canonical_pretty_json_bytes(
+        consumer_submit
     )
     consumer_terminal, consumer_authorization = (
         full_score_remote.collect_governed_full_score_remote_phase_attempt(
@@ -4693,17 +4915,13 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
     )
     evidence_authorization = full_score_remote.FullScoreRemoteTreeAuthorization(
         action=fixture_evidence_authorization.action,
-        execution_plan_sha256=(
-            fixture_evidence_authorization.execution_plan_sha256
-        ),
+        execution_plan_sha256=(fixture_evidence_authorization.execution_plan_sha256),
         wave_index=fixture_evidence_authorization.wave_index,
         durable_output_root=fixture_evidence_authorization.durable_output_root,
         request_sha256=fixture_evidence_authorization.request_sha256,
         result_uri=fixture_evidence_authorization.result_uri,
         result_file_sha256=fixture_evidence_authorization.result_file_sha256,
-        result_record_sha256=(
-            fixture_evidence_authorization.result_record_sha256
-        ),
+        result_record_sha256=(fixture_evidence_authorization.result_record_sha256),
         result_record=fixture_evidence_authorization.result_record,
         attestation_uri=fixture_evidence_authorization.attestation_uri,
         attestation_file_sha256=(
@@ -4722,21 +4940,17 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
         runs_get_receipt_record_sha256=(
             fixture_evidence_authorization.runs_get_receipt_record_sha256
         ),
-        phase_terminal_record_sha256=consumer_terminal[
-            "closed_record_sha256"
-        ],
+        phase_terminal_record_sha256=consumer_terminal["closed_record_sha256"],
         evidence_bindings=fixture_evidence_authorization.evidence_bindings,
+        workspace_host_sha256=_digest("https://dbc.example"),
+        user_name_sha256=_digest("researcher@example.com"),
         _issuer=full_score_remote._REMOTE_AUTHORIZATION_ISSUER,
     )
     matched_block_uris = []
     matched_blocks = []
     for shard_id in wave_completion["shard_ids"]:
-        evidence_directory = (
-            f"{durable_root}/evidence/wave-000/{shard_id}"
-        )
-        block_uri = (
-            f"{durable_root}/control/matched/wave-000/{shard_id}.json"
-        )
+        evidence_directory = f"{durable_root}/evidence/wave-000/{shard_id}"
+        block_uri = f"{durable_root}/control/matched/wave-000/{shard_id}.json"
         block = (
             full_score_remote.write_governed_full_score_remote_matched_billing_block(
                 workspace,
@@ -4750,6 +4964,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
                 consumer_terminal_uri=consumer_terminal_uri,
                 ledger_path=ledger_path,
                 remote_consumer_authorization=evidence_authorization,
+                single_user_name="researcher@example.com",
             )
         )
         matched_block_uris.append(block_uri)
@@ -4757,9 +4972,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
 
     wave_one_producers = _phase_payloads(campaign, 1, "producer")
     wave_one_attempt_id = "stock-mac-wave-001-producer"
-    admission_uri = (
-        f"{durable_root}/control/admission/wave-001-producer-p90.json"
-    )
+    admission_uri = f"{durable_root}/control/admission/wave-001-producer-p90.json"
     rendered, admission = (
         full_score_remote.prepare_governed_full_score_remote_live_p90_phase_submission(
             workspace,
@@ -4842,12 +5055,8 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
         submission_authorization=submission_authorization,
         opener=wave_one_opener,
     ) == {"run_id": wave_one_run_id}
-    wave_one_submit_uri = (
-        f"{durable_root}/control/phase/wave-001-producer-submit.json"
-    )
-    wave_one_run_uri = (
-        f"{durable_root}/control/phase/wave-001-producer-runs-get.json"
-    )
+    wave_one_submit_uri = f"{durable_root}/control/phase/wave-001-producer-submit.json"
+    wave_one_run_uri = f"{durable_root}/control/phase/wave-001-producer-runs-get.json"
     wave_one_terminal_uri = (
         f"{durable_root}/control/phase/wave-001-producer-terminal.json"
     )
@@ -4880,9 +5089,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
     remote_files[wave_one_completion_uri] = wave_one_completion_bytes
     wave_one_ready_authorization = full_score_remote.FullScoreRemoteTreeAuthorization(
         action="producer_ready",
-        execution_plan_sha256=campaign["execution_plan"][
-            "closed_record_sha256"
-        ],
+        execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
         wave_index=1,
         durable_output_root=durable_root,
         request_sha256=_digest("stock-mac-wave-one-producer-request"),
@@ -4893,9 +5100,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
         attestation_uri=(
             f"{durable_root}/control/producer-ready/wave-001-attestation.json"
         ),
-        attestation_file_sha256=_digest(
-            "stock-mac-wave-one-producer-attestation-file"
-        ),
+        attestation_file_sha256=_digest("stock-mac-wave-one-producer-attestation-file"),
         attestation_record_sha256=_digest(
             "stock-mac-wave-one-producer-attestation-record"
         ),
@@ -4904,19 +5109,15 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
         controller_authorization_record_sha256=_digest(
             "stock-mac-wave-one-producer-controller-authorization"
         ),
-        runs_get_receipt_record_sha256=_digest(
-            "stock-mac-wave-one-producer-runs-get"
-        ),
-        phase_terminal_record_sha256=wave_one_terminal[
-            "closed_record_sha256"
-        ],
+        runs_get_receipt_record_sha256=_digest("stock-mac-wave-one-producer-runs-get"),
+        phase_terminal_record_sha256=wave_one_terminal["closed_record_sha256"],
         evidence_bindings=(),
+        workspace_host_sha256=_digest("https://dbc.example"),
+        user_name_sha256=_digest("researcher@example.com"),
         _issuer=full_score_remote._REMOTE_AUTHORIZATION_ISSUER,
     )
     wave_one_consumers = _phase_payloads(campaign, 1, "consumer")
-    consumer_p90_uri = (
-        f"{durable_root}/control/admission/wave-001-consumer-p90.json"
-    )
+    consumer_p90_uri = f"{durable_root}/control/admission/wave-001-consumer-p90.json"
     before_missing_ready = len(download_calls)
     with pytest.raises(ValueError, match="producer-ready authority"):
         full_score_remote.prepare_governed_full_score_remote_live_p90_phase_submission(
@@ -4972,6 +5173,74 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
         )
         for task in consumer_rendered["tasks"]
     )
+    final_attempt_id = "stock-mac-wave-001-consumer"
+    _ledger, final_submission_authorization = (
+        full_score.reserve_governed_full_score_phase_attempt(
+            ledger_path,
+            consumer_rendered,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=1,
+            phase="consumer",
+            attempt_id=final_attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=wave_one_producer_authorization,
+            budget_admission_path=consumer_p90_uri,
+            remote_ready_authorization=wave_one_ready_authorization,
+            remote_consumer_authorizations=[evidence_authorization],
+            compact_artifact_resolver=cas.resolve,
+        )
+    )
+    final_run_id = 84_001
+    final_opener = _RoutingDatabricksOpener(
+        submit_payload={"run_id": final_run_id},
+        run_payload=_terminal_run_record(consumer_rendered, run_id=final_run_id),
+    )
+    assert full_score.submit_governed_full_score_phase_attempt(
+        workspace,
+        consumer_rendered,
+        ledger_path=ledger_path,
+        submission_authorization=final_submission_authorization,
+        opener=final_opener,
+    ) == {"run_id": final_run_id}
+    final_submit_uri = f"{durable_root}/control/phase/wave-001-consumer-submit.json"
+    final_run_uri = f"{durable_root}/control/phase/wave-001-consumer-runs-get.json"
+    final_terminal_uri = f"{durable_root}/control/phase/wave-001-consumer-terminal.json"
+    remote_files[final_submit_uri] = full_score._canonical_pretty_json_bytes(
+        consumer_rendered
+    )
+    final_terminal, final_authorization = (
+        full_score_remote.collect_governed_full_score_remote_phase_attempt(
+            workspace,
+            cas=cas,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+            submission_authorization=final_submission_authorization,
+            submit_payload_uri=final_submit_uri,
+            control_plane_run_uri=final_run_uri,
+            terminal_record_uri=final_terminal_uri,
+            single_user_name="researcher@example.com",
+            opener=final_opener,
+        )
+    )
+    replayed_final_authorization = (
+        full_score.replay_governed_full_score_phase_authorization(
+            final_terminal_uri,
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            ledger_path=ledger_path,
+            compact_artifact_resolver=cas.resolve,
+        )
+    )
+    assert replayed_final_authorization == final_authorization
+    assert final_terminal["phase"] == "consumer"
+    assert final_terminal["wave_index"] == 1
 
 
 def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
@@ -4996,12 +5265,11 @@ def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
 
     def load_test_block(path, **_kwargs):
         record = json.loads(Path(path).read_text(encoding="utf-8"))
-        if (
-            record.get("authorization_scope")
-            != full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
-            or record.get("closed_record_sha256")
-            != full_score._closed_record_sha256(record)
-        ):
+        if record.get(
+            "authorization_scope"
+        ) != full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE or record.get(
+            "closed_record_sha256"
+        ) != full_score._closed_record_sha256(record):
             raise ValueError("test governed matched block closure drift")
         return record
 
@@ -5093,9 +5361,7 @@ def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
         path.write_bytes(full_score._canonical_pretty_json_bytes(block))
 
     wave_one_producers = _phase_payloads(campaign, 1, "producer")
-    reservation = full_score.full_score_wave_worst_case_gpu_hours(
-        wave_one_producers
-    )
+    reservation = full_score.full_score_wave_worst_case_gpu_hours(wave_one_producers)
     diagnostic = full_score.build_full_score_live_p90_budget_admission(
         campaign["execution_plan"],
         _matched_blocks(campaign, 0),
@@ -5151,9 +5417,7 @@ def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
             ledger_path=live_ledger_path,
             predecessor_authorization=predecessor_authorization,
         )
-    block_paths[0].write_bytes(
-        full_score._canonical_pretty_json_bytes(blocks[0])
-    )
+    block_paths[0].write_bytes(full_score._canonical_pretty_json_bytes(blocks[0]))
     rendered = full_score.build_databricks_full_score_run_submit_payload(
         campaign["job"],
         wave_one_producers,
@@ -5258,9 +5522,7 @@ def test_matched_billing_keeps_the_consumer_task_indivisible(campaign):
     evidence = {
         "closed_record_sha256": "",
         "durable_evidence_committed": True,
-        "execution_plan_sha256": campaign["execution_plan"][
-            "closed_record_sha256"
-        ],
+        "execution_plan_sha256": campaign["execution_plan"]["closed_record_sha256"],
         "method_wall_clock": "time.monotonic_ns",
         "method_wall_seconds": {
             "baseline_prefill": 11.0,
@@ -5288,9 +5550,7 @@ def test_matched_billing_keeps_the_consumer_task_indivisible(campaign):
     deletion = {
         "closed_record_sha256": "",
         "evidence_closed_record_sha256": evidence["closed_record_sha256"],
-        "execution_plan_sha256": campaign["execution_plan"][
-            "closed_record_sha256"
-        ],
+        "execution_plan_sha256": campaign["execution_plan"]["closed_record_sha256"],
         "lifecycle": ["commit_durable_evidence", "delete_ephemeral_q8_kv"],
         "record_type": full_score.FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE,
         "schema_version": full_score.FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION,
@@ -5436,9 +5696,7 @@ def test_consumer_recovery_finishes_a_partially_deleted_ready_tree(
         if kwargs["require_deletion"]:
             assert not ready_dir.exists()
             deletion = json.loads(
-                (durable_dir / "deletion-attestation.json").read_text(
-                    encoding="utf-8"
-                )
+                (durable_dir / "deletion-attestation.json").read_text(encoding="utf-8")
             )
             return evidence, deletion
         return evidence, None
@@ -5489,8 +5747,7 @@ def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
     }
     assert environment["PIP_CONFIG_FILE"] == os.devnull
     assert (
-        environment["FLASHINFER_LOGGING_LEVEL"]
-        == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+        environment["FLASHINFER_LOGGING_LEVEL"] == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
     )
     assert environment["PYTHONNOUSERSITE"] == "1"
     assert environment["PYTHONSAFEPATH"] == "1"
@@ -5620,10 +5877,7 @@ def test_runtime_verifier_requires_bounded_canonical_stdout_and_empty_stderr(
         bounded_call["environment"]["FLASHINFER_LOGGING_LEVEL"]
         == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
     )
-    assert (
-        bounded_call["environment"]["PYTHONWARNINGS"]
-        == GPU_RUNTIME_PYTHONWARNINGS
-    )
+    assert bounded_call["environment"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
     repeated = full_score._run_runtime_verifier(
         runtime,
         bootstrap,
@@ -5936,9 +6190,7 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
             inventory,
             plan,
             [evidence],
-            authorization_scope=(
-                full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
-            ),
+            authorization_scope=(full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE),
             execution_plan=execution_plan,
         )
     publication_evidence = copy.deepcopy(evidence)
@@ -5969,9 +6221,7 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
                 "commit_durable_evidence",
                 "delete_ephemeral_q8_kv",
             ],
-            "ready_shard_sha256": publication_evidence[
-                "ready_shard_sha256"
-            ],
+            "ready_shard_sha256": publication_evidence["ready_shard_sha256"],
             "record_type": full_score.FULL_SCORE_DELETION_ATTESTATION_RECORD_TYPE,
             "schema_version": full_score.FULL_SCORE_DELETION_ATTESTATION_SCHEMA_VERSION,
             "shard_id": shard["shard_id"],
@@ -6040,9 +6290,7 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
     aggregate_causal_closure = full_score._canonical_sha256(
         {
             "batch_prefix": aggregate_batch.to_record(),
-            "ledger_path_sha256": databricks_ledger_path_sha256(
-                aggregate_ledger_path
-            ),
+            "ledger_path_sha256": databricks_ledger_path_sha256(aggregate_ledger_path),
             "terminal_prefix": aggregate_terminal_prefix.to_record(),
             "terminal_record_sha256": aggregate_terminal_record_sha256,
         }
@@ -6051,9 +6299,7 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         execution_plan_sha256=execution_plan["closed_record_sha256"],
         wave_index=0,
         phase="consumer",
-        ledger_path_sha256=databricks_ledger_path_sha256(
-            aggregate_ledger_path
-        ),
+        ledger_path_sha256=databricks_ledger_path_sha256(aggregate_ledger_path),
         predecessor_prefix=aggregate_predecessor,
         ledger_prefix=aggregate_terminal_prefix,
         phase_lease_root=aggregate_ledger_path.with_name(
@@ -6061,6 +6307,8 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         ),
         terminal_record_sha256=aggregate_terminal_record_sha256,
         causal_closure_sha256=aggregate_causal_closure,
+        workspace_host_sha256=_digest("https://dbc.example"),
+        user_name_sha256=_digest("researcher@example.com"),
         _issuer=full_score._FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
     )
     durable_root = "dbfs:/Volumes/catalog/schema/volume/durable"
@@ -6092,6 +6340,8 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         execution_plan_sha256=execution_plan["closed_record_sha256"],
         phase_terminal_record_sha256=aggregate_terminal_record_sha256,
         runs_get_receipt_record_sha256=_digest("remote-runs-get-receipt"),
+        workspace_host_sha256=final_consumer_authorization.workspace_host_sha256,
+        user_name_sha256=final_consumer_authorization.user_name_sha256,
         wave_index=0,
     )
 
@@ -6116,9 +6366,7 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         inventory,
         plan,
         [],
-        authorization_scope=(
-            full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
-        ),
+        authorization_scope=(full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE),
         execution_plan=execution_plan,
         final_consumer_authorization=final_consumer_authorization,
         ledger_path=aggregate_ledger_path,
@@ -6171,9 +6419,9 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         require_publication=True,
     )
     remote_plan_drift = copy.deepcopy(publication_aggregate)
-    remote_plan_drift["publication_lineage"][
-        "remote_consumer_authorizations"
-    ][0]["execution_plan_sha256"] = _digest("remote-plan-drift")
+    remote_plan_drift["publication_lineage"]["remote_consumer_authorizations"][0][
+        "execution_plan_sha256"
+    ] = _digest("remote-plan-drift")
     _close(remote_plan_drift)
     with pytest.raises(ValueError, match="remote execution-plan authority drift"):
         full_score.validate_full_score_aggregate_record(
@@ -6190,9 +6438,7 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
             inventory,
             plan,
             [],
-            authorization_scope=(
-                full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
-            ),
+            authorization_scope=(full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE),
             execution_plan=execution_plan,
             final_consumer_authorization=final_consumer_authorization,
             ledger_path=aggregate_ledger_path,
@@ -6211,9 +6457,7 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
             inventory,
             plan,
             [],
-            authorization_scope=(
-                full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
-            ),
+            authorization_scope=(full_score.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE),
             execution_plan=execution_plan,
             final_consumer_authorization=final_consumer_authorization,
             ledger_path=aggregate_ledger_path,
@@ -6267,25 +6511,21 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
                 for summary in method_record["metrics"].values()
             )
     for dataset, delta in deltas.items():
-        summaries = aggregate["datasets"][dataset][
-            "paired_vanilla_minus_baseline"
-        ]
+        summaries = aggregate["datasets"][dataset]["paired_vanilla_minus_baseline"]
         assert {round(value["mean"], 7) for value in summaries.values()} == {
             round(delta, 7)
         }
-        assert all(value["bootstrap_ci95"]["draws"] == 25 for value in summaries.values())
+        assert all(
+            value["bootstrap_ci95"]["draws"] == 25 for value in summaries.values()
+        )
     full_score.validate_full_score_aggregate_record(
         aggregate,
         inventory=inventory,
         shard_plan=plan,
     )
     aggregate_niah_redistribution = copy.deepcopy(aggregate)
-    aggregate_niah_redistribution["niah_grid"][NIAH_CELL_IDS[0]][
-        "example_count"
-    ] -= 1
-    aggregate_niah_redistribution["niah_grid"][NIAH_CELL_IDS[1]][
-        "example_count"
-    ] += 1
+    aggregate_niah_redistribution["niah_grid"][NIAH_CELL_IDS[0]]["example_count"] -= 1
+    aggregate_niah_redistribution["niah_grid"][NIAH_CELL_IDS[1]]["example_count"] += 1
     _close(aggregate_niah_redistribution)
     with pytest.raises(ValueError, match="cell count distribution drift"):
         full_score.validate_full_score_aggregate_record(
@@ -6336,9 +6576,9 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         )
 
     aggregate_invalid_score_credit = copy.deepcopy(aggregate)
-    invalid_credit_counts = aggregate_invalid_score_credit["datasets"][
-        "biography"
-    ]["methods"]["baseline_prefill"]["parser_status_counts"]
+    invalid_credit_counts = aggregate_invalid_score_credit["datasets"]["biography"][
+        "methods"
+    ]["baseline_prefill"]["parser_status_counts"]
     invalid_credit_counts["ok"] = 0
     invalid_credit_counts["missing_block"] = 1
     _close(aggregate_invalid_score_credit)
@@ -6350,9 +6590,9 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         )
 
     aggregate_metric_drift = copy.deepcopy(aggregate)
-    biography_metrics = aggregate_metric_drift["datasets"]["biography"][
-        "methods"
-    ]["baseline_prefill"]["metrics"]
+    biography_metrics = aggregate_metric_drift["datasets"]["biography"]["methods"][
+        "baseline_prefill"
+    ]["metrics"]
     first_biography_metric = next(iter(biography_metrics.values()))
     first_biography_metric["sum"] = 0.5
     _close(aggregate_metric_drift)
@@ -6435,9 +6675,9 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
         )
 
     scorer_drift = copy.deepcopy(evidence)
-    scorer_drift["paired_examples"][0]["methods"]["baseline_prefill"][
-        "scorer_id"
-    ] = "unreviewed-scorer"
+    scorer_drift["paired_examples"][0]["methods"]["baseline_prefill"]["scorer_id"] = (
+        "unreviewed-scorer"
+    )
     _close(scorer_drift)
     with pytest.raises(ValueError, match="scorer identity drift"):
         full_score.aggregate_full_score_shard_evidence(
@@ -6497,4 +6737,83 @@ def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
             authorization_scope=(
                 full_score.FULL_SCORE_LOCAL_FIXTURE_AUTHORIZATION_SCOPE
             ),
+        )
+
+
+def test_local_workspace_authority_reader_rejects_unsafe_files(tmp_path, monkeypatch):
+    root = tmp_path / "authority-root"
+    root.mkdir(mode=0o700)
+    path = root / "authority.json"
+    path.write_bytes(b"x" * 70_000)
+    path.chmod(0o600)
+    original_read = full_score.os.read
+    mutated = False
+
+    def mutating_read(descriptor, count):
+        nonlocal mutated
+        chunk = original_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            with path.open("r+b") as handle:
+                handle.write(b"y")
+                handle.flush()
+                os.fsync(handle.fileno())
+        return chunk
+
+    monkeypatch.setattr(full_score.os, "read", mutating_read)
+    with pytest.raises(ValueError, match="changed during secure read"):
+        full_score._read_stable_local_authority_bytes(path, label="authority")
+    monkeypatch.setattr(full_score.os, "read", original_read)
+
+    path.unlink()
+    target = root / "target.json"
+    target.write_bytes(b"{}\n")
+    target.chmod(0o600)
+    path.symlink_to(target)
+    with pytest.raises(OSError):
+        full_score._read_stable_local_authority_bytes(path, label="authority")
+    path.unlink()
+
+    os.link(target, path)
+    with pytest.raises(ValueError, match="single-link"):
+        full_score._read_stable_local_authority_bytes(path, label="authority")
+    path.unlink()
+    target.unlink()
+
+    path.write_bytes(b"x" * (1024 * 1024 + 1))
+    path.chmod(0o600)
+    with pytest.raises(ValueError, match="bounded"):
+        full_score._read_stable_local_authority_bytes(path, label="authority")
+    path.unlink()
+
+    root.chmod(0o755)
+    path.write_bytes(b"{}\n")
+    path.chmod(0o600)
+    with pytest.raises(ValueError, match="parent.*0700"):
+        full_score._read_stable_local_authority_bytes(path, label="authority")
+
+
+def test_local_workspace_authority_writer_recovers_only_proven_crash_link(tmp_path):
+    root = tmp_path / "authority-root"
+    root.mkdir(mode=0o700)
+    path = root / "authority.json"
+    content = b'{"authority":true}\n'
+    stale = root / ".authority.json.pending-123-456"
+    stale.write_bytes(content)
+    stale.chmod(0o600)
+    os.link(stale, path)
+
+    full_score._write_or_require_local_authority_bytes(path, content, label="authority")
+    assert path.read_bytes() == content
+    assert path.stat().st_nlink == 1
+    assert not stale.exists()
+
+    path.unlink()
+    malicious = root / "malicious-link"
+    malicious.write_bytes(content)
+    malicious.chmod(0o600)
+    os.link(malicious, path)
+    with pytest.raises(ValueError, match="ambiguous crash-recovery links"):
+        full_score._write_or_require_local_authority_bytes(
+            path, content, label="authority"
         )

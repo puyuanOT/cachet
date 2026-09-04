@@ -563,17 +563,27 @@ def _synthetic_campaign_ledger_projection_case(
             self.wave_index = (
                 campaign_finalizer.PUBLICATION_CAMPAIGN_FULL_SCORE_WAVES - 1
             )
+            self.workspace_host_sha256 = _digest("workspace-host")
+            self.user_name_sha256 = _digest("workspace-user")
+            self.causal_closure_sha256 = _digest("final-consumer-causal")
+            self.terminal_record_sha256 = _digest("final-consumer-terminal")
 
     latency_authorization = SimpleNamespace(
         ledger_path_sha256=ledger_path_sha256,
         ledger_prefix=latency_prefix,
+        workspace_host_sha256=_digest("workspace-host"),
+        user_name_sha256=_digest("workspace-user"),
     )
     final_consumer_authorization = FakeFullScorePhaseAuthorization()
     execution_plan = {"closed_record_sha256": execution_plan_sha256}
     aggregate = {
         "publication_lineage": {
+            "authorization_sha256": final_consumer_authorization.causal_closure_sha256,
             "ledger_id": ledger_id,
             "ledger_path_sha256": ledger_path_sha256,
+            "terminal_record_sha256": (
+                final_consumer_authorization.terminal_record_sha256
+            ),
             "terminal_prefix": final_prefix.to_record(),
         }
     }
@@ -630,6 +640,11 @@ def _synthetic_campaign_ledger_projection_case(
     )
     monkeypatch.setattr(
         campaign_finalizer,
+        "require_publication_latency_collection_authorization",
+        lambda *_args, **_kwargs: latency_prefix,
+    )
+    monkeypatch.setattr(
+        campaign_finalizer,
         "databricks_ledger_path_sha256",
         path_hash,
     )
@@ -661,6 +676,9 @@ def _synthetic_campaign_ledger_projection_case(
         "live": live,
         "projection_kwargs": {
             "latency_collection_authorization": latency_authorization,
+            "latency_execution_plan_record": {
+                "closed_record_sha256": _digest("latency-execution-plan")
+            },
             "full_score_execution_plan_record": execution_plan,
             "full_score_aggregate_record": aggregate,
             "final_consumer_authorization": final_consumer_authorization,
@@ -1098,6 +1116,42 @@ def test_campaign_ledger_projection_accepts_exact_twenty_phase_suffix(
         "prefix_from_record": 1,
         "read": 1,
     }
+
+
+def test_campaign_ledger_projection_rejects_final_authority_subclasses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    authority_type = campaign_finalizer.FullScorePhaseAuthorization
+
+    class SmuggledFinalAuthority(authority_type):
+        pass
+
+    case["projection_kwargs"]["final_consumer_authorization"] = (
+        SmuggledFinalAuthority()
+    )
+    with pytest.raises(TypeError, match="wrong authority type"):
+        campaign_finalizer._validated_campaign_ledger_projection(
+            **case["projection_kwargs"]
+        )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["authorization_sha256", "terminal_record_sha256"],
+)
+def test_campaign_ledger_projection_binds_final_authority_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    case["projection_kwargs"]["full_score_aggregate_record"][
+        "publication_lineage"
+    ][field_name] = _digest(f"tampered-{field_name}")
+    with pytest.raises(ValueError, match="terminal prefix"):
+        campaign_finalizer._validated_campaign_ledger_projection(
+            **case["projection_kwargs"]
+        )
 
 
 @pytest.mark.parametrize("tamper", ["unrelated", "reordered"])

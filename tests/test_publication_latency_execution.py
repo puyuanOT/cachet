@@ -57,18 +57,40 @@ from document_kv_cache.serving_env import (
 
 @pytest.fixture(autouse=True)
 def _bind_latency_current_user(monkeypatch):
-    def bind_current_user(_workspace, *, expected_user_name, opener=None):
+    def bind_current_user(workspace, *, expected_user_name, opener=None):
         return {
             "authenticated": True,
             "user_name_sha256": execution.sha256(
                 expected_user_name.encode("utf-8")
             ).hexdigest(),
+            "workspace_host_sha256": execution.sha256(
+                workspace.normalized_host.encode("utf-8")
+            ).hexdigest(),
         }
+
+    def bind_remote_closure_identity(
+        workspace,
+        _q8_authorization,
+        _bf16_authorization,
+        *,
+        expected_user_name,
+        opener=None,
+    ):
+        return execution.require_databricks_current_user_name(
+            workspace,
+            expected_user_name=expected_user_name,
+            opener=opener,
+        )
 
     monkeypatch.setattr(
         execution,
         "require_databricks_current_user_name",
         bind_current_user,
+    )
+    monkeypatch.setattr(
+        execution,
+        "require_publication_handoff_remote_closure_workspace_identity",
+        bind_remote_closure_identity,
     )
 
 
@@ -173,9 +195,7 @@ def test_reviewed_v2_constants_and_successor_verifier_use_ordered_streams(
     assert PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.prefix_sha256 == (
         "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
     )
-    reviewed_v2_prefix = (
-        qualification_v2.GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
-    )
+    reviewed_v2_prefix = qualification_v2.GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
     assert (
         reviewed_v2_prefix.reservation_count,
         reviewed_v2_prefix.submission_receipt_count,
@@ -307,12 +327,15 @@ def test_reviewed_v2_constants_and_successor_verifier_use_ordered_streams(
         "campaign_record_sha256": campaign["closed_record_sha256"],
     }
 
-    assert execution._require_reviewed_qualification_plan_campaign_successor(
-        qualification_ledger,
-        ledger_path=ledger_path,
-        campaign_plan_record=campaign,
-        qualification_plan_record=qualification,
-    ) == qualification_prefix
+    assert (
+        execution._require_reviewed_qualification_plan_campaign_successor(
+            qualification_ledger,
+            ledger_path=ledger_path,
+            campaign_plan_record=campaign,
+            qualification_plan_record=qualification,
+        )
+        == qualification_prefix
+    )
 
     with pytest.raises(ValueError, match="shorter than its authorized prefix"):
         execution._require_reviewed_qualification_plan_campaign_successor(
@@ -379,11 +402,14 @@ def test_condition_timeouts_and_runtime_zone_are_closed():
         and job["input_tokens"] == 16_384
         and job["request_parallelism"] == 4
     )
-    assert execution._job_runtime_policy(
-        l4_16k,
-        selected_32k_gmu=0.75,
-        single_user_name="publication@example.com",
-    )["gpu_memory_utilization"] == 0.90
+    assert (
+        execution._job_runtime_policy(
+            l4_16k,
+            selected_32k_gmu=0.75,
+            single_user_name="publication@example.com",
+        )["gpu_memory_utilization"]
+        == 0.90
+    )
     assert runtime["gpu_memory_utilization"] == 0.75
 
 
@@ -402,9 +428,7 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
     )
     runner_uri = "dbfs:/Volumes/catalog/schema/volume/runtime/latency-runner.py"
     package_uri = "dbfs:/Volumes/catalog/schema/volume/runtime/cachet.whl"
-    patched_vllm_uri = (
-        "dbfs:/Volumes/catalog/schema/volume/runtime/patched-vllm.whl"
-    )
+    patched_vllm_uri = "dbfs:/Volumes/catalog/schema/volume/runtime/patched-vllm.whl"
     job = {
         "artifact_files": [
             {
@@ -487,9 +511,7 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
         attempt_id=job["reservation_attempt_id"],
     )
     execution._validate_submit_payload(payload, job_record=job)
-    assert payload["tasks"][0]["new_cluster"]["data_security_mode"] == (
-        "SINGLE_USER"
-    )
+    assert payload["tasks"][0]["new_cluster"]["data_security_mode"] == ("SINGLE_USER")
     assert payload["tasks"][0]["new_cluster"]["single_user_name"] == (
         "publication@example.com"
     )
@@ -569,9 +591,7 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
             execution._validate_submit_payload(rebound(mutated), job_record=job)
 
     mutated = deepcopy(payload)
-    mutated["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = runtime[
-        "zone_id"
-    ]
+    mutated["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = runtime["zone_id"]
     mutated["tasks"][0]["spark_python_task"]["python_file"] = (
         "dbfs:/Volumes/attacker/substituted-runner.py"
     )
@@ -579,9 +599,7 @@ def test_submit_payload_rejects_timeout_and_zone_tampering():
         execution._validate_submit_payload(rebound(mutated), job_record=job)
 
     mutated = deepcopy(payload)
-    mutated["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = runtime[
-        "zone_id"
-    ]
+    mutated["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = runtime["zone_id"]
     mutated["tasks"][0]["spark_python_task"]["parameters"].extend(
         ["--attacker-flag", "value"]
     )
@@ -939,15 +957,36 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
         execution, "_require_prior_waves_succeeded", lambda *a, **k: None
     )
     principal_checks = []
+
+    def record_current_user(config, *, expected_user_name, opener=None):
+        principal_checks.append((expected_user_name, opener is not None))
+        return {
+            "authenticated": True,
+            "user_name_sha256": execution.sha256(
+                expected_user_name.encode("utf-8")
+            ).hexdigest(),
+            "workspace_host_sha256": execution.sha256(
+                config.normalized_host.encode("utf-8")
+            ).hexdigest(),
+        }
+
     monkeypatch.setattr(
         execution,
         "require_databricks_current_user_name",
-        lambda _config, *, expected_user_name, opener=None: principal_checks.append(
-            (expected_user_name, opener is not None)
-        ),
+        record_current_user,
     )
-    bf16_authorization = SimpleNamespace(ledger_prefix=opening_prefix)
-    source_authorization = SimpleNamespace(ledger_prefix=opening_prefix)
+    workspace_host_sha256 = execution.sha256(b"https://dbc.example").hexdigest()
+    user_name_sha256 = execution.sha256(b"publication@example.com").hexdigest()
+    bf16_authorization = SimpleNamespace(
+        ledger_prefix=opening_prefix,
+        workspace_host_sha256=workspace_host_sha256,
+        user_name_sha256=user_name_sha256,
+    )
+    source_authorization = SimpleNamespace(
+        ledger_prefix=opening_prefix,
+        workspace_host_sha256=workspace_host_sha256,
+        user_name_sha256=user_name_sha256,
+    )
     qualification_authorization = object()
     q8_authorization = object()
     wrong_principals = []
@@ -957,9 +996,7 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
         raise ValueError("Databricks current-user identity differs")
 
     def rejected_opener(*_args, **_kwargs):
-        raise AssertionError(
-            "wrong-principal wave launch must not perform HTTP"
-        )
+        raise AssertionError("wrong-principal wave launch must not perform HTTP")
 
     class Response:
         status = 200
@@ -991,9 +1028,7 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
         )
         with pytest.raises(ValueError, match="current-user identity differs"):
             execution.submit_publication_latency_launch_wave(
-                execution.DatabricksWorkspaceConfig(
-                    "https://dbc.example", "token"
-                ),
+                execution.DatabricksWorkspaceConfig("https://dbc.example", "token"),
                 execution_plan_record=plan,
                 qualification_launch_authorization=qualification_authorization,
                 handoff_serving_authorization=q8_authorization,
@@ -1037,9 +1072,7 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
         )
         with pytest.raises(ValueError, match="current-user identity differs"):
             execution.resume_publication_latency_launch_wave(
-                execution.DatabricksWorkspaceConfig(
-                    "https://dbc.example", "token"
-                ),
+                execution.DatabricksWorkspaceConfig("https://dbc.example", "token"),
                 execution_plan_record=plan,
                 qualification_launch_authorization=qualification_authorization,
                 handoff_serving_authorization=q8_authorization,
@@ -1151,6 +1184,80 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
             controller_cas_root=tmp_path / "cas",
         )
     )
+    assert wave_zero_authorization.workspace_host_sha256 == workspace_host_sha256
+    assert wave_zero_authorization.user_name_sha256 == user_name_sha256
+    assert wave_zero_authorization.workspace_authority_closure_sha256 == (
+        execution._canonical_sha256(
+            {
+                "causal_closure_sha256": (
+                    wave_zero_authorization.causal_closure_sha256
+                ),
+                "user_name_sha256": user_name_sha256,
+                "workspace_host_sha256": workspace_host_sha256,
+            }
+        )
+    )
+
+    for suffix, live_host, live_user in (
+        (
+            "other-host",
+            "https://dbc.other",
+            "publication@example.com",
+        ),
+        (
+            "other-principal",
+            "https://dbc.example",
+            "other-publication@example.com",
+        ),
+    ):
+        live_host_sha256 = execution.sha256(live_host.encode("utf-8")).hexdigest()
+        live_user_sha256 = execution.sha256(live_user.encode("utf-8")).hexdigest()
+        aligned_source_authorization = SimpleNamespace(
+            ledger_prefix=opening_prefix,
+            workspace_host_sha256=live_host_sha256,
+            user_name_sha256=live_user_sha256,
+        )
+        aligned_bf16_authorization = SimpleNamespace(
+            ledger_prefix=opening_prefix,
+            workspace_host_sha256=live_host_sha256,
+            user_name_sha256=live_user_sha256,
+        )
+        before = ledger_path.read_bytes()
+        rejected_lease = tmp_path / f"wave-1-{suffix}"
+
+        with monkeypatch.context() as identity_patch:
+            identity_patch.setattr(
+                execution,
+                "require_databricks_current_user_name",
+                lambda config, *, expected_user_name, opener=None, _user=live_user: {
+                    "authenticated": True,
+                    "user_name_sha256": execution.sha256(
+                        _user.encode("utf-8")
+                    ).hexdigest(),
+                    "workspace_host_sha256": execution.sha256(
+                        config.normalized_host.encode("utf-8")
+                    ).hexdigest(),
+                },
+            )
+            with pytest.raises(ValueError, match="prior-wave authority binding drift"):
+                execution.submit_publication_latency_launch_wave(
+                    execution.DatabricksWorkspaceConfig(live_host, "token"),
+                    execution_plan_record=plan,
+                    qualification_launch_authorization=qualification_authorization,
+                    handoff_serving_authorization=q8_authorization,
+                    bf16_handoff_serving_authorization=(aligned_bf16_authorization),
+                    source_closure_authorization=(aligned_source_authorization),
+                    ledger_path=ledger_path,
+                    wave_index=1,
+                    phase_lease_root=rejected_lease,
+                    prior_wave_authorization=wave_zero_authorization,
+                    opener=lambda *_args, **_kwargs: pytest.fail(
+                        "cross-identity wave chain must not perform HTTP"
+                    ),
+                )
+        assert ledger_path.read_bytes() == before
+        assert not rejected_lease.exists()
+
     wave_one, _wave_one_submission_authorization = (
         execution.submit_publication_latency_launch_wave(
             execution.DatabricksWorkspaceConfig("https://dbc.example", "token"),
@@ -1167,11 +1274,9 @@ def test_wave_zero_lost_response_resume_collects_then_authorizes_wave_one(
         )
     )
     assert wave_one["jobs"][0]["run_id"] == "102"
-    assert principal_checks == [
-        ("publication@example.com", True),
-        ("publication@example.com", True),
-        ("publication@example.com", True),
-    ]
+    assert len(principal_checks) >= 3
+    assert {item[0] for item in principal_checks} == {"publication@example.com"}
+    assert {item[1] for item in principal_checks} == {False, True}
     assert wrong_principals == [
         ("publication@example.com", rejected_opener),
         ("publication@example.com", rejected_opener),
@@ -1209,7 +1314,9 @@ def _remote_result_case(monkeypatch, *, listing_mode="exact", tamper_role=None):
     remote.update(
         {
             item["uri"]: (
-                b"tampered\n" if item["role"] == tamper_role else artifact_bytes[item["role"]]
+                b"tampered\n"
+                if item["role"] == tamper_role
+                else artifact_bytes[item["role"]]
             )
             for item in files
         }
@@ -1256,7 +1363,10 @@ def _remote_result_case(monkeypatch, *, listing_mode="exact", tamper_role=None):
         lambda *_args, **_kwargs: None,
     )
     return (
-        {"job_id": "job-a", "output": {"directory_uri": directory_uri, "result_uri": result_uri}},
+        {
+            "job_id": "job-a",
+            "output": {"directory_uri": directory_uri, "result_uri": result_uri},
+        },
         result_bytes,
         artifact_bytes,
     )
@@ -1287,9 +1397,7 @@ def _native_v2_runtime_attestation(*, vllm_uri, flashinfer_uri):
         "closure_bound_vllm_manifest_file_sha256": (
             qualification_v2.VLLM_PATCHED_MANIFEST_SHA256
         ),
-        "flashinfer_member_sha256": (
-            qualification_v2.FLASHINFER_TARGET_PATCHED_SHA256
-        ),
+        "flashinfer_member_sha256": (qualification_v2.FLASHINFER_TARGET_PATCHED_SHA256),
         "flashinfer_package_version": qualification_v2.FLASHINFER_PACKAGE_VERSION,
         "flashinfer_wheel_sha256": qualification_v2.FLASHINFER_PATCHED_WHEEL_SHA256,
         "installed_distribution_count": (
@@ -1345,9 +1453,7 @@ def _native_v2_job_record(*, method_id="baseline_prefill"):
         "package_wheel": "a" * 64,
         "patched_vllm_wheel": execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
         "patched_flashinfer_wheel": execution.FLASHINFER_PATCHED_WHEEL_SHA256,
-        "runtime_closure_manifest": (
-            execution.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
-        ),
+        "runtime_closure_manifest": (execution.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
         "runtime_lock": execution.VLLM_RUNTIME_BASE_LOCK_SHA256,
     }
     return {
@@ -1388,17 +1494,12 @@ def _native_v2_job_record(*, method_id="baseline_prefill"):
         "input_files": [
             {
                 "dataset": dataset,
-                "uri": (
-                    "dbfs:/Volumes/catalog/schema/volume/inputs/"
-                    f"{dataset}.jsonl"
-                ),
+                "uri": (f"dbfs:/Volumes/catalog/schema/volume/inputs/{dataset}.jsonl"),
             }
             for dataset in SUPPORTED_V1_DATASETS
         ],
         "job_id": cell["job_id"],
-        "output": {
-            "directory_uri": "dbfs:/Volumes/catalog/schema/volume/results/job"
-        },
+        "output": {"directory_uri": "dbfs:/Volumes/catalog/schema/volume/results/job"},
         "request_order": {
             "input_bundle_sha256": (
                 qualification_v2.GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256
@@ -1434,9 +1535,7 @@ def test_publication_vllm_config_binds_complete_native_v2_runtime(monkeypatch):
         "patched_flashinfer_wheel_uri": (
             artifact_files["patched_flashinfer_wheel"]["uri"]
         ),
-        "patched_vllm_wheel_sha256": (
-            artifact_files["patched_vllm_wheel"]["sha256"]
-        ),
+        "patched_vllm_wheel_sha256": (artifact_files["patched_vllm_wheel"]["sha256"]),
         "patched_vllm_wheel_uri": artifact_files["patched_vllm_wheel"]["uri"],
         "runtime_closure_manifest_sha256": (
             artifact_files["runtime_closure_manifest"]["sha256"]
@@ -1480,9 +1579,10 @@ def test_one_arm_latency_configs_emit_component_evidence(monkeypatch, method_id)
     )
     assert "--cache-runtime-prompt" not in runner_args
     for flag in ("--baseline-extra-body-json", "--cache-extra-body-json"):
-        assert json.loads(runner_args[runner_args.index(flag) + 1])[
-            "add_special_tokens"
-        ] is False
+        assert (
+            json.loads(runner_args[runner_args.index(flag) + 1])["add_special_tokens"]
+            is False
+        )
     assert execution.PUBLICATION_LATENCY_REQUEST_CUSTOMIZATION_DIGEST == (
         execution.sha256(b'{"add_special_tokens":false}').hexdigest()
     )
@@ -1516,18 +1616,22 @@ def test_component_evidence_gate_recomputes_full_canonical_record(monkeypatch):
         execution,
         "benchmark_gate_inputs_from_record",
         lambda observed: (
-            artifact_identities,
-            cache_state_attestations,
-        )
-        if observed is record
-        else (_ for _ in ()).throw(AssertionError("unexpected benchmark record")),
+            (
+                artifact_identities,
+                cache_state_attestations,
+            )
+            if observed is record
+            else (_ for _ in ()).throw(AssertionError("unexpected benchmark record"))
+        ),
     )
     monkeypatch.setattr(
         execution,
         "benchmark_record_payload_digest",
-        lambda observed: payload_digest
-        if observed is record
-        else (_ for _ in ()).throw(AssertionError("unexpected benchmark record")),
+        lambda observed: (
+            payload_digest
+            if observed is record
+            else (_ for _ in ()).throw(AssertionError("unexpected benchmark record"))
+        ),
     )
 
     def evaluate(observed_result, **kwargs):
@@ -1544,9 +1648,11 @@ def test_component_evidence_gate_recomputes_full_canonical_record(monkeypatch):
     monkeypatch.setattr(
         execution,
         "benchmark_evidence_gate_to_record",
-        lambda observed: deepcopy(canonical_gate)
-        if observed is gate_result
-        else (_ for _ in ()).throw(AssertionError("unexpected gate result")),
+        lambda observed: (
+            deepcopy(canonical_gate)
+            if observed is gate_result
+            else (_ for _ in ()).throw(AssertionError("unexpected gate result"))
+        ),
     )
 
     execution._require_publication_latency_component_evidence_gate(
@@ -1580,9 +1686,7 @@ def _source_closure_records():
                 "patched_vllm_wheel": (
                     execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
                 ),
-                "patched_flashinfer_wheel": (
-                    execution.FLASHINFER_PATCHED_WHEEL_SHA256
-                ),
+                "patched_flashinfer_wheel": (execution.FLASHINFER_PATCHED_WHEEL_SHA256),
                 "runtime_closure_manifest": (
                     execution.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
                 ),
@@ -1612,15 +1716,11 @@ def _source_closure_records():
         runtime_lock_uri=final_artifacts.file("runtime_lock").uri,
         runtime_lock_sha256=execution.VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_uri=final_artifacts.file("patched_vllm_wheel").uri,
-        patched_vllm_wheel_sha256=(
-            execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
-        ),
+        patched_vllm_wheel_sha256=(execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256),
         patched_flashinfer_wheel_uri=final_artifacts.file(
             "patched_flashinfer_wheel"
         ).uri,
-        patched_flashinfer_wheel_sha256=(
-            execution.FLASHINFER_PATCHED_WHEEL_SHA256
-        ),
+        patched_flashinfer_wheel_sha256=(execution.FLASHINFER_PATCHED_WHEEL_SHA256),
         runtime_closure_manifest_uri=final_artifacts.file(
             "runtime_closure_manifest"
         ).uri,
@@ -1652,9 +1752,7 @@ def _source_closure_records():
         }
         for block in range(1, 6)
     ]
-    storage_schedules = [
-        {**item, "selection_sha256": "f" * 64} for item in schedules
-    ]
+    storage_schedules = [{**item, "selection_sha256": "f" * 64} for item in schedules]
     semantic = {
         "campaign_closed_record_sha256": "1" * 64,
         "qualification_evidence_closed_record_sha256": "2" * 64,
@@ -1735,9 +1833,7 @@ def _source_closure_records():
         },
         "record_bindings": {
             "campaign": binding("campaign_plan", "1" * 64),
-            "qualification_evidence": binding(
-                "qualification_evidence", "2" * 64
-            ),
+            "qualification_evidence": binding("qualification_evidence", "2" * 64),
             "qualification_plan": binding("qualification_plan", "3" * 64),
             "schedules": [
                 binding(
@@ -1775,10 +1871,8 @@ def _source_closure_records():
         execution._source_closure_singleton_identity_from_request(request)
     )
     request["singleton_identity_sha256"] = singleton_identity_sha256
-    request["attempt_id"] = (
-        execution._publication_latency_source_closure_attempt_id(
-            singleton_identity_sha256
-        )
+    request["attempt_id"] = execution._publication_latency_source_closure_attempt_id(
+        singleton_identity_sha256
     )
     request_root, result_root = (
         execution.publication_latency_source_closure_control_roots(
@@ -1788,12 +1882,8 @@ def _source_closure_records():
     )
     request["coordinator"]["request_root_uri"] = request_root
     request["coordinator"]["result_root_uri"] = result_root
-    request["request_uri"] = execution._join_durable_uri(
-        request_root, "request.json"
-    )
-    request["result_uri"] = execution._join_durable_uri(
-        result_root, "result.json"
-    )
+    request["request_uri"] = execution._join_durable_uri(request_root, "request.json")
+    request["result_uri"] = execution._join_durable_uri(result_root, "result.json")
     request["closed_record_sha256"] = execution._closed_record_sha256(request)
     native_runtime = execution._source_closure_native_runtime_v2(config)
     runtime_verification = _native_v2_runtime_attestation(
@@ -1825,7 +1915,13 @@ def _source_closure_records():
     return request, result, final_artifacts
 
 
-def _source_closure_request_authorization(request, *, phase_lease_root=None):
+def _source_closure_request_authorization(
+    request,
+    *,
+    phase_lease_root=None,
+    workspace_host="https://dbc.example",
+    user_name="publication@example.com",
+):
     lease_root = (
         Path.cwd()
         / ".test-latency-source-closure"
@@ -1833,9 +1929,19 @@ def _source_closure_request_authorization(request, *, phase_lease_root=None):
         if phase_lease_root is None
         else Path(phase_lease_root)
     )
+    q8 = object.__new__(execution.PublicationHandoffRemoteClosureAuthorization)
+    bf16 = object.__new__(execution.PublicationHandoffRemoteClosureAuthorization)
     return execution.PublicationLatencySourceClosureRequestAuthorization(
         request=request,
         phase_lease_root=lease_root,
+        workspace_identity={
+            "workspace_host_sha256": execution.sha256(
+                workspace_host.encode("utf-8")
+            ).hexdigest(),
+            "user_name_sha256": execution.sha256(user_name.encode("utf-8")).hexdigest(),
+        },
+        q8_authorization=q8,
+        bf16_authorization=bf16,
         _issuer=execution._SOURCE_CLOSURE_REQUEST_AUTHORIZATION_ISSUER,
     )
 
@@ -1843,8 +1949,8 @@ def _source_closure_request_authorization(request, *, phase_lease_root=None):
 def _reseal_source_closure_singleton(request):
     identity = execution._source_closure_singleton_identity_from_request(request)
     request["singleton_identity_sha256"] = identity
-    request["attempt_id"] = (
-        execution._publication_latency_source_closure_attempt_id(identity)
+    request["attempt_id"] = execution._publication_latency_source_closure_attempt_id(
+        identity
     )
     closures = request["handoff_closures"]
     request_root, result_root = (
@@ -1855,9 +1961,7 @@ def _reseal_source_closure_singleton(request):
     )
     request["coordinator"]["request_root_uri"] = request_root
     request["coordinator"]["result_root_uri"] = result_root
-    request["request_uri"] = execution._join_durable_uri(
-        request_root, "request.json"
-    )
+    request["request_uri"] = execution._join_durable_uri(request_root, "request.json")
     request["result_uri"] = execution._join_durable_uri(result_root, "result.json")
     request["closed_record_sha256"] = execution._closed_record_sha256(request)
 
@@ -1888,9 +1992,7 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
         namespace = {"__name__": "latency_runner_test"}
         exec(compile(script, filename, "exec"), namespace)
         environment = namespace["_pip_subprocess_environment"]()
-        assert {
-            key for key in environment if key.upper().startswith("PIP_")
-        } == {
+        assert {key for key in environment if key.upper().startswith("PIP_")} == {
             "PIP_CONFIG_FILE",
             "PIP_DISABLE_PIP_VERSION_CHECK",
             "PIP_NO_INPUT",
@@ -1910,7 +2012,7 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     assert '"--extra-index-url"' not in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
-    assert '_verified(__file__, args.runner_sha256' in (
+    assert "_verified(__file__, args.runner_sha256" in (
         execution.PUBLICATION_LATENCY_RUNNER_SCRIPT
     )
     bound_runner = tmp_path / "bound-publication-latency-runner.py"
@@ -2021,9 +2123,7 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
         "2",
     ]
     child_stub = child_command[3]
-    assert child_stub.index("sys.warnoptions") < child_stub.index(
-        "runpy.run_module"
-    )
+    assert child_stub.index("sys.warnoptions") < child_stub.index("runpy.run_module")
     assert (
         child_environment["FLASHINFER_LOGGING_LEVEL"]
         == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
@@ -2089,9 +2189,7 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     assert task["new_cluster"]["num_workers"] == 0
     assert task["new_cluster"]["spark_version"] == "15.4.x-cpu-ml-scala2.12"
     assert task["new_cluster"]["data_security_mode"] == "SINGLE_USER"
-    assert task["new_cluster"]["single_user_name"] == (
-        "publication@example.com"
-    )
+    assert task["new_cluster"]["single_user_name"] == ("publication@example.com")
     assert task["new_cluster"]["custom_tags"]["ResourceClass"] == "SingleNode"
     assert task["timeout_seconds"] == 2 * 60 * 60
     assert payload["timeout_seconds"] == 2 * 60 * 60
@@ -2174,13 +2272,14 @@ def test_source_closure_result_rejects_rebound_native_v2_runtime_origin():
 
 def test_source_closure_authorization_is_issuer_only():
     request, result, _final_artifacts = _source_closure_records()
-    prefix = databricks_ledger_prefix(
-        DatabricksClusterHourLedger(ledger_id="campaign")
-    )
+    prefix = databricks_ledger_prefix(DatabricksClusterHourLedger(ledger_id="campaign"))
 
-    assert get_type_hints(
-        execution.build_publication_latency_source_closure_request
-    )["return"] is execution.PublicationLatencySourceClosureRequestAuthorization
+    assert (
+        get_type_hints(execution.build_publication_latency_source_closure_request)[
+            "return"
+        ]
+        is execution.PublicationLatencySourceClosureRequestAuthorization
+    )
     with pytest.raises(TypeError, match="request authority is issuer-only"):
         execution.PublicationLatencySourceClosureRequestAuthorization(
             request=request,
@@ -2197,8 +2296,78 @@ def test_source_closure_authorization_is_issuer_only():
             coordinator_run_id="101",
             control_plane_status_sha256="a" * 64,
             ledger_prefix=prefix,
+            workspace_host_sha256="b" * 64,
+            user_name_sha256="c" * 64,
             _issuer=object(),
         )
+
+
+@pytest.mark.parametrize(
+    ("live_host", "live_user"),
+    (
+        ("https://dbc.other", "publication@example.com"),
+        ("https://dbc.example", "other-publication@example.com"),
+    ),
+    ids=("different-host", "different-principal"),
+)
+def test_source_closure_workspace_identity_is_authority_only_and_fail_closed(
+    tmp_path,
+    monkeypatch,
+    live_host,
+    live_user,
+):
+    request, _result, _final_artifacts = _source_closure_records()
+    request_bytes = execution._pretty_json_bytes(request)
+    authorization = _source_closure_request_authorization(
+        request,
+        phase_lease_root=tmp_path / "source-closure-lease",
+    )
+    repeated = _source_closure_request_authorization(
+        request,
+        phase_lease_root=tmp_path / "source-closure-repeated-lease",
+    )
+    expected_host = execution.sha256(b"https://dbc.example").hexdigest()
+    expected_user = execution.sha256(b"publication@example.com").hexdigest()
+
+    assert execution._pretty_json_bytes(authorization.request_record) == request_bytes
+    assert execution.sha256(request_bytes).hexdigest() == (
+        authorization.request_file_sha256
+    )
+    assert b"workspace_host_sha256" not in request_bytes
+    assert b"user_name_sha256" not in request_bytes
+    assert authorization.authorization_record == repeated.authorization_record
+    assert authorization.authorization_record["workspace_host_sha256"] == (
+        expected_host
+    )
+    assert authorization.authorization_record["user_name_sha256"] == expected_user
+    assert (
+        execution._require_source_closure_request_authorization(authorization)
+        is authorization
+    )
+    with pytest.raises(
+        TypeError,
+        match="PublicationLatencySourceClosureRequestAuthorization",
+    ):
+        execution._require_source_closure_request_authorization(SimpleNamespace())
+
+    workspace = execution.DatabricksWorkspaceConfig("https://dbc.example", "token")
+    execution._require_source_closure_workspace_identity(workspace, authorization)
+
+    monkeypatch.setattr(
+        execution,
+        "require_publication_handoff_remote_closure_workspace_identity",
+        lambda *_args, **_kwargs: {
+            "authenticated": True,
+            "workspace_host_sha256": execution.sha256(
+                live_host.encode("utf-8")
+            ).hexdigest(),
+            "user_name_sha256": execution.sha256(live_user.encode("utf-8")).hexdigest(),
+        },
+    )
+    with pytest.raises(ValueError, match="workspace/principal authority drift"):
+        execution._require_source_closure_workspace_identity(workspace, authorization)
+    assert not authorization.phase_lease_root.exists()
+    assert execution._pretty_json_bytes(authorization.request_record) == request_bytes
 
 
 def test_source_closure_raw_and_resealed_swapped_package_fail_before_side_effects(
@@ -2207,14 +2376,10 @@ def test_source_closure_raw_and_resealed_swapped_package_fail_before_side_effect
     request, _result, _final_artifacts = _source_closure_records()
     swapped = deepcopy(request)
     swapped_sha256 = "b" * 64
-    swapped_uri = (
-        "dbfs:/Volumes/catalog/schema/volume/artifacts/swapped-package.whl"
-    )
+    swapped_uri = "dbfs:/Volumes/catalog/schema/volume/artifacts/swapped-package.whl"
     swapped["coordinator"]["package_wheel_sha256"] = swapped_sha256
     swapped["coordinator"]["package_wheel_uri"] = swapped_uri
-    swapped["qualification_artifact_pins"]["package_wheel_sha256"] = (
-        swapped_sha256
-    )
+    swapped["qualification_artifact_pins"]["package_wheel_sha256"] = swapped_sha256
     package_file = next(
         item
         for item in swapped["final_artifacts"]["files"]
@@ -2238,9 +2403,7 @@ def test_source_closure_raw_and_resealed_swapped_package_fail_before_side_effect
         execution, "upload_databricks_volume_file_bytes_exclusive", forbidden
     )
     monkeypatch.setattr(execution, "submit_databricks_run", forbidden)
-    workspace = execution.DatabricksWorkspaceConfig(
-        "https://dbc.example", "token"
-    )
+    workspace = execution.DatabricksWorkspaceConfig("https://dbc.example", "token")
     for raw_request in (request, swapped):
         with pytest.raises(
             TypeError,
@@ -2273,9 +2436,7 @@ def test_source_closure_singleton_rejects_alternate_attempt_and_control_roots():
         alternate_attempt
     )
     with pytest.raises(ValueError, match="attempt identity drift"):
-        execution.validate_publication_latency_source_closure_request(
-            alternate_attempt
-        )
+        execution.validate_publication_latency_source_closure_request(alternate_attempt)
 
     alternate_root = deepcopy(request)
     alternate_root["coordinator"]["request_root_uri"] += "-alternate"
@@ -2310,9 +2471,7 @@ def test_source_closure_wrong_current_user_fails_before_lease_or_io(
         ledger_path, ledger_id="campaign", cap_cluster_hours=1024.0
     )
     request, result, _final_artifacts = _source_closure_records()
-    request, _result = _bind_source_closure_to_ledger(
-        request, result, ledger_path
-    )
+    request, _result = _bind_source_closure_to_ledger(request, result, ledger_path)
     lease = tmp_path / "never-created-source-lease"
     request_authorization = _source_closure_request_authorization(
         request, phase_lease_root=lease
@@ -2343,9 +2502,7 @@ def test_source_closure_wrong_current_user_fails_before_lease_or_io(
 
     with pytest.raises(ValueError, match="current-user identity differs"):
         execution.submit_publication_latency_source_closure(
-            execution.DatabricksWorkspaceConfig(
-                "https://dbc.example", "token"
-            ),
+            execution.DatabricksWorkspaceConfig("https://dbc.example", "token"),
             request_authorization=request_authorization,
             ledger_path=ledger_path,
             phase_lease_root=lease,
@@ -2365,9 +2522,7 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
         ledger_path, ledger_id="campaign", cap_cluster_hours=1024.0
     )
     request, result, _final_artifacts = _source_closure_records()
-    request, _result = _bind_source_closure_to_ledger(
-        request, result, ledger_path
-    )
+    request, _result = _bind_source_closure_to_ledger(request, result, ledger_path)
     lease = tmp_path / "source-lease"
     request_authorization = _source_closure_request_authorization(
         request, phase_lease_root=lease
@@ -2397,9 +2552,7 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
         "upload_databricks_volume_file_bytes_exclusive",
         upload_request,
     )
-    workspace = execution.DatabricksWorkspaceConfig(
-        "https://dbc.example", "token"
-    )
+    workspace = execution.DatabricksWorkspaceConfig("https://dbc.example", "token")
     with pytest.raises(TimeoutError, match="lost response"):
         execution.submit_publication_latency_source_closure(
             workspace,
@@ -2414,12 +2567,18 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
         lease / "request-authorization.json",
         "persisted source request authorization",
     )
-    assert persisted_authorization == dict(
-        request_authorization.authorization_record
-    )
+    assert persisted_authorization == dict(request_authorization.authorization_record)
     assert persisted_authorization["closed_record_sha256"] == (
         request_authorization.authorization_record_sha256
     )
+    assert persisted_authorization["workspace_host_sha256"] == (
+        request_authorization.workspace_host_sha256
+    )
+    assert persisted_authorization["user_name_sha256"] == (
+        request_authorization.user_name_sha256
+    )
+    assert "workspace_host_sha256" not in request
+    assert "user_name_sha256" not in request
     lease_snapshot = {
         path.relative_to(lease): path.read_bytes()
         for path in lease.rglob("*")
@@ -2448,9 +2607,7 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
                 phase_lease_root=lease,
                 opener=rejected_opener,
             )
-    assert observed_principals == [
-        ("publication@example.com", rejected_opener)
-    ]
+    assert observed_principals == [("publication@example.com", rejected_opener)]
     assert len(upload_calls) == 1
     assert {
         path.relative_to(lease): path.read_bytes()
@@ -2504,6 +2661,19 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
     assert authorization.request_authorization_record_sha256 == (
         request_authorization.authorization_record_sha256
     )
+    assert (
+        authorization.workspace_host_sha256
+        == replayed_authorization.workspace_host_sha256
+        == request_authorization.workspace_host_sha256
+    )
+    assert (
+        authorization.user_name_sha256
+        == replayed_authorization.user_name_sha256
+        == request_authorization.user_name_sha256
+    )
+    assert authorization.workspace_authority_closure_sha256 == (
+        replayed_authorization.workspace_authority_closure_sha256
+    )
     assert submission["request_file_byte_count"] == len(request_bytes)
     assert submission["submit_payload_byte_count"] > 0
     assert len(upload_calls) == 3
@@ -2522,8 +2692,8 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
 
     tampered_authorization = deepcopy(persisted_authorization)
     tampered_authorization["package_wheel_sha256"] = "f" * 64
-    tampered_authorization["closed_record_sha256"] = (
-        execution._closed_record_sha256(tampered_authorization)
+    tampered_authorization["closed_record_sha256"] = execution._closed_record_sha256(
+        tampered_authorization
     )
     (lease / "request-authorization.json").write_bytes(
         execution._canonical_json_bytes(tampered_authorization)
@@ -2565,7 +2735,9 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
     swapped_package["uri"] = swapped_uri
     _reseal_source_closure_singleton(swapped_request)
     swapped_authorization = execution._source_closure_request_authorization_record(
-        swapped_request
+        swapped_request,
+        workspace_host_sha256=request_authorization.workspace_host_sha256,
+        user_name_sha256=request_authorization.user_name_sha256,
     )
     (lease / "request.json").write_bytes(
         execution._canonical_json_bytes(swapped_request)
@@ -2617,16 +2789,14 @@ def test_source_closure_collector_uses_direct_get_files_and_cas_without_gpu_ledg
         "start_time": 1000,
         "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
         "tasks": [
-                {
-                    "attempt_number": 0,
-                    "cluster_instance": {"cluster_id": "cluster-source"},
-                    "end_time": 2500,
-                    "new_cluster": cluster,
-                    "run_id": 1001,
-                    "spark_python_task": deepcopy(
-                        payload["tasks"][0]["spark_python_task"]
-                    ),
-                    "start_time": 1100,
+            {
+                "attempt_number": 0,
+                "cluster_instance": {"cluster_id": "cluster-source"},
+                "end_time": 2500,
+                "new_cluster": cluster,
+                "run_id": 1001,
+                "spark_python_task": deepcopy(payload["tasks"][0]["spark_python_task"]),
+                "start_time": 1100,
                 "state": {
                     "life_cycle_state": "TERMINATED",
                     "result_state": "SUCCESS",
@@ -2664,6 +2834,8 @@ def test_source_closure_collector_uses_direct_get_files_and_cas_without_gpu_ledg
             run_id="101",
             submit_payload_sha256=execution.sha256(canonical_payload).hexdigest(),
             submit_response_sha256="a" * 64,
+            workspace_host_sha256=request_authorization.workspace_host_sha256,
+            user_name_sha256=request_authorization.user_name_sha256,
             _issuer=execution._SOURCE_CLOSURE_SUBMISSION_AUTHORIZATION_ISSUER,
         )
     )
@@ -2680,9 +2852,12 @@ def test_source_closure_collector_uses_direct_get_files_and_cas_without_gpu_ledg
     assert get_calls == ["101"]
     assert ledger_path.read_bytes() == ledger_before
     assert authorization.ledger_prefix == execution.databricks_ledger_prefix(ledger)
-    assert execution._source_closure_authorization_binding(authorization)[
-        "single_user_name"
-    ] == "publication@example.com"
+    assert (
+        execution._source_closure_authorization_binding(authorization)[
+            "single_user_name"
+        ]
+        == "publication@example.com"
+    )
     assert len(list((tmp_path / "cas" / "sha256").glob("*/*"))) == 3
 
 
@@ -2848,8 +3023,7 @@ def test_controller_plan_and_source_validation_never_translate_dbfs_mounts():
     assert "require_q8_handoff_remote_closure_authorization" in validation_names
     assert "require_bf16_handoff_remote_closure_authorization" in validation_names
     assert (
-        "require_publication_latency_source_closure_authorization"
-        in validation_names
+        "require_publication_latency_source_closure_authorization" in validation_names
     )
 
 
@@ -3320,7 +3494,7 @@ def test_reclosed_plan_cannot_rebind_handoff_authority(monkeypatch):
     ] = "0" * 64
     forged["sources_sha256"] = execution._canonical_sha256(forged["sources"])
     forged["closed_record_sha256"] = execution._closed_record_sha256(forged)
-    with pytest.raises(ValueError, match="Q8 handoff serving authorization binding"):
+    with pytest.raises(TypeError, match="GPUQualificationLaunchAuthorization"):
         execution._require_latency_launch_authorization(
             forged,
             qualification_authorization,  # type: ignore[arg-type]
@@ -3333,7 +3507,7 @@ def test_reclosed_plan_cannot_rebind_handoff_authority(monkeypatch):
         causal_closure_sha256=bf16_causal_sha,
         ledger_id="other-ledger",
     )
-    with pytest.raises(ValueError, match="share the execution plan campaign ledger"):
+    with pytest.raises(TypeError, match="GPUQualificationLaunchAuthorization"):
         execution._require_latency_launch_authorization(
             plan,
             qualification_authorization,  # type: ignore[arg-type]
@@ -3471,10 +3645,13 @@ def test_descriptive_cache_projection_drops_provenance_bearing_telemetry():
         for key in _ram_cache_telemetry(requests=0)
         if key != "expected_backend_bytes_read"
     }
-    assert execution._descriptive_cache_telemetry_projection(
-        {"cache_telemetry": baseline_source},
-        method_id="baseline_prefill",
-    )["expected_backend_bytes_read"] == 0
+    assert (
+        execution._descriptive_cache_telemetry_projection(
+            {"cache_telemetry": baseline_source},
+            method_id="baseline_prefill",
+        )["expected_backend_bytes_read"]
+        == 0
+    )
 
 
 def test_descriptive_cache_claims_distinguish_uc_from_strict_cold_storage():
@@ -3785,9 +3962,7 @@ def test_descriptive_cell_validator_rejects_resource_and_cache_tampering():
             )
 
     forged_claim = deepcopy(_descriptive_ram_record())
-    forged_claim["physical_blocks"][0]["cache_telemetry"][
-        "backend_bytes_read"
-    ] = 1
+    forged_claim["physical_blocks"][0]["cache_telemetry"]["backend_bytes_read"] = 1
     forged_claim["cache_telemetry"]["backend_bytes_read"] = 1
     _reclose_descriptive_cell(forged_claim)
     with pytest.raises(ValueError, match="RAM descriptive cache telemetry"):
@@ -3798,17 +3973,23 @@ def test_descriptive_cell_rejects_reclosed_job_identity_and_small_count_tamperin
     core_coordinates = execution._publication_latency_descriptive_cell_coordinates()[
         "core-baseline_prefill-8192-c1"
     ]
-    assert execution._publication_latency_descriptive_physical_job_id(
-        core_coordinates,
-        deployment_block=3,
-    ) == "block-03-8k-c1-baseline"
+    assert (
+        execution._publication_latency_descriptive_physical_job_id(
+            core_coordinates,
+            deployment_block=3,
+        )
+        == "block-03-8k-c1-baseline"
+    )
     ram_coordinates = execution._publication_latency_descriptive_cell_coordinates()[
         "auxiliary-storage-ram"
     ]
-    assert execution._publication_latency_descriptive_physical_job_id(
-        ram_coordinates,
-        deployment_block=5,
-    ) == "block-05-storage-ram"
+    assert (
+        execution._publication_latency_descriptive_physical_job_id(
+            ram_coordinates,
+            deployment_block=5,
+        )
+        == "block-05-storage-ram"
+    )
 
     forged_identity = deepcopy(_descriptive_ram_record())
     forged_identity["physical_blocks"][0]["job_id"] = "arbitrary-job"

@@ -113,6 +113,7 @@ GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS: Final = (
 )
 GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES: Final = 9_500
 GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE: Final = "SINGLE_USER"
+GPU_QUALIFICATION_L40S_AWS_ZONE_ID: Final = "us-west-2a"
 GPU_QUALIFICATION_RUN_OUTPUT_LOG_MAX_UTF8_BYTES: Final = 5 * 1024 * 1024
 GPU_QUALIFICATION_LEGACY_UC_FAILURE_PLAN_SHA256: Final = (
     "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
@@ -4667,7 +4668,7 @@ def require_gpu_qualification_launch_authorization(
 ) -> GPUQualificationSelection:
     """Return the selection only from a collector/replay-issued capability."""
 
-    if not isinstance(value, GPUQualificationLaunchAuthorization):
+    if type(value) is not GPUQualificationLaunchAuthorization:
         raise TypeError(
             "publication launch requires GPUQualificationLaunchAuthorization"
         )
@@ -5583,7 +5584,10 @@ def _qualification_cluster(
             "spark.databricks.cluster.profile": "singleNode",
         },
         "custom_tags": tags,
-        "aws_attributes": {"availability": "ON_DEMAND", "zone_id": "auto"},
+        "aws_attributes": {
+            "availability": "ON_DEMAND",
+            "zone_id": GPU_QUALIFICATION_L40S_AWS_ZONE_ID,
+        },
     }
 
 
@@ -7505,6 +7509,7 @@ __all__ = [
     "GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE",
     "GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES",
     "GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS",
+    "GPU_QUALIFICATION_L40S_AWS_ZONE_ID",
     "GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_RECORD_TYPE",
     "GPU_QUALIFICATION_FAILED_ATTEMPT_RECONCILIATION_V2_RECORD_TYPE",
     "GPU_QUALIFICATION_LOCAL_WORK_ROOT",

@@ -1441,7 +1441,7 @@ def _staggered_batch_progress_v2(
 
     if not isinstance(ledger, DatabricksClusterHourLedger):
         raise TypeError("v2 staggered progress requires a Databricks ledger")
-    if not isinstance(authorization, DatabricksBatchReservationAuthorization):
+    if type(authorization) is not DatabricksBatchReservationAuthorization:
         raise TypeError("v2 staggered progress requires atomic batch authority")
     require_databricks_ledger_prefix(ledger, authorization.batch_prefix)
     predecessor = authorization.predecessor_prefix

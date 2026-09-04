@@ -50,6 +50,7 @@ from document_kv_cache.gpu_qualification_databricks import (
     GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT,
     GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
     GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES,
+    GPU_QUALIFICATION_L40S_AWS_ZONE_ID,
     GPU_QUALIFICATION_LOCAL_WORK_ROOT,
     GPU_QUALIFICATION_SUBMISSION_REJECTION_RECORD_TYPE,
     GPUQualificationLaunchAuthorization,
@@ -1450,12 +1451,21 @@ def test_renderer_maps_only_qualification_generation_job_to_g6e_l40s():
     assert l40s["driver_node_type_id"] == (
         GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE
     )
+    assert l40s["aws_attributes"] == {
+        "availability": "ON_DEMAND",
+        "zone_id": GPU_QUALIFICATION_L40S_AWS_ZONE_ID,
+    }
     assert GPU_QUALIFICATION_GENERATION_HARDWARE_ID not in SUPPORTED_V1_HARDWARE_TARGETS
     assert {
         payload["tasks"][0]["new_cluster"]["node_type_id"]
         for job_id, payload in by_job_id.items()
         if job_id != "aws-g6e-l40s-generation-throughput"
     } == {"g5.8xlarge", "g6.8xlarge"}
+    assert {
+        payload["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"]
+        for job_id, payload in by_job_id.items()
+        if job_id != "aws-g6e-l40s-generation-throughput"
+    } == {"auto"}
 
 
 def test_renderer_rejects_conflated_source_and_package_uri_roles():
@@ -6468,6 +6478,18 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
         expected_evidence_file_sha256=qualification_job._file_sha256(evidence_path),
     )
     assert observed_selection == selection
+
+    class SmuggledLaunchAuthorization(GPUQualificationLaunchAuthorization):
+        pass
+
+    with pytest.raises(TypeError, match="GPUQualificationLaunchAuthorization"):
+        require_gpu_qualification_launch_authorization(
+            object.__new__(SmuggledLaunchAuthorization),
+            expected_plan_sha256=plan["closed_record_sha256"],
+            expected_evidence_file_sha256=qualification_job._file_sha256(
+                evidence_path
+            ),
+        )
     assert evidence_path.is_file()
     assert len(list(terminal_root.glob("*.json"))) == 14
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)

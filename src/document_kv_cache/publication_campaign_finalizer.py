@@ -98,6 +98,7 @@ from document_kv_cache.publication_latency_execution import (
     PublicationLatencyCollectionAuthorization,
     PublicationLatencySourceClosureAuthorization,
     aggregate_publication_latency_campaign,
+    require_publication_latency_collection_authorization,
     validate_publication_latency_collection_record,
     validate_publication_latency_execution_plan_record,
     validate_publication_latency_summary_record,
@@ -289,9 +290,8 @@ def finalize_vllm_0271_publication_campaign(
     """Recompute both evidence branches and emit one digest-bound standard gate."""
 
     validate_publication_latency_execution_plan_record(latency_execution_plan_record)
-    if not isinstance(
-        latency_collection_authorization,
-        PublicationLatencyCollectionAuthorization,
+    if type(latency_collection_authorization) is not (
+        PublicationLatencyCollectionAuthorization
     ):
         raise TypeError(
             "latency_collection_authorization has the wrong authority type"
@@ -382,6 +382,7 @@ def finalize_vllm_0271_publication_campaign(
 
     ledger_record = _validated_campaign_ledger_projection(
         latency_collection_authorization=latency_collection_authorization,
+        latency_execution_plan_record=latency_execution_plan_record,
         full_score_execution_plan_record=full_score_execution_plan_record,
         full_score_aggregate_record=recomputed_full_score_aggregate,
         final_consumer_authorization=final_consumer_authorization,
@@ -819,18 +820,33 @@ def _build_report(
 def _validated_campaign_ledger_projection(
     *,
     latency_collection_authorization: PublicationLatencyCollectionAuthorization,
+    latency_execution_plan_record: Mapping[str, Any],
     full_score_execution_plan_record: Mapping[str, Any],
     full_score_aggregate_record: Mapping[str, Any],
     final_consumer_authorization: FullScorePhaseAuthorization,
     ledger_path: str | Path,
 ) -> dict[str, Any]:
-    if not isinstance(final_consumer_authorization, FullScorePhaseAuthorization):
+    if type(final_consumer_authorization) is not FullScorePhaseAuthorization:
         raise TypeError("final_consumer_authorization has the wrong authority type")
     execution_sha256 = _required_sha256(
         full_score_execution_plan_record,
         "closed_record_sha256",
     )
     path_sha256 = databricks_ledger_path_sha256(ledger_path)
+    latency_prefix = require_publication_latency_collection_authorization(
+        latency_collection_authorization,
+        execution_plan_record=latency_execution_plan_record,
+        ledger_path=ledger_path,
+        require_complete_current_prefix=False,
+    )
+    if (
+        latency_collection_authorization.workspace_host_sha256,
+        latency_collection_authorization.user_name_sha256,
+    ) != (
+        final_consumer_authorization.workspace_host_sha256,
+        final_consumer_authorization.user_name_sha256,
+    ):
+        raise ValueError("campaign final workspace authority lineage drift")
     if (
         path_sha256 != latency_collection_authorization.ledger_path_sha256
         or path_sha256 != final_consumer_authorization.ledger_path_sha256
@@ -841,7 +857,6 @@ def _validated_campaign_ledger_projection(
     ):
         raise ValueError("campaign final ledger authority binding drift")
     live = read_databricks_cluster_hour_ledger_json(ledger_path)
-    latency_prefix = latency_collection_authorization.ledger_prefix
     observed_latency_prefix = databricks_ledger_prefix_at_counts(
         live,
         reservation_count=latency_prefix.reservation_count,
@@ -864,6 +879,10 @@ def _validated_campaign_ledger_projection(
         or live.ledger_id != latency_prefix.ledger_id
         or lineage.get("ledger_id") != live.ledger_id
         or lineage.get("ledger_path_sha256") != path_sha256
+        or lineage.get("authorization_sha256")
+        != final_consumer_authorization.causal_closure_sha256
+        or lineage.get("terminal_record_sha256")
+        != final_consumer_authorization.terminal_record_sha256
         or lineage_prefix != final_prefix
         or final_consumer_authorization.ledger_prefix != final_prefix
     ):

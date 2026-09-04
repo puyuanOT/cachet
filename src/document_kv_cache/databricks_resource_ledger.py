@@ -1391,7 +1391,7 @@ def require_databricks_batch_reservation_authorization(
 ) -> DatabricksLedgerPrefix:
     """Validate an exact atomic batch capability and return its post-batch prefix."""
 
-    if not isinstance(authorization, DatabricksBatchReservationAuthorization):
+    if type(authorization) is not DatabricksBatchReservationAuthorization:
         raise TypeError(
             "atomic submission requires DatabricksBatchReservationAuthorization"
         )
@@ -1421,7 +1421,7 @@ def require_databricks_batch_terminal_closure(
 
     if not isinstance(ledger, DatabricksClusterHourLedger):
         raise TypeError("ledger must be a DatabricksClusterHourLedger")
-    if not isinstance(authorization, DatabricksBatchReservationAuthorization):
+    if type(authorization) is not DatabricksBatchReservationAuthorization:
         raise TypeError("authorization has the wrong type")
     require_databricks_ledger_prefix(ledger, authorization.batch_prefix)
     attempts = authorization.attempt_ids
@@ -1462,7 +1462,7 @@ def require_databricks_publication_batch_admission(
 
     if not isinstance(ledger, DatabricksClusterHourLedger):
         raise TypeError("ledger must be a DatabricksClusterHourLedger")
-    if not isinstance(authorization, DatabricksBatchReservationAuthorization):
+    if type(authorization) is not DatabricksBatchReservationAuthorization:
         raise TypeError("authorization has the wrong type")
     require_databricks_ledger_prefix(ledger, authorization.batch_prefix)
     predecessor = authorization.predecessor_prefix

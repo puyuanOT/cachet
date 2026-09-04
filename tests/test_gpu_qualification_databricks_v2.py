@@ -61,6 +61,19 @@ from document_kv_cache.serving_env import (
 )
 
 
+def test_v2_staggered_progress_rejects_batch_authority_subclasses():
+    class SmuggledBatchAuthorization(
+        databricks_v2.DatabricksBatchReservationAuthorization
+    ):
+        pass
+
+    with pytest.raises(TypeError, match="atomic batch authority"):
+        databricks_v2._staggered_batch_progress_v2(
+            databricks_v2.DatabricksClusterHourLedger(ledger_id="test-ledger"),
+            object.__new__(SmuggledBatchAuthorization),
+        )
+
+
 def _pins() -> GPUQualificationArtifactPinsV2:
     return GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,

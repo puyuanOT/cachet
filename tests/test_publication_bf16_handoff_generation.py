@@ -47,6 +47,7 @@ from document_kv_cache.publication_bf16_handoff_generation import (
     PUBLICATION_BF16_HANDOFF_WORKER_COUNT,
     DatabricksPublicationBF16HandoffJobConfig,
     PublicationBF16HandoffGenerationResult,
+    PublicationBF16HandoffServingAuthorization,
     authorize_publication_bf16_handoff_serving,
     build_databricks_publication_bf16_handoff_submit_payloads,
     build_publication_bf16_handoff_execution_config,
@@ -75,6 +76,59 @@ from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_bf16_workspace(monkeypatch):
+    monkeypatch.setattr(
+        generation,
+        "require_databricks_current_user_name",
+        lambda workspace, *, expected_user_name, opener=None: {
+            "workspace_host_sha256": sha256(
+                workspace.normalized_host.encode("utf-8")
+            ).hexdigest(),
+            "user_name_sha256": sha256(expected_user_name.encode("utf-8")).hexdigest(),
+        },
+    )
+
+
+def test_bf16_serving_resolver_rejects_authority_subclasses():
+    class SmuggledAuthorization(PublicationBF16HandoffServingAuthorization):
+        pass
+
+    with pytest.raises(TypeError, match="PublicationBF16HandoffServingAuthorization"):
+        resolve_publication_bf16_handoff_bundle(object.__new__(SmuggledAuthorization))
+
+
+def test_bf16_predecessor_rejects_authority_subclasses_before_ledger_io():
+    class SmuggledQualification(GPUQualificationLaunchAuthorization):
+        pass
+
+    with pytest.raises(TypeError, match="GPUQualificationLaunchAuthorization"):
+        generation._require_matching_predecessor_ledger(
+            "never-read-ledger.json",
+            object.__new__(SmuggledQualification),
+            object(),
+            expected_input_bundle_sha256="a" * 64,
+            expected_qualification_closed_record_sha256="b" * 64,
+        )
+
+    class SmuggledQ8Closure(
+        closure_coordinator.PublicationHandoffRemoteClosureAuthorization
+    ):
+        pass
+
+    with pytest.raises(
+        TypeError,
+        match="PublicationHandoffRemoteClosureAuthorization",
+    ):
+        generation._require_matching_predecessor_ledger(
+            "never-read-ledger.json",
+            object.__new__(GPUQualificationLaunchAuthorization),
+            object.__new__(SmuggledQ8Closure),
+            expected_input_bundle_sha256="a" * 64,
+            expected_qualification_closed_record_sha256="b" * 64,
+        )
 
 
 class CharacterTokenizer:
@@ -269,9 +323,7 @@ def _q8_authorization(tmp_path, ledger_path, authorization, monkeypatch, prepare
     request = {
         "closed_record_sha256": "a" * 64,
         "ledger_lineage": lineage,
-        "output_root_uri": (
-            "dbfs:/Volumes/catalog/schema/volume/q8-authorized-result"
-        ),
+        "output_root_uri": ("dbfs:/Volumes/catalog/schema/volume/q8-authorized-result"),
         "result_uri": (
             "dbfs:/Volumes/catalog/schema/volume/q8-authorized-result/result.json"
         ),
@@ -314,6 +366,10 @@ def _q8_authorization(tmp_path, ledger_path, authorization, monkeypatch, prepare
         ).hexdigest(),
         coordinator_run_id="12345",
         control_plane_status_sha256="e" * 64,
+        workspace_host_sha256=sha256(
+            b"https://example.cloud.databricks.com"
+        ).hexdigest(),
+        user_name_sha256=sha256(b"publication@example.com").hexdigest(),
         _issuer=closure_coordinator._AUTHORIZATION_ISSUER,
     )
     return capability
@@ -376,6 +432,7 @@ def _launch_material(prepared, monkeypatch, *, ledger_path):
         cachet_source_tree_sha256="4" * 64,
         single_user_name="publication@example.com",
     )
+    assert job.zone_id == "us-west-2a"
     return (
         plan,
         config,
@@ -494,18 +551,14 @@ def test_bf16_launch_rejects_v1_payload_and_exact8_pin_tamper(
 
     for mutation in ("missing", "extra", "flashinfer"):
         tampered = copy.deepcopy(payloads[0])
-        pins = tampered["generator_hardware_qualification"][
-            "expected_artifact_pins"
-        ]
+        pins = tampered["generator_hardware_qualification"]["expected_artifact_pins"]
         if mutation == "missing":
             pins.pop("runtime_closure_manifest_sha256")
         elif mutation == "extra":
             pins["downstream_runner_sha256"] = "1" * 64
         else:
             pins["patched_flashinfer_wheel_sha256"] = "1" * 64
-        tampered["closed_record_sha256"] = generation._closed_record_sha256(
-            tampered
-        )
+        tampered["closed_record_sha256"] = generation._closed_record_sha256(tampered)
         with pytest.raises(ValueError):
             generation.validate_publication_bf16_handoff_worker_payload(
                 tampered,
@@ -578,7 +631,9 @@ def test_submit_is_capability_gated_exact_16x_l40s_five_hours(
         qualification_launch_authorization=authorization,
         q8_handoff_remote_closure_authorization=q8_authorization,
     )
-    with pytest.raises(ValueError, match="remote Q8 closure ledger predecessor binding drift"):
+    with pytest.raises(
+        ValueError, match="remote Q8 closure ledger predecessor binding drift"
+    ):
         reserve_publication_bf16_handoff_worker_attempt_json(
             wrong_ledger_path,
             submissions[0],
@@ -597,7 +652,9 @@ def test_submit_is_capability_gated_exact_16x_l40s_five_hours(
         opener_called = True
         raise AssertionError("cross-ledger submit must fail before cloud submission")
 
-    with pytest.raises(ValueError, match="remote Q8 closure ledger predecessor binding drift"):
+    with pytest.raises(
+        ValueError, match="remote Q8 closure ledger predecessor binding drift"
+    ):
         reserve_and_submit_publication_bf16_handoff_worker(
             DatabricksWorkspaceConfig(
                 "https://example.cloud.databricks.com",
@@ -621,6 +678,10 @@ def test_submit_is_capability_gated_exact_16x_l40s_five_hours(
         item["tasks"][0]["new_cluster"]["node_type_id"] == "g6e.4xlarge"
         for item in submissions
     )
+    assert {
+        item["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"]
+        for item in submissions
+    } == {"us-west-2a"}
     with pytest.raises(TypeError, match="GPUQualificationLaunchAuthorization"):
         build_databricks_publication_bf16_handoff_submit_payloads(
             job,
@@ -629,7 +690,9 @@ def test_submit_is_capability_gated_exact_16x_l40s_five_hours(
             qualification_launch_authorization=object(),
             q8_handoff_remote_closure_authorization=q8_authorization,
         )
-    with pytest.raises(ValueError, match="remote Q8 closure ledger predecessor binding drift"):
+    with pytest.raises(
+        ValueError, match="remote Q8 closure ledger predecessor binding drift"
+    ):
         build_databricks_publication_bf16_handoff_submit_payloads(
             job,
             payloads,
@@ -739,7 +802,9 @@ def test_bf16_render_rejects_resealed_q8_binding_drift(
                 "evidence_closed_record_sha256"
             ] = "1" * 64
         payload["closed_record_sha256"] = generation._closed_record_sha256(payload)
-    with pytest.raises(ValueError, match="remote handoff closure authorization binding"):
+    with pytest.raises(
+        ValueError, match="remote handoff closure authorization binding"
+    ):
         build_databricks_publication_bf16_handoff_submit_payloads(
             job,
             drifted,
@@ -980,6 +1045,18 @@ def test_bf16_wave_rejects_post_render_runner_substitution_before_side_effects(
             )
         phase_record = json.loads((phase_root / "phase-lease.json").read_text())
         assert phase_record["record_type"].endswith(".v2")
+        workspace_record = json.loads(
+            (phase_root / "workspace-authority.json").read_text()
+        )
+        assert workspace_record["record_type"].endswith(".v1")
+        assert set(workspace_record) == {
+            "closed_record_sha256",
+            "phase_lease_record_sha256",
+            "record_type",
+            "schema_version",
+            "user_name_sha256",
+            "workspace_host_sha256",
+        }
         assert phase_record["job_config"] == job.to_record()
 
     mutated = copy.deepcopy(submissions)
@@ -1173,9 +1250,7 @@ def test_post_close_replay_rejects_bf16_raw_evidence_tampering(
     attestation_root = root / generation.PUBLICATION_BF16_HANDOFF_ATTESTATION_DIRECTORY
     attestation_root.mkdir()
     manifest_path = (
-        root
-        / "manifests"
-        / generation.PUBLICATION_BF16_HANDOFF_MANIFEST_FILENAME
+        root / "manifests" / generation.PUBLICATION_BF16_HANDOFF_MANIFEST_FILENAME
     )
     manifest_path.write_bytes(b"synthetic manifest\n")
     config = build_publication_bf16_handoff_execution_config(
@@ -1466,7 +1541,11 @@ def test_post_close_replay_rejects_bf16_raw_evidence_tampering(
             "generated_task_count": 128,
             "input_token_slots": 1280,
             "task_ids_sha256": generation._canonical_sha256(
-                sorted(item["task_id"] for worker in plan_workers for item in worker["items"])
+                sorted(
+                    item["task_id"]
+                    for worker in plan_workers
+                    for item in worker["items"]
+                )
             ),
         },
         "execution_contract": contract,
@@ -1524,9 +1603,7 @@ def test_post_close_replay_rejects_bf16_raw_evidence_tampering(
         lambda *_args, **_kwargs: reconciliation,
     )
     monkeypatch.setattr(generation, "_validate_qualification_record", lambda _r: None)
-    monkeypatch.setattr(
-        generation, "_validate_observed_l40s_hardware", lambda _r: None
-    )
+    monkeypatch.setattr(generation, "_validate_observed_l40s_hardware", lambda _r: None)
     monkeypatch.setattr(
         generation, "_verify_bound_hardware_qualification_file", lambda _r: None
     )
@@ -1540,7 +1617,9 @@ def test_post_close_replay_rejects_bf16_raw_evidence_tampering(
     def read_attestation(binding, *, durable_output_root):
         del durable_output_root
         worker_result = worker_results[binding.worker_index]
-        result_path = root / "worker-results" / f"worker-{binding.worker_index:02d}.json"
+        result_path = (
+            root / "worker-results" / f"worker-{binding.worker_index:02d}.json"
+        )
         return {
             "worker_result": {
                 "closed_record_sha256": worker_result["closed_record_sha256"],
@@ -1657,6 +1736,173 @@ def test_serving_authorization_requires_q8_predecessor_authority(
         )
 
 
+def test_valid_bf16_serving_authority_resolves_with_genuine_phase_authorities(
+    prepared, monkeypatch, tmp_path
+):
+    ledger_path = tmp_path / "serving-ledger.json"
+    (
+        _plan,
+        _config,
+        _qualification_record,
+        qualification_authorization,
+        q8_authorization,
+        payloads,
+        job,
+    ) = _launch_material(prepared, monkeypatch, ledger_path=ledger_path)
+    submissions = build_databricks_publication_bf16_handoff_submit_payloads(
+        job,
+        payloads,
+        ledger_path=ledger_path,
+        qualification_launch_authorization=qualification_authorization,
+        q8_handoff_remote_closure_authorization=q8_authorization,
+    )
+    attempts = {
+        index: publication_bf16_handoff_worker_attempt_id(
+            payloads[index], worker_index=index
+        )
+        for index in range(16)
+    }
+    next_run = 50_000
+
+    def submit(_request, timeout):
+        nonlocal next_run
+        assert timeout > 0
+        response = JsonHTTPResponse({"run_id": next_run})
+        next_run += 1
+        return response
+
+    _responses, submission_authorization = (
+        reserve_and_submit_publication_bf16_handoff_worker_wave(
+            DatabricksWorkspaceConfig("https://example.cloud.databricks.com", "token"),
+            submissions,
+            ledger_path=ledger_path,
+            worker_payloads=payloads,
+            attempt_ids_by_worker=attempts,
+            phase_lease_root=tmp_path / "serving-phase",
+            job_config=job,
+            qualification_launch_authorization=qualification_authorization,
+            q8_handoff_remote_closure_authorization=q8_authorization,
+            opener=submit,
+        )
+    )
+    live = read_databricks_cluster_hour_ledger_json(ledger_path)
+    reservations = {item.attempt_id: item for item in live.reservations}
+    reconciliation_attempts = [
+        {
+            "actual_gpu_duration_seconds": 1.0,
+            "attempt_id": attempts[index],
+            "attestation_closed_record_sha256": sha256(
+                f"attestation-{index}".encode()
+            ).hexdigest(),
+            "cluster_id": f"cluster-{index}",
+            "parent_run_id": str(50_000 + index),
+            "submit_payload_sha256": reservations[
+                attempts[index]
+            ].submit_payload_sha256,
+            "task_run_id": str(60_000 + index),
+            "worker_index": index,
+        }
+        for index in range(16)
+    ]
+    reconciliation = {
+        "attempt_count": 16,
+        "attempts": reconciliation_attempts,
+        "attempts_sha256": generation._canonical_sha256(reconciliation_attempts),
+        "cluster_ids_sha256": "3" * 64,
+        "ledger_id": live.ledger_id,
+        "parent_run_ids_sha256": "4" * 64,
+        "task_run_ids_sha256": "5" * 64,
+        "verification_source": "direct_databricks_runs_get",
+    }
+    root = tmp_path / "serving-result"
+    root.mkdir()
+    execution_path = root / generation.PUBLICATION_BF16_HANDOFF_EXECUTION_FILENAME
+    manifest_path = root / "manifest.json"
+    execution_path.write_text("{}\n", encoding="utf-8")
+    manifest_path.write_text("{}\n", encoding="utf-8")
+    result = PublicationBF16HandoffGenerationResult(
+        root=root,
+        source_root=root / "bundle",
+        manifest_path=manifest_path,
+        execution_record_path=execution_path,
+        manifest={"closed_record_sha256": "2" * 64},
+        record={
+            "closed_record_sha256": "1" * 64,
+            "input_bundle_sha256": payloads[0]["input_bundle_sha256"],
+            "generator_hardware": {
+                "qualification_closed_record_sha256": (
+                    qualification_authorization.evidence_closed_record_sha256
+                )
+            },
+            "ledger_reconciliation": reconciliation,
+        },
+    )
+    workers = {}
+    for index in range(16):
+        attestation_path = root / f"attestation-{index:02d}.json"
+        attestation_path.write_text("{}\n", encoding="utf-8")
+        workers[index] = generation.PublicationBF16HandoffWorkerAuthorization(
+            binding=generation.PublicationBF16HandoffAttestationBinding(
+                worker_index=index,
+                path=attestation_path,
+                file_sha256=sha256(attestation_path.read_bytes()).hexdigest(),
+                closed_record_sha256=reconciliation_attempts[index][
+                    "attestation_closed_record_sha256"
+                ],
+            ),
+            attempt_id=attempts[index],
+            ledger_id=live.ledger_id,
+            ledger_path_sha256=(
+                submission_authorization.batch_authorization.ledger_path_sha256
+            ),
+            producer_batch_prefix=(
+                submission_authorization.batch_authorization.batch_prefix
+            ),
+            control_plane_status_sha256=sha256(f"control-{index}".encode()).hexdigest(),
+            workspace_host_sha256=submission_authorization.workspace_host_sha256,
+            user_name_sha256=submission_authorization.user_name_sha256,
+            _issuer=generation._WORKER_AUTHORIZATION_ISSUER,
+        )
+    monkeypatch.setattr(
+        generation,
+        "read_publication_bf16_handoff_generation_result",
+        lambda _root: result,
+    )
+    monkeypatch.setattr(
+        generation,
+        "_require_submission_q8_remote_closure",
+        lambda *_args, **_kwargs: submission_authorization.batch_authorization,
+    )
+    monkeypatch.setattr(
+        generation,
+        "_require_matching_predecessor_ledger",
+        lambda *_args, **_kwargs: live,
+    )
+    monkeypatch.setattr(
+        generation, "require_databricks_ledger_prefix", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        generation,
+        "require_databricks_batch_terminal_closure",
+        lambda *_args, **_kwargs: (
+            submission_authorization.batch_authorization.batch_prefix
+        ),
+    )
+    monkeypatch.setattr(
+        generation, "_ledger_reconciliation", lambda *_args, **_kwargs: reconciliation
+    )
+    serving = authorize_publication_bf16_handoff_serving(
+        result,
+        ledger_path=ledger_path,
+        qualification_launch_authorization=qualification_authorization,
+        q8_handoff_remote_closure_authorization=q8_authorization,
+        submission_authorization=submission_authorization,
+        attempt_ids_by_worker=attempts,
+        worker_authorizations=workers,
+    )
+    assert resolve_publication_bf16_handoff_bundle(serving) == result
+
+
 @pytest.mark.parametrize("duplicate_cluster", [False, True])
 def test_direct_runs_get_attestations_close_all_16_unique_jobs(
     prepared,
@@ -1739,6 +1985,17 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
         == batch_authorization.batch_authorization.batch_prefix
     )
     assert (tmp_path / "bf16-phase-lease" / "batch-reserved.json").is_file()
+    mounted_output_root = batch_authorization.durable_output_root
+    original_local_path = generation.local_path
+    monkeypatch.setattr(
+        generation,
+        "local_path",
+        lambda value: (
+            str(durable_root)
+            if str(value).rstrip("/") == mounted_output_root
+            else original_local_path(value)
+        ),
+    )
     for index, submit_payload in enumerate(submissions):
         worker_result = {
             "closed_record_sha256": "",
@@ -1774,12 +2031,20 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
         host="https://example.cloud.databricks.com",
         token="test-token",
     )
+    monkeypatch.setattr(
+        generation,
+        "require_databricks_current_user_name",
+        lambda current_workspace, *, expected_user_name, opener=None: {
+            "workspace_host_sha256": sha256(
+                current_workspace.normalized_host.encode("utf-8")
+            ).hexdigest(),
+            "user_name_sha256": sha256(expected_user_name.encode("utf-8")).hexdigest(),
+        },
+    )
     original_terminal = terminals["10000"]
     for mutation in ("python_file", "ordered_parameters"):
         substituted_terminal = copy.deepcopy(original_terminal)
-        observed_python_task = substituted_terminal["tasks"][0][
-            "spark_python_task"
-        ]
+        observed_python_task = substituted_terminal["tasks"][0]["spark_python_task"]
         if mutation == "python_file":
             observed_python_task["python_file"] = "dbfs:/attacker.py"
         else:
@@ -1792,7 +2057,7 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
                 submissions[0],
                 submit_responses[0],
                 ledger_path=ledger_path,
-                durable_output_root=durable_root,
+                durable_output_root=mounted_output_root,
                 worker_index=0,
                 attempt_id=attempts[0],
                 q8_handoff_remote_closure_authorization=q8_authorization,
@@ -1806,7 +2071,7 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
             submit_payload,
             submit_responses[index],
             ledger_path=ledger_path,
-            durable_output_root=durable_root,
+            durable_output_root=mounted_output_root,
             worker_index=index,
             attempt_id=attempts[index],
             q8_handoff_remote_closure_authorization=q8_authorization,
@@ -1817,7 +2082,7 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
         submissions[0],
         submit_responses[0],
         ledger_path=ledger_path,
-        durable_output_root=durable_root,
+        durable_output_root=mounted_output_root,
         worker_index=0,
         attempt_id=attempts[0],
         q8_handoff_remote_closure_authorization=q8_authorization,
@@ -1828,14 +2093,275 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
             publication_bf16_handoff_terminal_actual_gpu_seconds_from_ledger(
                 ledger_path,
                 attempt_ids_by_worker=attempts,
-                durable_output_root=durable_root,
+                durable_output_root=mounted_output_root,
                 worker_authorizations=bindings,
             )
     else:
         actuals = publication_bf16_handoff_terminal_actual_gpu_seconds_from_ledger(
             ledger_path,
             attempt_ids_by_worker=attempts,
-            durable_output_root=durable_root,
+            durable_output_root=mounted_output_root,
             worker_authorizations=bindings,
         )
         assert actuals == {index: 1.0 for index in range(16)}
+
+        monkeypatch.setattr(generation, "local_path", original_local_path)
+        mirror = tmp_path / "bf16-controller-mirror"
+        uploaded = {}
+        events = []
+        tamper = {"result": False, "attestation": False}
+
+        def mirror_download(_workspace, uri):
+            if "/worker-results/" in uri:
+                events.append("worker-result/get")
+                if tamper["result"]:
+                    return b"tampered remote result\n"
+                return (durable_root / "worker-results" / "worker-00.json").read_bytes()
+            events.append("attestation/get")
+            if tamper["attestation"]:
+                return b"tampered remote attestation\n"
+            return uploaded[uri]
+
+        def mirror_upload(_workspace, uri, path, **_kwargs):
+            events.append("attestation/put")
+            uploaded[uri] = Path(path).read_bytes()
+            return {}
+
+        monkeypatch.setattr(
+            generation, "download_databricks_volume_file_bytes", mirror_download
+        )
+        monkeypatch.setattr(
+            generation, "upload_databricks_volume_file_path_exclusive", mirror_upload
+        )
+        mirrored = collect_publication_bf16_handoff_worker_attestation(
+            workspace,
+            submissions[0],
+            submit_responses[0],
+            ledger_path=ledger_path,
+            durable_output_root=batch_authorization.durable_output_root,
+            worker_index=0,
+            attempt_id=attempts[0],
+            q8_handoff_remote_closure_authorization=q8_authorization,
+            submission_authorization=batch_authorization,
+            local_evidence_mirror_root=mirror,
+        )
+        assert str(mirrored.binding.path).startswith("/dbfs/Volumes/")
+        with pytest.raises(
+            ValueError, match="workspace/principal differs from submission"
+        ):
+            collect_publication_bf16_handoff_worker_attestation(
+                DatabricksWorkspaceConfig("https://other-workspace.example", "token"),
+                submissions[0],
+                submit_responses[0],
+                ledger_path=ledger_path,
+                durable_output_root=batch_authorization.durable_output_root,
+                worker_index=0,
+                attempt_id=attempts[0],
+                q8_handoff_remote_closure_authorization=q8_authorization,
+                submission_authorization=batch_authorization,
+                local_evidence_mirror_root=mirror,
+            )
+        monkeypatch.setattr(
+            generation,
+            "require_databricks_current_user_name",
+            lambda _workspace, *, expected_user_name, opener=None: {
+                "workspace_host_sha256": mirrored.workspace_host_sha256,
+                "user_name_sha256": sha256(b"other-principal@example.com").hexdigest(),
+            },
+        )
+        with pytest.raises(
+            ValueError, match="workspace/principal differs from submission"
+        ):
+            collect_publication_bf16_handoff_worker_attestation(
+                workspace,
+                submissions[0],
+                submit_responses[0],
+                ledger_path=ledger_path,
+                durable_output_root=batch_authorization.durable_output_root,
+                worker_index=0,
+                attempt_id=attempts[0],
+                q8_handoff_remote_closure_authorization=q8_authorization,
+                submission_authorization=batch_authorization,
+                local_evidence_mirror_root=mirror,
+            )
+        monkeypatch.setattr(
+            generation,
+            "require_databricks_current_user_name",
+            lambda current_workspace, *, expected_user_name, opener=None: {
+                "workspace_host_sha256": sha256(
+                    current_workspace.normalized_host.encode("utf-8")
+                ).hexdigest(),
+                "user_name_sha256": sha256(
+                    expected_user_name.encode("utf-8")
+                ).hexdigest(),
+            },
+        )
+        replayed_mirrored = collect_publication_bf16_handoff_worker_attestation(
+            workspace,
+            submissions[0],
+            submit_responses[0],
+            ledger_path=ledger_path,
+            durable_output_root=batch_authorization.durable_output_root,
+            worker_index=0,
+            attempt_id=attempts[0],
+            q8_handoff_remote_closure_authorization=q8_authorization,
+            submission_authorization=batch_authorization,
+            local_evidence_mirror_root=mirror,
+        )
+        assert replayed_mirrored.binding == mirrored.binding
+        tamper["result"] = True
+        with pytest.raises(ValueError, match="not valid JSON"):
+            collect_publication_bf16_handoff_worker_attestation(
+                workspace,
+                submissions[0],
+                submit_responses[0],
+                ledger_path=ledger_path,
+                durable_output_root=batch_authorization.durable_output_root,
+                worker_index=0,
+                attempt_id=attempts[0],
+                q8_handoff_remote_closure_authorization=q8_authorization,
+                submission_authorization=batch_authorization,
+                local_evidence_mirror_root=mirror,
+            )
+        tamper["result"] = False
+        tamper["attestation"] = True
+        with pytest.raises(RuntimeError, match="readback differs"):
+            collect_publication_bf16_handoff_worker_attestation(
+                workspace,
+                submissions[0],
+                submit_responses[0],
+                ledger_path=ledger_path,
+                durable_output_root=batch_authorization.durable_output_root,
+                worker_index=0,
+                attempt_id=attempts[0],
+                q8_handoff_remote_closure_authorization=q8_authorization,
+                submission_authorization=batch_authorization,
+                local_evidence_mirror_root=mirror,
+            )
+
+
+def test_bf16_local_evidence_mirror_secure_replay_and_tamper(tmp_path):
+    mirror = tmp_path / "bf16-mirror"
+    root = generation._require_bf16_local_evidence_mirror_root(mirror, create=True)
+    assert root.stat().st_mode & 0o777 == 0o700
+    path = generation._write_bf16_exact_mirror_bytes(
+        root, "worker-results/worker-00.json", b"exact\n"
+    )
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert generation._read_bf16_stable_regular_file(path) == b"exact\n"
+    generation._write_bf16_exact_mirror_bytes(
+        root, "worker-results/worker-00.json", b"exact\n"
+    )
+    with pytest.raises(FileExistsError, match="different bytes"):
+        generation._write_bf16_exact_mirror_bytes(
+            root, "worker-results/worker-00.json", b"tampered\n"
+        )
+
+
+def test_bf16_local_evidence_mirror_rejects_non_normalized(tmp_path):
+    with pytest.raises(ValueError, match="absolute and normalized"):
+        generation._require_bf16_local_evidence_mirror_root("relative", create=True)
+    with pytest.raises(ValueError, match="absolute and normalized"):
+        generation._require_bf16_local_evidence_mirror_root(
+            f"{tmp_path}/../escape", create=True
+        )
+
+
+def test_bf16_wave_rejects_boolean_attempt_key(prepared, monkeypatch, tmp_path):
+    ledger_path = tmp_path / "ledger.json"
+    (
+        _plan,
+        _config,
+        _qualification,
+        authorization,
+        q8_authorization,
+        payloads,
+        job,
+    ) = _launch_material(prepared, monkeypatch, ledger_path=ledger_path)
+    submissions = build_databricks_publication_bf16_handoff_submit_payloads(
+        job,
+        payloads,
+        ledger_path=ledger_path,
+        qualification_launch_authorization=authorization,
+        q8_handoff_remote_closure_authorization=q8_authorization,
+    )
+    attempts = {
+        index: publication_bf16_handoff_worker_attempt_id(
+            payloads[index], worker_index=index
+        )
+        for index in range(1, 16)
+    }
+    attempts[False] = publication_bf16_handoff_worker_attempt_id(
+        payloads[0], worker_index=0
+    )
+    with pytest.raises(ValueError, match="workers 0..15 exactly"):
+        reserve_and_submit_publication_bf16_handoff_worker_wave(
+            DatabricksWorkspaceConfig("https://example.cloud.databricks.com", "token"),
+            submissions,
+            ledger_path=ledger_path,
+            worker_payloads=payloads,
+            attempt_ids_by_worker=attempts,
+            phase_lease_root=tmp_path / "must-not-create",
+            job_config=job,
+            qualification_launch_authorization=authorization,
+            q8_handoff_remote_closure_authorization=q8_authorization,
+        )
+
+
+@pytest.mark.parametrize("drift", ["host", "principal"])
+def test_bf16_wave_rejects_workspace_drift_from_q8_closure_before_state(
+    prepared, monkeypatch, tmp_path, drift
+):
+    ledger_path = tmp_path / f"{drift}-ledger.json"
+    (
+        _plan,
+        _config,
+        _qualification,
+        authorization,
+        q8_authorization,
+        payloads,
+        job,
+    ) = _launch_material(prepared, monkeypatch, ledger_path=ledger_path)
+    submissions = build_databricks_publication_bf16_handoff_submit_payloads(
+        job,
+        payloads,
+        ledger_path=ledger_path,
+        qualification_launch_authorization=authorization,
+        q8_handoff_remote_closure_authorization=q8_authorization,
+    )
+    attempts = {
+        index: publication_bf16_handoff_worker_attempt_id(
+            payloads[index], worker_index=index
+        )
+        for index in range(16)
+    }
+    monkeypatch.setattr(
+        generation,
+        "require_databricks_current_user_name",
+        lambda _workspace, *, expected_user_name, opener=None: {
+            "workspace_host_sha256": (
+                sha256(b"https://other.example").hexdigest()
+                if drift == "host"
+                else q8_authorization.workspace_host_sha256
+            ),
+            "user_name_sha256": (
+                sha256(b"other-principal@example.com").hexdigest()
+                if drift == "principal"
+                else q8_authorization.user_name_sha256
+            ),
+        },
+    )
+    phase_root = tmp_path / "must-not-create"
+    with pytest.raises(ValueError, match="differs from Q8 closure"):
+        reserve_and_submit_publication_bf16_handoff_worker_wave(
+            DatabricksWorkspaceConfig("https://example.cloud.databricks.com", "token"),
+            submissions,
+            ledger_path=ledger_path,
+            worker_payloads=payloads,
+            attempt_ids_by_worker=attempts,
+            phase_lease_root=phase_root,
+            job_config=job,
+            qualification_launch_authorization=authorization,
+            q8_handoff_remote_closure_authorization=q8_authorization,
+        )
+    assert not phase_root.exists()
