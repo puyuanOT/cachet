@@ -1839,6 +1839,18 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     )
     assert "exact 430/292/430 prefix" in compact_ledger_doc
     assert "116.12134277777776 terminal GPU-hours" in compact_ledger_doc
+    assert "5bc44ed1fdde3b6ae13e0e0f4d9429714475dc47fb9d163f70b2236635591822" in (
+        compact_ledger_doc
+    )
+    assert "Thirteen attempt-zero jobs succeeded" in compact_ledger_doc
+    assert "L40S run `965422570602790`" in compact_ledger_doc
+    assert "could not provision `g6e.4xlarge` capacity" in compact_ledger_doc
+    assert "exact 446/308/446 prefix" in compact_ledger_doc
+    assert "120.3651655555555 terminal GPU-hours" in compact_ledger_doc
+    assert "this batch `FAILED`" in compact_ledger_doc
+    assert "uses automatic zone placement for L40S qualification" in (
+        compact_ledger_doc
+    )
     assert (
         "L40S is the sole publication handoff generator. Fresh native-v2 "
         "eligibility requires same-hardware fresh-load byte reproducibility"

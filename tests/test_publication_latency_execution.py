@@ -200,14 +200,14 @@ def test_reviewed_v2_constants_and_successor_verifier_use_ordered_streams(
         reviewed_v2_prefix.reservation_count,
         reviewed_v2_prefix.submission_receipt_count,
         reviewed_v2_prefix.terminal_actual_count,
-    ) == (430, 292, 430)
+    ) == (446, 308, 446)
     assert reviewed_v2_prefix.prefix_sha256 == (
-        "116251d3ca5fce37ce5749565e1059fdf65b30ce17fd12ebc50b877835f9772b"
+        "3f2d86386b5431782cc07915ba61d6f103704a357548835001b6849b6ee4d963"
     )
     assert PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS == 71.39012833333337
     assert (
         qualification_v2.GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
-        == 116.12134277777776
+        == 120.3651655555555
     )
 
     ledger_path = tmp_path / "ordered-ledger.json"

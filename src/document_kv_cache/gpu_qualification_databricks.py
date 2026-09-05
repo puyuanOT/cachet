@@ -113,7 +113,7 @@ GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS: Final = (
 )
 GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES: Final = 9_500
 GPU_QUALIFICATION_DATABRICKS_DATA_SECURITY_MODE: Final = "SINGLE_USER"
-GPU_QUALIFICATION_L40S_AWS_ZONE_ID: Final = "us-west-2a"
+GPU_QUALIFICATION_L40S_AWS_ZONE_ID: Final = "auto"
 GPU_QUALIFICATION_RUN_OUTPUT_LOG_MAX_UTF8_BYTES: Final = 5 * 1024 * 1024
 GPU_QUALIFICATION_LEGACY_UC_FAILURE_PLAN_SHA256: Final = (
     "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
@@ -5601,8 +5601,8 @@ def _qualification_cluster(
     """Build a closed single-node cluster without widening V1 serving targets."""
 
     principal = _validated_single_user_name(single_user_name)
-    if l40s_zone_id not in {GPU_QUALIFICATION_L40S_AWS_ZONE_ID, "auto"}:
-        raise ValueError("L40S zone must be the live pin or historical auto value")
+    if l40s_zone_id != GPU_QUALIFICATION_L40S_AWS_ZONE_ID:
+        raise ValueError("L40S qualification requires automatic zone placement")
     if hardware_id != GPU_QUALIFICATION_GENERATION_HARDWARE_ID:
         return build_single_node_gpu_cluster(
             DatabricksSingleNodeGPUClusterConfig(

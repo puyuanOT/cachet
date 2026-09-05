@@ -284,7 +284,7 @@ FULL_SCORE_VLLM_BNB_LOADER_SHA256 = (
 FULL_SCORE_PRODUCER_HARDWARE_TARGET = GPU_QUALIFICATION_GENERATION_HARDWARE_ID
 FULL_SCORE_PRODUCER_GPU_NAME = GPU_QUALIFICATION_GENERATION_GPU
 FULL_SCORE_PRODUCER_NODE_TYPE_ID = GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE
-FULL_SCORE_PRODUCER_ZONE_ID = "us-west-2a"
+FULL_SCORE_PRODUCER_ZONE_ID = "auto"
 FULL_SCORE_CONSUMER_NODE_TYPE_ID = "g6.8xlarge"
 FULL_SCORE_KV_DTYPE = "fp8_e5m2"
 FULL_SCORE_ATTENTION_BACKEND = "TRITON_ATTN"
@@ -988,7 +988,9 @@ class DatabricksFullScoreJobConfig:
         if self.producer_node_type_id != FULL_SCORE_PRODUCER_NODE_TYPE_ID:
             raise ValueError("full-score producers require g6e.4xlarge/L40S")
         if self.producer_zone_id != FULL_SCORE_PRODUCER_ZONE_ID:
-            raise ValueError("full-score producers require the reviewed L40S zone")
+            raise ValueError(
+                "full-score producers require automatic L40S zone placement"
+            )
         validate_aws_single_node_gpu_type(self.consumer_node_type_id)
         if self.consumer_node_type_id != DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE:
             raise ValueError("full-score consumers require g6.8xlarge/L4")

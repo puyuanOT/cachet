@@ -239,7 +239,7 @@ PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_RECORD_TYPE = (
 PUBLICATION_LATENCY_HANDOFF_HARDWARE_QUALIFICATION_SCHEMA_VERSION = 2
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_HARDWARE_TARGET = "aws-g6e-l40s"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID = "g6e.4xlarge"
-PUBLICATION_LATENCY_HANDOFF_GENERATOR_ZONE_ID = "us-west-2a"
+PUBLICATION_LATENCY_HANDOFF_GENERATOR_ZONE_ID = "auto"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_GPU_MODEL = "NVIDIA L40S"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_QUANTIZATION = "bitsandbytes-4bit"
 PUBLICATION_LATENCY_HANDOFF_GENERATOR_MODEL_DTYPE = "bfloat16"
@@ -874,7 +874,9 @@ class DatabricksPublicationLatencyHandoffJobConfig:
         if self.node_type_id != PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID:
             raise ValueError("publication handoff producers require g6e.4xlarge")
         if self.zone_id != PUBLICATION_LATENCY_HANDOFF_GENERATOR_ZONE_ID:
-            raise ValueError("publication handoff L40S producers require us-west-2a")
+            raise ValueError(
+                "publication handoff L40S producers require automatic zone placement"
+            )
         if self.task_key_prefix != "latency_handoff_worker":
             raise ValueError("latency handoff task_key_prefix is frozen")
         if self.run_timeout_seconds != (

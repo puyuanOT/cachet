@@ -454,6 +454,27 @@ with 116.12134277777776 terminal GPU-hours, zero active reservations, and
 fresh repeat-aware native-v2 protocol; they cannot be combined with the old
 fourteen results to manufacture a pass.
 
+The successor repeat-aware batch is also retained as non-authorizing evidence.
+Its plan is
+`5bc44ed1fdde3b6ae13e0e0f4d9429714475dc47fb9d163f70b2236635591822`,
+its source tree is
+`c932b318aee242094621bef166473a138e23d8e010038bd5f9096570cb5bfe7e`,
+and its phase batch is
+`adfe601b9614451d40a3819d2e347d58562a267eeb270fd971b68b0841df91b2`.
+Thirteen attempt-zero jobs succeeded, but L40S run `965422570602790`
+never executed: AWS could not provision `g6e.4xlarge` capacity in the pinned
+`us-west-2a` zone, and no GPU result artifact was written. The fourteen
+terminal attempts consumed 3.7105216666666663 GPU-hours and closed the exact
+446/308/446 prefix
+`3f2d86386b5431782cc07915ba61d6f103704a357548835001b6849b6ee4d963`
+at 120.3651655555555 terminal GPU-hours, with zero active reservations and
+903.6348344444446 hours remaining. The all-jobs, attempt-zero contract makes
+this batch `FAILED`; neither the thirteen results nor a repaired task may grant
+publication qualification. The next native-v2 generation starts from that
+complete prefix and uses automatic zone placement for L40S qualification,
+latency-handoff, BF16-handoff, and full-score producer jobs while retaining the
+reviewed on-demand `g6e.4xlarge` hardware contract.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local

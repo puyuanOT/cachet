@@ -1031,20 +1031,22 @@ def test_structural_validator_rejects_missing_or_drifted_principal_and_none_mode
         qualification_job._validated_qualification_payloads(plan, payloads)
 
 
-def test_l40s_zone_validation_separates_live_and_reviewed_history(
+def test_l40s_zone_validation_requires_live_auto_and_keeps_reviewed_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plan = _plan()
     live_payloads = json.loads(json.dumps(_render(plan, _artifact_uris())))
-    historical_payloads = json.loads(json.dumps(live_payloads))
+    pinned_payloads = json.loads(json.dumps(live_payloads))
     l40s_index, l40s_payload = next(
         (index, payload)
-        for index, payload in enumerate(historical_payloads)
+        for index, payload in enumerate(pinned_payloads)
         if payload["tasks"][0]["new_cluster"]["node_type_id"] == "g6e.4xlarge"
     )
-    l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = "auto"
+    l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = (
+        "us-west-2a"
+    )
     l40s_payload.pop("idempotency_token")
-    historical_payloads[l40s_index] = (
+    pinned_payloads[l40s_index] = (
         qualification_job.bind_databricks_run_idempotency_token(
             l40s_payload,
             attempt_id=gpu_qualification_reservation_attempt_id(
@@ -1055,11 +1057,11 @@ def test_l40s_zone_validation_separates_live_and_reviewed_history(
     )
 
     with pytest.raises(ValueError, match="cluster specification differs"):
-        qualification_job._validated_qualification_payloads(plan, historical_payloads)
+        qualification_job._validated_qualification_payloads(plan, pinned_payloads)
     with pytest.raises(ValueError, match="not source-reviewed"):
         qualification_job._validated_qualification_payloads(
             plan,
-            historical_payloads,
+            live_payloads,
             historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
         )
     monkeypatch.setattr(
@@ -1067,25 +1069,25 @@ def test_l40s_zone_validation_separates_live_and_reviewed_history(
         "_GPU_QUALIFICATION_REVIEWED_HISTORICAL_AUTO_ZONE_PLAN_SHA256S",
         frozenset({plan["closed_record_sha256"]}),
     )
-    with pytest.raises(ValueError, match="cluster specification differs"):
+    assert len(
         qualification_job._validated_qualification_payloads(
             plan,
             live_payloads,
             historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
         )
+    ) == 14
     with pytest.raises(ValueError, match="not the reviewed plan"):
         qualification_job._validated_qualification_payloads(
             plan,
-            historical_payloads,
+            live_payloads,
             historical_l40s_auto_plan_sha256="0" * 64,
         )
-    assert len(
+    with pytest.raises(ValueError, match="cluster specification differs"):
         qualification_job._validated_qualification_payloads(
             plan,
-            historical_payloads,
+            pinned_payloads,
             historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
         )
-    ) == 14
 
 
 def test_current_plan_production_parameters_stay_below_databricks_safety_cap():
@@ -1673,7 +1675,7 @@ def test_submitter_rejects_incomplete_or_mutated_job_closure_before_post(
         ("oversize", "9500-byte safety cap"),
         ("corrupt-encoded-plan", "parameters differ from the renderer"),
         ("alternate-valid-encoding", "parameters differ from the renderer"),
-        ("l40s-auto", "cluster specification differs"),
+        ("l40s-pinned-zone", "cluster specification differs"),
     ],
 )
 def test_invalid_plan_transport_rejects_before_ledger_or_post(
@@ -1694,7 +1696,7 @@ def test_invalid_plan_transport_rejects_before_ledger_or_post(
         parameters[plan_option_index + 1] = canonical_gpu_qualification_json(plan)
     elif case == "oversize":
         parameters.extend(("--unexpected", "x" * 10_000))
-    elif case == "l40s-auto":
+    elif case == "l40s-pinned-zone":
         l40s_index, l40s_payload = next(
             (index, payload)
             for index, payload in enumerate(mutated)
@@ -1702,7 +1704,7 @@ def test_invalid_plan_transport_rejects_before_ledger_or_post(
         )
         l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"][
             "zone_id"
-        ] = "auto"
+        ] = "us-west-2a"
         l40s_payload.pop("idempotency_token")
         mutated[l40s_index] = qualification_job.bind_databricks_run_idempotency_token(
             l40s_payload,

@@ -114,12 +114,12 @@ GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION: Final = (
 GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX: Final = DatabricksLedgerPrefix(
     ledger_id=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.ledger_id,
     cap_cluster_hours=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.cap_cluster_hours,
-    reservation_count=430,
-    submission_receipt_count=292,
-    terminal_actual_count=430,
-    prefix_sha256=("116251d3ca5fce37ce5749565e1059fdf65b30ce17fd12ebc50b877835f9772b"),
+    reservation_count=446,
+    submission_receipt_count=308,
+    terminal_actual_count=446,
+    prefix_sha256=("3f2d86386b5431782cc07915ba61d6f103704a357548835001b6849b6ee4d963"),
 )
-GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 116.12134277777776
+GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 120.3651655555555
 
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_KEYS: Final = frozenset(

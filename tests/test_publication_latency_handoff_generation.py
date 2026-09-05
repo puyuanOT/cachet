@@ -864,7 +864,7 @@ def production_launch_material(prepared, monkeypatch):
         cachet_source_tree_sha256="4" * 64,
         single_user_name="publication@example.com",
     )
-    assert job_config.zone_id == "us-west-2a"
+    assert job_config.zone_id == "auto"
     return plan, payloads, job_config, qualification, authorization
 
 
@@ -1750,7 +1750,7 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
     assert {
         item["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"]
         for item in databricks_payloads
-    } == {"us-west-2a"}
+    } == {"auto"}
     assert sum(item["timeout_seconds"] for item in databricks_payloads) / 3600 == 80
     attempt_ids = {
         index: publication_latency_handoff_worker_attempt_id(

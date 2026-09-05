@@ -432,7 +432,7 @@ def _launch_material(prepared, monkeypatch, *, ledger_path):
         cachet_source_tree_sha256="4" * 64,
         single_user_name="publication@example.com",
     )
-    assert job.zone_id == "us-west-2a"
+    assert job.zone_id == "auto"
     return (
         plan,
         config,
@@ -681,7 +681,7 @@ def test_submit_is_capability_gated_exact_16x_l40s_five_hours(
     assert {
         item["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"]
         for item in submissions
-    } == {"us-west-2a"}
+    } == {"auto"}
     with pytest.raises(TypeError, match="GPUQualificationLaunchAuthorization"):
         build_databricks_publication_bf16_handoff_submit_payloads(
             job,

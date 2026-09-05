@@ -180,16 +180,16 @@ def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 25315
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "62f60cc02501665fad9a1d8220fad0a8d016de4ac62ccebe9357f25cdcd64e2b"
+        "1aff4e6d1e475f89f58a234f26bb1592c803eeca6facaaa827c5d34edf8fc296"
     )
-    assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 17307
+    assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 17306
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 116047
+    assert len(payload_bytes) == 116041
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "c77ac89bf66534c901452d5734a41fd69b9de5fee599ab2a23ae7666647f8003"
+        "62fb40df6d907a236d5c42a262b83599f44f692c57b308aa2007fca8814a5fed"
     )
 
 

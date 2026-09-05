@@ -454,7 +454,7 @@ class DatabricksPublicationBF16HandoffJobConfig:
         if self.node_type_id != PUBLICATION_LATENCY_HANDOFF_GENERATOR_NODE_TYPE_ID:
             raise ValueError("BF16 producers require g6e.4xlarge L40S")
         if self.zone_id != PUBLICATION_LATENCY_HANDOFF_GENERATOR_ZONE_ID:
-            raise ValueError("BF16 L40S producers require us-west-2a")
+            raise ValueError("BF16 L40S producers require automatic zone placement")
         if self.data_security_mode == "SINGLE_USER" and not self.single_user_name:
             raise ValueError("SINGLE_USER requires single_user_name")
 

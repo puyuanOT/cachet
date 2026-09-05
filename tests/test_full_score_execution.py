@@ -1890,10 +1890,10 @@ def test_databricks_renders_two_independent_bounded_phases(campaign, monkeypatch
     assert {
         task["new_cluster"]["aws_attributes"]["zone_id"]
         for task in producer_run["tasks"]
-    } == {"us-west-2a"}
+    } == {"auto"}
     assert campaign["job"].producer_zone_id == full_score.FULL_SCORE_PRODUCER_ZONE_ID
-    with pytest.raises(ValueError, match="reviewed L40S zone"):
-        replace(campaign["job"], producer_zone_id="auto")
+    with pytest.raises(ValueError, match="automatic L40S zone placement"):
+        replace(campaign["job"], producer_zone_id="us-west-2a")
     assert {
         task["new_cluster"]["data_security_mode"] for task in producer_run["tasks"]
     } == {"SINGLE_USER"}
