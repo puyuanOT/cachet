@@ -1,5 +1,6 @@
 import json
 import math
+from hashlib import sha256
 from urllib.error import HTTPError
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 import document_kv_cache.openai_compatible as openai_module
 from document_kv_cache.benchmark_runner import BenchmarkEngineRequest
 from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     BenchmarkExample,
@@ -102,7 +104,10 @@ class FakeErrorBody:
 
 
 def benchmark_request(
-    kv_transfer_params=None, *, repeat_index: int = 1
+    kv_transfer_params=None,
+    *,
+    repeat_index: int = 1,
+    request_id: str | None = None,
 ) -> BenchmarkEngineRequest:
     example = BenchmarkExample(
         example_id="bio-1",
@@ -125,7 +130,11 @@ def benchmark_request(
         example=example,
         arm=document_kv_cache_arm(),
         prompt_parts=build_prompt_parts(example),
-        request_id=example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
+        request_id=(
+            request_id
+            if request_id is not None
+            else example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+        ),
         kv_transfer_params=example.kv_transfer_params,
         repeat_index=repeat_index,
     )
@@ -138,7 +147,7 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
             base_url="http://localhost:8000",
             api_key="token",
             max_tokens=32,
-            extra_body={"top_p": 0.9},
+            extra_body={"add_special_tokens": False, "top_p": 0.9},
             extra_headers={"X-Test": "yes"},
         ),
         response=response,
@@ -161,9 +170,13 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert generation.metadata["request_payload_endpoint"] == "/v1/completions"
     assert generation.metadata["request_payload_max_token_fields"] == "max_tokens"
     assert generation.metadata["request_payload_max_tokens"] == "32"
+    assert generation.metadata["request_payload_add_special_tokens"] == "false"
     assert generation.metadata["request_payload_prompt_chars"] == str(
         len(benchmark_request().logical_prompt_text)
     )
+    assert generation.metadata["request_payload_prompt_sha256"] == sha256(
+        benchmark_request().logical_prompt_text.encode("utf-8")
+    ).hexdigest()
     assert "request_id" not in generation.metadata
     request_body = engine.payloads[0]
     assert request_body["prompt"] == benchmark_request().logical_prompt_text
@@ -171,6 +184,7 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert request_body["stream"] is True
     assert request_body["stream_options"] == {"include_usage": True}
     assert request_body["top_p"] == 0.9
+    assert request_body["add_special_tokens"] is False
     assert "request_id" not in request_body
     assert "kv_transfer_params" not in request_body
     assert engine.headers["Authorization"] == "Bearer token"
@@ -192,15 +206,37 @@ def test_runtime_prompt_mode_uses_cache_suffix_for_kv_aware_proxy():
 
     generation = engine.generate(benchmark_request())
 
-    assert generation.prompt_tokens == int(generation.metadata["runtime_prompt_tokens"])
-    assert generation.metadata["prompt_token_source"] == "runtime"
+    assert generation.prompt_tokens == 12
+    assert generation.metadata["prompt_token_source"] == "server_usage"
     assert generation.metadata["prompt_text_mode"] == "runtime"
     assert generation.metadata["server_usage_prompt_tokens"] == "12"
     assert generation.metadata["server_usage_prompt_tokens_present"] == "true"
+    assert generation.metadata["runtime_prompt_tokens"] == "12"
     assert int(generation.metadata["logical_prompt_tokens"]) > int(
         generation.metadata["runtime_prompt_tokens"]
     )
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
+
+
+def test_streaming_server_usage_is_authoritative_for_logical_prompt_counts():
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            prompt_token_accounting="server_usage",
+        ),
+        response=FakeStreamResponse(),
+        token_counter=FixedPromptTokenCounter(99),
+        clock=FakeClock([0.0, 0.25, 0.75]),
+    )
+
+    generation = engine.generate(benchmark_request())
+
+    assert generation.prompt_tokens == 11
+    assert generation.metadata["prompt_token_source"] == "server_usage"
+    assert generation.metadata["logical_prompt_tokens"] == "11"
+    assert generation.metadata["runtime_prompt_tokens"] == "11"
+    assert generation.metadata["server_usage_prompt_tokens"] == "11"
+    assert generation.metadata["server_usage_prompt_tokens_present"] == "true"
 
 
 def test_runtime_prompt_mode_sends_request_kv_transfer_params():
@@ -221,24 +257,47 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
     )
 
     generation = engine.generate(
-        benchmark_request(kv_transfer_params=kv_transfer_params)
+        benchmark_request(
+            kv_transfer_params=kv_transfer_params,
+            request_id="benchmark-request-1",
+        )
     )
 
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
-    assert engine.payloads[0]["request_id"] == "cachet-bio-1"
+    assert engine.payloads[0]["request_id"] == "benchmark-request-1"
     assert engine.payloads[0]["kv_transfer_params"] == {
         **kv_transfer_params,
+        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM: "benchmark-request-1",
         DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
     }
     assert engine.payloads[0]["cache_salt"] == "cachet-kv-cache"
     assert generation.metadata["kv_transfer_params_attached"] == "true"
-    assert generation.metadata["request_id"] == "cachet-bio-1"
+    assert generation.metadata["request_id"] == "benchmark-request-1"
     assert generation.metadata["request_payload_kv_transfer_param_keys"] == (
-        "document_kv.handoff_json,document_kv.payload_uri,"
+        "document_kv.benchmark_request_id,document_kv.handoff_json,document_kv.payload_uri,"
         "document_kv.prompt_text_mode,document_kv.request_id"
     )
     assert generation.metadata["prefix_cache_salt_attached"] == "true"
     assert generation.metadata["prefix_cache_salt"] == "cachet-kv-cache"
+
+
+def test_top_level_transport_rejects_conflicting_benchmark_request_id():
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM: "forged-request-id",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+    }
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            stream=False,
+        ),
+        response=FakeJSONResponse(),
+        clock=FakeClock([1.0, 2.0]),
+    )
+
+    with pytest.raises(ValueError, match="must equal the benchmark engine request_id"):
+        engine.generate(benchmark_request(kv_transfer_params=kv_transfer_params))
 
 
 def test_custom_params_transport_sends_sglang_compatible_kv_transfer_params():
@@ -414,8 +473,13 @@ def test_extra_body_factory_can_vary_prefix_cache_salt_per_request():
     assert second.metadata["prefix_cache_salt"] == "dynamic-repeat-2"
 
 
-def test_non_streaming_completion_engine_uses_usage_and_total_latency():
-    response = FakeJSONResponse()
+def test_non_streaming_logical_mode_uses_server_usage_for_representative_target():
+    response = FakeJSONResponse(
+        {
+            "choices": [{"text": "Ada Lovelace"}],
+            "usage": {"prompt_tokens": 8192, "completion_tokens": 2},
+        }
+    )
     engine = CapturingEngine(
         OpenAICompatibleEngineConfig(
             base_url="http://localhost:8000",
@@ -424,21 +488,20 @@ def test_non_streaming_completion_engine_uses_usage_and_total_latency():
             prompt_token_accounting="server_usage",
         ),
         response=response,
+        token_counter=FixedPromptTokenCounter(6283),
         clock=FakeClock([10.0, 12.5]),
     )
 
     generation = engine.generate(benchmark_request())
 
     assert generation.output_text == "Ada Lovelace"
-    assert generation.prompt_tokens == int(generation.metadata["logical_prompt_tokens"])
+    assert generation.prompt_tokens == 8192
     assert generation.completion_tokens == 2
-    assert generation.metadata["prompt_token_source"] == "logical"
-    assert generation.metadata["server_usage_prompt_tokens"] == "12"
+    assert generation.metadata["prompt_token_source"] == "server_usage"
+    assert generation.metadata["logical_prompt_tokens"] == "8192"
+    assert generation.metadata["runtime_prompt_tokens"] == "8192"
+    assert generation.metadata["server_usage_prompt_tokens"] == "8192"
     assert generation.metadata["server_usage_prompt_tokens_present"] == "true"
-    assert (
-        generation.metadata["logical_prompt_tokens"]
-        == generation.metadata["runtime_prompt_tokens"]
-    )
     assert generation.ttft_seconds == pytest.approx(2.5)
     assert generation.time_to_completion_seconds == pytest.approx(2.5)
     assert engine.payloads[0]["model"] == "served-qwen"
@@ -494,6 +557,33 @@ def test_server_usage_accounting_records_missing_usage_fallback():
         generation.metadata["logical_prompt_tokens"]
         == generation.metadata["runtime_prompt_tokens"]
     )
+
+
+def test_runtime_server_usage_accounting_falls_back_to_local_runtime_count():
+    request = benchmark_request()
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            stream=False,
+            prompt_text_mode="runtime",
+            prompt_token_accounting="server_usage",
+        ),
+        response=FakeJSONResponse({"choices": [{"text": "Ada Lovelace"}]}),
+        clock=FakeClock([10.0, 12.5]),
+    )
+
+    generation = engine.generate(request)
+
+    assert generation.prompt_tokens == WhitespaceTokenCounter().count(
+        request.cache_suffix_text
+    )
+    assert generation.metadata["prompt_token_source"] == "runtime"
+    assert generation.metadata["runtime_prompt_tokens"] == str(
+        generation.prompt_tokens
+    )
+    assert int(generation.metadata["logical_prompt_tokens"]) > generation.prompt_tokens
+    assert generation.metadata["server_usage_prompt_tokens_present"] == "false"
+    assert "server_usage_prompt_tokens" not in generation.metadata
 
 
 def test_streaming_error_payload_raises_and_closes_response():
@@ -606,3 +696,36 @@ def test_openai_compatible_engine_config_normalizes_json_body_tuples():
     )
 
     assert config.extra_body == {"guided_choice": ["yes", "no"]}
+
+
+@pytest.mark.parametrize(
+    "reserved_field",
+    (
+        "model",
+        "prompt",
+        "messages",
+        "max_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "stream",
+        "stream_options",
+        "request_id",
+        "kv_transfer_params",
+    ),
+)
+def test_openai_compatible_engine_rejects_reserved_extra_body_fields(
+    reserved_field,
+):
+    with pytest.raises(ValueError, match="reserved request fields"):
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            extra_body={reserved_field: "override"},
+        )
+
+
+def test_openai_compatible_engine_rejects_nested_handoff_override():
+    with pytest.raises(ValueError, match="custom_params.*kv_transfer_params"):
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            extra_body={"custom_params": {"kv_transfer_params": {"forged": True}}},
+        )

@@ -15,6 +15,7 @@ from document_kv_cache.engine_protocol import (
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.materializer import KVMaterializer
+from document_kv_cache.methods import method_spec
 from document_kv_cache.models import CacheGenerationMethod, DocumentChunkType, DocumentKVRequest, KVCacheKey
 from document_kv_cache.planner import CachePlanner
 from document_kv_cache.service import DocumentKVService
@@ -79,7 +80,11 @@ def request() -> DocumentKVRequest:
     )
 
 
-def service(tmp_path) -> DocumentKVService:
+def service(
+    tmp_path,
+    *,
+    storage_layout: KVStorageLayout = KVStorageLayout.SHARED_KEY_VALUE,
+) -> DocumentKVService:
     refs = write_kvpack(
         tmp_path / "engine.kvpack",
         [
@@ -89,7 +94,7 @@ def service(tmp_path) -> DocumentKVService:
                 STATIC_TOKEN_COUNT,
                 "int8",
                 "qwen3-v1",
-                storage_layout=KVStorageLayout.SHARED_KEY_VALUE,
+                storage_layout=storage_layout,
             ),
             PackChunk(
                 key(DocumentChunkType.DOCUMENT_CHUNK, "section-1"),
@@ -97,7 +102,7 @@ def service(tmp_path) -> DocumentKVService:
                 REVIEW_TOKEN_COUNT,
                 "int8",
                 "qwen3-v1",
-                storage_layout=KVStorageLayout.SHARED_KEY_VALUE,
+                storage_layout=storage_layout,
             ),
         ],
         align_bytes=1,
@@ -149,6 +154,48 @@ def test_build_handle_from_materialized_kv_segments(tmp_path):
     )
     assert ready.segment_tiers == materialized.segment_tiers
     assert ready.segment_tiers == (CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE)
+    assert ready.handle.cache_method == "full_prefix_prefill"
+    assert ready.reuse_plan is not None
+    assert ready.reuse_plan.method_id == "full_prefix_prefill"
+    assert method_spec(ready.handle.cache_method).artifact_version == "1"
+
+
+def test_build_engine_ready_request_resolves_pre_rope_default_to_vanilla(
+    tmp_path,
+):
+    document_service = service(
+        tmp_path,
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+    )
+    materialized = document_service.materializer.materialize(
+        document_service.planner.build_plan(request())
+    )
+    pre_rope_layout = replace(
+        layout(),
+        shares_kv_storage=False,
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+        pre_rope=True,
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=128,
+        key_position_encoding="pre_rope",
+    )
+
+    ready = build_engine_ready_request(materialized, layout=pre_rope_layout)
+
+    assert ready.handle.cache_method == "vanilla_prefill"
+    assert ready.reuse_plan is not None
+    assert ready.reuse_plan.method_id == "vanilla_prefill"
+    assert method_spec(ready.handle.cache_method).artifact_version == "2"
+
+    with pytest.raises(
+        ValueError,
+        match="stored post-RoPE reuse plans cannot reposition keys",
+    ):
+        build_engine_ready_request(
+            materialized,
+            layout=pre_rope_layout,
+            cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
+        )
 
 
 def test_build_handle_normalizes_metadata_and_adapter_ids(tmp_path):
@@ -254,7 +301,7 @@ def test_service_prepares_engine_ready_request_with_segmented_payload(tmp_path):
     assert prepared.payload == (STATIC_PAYLOAD, REVIEW_PAYLOAD)
     assert prepared.estimated_gpu_bytes == 2 * (len(STATIC_PAYLOAD) + len(REVIEW_PAYLOAD))
     assert prepared.handle.metadata == {"engine": "sglang"}
-    assert prepared.handle.cache_method == "vanilla_prefill"
+    assert prepared.handle.cache_method == "full_prefix_prefill"
     assert prepared.segment_tiers == (CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE)
 
 

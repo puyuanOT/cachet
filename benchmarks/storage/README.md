@@ -1,38 +1,14 @@
-# Storage Benchmarks
+# Storage Benchmark Index
 
-These results measure Cachet storage-reader throughput and latency. They are
-not model-serving latency benchmarks and are not memory-consumption
-measurements.
+The vLLM 0.27.1 campaign defines the implemented Vanilla KV storage comparison
+as a separate matched Disk/RAM/Unity Catalog trio in each of five deployment
+blocks. Every cell uses the same capacity-safe 16k schedule: two
+examples per dataset, 32 repeats, 256 requests, and concurrency 4. Disk is a
+fresh strict-cold local-NVMe control. The RAM cell requires proof that a 16-GiB
+provider payload cache was populated and verified before all measured hits. The
+Unity Catalog cell requires proof of mounted-path loads, successful OS-eviction
+requests, and exact bytes while retaining the honest `backend cache unproven`
+label. The combined hybrid policy remains unsupported.
 
-## Experimental Setup
-
-| Result | Hardware | Method | Workload | Repeats / measurements | Evidence |
-| --- | --- | --- | --- | --- | --- |
-| [`g6-l4-reader-throughput/`](g6-l4-reader-throughput/) | AWS g6/L4, `g6.8xlarge` | Memory, disk, Unity Catalog readers | 268,435,456 total bytes per reader | 256 reads; parallelism 8 | [`g6-l4-reader-throughput/storage_benchmark.json`](g6-l4-reader-throughput/storage_benchmark.json) |
-
-## Reader Throughput And Latency
-
-| Reader | Total bytes | Throughput | p50 latency | p95 latency | Reads | Parallelism | Errors |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Memory | 268,435,456 | 6531.4 MiB/s | 0.847 ms | 1.649 ms | 256 | 8 | 0 |
-| Disk | 268,435,456 | 6214.4 MiB/s | 1.130 ms | 1.604 ms | 256 | 8 | 0 |
-| Unity Catalog | 268,435,456 | 1148.0 MiB/s | 5.332 ms | 17.458 ms | 256 | 8 | 0 |
-
-## Memory / Footprint Interpretation
-
-| Metric | Value | Notes |
-| --- | --- | --- |
-| Bytes read | 268,435,456 per reader | Storage workload size, not resident memory |
-| Peak GPU memory | not measured | Storage benchmark does not run model serving |
-| CPU RSS | not measured | Not present in the artifact |
-| Cache-resident footprint | not measured | Not present in the artifact |
-| Serving TTFT / TTC | not measured | Use [`../vllm/`](../vllm/) or [`../sglang/`](../sglang/) |
-
-## Coverage
-
-| Reader | Hardware | Status |
-| --- | --- | --- |
-| Memory | AWS g6/L4 | Benchmark passed with zero errors |
-| Disk | AWS g6/L4 | Benchmark passed with zero errors |
-| Unity Catalog Volume | AWS g6/L4 | Benchmark passed with zero errors |
-| Other storage backends | Any hardware | not benchmarked yet |
+No prior storage number is carried forward. See the [benchmark root](../) for
+the canonical current campaign state and governed table.

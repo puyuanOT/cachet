@@ -33,6 +33,9 @@ DEFAULT_DATABRICKS_RUN_NAME = "document-kv-v1-benchmark"
 DEFAULT_DATABRICKS_TASK_KEY = "document_kv_v1_benchmark"
 DEFAULT_DATABRICKS_PURPOSE = "document-kv-v1-benchmark"
 DEFAULT_DATABRICKS_DATA_SECURITY_MODE = "SINGLE_USER"
+DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS = 14_400
+MAX_DATABRICKS_RUN_TIMEOUT_SECONDS = 43_200
+DEFAULT_DATABRICKS_TASK_MAX_RETRIES = 0
 DEDICATED_DATABRICKS_DATA_SECURITY_MODE = "DATA_SECURITY_MODE_DEDICATED"
 SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
     {DEFAULT_DATABRICKS_DATA_SECURITY_MODE, DEDICATED_DATABRICKS_DATA_SECURITY_MODE}
@@ -101,11 +104,15 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
     "DEFAULT_AWS_G5_NODE_TYPE",
+    "SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES",
     "DEFAULT_DATABRICKS_SPARK_VERSION",
     "DEFAULT_DATABRICKS_RUN_NAME",
     "DEFAULT_DATABRICKS_TASK_KEY",
     "DEFAULT_DATABRICKS_PURPOSE",
     "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
+    "DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS",
+    "MAX_DATABRICKS_RUN_TIMEOUT_SECONDS",
+    "DEFAULT_DATABRICKS_TASK_MAX_RETRIES",
     "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
     "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
     "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
@@ -121,6 +128,21 @@ __all__ = [
     "write_databricks_runner_script",
     "main",
 ]
+
+
+def _validated_databricks_run_timeout_seconds(value: object) -> int:
+    if type(value) is not int or not 0 < value <= MAX_DATABRICKS_RUN_TIMEOUT_SECONDS:
+        raise ValueError(
+            "run_timeout_seconds must be an integer between 1 and "
+            f"{MAX_DATABRICKS_RUN_TIMEOUT_SECONDS}"
+        )
+    return value
+
+
+def _validated_databricks_task_max_retries(value: object) -> int:
+    if type(value) is not int or value != DEFAULT_DATABRICKS_TASK_MAX_RETRIES:
+        raise ValueError("task_max_retries must be 0 for Databricks benchmark jobs")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +186,8 @@ class DatabricksBenchmarkJobConfig:
     runner_python_file: str
     run_name: str = DEFAULT_DATABRICKS_RUN_NAME
     task_key: str = DEFAULT_DATABRICKS_TASK_KEY
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+    task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
     node_type_id: str = DEFAULT_AWS_G5_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
@@ -186,6 +210,12 @@ class DatabricksBenchmarkJobConfig:
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        if self.run_timeout_seconds > DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "run_timeout_seconds exceeds the four-hour generic benchmark bound"
+            )
+        _validated_databricks_task_max_retries(self.task_max_retries)
         _DEFAULT_CLUSTER_CONFIG_FROM_BENCHMARK_JOB(self)
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
@@ -208,6 +238,8 @@ validate_aws_g5_node_type = validate_aws_single_node_gpu_type
 def build_databricks_run_submit_payload(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_key": config.task_key,
+        "timeout_seconds": config.run_timeout_seconds,
+        "max_retries": config.task_max_retries,
         "new_cluster": _single_node_g5_cluster(config),
         "spark_python_task": {
             "python_file": config.runner_python_file,
@@ -218,6 +250,7 @@ def build_databricks_run_submit_payload(config: DatabricksBenchmarkJobConfig) ->
         task["spark_python_task"]["parameters"].extend(["--package-wheel-uri", config.wheel_uri])
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
 
@@ -377,6 +410,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_TASK_KEY)
     parser.add_argument(
+        "--run-timeout-seconds",
+        type=int,
+        default=DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--task-max-retries",
+        type=int,
+        default=DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
+    )
+    parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
         help="V1 hardware target used to derive --node-type-id when it is omitted.",
@@ -418,6 +461,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner_python_file=args.runner_python_file,
             run_name=args.run_name,
             task_key=args.task_key,
+            run_timeout_seconds=args.run_timeout_seconds,
+            task_max_retries=args.task_max_retries,
             node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
             spark_version=args.spark_version,
             data_security_mode=args.data_security_mode,

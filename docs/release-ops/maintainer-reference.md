@@ -15,14 +15,15 @@ native GPU KV blocks.
 | What does it accelerate? | Repeated long document prefixes with short request-specific suffixes |
 | What engines are in this repo? | Thin vLLM and SGLang adapter modules live here and ship with `cachet-kv` |
 | What is the current target? | Qwen3 4B Instruct on AWS g6/L4 Databricks, `g6.8xlarge` |
-| Where are the latest results? | [`benchmarks/current/README.md`](../../benchmarks/current/) |
+| Where are the latest results? | [`benchmarks/README.md`](../../benchmarks/) |
 
-Current release evidence includes a strict vLLM g6/L4 benchmark with unchanged
-quality and 5.27x-6.97x TTFT speedups, Memory/Disk/Unity Catalog storage-reader
-evidence, provider-backed vLLM and SGLang native probe evidence, and SGLang live
-handoff evidence. SGLang prepared V1 live serving currently proves cache-hit
-correctness and quality on g6/L4, but it is not yet a speedup result on the
-short prepared prompts.
+The public benchmark surface is reset for the vLLM 0.27.1 publication campaign.
+No pre-reset latency, resource, ablation, or score number is carried forward.
+The tables in [`benchmarks/README.md`](../../benchmarks/) are explicit
+campaign-pending/N/A skeletons until exact source, wheel, runtime, input,
+hardware, Databricks, result, and publication-gate records are committed.
+Unsupported methods and the Q8 pre-RoPE SGLang serving path remain explicit
+`N/A` rather than being inferred from integration probes.
 
 Most readers should use these entry points first:
 
@@ -117,9 +118,10 @@ and release evidence in one repository. The human entry points are:
 - [`docs/evidence-policy.md`](../evidence-policy.md) explains what belongs in
   `benchmarks/`, `docs/release-ops/evidence/`, `docs/release-ops/pr-evidence/`, release bundles, and ignored
   `databricks-runs/` scratch output.
-- [`benchmarks/current/README.md`](../../benchmarks/current/) is the concise current
-  benchmark answer; [`benchmarks/README.md`](../../benchmarks/README.md) indexes the
-  standalone human-readable benchmark report folders.
+- [`benchmarks/README.md`](../../benchmarks/) is the research-style benchmark
+  answer and the authoritative vLLM 0.27.1 campaign-pending table surface.
+  `benchmarks/appendix/` contains no result evidence until the reset passes its
+  publication gate.
 - [`src/cachet/README.md`](../../src/cachet/) describes the Cachet-branded public
   facade; [`src/document_kv_cache/README.md`](../../src/document_kv_cache/) describes
   the implementation package and migration boundary.
@@ -146,8 +148,9 @@ Databricks probe metadata and launch-config compatibility.
 The current implementation and release gaps are tracked in
 `docs/v1-requirements-matrix.md`. Treat that matrix as the audit map for the V1
 open-source package goal: it distinguishes repository-implemented requirements
-from target AWS g6/L4/Unity Catalog evidence that has been bundled for the
-current release and must be kept fresh before each publication.
+from the frozen vLLM 0.27.1 campaign gates. Superseded benchmark snapshots are
+not accepted as evidence; a final-wheel strict bundle for the reset campaign
+remains pending.
 
 ## Logical Model
 
@@ -291,7 +294,17 @@ python -m document_kv_cache.databricks_storage_benchmark_job \
 Minimal shape:
 
 ```python
-layout = layout_for_model("qwen3:4b-instruct")
+generator = build_pre_rope_transformers_kv_chunk_generator()
+layout = layout_for_model(
+    "qwen3:4b-instruct",
+    dtype="bfloat16",
+    pre_rope=True,
+    rope_theta=generator.rope_theta,
+    rope_rotary_dim=generator.rope_rotary_dim,
+    shares_kv_storage=False,
+    storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+)
+generator.bind_layout(layout)
 workflow = DocumentKVWorkflow.with_storage(
     manifest=manifest,
     cpu_cache_bytes=2 * 1024**3,
@@ -318,7 +331,7 @@ result = workflow.generate_cache(
         model_id="qwen3:4b-instruct",
         lora_id="base",
         prompt_template_version="v1",
-        dtype="int8",
+        dtype=layout.dtype,
         layout_version="qwen3-v1",
         storage_layout=layout.storage_layout,
         cache_method=CacheGenerationMethod.VANILLA_PREFILL,
@@ -611,15 +624,6 @@ the same AWS g6/L4 policy:
       "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
       "metadata": [
         "vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector"
-      ],
-      "pip_packages": [
-        "vllm==0.23.0",
-        "transformers==5.12.1",
-        "huggingface-hub==1.20.1",
-        "tokenizers==0.22.2",
-        "numpy==2.3.5",
-        "fastapi[standard]==0.136.0",
-        "prometheus-fastapi-instrumentator==8.0.0"
       ]
     },
     {
@@ -641,6 +645,11 @@ the same AWS g6/L4 policy:
   ]
 }
 ```
+
+The vLLM target deliberately omits an inline `pip_packages` list. The
+release-safe preset derives the prepatched vLLM `0.27.1+cu129` wheel and full
+hash-locked runtime closure from `document_kv_cache.serving_env`; a caller must
+not replace that closure with an unpinned package spec.
 
 When the target uses Cachet's built-in reserved factory path, add
 `native_probe_delegate_factory` to that backend's target record. The Databricks
@@ -916,34 +925,16 @@ the explicit non-default `aws-g5-a10g` target for `g5.8xlarge` compatibility
 runs. It defines a common schema for comparing the no-cache prefill baseline
 with document KV-cache reuse:
 
-Curated, human-readable benchmark reports are tracked under
-[`benchmarks/`](../../benchmarks/README.md). Start with
-[`benchmarks/current/`](../../benchmarks/current/) for the concise current result
-index, then open the standalone report folders for
-[`vLLM`](../../benchmarks/vllm/), [`SGLang`](../../benchmarks/sglang/),
-[`storage`](../../benchmarks/storage/), and [`native-engine`](../../benchmarks/native-engine/)
-status. Use the Databricks artifact snapshot at
-[`benchmarks/databricks/CURRENT.md`](../../benchmarks/databricks/CURRENT.md) for
-sanitized source records. Those folders contain the current g6/L4 target
-benchmark, g5/A10G compatibility benchmark, storage-reader benchmark, and
-native vLLM/SGLang probe artifacts without relying on the PR-only
-`docs/release-ops/pr-evidence/` tree or ignored local `databricks-runs/` output. Every durable
-Databricks benchmark or benchmark-readiness run should get its own dated
-standalone folder with a `README.md` and compact sanitized evidence committed
-beside it; `docs/release-ops/pr-evidence/` stays reserved for machine-readable PR validation and
-release-audit sidecars.
+Curated, human-readable benchmark reports are tracked in
+[`benchmarks/README.md`](../../benchmarks/README.md). It currently contains the
+vLLM 0.27.1 campaign design and explicit pending/N/A tables, not numeric
+results. Add a stable appendix folder only after sanitized evidence passes the
+publication gate; `docs/release-ops/pr-evidence/` remains reserved for
+machine-readable PR validation and release-audit sidecars.
 
-The full release-suite latency and quality benchmark rows are vLLM benchmark
-runs. The current SGLang artifacts include provider-backed native HiCache probe
-and connector-action records, a synthetic live SGLang benchmark that validates
-repeated Cachet-backed cache hits and quality for one generated NIAH prompt,
-and a prepared four-dataset V1 live benchmark that passes cache-hit and quality
-gates on g6/L4. The SGLang prepared V1 cache arm is slower on the short prepared
-prompts, and the artifact remains the SGLang live benchmark record type rather
-than the canonical `document_kv.benchmark_run.v1` release-bundle input. Strict
-release bundles validate raw `cachet.sglang_live_benchmark.v1` sidecars through
-the dedicated `sglang_live_v1_benchmark` role; the tracked standalone report is
-a compact human-readable snapshot, not the bundle sidecar itself.
+Provider-backed SGLang probes remain integration checks. They do not populate a
+latency or score table, and the Q8 pre-RoPE SGLang serving path is explicitly
+unsupported in the reset campaign.
 
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.
@@ -996,9 +987,12 @@ By default this engine posts the full logical prompt, which is the correct behav
 Generate per-example handoff JSON and payload files from prepared benchmark rows
 by supplying the runtime KV generator factory. Cachet does not ship a fake
 benchmark generator; the factory must return a `KVChunkGenerator` whose payload
-geometry matches the supplied model layout. For vanilla prefill generation in a
-Transformers environment, Cachet provides
-`document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator`.
+geometry matches the supplied model layout. For Vanilla generation in a
+Transformers environment, use the forced pre-RoPE factory
+`document_kv_cache.transformers_generator:build_pre_rope_transformers_kv_chunk_generator`
+with the explicit `vanilla_prefill` and per-document options. For the
+monolithic full-prefix control, use
+`build_post_rope_transformers_kv_chunk_generator` and omit those two options.
 Use a floating KV dtype, such as `--dtype bfloat16`, for model-produced payloads.
 Set `CACHET_TRANSFORMERS_TRUST_REMOTE_CODE=true` only for model repositories that
 require custom Transformers code. The generator expects Hugging Face
@@ -1014,7 +1008,9 @@ cachet-benchmark-handoff-bundles \
   --input-jsonl /data/v1-prepared/biography.jsonl \
   --output-dir /Volumes/catalog/schema/volume/cachet/handoffs \
   --output-manifest-json /data/handoffs/biography-manifest.json \
-  --generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --generator-factory document_kv_cache.transformers_generator:build_pre_rope_transformers_kv_chunk_generator \
+  --cache-method vanilla_prefill \
+  --segment-per-document \
   --dtype bfloat16
 ```
 
@@ -1031,7 +1027,9 @@ cachet-benchmark-handoff-bundles \
   --input-jsonl /data/v1-prepared/biography.jsonl \
   --output-dir /Volumes/catalog/schema/volume/cachet/sglang-handoffs \
   --output-manifest-json /data/handoffs/biography-sglang-manifest.json \
-  --generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --generator-factory document_kv_cache.transformers_generator:build_pre_rope_transformers_kv_chunk_generator \
+  --cache-method vanilla_prefill \
+  --segment-per-document \
   --backend sglang \
   --sglang-hicache-page-size 16 \
   --dtype bfloat16
@@ -1081,7 +1079,11 @@ cachet-benchmark-handoff-manifest \
   --output-json /data/handoffs/biography-sglang-manifest.json
 ```
 
-To run the V1 benchmark contract against existing OpenAI-compatible vLLM or SGLang servers, generate a reproducible command plan for all four datasets:
+To run the V1 benchmark contract against existing OpenAI-compatible vLLM or
+SGLang servers, generate a reproducible command plan for all four datasets. The
+plan-level generation example below is the monolithic full-prefix control;
+use the per-document Vanilla bundle commands above when benchmarking
+Vanilla:
 
 ```bash
 python -m document_kv_cache.benchmark_plan \
@@ -1094,7 +1096,7 @@ python -m document_kv_cache.benchmark_plan \
   --benchmark-handoff-manifest-json hotpotqa=/data/handoffs/hotpotqa-manifest.json \
   --benchmark-handoff-manifest-json musique=/data/handoffs/musique-manifest.json \
   --benchmark-handoff-manifest-json niah=/data/handoffs/niah-manifest.json \
-  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_post_rope_transformers_kv_chunk_generator \
   --benchmark-handoff-dtype bfloat16 \
   --benchmark-handoff-output-dir /data/handoffs/generated \
   --base-url http://localhost:8000 \
@@ -1373,7 +1375,9 @@ python -m document_kv_cache.vllm_smoke \
   --max-num-seqs 1 \
   --gpu-memory-utilization 0.9 \
   --max-tokens 100 \
-  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_pre_rope_transformers_kv_chunk_generator \
+  --benchmark-handoff-chunk-per-document \
+  --benchmark-handoff-cache-method vanilla_prefill \
   --benchmark-handoff-output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared/handoffs \
   --benchmark-handoff-dtype bfloat16 \
   --dataset biography=/Volumes/catalog/schema/volume/v1/biography.jsonl \
@@ -1426,7 +1430,9 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --max-num-seqs 1 \
   --gpu-memory-utilization 0.9 \
   --max-tokens 100 \
-  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_pre_rope_transformers_kv_chunk_generator \
+  --benchmark-handoff-chunk-per-document \
+  --benchmark-handoff-cache-method vanilla_prefill \
   --benchmark-handoff-output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared/handoffs \
   --benchmark-handoff-dtype bfloat16 \
   --spark-env-var CACHET_TRANSFORMERS_DEVICE=cuda \
@@ -2014,7 +2020,7 @@ python -m document_kv_cache.live_server \
   --model-id qwen3:4b-instruct
 ```
 
-The command prints a JSON record with TTFT, time-to-completion, token counts, `prompt_token_source`, answer-found quality, and the prompt mode used. Add `--cache-arm --runtime-prompt` only for a KV-aware proxy that injects the cached prefix out of band; ordinary OpenAI-compatible servers should use the default full-prompt mode.
+The command prints a JSON record with TTFT, time-to-completion, token counts, `prompt_token_source`, `answer_found_rate`, and the prompt mode used. Add `--cache-arm --runtime-prompt` only for a KV-aware proxy that injects the cached prefix out of band; ordinary OpenAI-compatible servers should use the default full-prompt mode.
 
 For native engine paths, pass a validated Cachet handoff so the smoke request
 carries the same `kv_transfer_params` field as benchmark cache-arm requests.
@@ -2046,7 +2052,8 @@ This package uses Poetry metadata with exact direct dependency pins: Python
 extras because their current dependency graphs conflict in one resolver; use
 the vendored adapter code from the Cachet wheel and install exactly one serving
 runtime in an isolated environment. The Databricks vLLM smoke helper creates
-one such isolated local-NVMe environment and pins `vllm==0.23.0`.
+one such isolated local-NVMe environment from the prepatched vLLM
+`0.27.1+cu129` wheel and its reviewed hash-locked runtime closure.
 `document_kv_cache.serving_env` records the exact helper profiles for vLLM and
 SGLang so future smoke/probe jobs share the same install boundary.
 The committed `poetry.lock` records the resolver output for the base package,
@@ -2081,44 +2088,16 @@ users keep inline type annotations after installation.
 
 ## Remaining V1 Work
 
-- Keep the complete strict release bundle refreshed from the target AWS
-  g6/L4/UC evidence set. The benchmark, storage-reader, and vLLM/SGLang native
-  engine-probe Databricks runs have succeeded, and release evidence over the
-  benchmark, storage, connector action descriptors, and native engine block managers
-  is green for the current `cachet-kv` wheel. The native engine block managers
-  remain owned by vLLM and SGLang rather than Cachet. The latest validated
-  strict-bundle snapshot, built after PR #513 with the current wheel, validates
-  with 37 artifacts after adding the successful raw SGLang live V1 sidecar from
-  run `48413356233422`, the current g6 benchmark status sidecar, current
-  `aws-g5-a10g` compatibility benchmark, matching `aws-g5-a10g` Databricks
-  run-status sidecar, PR
-  #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence,
-  `legacy_migration_evidence` for the removed restaurant facade, and
-  `dependency_freshness` evidence for the current package/runtime dependency
-  policy.
-  Traceability-only PR evidence added after that snapshot must be included in
-  the next publication bundle refresh. The required artifact set remains:
-  release evidence
-  sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
-  vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
-  sidecars, SGLang live V1 benchmark sidecar, benchmark plan execution sidecar,
-  Databricks run-status
-  sidecars for benchmark, storage, and vLLM/SGLang engine-probe runs, tested
-  package wheel, PR evidence sidecar, dependency freshness sidecar, legacy
-  migration evidence sidecar, V1 requirements matrix, GitHub governance
-  sidecar, repository hygiene sidecar, native probe factory diagnostics
-  sidecar entries from both runtime
-  environments, and the current `aws-g5-a10g` benchmark/status evidence carried
-  through the `compatibility_benchmark` and
-  `compatibility_databricks_run_status` roles.
-- Keep the current AWS g5/A10G compatibility benchmark evidence with the
-  release handoff: QA Databricks run `566743786103032` on `g5.8xlarge`
-  completed Biography, HotpotQA, MusiQue, and NIAH with no benchmark errors,
-  current `v1_evidence.ok=true`, TTFT speedups of 4.66x-6.04x, and release
-  evidence `ok=true` when validated with the current storage and native
-  vLLM/SGLang probe/action artifacts. Carry it in release handoffs with
-  `--compatibility-benchmark-json`; this compatibility evidence does not change
-  the strict V1 publication target from AWS g6/L4.
+- Freeze the vLLM 0.27.1 source snapshot, rebuild the final Cachet and patched
+  vLLM wheels, and close their exact runtime, input, and qualification records
+  before submitting production jobs.
+- Run the complete five-block Baseline/Vanilla latency factorial at 8k/16k/32k
+  and concurrency 1/2/4, refresh every implemented ablation, and complete the
+  paired full-dataset score pass. Do not publish partial or pre-reset numbers.
+- Build a new strict release bundle exclusively from the reset campaign's
+  source-bound artifacts, Databricks attestations, results, and passing
+  publication gate. Native engine block managers remain owned by vLLM and
+  SGLang rather than Cachet.
 - Keep GitHub governance release-ready before each public release. Current
   governance evidence is green: the repository is public, `allow_auto_merge`
   reports enabled, merged head branches are deleted automatically, `main`

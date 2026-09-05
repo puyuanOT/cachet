@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import math
 import os
+import sys
+from contextlib import contextmanager
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from inspect import signature
 from typing import Any
 
-from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout, dtype_byte_width
+from document_kv_cache.artifact_identity import UNRESOLVED_IDENTITY, TokenContract
+from document_kv_cache.engine_protocol import (
+    KVLayout,
+    KVPayloadAxisOrder,
+    KVStorageLayout,
+    dtype_byte_width,
+    kv_payload_axis_order_from_value,
+)
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID, layout_for_model
 from document_kv_cache.models import KVCacheKey
+from document_kv_cache.reuse_contract import PositionHandling
 from document_kv_cache.workflow import (
     CacheBuildConfig,
     SourceChunk,
@@ -23,7 +34,9 @@ from document_kv_cache.workflow import (
 )
 
 CACHET_TRANSFORMERS_MODEL_ID_ENV = "CACHET_TRANSFORMERS_MODEL_ID"
+CACHET_TRANSFORMERS_MODEL_REVISION_ENV = "CACHET_TRANSFORMERS_MODEL_REVISION"
 CACHET_TRANSFORMERS_TOKENIZER_ID_ENV = "CACHET_TRANSFORMERS_TOKENIZER_ID"
+CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV = "CACHET_TRANSFORMERS_TOKENIZER_REVISION"
 CACHET_TRANSFORMERS_DEVICE_ENV = "CACHET_TRANSFORMERS_DEVICE"
 CACHET_TRANSFORMERS_TORCH_DTYPE_ENV = "CACHET_TRANSFORMERS_TORCH_DTYPE"
 CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV = "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE"
@@ -32,6 +45,13 @@ CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV = "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER
 CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV = "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON"
 CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV = "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON"
 CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV = "CACHET_TRANSFORMERS_USE_FAST_TOKENIZER"
+CACHET_TRANSFORMERS_QUANTIZATION_ENV = "CACHET_TRANSFORMERS_QUANTIZATION"
+CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV = "CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON"
+CACHET_TRANSFORMERS_DEVICE_MAP_ENV = "CACHET_TRANSFORMERS_DEVICE_MAP"
+# When truthy, capture keys BEFORE rotary position embedding (post QK-norm for
+# Qwen3) so a cached chunk is position-independent and re-roped at its true offset
+# during injection. Fixes multi-document positional inconsistency.
+CACHET_TRANSFORMERS_PRE_ROPE_ENV = "CACHET_TRANSFORMERS_PRE_ROPE"
 _CACHE_AXIS_ORDER_HEAD_MAJOR = "head_major"
 _CACHE_AXIS_ORDER_TOKEN_MAJOR = "token_major"
 _CACHE_AXIS_ORDERS = frozenset(
@@ -41,6 +61,7 @@ _CACHE_AXIS_ORDERS = frozenset(
     }
 )
 _FLOAT_KV_DTYPES = frozenset({"bf16", "bfloat16", "fp16", "float16", "fp32", "float32"})
+_FLOAT8_KV_DTYPES = frozenset({"fp8", "fp8_e4m3", "fp8_e4m3fn", "fp8_e5m2", "float8"})
 _SUPPORTED_STORAGE_LAYOUTS = frozenset(
     {
         KVStorageLayout.SEPARATE_KEY_VALUE,
@@ -53,14 +74,22 @@ __all__ = [
     "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV",
     "CACHET_TRANSFORMERS_DEVICE_ENV",
     "CACHET_TRANSFORMERS_MODEL_ID_ENV",
+    "CACHET_TRANSFORMERS_MODEL_REVISION_ENV",
     "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV",
+    "CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV",
+    "CACHET_TRANSFORMERS_QUANTIZATION_ENV",
     "CACHET_TRANSFORMERS_TOKENIZER_ID_ENV",
+    "CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV",
     "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV",
     "CACHET_TRANSFORMERS_TORCH_DTYPE_ENV",
     "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV",
     "CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV",
+    "CACHET_TRANSFORMERS_DEVICE_MAP_ENV",
+    "CACHET_TRANSFORMERS_PRE_ROPE_ENV",
     "TransformersKVGeneratorConfig",
     "TransformersKVChunkGenerator",
+    "build_post_rope_transformers_kv_chunk_generator",
+    "build_pre_rope_transformers_kv_chunk_generator",
     "build_transformers_kv_chunk_generator",
 ]
 
@@ -70,22 +99,39 @@ class TransformersKVGeneratorConfig:
     """Configuration for loading a Hugging Face causal LM as a Cachet generator."""
 
     model_id: str = QWEN3_4B_INSTRUCT_HF_MODEL_ID
+    model_revision: str | None = None
     tokenizer_id: str | None = None
+    tokenizer_revision: str | None = None
     device: str | None = None
     torch_dtype: str | None = "auto"
     trust_remote_code: bool = False
     add_special_tokens: bool = False
     cache_axis_order: str = _CACHE_AXIS_ORDER_HEAD_MAJOR
+    quantization: str | None = None
+    quantization_config: Mapping[str, Any] = field(default_factory=dict)
+    device_map: str | None = None
     model_kwargs: Mapping[str, Any] = field(default_factory=dict)
     tokenizer_kwargs: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "model_id", _non_empty_string(self.model_id, "model_id"))
+        if self.model_revision is not None:
+            object.__setattr__(
+                self,
+                "model_revision",
+                _non_empty_string(self.model_revision, "model_revision"),
+            )
         if self.tokenizer_id is not None:
             object.__setattr__(
                 self,
                 "tokenizer_id",
                 _non_empty_string(self.tokenizer_id, "tokenizer_id"),
+            )
+        if self.tokenizer_revision is not None:
+            object.__setattr__(
+                self,
+                "tokenizer_revision",
+                _non_empty_string(self.tokenizer_revision, "tokenizer_revision"),
             )
         if self.device is not None:
             object.__setattr__(self, "device", _non_empty_string(self.device, "device"))
@@ -99,10 +145,27 @@ class TransformersKVGeneratorConfig:
             raise ValueError("trust_remote_code must be a boolean")
         if type(self.add_special_tokens) is not bool:
             raise ValueError("add_special_tokens must be a boolean")
+        if self.quantization is not None:
+            object.__setattr__(
+                self,
+                "quantization",
+                _non_empty_string(self.quantization, "quantization"),
+            )
+        if self.device_map is not None:
+            object.__setattr__(
+                self,
+                "device_map",
+                _non_empty_string(self.device_map, "device_map"),
+            )
         object.__setattr__(
             self,
             "cache_axis_order",
             _cache_axis_order_from_value(self.cache_axis_order),
+        )
+        object.__setattr__(
+            self,
+            "quantization_config",
+            _json_object_mapping(self.quantization_config, "quantization_config"),
         )
         object.__setattr__(
             self,
@@ -134,8 +197,14 @@ class TransformersKVChunkGenerator:
         model: object,
         tokenizer: object,
         layout: KVLayout | None = None,
+        model_id: str = UNRESOLVED_IDENTITY,
+        model_revision: str = UNRESOLVED_IDENTITY,
+        tokenizer_id: str = UNRESOLVED_IDENTITY,
+        tokenizer_revision: str = UNRESOLVED_IDENTITY,
+        generator_version: str = UNRESOLVED_IDENTITY,
         add_special_tokens: bool = False,
         cache_axis_order: str = _CACHE_AXIS_ORDER_HEAD_MAJOR,
+        pre_rope: bool = False,
     ) -> None:
         if model is None:
             raise TypeError("model must be provided")
@@ -147,9 +216,52 @@ class TransformersKVChunkGenerator:
             layout.validate()
         self.model = model
         self.tokenizer = tokenizer
+        self.model_id = _non_empty_string(model_id, "model_id")
+        self.model_revision = _non_empty_string(model_revision, "model_revision")
+        self.tokenizer_id = _non_empty_string(tokenizer_id, "tokenizer_id")
+        self.tokenizer_revision = _non_empty_string(
+            tokenizer_revision,
+            "tokenizer_revision",
+        )
+        self.generator_family = "transformers"
+        self.generator_version = _non_empty_string(
+            generator_version,
+            "generator_version",
+        )
         self.layout = layout
         self.add_special_tokens = add_special_tokens
         self.cache_axis_order = _cache_axis_order_from_value(cache_axis_order)
+        self.pre_rope = bool(pre_rope)
+        self.position_handling = (
+            PositionHandling.REROPE_AT_INJECTION
+            if self.pre_rope
+            else PositionHandling.STORED_POST_ROPE
+        )
+        self.rope_theta: float | None = None
+        self.rope_rotary_dim: int | None = None
+        if self.pre_rope:
+            self.rope_theta, self.rope_rotary_dim = _model_rope_params(model)
+
+    def bind_layout(self, layout: KVLayout) -> None:
+        """Bind the exact caller-resolved layout without masking conflicts."""
+
+        if not isinstance(layout, KVLayout):
+            raise TypeError("layout must be a KVLayout")
+        layout.validate()
+        if layout.pre_rope != self.pre_rope:
+            raise ValueError(
+                "generator pre_rope capability conflicts with the resolved handoff layout"
+            )
+        if self.pre_rope and (
+            layout.rope_theta != self.rope_theta
+            or layout.rope_rotary_dim != self.rope_rotary_dim
+        ):
+            raise ValueError(
+                "generator RoPE geometry conflicts with the resolved handoff layout"
+            )
+        if self.layout is not None and self.layout != layout:
+            raise ValueError("generator layout conflicts with the resolved handoff layout")
+        self.layout = layout
 
     @classmethod
     def from_pretrained(
@@ -157,6 +269,7 @@ class TransformersKVChunkGenerator:
         config: TransformersKVGeneratorConfig | None = None,
         *,
         layout: KVLayout | None = None,
+        pre_rope: bool = False,
     ) -> "TransformersKVChunkGenerator":
         """Load a causal LM/tokenizer pair with optional runtime dependencies."""
 
@@ -164,6 +277,18 @@ class TransformersKVChunkGenerator:
         torch = _torch()
         transformers = _transformers()
         model_kwargs = dict(resolved.model_kwargs)
+        _set_pinned_revision(
+            model_kwargs,
+            resolved.model_revision,
+            field_name="model_kwargs.revision",
+        )
+        _apply_transformers_quantization_config(
+            transformers,
+            torch,
+            model_kwargs,
+            quantization=resolved.quantization,
+            quantization_config=resolved.quantization_config,
+        )
         if resolved.torch_dtype not in (None, "auto"):
             model_kwargs.setdefault(
                 "torch_dtype",
@@ -171,8 +296,17 @@ class TransformersKVChunkGenerator:
             )
         elif resolved.torch_dtype == "auto":
             model_kwargs.setdefault("torch_dtype", "auto")
+        if resolved.device_map is not None:
+            model_kwargs.setdefault("device_map", resolved.device_map)
+        elif resolved.device is not None and "quantization_config" in model_kwargs:
+            model_kwargs.setdefault("device_map", resolved.device)
         model_kwargs.setdefault("trust_remote_code", resolved.trust_remote_code)
         tokenizer_kwargs = dict(resolved.tokenizer_kwargs)
+        _set_pinned_revision(
+            tokenizer_kwargs,
+            resolved.tokenizer_revision,
+            field_name="tokenizer_kwargs.revision",
+        )
         tokenizer_kwargs.setdefault("trust_remote_code", resolved.trust_remote_code)
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -183,18 +317,28 @@ class TransformersKVChunkGenerator:
             resolved.model_id,
             **model_kwargs,
         )
-        if resolved.device is not None:
+        if resolved.device is not None and "device_map" not in model_kwargs:
             model = model.to(resolved.device)
         evaluator = getattr(model, "eval", None)
         if callable(evaluator):
             evaluator()
-        return cls(
+        generator = cls(
             model=model,
             tokenizer=tokenizer,
             layout=layout,
+            model_id=resolved.model_id,
+            model_revision=resolved.model_revision or UNRESOLVED_IDENTITY,
+            tokenizer_id=resolved.resolved_tokenizer_id,
+            tokenizer_revision=(
+                resolved.tokenizer_revision or UNRESOLVED_IDENTITY
+            ),
+            generator_version=_transformers_version(transformers),
             add_special_tokens=resolved.add_special_tokens,
             cache_axis_order=resolved.cache_axis_order,
+            pre_rope=pre_rope,
         )
+        generator.config = resolved
+        return generator
 
     def generate(
         self,
@@ -208,7 +352,13 @@ class TransformersKVChunkGenerator:
             raise ValueError(
                 "TransformersKVChunkGenerator does not apply training adapter artifacts"
             )
-        layout = _layout_for_config(config, self.layout)
+        layout = _layout_for_config(
+            config,
+            self.layout,
+            pre_rope=self.pre_rope,
+            rope_theta=self.rope_theta,
+            rope_rotary_dim=self.rope_rotary_dim,
+        )
         torch = _torch()
         inputs = self._tokenize(chunk.text)
         input_ids = _input_ids(inputs)
@@ -217,11 +367,22 @@ class TransformersKVChunkGenerator:
             raise ValueError("tokenized chunk must contain at least one token")
         inputs = _inputs_to_device(inputs, _model_device(self.model))
         forward_kwargs = _kv_generation_forward_kwargs(self.model)
-        with torch.no_grad():
-            outputs = self.model(**inputs, use_cache=True, **forward_kwargs)
-        past_key_values = _past_key_values(outputs)
+        if self.pre_rope:
+            with torch.no_grad(), _capture_pre_rope_keys(self.model) as captured_keys:
+                outputs = self.model(**inputs, use_cache=True, **forward_kwargs)
+            post_cache = _legacy_past_key_values(_past_key_values(outputs))
+            source_cache = _pre_rope_cache(
+                captured_keys,
+                post_cache,
+                rope_theta=self.rope_theta,
+                rotary_dim=self.rope_rotary_dim,
+            )
+        else:
+            with torch.no_grad():
+                outputs = self.model(**inputs, use_cache=True, **forward_kwargs)
+            source_cache = _past_key_values(outputs)
         payload = _payload_from_past_key_values(
-            past_key_values,
+            source_cache,
             token_count=token_count,
             layout=layout,
             cache_axis_order=self.cache_axis_order,
@@ -240,6 +401,14 @@ class TransformersKVChunkGenerator:
                 chunk_type=chunk.chunk_type,
                 chunk_id=chunk.chunk_id,
                 content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout),
+                token_contract=TokenContract.from_token_ids(
+                    _token_id_tuple(input_ids),
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=self.add_special_tokens,
+                    prompt_template_version=config.prompt_template_version,
+                ),
             ),
             payload=payload,
             token_count=token_count,
@@ -258,13 +427,41 @@ class TransformersKVChunkGenerator:
             raise TypeError("tokenizer must return a mapping")
         return encoded
 
+    def logical_token_count(self, text: str) -> int:
+        """Count a logical prompt with the exact tokenizer/load configuration."""
+
+        return int(_input_ids(self._tokenize(text)).shape[-1])
+
 
 def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
     """Build a Transformers generator from Cachet environment variables."""
 
+    return _build_transformers_kv_chunk_generator(
+        pre_rope=_env_bool(CACHET_TRANSFORMERS_PRE_ROPE_ENV, default=False),
+    )
+
+
+def build_post_rope_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
+    """Build the canonical full-prefix generator with stored post-RoPE keys."""
+
+    return _build_transformers_kv_chunk_generator(pre_rope=False)
+
+
+def build_pre_rope_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
+    """Build the canonical Vanilla generator with position-independent keys."""
+
+    return _build_transformers_kv_chunk_generator(pre_rope=True)
+
+
+def _build_transformers_kv_chunk_generator(
+    *,
+    pre_rope: bool,
+) -> TransformersKVChunkGenerator:
     config = TransformersKVGeneratorConfig(
         model_id=_env_string(CACHET_TRANSFORMERS_MODEL_ID_ENV, default=QWEN3_4B_INSTRUCT_HF_MODEL_ID),
+        model_revision=_env_string(CACHET_TRANSFORMERS_MODEL_REVISION_ENV),
         tokenizer_id=_env_string(CACHET_TRANSFORMERS_TOKENIZER_ID_ENV),
+        tokenizer_revision=_env_string(CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV),
         device=_env_string(CACHET_TRANSFORMERS_DEVICE_ENV),
         torch_dtype=_env_string(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, default="auto"),
         trust_remote_code=_env_bool(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, default=False),
@@ -273,10 +470,16 @@ def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
             CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
             default=_CACHE_AXIS_ORDER_HEAD_MAJOR,
         ),
+        quantization=_env_string(CACHET_TRANSFORMERS_QUANTIZATION_ENV),
+        quantization_config=_env_json_object(CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV),
+        device_map=_env_string(CACHET_TRANSFORMERS_DEVICE_MAP_ENV),
         model_kwargs=_env_json_object(CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV),
         tokenizer_kwargs=_tokenizer_kwargs_from_env(),
     )
-    return TransformersKVChunkGenerator.from_pretrained(config)
+    return TransformersKVChunkGenerator.from_pretrained(
+        config,
+        pre_rope=pre_rope,
+    )
 
 
 def _tokenizer_kwargs_from_env() -> dict[str, Any]:
@@ -287,7 +490,14 @@ def _tokenizer_kwargs_from_env() -> dict[str, Any]:
     return kwargs
 
 
-def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | None) -> KVLayout:
+def _layout_for_config(
+    config: CacheBuildConfig,
+    explicit_layout: KVLayout | None,
+    *,
+    pre_rope: bool,
+    rope_theta: float | None,
+    rope_rotary_dim: int | None,
+) -> KVLayout:
     if explicit_layout is None:
         layout = layout_for_model(
             config.model_id,
@@ -295,6 +505,11 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
             lora_id=config.lora_id,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
+            payload_axis_order=config.payload_axis_order,
+            pre_rope=pre_rope,
+            rope_theta=rope_theta if pre_rope else None,
+            rope_rotary_dim=rope_rotary_dim if pre_rope else None,
+            shares_kv_storage=False if pre_rope else None,
         )
     else:
         layout = explicit_layout
@@ -305,6 +520,10 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
         "dtype": config.dtype,
         "layout_version": config.layout_version,
         "storage_layout": config.storage_layout,
+        "payload_axis_order": kv_payload_axis_order_from_value(config.payload_axis_order),
+        "pre_rope": pre_rope,
+        "rope_theta": rope_theta if pre_rope else None,
+        "rope_rotary_dim": rope_rotary_dim if pre_rope else None,
     }
     actual = {
         "model_id": layout.model_id,
@@ -312,6 +531,10 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
         "dtype": layout.dtype,
         "layout_version": layout.layout_version,
         "storage_layout": layout.storage_layout,
+        "payload_axis_order": layout.payload_axis_order,
+        "pre_rope": layout.pre_rope,
+        "rope_theta": layout.rope_theta,
+        "rope_rotary_dim": layout.rope_rotary_dim,
     }
     mismatches = tuple(name for name, value in expected.items() if actual[name] != value)
     if mismatches:
@@ -326,7 +549,8 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
         )
     if _dtype_kind(layout.dtype) != "float":
         raise ValueError(
-            "Transformers KV generation requires a floating KV dtype such as bfloat16 or float16"
+            "Transformers KV generation requires a floating KV dtype or FP8 dtype "
+            "such as bfloat16, float16, fp8, fp8_e4m3, or fp8_e5m2"
         )
     if layout.storage_layout not in _SUPPORTED_STORAGE_LAYOUTS:
         supported = ", ".join(layout.value for layout in sorted(_SUPPORTED_STORAGE_LAYOUTS))
@@ -370,15 +594,27 @@ def _payload_from_past_key_values(
             cache_axis_order=cache_axis_order,
         )
         layer_values = _layer_values(key_values, value_values, dtype=dtype, layout=layout)
+        layer_major = layout.payload_axis_order == KVPayloadAxisOrder.LAYER_MAJOR
         if payload_tensor is None:
             # Keep the full token/layer payload in CPU memory; long L4 runs cannot
             # afford an extra all-layer stack on top of model-owned GPU KV tensors.
+            # token-major: [token, layer, K/V, kv_head, head_dim]; layer-major:
+            # [layer, token, K/V, kv_head, head_dim] so one layer's token span is
+            # contiguous (enables per-layer streaming in the vLLM provider).
+            outer_shape = (
+                (len(legacy_cache), token_count)
+                if layer_major
+                else (token_count, len(legacy_cache))
+            )
             payload_tensor = torch.empty(
-                (token_count, len(legacy_cache), *tuple(layer_values.shape[1:])),
+                (*outer_shape, *tuple(layer_values.shape[1:])),
                 dtype=layer_values.dtype,
                 device="cpu",
             )
-        payload_tensor[:, layer_index, ...].copy_(layer_values)
+        if layer_major:
+            payload_tensor[layer_index].copy_(layer_values)
+        else:
+            payload_tensor[:, layer_index, ...].copy_(layer_values)
         del key_values, value_values, layer_values
         _empty_cuda_cache(torch)
     if payload_tensor is None:  # pragma: no cover - layout validation should reject this first.
@@ -467,8 +703,12 @@ def _normalize_cache_tensor(
 
 def _layer_values(key: object, value: object, *, dtype: object, layout: KVLayout) -> object:
     torch = _torch()
-    key = key.to(device="cpu", dtype=dtype).contiguous()
-    value = value.to(device="cpu", dtype=dtype).contiguous()
+    if _dtype_is_float8(layout.dtype):
+        key = key.to(device="cpu", dtype=dtype).contiguous().view(torch.uint8)
+        value = value.to(device="cpu", dtype=dtype).contiguous().view(torch.uint8)
+    else:
+        key = key.to(device="cpu", dtype=dtype).contiguous()
+        value = value.to(device="cpu", dtype=dtype).contiguous()
     key = _pad_kv_stride(key, layout=layout)
     value = _pad_kv_stride(value, layout=layout)
     return torch.stack((key, value), dim=1).contiguous()
@@ -501,7 +741,33 @@ def _pad_kv_stride(tensor: object, *, layout: KVLayout) -> object:
 
 def _tensor_bytes(tensor: object) -> bytes:
     torch = _torch()
-    return tensor.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
+    byte_tensor = tensor.detach().cpu().contiguous().view(torch.uint8)
+    byte_count = int(byte_tensor.numel())
+    if byte_count == 0:
+        return b""
+    if byte_count < 0:
+        raise ValueError("tensor byte count must not be negative")
+    data_ptr = int(byte_tensor.data_ptr())
+    if data_ptr <= 0:
+        raise ValueError("non-empty tensor must expose a non-null data pointer")
+    if byte_count > sys.maxsize:
+        raise OverflowError("tensor byte count exceeds CPython Py_ssize_t capacity")
+    if sys.implementation.name != "cpython":
+        raise RuntimeError("tensor byte serialization requires the CPython C API")
+    try:
+        bytes_from_pointer = ctypes.pythonapi.PyBytes_FromStringAndSize
+    except AttributeError as exc:
+        raise RuntimeError("CPython PyBytes_FromStringAndSize is unavailable") from exc
+    bytes_from_pointer.argtypes = (ctypes.c_void_p, ctypes.c_ssize_t)
+    bytes_from_pointer.restype = ctypes.py_object
+    # Keep ``byte_tensor`` alive while CPython copies directly into the final bytes object.
+    payload = bytes_from_pointer(
+        ctypes.c_void_p(data_ptr),
+        ctypes.c_ssize_t(byte_count),
+    )
+    if not isinstance(payload, bytes):
+        raise RuntimeError("CPython PyBytes_FromStringAndSize returned a non-bytes value")
+    return payload
 
 
 def _input_ids(inputs: Mapping[str, object]) -> object:
@@ -512,6 +778,11 @@ def _input_ids(inputs: Mapping[str, object]) -> object:
     if input_ids.ndim != 2 or input_ids.shape[0] != 1:
         raise ValueError("tokenizer input_ids must have shape [1, tokens]")
     return input_ids
+
+
+def _token_id_tuple(input_ids: object) -> tuple[int, ...]:
+    values = input_ids.detach().to(device="cpu").reshape(-1).tolist()
+    return tuple(int(value) for value in values)
 
 
 def _inputs_to_device(inputs: Mapping[str, object], device: object | None) -> dict[str, object]:
@@ -535,6 +806,199 @@ def _model_device(model: object) -> object | None:
         except (StopIteration, TypeError):
             return None
     return None
+
+
+def _model_rope_params(model: object) -> tuple[float, int]:
+    """Read ``(rope_theta, rotary_dim)`` from a loaded HF model.
+
+    Robust across transformers versions: newer configs moved the rope base into a
+    ``rope_parameters``/``rope_scaling`` dict instead of a top-level ``rope_theta``,
+    and multimodal configs nest it under ``text_config``/``get_text_config()``. As a
+    version-agnostic fallback the base is derived from the rotary embedding's
+    ``inv_freq`` buffer. Correctness is ultimately gated by the generation self-check.
+    """
+    config = getattr(model, "config", None)
+    configs: list[Any] = []
+    getter = getattr(config, "get_text_config", None)
+    if callable(getter):
+        try:
+            resolved = getter()
+        except Exception:
+            resolved = None
+        if resolved is not None:
+            configs.append(resolved)
+    for candidate in (getattr(config, "text_config", None), config):
+        if candidate is not None and all(candidate is not existing for existing in configs):
+            configs.append(candidate)
+
+    def _find(attr: str) -> Any:
+        for cfg in configs:
+            value = getattr(cfg, attr, None)
+            if value is not None:
+                return value
+        return None
+
+    rope_theta = _find("rope_theta")
+    if rope_theta is None:
+        for key in ("rope_parameters", "rope_scaling"):
+            params = _find(key)
+            if isinstance(params, Mapping):
+                for name in ("rope_theta", "theta", "base"):
+                    if params.get(name) is not None:
+                        rope_theta = params.get(name)
+                        break
+            if rope_theta is not None:
+                break
+
+    head_dim = _find("head_dim")
+    if not head_dim:
+        hidden = _find("hidden_size")
+        heads = _find("num_attention_heads")
+        if hidden and heads:
+            head_dim = int(hidden) // int(heads)
+    partial = _find("partial_rotary_factor") or 1.0
+
+    if rope_theta is None or not head_dim:
+        theta_iv, rotary_dim_iv = _rope_params_from_inv_freq(model)
+        if rope_theta is None:
+            rope_theta = theta_iv
+        if not head_dim and rotary_dim_iv:
+            head_dim = rotary_dim_iv
+            partial = 1.0
+
+    if rope_theta is None:
+        sample = sorted({k for cfg in configs for k in vars(cfg)}) if configs else []
+        raise ValueError(
+            "model config does not expose rope_theta (checked rope_theta, rope_parameters, "
+            f"rope_scaling, and rotary inv_freq); available config attrs: {sample[:50]}"
+        )
+    if not head_dim:
+        raise ValueError("model config does not expose head_dim; cannot store pre-RoPE keys")
+    rotary_dim = int(round(int(head_dim) * float(partial)))
+    if rotary_dim % 2 != 0:
+        rotary_dim -= 1
+    return float(rope_theta), int(rotary_dim)
+
+
+def _rope_params_from_inv_freq(model: object) -> tuple[float | None, int | None]:
+    """Derive ``(rope_theta, rotary_dim)`` from a rotary embedding's ``inv_freq`` buffer.
+
+    For standard RoPE ``inv_freq[i] = theta**(-2i/rotary_dim)``, so a log-linear fit
+    of ``inv_freq`` recovers ``theta`` and ``2*len(inv_freq)`` is the rotary dim. This
+    is independent of config attribute names; a non-power-law schedule (e.g. YaRN) is
+    caught by the generation self-check.
+    """
+    torch = _torch()
+    modules = getattr(model, "modules", None)
+    if not callable(modules):
+        return None, None
+    for module in modules():
+        inv = getattr(module, "inv_freq", None)
+        if inv is None or not hasattr(inv, "numel") or inv.numel() < 2:
+            continue
+        inv = inv.detach().to("cpu", torch.float64)
+        rotary_dim = int(inv.numel() * 2)
+        idx = torch.arange(inv.numel(), dtype=torch.float64)
+        log_inv = torch.log(inv)
+        denom = float(((idx - idx.mean()) ** 2).sum())
+        if denom <= 0:
+            continue
+        slope = float(((idx - idx.mean()) * (log_inv - log_inv.mean())).sum() / denom)
+        theta = math.exp(-slope * rotary_dim / 2.0)
+        if theta > 1.0:
+            return float(theta), rotary_dim
+    return None, None
+
+
+@contextmanager
+def _capture_pre_rope_keys(model: object):
+    """Patch the model module's ``apply_rotary_pos_emb`` to record pre-RoPE keys.
+
+    Yields a list that, after the forward pass, holds one key tensor per attention
+    layer (in execution order), each captured BEFORE rotary is applied (for Qwen3
+    this is post-QK-norm). The original function is always restored.
+    """
+    import importlib
+
+    module_name = type(model).__module__
+    module = importlib.import_module(module_name)
+    original = getattr(module, "apply_rotary_pos_emb", None)
+    if not callable(original):
+        raise RuntimeError(
+            f"cannot capture pre-RoPE keys: module {module_name!r} has no callable "
+            "apply_rotary_pos_emb (model architecture unsupported for pre-RoPE storage)"
+        )
+    captured: list[Any] = []
+
+    def _patched(q: Any, k: Any, *args: Any, **kwargs: Any) -> Any:
+        captured.append(k.detach())
+        return original(q, k, *args, **kwargs)
+
+    setattr(module, "apply_rotary_pos_emb", _patched)
+    try:
+        yield captured
+    finally:
+        setattr(module, "apply_rotary_pos_emb", original)
+
+
+def _pre_rope_cache(
+    captured_keys: list[Any],
+    post_cache: tuple[Any, ...],
+    *,
+    rope_theta: float | None,
+    rotary_dim: int | None,
+) -> tuple[tuple[Any, Any], ...]:
+    """Build a legacy ``[(pre_rope_K, V), ...]`` cache and self-check the rotation.
+
+    Values come from the model's post-RoPE cache (V is not rotated); keys are the
+    captured pre-RoPE tensors. As a correctness gate, re-roping the first layer's
+    pre-RoPE keys at their local positions must reconstruct the model's own
+    post-RoPE keys — otherwise the capture point or rope params are wrong.
+    """
+    if len(captured_keys) != len(post_cache):
+        raise ValueError(
+            f"captured pre-RoPE key count {len(captured_keys)} != layer count {len(post_cache)}; "
+            "apply_rotary_pos_emb was not called once per layer"
+        )
+    post_key0, _ = _key_value_pair(post_cache[0], layer_index=0)
+    _verify_rope_reconstruction(captured_keys[0], post_key0, rope_theta=rope_theta, rotary_dim=rotary_dim)
+    layers: list[tuple[Any, Any]] = []
+    for index in range(len(post_cache)):
+        _, value = _key_value_pair(post_cache[index], layer_index=index)
+        layers.append((captured_keys[index], value))
+    return tuple(layers)
+
+
+def _verify_rope_reconstruction(
+    pre_key: Any,
+    post_key: Any,
+    *,
+    rope_theta: float | None,
+    rotary_dim: int | None,
+) -> None:
+    torch = _torch()
+    from document_kv_cache.rope import apply_rope_to_keys
+
+    if getattr(pre_key, "dim", None) is None or pre_key.dim() != 4:
+        raise ValueError("captured pre-RoPE key must have shape [batch, kv_heads, seq, head_dim]")
+    if tuple(post_key.shape) != tuple(pre_key.shape):
+        raise ValueError(
+            f"pre/post-RoPE key shapes differ: {tuple(pre_key.shape)} vs {tuple(post_key.shape)}"
+        )
+    _, _, seq, head_dim = pre_key.shape
+    pre = pre_key[0].transpose(0, 1).to(torch.float32)  # [seq, kv_heads, head_dim]
+    post = post_key[0].transpose(0, 1).to(torch.float32)
+    positions = torch.arange(seq, device=pre.device)
+    reconstructed = apply_rope_to_keys(pre, positions, rope_theta=rope_theta, rotary_dim=rotary_dim)
+    max_err = (reconstructed - post).abs().max().item()
+    scale = max(post.abs().max().item(), 1.0)
+    if max_err > 0.02 * scale + 1e-3:
+        raise ValueError(
+            "pre-RoPE self-check failed: re-roping captured keys at local positions deviates from "
+            f"the model's post-RoPE keys by {max_err:.4g} (scale {scale:.4g}). "
+            f"rope_theta={rope_theta}, rotary_dim={rotary_dim}, head_dim={head_dim}. "
+            "The capture point or rope parameters are incorrect."
+        )
 
 
 def _past_key_values(outputs: object) -> object:
@@ -565,6 +1029,69 @@ def _callable_accepts_keyword(callable_object: object, keyword: str) -> bool:
     return keyword in parameters
 
 
+def _apply_transformers_quantization_config(
+    transformers: object,
+    torch: object,
+    model_kwargs: dict[str, Any],
+    *,
+    quantization: str | None,
+    quantization_config: Mapping[str, Any],
+) -> None:
+    existing = model_kwargs.get("quantization_config")
+    if existing is not None:
+        if isinstance(existing, Mapping):
+            model_kwargs["quantization_config"] = _bitsandbytes_config(
+                transformers,
+                torch,
+                existing,
+            )
+        return
+    if quantization is None:
+        return
+    normalized = quantization.strip().lower().replace("_", "-")
+    if normalized in {"bitsandbytes", "bitsandbytes-4bit", "bnb", "bnb-4bit", "4bit"}:
+        model_kwargs["quantization_config"] = _bitsandbytes_config(
+            transformers,
+            torch,
+            {"load_in_4bit": True, **dict(quantization_config)},
+        )
+        return
+    if normalized in {"bitsandbytes-8bit", "bnb-8bit", "8bit"}:
+        model_kwargs["quantization_config"] = _bitsandbytes_config(
+            transformers,
+            torch,
+            {"load_in_8bit": True, **dict(quantization_config)},
+        )
+        return
+    raise ValueError(
+        "Unsupported Transformers quantization "
+        f"{quantization!r}; expected bitsandbytes-4bit or bitsandbytes-8bit"
+    )
+
+
+def _bitsandbytes_config(
+    transformers: object,
+    torch: object,
+    values: Mapping[str, Any],
+) -> object:
+    config_type = getattr(transformers, "BitsAndBytesConfig", None)
+    if config_type is None:
+        raise ValueError("Transformers runtime does not expose BitsAndBytesConfig")
+    kwargs = {
+        str(key): _transformers_quantization_value(torch, str(key), value)
+        for key, value in values.items()
+    }
+    return config_type(**kwargs)
+
+
+def _transformers_quantization_value(torch: object, key: str, value: Any) -> Any:
+    if isinstance(value, str) and (
+        key.endswith("_dtype") or key.endswith("_quant_storage")
+    ):
+        return _torch_dtype_from_name(torch, value)
+    return value
+
+
 def _torch_dtype_from_name(torch: object, dtype: str) -> object:
     normalized = dtype.lower()
     mapping = {
@@ -574,7 +1101,18 @@ def _torch_dtype_from_name(torch: object, dtype: str) -> object:
         "float16": torch.float16,
         "fp32": torch.float32,
         "float32": torch.float32,
+        "uint8": torch.uint8,
     }
+    if normalized in {"fp8", "fp8_e4m3", "fp8_e4m3fn", "float8"}:
+        try:
+            return torch.float8_e4m3fn
+        except AttributeError as exc:  # pragma: no cover - depends on torch build.
+            raise ValueError("Torch runtime does not support float8_e4m3fn") from exc
+    if normalized == "fp8_e5m2":
+        try:
+            return torch.float8_e5m2
+        except AttributeError as exc:  # pragma: no cover - depends on torch build.
+            raise ValueError("Torch runtime does not support float8_e5m2") from exc
     try:
         return mapping[normalized]
     except KeyError as exc:
@@ -582,7 +1120,11 @@ def _torch_dtype_from_name(torch: object, dtype: str) -> object:
 
 
 def _dtype_kind(dtype: str) -> str:
-    return "float" if dtype.lower() in _FLOAT_KV_DTYPES else "other"
+    return "float" if dtype.lower() in (_FLOAT_KV_DTYPES | _FLOAT8_KV_DTYPES) else "other"
+
+
+def _dtype_is_float8(dtype: str) -> bool:
+    return dtype.lower() in _FLOAT8_KV_DTYPES
 
 
 def _cache_axis_order_from_value(value: object) -> str:
@@ -593,6 +1135,29 @@ def _cache_axis_order_from_value(value: object) -> str:
         supported = ", ".join(sorted(_CACHE_AXIS_ORDERS))
         raise ValueError(f"Unsupported cache_axis_order {value!r}; supported values: {supported}")
     return normalized
+
+
+def _set_pinned_revision(
+    kwargs: dict[str, Any],
+    revision: str | None,
+    *,
+    field_name: str,
+) -> None:
+    if revision is None:
+        return
+    existing = kwargs.get("revision")
+    if existing is not None and existing != revision:
+        raise ValueError(
+            f"{field_name} conflicts with the pinned revision {revision!r}"
+        )
+    kwargs["revision"] = revision
+
+
+def _transformers_version(transformers: object) -> str:
+    version = getattr(transformers, "__version__", None)
+    if not isinstance(version, str) or not version:
+        return UNRESOLVED_IDENTITY
+    return version
 
 
 def _torch() -> Any:

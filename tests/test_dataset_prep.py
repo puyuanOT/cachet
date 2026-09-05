@@ -9,6 +9,8 @@ from document_kv_cache.dataset_prep import (
     convert_v1_jsonl,
     main,
     normalize_v1_record,
+    opaque_biography_example_id,
+    redact_biography_document_text,
     write_v1_jsonl,
 )
 
@@ -23,20 +25,63 @@ def test_normalize_biography_builds_query_answer_and_document_from_subject_field
         dataset="biography",
     )
 
+    opaque_id = opaque_biography_example_id("ada-lovelace", split="dev")
     assert record == {
         "dataset": "biography",
-        "example_id": "ada-lovelace",
-        "query": "Which person is described in the biography?",
+        "example_id": opaque_id,
+        "query": "Which entity is described in the biography?",
         "expected_answer": "Ada Lovelace",
         "documents": [
             {
-                "document_id": "ada-lovelace",
-                "title": "Ada Lovelace",
-                "text": "Ada Lovelace wrote notes on the Analytical Engine.",
+                "document_id": f"{opaque_id}-doc-0",
+                "text": "the subject wrote notes on the Analytical Engine.",
             }
         ],
-        "metadata": {"split": "dev"},
+        "metadata": {
+            "split": "dev",
+            "benchmark_task": "biography_entity_identification",
+            "benchmark_task_version": "2",
+            "answer_bearing_document_metadata": "removed",
+            "answer_surface_in_document_context": "redacted",
+        },
     }
+
+
+def test_redact_biography_document_text_tolerates_terminal_title_punctuation():
+    assert redact_biography_document_text(
+        "Lowell Thomas , Jr. was a pilot. Lowell Thomas , Jr also served in office.",
+        expected_answer="lowell thomas , jr. .",
+    ) == "the subject. was a pilot. the subject also served in office."
+
+
+def test_normalize_biography_redacts_gold_surface_from_all_document_text_fields():
+    record = normalize_v1_record(
+        {
+            "name": "D'Angelo Russell",
+            "documents": [
+                {
+                    "title": "D'Angelo Russell",
+                    "static_text": "D'ANGELO RUSSELL was a guard.",
+                    "chunks": [
+                        "D'Angelo Russell played basketball.",
+                        {
+                            "chunk_id": "later",
+                            "text": "A team drafted D'Angelo Russell.",
+                        },
+                    ],
+                    "metadata": {"name": "D'Angelo Russell", "split": "dev"},
+                }
+            ],
+        },
+        dataset="biography",
+    )
+
+    serialized_documents = json.dumps(record["documents"], sort_keys=True).casefold()
+    assert "d'angelo russell" not in serialized_documents
+    assert serialized_documents.count("the subject") == 3
+    assert record["documents"][0]["document_id"].startswith("biography-")
+    assert "title" not in record["documents"][0]
+    assert "name" not in record["documents"][0].get("metadata", {})
 
 
 def test_normalize_hotpotqa_converts_context_pairs_to_canonical_documents():
@@ -81,6 +126,30 @@ def test_normalize_musique_converts_paragraphs_to_documents():
         {"document_id": "France", "title": "France", "text": "Paris is in France."},
         {"document_id": "p2", "text": "Berlin is in Germany."},
     ]
+
+
+def test_normalize_and_write_musique_preserves_primary_answer_and_aliases(tmp_path):
+    record = normalize_v1_record(
+        {
+            "id": "mq-alias",
+            "question": "Which city?",
+            "answer": "New York City",
+            "answer_aliases": ["NYC", "New York"],
+            "paragraphs": [{"idx": 0, "paragraph_text": "The city is described."}],
+        },
+        dataset="musique",
+    )
+    output_path = tmp_path / "musique.jsonl"
+
+    write_v1_jsonl((record,), output_path)
+    loaded = load_benchmark_jsonl(
+        output_path,
+        dataset="musique",
+        require_dataset=True,
+    )
+
+    assert record["references"] == ["New York City", "NYC", "New York"]
+    assert loaded[0].references == ("New York City", "NYC", "New York")
 
 
 def test_build_niah_record_inserts_needle_when_missing():

@@ -17,19 +17,19 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Integrate with established serving platforms instead of custom solvers | Implemented | `engine_adapters.py`, `engine_probe.py`, `native_probe_factories.py`, `openai_compatible.py`, and `CONTRIBUTING.md` keep engine-specific work at the vLLM/SGLang handoff boundary. QA run `934698284395881` completed vLLM and SGLang provider-backed native probes plus connector action descriptors against real vLLM and SGLang native block managers on `g6.8xlarge`. | Run connector action descriptor validation whenever connector contracts change, then keep the refreshed native probe/action records in the strict release bundle. |
-| Use Poetry with pinned dependencies | Implemented | `pyproject.toml` pins package, test, and Databricks dependencies with exact `==` requirements; `poetry.lock` records the resolver output; CI runs `poetry check --lock`. `dependency_freshness.py` and `docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json` record the current freshness policy: direct pins for `poetry-core`, `packaging`, `pyspark`, `databricks-sdk`, and `pytest` match the supplied latest stable versions; isolated vLLM/SGLang serving-profile pins are exact; non-latest runtime holds for `sglang`, `tokenizers`, `numpy`, `fastapi`, and `prometheus-fastapi-instrumentator` carry Databricks-validation upgrade reasons; and the resolver-held `protobuf==6.33.6` drift is explained by the current `databricks-sdk==0.118.0` protobuf constraint. Strict release bundles require the matching dependency freshness sidecar. | Keep direct package pins current, refresh the dependency-freshness evidence before each release, include the dependency freshness sidecar in the strict release bundle, and rerun the relevant g6/L4 Databricks smoke or benchmark before upgrading non-latest serving-profile runtime pins. |
-| Load KV ranges from Memory, Disk, and Unity Catalog | Implemented | `storage.py`, `materializer.py`, `service.py`, and `storage_benchmark.py` cover Memory, Disk, UC Volume, and routed readers. QA run `948365719597221` produced Memory, Disk, and real Unity Catalog storage-reader evidence; its run-status sidecar has been regenerated with current strict bundle schema and included in the complete strict release bundle. | Re-run storage evidence whenever storage readers, UC access patterns, or bundle schema gates change. |
+| Integrate with established serving platforms instead of custom solvers | Implemented | `engine_adapters.py`, `engine_probe.py`, `native_probe_factories.py`, `openai_compatible.py`, and `CONTRIBUTING.md` keep engine-specific work at the vLLM/SGLang handoff boundary. The implementation retains probes against real vLLM and SGLang native block managers, but superseded run evidence is not carried into the reset. | Run connector action descriptor validation against the frozen 0.27.1 runtime whenever connector contracts change, then keep only the refreshed native probe/action records in the strict release bundle. |
+| Use Poetry with pinned dependencies | Implemented | `pyproject.toml` pins package, test, and Databricks dependencies with exact `==` requirements; `poetry.lock` records the resolver output; CI runs `poetry check --lock`. `dependency_freshness.py` and `docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json` record the current freshness policy: direct pins for `poetry-core`, `packaging`, `pyspark`, `databricks-sdk`, and `pytest` match the supplied latest stable versions; isolated vLLM/SGLang serving-profile pins are exact; fresh vLLM Q4-materializer runtime pins include `bitsandbytes` and `accelerate`; non-latest runtime holds for `sglang`, `tokenizers`, `numpy`, `fastapi`, and `prometheus-fastapi-instrumentator` carry Databricks-validation upgrade reasons; and the resolver-held `protobuf==6.33.6` drift is explained by the current `databricks-sdk==0.118.0` protobuf constraint. Strict release bundles require the matching dependency freshness sidecar. | Keep direct package pins current, refresh the dependency-freshness evidence before each release, include the dependency freshness sidecar in the strict release bundle, and rerun the relevant g6/L4 Databricks smoke or benchmark before upgrading non-latest serving-profile runtime pins. |
+| Load KV ranges from Memory, Disk, and Unity Catalog | Release-gated | `storage.py`, `materializer.py`, `service.py`, and `storage_benchmark.py` cover Memory, Disk, UC Volume, and routed readers. The public storage table has been reset and contains no current numeric evidence. | Run the frozen vLLM 0.27.1 campaign for every implemented storage cell, retain backend-correlated cache-state attestation, and publish only qualified results. |
 | Keep the repository clean | Implemented | `.gitignore`, `repository_hygiene.py`, directory README/docstring tests, credential scanning tests, and PR evidence validation guard generated files and secrets. | Include repository hygiene sidecar in the strict release bundle. |
 
 ## V1 Scope And Benchmarking
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars are bundled for the current `cachet-kv` benchmark run `872615985402004`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `566743786103032` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. `benchmarks/current/` is the concise human-facing benchmark index. Standalone human-readable benchmark report folders under `benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and `benchmarks/native-engine/` summarize the results and status and include compact sanitized JSON evidence beside each dated report README, while `benchmarks/databricks/` mirrors release-source records for bundle and Databricks run-status audits. The latest validated strict-bundle snapshot was built after PR #513 with the current wheel and validates with 37 artifacts, carries the SGLang live V1 benchmark sidecar, carries the g5 report in the `compatibility_benchmark` artifact role plus the matching g5 run status in the `compatibility_databricks_run_status` role, includes PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence, includes `legacy_migration_evidence` for the removed restaurant facade, and includes `dependency_freshness` evidence. Traceability-only PR evidence added after that snapshot must be included in the next publication bundle refresh; compatibility artifacts cannot substitute for the strict release target. | Keep g6/L4 and g5/A10G evidence refreshed when benchmark, model, native connector contracts, package wheel identity, PR evidence, dependency freshness, or standalone benchmark folders change. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the `aws-g6-l4` target. The benchmark index records the frozen vLLM 0.27.1 campaign contract, but all result cells remain pending. | Qualify the final source, wheel, runtime, and inputs; complete all five independent deployment blocks; then publish a new strict bundle. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
-| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. Current QA benchmark run `872615985402004` produced vLLM `document_kv.benchmark_run.v1` evidence from the tested `cachet_kv-0.2.0-py3-none-any.whl` with 24 measurements, 4 comparisons, zero quality deltas, TTFT speedups from 5.27x to 6.97x, and time-to-completion speedups from 1.74x to 2.25x; the same sanitized report is tracked in `benchmarks/databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/`. Release evidence over that benchmark plus the current storage and native vLLM/SGLang probe/action sidecars is `ok=true`. SGLang QA run `238535418152934` produced synthetic live `cachet.sglang_live_benchmark.v1` evidence on `g6.8xlarge` with 4 measurements, validated 175-token Cachet-backed cache hits in both cache repeats, zero quality deltas, and no speedup on the tiny prompt; the sanitized report is tracked in `benchmarks/sglang/qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/`. SGLang prepared V1 run `48413356233422` produced a successful `cachet.sglang_live_benchmark.v1` release-suite record across Biography, HotpotQA, MusiQue, and NIAH on `g6.8xlarge`, with 16 measurements, 8/8 validated Cachet-backed cache hits, zero quality deltas, TTFT speedups from 0.313x to 0.966x, and time-to-completion speedups from 0.891x to 0.966x; the compact sanitized report is tracked in `benchmarks/sglang/qwen3-4b-g6-l4-vanilla-kv-prepared/`, while strict release bundles consume raw live benchmark sidecars through the dedicated `sglang_live_v1_benchmark` artifact role. | Re-run, re-bundle, and refresh standalone benchmark folders whenever benchmark code, runtime pins, connector behavior, package wheel identity, or SGLang live benchmark validation changes. |
-| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. Current QA benchmark run `872615985402004` completed Biography, HotpotQA, MusiQue, and NIAH with bundled release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, native connector behavior, or package wheel identity changes. |
+| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. The public tables are a vLLM 0.27.1-campaign-pending skeleton: implemented cells are pending and unsupported methods remain explicit `N/A`. | Complete the Baseline/Vanilla 8k/16k/32k by concurrency 1/2/4 factorial across five independent deployment blocks, all implemented ablations, and corrected full-dataset scoring before publishing numbers. |
+| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. No prior run is accepted as evidence for the frozen vLLM 0.27.1 campaign. | Keep all four datasets in the strict release bundle and complete the corrected full-dataset evaluation without padding or truncating the score population. |
 | Compare against standard no-cache prefill | Implemented | Benchmark summaries require a `baseline_prefill` arm and cache-arm comparisons with logical/runtime prompt accounting. | Target release evidence must include finite baseline and cache measurements. |
 
 ## Architecture And Extensibility
@@ -62,84 +62,36 @@ mean:
 
 ## Remaining V1 Release Gates
 
-- Target g6/L4 benchmark evidence exists for
-  `cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main`
-  from QA Databricks run `872615985402004` on a single-node `g6.8xlarge`: all
-  four datasets completed with no benchmark errors, 24 measurements, 4
-  cache-vs-baseline comparisons, answer-found and exact-match deltas of zero,
-  TTFT speedups of 5.27x-6.97x, and time-to-completion speedups of 1.74x-2.25x.
-  The installed package was `cachet_kv-0.2.0-py3-none-any.whl`, the vLLM import
-  probe reported `DocumentKVNativeProvider`, and the vLLM server log recorded
-  external prefix-cache hits plus successful Cachet layer loads
-  (`document_kv_layers_loaded=36`, `document_kv_load_error_blocks=0`).
-- Current g5/A10G compatibility benchmark evidence exists for
-  `cachet_vllm_hot_payload_g5_longcmp_388ea0a_20260623_162302_repeat3_cache8g_cachet_kv_current_main`
-  from QA Databricks run `566743786103032` on a single-node `g5.8xlarge`: all
-  four datasets completed with no benchmark errors, 24 measurements, 4
-  cache-vs-baseline comparisons, `v1_evidence.ok=true`, TTFT speedups of
-  4.66x-6.04x, and time-to-completion speedups of 2.04x-2.67x. Release
-  evidence over that g5 benchmark plus the current storage and native
-  vLLM/SGLang probe/action artifacts is `ok=true` with no issues. The installed
-  package was `cachet_kv-0.2.0-py3-none-any.whl`, and the vLLM server log
-  recorded native `DocumentKVConnector` startup, payload-cache hits, successful
-  Cachet layer loads (`document_kv_layers_loaded=36`), and zero load error
-  blocks (`document_kv_load_error_blocks=0`). This compatibility evidence can
-  be bundled through the optional `compatibility_benchmark` artifact role and
-  does not replace the strict V1 publication target, which remains the default
-  AWS g6/L4 release bundle.
-- Target g6/L4 UC storage-reader evidence exists for
-  `cachet_readiness_20260621_095026` from QA Databricks run
-  `948365719597221`: Memory, Disk, and Unity Catalog readers all completed with
-  zero errors against a real UC Volume. Its Databricks run-status sidecar was
-  regenerated with the current strict bundle schema, including explicit
-  `spark_env_keys` arrays.
-- Target g6/L4 native engine evidence exists for QA Databricks run
-  `934698284395881`: vLLM and SGLang provider-backed native probe tasks both
-  terminated `SUCCESS` on `g6.8xlarge`, emitted `payload_mode=merged` engine
-  probe sidecars, connector action sidecars, runtime preflight sidecars, and
-  native probe factory diagnostics from inside the installed runtime
-  environments. Run connector action descriptor validation remains the required
-  regression step whenever connector contracts change.
-- Release-evidence validation over the current target benchmark, storage, and
-  vLLM/SGLang native probe/action artifacts is `ok=true` with no issues, and
-  the same validation is green for the current `aws-g5-a10g` compatibility
-  benchmark via the `compatibility_benchmark` role. The latest validated
-  strict-bundle snapshot was built after PR #513 with the current wheel and
-  validates with 37 artifacts after replacing its benchmark/status sidecars with
-  the current `872615985402004`/`566743786103032` evidence, adding the
-  successful raw SGLang live V1 sidecar from run `48413356233422`, including
-  PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence,
-  carrying `legacy_migration_evidence` for the removed restaurant facade, and
-  carrying `dependency_freshness` evidence for the current package/runtime
-  dependency policy.
-  Traceability-only PR evidence added after that snapshot must be included in
-  the next publication bundle refresh. The bundled artifacts include the release evidence
-  sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
-  vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
-  sidecars, SGLang live V1 benchmark sidecar, benchmark plan execution sidecar,
-  Databricks run-status sidecars for benchmark, storage, and vLLM/SGLang engine-probe runs, the
-  `aws-g5-a10g` compatibility benchmark and compatibility Databricks run-status
-  sidecar, tested package wheel, PR evidence sidecar, legacy migration evidence
-  sidecar, dependency freshness sidecar, V1 requirements matrix, GitHub
-  governance sidecar, repository hygiene sidecar, and native probe factory
-  diagnostics sidecars emitted from the split vLLM/SGLang runtime probe
-  environments.
-- GitHub governance is release-ready: the repository is public, visibility is
-  public, auto-merge is enabled, merged head branches are deleted automatically,
-  `main` branch protection requires the `Test and build` check, branch
-  protection applies to administrators, force-pushes/deletions are blocked, and
-  no unexpected pull requests are open.
-- `benchmark_plan.py` can now emit the vLLM/SGLang engine launch config sidecars
-  through `--engine-launch-config-output-dir`; those generated paths satisfy the
-  strict bundle launch-config gate when paired with the native probe/action
-  evidence.
-- Keep runtime serving inside established engines and outside Cachet's package
-  boundary.
-- The built `cachet-kv` wheel and source tree no longer include the legacy
-  restaurant facade, `restaurant-kv-*` scripts, or core runtime aliases for
-  restaurant request models, chunk types, key fields, manifest lookup helpers,
-  and service names. Current downstream migration evidence is tracked under
-  `docs/release-ops/evidence/legacy-migration/current/` as validated
-  `document_kv.legacy_compatibility_migration.v1` evidence that can be bundled
-  through the optional `legacy_migration_evidence` role; see
-  `docs/legacy-compatibility-removal.md` for the completed removal contract.
+The complete strict release bundle remains a required publication artifact.
+Its closed inventory must include each governed input named by the release
+validator: the release evidence sidecar, preflight sidecar, SGLang live V1
+benchmark sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang
+connector action sidecars, vLLM/SGLang engine launch config sidecars, benchmark
+plan execution sidecar, Databricks run-status sidecars for benchmark, storage,
+and vLLM/SGLang engine-probe runs, tested package wheel, PR evidence sidecar,
+dependency freshness sidecar, V1 requirements matrix, GitHub governance
+sidecar, repository hygiene sidecar, and native probe factory diagnostics
+sidecar. During the 0.27.1 refresh these remain required gates, not historical
+evidence that may populate the reset result tables.
+
+- Freeze the exact vLLM 0.27.1 source, rebuilt wheels, runtime closure,
+  benchmark inputs, and GPU qualification records before allocating campaign
+  compute.
+- Preserve the legacy-v1 `generation_throughput_with_writes` byte-identity rule
+  only for historical validation; fresh native-v2 plans use a distinct
+  repeat-aware sentinel requiring same-hardware fresh-load byte reproducibility
+  and cross-hardware logical/token/layout/size equivalence without raw-digest
+  equality.
+- Use L40S as the sole publication handoff generator. Generate the reusable Q8
+  handoff artifacts once on 16 independent L40S workers and bind every output
+  to its qualified input and control-plane attestation.
+- Run the complete Baseline/Vanilla latency factorial for 8k, 16k, and 32k at
+  concurrency 1, 2, and 4 across five independent deployment blocks.
+- Run every currently implemented precision, storage, hardware, and platform
+  ablation plus the corrected full-dataset score evaluation. Unsupported
+  methods remain explicit `N/A`.
+- Publish no numeric result until the new evidence passes the canonical
+  publication gate and a strict release bundle is rebuilt from the frozen
+  source and wheel.
+- Keep the completed legacy-facade removal contract auditable through
+  `docs/legacy-compatibility-removal.md` and its generated migration evidence.

@@ -5,6 +5,10 @@ import json
 import pytest
 
 import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
+from document_kv_cache.serving_env import VLLM_PACKAGE_VERSION
+from document_kv_cache.vllm_runtime_contract_data import (
+    VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
+)
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
@@ -27,8 +31,9 @@ from vllm_kv_injection.vllm_runtime_preflight import (
 def matching_installed_contract() -> dict:
     return installed_vllm_kv_connector_v1_contract_to_record(
         VLLMInstalledKVConnectorContract(
-            package_version="0.23.0",
+            package_version=VLLM_PACKAGE_VERSION,
             importable=True,
+            base_source_sha256=VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
             installed_methods=tuple(
                 sorted(
                     (
@@ -37,7 +42,11 @@ def matching_installed_contract() -> dict:
                     )
                 )
             ),
-            installed_properties=("prefer_cross_layer_blocks", "role"),
+            installed_properties=(
+                "prefer_cross_layer_blocks",
+                "requires_kv_delivery",
+                "role",
+            ),
         )
     )
 

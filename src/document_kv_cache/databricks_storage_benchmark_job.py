@@ -16,8 +16,12 @@ from document_kv_cache._hardware_targets import (
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
+    DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
     DEFAULT_DATABRICKS_SPARK_VERSION,
+    DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
     DatabricksSingleNodeGPUClusterConfig,
+    _validated_databricks_run_timeout_seconds,
+    _validated_databricks_task_max_retries,
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.storage_benchmark import (
@@ -98,6 +102,8 @@ class DatabricksStorageBenchmarkJobConfig:
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+    task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
 
     def __post_init__(self) -> None:
         if not self.workspace_dir:
@@ -116,6 +122,12 @@ class DatabricksStorageBenchmarkJobConfig:
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        if self.run_timeout_seconds > DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "run_timeout_seconds exceeds the four-hour storage benchmark bound"
+            )
+        _validated_databricks_task_max_retries(self.task_max_retries)
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
         object.__setattr__(self, "readers", tuple(self.readers))
@@ -138,6 +150,8 @@ def build_databricks_storage_benchmark_run_submit_payload(
 ) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_key": config.task_key,
+        "timeout_seconds": config.run_timeout_seconds,
+        "max_retries": config.task_max_retries,
         "new_cluster": build_single_node_gpu_cluster(_cluster_config_from_storage_benchmark_job(config)),
         "spark_python_task": {
             "python_file": config.runner_python_file,
@@ -148,6 +162,7 @@ def build_databricks_storage_benchmark_run_submit_payload(
         task["spark_python_task"]["parameters"].extend(["--package-wheel-uri", config.wheel_uri])
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
 
@@ -234,6 +249,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY)
     parser.add_argument(
+        "--run-timeout-seconds",
+        type=int,
+        default=DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--task-max-retries",
+        type=int,
+        default=DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
+    )
+    parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
         help="V1 hardware target used to derive --node-type-id when it is omitted.",
@@ -265,6 +290,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             uc_volume_root=args.uc_volume_root,
             run_name=args.run_name,
             task_key=args.task_key,
+            run_timeout_seconds=args.run_timeout_seconds,
+            task_max_retries=args.task_max_retries,
             node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
             spark_version=args.spark_version,
             data_security_mode=args.data_security_mode,

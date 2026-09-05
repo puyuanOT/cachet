@@ -20,7 +20,30 @@ from document_kv_cache.benchmarks import (
     answer_found as _benchmark_answer_found,
     exact_match as _benchmark_exact_match,
 )
-from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.benchmark_runner import (
+    BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE,
+    BENCHMARK_RUN_RECORD_TYPE,
+    benchmark_record_payload_digest,
+    benchmark_record_aggregate_issues,
+    benchmark_run_result_from_record,
+)
+from document_kv_cache._benchmark_records import sanitized_measurement_metadata_issues
+from document_kv_cache.benchmark_gates import (
+    BENCHMARK_EVIDENCE_GATE_RECORD_TYPE,
+    CACHE_STATE_ATTESTATION_RECORD_TYPE,
+    CacheStateAttestation,
+    benchmark_evidence_gate_to_record,
+    evaluate_benchmark_evidence_gate,
+)
+from document_kv_cache.artifact_identity import ArtifactIdentity, canonical_json_sha256
+from document_kv_cache.benchmark_metrics import aggregate_decode_tokens_per_second
+from document_kv_cache.canary_orchestration import (
+    HANDOFF_TOPOLOGY_ATTESTATION_RECORD_TYPE,
+    HANDOFF_TOPOLOGY_ATTESTATION_SCHEMA_VERSION,
+    REPRESENTATIVE_CANARY_MODEL_ID,
+    REPRESENTATIVE_CANARY_MODEL_REVISION,
+    validate_handoff_topology_attestation,
+)
 from document_kv_cache.engine_adapters import (
     ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
     ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
@@ -39,7 +62,13 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
-from document_kv_cache.model_profiles import get_model_profile
+from document_kv_cache.model_profiles import (
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
+    get_model_profile,
+    layout_for_model,
+)
+from document_kv_cache.methods import MethodRegistry, default_method_registry
 from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage import is_real_uc_volume_root, local_path
@@ -51,6 +80,7 @@ __all__ = [
     "RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE",
     "SGLANG_LIVE_BENCHMARK_RECORD_TYPE",
     "SGLANG_LIVE_V1_BENCHMARK_SCOPE",
+    "SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE",
     "RELEASE_EVIDENCE_ARTIFACT_ROLES",
     "REQUIRED_ENGINE_PROBE_BACKENDS",
     "ReleaseEvidenceArtifactSource",
@@ -62,6 +92,8 @@ __all__ = [
     "inspect_release_evidence_input_files",
     "release_evidence_input_status_to_record",
     "release_evidence_to_record",
+    "sanitize_sglang_representative_canary_evidence",
+    "sglang_representative_canary_evidence_issues",
     "sglang_live_v1_benchmark_issues",
     "write_release_evidence_input_status_json",
     "write_release_evidence_json",
@@ -73,9 +105,32 @@ RELEASE_EVIDENCE_RECORD_TYPE = "document_kv.release_evidence.v1"
 RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE = "document_kv.release_evidence_inputs.v1"
 SGLANG_LIVE_BENCHMARK_RECORD_TYPE = "cachet.sglang_live_benchmark.v1"
 SGLANG_LIVE_V1_BENCHMARK_SCOPE = "live_v1_release"
+SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE = (
+    "cachet.sglang_representative_canary_evidence.v1"
+)
+_REPRESENTATIVE_SGLANG_PROFILE_ID = "sglang-4k-32-v1"
+_REPRESENTATIVE_SGLANG_HARDWARE_TARGET = "aws-g6-l4"
+_REPRESENTATIVE_SGLANG_SUITE_ID = "sglang-live-synthetic-niah"
+_REPRESENTATIVE_SGLANG_SUITE_SCOPE = "live_synthetic_niah"
+_REPRESENTATIVE_SGLANG_DATASETS = ("niah",)
+_REPRESENTATIVE_SGLANG_EXAMPLES = 1
+_REPRESENTATIVE_SGLANG_REPEATS = 2
+_REPRESENTATIVE_SGLANG_BENCHMARK_ID = "g6-sglang-4k-32-paired-smoke"
+_REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID = "vanilla_prefill"
+_REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION = default_method_registry().get(
+    _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID,
+    require_implemented=True,
+).artifact_version
+_REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY = (
+    "document_kv_cache.transformers_generator:"
+    "build_pre_rope_transformers_kv_chunk_generator"
+)
+_REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_VERSION = "5.3.0"
+_REPRESENTATIVE_SGLANG_HANDOFF_TOPOLOGY_ID = "per_document"
 REQUIRED_ENGINE_PROBE_BACKENDS = tuple(backend.value for backend in ServingBackend)
 RELEASE_EVIDENCE_ARTIFACT_ROLES = (
     "v1_benchmark",
+    "benchmark_evidence_gate",
     "storage_benchmark",
     "engine_probe",
     "engine_connector_actions",
@@ -236,14 +291,26 @@ def evaluate_release_evidence(
     required_engine_probe_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     required_engine_action_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     artifact_sources: Sequence[ReleaseEvidenceArtifactSource] = (),
+    benchmark_evidence_gate_record: Mapping[str, Any] | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> ReleaseEvidence:
     required_backends = _validated_required_backends(required_engine_probe_backends)
     required_action_backends = _validated_required_backends(required_engine_action_backends)
     artifact_source_tuple = _validated_artifact_sources(artifact_sources)
     issues: list[str] = []
-    v1_issues = _v1_benchmark_issues(v1_benchmark_record)
+    if method_registry is not None and not isinstance(method_registry, MethodRegistry):
+        raise TypeError("method_registry must be a MethodRegistry or None")
+    v1_issues = _v1_benchmark_issues(
+        v1_benchmark_record,
+        method_registry=method_registry,
+    )
+    gate_issues = _standalone_benchmark_gate_issues(
+        v1_benchmark_record,
+        benchmark_evidence_gate_record,
+    )
     storage_issues = _storage_benchmark_issues(storage_benchmark_record)
     issues.extend(v1_issues)
+    issues.extend(gate_issues)
     issues.extend(storage_issues)
 
     probe_backends, invalid_probe_records, duplicate_probe_backends, valid_probe_records = _engine_probe_evidence(
@@ -271,7 +338,7 @@ def evaluate_release_evidence(
     issues.extend(f"invalid engine action record: {issue}" for issue in invalid_action_records)
 
     return ReleaseEvidence(
-        v1_benchmark_ok=not v1_issues,
+        v1_benchmark_ok=not v1_issues and not gate_issues,
         storage_benchmark_ok=not storage_issues,
         engine_probe_backends=probe_backends,
         missing_engine_probe_backends=missing_probe_backends,
@@ -292,16 +359,25 @@ def evaluate_release_evidence_files(
     storage_benchmark_json: str | Path,
     engine_probe_jsons: Sequence[str | Path] = (),
     engine_actions_jsons: Sequence[str | Path] = (),
+    benchmark_evidence_gate_json: str | Path | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> ReleaseEvidence:
     v1_record = _read_json_record(v1_benchmark_json)
     storage_record = _read_json_record(storage_benchmark_json)
     engine_probe_records = tuple(_read_json_record(path) for path in engine_probe_jsons)
     engine_action_records = tuple(_read_json_record(path) for path in engine_actions_jsons)
+    gate_record = (
+        _read_json_record(benchmark_evidence_gate_json)
+        if benchmark_evidence_gate_json is not None
+        else None
+    )
     return evaluate_release_evidence(
         v1_record,
         storage_record,
         engine_probe_records=engine_probe_records,
         engine_action_records=engine_action_records,
+        benchmark_evidence_gate_record=gate_record,
+        method_registry=method_registry,
         artifact_sources=_artifact_sources_for_records(
             v1_benchmark_json=v1_benchmark_json,
             v1_record=v1_record,
@@ -311,6 +387,8 @@ def evaluate_release_evidence_files(
             engine_probe_records=engine_probe_records,
             engine_actions_jsons=engine_actions_jsons,
             engine_action_records=engine_action_records,
+            benchmark_evidence_gate_json=benchmark_evidence_gate_json,
+            benchmark_evidence_gate_record=gate_record,
         ),
     )
 
@@ -323,6 +401,7 @@ def inspect_release_evidence_input_files(
     engine_actions_jsons: Sequence[str | Path] = (),
     required_engine_probe_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     required_engine_action_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
+    benchmark_evidence_gate_json: str | Path | None = None,
 ) -> ReleaseEvidenceInputStatus:
     required_backends = _validated_required_backends(required_engine_probe_backends)
     required_action_backends = _validated_required_backends(required_engine_action_backends)
@@ -330,6 +409,13 @@ def inspect_release_evidence_input_files(
         _inspect_release_evidence_input_file("v1_benchmark", v1_benchmark_json),
         _inspect_release_evidence_input_file("storage_benchmark", storage_benchmark_json),
     ]
+    if benchmark_evidence_gate_json is not None:
+        input_files.append(
+            _inspect_release_evidence_input_file(
+                "benchmark_evidence_gate",
+                benchmark_evidence_gate_json,
+            )
+        )
     input_files.extend(_inspect_release_evidence_input_file("engine_probe", path) for path in engine_probe_jsons)
     input_files.extend(
         _inspect_release_evidence_input_file("engine_connector_actions", path)
@@ -442,6 +528,8 @@ def _artifact_sources_for_records(
     engine_probe_records: Sequence[Mapping[str, Any]],
     engine_actions_jsons: Sequence[str | Path],
     engine_action_records: Sequence[Mapping[str, Any]],
+    benchmark_evidence_gate_json: str | Path | None,
+    benchmark_evidence_gate_record: Mapping[str, Any] | None,
 ) -> tuple[ReleaseEvidenceArtifactSource, ...]:
     sources = [
         ReleaseEvidenceArtifactSource(
@@ -457,6 +545,20 @@ def _artifact_sources_for_records(
             **_artifact_source_fingerprint(storage_benchmark_json),
         ),
     ]
+    if (
+        benchmark_evidence_gate_json is not None
+        and benchmark_evidence_gate_record is not None
+    ):
+        sources.append(
+            ReleaseEvidenceArtifactSource(
+                role="benchmark_evidence_gate",
+                path=str(benchmark_evidence_gate_json),
+                record_type=_optional_str(
+                    benchmark_evidence_gate_record.get("record_type")
+                ),
+                **_artifact_source_fingerprint(benchmark_evidence_gate_json),
+            )
+        )
     for path, record in zip(engine_probe_jsons, engine_probe_records, strict=True):
         sources.append(
             ReleaseEvidenceArtifactSource(
@@ -567,6 +669,8 @@ def _expected_record_type_for_role(role: str) -> str:
         return BENCHMARK_RUN_RECORD_TYPE
     if role == "storage_benchmark":
         return STORAGE_BENCHMARK_RECORD_TYPE
+    if role == "benchmark_evidence_gate":
+        return BENCHMARK_EVIDENCE_GATE_RECORD_TYPE
     if role == "engine_probe":
         return ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE
     if role == "engine_connector_actions":
@@ -591,7 +695,528 @@ def _is_sha256_hex_digest(value: Any) -> bool:
     )
 
 
-def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+def _reject_unknown_fields(
+    record: Mapping[str, Any],
+    allowed: set[str],
+    label: str,
+    issues: list[str],
+) -> None:
+    unknown = sorted(set(record).difference(allowed))
+    if unknown:
+        issues.append(f"{label} has unknown fields: {unknown}")
+
+
+def _validate_manifest_comparison_contract(
+    comparison: Mapping[str, Any],
+    arms: Sequence[Mapping[str, Any]],
+    issues: list[str],
+) -> None:
+    mode = comparison.get("mode")
+    varied_setting = comparison.get("varied_setting")
+    if mode == "methods_same_setting":
+        if varied_setting not in (None, ""):
+            issues.append(
+                "methods_same_setting comparison must not declare varied_setting"
+            )
+        if any(arm.get("setting_overrides") not in ({}, None) for arm in arms):
+            issues.append(
+                "methods_same_setting arms must not declare setting_overrides"
+            )
+        return
+    if mode != "single_method_setting_variation":
+        issues.append("experiment_manifest comparison mode is unsupported")
+        return
+    if not isinstance(varied_setting, str) or not varied_setting:
+        issues.append("setting-variation comparison requires varied_setting")
+        return
+    methods = {arm.get("method_id") for arm in arms}
+    if None in methods or "" in methods or len(methods) != 1:
+        issues.append("setting-variation arms must share one non-empty method_id")
+    reference_arm_id = comparison.get(
+        "reference_arm_id",
+        comparison.get("baseline_arm_id"),
+    )
+    reference = next(
+        (arm for arm in arms if arm.get("arm_id") == reference_arm_id),
+        None,
+    )
+    invariant_fields = (
+        "implementation_kind",
+        "uses_cache",
+        "method_id",
+        "method_version",
+        "method_config_digest",
+        "connector_mode",
+        "requires_cachet_handoff",
+        "scorer_plugin_path",
+        "source_revision",
+    )
+    if reference is not None:
+        for arm in arms:
+            if arm is reference:
+                continue
+            differences = [
+                field_name
+                for field_name in invariant_fields
+                if arm.get(field_name) != reference.get(field_name)
+            ]
+            reference_transform = reference.get("physical_transform")
+            arm_transform = arm.get("physical_transform")
+            for field_name in (
+                "transform_id",
+                "version",
+                "declared_config_digest",
+            ):
+                reference_value = (
+                    reference_transform.get(field_name)
+                    if isinstance(reference_transform, Mapping)
+                    else None
+                )
+                arm_value = (
+                    arm_transform.get(field_name)
+                    if isinstance(arm_transform, Mapping)
+                    else None
+                )
+                if arm_value != reference_value:
+                    differences.append(f"physical_transform.{field_name}")
+            if (
+                varied_setting != "model_quantization"
+                and arm.get("checkpoint_identity")
+                != reference.get("checkpoint_identity")
+            ):
+                differences.append("checkpoint_identity")
+            if varied_setting != "serving_platform":
+                reference_customization = reference.get("request_customization")
+                arm_customization = arm.get("request_customization")
+                reference_digest = (
+                    reference_customization.get("config_digest")
+                    if isinstance(reference_customization, Mapping)
+                    else None
+                )
+                arm_digest = (
+                    arm_customization.get("config_digest")
+                    if isinstance(arm_customization, Mapping)
+                    else None
+                )
+                if arm_digest != reference_digest:
+                    differences.append("request_customization.config_digest")
+            if differences:
+                issues.append(
+                    "setting-variation arm "
+                    f"{arm.get('arm_id')!r} changes invariant method or "
+                    f"implementation fields: {sorted(differences)}"
+                )
+    varied_values: list[str] = []
+    for arm in arms:
+        overrides = arm.get("setting_overrides")
+        if not isinstance(overrides, Mapping) or set(overrides) != {varied_setting}:
+            issues.append(
+                f"setting-variation arm {arm.get('arm_id')!r} must declare exactly "
+                f"setting_overrides.{varied_setting}"
+            )
+            continue
+        varied_values.append(
+            json.dumps(
+                overrides[varied_setting],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    if len(varied_values) == len(arms) and len(set(varied_values)) != len(arms):
+        issues.append("setting-variation arms must declare distinct setting values")
+
+
+def _manifest_benchmark_issues(
+    record: Mapping[str, Any],
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> tuple[str, ...]:
+    """Validate the generalized N-way record without applying legacy V1 arm rules."""
+
+    issues: list[str] = []
+    if record.get("record_type") != BENCHMARK_RUN_RECORD_TYPE:
+        issues.append(f"benchmark record_type must be {BENCHMARK_RUN_RECORD_TYPE!r}")
+    manifest = _mapping_or_issue(record, "experiment_manifest", issues)
+    suite = _mapping_or_issue(record, "suite", issues)
+    gate = _mapping_or_issue(record, "evidence_gate", issues)
+    measurements = _sequence_or_issue(record, "measurements", issues)
+    report_rows = _sequence_or_issue(record, "report_rows", issues)
+    comparisons = _sequence_or_issue(record, "comparisons", issues)
+    if manifest is None:
+        return tuple(issues)
+    if record.get("evidence_sanitized") is not True:
+        issues.append("publication benchmark record must use sanitized evidence serialization")
+    _reject_unknown_fields(
+        manifest,
+        {
+            "record_type",
+            "manifest_version",
+            "experiment_id",
+            "comparison",
+            "logical_workload",
+            "decoding",
+            "model_runtime",
+            "environment",
+            "execution",
+            "arms",
+            "has_unresolved_provenance",
+        },
+        "experiment_manifest",
+        issues,
+    )
+    if manifest.get("record_type") != BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE:
+        issues.append("experiment_manifest has an unsupported record_type")
+    if manifest.get("manifest_version") != 1:
+        issues.append("experiment_manifest manifest_version must be 1")
+    workload = _mapping_or_issue(manifest, "logical_workload", issues)
+    comparison = _mapping_or_issue(manifest, "comparison", issues)
+    arms = _sequence_or_issue(manifest, "arms", issues)
+    if workload is not None:
+        _reject_unknown_fields(
+            workload,
+            {
+                "sample_selection_digest",
+                "dataset_sample_digests",
+                "datasets",
+                "example_count",
+                "complete_dataset_split",
+                "measurement_scopes",
+                "prompt_template_version",
+                "input_tokens_target",
+                "output_tokens_target",
+                "scorers",
+            },
+            "experiment_manifest.logical_workload",
+            issues,
+        )
+        if not _is_sha256_hex_digest(workload.get("sample_selection_digest")):
+            issues.append("experiment_manifest sample_selection_digest must be SHA-256")
+        scopes = workload.get("measurement_scopes")
+        if (
+            not isinstance(scopes, Sequence)
+            or isinstance(scopes, (str, bytes, bytearray))
+            or not scopes
+            or any(scope not in {"latency", "quality", "resource"} for scope in scopes)
+            or len(set(scopes)) != len(scopes)
+        ):
+            issues.append("experiment_manifest measurement_scopes are invalid")
+        dataset_digests = workload.get("dataset_sample_digests")
+        if not isinstance(dataset_digests, Mapping) or any(
+            not isinstance(dataset, str)
+            or not dataset
+            or not _is_sha256_hex_digest(digest)
+            for dataset, digest in (
+                dataset_digests.items() if isinstance(dataset_digests, Mapping) else ()
+            )
+        ):
+            issues.append("experiment_manifest dataset_sample_digests are invalid")
+    baseline_arm_id = comparison.get("baseline_arm_id") if comparison is not None else None
+    if comparison is not None:
+        _reject_unknown_fields(
+            comparison,
+            {"mode", "varied_setting", "baseline_arm_id", "reference_arm_id"},
+            "experiment_manifest.comparison",
+            issues,
+        )
+        if comparison.get("reference_arm_id", baseline_arm_id) != baseline_arm_id:
+            issues.append(
+                "experiment_manifest comparison reference_arm_id must match baseline_arm_id"
+            )
+    if not isinstance(baseline_arm_id, str) or not baseline_arm_id:
+        issues.append("experiment_manifest comparison.baseline_arm_id must be non-empty")
+    arm_ids: list[str] = []
+    comparison_arm_ids: set[str] = set()
+    if arms is not None:
+        for index, item in enumerate(arms):
+            if not isinstance(item, Mapping):
+                issues.append(f"experiment_manifest arms[{index}] must be an object")
+                continue
+            arm_id = item.get("arm_id")
+            if not isinstance(arm_id, str) or not arm_id:
+                issues.append(f"experiment_manifest arms[{index}].arm_id is invalid")
+                continue
+            arm_ids.append(arm_id)
+            _reject_unknown_fields(
+                item,
+                {
+                    "arm_id",
+                    "implementation_kind",
+                    "uses_cache",
+                    "requires_cachet_handoff",
+                    "method_id",
+                    "method_version",
+                    "method_config_digest",
+                    "artifact_ids",
+                    "variant_id",
+                    "connector_mode",
+                    "physical_transform",
+                    "request_customization",
+                    "scorer_plugin_path",
+                    "source_revision",
+                    "checkpoint_identity",
+                    "setting_overrides",
+                    "runtime_environment",
+                    "offline_costs",
+                },
+                f"experiment_manifest.arms[{index}]",
+                issues,
+            )
+            physical = item.get("physical_transform")
+            if (
+                not isinstance(physical, Mapping)
+                or not _is_sha256_hex_digest(physical.get("config_digest"))
+            ):
+                issues.append(f"experiment_manifest arm {arm_id!r} has invalid physical transform")
+            request_customization = item.get("request_customization")
+            if not isinstance(request_customization, Mapping):
+                issues.append(
+                    f"experiment_manifest arm {arm_id!r} is missing request customization identity"
+                )
+            else:
+                _reject_unknown_fields(
+                    request_customization,
+                    {"config_digest"},
+                    f"experiment_manifest.arms[{index}].request_customization",
+                    issues,
+                )
+                if not _is_sha256_hex_digest(
+                    request_customization.get("config_digest")
+                ):
+                    issues.append(
+                        f"experiment_manifest arm {arm_id!r} has invalid request customization identity"
+                    )
+        if len(set(arm_ids)) != len(arm_ids):
+            issues.append("experiment_manifest arm ids must be distinct")
+        if baseline_arm_id not in arm_ids:
+            issues.append("experiment_manifest baseline arm is not declared")
+        comparison_arm_ids = set(arm_ids).difference({baseline_arm_id})
+        if comparison is not None:
+            _validate_manifest_comparison_contract(
+                comparison,
+                tuple(item for item in arms if isinstance(item, Mapping)),
+                issues,
+            )
+    if suite is not None:
+        suite_arms = suite.get("arms")
+        suite_arm_ids = {
+            item.get("arm_id")
+            for item in suite_arms
+            if isinstance(suite_arms, Sequence) and isinstance(item, Mapping)
+        } if isinstance(suite_arms, Sequence) else set()
+        if suite_arm_ids != set(arm_ids):
+            issues.append("suite arms do not match experiment_manifest arms")
+        if workload is not None and suite.get("examples") != workload.get("example_count"):
+            issues.append("suite example count does not match experiment_manifest")
+    if gate is not None:
+        if gate.get("record_type") != BENCHMARK_EVIDENCE_GATE_RECORD_TYPE:
+            issues.append("evidence_gate has an unsupported record_type")
+        if gate.get("policy") != "publication":
+            issues.append("release evidence requires a publication gate")
+        if gate.get("ok") is not True:
+            gate_issues = gate.get("issues")
+            if isinstance(gate_issues, Sequence) and not isinstance(
+                gate_issues, (str, bytes, bytearray)
+            ):
+                issues.extend(f"publication gate: {issue}" for issue in gate_issues)
+            else:
+                issues.append("publication gate did not pass")
+        expected_payload_digest = benchmark_record_payload_digest(record)
+        if gate.get("benchmark_payload_digest") != expected_payload_digest:
+            issues.append(
+                "evidence_gate benchmark_payload_digest does not match the benchmark payload"
+            )
+    if measurements is not None:
+        observed_keys: dict[tuple[str, str, int], set[str]] = {}
+        logical_digests: dict[tuple[str, str, int], set[str]] = {}
+        for index, measurement in enumerate(measurements):
+            if not isinstance(measurement, Mapping):
+                issues.append(f"measurements[{index}] must be an object")
+                continue
+            arm_id = measurement.get("arm_id")
+            if arm_id not in set(arm_ids):
+                issues.append(f"measurements[{index}] references an unknown arm")
+                continue
+            dataset = measurement.get("dataset")
+            example_id = measurement.get("example_id")
+            repeat_index = measurement.get("repeat_index")
+            if not isinstance(dataset, str) or not isinstance(example_id, str) or not _is_positive_int(repeat_index):
+                issues.append(f"measurements[{index}] has an invalid logical pair key")
+                continue
+            key = (dataset, example_id, repeat_index)
+            observed_keys.setdefault(key, set()).add(arm_id)
+            metadata = measurement.get("metadata")
+            for metadata_issue in sanitized_measurement_metadata_issues(metadata):
+                issues.append(f"measurements[{index}] {metadata_issue}")
+            if measurement.get("output_text") != "":
+                issues.append(
+                    f"measurements[{index}] sanitized output_text must be empty"
+                )
+            if measurement.get("expected_answer") is not None:
+                issues.append(
+                    f"measurements[{index}] sanitized expected_answer must be null"
+                )
+            references = measurement.get("references")
+            if not isinstance(references, Sequence) or isinstance(
+                references,
+                (str, bytes, bytearray),
+            ) or references:
+                issues.append(
+                    f"measurements[{index}] sanitized references must be empty"
+                )
+            if measurement.get("error") not in {None, "redacted"}:
+                issues.append(
+                    f"measurements[{index}] sanitized error must be null or redacted"
+                )
+            request_id = measurement.get("request_id")
+            if request_id not in {None, ""} and not _is_sha256_hex_digest(request_id):
+                issues.append(
+                    f"measurements[{index}] sanitized request_id must be SHA-256"
+                )
+            digest = metadata.get("logical_prompt_sha256") if isinstance(metadata, Mapping) else None
+            if not _is_sha256_hex_digest(digest):
+                issues.append(f"measurements[{index}] is missing logical prompt identity")
+            else:
+                logical_digests.setdefault(key, set()).add(digest)
+        expected_arms = set(arm_ids)
+        for key, observed_arms in observed_keys.items():
+            if observed_arms != expected_arms:
+                issues.append(f"logical pair {key} does not contain every declared arm")
+            if len(logical_digests.get(key, ())) != 1:
+                issues.append(f"logical pair {key} changes across physical arms")
+    if report_rows is not None:
+        report_keys = [
+            (row.get("dataset"), row.get("arm_id"))
+            for row in report_rows
+            if isinstance(row, Mapping)
+        ]
+        if len(set(report_keys)) != len(report_keys):
+            issues.append("report_rows contain duplicate dataset/arm rows")
+        if any(arm_id not in set(arm_ids) for _dataset, arm_id in report_keys):
+            issues.append("report_rows reference unknown arms")
+    if comparisons is not None:
+        for index, comparison_row in enumerate(comparisons):
+            if not isinstance(comparison_row, Mapping):
+                issues.append(f"comparisons[{index}] must be an object")
+                continue
+            if comparison_row.get("baseline_arm_id") != baseline_arm_id:
+                issues.append(f"comparisons[{index}] uses a different baseline")
+            if comparison_row.get("cache_arm_id") not in comparison_arm_ids:
+                issues.append(f"comparisons[{index}] references an unknown comparison arm")
+    issues.extend(benchmark_record_aggregate_issues(record))
+    if gate is not None:
+        try:
+            identities, attestations = _benchmark_gate_inputs(record)
+            reconstructed = benchmark_run_result_from_record(
+                record,
+                evidence_policy="publication",
+            )
+            expected_gate = benchmark_evidence_gate_to_record(
+                evaluate_benchmark_evidence_gate(
+                    reconstructed,
+                    policy="publication",
+                    artifact_identities=identities,
+                    cache_state_attestations=attestations,
+                    method_registry=method_registry,
+                    benchmark_payload_digest=benchmark_record_payload_digest(record),
+                )
+            )
+            if gate != expected_gate:
+                issues.append(
+                    "evidence_gate does not match recomputed publication evidence"
+                )
+        except (TypeError, ValueError) as exc:
+            issues.append(f"publication evidence gate cannot be recomputed: {exc}")
+    return tuple(issues)
+
+
+def _benchmark_gate_inputs(
+    record: Mapping[str, Any],
+) -> tuple[dict[str, ArtifactIdentity], tuple[CacheStateAttestation, ...]]:
+    raw_inputs = record.get("gate_inputs")
+    if raw_inputs is None:
+        raw_inputs = {
+            "artifact_identities": (),
+            "cache_state_attestations": (),
+        }
+    if not isinstance(raw_inputs, Mapping):
+        raise ValueError("gate_inputs must be an object")
+    raw_identities = raw_inputs.get("artifact_identities", ())
+    raw_attestations = raw_inputs.get("cache_state_attestations", ())
+    if not isinstance(raw_identities, Sequence) or isinstance(
+        raw_identities,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("gate_inputs.artifact_identities must be an array")
+    if not isinstance(raw_attestations, Sequence) or isinstance(
+        raw_attestations,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("gate_inputs.cache_state_attestations must be an array")
+    identities: dict[str, ArtifactIdentity] = {}
+    for raw_identity in raw_identities:
+        if not isinstance(raw_identity, Mapping):
+            raise ValueError("artifact identity descriptor must be an object")
+        identity = ArtifactIdentity.from_record(raw_identity)
+        if identity.artifact_id in identities:
+            raise ValueError("gate_inputs contains a duplicate artifact identity")
+        identities[identity.artifact_id] = identity
+    attestations: list[CacheStateAttestation] = []
+    for raw_attestation in raw_attestations:
+        if not isinstance(raw_attestation, Mapping):
+            raise ValueError("cache-state attestation must be an object")
+        if raw_attestation.get("record_type") != CACHE_STATE_ATTESTATION_RECORD_TYPE:
+            raise ValueError("cache-state attestation has an unsupported record_type")
+        if not _is_sha256_hex_digest(raw_attestation.get("request_id")):
+            raise ValueError(
+                "sanitized cache-state attestation request_id must be SHA-256"
+            )
+        if raw_attestation.get("source") not in {"disk", "file", "local_path", "uri"}:
+            raise ValueError("cache-state attestation source must be a safe source kind")
+        values = {
+            key: value
+            for key, value in raw_attestation.items()
+            if key not in {"record_type", "cold_read_attested"}
+        }
+        attestations.append(CacheStateAttestation(**values))
+    return identities, tuple(attestations)
+
+
+def _standalone_benchmark_gate_issues(
+    benchmark_record: Mapping[str, Any],
+    gate_record: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    if not isinstance(benchmark_record.get("experiment_manifest"), Mapping):
+        return ()
+    if gate_record is None:
+        return ("manifest benchmark release requires a standalone evidence gate",)
+    issues: list[str] = []
+    if gate_record.get("record_type") != BENCHMARK_EVIDENCE_GATE_RECORD_TYPE:
+        issues.append("standalone evidence gate has an unsupported record_type")
+    if gate_record.get("policy") != "publication":
+        issues.append("standalone release evidence gate must use publication policy")
+    if gate_record.get("ok") is not True:
+        issues.append("standalone release evidence gate did not pass")
+    expected_payload_digest = benchmark_record_payload_digest(benchmark_record)
+    if gate_record.get("benchmark_payload_digest") != expected_payload_digest:
+        issues.append(
+            "standalone evidence gate benchmark_payload_digest does not match the benchmark payload"
+        )
+    embedded = benchmark_record.get("evidence_gate")
+    if gate_record != embedded:
+        issues.append("standalone evidence gate does not match the benchmark record")
+    return tuple(issues)
+
+
+def _v1_benchmark_issues(
+    record: Mapping[str, Any],
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> tuple[str, ...]:
+    if isinstance(record.get("experiment_manifest"), Mapping):
+        return _manifest_benchmark_issues(
+            record,
+            method_registry=method_registry,
+        )
     issues: list[str] = []
     if record.get("record_type") != BENCHMARK_RUN_RECORD_TYPE:
         issues.append(f"v1 benchmark record_type must be {BENCHMARK_RUN_RECORD_TYPE!r}")
@@ -649,10 +1274,43 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(issues)
 
 
-def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    """Return release-readiness issues for a live SGLang prepared V1 benchmark."""
+def sglang_live_v1_benchmark_issues(
+    record: Mapping[str, Any],
+    *,
+    expected_cachet_wheel_sha256: str | None = None,
+) -> tuple[str, ...]:
+    """Return release-readiness issues for a live SGLang benchmark.
+
+    Representative evidence requires ``expected_cachet_wheel_sha256`` to bind
+    its self-reported provenance to the already-verified submit payload.  The
+    generic full V1 release contract has no Cachet wheel field and therefore
+    rejects this context instead of silently ignoring it.
+    """
+
+    if (
+        expected_cachet_wheel_sha256 is not None
+        and not _is_sha256_hex_digest(expected_cachet_wheel_sha256)
+    ):
+        raise ValueError(
+            "expected_cachet_wheel_sha256 must be a lowercase SHA-256 digest"
+        )
 
     issues: list[str] = []
+    representative_canary = record.get("representative_canary") is True
+    required_datasets = (
+        _REPRESENTATIVE_SGLANG_DATASETS
+        if representative_canary
+        else SUPPORTED_V1_DATASETS
+    )
+    if expected_cachet_wheel_sha256 is not None and not representative_canary:
+        issues.append(
+            "expected_cachet_wheel_sha256 requires representative_canary=true"
+        )
+    if representative_canary and expected_cachet_wheel_sha256 is None:
+        issues.append(
+            "representative SGLang evidence requires an independently verified "
+            "expected_cachet_wheel_sha256"
+        )
     if record.get("record_type") != SGLANG_LIVE_BENCHMARK_RECORD_TYPE:
         issues.append(
             "SGLang live V1 benchmark record_type must be "
@@ -678,7 +1336,11 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
             "SGLang live V1 benchmark hardware_target must be one of "
             f"{SUPPORTED_V1_HARDWARE_TARGETS!r}"
         )
-    _validate_sglang_live_v1_runtime_metadata(record, issues)
+    _validate_sglang_live_v1_runtime_metadata(
+        record,
+        issues,
+        expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+    )
 
     suite = _mapping_or_issue(record, "suite", issues)
     measurements = _sequence_or_issue(record, "measurements", issues)
@@ -686,7 +1348,11 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
     comparisons = _sequence_or_issue(record, "comparisons", issues)
     cache_hit_validations = _sequence_or_issue(record, "cache_hit_validations", issues)
     if suite is not None:
-        _validate_sglang_live_v1_suite_metadata(suite, issues)
+        _validate_sglang_live_v1_suite_metadata(
+            suite,
+            issues,
+            representative_canary=representative_canary,
+        )
     if suite is not None and measurements is not None:
         _validate_sglang_live_v1_measurement_count(suite, measurements, issues)
         _validate_v1_suite_examples_match_measurements(suite, measurements, issues)
@@ -694,28 +1360,986 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
         _validate_v1_measurement_examples_have_required_arms(measurements, issues)
         _validate_v1_measurement_examples_have_consistent_expected_answers(measurements, issues)
         _validate_v1_measurement_examples_have_consistent_logical_prompt_tokens(measurements, issues)
-        _validate_v1_measurements(measurements, issues)
+        if representative_canary:
+            _validate_representative_sglang_measurement_matrix(
+                measurements,
+                issues,
+            )
+        _validate_v1_measurements(
+            measurements,
+            issues,
+            required_datasets=required_datasets,
+        )
     if measurements is not None and report_rows is not None:
         _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
     if report_rows is not None and comparisons is not None:
         _validate_v1_comparisons_match_report_rows(report_rows, comparisons, issues)
     if report_rows is not None:
-        _validate_v1_report_rows(report_rows, issues)
+        _validate_v1_report_rows(
+            report_rows,
+            issues,
+            required_datasets=required_datasets,
+        )
     if comparisons is not None:
-        _validate_v1_comparisons(comparisons, issues)
+        _validate_v1_comparisons(
+            comparisons,
+            issues,
+            required_datasets=required_datasets,
+        )
     if suite is not None and cache_hit_validations is not None:
         _validate_sglang_live_v1_cache_hit_validations(
             suite,
             cache_hit_validations,
             measurements=measurements,
             issues=issues,
+            required_datasets=required_datasets,
+            require_exact_count=representative_canary,
         )
     return tuple(issues)
+
+
+def sanitize_sglang_representative_canary_evidence(
+    record: Mapping[str, Any],
+    *,
+    expected_cachet_wheel_sha256: str,
+    handoff_generation_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project a validated canary and its handoff sidecar into a safe schema."""
+
+    raw_issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+    )
+    if raw_issues:
+        raise ValueError(
+            "cannot sanitize invalid representative SGLang canary evidence: "
+            + "; ".join(raw_issues)
+        )
+    handoff_generation_provenance = _sanitize_sglang_handoff_generation_provenance(
+        handoff_generation_record,
+        benchmark_record=record,
+    )
+
+    suite = _required_mapping(record, "suite")
+    provenance = _required_mapping(record, "benchmark_manifest_provenance")
+    model_provenance = {key: provenance[key] for key in sorted(provenance)}
+    package_revisions = _required_mapping(provenance, "package_revisions")
+    model_provenance["package_revisions"] = {
+        key: package_revisions[key] for key in sorted(package_revisions)
+    }
+    measurements = sorted(
+        (
+            _sanitize_sglang_representative_measurement(row)
+            for row in _required_mapping_sequence(record, "measurements")
+        ),
+        key=_sanitized_sglang_measurement_key,
+    )
+    report_rows = sorted(
+        (
+            _sanitize_sglang_representative_report_row(row)
+            for row in _required_mapping_sequence(record, "report_rows")
+        ),
+        key=lambda row: (row["dataset"], _sanitized_sglang_arm_order(row["arm_id"])),
+    )
+    comparisons = sorted(
+        (
+            _copy_fields(row, _SGLANG_SAFE_COMPARISON_FIELDS)
+            for row in _required_mapping_sequence(record, "comparisons")
+        ),
+        key=lambda row: row["dataset"],
+    )
+    cache_hits = sorted(
+        (
+            _sanitize_sglang_representative_cache_hit(row)
+            for row in _required_mapping_sequence(record, "cache_hit_validations")
+        ),
+        key=lambda row: (
+            row["dataset"],
+            row["example_identity_sha256"],
+            row["repeat_index"],
+        ),
+    )
+    sanitized_suite = _copy_fields(suite, _SGLANG_SAFE_SUITE_FIELDS)
+    sanitized_suite["datasets"] = list(suite["datasets"])
+    evidence = {
+        "record_type": SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE,
+        "evidence_sanitized": True,
+        "publication_qualified": False,
+        "raw_record_sha256": canonical_json_sha256(record),
+        "engine": "sglang",
+        "hardware_target": record["hardware_target"],
+        "workload_profile": record["representative_workload_profile"],
+        "model_provenance": model_provenance,
+        "handoff_generation_provenance": handoff_generation_provenance,
+        "suite": sanitized_suite,
+        "measurements": measurements,
+        "report_rows": report_rows,
+        "comparisons": comparisons,
+        "cache_hit_validations": cache_hits,
+    }
+    projection_issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+        expected_handoff_generation_provenance=handoff_generation_provenance,
+    )
+    if projection_issues:
+        raise RuntimeError(
+            "representative SGLang evidence projection violated its schema: "
+            + "; ".join(projection_issues)
+        )
+    return evidence
+
+
+_SGLANG_SAFE_SUITE_FIELDS = (
+    "suite_id",
+    "scope",
+    "datasets",
+    "examples",
+    "repeats",
+    "release_v1_suite",
+)
+_SGLANG_SAFE_MEASUREMENT_FIELDS = (
+    "dataset",
+    "example_identity_sha256",
+    "arm_id",
+    "repeat_index",
+    "prompt_tokens",
+    "completion_tokens",
+    "prompt_text_mode",
+    "logical_prompt_tokens",
+    "runtime_prompt_tokens",
+    "ttft_seconds",
+    "time_to_completion_seconds",
+    "exact_match",
+    "answer_found",
+)
+_SGLANG_SAFE_REPORT_FIELDS = (
+    "dataset",
+    "arm_id",
+    "requests",
+    "errors",
+    "prompt_tokens_mean",
+    "completion_tokens_mean",
+    "ttft",
+    "time_to_completion",
+    "exact_match_rate",
+    "answer_found_rate",
+    "output_tokens_per_second",
+)
+_SGLANG_SAFE_COMPARISON_FIELDS = (
+    "dataset",
+    "baseline_arm_id",
+    "cache_arm_id",
+    "ttft_speedup",
+    "time_to_completion_speedup",
+    "exact_match_delta",
+    "answer_found_delta",
+)
+_SGLANG_SAFE_CACHE_HIT_FIELDS = (
+    "dataset",
+    "example_identity_sha256",
+    "arm_id",
+    "repeat_index",
+    "cache_hit",
+    "minimum_cached_tokens",
+    "cache_request_cached_tokens",
+    "cache_request_prompt_tokens",
+    "observed_prefill",
+)
+_SGLANG_SAFE_LATENCY_FIELDS = ("count", "mean", "p50", "p95")
+_SGLANG_SAFE_PREFILL_FIELDS = ("cached_tokens", "total_prompt_tokens")
+_SGLANG_HANDOFF_PROVENANCE_FIELDS = {
+    "raw_sidecar_sha256",
+    "method_id",
+    "method_version",
+    "generator_factory",
+    "generator_version",
+    "topology",
+    "content_digests",
+}
+_SGLANG_HANDOFF_TOPOLOGY_FIELDS = {
+    "topology_id",
+    "record_type",
+    "schema_version",
+    "example_count",
+    "document_count",
+    "segment_count",
+    "attestation_sha256",
+    "examples_sha256",
+}
+_SGLANG_HANDOFF_CONTENT_DIGEST_FIELDS = {
+    "artifact_sha256",
+    "logical_prompt_sha256",
+    "method_config_sha256",
+}
+
+
+def _sanitize_sglang_handoff_generation_provenance(
+    record: Mapping[str, Any],
+    *,
+    benchmark_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(record, Mapping):
+        raise TypeError("handoff_generation_record must be a mapping")
+    expected_raw = {
+        "ok": True,
+        "backend": "sglang",
+        "benchmark_id": _REPRESENTATIVE_SGLANG_BENCHMARK_ID,
+        "artifact_model_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "artifact_model_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "artifact_tokenizer_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "artifact_tokenizer_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "dtype": "bfloat16",
+        "generator_factory": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY,
+        "generator_version": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_VERSION,
+    }
+    for field_name, expected in expected_raw.items():
+        if record.get(field_name) != expected:
+            raise ValueError(
+                "representative SGLang handoff generation "
+                f"{field_name} must be {expected!r}"
+            )
+    benchmark_id = benchmark_record.get("benchmark_id")
+    if (
+        benchmark_id != _REPRESENTATIVE_SGLANG_BENCHMARK_ID
+        or benchmark_id != record.get("benchmark_id")
+    ):
+        raise ValueError(
+            "representative SGLang benchmark and handoff generation benchmark_id "
+            f"must both be {_REPRESENTATIVE_SGLANG_BENCHMARK_ID!r}"
+        )
+    raw_topology = record.get("handoff_topology_attestation")
+    if not isinstance(raw_topology, Mapping):
+        raise ValueError("representative SGLang handoff generation topology is invalid")
+    try:
+        topology = validate_handoff_topology_attestation(raw_topology)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"representative SGLang handoff generation topology is invalid: {exc}"
+        ) from exc
+    examples = topology["examples"]
+    if len(examples) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        raise ValueError("representative SGLang handoff generation must attest one example")
+    for index, example in enumerate(examples):
+        if (
+            example["method_id"] != _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID
+            or example["method_version"] != _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION
+        ):
+            raise ValueError(
+                f"representative SGLang handoff generation examples[{index}] must use Vanilla"
+            )
+        if example["segment_count"] != example["document_count"]:
+            raise ValueError(
+                f"representative SGLang handoff generation examples[{index}] "
+                "must use per-document topology"
+            )
+    _validate_sglang_handoff_generation_cross_bindings(
+        benchmark_record,
+        record,
+        examples,
+    )
+    # The pinned live-sidecar producer omitted this redundant top-level field;
+    # its closed topology attestation is the authoritative historical binding.
+    cache_method = record.get("cache_method", examples[0]["method_id"])
+    if cache_method != _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID:
+        raise ValueError(
+            "representative SGLang handoff generation cache_method must be "
+            f"{_REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID!r}"
+        )
+    return {
+        "raw_sidecar_sha256": canonical_json_sha256(record),
+        "method_id": _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID,
+        "method_version": _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION,
+        "generator_factory": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY,
+        "generator_version": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_VERSION,
+        "topology": {
+            "topology_id": _REPRESENTATIVE_SGLANG_HANDOFF_TOPOLOGY_ID,
+            "record_type": topology["record_type"],
+            "schema_version": topology["schema_version"],
+            "example_count": topology["example_count"],
+            "document_count": sum(row["document_count"] for row in examples),
+            "segment_count": sum(row["segment_count"] for row in examples),
+            "attestation_sha256": canonical_json_sha256(topology),
+            "examples_sha256": topology["examples_sha256"],
+        },
+        "content_digests": [
+            {
+                "artifact_sha256": row["artifact_id"],
+                "logical_prompt_sha256": row["logical_prompt_sha256"],
+                "method_config_sha256": row["method_config_digest"],
+            }
+            for row in examples
+        ],
+    }
+
+
+def _validate_sglang_handoff_generation_cross_bindings(
+    benchmark_record: Mapping[str, Any],
+    generation_record: Mapping[str, Any],
+    topology_examples: Sequence[Mapping[str, Any]],
+) -> None:
+    measurements = _required_mapping_sequence(benchmark_record, "measurements")
+    identities: set[tuple[str, str]] = set()
+    prompt_tokens: set[int] = set()
+    for index, measurement in enumerate(measurements):
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        tokens = measurement.get("prompt_tokens")
+        if not isinstance(dataset, str) or not isinstance(example_id, str):
+            raise ValueError(
+                f"representative SGLang measurements[{index}] identity must be strings"
+            )
+        if type(tokens) is not int or tokens <= 0:
+            raise ValueError(
+                f"representative SGLang measurements[{index}].prompt_tokens must be positive"
+            )
+        identities.add((dataset, example_id))
+        prompt_tokens.add(tokens)
+    if len(identities) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        raise ValueError(
+            "representative SGLang measurements must contain exactly one unique "
+            "dataset/example identity"
+        )
+    expected_example_keys = {
+        canonical_json_sha256({"dataset": dataset, "example_id": example_id})
+        for dataset, example_id in identities
+    }
+    topology_example_keys = {
+        str(example["example_key_sha256"]) for example in topology_examples
+    }
+    if (
+        len(topology_example_keys) != len(topology_examples)
+        or topology_example_keys != expected_example_keys
+    ):
+        raise ValueError(
+            "representative SGLang handoff topology example keys must exactly "
+            "match the unique benchmark dataset/example identities"
+        )
+
+    runtime_prompt_tokens = generation_record.get("runtime_prompt_tokens")
+    if not _is_positive_int(runtime_prompt_tokens) or prompt_tokens != {
+        runtime_prompt_tokens
+    }:
+        raise ValueError(
+            "representative SGLang handoff runtime_prompt_tokens must match every "
+            "benchmark measurement"
+        )
+
+    validations = _required_mapping_sequence(
+        benchmark_record, "cache_hit_validations"
+    )
+    cached_tokens: set[int] = set()
+    validation_prompt_tokens: set[int] = set()
+    validation_identities: set[tuple[str, str]] = set()
+    for index, validation in enumerate(validations):
+        cached = validation.get("cache_request_cached_tokens")
+        prompt = validation.get("cache_request_prompt_tokens")
+        dataset = validation.get("dataset")
+        example_id = validation.get("example_id")
+        if (
+            type(cached) is not int
+            or cached <= 0
+            or type(prompt) is not int
+            or prompt <= 0
+        ):
+            raise ValueError(
+                f"representative SGLang cache_hit_validations[{index}] token "
+                "counts must be positive"
+            )
+        if not isinstance(dataset, str) or not isinstance(example_id, str):
+            raise ValueError(
+                f"representative SGLang cache_hit_validations[{index}] identity "
+                "must be strings"
+            )
+        cached_tokens.add(cached)
+        validation_prompt_tokens.add(prompt)
+        validation_identities.add((dataset, example_id))
+    cache_prefix_tokens = generation_record.get("cache_prefix_tokens")
+    if not _is_positive_int(cache_prefix_tokens) or cached_tokens != {
+        cache_prefix_tokens
+    }:
+        raise ValueError(
+            "representative SGLang handoff cache_prefix_tokens must match every "
+            "cache-hit validation"
+        )
+    if validation_prompt_tokens != {runtime_prompt_tokens}:
+        raise ValueError(
+            "representative SGLang cache-hit prompt tokens must match handoff "
+            "runtime_prompt_tokens"
+        )
+    if validation_identities != identities:
+        raise ValueError(
+            "representative SGLang cache-hit identities must match benchmark "
+            "measurement identities"
+        )
+
+
+def _validate_sanitized_sglang_handoff_generation_provenance(
+    provenance: Mapping[str, Any],
+    issues: list[str],
+) -> None:
+    label = "representative SGLang handoff_generation_provenance"
+    _reject_unknown_fields(provenance, _SGLANG_HANDOFF_PROVENANCE_FIELDS, label, issues)
+    expected_scalars = {
+        "method_id": _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID,
+        "method_version": _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION,
+        "generator_factory": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY,
+        "generator_version": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_VERSION,
+    }
+    for field_name, expected in expected_scalars.items():
+        if provenance.get(field_name) != expected:
+            issues.append(f"{label} {field_name} must be {expected!r}")
+    raw_digest = provenance.get("raw_sidecar_sha256")
+    if not _is_sha256_hex_digest(raw_digest):
+        issues.append(f"{label} raw_sidecar_sha256 must be SHA-256")
+
+    topology = _mapping_or_issue(provenance, "topology", issues)
+    if topology is not None:
+        topology_label = f"{label} topology"
+        _reject_unknown_fields(topology, _SGLANG_HANDOFF_TOPOLOGY_FIELDS, topology_label, issues)
+        expected_topology = {
+            "topology_id": _REPRESENTATIVE_SGLANG_HANDOFF_TOPOLOGY_ID,
+            "record_type": HANDOFF_TOPOLOGY_ATTESTATION_RECORD_TYPE,
+            "schema_version": HANDOFF_TOPOLOGY_ATTESTATION_SCHEMA_VERSION,
+            "example_count": _REPRESENTATIVE_SGLANG_EXAMPLES,
+        }
+        for field_name, topology_expected in expected_topology.items():
+            if topology.get(field_name) != topology_expected:
+                issues.append(
+                    f"{topology_label} {field_name} must be {topology_expected!r}"
+                )
+        for field_name in ("document_count", "segment_count"):
+            if not _is_positive_int(topology.get(field_name)):
+                issues.append(f"{topology_label} {field_name} must be positive")
+        if (
+            _is_positive_int(topology.get("document_count"))
+            and _is_positive_int(topology.get("segment_count"))
+            and topology["segment_count"] != topology["document_count"]
+        ):
+            issues.append(f"{topology_label} must retain one segment per document")
+        for field_name in ("attestation_sha256", "examples_sha256"):
+            if not _is_sha256_hex_digest(topology.get(field_name)):
+                issues.append(f"{topology_label} {field_name} must be SHA-256")
+
+    content = _sequence_or_issue(provenance, "content_digests", issues)
+    if content is None:
+        return
+    if len(content) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        issues.append(f"{label} content_digests must contain exactly one row")
+    for index, row in enumerate(content):
+        row_label = f"{label} content_digests[{index}]"
+        if not isinstance(row, Mapping):
+            issues.append(f"{row_label} must be a mapping")
+            continue
+        _reject_unknown_fields(row, _SGLANG_HANDOFF_CONTENT_DIGEST_FIELDS, row_label, issues)
+        for field_name in _SGLANG_HANDOFF_CONTENT_DIGEST_FIELDS:
+            if not _is_sha256_hex_digest(row.get(field_name)):
+                issues.append(f"{row_label} {field_name} must be SHA-256")
+
+
+def sglang_representative_canary_evidence_issues(
+    evidence: Mapping[str, Any],
+    *,
+    expected_cachet_wheel_sha256: str,
+    expected_handoff_generation_provenance: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return closed-schema and recomputed-aggregate issues for safe canary evidence."""
+
+    if not _is_sha256_hex_digest(expected_cachet_wheel_sha256):
+        raise ValueError(
+            "expected_cachet_wheel_sha256 must be a lowercase SHA-256 digest"
+        )
+    if not isinstance(expected_handoff_generation_provenance, Mapping):
+        raise TypeError(
+            "expected_handoff_generation_provenance must be an independently "
+            "verified mapping"
+        )
+    if not isinstance(evidence, Mapping):
+        return ("representative SGLang canary evidence must be a mapping",)
+
+    issues: list[str] = []
+    _reject_unknown_fields(
+        evidence,
+        {
+            "record_type",
+            "evidence_sanitized",
+            "publication_qualified",
+            "raw_record_sha256",
+            "engine",
+            "hardware_target",
+            "workload_profile",
+            "model_provenance",
+            "handoff_generation_provenance",
+            "suite",
+            "measurements",
+            "report_rows",
+            "comparisons",
+            "cache_hit_validations",
+        },
+        "representative SGLang canary evidence",
+        issues,
+    )
+    expected_scalars = {
+        "record_type": SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE,
+        "evidence_sanitized": True,
+        "publication_qualified": False,
+        "engine": "sglang",
+        "hardware_target": _REPRESENTATIVE_SGLANG_HARDWARE_TARGET,
+        "workload_profile": _REPRESENTATIVE_SGLANG_PROFILE_ID,
+    }
+    for field_name, expected in expected_scalars.items():
+        if evidence.get(field_name) != expected:
+            issues.append(
+                f"representative SGLang canary {field_name} must be {expected!r}"
+            )
+    if not _is_sha256_hex_digest(evidence.get("raw_record_sha256")):
+        issues.append("representative SGLang canary raw_record_sha256 must be SHA-256")
+
+    provenance = _mapping_or_issue(evidence, "model_provenance", issues)
+    if provenance is not None:
+        _validate_representative_sglang_provenance(
+            {
+                "representative_canary": True,
+                "representative_workload_profile": evidence.get("workload_profile"),
+                "hardware_target": evidence.get("hardware_target"),
+                "benchmark_manifest_provenance": provenance,
+            },
+            issues,
+            expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+        )
+
+    handoff_provenance = _mapping_or_issue(
+        evidence, "handoff_generation_provenance", issues
+    )
+    expected_handoff_issues: list[str] = []
+    _validate_sanitized_sglang_handoff_generation_provenance(
+        expected_handoff_generation_provenance,
+        expected_handoff_issues,
+    )
+    issues.extend(
+        f"invalid expected handoff-generation context: {issue}"
+        for issue in expected_handoff_issues
+    )
+    if handoff_provenance is not None:
+        _validate_sanitized_sglang_handoff_generation_provenance(
+            handoff_provenance,
+            issues,
+        )
+        if dict(handoff_provenance) != dict(
+            expected_handoff_generation_provenance
+        ):
+            issues.append(
+                "representative SGLang handoff_generation_provenance does not "
+                "match the independently verified safe projection"
+            )
+
+    suite = _mapping_or_issue(evidence, "suite", issues)
+    if suite is not None:
+        _reject_unknown_fields(
+            suite,
+            set(_SGLANG_SAFE_SUITE_FIELDS),
+            "representative SGLang canary suite",
+            issues,
+        )
+        _validate_sglang_live_v1_suite_metadata(
+            suite,
+            issues,
+            representative_canary=True,
+        )
+
+    measurements = _sequence_or_issue(evidence, "measurements", issues)
+    report_rows = _sequence_or_issue(evidence, "report_rows", issues)
+    comparisons = _sequence_or_issue(evidence, "comparisons", issues)
+    cache_hits = _sequence_or_issue(evidence, "cache_hit_validations", issues)
+    example_digests: set[str] = set()
+    if measurements is not None:
+        example_digests = _sanitized_sglang_measurement_issues(
+            measurements,
+            issues,
+        )
+    if report_rows is not None:
+        _sanitized_sglang_report_row_issues(report_rows, issues)
+        _validate_v1_report_rows(
+            report_rows,
+            issues,
+            required_datasets=_REPRESENTATIVE_SGLANG_DATASETS,
+        )
+    if measurements is not None and report_rows is not None:
+        _validate_v1_report_aggregates_match_measurements(
+            report_rows,
+            measurements,
+            issues,
+        )
+    if comparisons is not None:
+        _sanitized_sglang_comparison_issues(comparisons, issues)
+        _validate_v1_comparisons(
+            comparisons,
+            issues,
+            required_datasets=_REPRESENTATIVE_SGLANG_DATASETS,
+        )
+    if report_rows is not None and comparisons is not None:
+        _validate_v1_comparisons_match_report_rows(
+            report_rows,
+            comparisons,
+            issues,
+        )
+    if cache_hits is not None:
+        _sanitized_sglang_cache_hit_issues(
+            cache_hits,
+            example_digests=example_digests,
+            issues=issues,
+        )
+    return tuple(issues)
+
+
+def _sanitize_sglang_representative_measurement(
+    measurement: Mapping[str, Any],
+) -> dict[str, Any]:
+    metadata = _required_mapping(measurement, "metadata")
+    dataset = measurement["dataset"]
+    return {
+        "dataset": dataset,
+        "example_identity_sha256": _sglang_example_identity_sha256(
+            dataset,
+            measurement["example_id"],
+        ),
+        "arm_id": measurement["arm_id"],
+        "repeat_index": _required_positive_metadata_int(
+            metadata.get("repeat_index"),
+            "measurement.metadata.repeat_index",
+        ),
+        "prompt_tokens": measurement["prompt_tokens"],
+        "completion_tokens": measurement["completion_tokens"],
+        "prompt_text_mode": metadata["prompt_text_mode"],
+        "logical_prompt_tokens": _required_positive_metadata_int(
+            metadata.get("logical_prompt_tokens"),
+            "measurement.metadata.logical_prompt_tokens",
+        ),
+        "runtime_prompt_tokens": _required_positive_metadata_int(
+            metadata.get("runtime_prompt_tokens"),
+            "measurement.metadata.runtime_prompt_tokens",
+        ),
+        "ttft_seconds": measurement["ttft_seconds"],
+        "time_to_completion_seconds": measurement["time_to_completion_seconds"],
+        "exact_match": measurement["exact_match"],
+        "answer_found": measurement["answer_found"],
+    }
+
+
+def _sanitize_sglang_representative_report_row(
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    sanitized = _copy_fields(row, _SGLANG_SAFE_REPORT_FIELDS)
+    for field_name in ("ttft", "time_to_completion"):
+        sanitized[field_name] = _copy_fields(
+            _required_mapping(row, field_name),
+            _SGLANG_SAFE_LATENCY_FIELDS,
+        )
+    return sanitized
+
+
+def _sanitize_sglang_representative_cache_hit(
+    validation: Mapping[str, Any],
+) -> dict[str, Any]:
+    prefill = _sglang_live_v1_cache_hit_prefill_row(validation)
+    if prefill is None:
+        raise RuntimeError("validated cache hit is missing its observed prefill row")
+    dataset = validation["dataset"]
+    return {
+        "dataset": dataset,
+        "example_identity_sha256": _sglang_example_identity_sha256(
+            dataset,
+            validation["example_id"],
+        ),
+        "arm_id": validation["arm_id"],
+        "repeat_index": validation["repeat_index"],
+        "cache_hit": validation["ok"],
+        "minimum_cached_tokens": validation["minimum_cached_tokens"],
+        "cache_request_cached_tokens": validation["cache_request_cached_tokens"],
+        "cache_request_prompt_tokens": validation["cache_request_prompt_tokens"],
+        "observed_prefill": _copy_fields(prefill, _SGLANG_SAFE_PREFILL_FIELDS),
+    }
+
+
+def _copy_fields(
+    record: Mapping[str, Any],
+    field_names: Sequence[str],
+) -> dict[str, Any]:
+    return {field_name: record[field_name] for field_name in field_names}
+
+
+def _required_mapping_sequence(
+    record: Mapping[str, Any],
+    field_name: str,
+) -> Sequence[Mapping[str, Any]]:
+    value = record.get(field_name)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise TypeError(f"{field_name} must be a sequence")
+    if any(not isinstance(item, Mapping) for item in value):
+        raise TypeError(f"{field_name} entries must be mappings")
+    return value
+
+
+def _sglang_example_identity_sha256(dataset: Any, example_id: Any) -> str:
+    if not isinstance(dataset, str) or not isinstance(example_id, str):
+        raise TypeError("dataset and example_id must be strings")
+    return canonical_json_sha256({"dataset": dataset, "example_id": example_id})
+
+
+def _required_positive_metadata_int(value: Any, field_name: str) -> int:
+    parsed = _positive_int_metadata(value)
+    if parsed is None:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return parsed
+
+
+def _sanitized_sglang_arm_order(arm_id: Any) -> int:
+    return 0 if arm_id == BASELINE_PREFILL_ARM else 1
+
+
+def _sanitized_sglang_measurement_key(
+    measurement: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    return (
+        measurement["dataset"],
+        measurement["example_identity_sha256"],
+        measurement["repeat_index"],
+        _sanitized_sglang_arm_order(measurement["arm_id"]),
+    )
+
+
+def _sanitized_sglang_measurement_issues(
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> set[str]:
+    observed: set[tuple[str, str, int]] = set()
+    example_digests: set[str] = set()
+    for index, measurement in enumerate(measurements):
+        label = f"representative SGLang canary measurements[{index}]"
+        if not isinstance(measurement, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        _reject_unknown_fields(
+            measurement,
+            set(_SGLANG_SAFE_MEASUREMENT_FIELDS),
+            label,
+            issues,
+        )
+        dataset = measurement.get("dataset")
+        digest = measurement.get("example_identity_sha256")
+        arm_id = measurement.get("arm_id")
+        repeat_index = measurement.get("repeat_index")
+        digest_value = digest if isinstance(digest, str) else None
+        arm_value = arm_id if isinstance(arm_id, str) else None
+        repeat_value = repeat_index if type(repeat_index) is int else None
+        if dataset != _REPRESENTATIVE_SGLANG_DATASETS[0]:
+            issues.append(f"{label}.dataset must be 'niah'")
+        if not _is_sha256_hex_digest(digest):
+            issues.append(f"{label}.example_identity_sha256 must be SHA-256")
+        else:
+            example_digests.add(digest_value or "")
+        if arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM):
+            issues.append(f"{label}.arm_id is unsupported")
+        if not _is_positive_int(repeat_index):
+            issues.append(f"{label}.repeat_index must be a positive integer")
+        elif repeat_value is not None and repeat_value > _REPRESENTATIVE_SGLANG_REPEATS:
+            issues.append(f"{label}.repeat_index exceeds suite repeats")
+        if (
+            dataset == _REPRESENTATIVE_SGLANG_DATASETS[0]
+            and _is_sha256_hex_digest(digest)
+            and arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+            and _is_positive_int(repeat_index)
+        ):
+            key = (digest_value or "", arm_value or "", repeat_value or 0)
+            if key in observed:
+                issues.append(f"{label} duplicates an arm/repeat measurement")
+            observed.add(key)
+
+        for field_name in (
+            "prompt_tokens",
+            "completion_tokens",
+            "logical_prompt_tokens",
+            "runtime_prompt_tokens",
+        ):
+            if not _is_positive_int(measurement.get(field_name)):
+                issues.append(f"{label}.{field_name} must be a positive integer")
+        for field_name in ("ttft_seconds", "time_to_completion_seconds"):
+            if not _is_non_negative_number(measurement.get(field_name)):
+                issues.append(f"{label}.{field_name} must be non-negative and finite")
+        ttft = measurement.get("ttft_seconds")
+        completion = measurement.get("time_to_completion_seconds")
+        if (
+            _is_non_negative_number(ttft)
+            and _is_non_negative_number(completion)
+            and float(completion or 0.0) < float(ttft or 0.0)
+        ):
+            issues.append(f"{label}.time_to_completion_seconds must cover TTFT")
+        for field_name in ("exact_match", "answer_found"):
+            if type(measurement.get(field_name)) is not bool:
+                issues.append(f"{label}.{field_name} must be boolean")
+
+        prompt_mode = measurement.get("prompt_text_mode")
+        logical_tokens = measurement.get("logical_prompt_tokens")
+        runtime_tokens = measurement.get("runtime_prompt_tokens")
+        if prompt_mode not in {"logical", "runtime"}:
+            issues.append(f"{label}.prompt_text_mode must be 'logical' or 'runtime'")
+        elif arm_id == BASELINE_PREFILL_ARM and prompt_mode != "logical":
+            issues.append(f"{label} baseline prompt_text_mode must be 'logical'")
+        expected_prompt_tokens = (
+            runtime_tokens if prompt_mode == "runtime" else logical_tokens
+        )
+        if (
+            _is_positive_int(expected_prompt_tokens)
+            and measurement.get("prompt_tokens") != expected_prompt_tokens
+        ):
+            issues.append(f"{label}.prompt_tokens does not match prompt_text_mode")
+
+    expected_count = _REPRESENTATIVE_SGLANG_EXAMPLES * _REPRESENTATIVE_SGLANG_REPEATS * 2
+    if len(measurements) != expected_count:
+        issues.append(f"representative SGLang canary must contain {expected_count} measurements")
+    if len(example_digests) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        issues.append("representative SGLang canary must contain one example identity")
+    if len(example_digests) == 1:
+        digest = next(iter(example_digests))
+        expected = {
+            (digest, arm_id, repeat_index)
+            for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+            for repeat_index in range(1, _REPRESENTATIVE_SGLANG_REPEATS + 1)
+        }
+        if observed != expected:
+            issues.append(
+                "representative SGLang canary measurements do not contain the "
+                "exact arm/repeat matrix"
+            )
+    return example_digests
+
+
+def _sanitized_sglang_report_row_issues(
+    report_rows: Sequence[Any],
+    issues: list[str],
+) -> None:
+    keys: list[tuple[Any, Any]] = []
+    for index, row in enumerate(report_rows):
+        label = f"representative SGLang canary report_rows[{index}]"
+        if not isinstance(row, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        _reject_unknown_fields(row, set(_SGLANG_SAFE_REPORT_FIELDS), label, issues)
+        keys.append((row.get("dataset"), row.get("arm_id")))
+        for field_name in ("ttft", "time_to_completion"):
+            summary = row.get(field_name)
+            if isinstance(summary, Mapping):
+                _reject_unknown_fields(
+                    summary,
+                    set(_SGLANG_SAFE_LATENCY_FIELDS),
+                    f"{label}.{field_name}",
+                    issues,
+                )
+    expected = {
+        (_REPRESENTATIVE_SGLANG_DATASETS[0], BASELINE_PREFILL_ARM),
+        (_REPRESENTATIVE_SGLANG_DATASETS[0], CACHE_REUSE_ARM),
+    }
+    if len(keys) != len(expected) or set(keys) != expected:
+        issues.append(
+            "representative SGLang canary report_rows must contain the "
+            "baseline/cache pair"
+        )
+
+
+def _sanitized_sglang_comparison_issues(
+    comparisons: Sequence[Any],
+    issues: list[str],
+) -> None:
+    valid = len(comparisons) == 1 and isinstance(comparisons[0], Mapping)
+    for index, comparison in enumerate(comparisons):
+        label = f"representative SGLang canary comparisons[{index}]"
+        if not isinstance(comparison, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        _reject_unknown_fields(
+            comparison,
+            set(_SGLANG_SAFE_COMPARISON_FIELDS),
+            label,
+            issues,
+        )
+    if not valid or comparisons[0].get("dataset") != _REPRESENTATIVE_SGLANG_DATASETS[0]:
+        issues.append(
+            "representative SGLang canary comparisons must contain only the niah row"
+        )
+
+
+def _sanitized_sglang_cache_hit_issues(
+    validations: Sequence[Any],
+    *,
+    example_digests: set[str],
+    issues: list[str],
+) -> None:
+    reconstructed: list[dict[str, Any]] = []
+    for index, validation in enumerate(validations):
+        label = f"representative SGLang canary cache_hit_validations[{index}]"
+        if not isinstance(validation, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        _reject_unknown_fields(
+            validation,
+            set(_SGLANG_SAFE_CACHE_HIT_FIELDS),
+            label,
+            issues,
+        )
+        digest = validation.get("example_identity_sha256")
+        if not _is_sha256_hex_digest(digest):
+            issues.append(f"{label}.example_identity_sha256 must be SHA-256")
+        prefill = validation.get("observed_prefill")
+        if isinstance(prefill, Mapping):
+            _reject_unknown_fields(
+                prefill,
+                set(_SGLANG_SAFE_PREFILL_FIELDS),
+                f"{label}.observed_prefill",
+                issues,
+            )
+        reconstructed.append(
+            {
+                "dataset": validation.get("dataset"),
+                "example_id": digest,
+                "arm_id": validation.get("arm_id"),
+                "repeat_index": validation.get("repeat_index"),
+                "ok": validation.get("cache_hit"),
+                "issue": None,
+                "minimum_cached_tokens": validation.get("minimum_cached_tokens"),
+                "cache_request_cached_tokens": validation.get(
+                    "cache_request_cached_tokens"
+                ),
+                "cache_request_prompt_tokens": validation.get(
+                    "cache_request_prompt_tokens"
+                ),
+                "observed_prefill_row": prefill,
+            }
+        )
+    cache_measurements = [
+        {
+            "dataset": _REPRESENTATIVE_SGLANG_DATASETS[0],
+            "example_id": digest,
+            "arm_id": CACHE_REUSE_ARM,
+            "metadata": {"repeat_index": repeat_index},
+        }
+        for digest in example_digests
+        for repeat_index in range(1, _REPRESENTATIVE_SGLANG_REPEATS + 1)
+    ]
+    _validate_sglang_live_v1_cache_hit_validations(
+        {"repeats": _REPRESENTATIVE_SGLANG_REPEATS},
+        reconstructed,
+        measurements=cache_measurements,
+        issues=issues,
+        required_datasets=_REPRESENTATIVE_SGLANG_DATASETS,
+        require_exact_count=True,
+    )
 
 
 def _validate_sglang_live_v1_runtime_metadata(
     record: Mapping[str, Any],
     issues: list[str],
+    *,
+    expected_cachet_wheel_sha256: str | None,
 ) -> None:
     if not isinstance(record.get("benchmark_id"), str) or not record.get("benchmark_id"):
         issues.append("SGLang live V1 benchmark benchmark_id must be non-empty")
@@ -723,21 +2347,236 @@ def _validate_sglang_live_v1_runtime_metadata(
         issues.append("SGLang live V1 benchmark served_model_name must be non-empty")
     if record.get("cache_prompt_text_mode") != "logical":
         issues.append("SGLang live V1 benchmark cache_prompt_text_mode must be 'logical'")
-    if record.get("live_check_prompt_format") != "plain":
-        issues.append("SGLang live V1 benchmark live_check_prompt_format must be 'plain'")
-    if record.get("live_check_request_mode") != "completion":
-        issues.append("SGLang live V1 benchmark live_check_request_mode must be 'completion'")
+    representative_canary = record.get("representative_canary") is True
+    expected_prompt_format = "qwen3_chat" if representative_canary else "plain"
+    expected_request_mode = "chat" if representative_canary else "completion"
+    if record.get("live_check_prompt_format") != expected_prompt_format:
+        issues.append(
+            "SGLang live V1 benchmark live_check_prompt_format must be "
+            f"{expected_prompt_format!r}"
+        )
+    if record.get("live_check_request_mode") != expected_request_mode:
+        issues.append(
+            "SGLang live V1 benchmark live_check_request_mode must be "
+            f"{expected_request_mode!r}"
+        )
     temperature = record.get("live_check_temperature")
     if not _is_finite_number(temperature) or temperature != 0.0:
         issues.append("SGLang live V1 benchmark live_check_temperature must be 0.0")
     if record.get("kv_transfer_params_transport") != "custom_params":
         issues.append("SGLang live V1 benchmark kv_transfer_params_transport must be 'custom_params'")
+    _validate_representative_sglang_provenance(
+        record,
+        issues,
+        expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+    )
+
+
+def _validate_representative_sglang_provenance(
+    record: Mapping[str, Any],
+    issues: list[str],
+    *,
+    expected_cachet_wheel_sha256: str | None,
+) -> None:
+    representative = record.get("representative_canary")
+    if representative is None:
+        return
+    if type(representative) is not bool:
+        issues.append(
+            "SGLang live V1 benchmark representative_canary must be boolean"
+        )
+        return
+    if not representative:
+        return
+
+    profile_id = record.get("representative_workload_profile")
+    if profile_id != _REPRESENTATIVE_SGLANG_PROFILE_ID:
+        issues.append(
+            "representative SGLang live V1 benchmark workload profile must be "
+            f"{_REPRESENTATIVE_SGLANG_PROFILE_ID!r}"
+        )
+    if record.get("hardware_target") != _REPRESENTATIVE_SGLANG_HARDWARE_TARGET:
+        issues.append(
+            "representative SGLang live V1 benchmark hardware_target must be "
+            f"{_REPRESENTATIVE_SGLANG_HARDWARE_TARGET!r}"
+        )
+    provenance = record.get("benchmark_manifest_provenance")
+    if not isinstance(provenance, Mapping):
+        issues.append(
+            "representative SGLang live V1 benchmark must include "
+            "benchmark_manifest_provenance"
+        )
+        return
+
+    _reject_unknown_fields(
+        provenance,
+        {
+            "canonical_model_id",
+            "model_revision",
+            "tokenizer_id",
+            "tokenizer_revision",
+            "lora_id",
+            "engine_id",
+            "engine_version",
+            "serving_platform",
+            "model_dtype",
+            "model_quantization",
+            "runtime_kv_dtype",
+            "layout_version",
+            "payload_axis_order",
+            "block_size",
+            "key_position_encoding",
+            "tensor_parallel_size",
+            "pipeline_parallel_size",
+            "rope_theta",
+            "rope_rotary_dim",
+            "package_revisions",
+        },
+        "representative SGLang benchmark_manifest_provenance",
+        issues,
+    )
+    model_profile = get_model_profile(DEFAULT_V1_MODEL_ID)
+    if model_profile.metadata.get("hf_model_id") != REPRESENTATIVE_CANARY_MODEL_ID:
+        raise RuntimeError(
+            "representative SGLang model profile drifted from its canonical model"
+        )
+    layout = layout_for_model(
+        REPRESENTATIVE_CANARY_MODEL_ID,
+        dtype="bfloat16",
+        block_size=1,
+        pre_rope=True,
+        rope_theta=QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+        shares_kv_storage=False,
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+    )
+    expected_identity: dict[str, Any] = {
+        "canonical_model_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "model_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "tokenizer_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "tokenizer_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "lora_id": layout.lora_id,
+        "engine_id": "sglang",
+        "engine_version": serving_environment_profile(
+            ServingBackend.SGLANG
+        ).engine_version,
+        "serving_platform": "sglang",
+        "model_dtype": "bfloat16",
+        "model_quantization": "none",
+        "runtime_kv_dtype": "bfloat16",
+        "layout_version": layout.layout_version,
+        "payload_axis_order": getattr(
+            layout.payload_axis_order,
+            "value",
+            layout.payload_axis_order,
+        ),
+        "block_size": layout.block_size,
+        "key_position_encoding": getattr(
+            layout.key_position_encoding,
+            "value",
+            layout.key_position_encoding,
+        ),
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+    }
+    for field_name, expected in expected_identity.items():
+        if provenance.get(field_name) != expected:
+            issues.append(
+                "representative SGLang benchmark_manifest_provenance."
+                f"{field_name} must be {expected!r}"
+            )
+    expected_rope = {
+        "rope_theta": layout.rope_theta,
+        "rope_rotary_dim": layout.rope_rotary_dim,
+    }
+    if all(value is None for value in expected_rope.values()):
+        unexpected_rope = sorted(set(expected_rope).intersection(provenance))
+        if unexpected_rope:
+            issues.append(
+                "representative SGLang benchmark_manifest_provenance must omit "
+                "post-RoPE-only fields: "
+                + ", ".join(unexpected_rope)
+            )
+    else:
+        for field_name, expected in expected_rope.items():
+            if provenance.get(field_name) != expected:
+                issues.append(
+                    "representative SGLang benchmark_manifest_provenance."
+                    f"{field_name} must be {expected!r}"
+                )
+
+    package_revisions = provenance.get("package_revisions")
+    if not isinstance(package_revisions, Mapping):
+        issues.append(
+            "representative SGLang benchmark_manifest_provenance.package_revisions "
+            "must be an object"
+        )
+        return
+    serving_profile = serving_environment_profile(ServingBackend.SGLANG)
+    expected_serving_revision = serving_profile.engine_version
+    if package_revisions.get(serving_profile.engine_package) != expected_serving_revision:
+        issues.append(
+            "representative SGLang package_revisions must include the exact "
+            f"{serving_profile.engine_package} pin {expected_serving_revision!r}"
+        )
+    wheel_revision = package_revisions.get("cachet-kv")
+    wheel_prefix = "wheel-sha256:"
+    wheel_digest = (
+        wheel_revision.removeprefix(wheel_prefix)
+        if isinstance(wheel_revision, str)
+        and wheel_revision.startswith(wheel_prefix)
+        else None
+    )
+    if not _is_sha256_hex_digest(wheel_digest):
+        issues.append(
+            "representative SGLang package_revisions['cachet-kv'] must use "
+            "wheel-sha256:<lowercase SHA-256>"
+        )
+    elif (
+        expected_cachet_wheel_sha256 is not None
+        and wheel_digest != expected_cachet_wheel_sha256
+    ):
+        issues.append(
+            "representative SGLang cachet-kv wheel SHA-256 does not match "
+            "the verified submit payload"
+        )
+    expected_packages = {serving_profile.engine_package, "cachet-kv"}
+    if set(package_revisions) != expected_packages:
+        issues.append(
+            "representative SGLang package_revisions must contain exactly the "
+            "serving package and cachet-kv wheel identity"
+        )
 
 
 def _validate_sglang_live_v1_suite_metadata(
     suite: Mapping[str, Any],
     issues: list[str],
+    *,
+    representative_canary: bool,
 ) -> None:
+    if representative_canary:
+        expected = {
+            "suite_id": _REPRESENTATIVE_SGLANG_SUITE_ID,
+            "scope": _REPRESENTATIVE_SGLANG_SUITE_SCOPE,
+            "datasets": list(_REPRESENTATIVE_SGLANG_DATASETS),
+            "examples": _REPRESENTATIVE_SGLANG_EXAMPLES,
+            "repeats": _REPRESENTATIVE_SGLANG_REPEATS,
+            "release_v1_suite": False,
+        }
+        for field_name, expected_value in expected.items():
+            observed_value = suite.get(field_name)
+            if field_name == "datasets" and isinstance(
+                observed_value,
+                Sequence,
+            ) and not isinstance(observed_value, (str, bytes, bytearray)):
+                observed_value = list(observed_value)
+            if observed_value != expected_value:
+                issues.append(
+                    "representative SGLang live benchmark suite."
+                    f"{field_name} must be {expected_value!r}"
+                )
+        return
+
     suite_id = suite.get("suite_id")
     if not isinstance(suite_id, str) or not suite_id:
         issues.append("SGLang live V1 benchmark suite_id must be non-empty")
@@ -778,12 +2617,85 @@ def _validate_sglang_live_v1_measurement_count(
         )
 
 
+def _validate_representative_sglang_measurement_matrix(
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> None:
+    observed_examples: set[str] = set()
+    observed: set[tuple[str, str, int]] = set()
+    duplicates: set[tuple[str, str, int]] = set()
+    for index, measurement in enumerate(measurements):
+        if not isinstance(measurement, Mapping):
+            continue
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        arm_id = measurement.get("arm_id")
+        metadata = measurement.get("metadata")
+        repeat_index = (
+            _positive_int_metadata(metadata.get("repeat_index"))
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        if dataset != _REPRESENTATIVE_SGLANG_DATASETS[0]:
+            issues.append(
+                "representative SGLang live benchmark measurement "
+                f"{index} dataset must be {_REPRESENTATIVE_SGLANG_DATASETS[0]!r}"
+            )
+        if not isinstance(example_id, str) or not example_id:
+            continue
+        observed_examples.add(example_id)
+        if arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM):
+            continue
+        if repeat_index is None:
+            issues.append(
+                "representative SGLang live benchmark measurement "
+                f"{index} must include a positive metadata.repeat_index"
+            )
+            continue
+        key = (example_id, arm_id, repeat_index)
+        if key in observed:
+            duplicates.add(key)
+        observed.add(key)
+
+    if len(observed_examples) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        issues.append(
+            "representative SGLang live benchmark measurements must contain "
+            f"exactly {_REPRESENTATIVE_SGLANG_EXAMPLES} sample"
+        )
+        return
+    example_id = next(iter(observed_examples))
+    expected = {
+        (example_id, arm_id, repeat_index)
+        for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+        for repeat_index in range(1, _REPRESENTATIVE_SGLANG_REPEATS + 1)
+    }
+    missing = sorted(expected.difference(observed))
+    unexpected = sorted(observed.difference(expected))
+    if missing:
+        issues.append(
+            "representative SGLang live benchmark measurements missing required "
+            f"arm/repeat records: {missing!r}"
+        )
+    if unexpected:
+        issues.append(
+            "representative SGLang live benchmark measurements contain unexpected "
+            f"arm/repeat records: {unexpected!r}"
+        )
+    if duplicates:
+        issues.append(
+            "representative SGLang live benchmark measurements contain duplicate "
+            f"arm/repeat records: {sorted(duplicates)!r}"
+        )
+
+
 def _validate_sglang_live_v1_cache_hit_validations(
     suite: Mapping[str, Any],
     validations: Sequence[Any],
     *,
     measurements: Sequence[Any] | None,
     issues: list[str],
+    required_datasets: Sequence[str],
+    require_exact_count: bool,
 ) -> None:
     if not validations:
         issues.append("SGLang live V1 benchmark cache_hit_validations must be non-empty")
@@ -796,6 +2708,7 @@ def _validate_sglang_live_v1_cache_hit_validations(
         else set()
     )
     observed_dataset_repeats: set[tuple[str, int]] = set()
+    duplicate_dataset_repeats: set[tuple[str, int]] = set()
     for index, validation in enumerate(validations):
         label = f"SGLang live V1 benchmark cache_hit_validations[{index}]"
         if not isinstance(validation, Mapping):
@@ -817,7 +2730,10 @@ def _validate_sglang_live_v1_cache_hit_validations(
         elif repeat_count and repeat_index > repeat_count:
             issues.append(f"{label}.repeat_index must not exceed suite repeats")
         elif dataset is not None:
-            observed_dataset_repeats.add((dataset, repeat_index))
+            dataset_repeat = (dataset, repeat_index)
+            if dataset_repeat in observed_dataset_repeats:
+                duplicate_dataset_repeats.add(dataset_repeat)
+            observed_dataset_repeats.add(dataset_repeat)
             if isinstance(example_id, str) and example_id and measurements is not None:
                 binding = (dataset, example_id, repeat_index)
                 if binding not in cache_measurement_bindings:
@@ -844,7 +2760,7 @@ def _validate_sglang_live_v1_cache_hit_validations(
     if repeat_count:
         expected = {
             (dataset, repeat)
-            for dataset in SUPPORTED_V1_DATASETS
+            for dataset in required_datasets
             for repeat in range(1, repeat_count + 1)
         }
         missing = sorted(
@@ -856,6 +2772,32 @@ def _validate_sglang_live_v1_cache_hit_validations(
                 "SGLang live V1 benchmark cache_hit_validations missing required "
                 f"dataset repeats: {', '.join(missing)}"
             )
+        if require_exact_count:
+            unexpected = sorted(
+                f"{dataset}:repeat_{repeat}"
+                for dataset, repeat in observed_dataset_repeats.difference(expected)
+            )
+            if unexpected:
+                issues.append(
+                    "representative SGLang live benchmark cache_hit_validations "
+                    "contain unexpected dataset repeats: "
+                    + ", ".join(unexpected)
+                )
+            duplicates = sorted(
+                f"{dataset}:repeat_{repeat}"
+                for dataset, repeat in duplicate_dataset_repeats
+            )
+            if duplicates:
+                issues.append(
+                    "representative SGLang live benchmark cache_hit_validations "
+                    "contain duplicate dataset repeats: "
+                    + ", ".join(duplicates)
+                )
+            if len(validations) != len(expected):
+                issues.append(
+                    "representative SGLang live benchmark cache_hit_validations "
+                    f"must contain exactly {len(expected)} records"
+                )
 
 
 def _sglang_live_v1_cache_measurement_bindings(
@@ -1091,8 +3033,7 @@ class _V1MeasurementAggregate:
     prompt_tokens_count: int = 0
     completion_tokens_sum: int = 0
     completion_tokens_count: int = 0
-    output_tokens_sum: int = 0
-    time_to_completion_sum: float = 0.0
+    decode_throughput_samples: list[tuple[int, float, float]] = field(default_factory=list)
     throughput_count: int = 0
     ttft_values: list[float] = field(default_factory=list)
     time_to_completion_values: list[float] = field(default_factory=list)
@@ -1141,9 +3082,15 @@ def _validate_v1_report_aggregates_match_measurements(
             aggregate.ttft_values.append(float(ttft))
         if _is_non_negative_number(time_to_completion):
             aggregate.time_to_completion_values.append(float(time_to_completion))
-        if _is_positive_int(completion_tokens) and _is_non_negative_number(time_to_completion):
-            aggregate.output_tokens_sum += completion_tokens
-            aggregate.time_to_completion_sum += float(time_to_completion)
+        if (
+            _is_positive_int(completion_tokens)
+            and _is_non_negative_number(ttft)
+            and _is_non_negative_number(time_to_completion)
+            and float(time_to_completion) >= float(ttft)
+        ):
+            aggregate.decode_throughput_samples.append(
+                (completion_tokens, float(ttft), float(time_to_completion))
+            )
             aggregate.throughput_count += 1
         if type(exact_match) is bool:
             aggregate.exact_match_true_count += int(exact_match)
@@ -1195,17 +3142,20 @@ def _validate_v1_report_aggregates_match_measurements(
             and measurement_successes > 0
         ):
             throughput_label = f"v1 benchmark report row {dataset}:{arm_id} output_tokens_per_second"
-            if aggregate.time_to_completion_sum > 0:
+            expected_throughput = aggregate_decode_tokens_per_second(
+                aggregate.decode_throughput_samples
+            )
+            if expected_throughput is not None:
                 _validate_v1_report_aggregate_number(
                     row.get("output_tokens_per_second"),
-                    aggregate.output_tokens_sum / aggregate.time_to_completion_sum,
+                    expected_throughput,
                     throughput_label,
                     issues,
                 )
             elif row.get("output_tokens_per_second") is not None:
                 issues.append(
                     f"{throughput_label} must be absent when measurements have zero total "
-                    "time_to_completion_seconds"
+                    "post-TTFT decode time"
                 )
         if (
             row.get("exact_match_rate") is not None
@@ -1599,7 +3549,12 @@ def _sequence_or_issue(record: Mapping[str, Any], key: str, issues: list[str]) -
     return None
 
 
-def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> None:
+def _validate_v1_report_rows(
+    report_rows: Sequence[Any],
+    issues: list[str],
+    *,
+    required_datasets: Sequence[str] = SUPPORTED_V1_DATASETS,
+) -> None:
     if not report_rows:
         issues.append("v1 benchmark report_rows must be non-empty")
         return
@@ -1669,7 +3624,7 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
                 )
     expected = {
         (dataset, arm_id)
-        for dataset in SUPPORTED_V1_DATASETS
+        for dataset in required_datasets
         for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
     }
     missing = sorted(f"{dataset}:{arm_id}" for dataset, arm_id in expected.difference(row_keys))
@@ -1677,7 +3632,12 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
         issues.append(f"v1 benchmark report_rows missing required rows: {', '.join(missing)}")
 
 
-def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) -> None:
+def _validate_v1_measurements(
+    measurements: Sequence[Any],
+    issues: list[str],
+    *,
+    required_datasets: Sequence[str] = SUPPORTED_V1_DATASETS,
+) -> None:
     if not measurements:
         issues.append("v1 benchmark measurements must be non-empty")
         return
@@ -1750,7 +3710,7 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
         )
     expected = {
         (dataset, arm_id)
-        for dataset in SUPPORTED_V1_DATASETS
+        for dataset in required_datasets
         for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
     }
     missing = sorted(f"{dataset}:{arm_id}" for dataset, arm_id in expected.difference(measurement_keys))
@@ -1835,7 +3795,12 @@ def _validate_v1_measurement_token_context(
                 issues.append(f"{label} cache prompt_tokens must match metadata.{prompt_text_mode}_prompt_tokens")
 
 
-def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> None:
+def _validate_v1_comparisons(
+    comparisons: Sequence[Any],
+    issues: list[str],
+    *,
+    required_datasets: Sequence[str] = SUPPORTED_V1_DATASETS,
+) -> None:
     if not comparisons:
         issues.append("v1 benchmark comparisons must be non-empty")
         return
@@ -1872,7 +3837,7 @@ def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> N
                 f"v1 benchmark comparison {dataset_value} {metric_name}",
                 issues,
             )
-    missing = sorted(set(SUPPORTED_V1_DATASETS).difference(comparison_datasets))
+    missing = sorted(set(required_datasets).difference(comparison_datasets))
     if missing:
         issues.append(f"v1 benchmark comparisons missing required datasets: {', '.join(missing)}")
 
@@ -2290,6 +4255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate Document KV Cache release evidence JSON artifacts.")
     parser.add_argument("--v1-benchmark-json", required=True)
     parser.add_argument("--storage-benchmark-json", required=True)
+    parser.add_argument("--benchmark-evidence-gate-json")
     parser.add_argument("--engine-probe-json", action="append", default=[])
     parser.add_argument("--engine-actions-json", action="append", default=[])
     parser.add_argument("--output-json", help="Write the release evidence JSON to this path instead of stdout.")
@@ -2304,6 +4270,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 storage_benchmark_json=args.storage_benchmark_json,
                 engine_probe_jsons=tuple(args.engine_probe_json),
                 engine_actions_jsons=tuple(args.engine_actions_json),
+                benchmark_evidence_gate_json=args.benchmark_evidence_gate_json,
             )
             if args.preflight_output_json:
                 write_release_evidence_input_status_json(input_status, args.preflight_output_json)
@@ -2316,6 +4283,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             storage_benchmark_json=args.storage_benchmark_json,
             engine_probe_jsons=tuple(args.engine_probe_json),
             engine_actions_jsons=tuple(args.engine_actions_json),
+            benchmark_evidence_gate_json=args.benchmark_evidence_gate_json,
         )
         if args.output_json:
             write_release_evidence_json(evidence, args.output_json)

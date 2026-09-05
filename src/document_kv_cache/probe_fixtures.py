@@ -199,7 +199,7 @@ def write_qwen3_v1_engine_probe_fixture(config: EngineProbeFixtureConfig) -> Eng
         layout=layout,
         handle_uri=config.handle_uri,
         metadata=config.metadata,
-        cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
         adapter_ids=config.adapter_ids,
         segmented=config.segmented,
     )

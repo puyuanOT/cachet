@@ -16,8 +16,12 @@ from document_kv_cache._hardware_targets import (
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
+    DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
     DEFAULT_DATABRICKS_SPARK_VERSION,
+    DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
     DatabricksSingleNodeGPUClusterConfig,
+    _validated_databricks_run_timeout_seconds,
+    _validated_databricks_task_max_retries,
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
@@ -41,10 +45,20 @@ from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_t
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
 from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+    PIP_BOOTSTRAP_CONSTRAINTS,
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_VERSION,
     VLLM_DEPENDENCY_CONSTRAINTS,
-    VLLM_VERSION,
+    VLLM_PACKAGE_INDEX_URLS,
+    VLLM_RUNTIME_LOCK_FILENAME,
+    VLLM_RUNTIME_LOCK_SHA256,
+    VLLM_WHEEL_INSTALL_SPEC,
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+    VIRTUALENV_BOOTSTRAP_VERSION,
+    vllm_runtime_install_requirements,
 )
 from document_kv_cache.storage import local_path
 
@@ -55,7 +69,7 @@ DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE = "document-kv-engine-probe"
 DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY = "probes"
 ENGINE_PROBE_TARGETS_RECORD_TYPE = "document_kv.engine_probe_targets.v1"
 ENGINE_PROBE_TARGETS_SCHEMA_VERSION = 1
-DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE = f"vllm=={VLLM_VERSION}"
+DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE = VLLM_WHEEL_INSTALL_SPEC
 DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE = f"sglang=={SGLANG_VERSION}"
 _PROVIDER_BACKED_NATIVE_PROBE_OPTION_NAMES = {
     ServingBackend.VLLM: "--provider-backed-vllm-native-probe",
@@ -73,11 +87,6 @@ _PROVIDER_BACKED_NATIVE_PROBE_METADATA = {
     ServingBackend.VLLM: VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     ServingBackend.SGLANG: SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
 }
-_PROVIDER_BACKED_NATIVE_PROBE_RUNTIME_PACKAGES = {
-    ServingBackend.VLLM: VLLM_DEPENDENCY_CONSTRAINTS,
-    ServingBackend.SGLANG: SGLANG_DEPENDENCY_CONSTRAINTS,
-}
-_VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE = "opencv-python-headless==4.12.0.88"
 _ENGINE_PROBE_TARGETS_ENVELOPE_KEYS = frozenset(
     {
         "record_type",
@@ -112,15 +121,71 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
         "native_probe_factories_output_json",
     }
 )
+
+
+def _provider_backed_native_probe_runtime_packages(
+    backend: ServingBackend,
+) -> tuple[str, ...]:
+    """Return the exact runtime requirements for a release-safe native probe."""
+
+    if backend == ServingBackend.VLLM:
+        return vllm_runtime_install_requirements()
+    if backend == ServingBackend.SGLANG:
+        return SGLANG_DEPENDENCY_CONSTRAINTS
+    raise ValueError(f"Unsupported serving backend {backend!r}")
+
+
 ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 import os
+import platform
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
+import zipfile
 
 DEFAULT_SERVING_VENV_DIR = "/local_disk0/cachet/engine-probe-venv"
-DEFAULT_VIRTUALENV_PACKAGE = "virtualenv==20.39.1"
+VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
+VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
+VIRTUALENV_BOOTSTRAP_SHA256 = __CACHET_VIRTUALENV_BOOTSTRAP_SHA256__
+PIP_BOOTSTRAP_CONSTRAINTS = __CACHET_PIP_BOOTSTRAP_CONSTRAINTS__
+VLLM_PACKAGE_INDEX_URLS = __CACHET_VLLM_PACKAGE_INDEX_URLS__
+VLLM_LOCKED_DIRECT_REQUIREMENTS = __CACHET_VLLM_LOCKED_DIRECT_REQUIREMENTS__
+VLLM_RUNTIME_LOCK_MEMBER = __CACHET_VLLM_RUNTIME_LOCK_MEMBER__
+VLLM_RUNTIME_LOCK_SHA256 = __CACHET_VLLM_RUNTIME_LOCK_SHA256__
+GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL = __GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__
+GPU_RUNTIME_PYTHONWARNINGS = __GPU_RUNTIME_PYTHONWARNINGS__
+VLLM_ENGINE_PROBE_CHILD_CODE = '''import os
+import sys
+
+if (
+    os.environ.get("FLASHINFER_LOGGING_LEVEL")
+    != __GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__
+    or os.environ.get("PYTHONWARNINGS") != __GPU_RUNTIME_PYTHONWARNINGS__
+    or tuple(sys.warnoptions)
+    != tuple(__GPU_RUNTIME_PYTHONWARNINGS__.split(","))
+    or not sys.flags.safe_path
+    or "PYTHONHOME" in os.environ
+    or "PYTHONPATH" in os.environ
+):
+    raise RuntimeError(
+        "vLLM engine-probe child lacks the pinned CUDA warning startup policy"
+    )
+
+_virtual_env = os.environ.get("VIRTUAL_ENV")
+if _virtual_env is not None:
+    _venv_bindir = "Scripts" if os.name == "nt" else "bin"
+    _venv_python = os.path.join(_virtual_env, _venv_bindir, "python")
+    if os.path.realpath(sys.executable) != os.path.realpath(_venv_python):
+        raise RuntimeError("vLLM engine-probe child has an invalid VIRTUAL_ENV")
+
+from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_task
+
+raise SystemExit(run_engine_probe_task(sys.argv[1:]))
+'''
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -134,18 +199,143 @@ def _venv_python(venv_dir: str) -> str:
     return os.path.join(venv_dir, bindir, "python")
 
 
+def _pip_subprocess_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    for variable_name in tuple(env):
+        if variable_name.upper().startswith("PIP_"):
+            env.pop(variable_name)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(variable_name, None)
+    env.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        }
+    )
+    return env
+
+
+def _expected_backend(argv: list[str]) -> str | None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--expected-backend")
+    args, _remaining = parser.parse_known_args(argv)
+    return args.expected_backend
+
+
+def _vllm_child_environment(
+    base_env: dict[str, str],
+    *,
+    expected_virtual_env: str | None = None,
+) -> dict[str, str]:
+    env = dict(base_env)
+    for variable_name in ("PYTHONHOME", "PYTHONPATH"):
+        env.pop(variable_name, None)
+    if expected_virtual_env is None:
+        env.pop("VIRTUAL_ENV", None)
+    elif env.get("VIRTUAL_ENV") != expected_virtual_env:
+        raise RuntimeError("vLLM engine-probe child VIRTUAL_ENV differs")
+    env.update(
+        {
+            "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+        }
+    )
+    return env
+
+
+def _run_vllm_child(
+    python_executable: str,
+    argv: list[str],
+    *,
+    base_env: dict[str, str],
+    expected_virtual_env: str | None = None,
+) -> int:
+    return subprocess.call(
+        [
+            python_executable,
+            "-P",
+            "-c",
+            VLLM_ENGINE_PROBE_CHILD_CODE,
+            *argv,
+        ],
+        env=_vllm_child_environment(
+            base_env,
+            expected_virtual_env=expected_virtual_env,
+        ),
+    )
+
+
 def _create_serving_venv(venv_dir: str) -> None:
+    env = _pip_subprocess_environment()
     try:
-        subprocess.check_call([sys.executable, "-m", "venv", "--clear", venv_dir])
+        subprocess.check_call(
+            [sys.executable, "-m", "venv", "--clear", venv_dir],
+            env=env,
+        )
     except subprocess.CalledProcessError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", DEFAULT_VIRTUALENV_PACKAGE])
-        subprocess.check_call([sys.executable, "-m", "virtualenv", "--clear", venv_dir])
+        bootstrap = _materialize_virtualenv_bootstrap(os.path.dirname(venv_dir))
+        subprocess.check_call(
+            [sys.executable, bootstrap, "--clear", venv_dir],
+            env=env,
+        )
+
+
+def _file_sha256(path: str) -> str:
+    digest = sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    target = os.path.join(
+        output_dir,
+        "virtualenv-"
+        + VIRTUALENV_BOOTSTRAP_VERSION
+        + "-"
+        + VIRTUALENV_BOOTSTRAP_SHA256[:16]
+        + ".pyz",
+    )
+    if os.path.exists(target):
+        observed = _file_sha256(target)
+        if observed != VIRTUALENV_BOOTSTRAP_SHA256:
+            raise RuntimeError("virtualenv bootstrap SHA-256 mismatch: " + observed)
+        return target
+    temporary = target + ".tmp"
+    request = urllib.request.Request(
+        VIRTUALENV_BOOTSTRAP_URL,
+        headers={"User-Agent": "cachet-engine-probe-bootstrap"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120.0) as response:
+            with open(temporary, "wb") as stream:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+        observed = _file_sha256(temporary)
+        if observed != VIRTUALENV_BOOTSTRAP_SHA256:
+            raise RuntimeError("downloaded virtualenv bootstrap SHA-256 mismatch: " + observed)
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return target
 
 
 def _venv_subprocess_env(venv_dir: str) -> dict[str, str]:
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    env["PYTHONNOUSERSITE"] = "1"
+    env = _pip_subprocess_environment()
     env["VIRTUAL_ENV"] = venv_dir
     env["PATH"] = os.path.dirname(_venv_python(venv_dir)) + os.pathsep + env.get("PATH", "")
     return env
@@ -156,6 +346,99 @@ def _runner_script_path() -> str:
     if not script_path:
         raise RuntimeError("Cannot determine generated engine-probe runner script path")
     return script_path
+
+
+def _pip_package_name(package: str) -> str:
+    normalized = package.strip()
+    name_chars = []
+    for char in normalized:
+        if char.isalnum() or char in {"-", "_", "."}:
+            name_chars.append(char)
+            continue
+        break
+    return "".join(name_chars).replace("_", "-").lower()
+
+
+def _is_patched_vllm_spec(package: str) -> bool:
+    decoded_package = urllib.parse.unquote(package)
+    return (
+        _pip_package_name(package) == "vllm"
+        and "vllm-0.27.1+cu129-1cachete5m2" in decoded_package
+        and "#sha256=" in package
+    )
+
+
+def _vllm_index_args() -> list[str]:
+    return [
+        argument
+        for index_url in VLLM_PACKAGE_INDEX_URLS
+        for argument in ("--extra-index-url", index_url)
+    ]
+
+
+def _validate_locked_vllm_runtime_packages(packages: list[str]) -> str | None:
+    patched_specs = [package for package in packages if _is_patched_vllm_spec(package)]
+    if not patched_specs:
+        return None
+    if len(patched_specs) != 1:
+        raise RuntimeError("locked vLLM probe requires exactly one patched vLLM wheel")
+    non_vllm = {
+        _pip_package_name(package): package
+        for package in packages
+        if _pip_package_name(package) != "vllm"
+    }
+    expected = {
+        _pip_package_name(package): package
+        for package in VLLM_LOCKED_DIRECT_REQUIREMENTS
+    }
+    if non_vllm != expected:
+        raise RuntimeError(
+            "locked vLLM probe package declaration must match the reviewed direct closure"
+        )
+    return patched_specs[0]
+
+
+def _validate_vllm_lock_platform() -> None:
+    if sys.version_info[:2] != (3, 11):
+        raise RuntimeError("vLLM runtime lock requires CPython 3.11")
+    if sys.platform != "linux":
+        raise RuntimeError("vLLM runtime lock requires Linux")
+    if platform.machine().lower() not in {"x86_64", "amd64"}:
+        raise RuntimeError("vLLM runtime lock requires x86_64")
+    if platform.libc_ver() != ("glibc", "2.35"):
+        raise RuntimeError("vLLM runtime lock requires glibc 2.35")
+
+
+def _materialize_vllm_runtime_lock(
+    package_wheel_uris: list[str] | None,
+    *,
+    venv_dir: str,
+) -> str:
+    matches = []
+    for package_wheel_uri in package_wheel_uris or ():
+        wheel_path = _cluster_file_path(package_wheel_uri)
+        try:
+            with zipfile.ZipFile(wheel_path) as wheel:
+                lock_bytes = wheel.read(VLLM_RUNTIME_LOCK_MEMBER)
+        except (OSError, KeyError, zipfile.BadZipFile):
+            continue
+        matches.append((wheel_path, lock_bytes))
+    if len(matches) != 1:
+        raise RuntimeError(
+            "locked vLLM probe requires exactly one Cachet wheel containing "
+            + VLLM_RUNTIME_LOCK_MEMBER
+        )
+    _wheel_path, lock_bytes = matches[0]
+    observed_digest = sha256(lock_bytes).hexdigest()
+    if observed_digest != VLLM_RUNTIME_LOCK_SHA256:
+        raise RuntimeError(
+            "Packaged vLLM runtime lock failed its content hash: "
+            + observed_digest
+        )
+    lock_path = os.path.join(venv_dir, os.path.basename(VLLM_RUNTIME_LOCK_MEMBER))
+    with open(lock_path, "wb") as stream:
+        stream.write(lock_bytes)
+    return lock_path
 
 
 def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
@@ -175,10 +458,54 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
     _create_serving_venv(venv_dir)
     venv_python = _venv_python(venv_dir)
     venv_env = _venv_subprocess_env(venv_dir)
-    subprocess.check_call([venv_python, "-m", "pip", "install", "--upgrade", "pip"], env=venv_env)
+    patched_vllm_spec = _validate_locked_vllm_runtime_packages(args.pip_package or [])
     if args.pip_package:
-        subprocess.check_call([venv_python, "-m", "pip", "install", *args.pip_package], env=venv_env)
+        if patched_vllm_spec is not None:
+            _validate_vllm_lock_platform()
+            lock_path = _materialize_vllm_runtime_lock(
+                args.package_wheel_uri,
+                venv_dir=venv_dir,
+            )
+            subprocess.check_call(
+                [
+                    venv_python,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--require-hashes",
+                    "--only-binary",
+                    ":all:",
+                    "--requirement",
+                    lock_path,
+                ],
+                env=venv_env,
+            )
+            subprocess.check_call(
+                [venv_python, "-m", "pip", "install", "--no-deps", patched_vllm_spec],
+                env=venv_env,
+            )
+        else:
+            subprocess.check_call(
+                [venv_python, "-m", "pip", "install", "--upgrade", *PIP_BOOTSTRAP_CONSTRAINTS],
+                env=venv_env,
+            )
+            index_args = (
+                _vllm_index_args()
+                if any(_pip_package_name(package) == "vllm" for package in args.pip_package)
+                else []
+            )
+            subprocess.check_call(
+                [venv_python, "-m", "pip", "install", *index_args, *args.pip_package],
+                env=venv_env,
+            )
+    elif args.package_wheel_uri:
+        subprocess.check_call(
+            [venv_python, "-m", "pip", "install", "--upgrade", *PIP_BOOTSTRAP_CONSTRAINTS],
+            env=venv_env,
+        )
     if args.pip_override_package:
+        if patched_vllm_spec is not None:
+            raise RuntimeError("locked vLLM probe does not permit pip overrides")
         subprocess.check_call(
             [
                 venv_python,
@@ -193,8 +520,41 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
         )
     for package_wheel_uri in args.package_wheel_uri or ():
         subprocess.check_call(
-            [venv_python, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)],
+            [
+                venv_python,
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                _cluster_file_path(package_wheel_uri),
+            ],
             env=venv_env,
+        )
+    if patched_vllm_spec is not None:
+        subprocess.check_call(
+            [venv_python, "-m", "pip", "check"],
+            env=venv_env,
+        )
+        verification_code = (
+            "import json,sys; "
+            "from document_kv_cache.serving_env import "
+            "verify_installed_vllm_runtime_lock; "
+            "print(json.dumps(verify_installed_vllm_runtime_lock(sys.argv[1]), "
+            "sort_keys=True))"
+        )
+        subprocess.check_call(
+            [venv_python, "-c", verification_code, patched_vllm_spec],
+            env=venv_env,
+        )
+    if _expected_backend(remaining) == "vllm":
+        return (
+            remaining,
+            _run_vllm_child(
+                venv_python,
+                remaining,
+                base_env=venv_env,
+                expected_virtual_env=venv_dir,
+            ),
         )
     return (
         remaining,
@@ -214,13 +574,51 @@ if __name__ == "__main__":
     if reexec_exit_code is not None:
         if reexec_exit_code:
             raise SystemExit(reexec_exit_code)
+    elif _expected_backend(remaining_args) == "vllm":
+        exit_code = _run_vllm_child(
+            sys.executable,
+            remaining_args,
+            base_env=_pip_subprocess_environment(),
+        )
+        if exit_code:
+            raise SystemExit(exit_code)
     else:
         from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_task
 
         exit_code = run_engine_probe_task(remaining_args)
         if exit_code:
             raise SystemExit(exit_code)
-"""
+""".replace(
+    "__CACHET_VIRTUALENV_BOOTSTRAP_VERSION__",
+    repr(VIRTUALENV_BOOTSTRAP_VERSION),
+).replace(
+    "__CACHET_VIRTUALENV_BOOTSTRAP_URL__",
+    repr(VIRTUALENV_BOOTSTRAP_URL),
+).replace(
+    "__CACHET_VIRTUALENV_BOOTSTRAP_SHA256__",
+    repr(VIRTUALENV_BOOTSTRAP_SHA256),
+).replace(
+    "__CACHET_PIP_BOOTSTRAP_CONSTRAINTS__",
+    repr(PIP_BOOTSTRAP_CONSTRAINTS),
+).replace(
+    "__CACHET_VLLM_PACKAGE_INDEX_URLS__",
+    repr(VLLM_PACKAGE_INDEX_URLS),
+).replace(
+    "__CACHET_VLLM_LOCKED_DIRECT_REQUIREMENTS__",
+    repr(VLLM_DEPENDENCY_CONSTRAINTS[1:]),
+).replace(
+    "__CACHET_VLLM_RUNTIME_LOCK_MEMBER__",
+    repr(f"document_kv_cache/runtime_locks/{VLLM_RUNTIME_LOCK_FILENAME}"),
+).replace(
+    "__CACHET_VLLM_RUNTIME_LOCK_SHA256__",
+    repr(VLLM_RUNTIME_LOCK_SHA256),
+).replace(
+    "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+    repr(GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL),
+).replace(
+    "__GPU_RUNTIME_PYTHONWARNINGS__",
+    repr(GPU_RUNTIME_PYTHONWARNINGS),
+)
 
 __all__ = [
     "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME",
@@ -362,6 +760,8 @@ class DatabricksEngineProbeMatrixJobConfig:
     extra_wheel_uris: tuple[str, ...] = ()
     serial_tasks: bool = False
     extra_pip_packages: tuple[str, ...] = ()
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+    task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
 
     def __post_init__(self) -> None:
         if not self.probe_targets:
@@ -370,6 +770,12 @@ class DatabricksEngineProbeMatrixJobConfig:
             raise ValueError("runner_python_file must be non-empty")
         if not self.run_name:
             raise ValueError("run_name must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        if self.run_timeout_seconds > DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "run_timeout_seconds exceeds the four-hour engine-probe bound"
+            )
+        _validated_databricks_task_max_retries(self.task_max_retries)
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
         _DEFAULT_VALIDATE_WHEEL_URIS(self.extra_wheel_uris, field_name="extra_wheel_uris")
@@ -421,6 +827,8 @@ class DatabricksEngineProbeJobConfig:
     sglang_runtime_preflight_output_json: str | None = None
     sglang_runtime_preflight_launch_config_json: str | None = None
     native_probe_factories_output_json: str | None = None
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+    task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
@@ -443,6 +851,12 @@ class DatabricksEngineProbeJobConfig:
             object.__setattr__(self, "task_key", _default_task_key_for_backend(self.expected_backend))
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        if self.run_timeout_seconds > DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "run_timeout_seconds exceeds the four-hour engine-probe bound"
+            )
+        _validated_databricks_task_max_retries(self.task_max_retries)
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
         _DEFAULT_VALIDATE_WHEEL_URIS(self.extra_wheel_uris, field_name="extra_wheel_uris")
@@ -489,6 +903,8 @@ class DatabricksEngineProbeJobConfig:
 def build_databricks_engine_probe_run_submit_payload(config: DatabricksEngineProbeJobConfig) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_key": config.task_key,
+        "timeout_seconds": config.run_timeout_seconds,
+        "max_retries": config.task_max_retries,
         "new_cluster": _engine_probe_cluster(config),
         "spark_python_task": {
             "python_file": config.runner_python_file,
@@ -502,6 +918,7 @@ def build_databricks_engine_probe_run_submit_payload(config: DatabricksEnginePro
     task["spark_python_task"]["parameters"].extend(_package_wheel_parameters(config))
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
 
@@ -517,6 +934,7 @@ def build_databricks_engine_probe_matrix_run_submit_payload(
         _add_serial_task_dependencies(tasks)
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": tasks,
     }
 
@@ -596,6 +1014,8 @@ def _engine_probe_task_from_target(
         payload_uri=target.payload_uri,
         run_name=config.run_name,
         task_key=target.task_key or _default_task_key_for_backend(target.expected_backend),
+        run_timeout_seconds=config.run_timeout_seconds,
+        task_max_retries=config.task_max_retries,
         node_type_id=config.node_type_id,
         spark_version=config.spark_version,
         data_security_mode=config.data_security_mode,
@@ -625,11 +1045,11 @@ def _engine_probe_task_from_target(
 
 def _engine_probe_cluster(config: DatabricksEngineProbeJobConfig) -> dict[str, Any]:
     cluster = build_single_node_gpu_cluster(_cluster_config_from_engine_probe_job(config))
-    if config.native_probe_delegate_factory is None:
-        return cluster
     spark_env_vars = dict(cluster.get("spark_env_vars", {}))
-    spark_env_vars[_native_probe_delegate_env_name(config.expected_backend)] = config.native_probe_delegate_factory
-    cluster["spark_env_vars"] = spark_env_vars
+    if config.native_probe_delegate_factory is not None:
+        spark_env_vars[_native_probe_delegate_env_name(config.expected_backend)] = config.native_probe_delegate_factory
+    if spark_env_vars:
+        cluster["spark_env_vars"] = spark_env_vars
     return cluster
 
 
@@ -727,15 +1147,18 @@ def _engine_probe_pip_packages(config: DatabricksEngineProbeJobConfig) -> tuple[
     if config.release_safe and _is_provider_backed_native_probe(config):
         _append_required_pip_packages(
             packages,
-            required_packages=_PROVIDER_BACKED_NATIVE_PROBE_RUNTIME_PACKAGES[config.expected_backend],
+            required_packages=_provider_backed_native_probe_runtime_packages(
+                config.expected_backend
+            ),
             option_name=f"release-safe provider-backed {config.expected_backend.value} engine probe job",
         )
     return tuple(packages)
 
 
-def _engine_probe_pip_override_packages(config: DatabricksEngineProbeJobConfig) -> tuple[str, ...]:
-    if config.release_safe and _is_provider_backed_vllm_probe(config):
-        return (_VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE,)
+def _engine_probe_pip_override_packages(
+    _config: DatabricksEngineProbeJobConfig,
+) -> tuple[str, ...]:
+    # The vLLM lock already pins OpenCV; post-lock overrides are forbidden.
     return ()
 
 
@@ -1420,7 +1843,7 @@ def _single_target_extra_pip_packages_from_cli(args: argparse.Namespace) -> tupl
     if preset is not None:
         _append_required_pip_packages(
             packages,
-            required_packages=_PROVIDER_BACKED_NATIVE_PROBE_RUNTIME_PACKAGES[preset],
+            required_packages=_provider_backed_native_probe_runtime_packages(preset),
             option_name=_provider_backed_native_probe_option_name(preset),
         )
     return tuple(packages)
@@ -1643,6 +2066,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME)
     parser.add_argument("--task-key")
     parser.add_argument(
+        "--run-timeout-seconds",
+        type=int,
+        default=DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--task-max-retries",
+        type=int,
+        default=DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
+    )
+    parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
         help="V1 hardware target used to derive --node-type-id when it is omitted.",
@@ -1716,6 +2149,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 probe_targets=targets_file.probe_targets,
                 runner_python_file=args.runner_python_file,
                 run_name=args.run_name,
+                run_timeout_seconds=args.run_timeout_seconds,
+                task_max_retries=args.task_max_retries,
                 node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
                 spark_version=args.spark_version,
                 data_security_mode=args.data_security_mode,
@@ -1751,6 +2186,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload_uri=args.payload_uri,
                 run_name=args.run_name,
                 task_key=args.task_key or DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
+                run_timeout_seconds=args.run_timeout_seconds,
+                task_max_retries=args.task_max_retries,
                 node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
                 spark_version=args.spark_version,
                 data_security_mode=args.data_security_mode,

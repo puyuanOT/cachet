@@ -58,6 +58,15 @@ Serving changes should integrate with established engines such as vLLM or
 SGLang. Cachet should stay at the document KV preparation and handoff boundary;
 it should not grow its own scheduler, decoder, or custom serving engine.
 
+## KV Reuse Methods
+
+Start new method work with `cachet-method-scaffold` and follow
+[`docs/adding-a-kv-method.md`](docs/adding-a-kv-method.md). Keep method
+registration immutable and application-owned. A method must remain
+`implemented=False` until artifact identity, token contracts, runtime
+compatibility, serving integration, and benchmark publication gates are
+covered by tests.
+
 ## Secrets And Generated Files
 
 Keep credentials outside the repository. Use environment variables or the

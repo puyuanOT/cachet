@@ -60,6 +60,8 @@ def test_chunk_cache_result_rejects_invalid_public_values(payload, tier, message
         ({"cpu_max_bytes": -1}, "cpu_max_bytes must be non-negative"),
         ({"local_items": -1}, "local_items must be non-negative"),
         ({"local_bytes": -1}, "local_bytes must be non-negative"),
+        ({"local_promotions": -1}, "local_promotions must be non-negative"),
+        ({"local_evictions": -1}, "local_evictions must be non-negative"),
         ({"local_max_bytes": True}, "local_max_bytes must be a non-negative integer"),
         ({"local_max_bytes": -1}, "local_max_bytes must be non-negative"),
     ),
@@ -144,6 +146,24 @@ def test_byte_lru_rejects_invalid_lookup_keys(lookup):
 def test_chunk_cache_rejects_invalid_local_disk_budget(tmp_path):
     with pytest.raises(ValueError, match="local_max_bytes must be a non-negative integer"):
         ChunkCache(cpu_max_bytes=0, local_dir=tmp_path / "chunk-cache", local_max_bytes=True)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    (
+        (0, "local_promotion_threshold must be positive"),
+        (-1, "local_promotion_threshold must be positive"),
+        (True, "local_promotion_threshold must be a positive integer"),
+        (1.5, "local_promotion_threshold must be a positive integer"),
+    ),
+)
+def test_chunk_cache_rejects_invalid_local_promotion_threshold(tmp_path, value, message):
+    with pytest.raises(ValueError, match=message):
+        ChunkCache(
+            cpu_max_bytes=0,
+            local_dir=tmp_path / "chunk-cache",
+            local_promotion_threshold=value,
+        )
 
 
 def test_chunk_cache_reports_cpu_hit_stats(tmp_path):
@@ -509,6 +529,94 @@ def test_chunk_cache_enforces_local_disk_budget_with_lru_eviction(tmp_path):
 
     assert cache.get_or_load(refs[0], reader.read) == b"aa"
     assert cache.stats().cold_misses == 3
+
+
+def test_chunk_cache_promotes_popular_cold_chunks_to_local_disk(tmp_path):
+    ref = write_kvpack(
+        tmp_path / "promote-popular.kvpack",
+        [PackChunk(key=key("popular"), payload=b"popular", token_count=2, dtype="int8", layout_version="v1")],
+        align_bytes=1,
+    )[0]
+    reader = DiskRangeReader()
+    cache_dir = tmp_path / "hierarchical-cache"
+    cache = ChunkCache(
+        cpu_max_bytes=0,
+        local_dir=cache_dir,
+        local_promotion_threshold=2,
+    )
+
+    first = cache.get_or_load_with_tier(ref, reader.read)
+    assert first == ChunkCacheResult(payload=b"popular", tier=CacheTier.COLD_STORAGE)
+    assert list(cache_dir.rglob("*.chunk")) == []
+    assert cache.stats().local_promotions == 0
+
+    second = cache.get_or_load_with_tier(ref, reader.read)
+    assert second == ChunkCacheResult(payload=b"popular", tier=CacheTier.COLD_STORAGE)
+    promoted_files = list(cache_dir.rglob("*.chunk"))
+    assert len(promoted_files) == 1
+    assert promoted_files[0].read_bytes() == b"popular"
+    assert cache.stats().local_promotions == 1
+
+    reloaded = ChunkCache(
+        cpu_max_bytes=0,
+        local_dir=cache_dir,
+        local_promotion_threshold=2,
+    )
+    local = reloaded.get_or_load_with_tier(ref, reader.read)
+    assert local == ChunkCacheResult(payload=b"popular", tier=CacheTier.LOCAL_DISK)
+
+
+def test_chunk_cache_can_promote_from_cpu_hit_without_reloading_cold_storage(tmp_path):
+    ref = write_kvpack(
+        tmp_path / "promote-cpu-hit.kvpack",
+        [PackChunk(key=key("cpu-popular"), payload=b"cached", token_count=2, dtype="int8", layout_version="v1")],
+        align_bytes=1,
+    )[0]
+    reader = DiskRangeReader()
+    cache_dir = tmp_path / "hierarchical-cache"
+    cache = ChunkCache(
+        cpu_max_bytes=1024,
+        local_dir=cache_dir,
+        local_promotion_threshold=2,
+    )
+
+    assert cache.get_or_load_with_tier(ref, reader.read).tier == CacheTier.COLD_STORAGE
+    assert list(cache_dir.rglob("*.chunk")) == []
+    assert cache.get_or_load_with_tier(ref, lambda _: pytest.fail("cold storage should not be read")).tier == CacheTier.CPU
+
+    promoted = list(cache_dir.rglob("*.chunk"))
+    assert len(promoted) == 1
+    assert promoted[0].read_bytes() == b"cached"
+    assert cache.stats().local_promotions == 1
+    assert cache.stats().cold_misses == 1
+    assert cache.stats().cpu_hits == 1
+
+
+def test_chunk_cache_local_hierarchy_eviction_counts_removed_promotions(tmp_path):
+    refs = write_kvpack(
+        tmp_path / "promotion-eviction.kvpack",
+        [
+            PackChunk(key=key("a"), payload=b"aaa", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"bbbb", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    reader = DiskRangeReader()
+    cache = ChunkCache(
+        cpu_max_bytes=0,
+        local_dir=tmp_path / "hierarchical-cache",
+        local_max_bytes=4,
+        local_promotion_threshold=1,
+    )
+
+    assert cache.get_or_load_with_tier(refs[0], reader.read).tier == CacheTier.COLD_STORAGE
+    assert cache.get_or_load_with_tier(refs[1], reader.read).tier == CacheTier.COLD_STORAGE
+
+    stats = cache.stats()
+    assert stats.local_promotions == 2
+    assert stats.local_evictions == 1
+    assert stats.local_items == 1
+    assert stats.local_bytes == 4
 
 
 def test_chunk_cache_local_path_includes_checksum_to_avoid_stale_reuse(tmp_path):

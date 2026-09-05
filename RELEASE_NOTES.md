@@ -13,7 +13,7 @@ Highlights:
   `python examples/quickstart_local.py` without cloud or GPU access;
 - use memory/disk storage locally and advanced vLLM/SGLang adapters in serving
   environments;
-- read current benchmark summaries from `benchmarks/current/README.md`.
+- read current benchmark summaries from `benchmarks/README.md`.
 
 Known limitations:
 

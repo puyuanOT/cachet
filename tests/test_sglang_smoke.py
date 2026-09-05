@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import ModuleType
 import pytest
 
 import document_kv_cache.sglang_smoke as public_sglang_smoke
+from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmark_runner import BenchmarkGeneration
 from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
@@ -44,6 +46,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
     DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
+    DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
     HF_MODEL_ID,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
@@ -54,7 +57,9 @@ from document_kv_cache.sglang_smoke import (
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
     SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
     SGLANG_PREPARED_V1_LIVE_BENCHMARK_SCOPE,
+    SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES,
     SGLANG_VERSION,
+    SGLangRepresentativeWorkloadProfile,
     SGLangSmokeBenchmarkConfig,
     SGLangPreparedHandoffGenerationConfig,
     benchmark_dataset_paths,
@@ -75,6 +80,7 @@ from document_kv_cache.sglang_smoke import (
     run_live_checks,
     run_sglang_live_benchmark,
     run_sglang_quality_canary,
+    sglang_representative_workload_profile,
     sglang_cache_hit_validation_record,
     sglang_cached_token_counts,
     sglang_prefill_token_counts,
@@ -82,6 +88,10 @@ from document_kv_cache.sglang_smoke import (
     validate_prepared_sglang_benchmark_handoffs,
 )
 from document_kv_cache.storage import local_path
+from document_kv_cache.transformers_generator import (
+    CACHET_TRANSFORMERS_MODEL_REVISION_ENV,
+    CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV,
+)
 from document_kv_cache.workflow import SourceDocument
 from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 from sglang_kv_injection.sglang_dynamic_backend import (
@@ -92,6 +102,27 @@ from sglang_kv_injection.sglang_dynamic_backend import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+REPRESENTATIVE_WORKLOAD_PROFILE_ID = "sglang-4k-32-v1"
+REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
+REPRESENTATIVE_WORKLOAD_KWARGS = {
+    "representative_canary": True,
+    "representative_workload_profile": REPRESENTATIVE_WORKLOAD_PROFILE_ID,
+    "context_length": 4096,
+    "max_tokens": 32,
+    "live_benchmark_repeats": 2,
+    "sglang_attention_backend": "triton",
+    "sglang_sampling_backend": "pytorch",
+    "sglang_enable_deterministic_inference": True,
+}
+
+
+@pytest.fixture
+def representative_wheel_sha256_env(monkeypatch):
+    monkeypatch.setenv(
+        DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+        REPRESENTATIVE_WHEEL_SHA256,
+    )
+    return REPRESENTATIVE_WHEEL_SHA256
 
 
 def handoff_record(
@@ -128,6 +159,7 @@ def handoff_record(
         ),
         total_tokens=total_tokens,
         total_bytes=total_bytes,
+        cache_method="full_prefix_prefill",
     )
     ready = EngineReadyRequest(
         handle=handle,
@@ -314,7 +346,15 @@ class TinyTokenizer:
         assert text
         assert return_tensors == "pt"
         assert add_special_tokens is False
-        return {"input_ids": [list(self.token_ids)]}
+        # Cached benchmark prefixes own their trailing blank-line boundary. The
+        # complete logical prompt appends at least one online-query token, so the
+        # independently generated prefix remains a strict leading token prefix.
+        token_ids = (
+            self.token_ids
+            if text.endswith("\n\n")
+            else (*self.token_ids, 99)
+        )
+        return {"input_ids": [list(token_ids)]}
 
     def apply_chat_template(
         self, messages, *, tokenize, add_generation_prompt, **template_kwargs
@@ -336,17 +376,23 @@ class TinyTokenizer:
 class TinySGLangLiveKVGenerator:
     tokenizer = TinyTokenizer()
     add_special_tokens = False
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
+        layout = self.layout or layout_for_model(
             config.model_id,
             dtype=config.dtype,
             lora_id=config.lora_id,
+            block_size=2,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
         token_count = len(self.tokenizer.token_ids)
+        payload = b"\0" * (token_count * layout.bytes_per_token)
         return PackChunk(
             key=KVCacheKey.for_document(
                 model_id=config.model_id,
@@ -355,8 +401,66 @@ class TinySGLangLiveKVGenerator:
                 document_id=document.document_id,
                 chunk_type=chunk.chunk_type,
                 chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout),
+                token_contract=TokenContract.from_token_ids(
+                    self.tokenizer.token_ids,
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
             ),
-            payload=b"\0" * (token_count * layout.bytes_per_token),
+            payload=payload,
+            token_count=token_count,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+class LayoutAwareSGLangLiveKVGenerator:
+    """CPU fake matching the default Transformers generator's layout contract."""
+
+    tokenizer = TinyTokenizer()
+    add_special_tokens = False
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
+
+    def __init__(self):
+        self.layout = None
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        layout = self.layout or layout_for_model(
+            config.model_id,
+            dtype=config.dtype,
+            lora_id=config.lora_id,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+        token_count = len(self.tokenizer.token_ids)
+        payload = b"\0" * (token_count * layout.bytes_per_token)
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout),
+                token_contract=TokenContract.from_token_ids(
+                    self.tokenizer.token_ids,
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
+            ),
+            payload=payload,
             token_count=token_count,
             dtype=config.dtype,
             layout_version=config.layout_version,
@@ -404,13 +508,18 @@ class PromptFormatTokenizer:
 class PromptFormatSGLangLiveKVGenerator:
     tokenizer = PromptFormatTokenizer()
     add_special_tokens = False
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
+        layout = self.layout or layout_for_model(
             config.model_id,
             dtype=config.dtype,
             lora_id=config.lora_id,
+            block_size=2,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
@@ -419,6 +528,7 @@ class PromptFormatSGLangLiveKVGenerator:
             return_tensors="pt",
             add_special_tokens=False,
         )["input_ids"][0]
+        payload = b"\0" * (len(token_ids) * layout.bytes_per_token)
         return PackChunk(
             key=KVCacheKey.for_document(
                 model_id=config.model_id,
@@ -427,8 +537,17 @@ class PromptFormatSGLangLiveKVGenerator:
                 document_id=document.document_id,
                 chunk_type=chunk.chunk_type,
                 chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout),
+                token_contract=TokenContract.from_token_ids(
+                    token_ids,
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
             ),
-            payload=b"\0" * (len(token_ids) * layout.bytes_per_token),
+            payload=payload,
             token_count=len(token_ids),
             dtype=config.dtype,
             layout_version=config.layout_version,
@@ -462,13 +581,18 @@ class BoundaryDriftTokenizer:
 class BoundaryDriftSGLangLiveKVGenerator:
     tokenizer = BoundaryDriftTokenizer()
     add_special_tokens = False
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
+        layout = self.layout or layout_for_model(
             config.model_id,
             dtype=config.dtype,
             lora_id=config.lora_id,
+            block_size=2,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
@@ -477,6 +601,7 @@ class BoundaryDriftSGLangLiveKVGenerator:
             return_tensors="pt",
             add_special_tokens=False,
         )["input_ids"][0]
+        payload = b"\0" * (len(token_ids) * layout.bytes_per_token)
         return PackChunk(
             key=KVCacheKey.for_document(
                 model_id=config.model_id,
@@ -485,8 +610,17 @@ class BoundaryDriftSGLangLiveKVGenerator:
                 document_id=document.document_id,
                 chunk_type=chunk.chunk_type,
                 chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout),
+                token_contract=TokenContract.from_token_ids(
+                    token_ids,
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
             ),
-            payload=b"\0" * (len(token_ids) * layout.bytes_per_token),
+            payload=payload,
             token_count=len(token_ids),
             dtype=config.dtype,
             layout_version=config.layout_version,
@@ -533,6 +667,330 @@ def test_dependency_constraints_match_pinned_sglang_stack():
     assert CACHET_MODEL_ID == "qwen3:4b-instruct"
     assert SERVED_MODEL_NAME == "qwen3-4b-instruct"
     assert ":" not in SERVED_MODEL_NAME
+
+
+def test_sglang_representative_workload_profile_is_typed_and_registered():
+    profile = sglang_representative_workload_profile(
+        REPRESENTATIVE_WORKLOAD_PROFILE_ID
+    )
+
+    assert isinstance(profile, SGLangRepresentativeWorkloadProfile)
+    assert SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES == (profile,)
+    assert profile.context_length == 4096
+    assert profile.max_tokens == 32
+    assert profile.live_benchmark_repeats == 2
+    assert profile.attention_backend == "triton"
+    assert profile.sampling_backend == "pytorch"
+    assert profile.enable_deterministic_inference is True
+    assert profile.cache_prompt_text_mode == "logical"
+    assert profile.live_check_prompt_format == "qwen3_chat"
+    assert profile.live_check_request_mode == "chat"
+    assert profile.live_check_temperature == 0.0
+    assert profile.flush_cache_before_cache_arm is True
+    assert profile.flush_cache_before_canary is True
+    assert profile.flush_cache_timeout_seconds == 30.0
+    with pytest.raises(ValueError, match="unknown representative_workload_profile"):
+        sglang_representative_workload_profile("sglang-arbitrary-profile")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"representative_canary": True},
+        {"representative_workload_profile": REPRESENTATIVE_WORKLOAD_PROFILE_ID},
+    ],
+)
+def test_sglang_representative_flag_and_profile_are_required_together(
+    tmp_path,
+    kwargs,
+):
+    with pytest.raises(ValueError, match="must be provided together"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-unpaired-representative",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize(
+    ("override", "field_name"),
+    [
+        ({"context_length": 8192}, "context_length"),
+        ({"max_tokens": 64}, "max_tokens"),
+        ({"live_benchmark_repeats": 1}, "live_benchmark_repeats"),
+        ({"sglang_attention_backend": "fa3"}, "sglang_attention_backend"),
+        ({"sglang_sampling_backend": "flashinfer"}, "sglang_sampling_backend"),
+        (
+            {"sglang_enable_deterministic_inference": False},
+            "sglang_enable_deterministic_inference",
+        ),
+    ],
+)
+def test_sglang_representative_profile_rejects_arbitrary_runtime_values(
+    tmp_path,
+    override,
+    field_name,
+):
+    revision = "a" * 40
+    kwargs = {
+        "benchmark_id": "sglang-mismatched-representative",
+        "output_dir": tmp_path / "out",
+        "model_revision": revision,
+        "tokenizer_revision": revision,
+        "handoff_generation": SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "handoff",
+        ),
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
+        **override,
+    }
+
+    with pytest.raises(ValueError, match=field_name):
+        SGLangSmokeBenchmarkConfig(**kwargs)
+
+
+def test_sglang_representative_profile_is_recorded_in_metadata(
+    tmp_path,
+    representative_wheel_sha256_env,
+):
+    revision = "a" * 40
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-representative-profile-metadata",
+        output_dir=tmp_path / "out",
+        model_revision=revision,
+        tokenizer_revision=revision,
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "handoff",
+        ),
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
+    )
+
+    assert isinstance(
+        config.representative_workload_profile,
+        SGLangRepresentativeWorkloadProfile,
+    )
+    assert (
+        build_metadata(config)["representative_workload_profile"]
+        == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+    )
+    assert build_metadata(config)["benchmark_manifest_provenance"][
+        "package_revisions"
+    ] == {
+        "sglang": SGLANG_VERSION,
+        "cachet-kv": f"wheel-sha256:{representative_wheel_sha256_env}",
+    }
+
+
+@pytest.mark.parametrize("environment_value", [None, "F" * 64, "f" * 63])
+def test_sglang_representative_requires_verified_wheel_digest_environment(
+    tmp_path,
+    monkeypatch,
+    environment_value,
+):
+    if environment_value is None:
+        monkeypatch.delenv(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV, raising=False)
+    else:
+        monkeypatch.setenv(
+            DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+            environment_value,
+        )
+
+    with pytest.raises(
+        ValueError,
+        match=DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+    ):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-missing-verified-wheel",
+            output_dir=tmp_path / "out",
+            model_revision="a" * 40,
+            tokenizer_revision="a" * 40,
+            handoff_generation=SGLangLiveHandoffGenerationConfig(
+                output_dir=tmp_path / "handoff",
+            ),
+            **REPRESENTATIVE_WORKLOAD_KWARGS,
+        )
+
+
+def test_sglang_representative_provenance_snapshots_verified_wheel_digest(
+    tmp_path,
+    monkeypatch,
+    representative_wheel_sha256_env,
+):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-verified-wheel-snapshot",
+        output_dir=tmp_path / "out",
+        model_revision="a" * 40,
+        tokenizer_revision="a" * 40,
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "handoff",
+        ),
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
+    )
+    monkeypatch.setenv(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV, "e" * 64)
+
+    assert config.package_wheel_sha256 == representative_wheel_sha256_env
+    assert public_sglang_smoke._resolved_sglang_provenance(config)[
+        "package_revisions"
+    ]["cachet-kv"] == f"wheel-sha256:{representative_wheel_sha256_env}"
+
+
+def test_sglang_representative_provenance_binds_resolved_rope_geometry(
+    tmp_path,
+    monkeypatch,
+    representative_wheel_sha256_env,
+):
+    class PreRopeLayout:
+        lora_id = "base"
+        layout_version = "qwen3-prerope-v1"
+        payload_axis_order = "token_major"
+        block_size = 16
+        key_position_encoding = "pre_rope"
+        rope_theta = 5_000_000.0
+        rope_rotary_dim = 128
+
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "layout_for_model",
+        lambda *_args, **_kwargs: PreRopeLayout(),
+    )
+    revision = "a" * 40
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prerope-provenance",
+        output_dir=tmp_path / "out",
+        model_revision=revision,
+        tokenizer_revision=revision,
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "handoff",
+        ),
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
+    )
+
+    provenance = public_sglang_smoke._resolved_sglang_provenance(config)
+    assert provenance["canonical_model_id"] == HF_MODEL_ID
+    assert provenance["lora_id"] == "base"
+    assert provenance["serving_platform"] == "sglang"
+    assert provenance["model_dtype"] == "bfloat16"
+    assert provenance["model_quantization"] == "none"
+    assert provenance["runtime_kv_dtype"] == "bfloat16"
+    assert provenance["package_revisions"] == {
+        "sglang": SGLANG_VERSION,
+        "cachet-kv": f"wheel-sha256:{representative_wheel_sha256_env}",
+    }
+    assert provenance["rope_theta"] == 5_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
+
+
+def test_sglang_prepared_handoff_provenance_is_pre_rope(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=False,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-prerope-provenance",
+        output_dir=tmp_path / "out",
+        live_benchmark_repeats=1,
+        dataset_specs=dataset_specs,
+        prepared_handoff_generation=SGLangPreparedHandoffGenerationConfig(
+            output_dir=tmp_path / "handoffs",
+        ),
+    )
+
+    provenance = public_sglang_smoke._resolved_sglang_provenance(config)
+    assert provenance["key_position_encoding"] == "pre_rope"
+    assert provenance["rope_theta"] == 5_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
+
+
+def test_sglang_existing_prepared_handoff_provenance_is_pre_rope(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=True,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-existing-prepared-prerope-provenance",
+        output_dir=tmp_path / "out",
+        live_benchmark_repeats=1,
+        dataset_specs=dataset_specs,
+    )
+
+    provenance = public_sglang_smoke._resolved_sglang_provenance(config)
+    assert provenance["key_position_encoding"] == "pre_rope"
+    assert provenance["rope_theta"] == 5_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
+
+
+def test_sglang_explicit_handoff_provenance_is_pre_rope(tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(
+        handoff_path,
+        request_id="cachet-live-sglang-provenance",
+        payload_uri=payload_uri,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-explicit-prerope-provenance",
+        output_dir=tmp_path / "out",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-provenance",
+        sglang_hicache_page_keys=("page-a", "page-b"),
+    )
+
+    provenance = public_sglang_smoke._resolved_sglang_provenance(config)
+    assert provenance["key_position_encoding"] == "pre_rope"
+    assert provenance["rope_theta"] == 5_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
+
+
+def test_sglang_representative_server_env_pins_generator_and_page_cache(
+    tmp_path,
+    monkeypatch,
+    representative_wheel_sha256_env,
+):
+    for name in (
+        CACHET_TRANSFORMERS_MODEL_REVISION_ENV,
+        CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV,
+        "DOCUMENT_KV_EVICT_PAGE_CACHE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    revision = "a" * 40
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-representative-generator-env",
+        output_dir=tmp_path / "out",
+        model_revision=revision,
+        tokenizer_revision=revision,
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "handoff",
+        ),
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
+    )
+
+    env = public_sglang_smoke.server_env(config)
+    assert env[CACHET_TRANSFORMERS_MODEL_REVISION_ENV] == revision
+    assert env[CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV] == revision
+    assert env["DOCUMENT_KV_EVICT_PAGE_CACHE"] == "1"
+
+    monkeypatch.setenv(CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV, "wrong-revision")
+    with pytest.raises(ValueError, match=CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV):
+        public_sglang_smoke.server_env(config)
+
+
+def test_sglang_smoke_requires_matching_model_and_tokenizer_revisions(tmp_path):
+    with pytest.raises(ValueError, match="provided together"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            model_revision="a" * 40,
+            baseline_only=True,
+        )
+    with pytest.raises(ValueError, match="revisions must match"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            model_revision="a" * 40,
+            tokenizer_revision="b" * 40,
+            baseline_only=True,
+        )
 
 
 def test_sglang_smoke_cache_arm_requires_handoff_and_page_keys(tmp_path):
@@ -1012,6 +1470,11 @@ def test_prepare_generated_sglang_benchmark_handoffs_writes_enriched_inputs(
     assert generation_record["ok"] is True
     assert generation_record["backend"] == "sglang"
     assert generation_record["sglang_hicache_page_size"] == 2
+    assert generation_record["cache_method"] == "vanilla_prefill"
+    assert generation_record["method_version"] == "2"
+    assert generation_record["key_position_encoding"] == "pre_rope"
+    assert generation_record["rope_theta"] == 5_000_000.0
+    assert generation_record["rope_rotary_dim"] == 128
     assert generation_record["datasets"]["niah"]["enriched_rows"] == 1
     row = json.loads(generated_paths["niah"].read_text(encoding="utf-8"))
     params = row["kv_transfer_params"]
@@ -1025,11 +1488,17 @@ def test_prepare_generated_sglang_benchmark_handoffs_writes_enriched_inputs(
     )
     assert handoff["backend"] == "sglang"
     assert handoff["handle"]["layout"]["block_size"] == 2
+    assert handoff["handle"]["layout"]["key_position_encoding"] == "pre_rope"
+    assert handoff["handle"]["layout"]["rope_theta"] == 5_000_000.0
+    assert handoff["handle"]["layout"]["rope_rotary_dim"] == 128
+    assert handoff["handle"]["layout"]["storage_layout"] == "separate_key_value"
+    assert handoff["handle"]["artifact_identity"]["method_id"] == "vanilla_prefill"
+    assert handoff["handle"]["artifact_identity"]["method_version"] == "2"
     assert local_path(params[DOCUMENT_KV_PAYLOAD_URI_PARAM]).exists()
 
 
 def test_prepare_generated_sglang_benchmark_handoffs_uses_sglang_venv(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, representative_wheel_sha256_env
 ):
     generation = SGLangPreparedHandoffGenerationConfig(
         output_dir=tmp_path / "generated-handoffs",
@@ -1047,9 +1516,11 @@ def test_prepare_generated_sglang_benchmark_handoffs_uses_sglang_venv(
         benchmark_id="sglang-prepared-venv",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
+        model_revision="a" * 40,
+        tokenizer_revision="a" * 40,
         dataset_specs=dataset_specs,
-        live_benchmark_repeats=1,
         prepared_handoff_generation=generation,
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
     )
     config.venv_python.parent.mkdir(parents=True)
     config.venv_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
@@ -1062,6 +1533,17 @@ def test_prepare_generated_sglang_benchmark_handoffs_uses_sglang_venv(
         assert "SGLangPreparedHandoffGenerationConfig,\n" in argv[2]
         input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
         assert input_payload["benchmark_id"] == "sglang-prepared-venv"
+        assert input_payload["representative_canary"] is True
+        assert (
+            input_payload["representative_workload_profile"]
+            == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+        )
+        assert input_payload["context_length"] == 4096
+        assert input_payload["max_tokens"] == 32
+        assert input_payload["live_benchmark_repeats"] == 2
+        assert input_payload["sglang_attention_backend"] == "triton"
+        assert input_payload["sglang_sampling_backend"] == "pytorch"
+        assert input_payload["sglang_enable_deterministic_inference"] is True
         assert (
             input_payload["handoff_generation"]["generator_factory"]
             == "module:factory"
@@ -1385,6 +1867,45 @@ def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(
     assert generation["sglang_hicache_page_size"] == 2
 
 
+def test_prepare_generated_live_handoff_binds_layout_to_hicache_page_size(
+    tmp_path, monkeypatch
+):
+    module = ModuleType("cachet_test_sglang_layout_aware_live_handoff_generator")
+    module.build_generator = LayoutAwareSGLangLiveKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-page-one",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "generated-live",
+            generator_factory=f"{module.__name__}:build_generator",
+            dtype="bfloat16",
+            align_bytes=1,
+            page_size=1,
+        ),
+    )
+
+    runtime_config = prepare_generated_live_handoff(config)
+
+    handoff = read_engine_adapter_request_json(
+        runtime_config.handoff_json,
+        require_external_payload_uri=False,
+    )
+    handle = handoff["handle"]
+    assert handle["layout"]["block_size"] == 1
+    assert handle["artifact_identity"]["block_size"] == 1
+    assert runtime_config.sglang_hicache_page_keys == sglang_hicache_page_keys(
+        TinyTokenizer.token_ids,
+        page_size=1,
+    )
+    generation = json.loads(
+        config.live_handoff_generation_path.read_text(encoding="utf-8")
+    )
+    assert generation["sglang_hicache_page_size"] == 1
+    assert generation["cache_prefix_full_pages"] == len(TinyTokenizer.token_ids)
+
+
 def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
     tmp_path, monkeypatch
 ):
@@ -1551,7 +2072,7 @@ def test_token_stable_handoff_rejects_non_page_aligned_decode_fallback():
 
 
 def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, representative_wheel_sha256_env
 ):
     generation = SGLangLiveHandoffGenerationConfig(
         output_dir=tmp_path / "generated-live",
@@ -1565,9 +2086,10 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         benchmark_id="sglang-generated-venv",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
-        live_check_prompt_format="plain",
-        live_check_temperature=0.25,
+        model_revision="a" * 40,
+        tokenizer_revision="a" * 40,
         handoff_generation=generation,
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
     )
     config.venv_python.parent.mkdir(parents=True)
     config.venv_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
@@ -1583,8 +2105,25 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         assert "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,\n" in argv[2]
         input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
         assert input_payload["benchmark_id"] == "sglang-generated-venv"
-        assert input_payload["live_check_prompt_format"] == "plain"
-        assert input_payload["live_check_temperature"] == 0.25
+        assert (
+            input_payload["live_check_prompt_format"]
+            == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+        )
+        assert (
+            input_payload["live_check_temperature"]
+            == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+        )
+        assert input_payload["representative_canary"] is True
+        assert (
+            input_payload["representative_workload_profile"]
+            == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+        )
+        assert input_payload["context_length"] == 4096
+        assert input_payload["max_tokens"] == 32
+        assert input_payload["live_benchmark_repeats"] == 2
+        assert input_payload["sglang_attention_backend"] == "triton"
+        assert input_payload["sglang_sampling_backend"] == "pytorch"
+        assert input_payload["sglang_enable_deterministic_inference"] is True
         assert (
             input_payload["live_check_extra_body"]
             == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
@@ -1696,9 +2235,12 @@ def test_install_sglang_and_cachet_package_use_pinned_constraints(
 
 
 def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
+    revision = "a" * 40
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-1",
         output_dir=tmp_path / "out",
+        model_revision=revision,
+        tokenizer_revision=revision,
         baseline_only=True,
         server_port=8123,
         context_length=8192,
@@ -1718,6 +2260,7 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
         "sglang.launch_server",
     ]
     assert args[args.index("--model-path") + 1] == HF_MODEL_ID
+    assert args[args.index("--revision") + 1] == revision
     assert args[args.index("--served-model-name") + 1] == SERVED_MODEL_NAME
     assert ":" not in args[args.index("--served-model-name") + 1]
     assert args[args.index("--host") + 1] == "127.0.0.1"
@@ -1735,6 +2278,9 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
         DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY
     )
     assert args[args.index("--hicache-write-policy") + 1] == "write_through_selective"
+    metadata = build_metadata(config)
+    assert metadata["model_revision"] == revision
+    assert metadata["tokenizer_revision"] == revision
     extra_config = json.loads(
         args[args.index("--hicache-storage-backend-extra-config") + 1]
     )
@@ -1981,7 +2527,8 @@ def test_sglang_smoke_cli_rejects_zero_prepared_handoff_page_size(tmp_path):
         )
 
 
-def test_build_metadata_records_custom_params_transport(tmp_path):
+def test_build_metadata_records_custom_params_transport(tmp_path, monkeypatch):
+    monkeypatch.setenv(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV, "e" * 64)
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-1",
         output_dir=tmp_path / "out",
@@ -1998,6 +2545,9 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["sglang_attention_backend"] is None
     assert metadata["sglang_sampling_backend"] is None
     assert metadata["sglang_enable_deterministic_inference"] is False
+    assert metadata["representative_workload_profile"] is None
+    assert config.package_wheel_sha256 is None
+    assert "package_revisions" not in metadata["benchmark_manifest_provenance"]
     assert metadata["sglang_server_backend_options"] == {
         "attention_backend": None,
         "sampling_backend": None,
@@ -2490,7 +3040,7 @@ def test_run_live_checks_can_skip_cache_arm_cache_flush(monkeypatch, tmp_path):
 
 
 def test_run_sglang_live_benchmark_writes_repeat_measurements(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, representative_wheel_sha256_env
 ):
     handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
     payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
@@ -2501,11 +3051,13 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
         benchmark_id="sglang-benchmark-1",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
+        model_revision="a" * 40,
+        tokenizer_revision="a" * 40,
         handoff_json=str(handoff_path),
         payload_uri=payload_uri,
         request_id="cachet-live-sglang-1",
         sglang_hicache_page_keys=("page-a", "page-b"),
-        live_benchmark_repeats=2,
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
     )
     config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
     events = []
@@ -2573,6 +3125,15 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
 
     assert record["ok"] is True
     assert record["record_type"] == SGLANG_LIVE_BENCHMARK_RECORD_TYPE
+    assert record["representative_canary"] is True
+    assert (
+        record["representative_workload_profile"]
+        == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+    )
+    assert record["benchmark_manifest_provenance"]["package_revisions"] == {
+        "sglang": SGLANG_VERSION,
+        "cachet-kv": f"wheel-sha256:{representative_wheel_sha256_env}",
+    }
     assert record["suite"] == {
         "suite_id": "sglang-live-synthetic-niah",
         "scope": "live_synthetic_niah",
@@ -3529,12 +4090,17 @@ def test_run_sglang_live_smoke_records_cache_hit_when_quality_fails(
 
 
 def test_parse_args_builds_baseline_only_config(tmp_path):
+    revision = "a" * 40
     config = parse_args(
         [
             "--benchmark-id",
             "sglang-1",
             "--output-dir",
             str(tmp_path / "out"),
+            "--model-revision",
+            revision,
+            "--tokenizer-revision",
+            revision,
             "--baseline-only",
             "--hardware-target",
             "aws-g5-a10g",
@@ -3548,6 +4114,8 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
     )
 
     assert config.baseline_only is True
+    assert config.model_revision == revision
+    assert config.tokenizer_revision == revision
     assert config.hardware_target == "aws-g5-a10g"
     assert config.sglang_attention_backend == "triton"
     assert config.sglang_sampling_backend == "pytorch"
@@ -3571,6 +4139,54 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
         )
 
     assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
+
+
+def test_parse_args_builds_explicit_representative_workload_profile(
+    tmp_path,
+    representative_wheel_sha256_env,
+):
+    revision = "a" * 40
+    package_pin_args = [
+        argument
+        for package_pin in SGLANG_DEPENDENCY_CONSTRAINTS
+        for argument in ("--representative-package-pin", package_pin)
+    ]
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "sglang-representative-profile",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--model-revision",
+            revision,
+            "--tokenizer-revision",
+            revision,
+            "--representative-canary",
+            "--representative-workload-profile",
+            REPRESENTATIVE_WORKLOAD_PROFILE_ID,
+            "--context-length",
+            "4096",
+            "--max-tokens",
+            "32",
+            "--live-benchmark-repeats",
+            "2",
+            "--sglang-attention-backend",
+            "triton",
+            "--sglang-sampling-backend",
+            "pytorch",
+            "--sglang-enable-deterministic-inference",
+            "--generate-live-handoff",
+            *package_pin_args,
+        ]
+    )
+
+    assert config.representative_canary is True
+    assert config.representative_workload_profile is not None
+    assert (
+        config.representative_workload_profile.profile_id
+        == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+    )
+    assert config.live_benchmark_repeats == 2
 
 
 def test_parse_args_accepts_live_benchmark_repeats_for_cache_arm(tmp_path):

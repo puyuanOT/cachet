@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility path.
 
 from typing import TypeAlias
 
+from document_kv_cache.artifact_identity import ArtifactIdentity, TokenContract
 from document_kv_cache.engine_protocol import (
     KVStorageLayout,
     kv_storage_layout_from_value,
@@ -60,9 +61,13 @@ class DocumentChunkRole(StrEnum):
 
 
 class CacheGenerationMethod(StrEnum):
+    FULL_PREFIX_PREFILL = "full_prefix_prefill"
     VANILLA_PREFILL = "vanilla_prefill"
+    LMCACHE = "lmcache"
     ADAPTER_TRAINED = "adapter_trained"
     KV_PACKET = "kv_packet"
+    CACHEBLEND = "cacheblend"
+    INFOFLOW_KV = "infoflow_kv"
     CUSTOM = "custom"
 
 
@@ -147,6 +152,8 @@ class KVCacheKey:
     chunk_type: CacheChunkType
     chunk_id: str
     content_hash: str = ""
+    artifact_identity: ArtifactIdentity | None = None
+    token_contract: TokenContract | None = None
 
     def __init__(
         self,
@@ -157,6 +164,8 @@ class KVCacheKey:
         chunk_type: CacheChunkType | None = None,
         chunk_id: str | None = None,
         content_hash: str = "",
+        artifact_identity: ArtifactIdentity | None = None,
+        token_contract: TokenContract | None = None,
     ) -> None:
         if document_id is None:
             raise TypeError("document_id is required")
@@ -175,6 +184,13 @@ class KVCacheKey:
         ):
             _validate_storage_key_part(name, value)
         _validate_optional_storage_key_part("content_hash", content_hash)
+        _validate_key_contracts(
+            artifact_identity=artifact_identity,
+            token_contract=token_contract,
+            model_id=model_id,
+            lora_id=lora_id,
+            prompt_template_version=prompt_template_version,
+        )
         object.__setattr__(self, "model_id", model_id)
         object.__setattr__(self, "lora_id", lora_id)
         object.__setattr__(self, "prompt_template_version", prompt_template_version)
@@ -182,6 +198,8 @@ class KVCacheKey:
         object.__setattr__(self, "chunk_type", chunk_type)
         object.__setattr__(self, "chunk_id", chunk_id)
         object.__setattr__(self, "content_hash", content_hash)
+        object.__setattr__(self, "artifact_identity", artifact_identity)
+        object.__setattr__(self, "token_contract", token_contract)
 
     def storage_key(self) -> str:
         parts = [
@@ -193,6 +211,13 @@ class KVCacheKey:
             self.chunk_id,
             self.content_hash,
         ]
+        if self.artifact_identity is not None or self.token_contract is not None:
+            parts.extend(
+                (
+                    "" if self.artifact_identity is None else self.artifact_identity.artifact_id,
+                    "" if self.token_contract is None else self.token_contract.fingerprint,
+                )
+            )
         return "|".join(parts)
 
     @classmethod
@@ -206,6 +231,8 @@ class KVCacheKey:
         chunk_type: CacheChunkType,
         chunk_id: str,
         content_hash: str = "",
+        artifact_identity: ArtifactIdentity | None = None,
+        token_contract: TokenContract | None = None,
     ) -> "KVCacheKey":
         return cls(
             model_id=model_id,
@@ -215,6 +242,8 @@ class KVCacheKey:
             chunk_type=chunk_type,
             chunk_id=chunk_id,
             content_hash=content_hash,
+            artifact_identity=artifact_identity,
+            token_contract=token_contract,
         )
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +297,7 @@ class DocumentKVRequest:
     include_static: bool = True
     task_prefix_id: str | None = None
     static_chunk_id: ChunkId = DEFAULT_STATIC_CHUNK_ID
+    artifact_identity: ArtifactIdentity | None = None
 
     def __post_init__(self) -> None:
         _validate_request_metadata(
@@ -278,6 +308,7 @@ class DocumentKVRequest:
             prompt_template_version=self.prompt_template_version,
             include_static=self.include_static,
             task_prefix_id=self.task_prefix_id,
+            artifact_identity=self.artifact_identity,
         )
         _validate_static_chunk_id(self.static_chunk_id)
         object.__setattr__(
@@ -298,6 +329,7 @@ class DocumentKVRequest:
         document_id: str,
         chunk_id: ChunkId = "document",
         task_prefix_id: str | None = None,
+        artifact_identity: ArtifactIdentity | None = None,
     ) -> "DocumentKVRequest":
         return cls.for_document_chunks(
             request_id=request_id,
@@ -309,6 +341,7 @@ class DocumentKVRequest:
             chunk_ids=(chunk_id,),
             include_static=False,
             task_prefix_id=task_prefix_id,
+            artifact_identity=artifact_identity,
         )
 
     @classmethod
@@ -325,6 +358,7 @@ class DocumentKVRequest:
         include_static: bool = True,
         static_chunk_id: ChunkId = DEFAULT_STATIC_CHUNK_ID,
         task_prefix_id: str | None = None,
+        artifact_identity: ArtifactIdentity | None = None,
     ) -> "DocumentKVRequest":
         return cls.for_document_selection(
             request_id=request_id,
@@ -336,6 +370,7 @@ class DocumentKVRequest:
             include_static=include_static,
             static_chunk_id=static_chunk_id,
             task_prefix_id=task_prefix_id,
+            artifact_identity=artifact_identity,
         )
 
     @classmethod
@@ -351,6 +386,7 @@ class DocumentKVRequest:
         include_static: bool = True,
         static_chunk_id: ChunkId = DEFAULT_STATIC_CHUNK_ID,
         task_prefix_id: str | None = None,
+        artifact_identity: ArtifactIdentity | None = None,
     ) -> "DocumentKVRequest":
         return cls(
             request_id=request_id,
@@ -362,6 +398,7 @@ class DocumentKVRequest:
             include_static=include_static,
             task_prefix_id=task_prefix_id,
             static_chunk_id=static_chunk_id,
+            artifact_identity=artifact_identity,
         )
 
     @property
@@ -446,6 +483,43 @@ def _validate_optional_storage_key_part(name: str, value: object) -> None:
         raise ValueError(f"{name} must not contain '|'")
 
 
+def _validate_key_contracts(
+    *,
+    artifact_identity: ArtifactIdentity | None,
+    token_contract: TokenContract | None,
+    model_id: str,
+    lora_id: str,
+    prompt_template_version: str,
+) -> None:
+    if artifact_identity is not None:
+        if not isinstance(artifact_identity, ArtifactIdentity):
+            raise TypeError("artifact_identity must be an ArtifactIdentity or None")
+        expected = {
+            "model_id": model_id,
+            "lora_id": lora_id,
+            "prompt_template_version": prompt_template_version,
+        }
+        mismatches = [
+            name
+            for name, value in expected.items()
+            if getattr(artifact_identity, name) != value
+        ]
+        if mismatches:
+            raise ValueError(
+                "artifact_identity does not match cache key: " + ", ".join(mismatches)
+            )
+    if token_contract is not None:
+        if not isinstance(token_contract, TokenContract):
+            raise TypeError("token_contract must be a TokenContract or None")
+        if token_contract.prompt_template_version != prompt_template_version:
+            raise ValueError("token_contract prompt_template_version does not match cache key")
+        if artifact_identity is not None:
+            if token_contract.tokenizer_id != artifact_identity.tokenizer_id:
+                raise ValueError("token_contract tokenizer_id does not match artifact_identity")
+            if token_contract.tokenizer_revision != artifact_identity.tokenizer_revision:
+                raise ValueError("token_contract tokenizer_revision does not match artifact_identity")
+
+
 def _validate_non_negative_integer(name: str, value: int) -> None:
     if type(value) is not int:
         raise ValueError(f"{name} must be an integer")
@@ -462,6 +536,7 @@ def _validate_request_metadata(
     prompt_template_version: str,
     include_static: bool,
     task_prefix_id: str | None,
+    artifact_identity: ArtifactIdentity | None,
 ) -> None:
     for name, value in (
         ("request_id", request_id),
@@ -476,6 +551,23 @@ def _validate_request_metadata(
         raise ValueError("include_static must be a boolean")
     if task_prefix_id is not None and not _is_non_empty_string(task_prefix_id):
         raise ValueError("task_prefix_id must be non-empty when provided")
+    if artifact_identity is not None:
+        if not isinstance(artifact_identity, ArtifactIdentity):
+            raise TypeError("artifact_identity must be an ArtifactIdentity or None")
+        expected = {
+            "model_id": model_id,
+            "lora_id": lora_id,
+            "prompt_template_version": prompt_template_version,
+        }
+        mismatches = [
+            name
+            for name, value in expected.items()
+            if getattr(artifact_identity, name) != value
+        ]
+        if mismatches:
+            raise ValueError(
+                "artifact_identity does not match request: " + ", ".join(mismatches)
+            )
 
 
 def _normalize_chunk_map(name: str, value: DocumentChunkMap) -> NormalizedDocumentChunkMap:

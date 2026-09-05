@@ -6,11 +6,18 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
-VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE = "vllm_kv_injection.kv_connector_v1_contract.v1"
-VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION = 1
+from document_kv_cache.serving_env import VLLM_PACKAGE_VERSION
+
+VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE = "vllm_kv_injection.kv_connector_v1_contract.v3"
+VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION = 3
 VLLM_KV_CONNECTOR_V1_RUNTIME = "vllm-kv-connector-v1"
+VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME = "vllm"
+VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION = VLLM_PACKAGE_VERSION
+VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256 = (
+    "ec3e461a802fdbc0d324d8cb200a161042da0614cfc0cb342accdd9d58dca31d"
+)
 VLLM_KV_CONNECTOR_V1_DOC_URL = (
-    "https://docs.vllm.ai/en/stable/api/vllm/distributed/kv_transfer/kv_connector/v1/"
+    "https://docs.vllm.ai/en/v0.27.1/api/vllm/distributed/kv_transfer/kv_connector/v1/"
 )
 VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS = (
     "get_num_new_matched_tokens",
@@ -57,10 +64,13 @@ __all__ = [
     "VLLM_KV_CONNECTOR_V1_CONTRACT",
     "VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE",
     "VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION",
+    "VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256",
     "VLLM_KV_CONNECTOR_V1_DOC_URL",
     "VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS",
     "VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS",
     "VLLM_KV_CONNECTOR_V1_RUNTIME",
+    "VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME",
+    "VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION",
     "vllm_kv_connector_v1_contract_to_record",
 ]
 
@@ -75,6 +85,9 @@ def vllm_kv_connector_v1_contract_to_record(
         "record_type": VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE,
         "schema_version": VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION,
         "runtime": VLLM_KV_CONNECTOR_V1_RUNTIME,
+        "target_package_name": VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME,
+        "target_package_version": VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION,
+        "base_source_sha256": VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
         "doc_url": VLLM_KV_CONNECTOR_V1_DOC_URL,
         "required_methods": list(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS),
         "optional_methods": list(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS),

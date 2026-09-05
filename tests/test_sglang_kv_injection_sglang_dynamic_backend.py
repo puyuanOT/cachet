@@ -4,6 +4,7 @@ import importlib.util
 import json
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 from types import SimpleNamespace
@@ -19,12 +20,33 @@ from document_kv_cache.benchmarks import (
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
+    RuntimeOperationSupport,
     build_engine_adapter_request,
+    build_engine_kv_injection_plan,
+    engine_adapter_request_to_record,
     sglang_adapter_spec,
     vllm_adapter_spec,
     write_engine_adapter_request_json,
 )
-from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
+from document_kv_cache.engine_protocol import (
+    KVCacheHandle,
+    KVLayout,
+    KVPayloadAxisOrder,
+    KVSegment,
+)
+from document_kv_cache.methods import MethodRegistry, MethodSpec, method_spec
+from document_kv_cache.models import CacheGenerationMethod
+from document_kv_cache.rope import apply_rope_to_keys
+from document_kv_cache.reuse_contract import (
+    ArtifactEncoding,
+    PACKED_Q4_ARTIFACT_FORMAT,
+    PayloadDecodeStage,
+    RuntimeOperationDescriptor,
+    RuntimeOperationHandlerRegistry,
+    RuntimeOperationPhase,
+    RuntimeOperationResult,
+    runtime_operation_config_digest,
+)
 import sglang_kv_injection
 import sglang_kv_injection.sglang_dynamic_backend as sglang_dynamic_backend
 from sglang_kv_injection.sglang_dynamic_backend import (
@@ -132,6 +154,244 @@ def write_sglang_handoff(tmp_path, ready: EngineReadyRequest) -> tuple[Path, Pat
         payload_uri=f"disk:{payload_path}",
     )
     return handoff_path, payload_path
+
+
+def test_sglang_two_segment_reposition_uses_global_positions_and_preserves_values():
+    torch = pytest.importorskip("torch")
+    rope_theta = 5_000_000.0
+    layout = KVLayout(
+        model_id="tiny-pre-rope-sglang-model",
+        lora_id="base",
+        layout_version="pre-rope-v2",
+        dtype="float32",
+        num_layers=1,
+        block_size=2,
+        bytes_per_token=32,
+        num_query_heads=1,
+        num_kv_heads=1,
+        head_size=4,
+        kv_stride_bytes=16,
+        shares_kv_storage=False,
+        storage_layout="separate_key_value",
+        pre_rope=True,
+        rope_theta=rope_theta,
+        rope_rotary_dim=4,
+        key_position_encoding="pre_rope",
+    )
+    pre_rope_keys = torch.tensor(
+        [
+            [[1.0, 0.0, 0.0, 0.0]],
+            [[0.0, 1.0, 0.0, 0.0]],
+            [[1.0, 0.0, 0.0, 0.0]],
+            [[0.0, 1.0, 0.0, 0.0]],
+        ],
+        dtype=torch.float32,
+    )
+    values = torch.tensor(
+        [
+            [[11.0, 12.0, 13.0, 14.0]],
+            [[21.0, 22.0, 23.0, 24.0]],
+            [[31.0, 32.0, 33.0, 34.0]],
+            [[41.0, 42.0, 43.0, 44.0]],
+        ],
+        dtype=torch.float32,
+    )
+    token_major = torch.stack((pre_rope_keys, values), dim=1).unsqueeze(1)
+    payload = bytes(token_major.contiguous().view(torch.uint8).flatten().tolist())
+    handle = KVCacheHandle(
+        request_id="req-sglang-vanilla",
+        handle_uri="document-kv://req-sglang-vanilla",
+        layout=layout,
+        segments=(
+            KVSegment("doc-a", "document_chunk", "doc-a", 0, 2, 0, 64),
+            KVSegment("doc-b", "document_chunk", "doc-b", 2, 2, 64, 64),
+        ),
+        total_tokens=4,
+        total_bytes=len(payload),
+        cache_method="vanilla_prefill",
+    )
+    ready = EngineReadyRequest(
+        handle=handle,
+        payload=payload,
+        estimated_gpu_bytes=len(payload),
+        reuse_plan=method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
+    )
+    record = engine_adapter_request_to_record(
+        build_engine_adapter_request(ready, spec=sglang_adapter_spec())
+    )
+    plan = build_engine_kv_injection_plan(
+        record,
+        expected_backend="sglang",
+        require_external_payload_uri=False,
+    )
+
+    repositioned = sglang_dynamic_backend._reposition_hicache_payload(plan, payload)
+    decoded = torch.frombuffer(bytearray(repositioned), dtype=torch.float32).reshape(
+        4, 1, 2, 1, 4
+    )
+    expected_keys = apply_rope_to_keys(
+        pre_rope_keys,
+        torch.arange(4),
+        rope_theta=rope_theta,
+        rotary_dim=4,
+    )
+    local_document_two_keys = apply_rope_to_keys(
+        pre_rope_keys[2:],
+        torch.arange(2),
+        rope_theta=rope_theta,
+        rotary_dim=4,
+    )
+    assert torch.allclose(decoded[:, 0, 0], expected_keys)
+    assert not torch.allclose(decoded[2:, 0, 0], local_document_two_keys)
+    assert torch.equal(decoded[:, 0, 1], values)
+
+
+def test_sglang_provider_payload_decoder_runs_before_page_slicing(monkeypatch) -> None:
+    decoded = b"page-onepage-two"
+    encoded = b"toy-packed"
+    ready = sglang_ready_request(payload=decoded)
+    segment = replace(
+        ready.handle.segments[0],
+        byte_length=len(encoded),
+    )
+    decoder = RuntimeOperationDescriptor(
+        strategy_id="cpu-toy.decoder",
+        version="1",
+        config_digest=runtime_operation_config_digest({"codec": "fixture"}),
+    )
+    method = MethodSpec(
+        method=ready.handle.cache_method,
+        display_name="CPU packed SGLang fixture",
+        arm_id="document_kv_cache",
+        connector_mode="cachet",
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=True,
+        description="CPU-only SGLang provider boundary fixture.",
+        generator_factory="fixture:generator",
+        artifact_format=PACKED_Q4_ARTIFACT_FORMAT,
+        payload_decode_stage=PayloadDecodeStage.PROVIDER,
+        payload_decoder=decoder,
+    )
+    method_registry = MethodRegistry().with_spec(method)
+    reuse_plan = method.reuse_plan()
+    packed_ready = replace(
+        ready,
+        handle=replace(
+            ready.handle,
+            segments=(segment,),
+            total_bytes=len(encoded),
+        ),
+        payload=encoded,
+        estimated_gpu_bytes=len(decoded),
+        reuse_plan=reuse_plan,
+    )
+    spec = replace(
+        sglang_adapter_spec(),
+        supported_artifact_encodings=(
+            ArtifactEncoding.RAW_KV,
+            ArtifactEncoding.PACKED_Q4,
+        ),
+        supported_payload_decode_stages=(
+            PayloadDecodeStage.NONE,
+            PayloadDecodeStage.PROVIDER,
+        ),
+        supported_runtime_operations=(
+            RuntimeOperationSupport(
+                RuntimeOperationPhase.PAYLOAD_DECODE,
+                decoder.strategy_id,
+                decoder.version,
+            ),
+        ),
+    )
+    calls = []
+
+    def decode(request):
+        calls.append(request)
+        assert request.payload == encoded
+        return RuntimeOperationResult(payload=decoded)
+
+    handlers = RuntimeOperationHandlerRegistry().with_handler(
+        RuntimeOperationPhase.PAYLOAD_DECODE,
+        decoder,
+        decode,
+    )
+    adapter_request = build_engine_adapter_request(
+        packed_ready,
+        spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    record = engine_adapter_request_to_record(
+        adapter_request,
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    monkeypatch.setattr(
+        sglang_dynamic_backend,
+        "read_engine_adapter_payload",
+        lambda *args, **kwargs: encoded,
+    )
+    provider = DocumentKVHiCachePageProvider(
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={},
+        request_id=ready.request_id,
+        handoff_record=record,
+        payload_uri="disk:/fixture/packed.kv",
+        sglang_hicache_page_keys=("page-0", "page-1"),
+    )
+
+    assert provider.batch_exists(
+        ["page-0", "page-1"],
+        document_kv_request_context=context,
+    ) == 2
+    assert provider.get("page-0") == decoded[:8]
+    assert provider.get("page-1") == decoded[8:16]
+    assert len(calls) == 1
+
+
+def test_sglang_page_slicing_defensively_rejects_layer_major_payload() -> None:
+    ready = sglang_ready_request()
+    layer_major_ready = replace(
+        ready,
+        handle=replace(
+            ready.handle,
+            layout=replace(
+                ready.handle.layout,
+                payload_axis_order=KVPayloadAxisOrder.LAYER_MAJOR,
+            ),
+        ),
+    )
+    permissive_test_spec = replace(
+        sglang_adapter_spec(),
+        supported_payload_axis_orders=(
+            KVPayloadAxisOrder.TOKEN_MAJOR,
+            KVPayloadAxisOrder.LAYER_MAJOR,
+        ),
+    )
+    adapter_request = build_engine_adapter_request(
+        layer_major_ready,
+        spec=permissive_test_spec,
+    )
+    plan = build_engine_kv_injection_plan(
+        engine_adapter_request_to_record(
+            adapter_request,
+            adapter_spec=permissive_test_spec,
+        ),
+        require_external_payload_uri=False,
+        adapter_spec=permissive_test_spec,
+    )
+
+    with pytest.raises(ValueError, match="requires token-major"):
+        sglang_dynamic_backend._sglang_hicache_payload_pages(
+            plan,
+            layer_major_ready.payload,
+        )
 
 
 class RequestContextProvider(RecordingProvider):
@@ -1247,6 +1507,54 @@ def test_document_kv_hicache_page_provider_validates_handoff_before_warm_page_hi
 
     with pytest.raises(ValueError, match="does not match expected_backend"):
         provider.batch_exists(["sglang-hash-page-0"], document_kv_request_context=context)
+
+
+def test_sglang_provider_rejects_planned_method_before_payload_io(monkeypatch):
+    ready = sglang_ready_request()
+    adapter_request = build_engine_adapter_request(
+        ready,
+        spec=sglang_adapter_spec(),
+    )
+    record = engine_adapter_request_to_record(adapter_request)
+    assert adapter_request.reuse_plan is not None
+    forged_plan = replace(adapter_request.reuse_plan, method_id="infoflow_kv")
+    record["reuse_plan"] = forged_plan.to_record()
+    record["handle"]["cache_method"] = "infoflow_kv"
+    record["metadata"]["document_kv.cache_method"] = "infoflow_kv"
+    record["metadata"][
+        "document_kv.reuse_capability_id"
+    ] = forged_plan.capability_id
+    payload_reads = []
+
+    def unexpected_payload_read(*args, **kwargs):
+        payload_reads.append((args, kwargs))
+        raise AssertionError("payload must not be read for a planned method")
+
+    monkeypatch.setattr(
+        sglang_dynamic_backend,
+        "read_engine_adapter_payload",
+        unexpected_payload_read,
+    )
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_RECORD_PARAM: record,
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: "disk:/not-read/planned.kv",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: ["sglang-page-0"],
+        },
+        request_id=ready.request_id,
+        handoff_record=record,
+        payload_uri="disk:/not-read/planned.kv",
+        sglang_hicache_page_keys=("sglang-page-0",),
+    )
+
+    with pytest.raises(ValueError, match="not a runnable registered Cachet method"):
+        provider.batch_exists(
+            ["sglang-page-0"],
+            document_kv_request_context=context,
+        )
+    assert payload_reads == []
 
 
 def test_document_kv_hicache_page_provider_rejects_request_id_mismatch(tmp_path):

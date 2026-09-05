@@ -16,7 +16,9 @@ from document_kv_cache.engine_launch_config import (
     ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION,
     REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS,
     EngineLaunchConfigEvidence,
+    build_sglang_hicache_server_args,
     build_sglang_launch_config,
+    build_vllm_kv_offloading_config,
     build_vllm_launch_config,
     engine_launch_config_evidence_to_record,
     engine_launch_config_record_issues,
@@ -139,6 +141,69 @@ def test_build_vllm_launch_config_accepts_payload_cache_budget():
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.VLLM)
 
 
+def test_build_vllm_kv_offloading_config_emits_cpu_tier_config():
+    record = build_vllm_kv_offloading_config(
+        cpu_bytes_to_use=10 * 1024**3,
+        block_size=64,
+        store_threshold=1,
+    )
+
+    assert record == {
+        "kv_connector": "OffloadingConnector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "block_size": 64,
+            "cpu_bytes_to_use": 10 * 1024**3,
+            "eviction_policy": "lru",
+            "offload_prompt_only": True,
+            "store_threshold": 1,
+        },
+    }
+
+
+def test_build_vllm_kv_offloading_config_emits_filesystem_tier_config():
+    record = build_vllm_kv_offloading_config(
+        cpu_bytes_to_use=4 * 1024**3,
+        block_size=16,
+        eviction_policy="arc",
+        offload_prompt_only=False,
+        secondary_fs_root="/local_disk0/vllm-kv-offload",
+        secondary_fs_read_threads=32,
+        secondary_fs_write_threads=8,
+    )
+
+    extra = record["kv_connector_extra_config"]
+    assert extra["spec_name"] == "TieringOffloadingSpec"
+    assert extra["secondary_tiers"] == [
+        {
+            "type": "fs",
+            "root_dir": "/local_disk0/vllm-kv-offload",
+            "n_read_threads": 32,
+            "n_write_threads": 8,
+        }
+    ]
+    assert extra["offload_prompt_only"] is False
+    assert extra["eviction_policy"] == "arc"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    (
+        ({"cpu_bytes_to_use": 0}, "cpu_bytes_to_use must be a positive integer"),
+        ({"cpu_bytes_to_use": 1, "kv_role": "bad"}, "kv_role must be one of"),
+        ({"cpu_bytes_to_use": 1, "eviction_policy": "fifo"}, "eviction_policy must be one of"),
+        ({"cpu_bytes_to_use": 1, "offload_prompt_only": "true"}, "offload_prompt_only must be a boolean"),
+        (
+            {"cpu_bytes_to_use": 1, "secondary_fs_root": "/tmp/kv", "store_threshold": 2},
+            "store_threshold >= 2 is not supported",
+        ),
+    ),
+)
+def test_build_vllm_kv_offloading_config_rejects_invalid_values(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        build_vllm_kv_offloading_config(**kwargs)
+
+
 @pytest.mark.parametrize("value", [-1, True, "4096"])
 def test_build_vllm_launch_config_rejects_invalid_payload_cache_budget(value):
     with pytest.raises(ValueError, match="payload_cache_max_bytes"):
@@ -173,6 +238,63 @@ def test_build_sglang_launch_config_defaults_to_builtin_provider_factory():
 
     assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
+
+
+def test_build_sglang_launch_config_accepts_hicache_runtime_options():
+    record = build_sglang_launch_config(
+        hicache_size_gb=64,
+        page_size=8,
+        hicache_storage_prefetch_policy="timeout",
+        hicache_write_policy="write_through_selective",
+        hicache_io_backend="kernel",
+        hicache_mem_layout="page_first_direct",
+    )
+
+    assert record["hicache_size"] == 64
+    assert record["page_size"] == 8
+    assert record["hicache_storage_prefetch_policy"] == "timeout"
+    assert record["hicache_write_policy"] == "write_through_selective"
+    assert record["hicache_io_backend"] == "kernel"
+    assert record["hicache_mem_layout"] == "page_first_direct"
+    validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
+
+
+def test_build_sglang_hicache_server_args_returns_cli_flags():
+    args = build_sglang_hicache_server_args(
+        hicache_size_gb=30,
+        page_size=4,
+        hicache_storage_backend="file",
+        hicache_storage_backend_extra_config='{"path":"/local_disk0/sglang-hicache"}',
+        hicache_write_policy="write_back",
+    )
+
+    assert args == (
+        "--enable-hierarchical-cache",
+        "--hicache-size",
+        "30",
+        "--page-size",
+        "4",
+        "--hicache-write-policy",
+        "write_back",
+        "--hicache-storage-backend",
+        "file",
+        "--hicache-storage-backend-extra-config",
+        '{"path":"/local_disk0/sglang-hicache"}',
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    (
+        ({"hicache_ratio": 1.0}, "hicache_ratio must be greater than 1"),
+        ({"hicache_size_gb": 0}, "hicache_size_gb must be a positive integer"),
+        ({"page_size": 0}, "page_size must be a positive integer"),
+        ({"hicache_write_policy": "never"}, "hicache_write_policy must be one of"),
+    ),
+)
+def test_build_sglang_hicache_options_reject_invalid_values(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        build_sglang_launch_config(**kwargs)
 
 
 def test_build_launch_config_rejects_reserved_extra_config_keys():
@@ -360,6 +482,7 @@ def test_read_and_write_engine_launch_config_json(tmp_path):
 
 def test_main_builds_launch_config_sidecars(tmp_path):
     vllm_path = tmp_path / "vllm.json"
+    vllm_offload_path = tmp_path / "vllm-offload.json"
     sglang_path = tmp_path / "sglang.json"
 
     assert (
@@ -379,11 +502,31 @@ def test_main_builds_launch_config_sidecars(tmp_path):
     assert (
         main(
             [
+                "build-vllm-offload",
+                "--output-json",
+                str(vllm_offload_path),
+                "--cpu-bytes-to-use",
+                str(8 * 1024**3),
+                "--block-size",
+                "64",
+                "--secondary-fs-root",
+                "/local_disk0/vllm-kv-offload",
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
                 "build-sglang",
                 "--output-json",
                 str(sglang_path),
                 "--provider-factory",
                 SGLANG_TEST_PROVIDER_FACTORY,
+                "--hicache-size-gb",
+                "30",
+                "--hicache-write-policy",
+                "write_back",
                 "--extra-config",
                 "deployment=\"qa\"",
             ]
@@ -400,10 +543,17 @@ def test_main_builds_launch_config_sidecars(tmp_path):
     assert read_engine_launch_config_json(vllm_path, expected_backend="vllm")[
         "kv_connector_extra_config"
     ][DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY] == 4096
+    vllm_offload = json.loads(vllm_offload_path.read_text(encoding="utf-8"))
+    assert vllm_offload["kv_connector"] == "OffloadingConnector"
+    assert vllm_offload["kv_connector_extra_config"]["cpu_bytes_to_use"] == 8 * 1024**3
+    assert vllm_offload["kv_connector_extra_config"]["secondary_tiers"][0]["root_dir"] == (
+        "/local_disk0/vllm-kv-offload"
+    )
+    sglang_record = read_engine_launch_config_json(sglang_path, expected_backend="sglang")
+    assert sglang_record["hicache_size"] == 30
+    assert sglang_record["hicache_write_policy"] == "write_back"
     sglang_extra = json.loads(
-        read_engine_launch_config_json(sglang_path, expected_backend="sglang")[
-            "hicache_storage_backend_extra_config"
-        ]
+        sglang_record["hicache_storage_backend_extra_config"]
     )
     assert sglang_extra["deployment"] == "qa"
     assert sglang_extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == SGLANG_TEST_PROVIDER_FACTORY

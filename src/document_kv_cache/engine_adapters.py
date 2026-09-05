@@ -2,30 +2,103 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeGuard, TypeVar, cast
 
+from document_kv_cache.artifact_identity import ArtifactIdentity, TokenContract
 from document_kv_cache.cache import CacheTier
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_protocol import (
-    KVCacheHandle,
     KVLayout,
+    KVPayloadAxisOrder,
     KVSegment,
+    KVStorageLayout,
+    kv_key_position_encoding_from_value,
+    kv_payload_axis_order_from_value,
     kv_storage_layout_from_value,
+)
+from document_kv_cache.methods import (
+    CACHET_CONNECTOR_MODE,
+    MethodRegistry,
+    default_method_registry,
+    validate_registered_reuse_plan,
+)
+from document_kv_cache.reuse_contract import (
+    ArtifactEncoding,
+    PayloadDecodeStage,
+    PositionHandling,
+    ReusePlan,
+    RuntimeOperationHandlerRegistry,
+    RuntimeOperationPhase,
+    TokenRecomputePolicy,
 )
 from document_kv_cache.storage import local_path
 
+_EnumT = TypeVar("_EnumT", bound=StrEnum)
+
+_VLLM_RUNTIME_DTYPES = (
+    "bf16",
+    "bfloat16",
+    "fp16",
+    "float16",
+    "fp32",
+    "float32",
+    "fp8",
+    "fp8_e4m3",
+    "fp8_e5m2",
+    "float8",
+    "int8",
+    "uint8",
+)
+_VLLM_REROPE_DTYPES = tuple(
+    dtype for dtype in _VLLM_RUNTIME_DTYPES if dtype not in {"float8", "int8", "uint8"}
+)
+_SGLANG_REROPE_DTYPES = (
+    "bf16",
+    "bfloat16",
+    "fp16",
+    "float16",
+    "fp32",
+    "float32",
+)
+
 RESERVED_METADATA_PREFIXES = ("document_kv.", "engine.")
 ENGINE_ADAPTER_HANDOFF_RECORD_TYPE = "document_kv.engine_adapter_request.v1"
-ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION = 2
+ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION = 4
+_ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION = 2
+_ENGINE_ADAPTER_HANDOFF_SUPPORTED_SCHEMA_VERSIONS = frozenset(
+    {_ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION, ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION}
+)
+_ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V2 = frozenset(
+    {
+        "record_type",
+        "schema_version",
+        "backend",
+        "request_id",
+        "handle_uri",
+        "connector_package",
+        "kv_injection_method",
+        "payload_contract",
+        "payload_mode",
+        "required_steps",
+        "metadata",
+        "estimated_gpu_bytes",
+        "payload_source",
+        "handle",
+    }
+)
+_ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V4 = (
+    _ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V2 | {"reuse_plan"}
+)
 ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE = "document_kv.engine_kv_connector_actions.v1"
-ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION = 1
+ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION = 2
 ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE = "document_kv.engine_kv_connector_probe.v1"
 ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION = 2
 _NON_NATIVE_PROBE_KIND_VALUES = frozenset({"debug_in_memory", "in_memory_debug", "non_native_debug"})
@@ -57,6 +130,7 @@ _ENGINE_KV_CONNECTOR_ACTIONS_RECORD_KEYS = frozenset(
         "copies",
         "bind",
         "release",
+        "reuse_plan",
     }
 )
 _ENGINE_KV_RESERVATION_ACTION_KEYS = frozenset(
@@ -68,6 +142,8 @@ _ENGINE_KV_RESERVATION_ACTION_KEYS = frozenset(
         "estimated_gpu_bytes",
         "adapter_ids",
         "layout",
+        "artifact_identity",
+        "payload_checksum",
     }
 )
 _ENGINE_KV_COPY_ACTION_KEYS = frozenset(
@@ -88,6 +164,7 @@ _ENGINE_KV_COPY_ACTION_KEYS = frozenset(
         "first_block_index",
         "last_block_index_exclusive",
         "content_hash",
+        "token_contract",
         "cache_tier",
     }
 )
@@ -97,6 +174,7 @@ _ENGINE_KV_RELEASE_ACTION_KEYS = frozenset({"request_id"})
 __all__ = [
     "EngineAdapterRequest",
     "EngineAdapterSpec",
+    "RuntimeOperationSupport",
     "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE",
     "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION",
     "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
@@ -145,6 +223,24 @@ class PayloadMode(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeOperationSupport:
+    """One method-owned strategy implemented by an engine adapter backend."""
+
+    phase: RuntimeOperationPhase
+    strategy_id: str
+    version: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "phase", RuntimeOperationPhase(self.phase))
+        _validate_nonempty_str_value(self.strategy_id, field_name="strategy_id")
+        _validate_nonempty_str_value(self.version, field_name="version")
+
+    @property
+    def key(self) -> tuple[RuntimeOperationPhase, str, str]:
+        return self.phase, self.strategy_id, self.version
+
+
+@dataclass(frozen=True, slots=True)
 class EngineAdapterSpec:
     """Capabilities expected from an external serving-engine adapter."""
 
@@ -156,6 +252,33 @@ class EngineAdapterSpec:
     supports_segmented_payload: bool = True
     supports_lora_adapters: bool = True
     supports_dynamic_loading: bool = True
+    supported_connector_modes: tuple[str, ...] = (CACHET_CONNECTOR_MODE,)
+    supported_artifact_encodings: tuple[ArtifactEncoding, ...] = (
+        ArtifactEncoding.RAW_KV,
+    )
+    supported_position_handling: tuple[PositionHandling, ...] = (
+        PositionHandling.STORED_POST_ROPE,
+        PositionHandling.REROPE_AT_INJECTION,
+    )
+    supported_payload_decode_stages: tuple[PayloadDecodeStage, ...] = (
+        PayloadDecodeStage.NONE,
+    )
+    supported_token_recompute_policies: tuple[TokenRecomputePolicy, ...] = (
+        TokenRecomputePolicy.NONE,
+    )
+    supported_storage_layouts: tuple[KVStorageLayout, ...] = tuple(
+        KVStorageLayout
+    )
+    supported_payload_axis_orders: tuple[KVPayloadAxisOrder, ...] = (
+        KVPayloadAxisOrder.TOKEN_MAJOR,
+    )
+    supported_runtime_operations: tuple[RuntimeOperationSupport, ...] = ()
+    supported_runtime_dtypes: tuple[str, ...] = _VLLM_RUNTIME_DTYPES
+    supported_rerope_dtypes: tuple[str, ...] = _VLLM_REROPE_DTYPES
+    supported_rerope_storage_layouts: tuple[KVStorageLayout, ...] = (
+        KVStorageLayout.SEPARATE_KEY_VALUE,
+    )
+    requires_complete_rerope_geometry: bool = True
     required_steps: tuple[str, ...] = (
         "reserve_engine_kv_blocks",
         "load_or_map_document_kv_payload",
@@ -176,6 +299,108 @@ class EngineAdapterSpec:
             raise ValueError("payload_contract must be non-empty")
         if not self.supports_merged_payload and not self.supports_segmented_payload:
             raise ValueError("Engine adapter must support at least one payload mode")
+        connector_modes = _nonempty_unique_string_tuple(
+            self.supported_connector_modes,
+            field_name="supported_connector_modes",
+        )
+        artifact_encodings = _nonempty_unique_enum_tuple(
+            self.supported_artifact_encodings,
+            ArtifactEncoding,
+            field_name="supported_artifact_encodings",
+        )
+        position_handling = _nonempty_unique_enum_tuple(
+            self.supported_position_handling,
+            PositionHandling,
+            field_name="supported_position_handling",
+        )
+        payload_decode_stages = _nonempty_unique_enum_tuple(
+            self.supported_payload_decode_stages,
+            PayloadDecodeStage,
+            field_name="supported_payload_decode_stages",
+        )
+        recompute_policies = _nonempty_unique_enum_tuple(
+            self.supported_token_recompute_policies,
+            TokenRecomputePolicy,
+            field_name="supported_token_recompute_policies",
+        )
+        object.__setattr__(self, "supported_connector_modes", connector_modes)
+        object.__setattr__(self, "supported_artifact_encodings", artifact_encodings)
+        object.__setattr__(self, "supported_position_handling", position_handling)
+        object.__setattr__(self, "supported_payload_decode_stages", payload_decode_stages)
+        object.__setattr__(
+            self,
+            "supported_token_recompute_policies",
+            recompute_policies,
+        )
+        storage_layouts = _nonempty_unique_enum_tuple(
+            self.supported_storage_layouts,
+            KVStorageLayout,
+            field_name="supported_storage_layouts",
+        )
+        payload_axis_orders = _nonempty_unique_enum_tuple(
+            self.supported_payload_axis_orders,
+            KVPayloadAxisOrder,
+            field_name="supported_payload_axis_orders",
+        )
+        runtime_operations = tuple(self.supported_runtime_operations)
+        if any(
+            not isinstance(operation, RuntimeOperationSupport)
+            for operation in runtime_operations
+        ):
+            raise TypeError(
+                "supported_runtime_operations entries must be "
+                "RuntimeOperationSupport instances"
+            )
+        operation_keys = tuple(operation.key for operation in runtime_operations)
+        if len(set(operation_keys)) != len(operation_keys):
+            raise ValueError(
+                "supported_runtime_operations must not contain duplicate "
+                "phase/strategy/version entries"
+            )
+        object.__setattr__(self, "supported_storage_layouts", storage_layouts)
+        object.__setattr__(
+            self,
+            "supported_payload_axis_orders",
+            payload_axis_orders,
+        )
+        object.__setattr__(
+            self,
+            "supported_runtime_operations",
+            runtime_operations,
+        )
+        runtime_dtypes = _nonempty_unique_string_tuple(
+            self.supported_runtime_dtypes,
+            field_name="supported_runtime_dtypes",
+        )
+        rerope_dtypes = _nonempty_unique_string_tuple(
+            self.supported_rerope_dtypes,
+            field_name="supported_rerope_dtypes",
+        )
+        unsupported_rerope_dtypes = sorted(set(rerope_dtypes) - set(runtime_dtypes))
+        if unsupported_rerope_dtypes:
+            raise ValueError(
+                "supported_rerope_dtypes must be a subset of "
+                "supported_runtime_dtypes"
+            )
+        rerope_storage_layouts = _nonempty_unique_enum_tuple(
+            self.supported_rerope_storage_layouts,
+            KVStorageLayout,
+            field_name="supported_rerope_storage_layouts",
+        )
+        if not set(rerope_storage_layouts).issubset(set(storage_layouts)):
+            raise ValueError(
+                "supported_rerope_storage_layouts must be a subset of "
+                "supported_storage_layouts"
+            )
+        if type(self.requires_complete_rerope_geometry) is not bool:
+            raise TypeError("requires_complete_rerope_geometry must be a boolean")
+        object.__setattr__(self, "supported_runtime_dtypes", runtime_dtypes)
+        object.__setattr__(self, "supported_rerope_dtypes", rerope_dtypes)
+        object.__setattr__(
+            self,
+            "supported_rerope_storage_layouts",
+            rerope_storage_layouts,
+        )
         required_steps = _normalize_required_steps(self.required_steps)
         if not required_steps:
             raise ValueError("required_steps must be non-empty")
@@ -183,7 +408,13 @@ class EngineAdapterSpec:
         _validate_metadata_strings(self.metadata)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
-    def validate_ready_request(self, request: EngineReadyRequest) -> None:
+    def validate_ready_request(
+        self,
+        request: EngineReadyRequest,
+        *,
+        operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+        method_registry: MethodRegistry | None = None,
+    ) -> ReusePlan:
         request.validate()
         _reject_reserved_metadata(request.handle.metadata)
         payload_mode = payload_mode_for(request)
@@ -193,6 +424,123 @@ class EngineAdapterSpec:
             raise ValueError(f"{self.backend.value} adapter does not support merged payloads")
         if request.handle.adapter_ids and not self.supports_lora_adapters:
             raise ValueError(f"{self.backend.value} adapter does not support LoRA adapter ids")
+        reuse_plan = _reuse_plan_for_ready_request(
+            request,
+            method_registry=method_registry,
+        )
+        self.validate_reuse_plan(
+            reuse_plan,
+            layout=request.handle.layout,
+            artifact_identity=request.handle.artifact_identity,
+            operation_handlers=operation_handlers,
+            method_registry=method_registry,
+        )
+        return reuse_plan
+
+    def validate_reuse_plan(
+        self,
+        reuse_plan: ReusePlan,
+        *,
+        layout: KVLayout,
+        artifact_identity: ArtifactIdentity | None = None,
+        operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+        method_registry: MethodRegistry | None = None,
+    ) -> None:
+        """Reject method operations this backend does not explicitly execute."""
+
+        if not isinstance(reuse_plan, ReusePlan):
+            raise TypeError("reuse_plan must be a ReusePlan")
+        reuse_plan.validate_runtime_layout(layout)
+        unsupported: list[str] = []
+        if layout.storage_layout not in self.supported_storage_layouts:
+            unsupported.append(
+                f"storage layout {layout.storage_layout.value!r}"
+            )
+        if layout.payload_axis_order not in self.supported_payload_axis_orders:
+            unsupported.append(
+                f"payload axis order {layout.payload_axis_order.value!r}"
+            )
+        normalized_dtype = layout.dtype.lower()
+        if normalized_dtype not in self.supported_runtime_dtypes:
+            unsupported.append(f"runtime dtype {layout.dtype!r}")
+        if reuse_plan.position_handling == PositionHandling.REROPE_AT_INJECTION:
+            if normalized_dtype not in self.supported_rerope_dtypes:
+                unsupported.append(f"re-rope dtype {layout.dtype!r}")
+            if layout.storage_layout not in self.supported_rerope_storage_layouts:
+                unsupported.append(
+                    "re-rope storage layout "
+                    f"{layout.storage_layout.value!r}"
+                )
+            if self.requires_complete_rerope_geometry:
+                missing_geometry = [
+                    field_name
+                    for field_name in (
+                        "num_query_heads",
+                        "num_kv_heads",
+                        "head_size",
+                        "kv_stride_bytes",
+                    )
+                    if getattr(layout, field_name) is None
+                ]
+                if missing_geometry:
+                    unsupported.append(
+                        "re-rope geometry missing " + ", ".join(missing_geometry)
+                    )
+        if reuse_plan.connector_mode not in self.supported_connector_modes:
+            unsupported.append(f"connector mode {reuse_plan.connector_mode!r}")
+        if reuse_plan.artifact_format.encoding not in self.supported_artifact_encodings:
+            unsupported.append(
+                f"artifact encoding {reuse_plan.artifact_format.encoding.value!r}"
+            )
+        if reuse_plan.position_handling not in self.supported_position_handling:
+            unsupported.append(
+                f"position handling {reuse_plan.position_handling.value!r}"
+            )
+        if reuse_plan.payload_decode_stage not in self.supported_payload_decode_stages:
+            unsupported.append(
+                f"payload decode stage {reuse_plan.payload_decode_stage.value!r}"
+            )
+        if (
+            reuse_plan.token_recompute_policy
+            not in self.supported_token_recompute_policies
+        ):
+            unsupported.append(
+                "token recompute policy "
+                f"{reuse_plan.token_recompute_policy.value!r}"
+            )
+        if unsupported:
+            raise ValueError(
+                f"{self.backend.value} adapter does not support reuse plan "
+                f"{reuse_plan.capability_id}: {', '.join(unsupported)}"
+            )
+        registry = _operation_handler_registry(operation_handlers)
+        supported_operation_keys = {
+            operation.key for operation in self.supported_runtime_operations
+        }
+        for phase, descriptor in reuse_plan.runtime_operations:
+            operation_key = (
+                phase,
+                descriptor.strategy_id,
+                descriptor.version,
+            )
+            if operation_key not in supported_operation_keys:
+                raise ValueError(
+                    f"{self.backend.value} adapter does not advertise runtime "
+                    "operation "
+                    f"{phase.value}:{descriptor.strategy_version_id}"
+                )
+            try:
+                registry.resolve(phase, descriptor)
+            except KeyError as exc:
+                raise ValueError(
+                    f"{self.backend.value} adapter has no injected handler for "
+                    f"{phase.value}:{descriptor.strategy_version_id}"
+                ) from exc
+        validate_registered_reuse_plan(
+            reuse_plan,
+            artifact_identity=artifact_identity,
+            registry=_method_registry(method_registry),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +554,7 @@ class EngineAdapterRequest:
     payload_contract: str
     required_steps: tuple[str, ...]
     metadata: Mapping[str, str]
+    reuse_plan: ReusePlan | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", _backend_from_value(self.backend, field_name="backend"))
@@ -213,14 +562,25 @@ class EngineAdapterRequest:
         object.__setattr__(self, "required_steps", _normalize_required_steps(self.required_steps))
         _validate_metadata_strings(self.metadata)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        if self.reuse_plan is not None:
+            if not isinstance(self.reuse_plan, ReusePlan):
+                raise TypeError("reuse_plan must be a ReusePlan or None")
+            if self.reuse_plan.method_id != self.ready_request.handle.cache_method:
+                raise ValueError("reuse_plan.method_id must match handle.cache_method")
 
     @property
     def request_id(self) -> str:
-        return self.ready_request.request_id
+        request_id = self.ready_request.request_id
+        if not isinstance(request_id, str):
+            raise TypeError("ready_request.request_id must be a string")
+        return request_id
 
     @property
     def handle_uri(self) -> str:
-        return self.ready_request.handle.handle_uri
+        handle_uri = self.ready_request.handle.handle_uri
+        if not isinstance(handle_uri, str):
+            raise TypeError("ready_request.handle.handle_uri must be a string")
+        return handle_uri
 
     @property
     def payload_mode(self) -> PayloadMode:
@@ -244,6 +604,7 @@ class EngineKVSegmentBinding:
     last_block_index_exclusive: int
     content_hash: str = ""
     cache_tier: CacheTier | str = CacheTier.COLD_STORAGE
+    token_contract: TokenContract | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cache_tier", _cache_tier_from_value(self.cache_tier, field_name="cache_tier"))
@@ -273,6 +634,11 @@ class EngineKVSegmentBinding:
             raise ValueError("block range must be positive")
         if not isinstance(self.content_hash, str):
             raise TypeError("content_hash must be a string")
+        if self.token_contract is not None:
+            if not isinstance(self.token_contract, TokenContract):
+                raise TypeError("token_contract must be a TokenContract or None")
+            if self.token_contract.token_count != self.token_count:
+                raise ValueError("token_contract token_count must match token_count")
 
     @property
     def block_count(self) -> int:
@@ -299,6 +665,9 @@ class EngineKVInjectionPlan:
     estimated_gpu_bytes: int
     segments: tuple[EngineKVSegmentBinding, ...]
     metadata: Mapping[str, str]
+    reuse_plan: ReusePlan
+    artifact_identity: ArtifactIdentity | None = None
+    payload_checksum: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", _backend_from_value(self.backend, field_name="backend"))
@@ -308,6 +677,21 @@ class EngineKVInjectionPlan:
         _validate_nonempty_str_value(self.handle_uri, field_name="handle_uri")
         _validate_nonempty_str_value(self.kv_injection_method, field_name="kv_injection_method")
         _validate_nonempty_str_value(self.cache_method, field_name="cache_method")
+        if not isinstance(self.reuse_plan, ReusePlan):
+            raise TypeError("reuse_plan must be a ReusePlan")
+        if self.reuse_plan.method_id != self.cache_method:
+            raise ValueError("reuse_plan.method_id must match cache_method")
+        self.reuse_plan.validate_runtime_layout(self.layout)
+        if self.artifact_identity is not None:
+            if not isinstance(self.artifact_identity, ArtifactIdentity):
+                raise TypeError("artifact_identity must be an ArtifactIdentity or None")
+            if self.artifact_identity.method_id != self.cache_method:
+                raise ValueError("artifact_identity.method_id must match cache_method")
+            _validate_reuse_plan_artifact_identity(
+                self.reuse_plan,
+                self.artifact_identity,
+            )
+        _validate_optional_sha256(self.payload_checksum, field_name="payload_checksum")
         self.layout.validate()
         _validate_nonnegative_int_value(self.total_tokens, field_name="total_tokens")
         _validate_nonnegative_int_value(self.total_bytes, field_name="total_bytes")
@@ -318,6 +702,7 @@ class EngineKVInjectionPlan:
             total_bytes=self.total_bytes,
             total_blocks=self.total_blocks,
             layout=self.layout,
+            reuse_plan=self.reuse_plan,
         )
         adapter_ids = _normalize_connector_adapter_ids(self.adapter_ids)
         segments = tuple(self.segments)
@@ -328,6 +713,7 @@ class EngineKVInjectionPlan:
             total_tokens=self.total_tokens,
             total_bytes=self.total_bytes,
             layout=self.layout,
+            reuse_plan=self.reuse_plan,
         )
         object.__setattr__(self, "adapter_ids", adapter_ids)
         object.__setattr__(self, "segments", segments)
@@ -346,6 +732,8 @@ class EngineKVReservationAction:
     estimated_gpu_bytes: int
     layout: KVLayout
     adapter_ids: tuple[str, ...]
+    artifact_identity: ArtifactIdentity | None = None
+    payload_checksum: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", _backend_from_value(self.backend, field_name="backend"))
@@ -356,6 +744,33 @@ class EngineKVReservationAction:
             raise ValueError("total_blocks does not match total_tokens and layout.block_size")
         _validate_nonnegative_int_value(self.estimated_gpu_bytes, field_name="estimated_gpu_bytes")
         object.__setattr__(self, "adapter_ids", _normalize_connector_adapter_ids(self.adapter_ids))
+        if self.artifact_identity is not None and not isinstance(self.artifact_identity, ArtifactIdentity):
+            raise TypeError("artifact_identity must be an ArtifactIdentity or None")
+        if self.artifact_identity is not None:
+            identity_layout = {
+                "model_id": self.layout.model_id,
+                "lora_id": self.layout.lora_id,
+                "layout_version": self.layout.layout_version,
+                "runtime_kv_dtype": self.layout.dtype,
+                "block_size": self.layout.block_size,
+                "payload_axis_order": self.layout.payload_axis_order.value,
+                "key_position_encoding": (
+                    self.layout.key_position_encoding.value
+                ),
+                "rope_theta": self.layout.rope_theta,
+                "rope_rotary_dim": self.layout.rope_rotary_dim,
+            }
+            mismatches = [
+                name
+                for name, value in identity_layout.items()
+                if getattr(self.artifact_identity, name) != value
+            ]
+            if mismatches:
+                raise ValueError(
+                    "artifact_identity does not match reservation layout: "
+                    + ", ".join(mismatches)
+                )
+        _validate_optional_sha256(self.payload_checksum, field_name="payload_checksum")
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +793,7 @@ class EngineKVSegmentCopyAction:
     last_block_index_exclusive: int
     content_hash: str = ""
     cache_tier: CacheTier | str = CacheTier.COLD_STORAGE
+    token_contract: TokenContract | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cache_tier", _cache_tier_from_value(self.cache_tier, field_name="cache_tier"))
@@ -411,6 +827,11 @@ class EngineKVSegmentCopyAction:
             raise ValueError("block range must be positive")
         if not isinstance(self.content_hash, str):
             raise TypeError("content_hash must be a string")
+        if self.token_contract is not None:
+            if not isinstance(self.token_contract, TokenContract):
+                raise TypeError("token_contract must be a TokenContract or None")
+            if self.token_contract.token_count != self.token_count:
+                raise ValueError("token_contract token_count must match token_count")
 
     @property
     def source_byte_end(self) -> int:
@@ -462,6 +883,7 @@ class EngineKVConnectorActions:
     copies: tuple[EngineKVSegmentCopyAction, ...]
     bind: EngineKVBindAction
     release: EngineKVReleaseAction
+    reuse_plan: ReusePlan | None = None
 
     def __post_init__(self) -> None:
         request_id = self.reservation.request_id
@@ -470,6 +892,27 @@ class EngineKVConnectorActions:
         if any(copy.request_id != request_id for copy in self.copies):
             raise ValueError("Connector copy action request ids must match reservation")
         object.__setattr__(self, "copies", tuple(self.copies))
+        reuse_plan = self.reuse_plan
+        if reuse_plan is None:
+            try:
+                reuse_plan = default_method_registry().get(
+                    self.bind.cache_method,
+                    require_implemented=True,
+                ).reuse_plan()
+            except (KeyError, NotImplementedError) as exc:
+                raise ValueError(
+                    "custom connector actions require an explicit reuse_plan"
+                ) from exc
+        if not isinstance(reuse_plan, ReusePlan):
+            raise TypeError("reuse_plan must be a ReusePlan")
+        if reuse_plan.method_id != self.bind.cache_method:
+            raise ValueError("reuse_plan.method_id must match bind.cache_method")
+        reuse_plan.validate_runtime_layout(self.reservation.layout)
+        _validate_reuse_plan_artifact_identity(
+            reuse_plan,
+            self.reservation.artifact_identity,
+        )
+        object.__setattr__(self, "reuse_plan", reuse_plan)
 
 
 class EngineKVBlockManagerProbe(Protocol):
@@ -574,7 +1017,10 @@ def validate_engine_kv_connector_probe_record(
             f"Unsupported engine KV probe schema_version {record.get('schema_version')!r}; "
             f"expected {ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION}"
         )
-    backend = _backend_from_value(record.get("backend"), field_name="backend")
+    backend = _backend_from_value(
+        _required_str(record, "backend"),
+        field_name="backend",
+    )
     if expected_backend is not None:
         expected = _backend_from_value(expected_backend, field_name="expected_backend")
         if backend != expected:
@@ -604,7 +1050,10 @@ def validate_engine_kv_connector_probe_record(
         raise ValueError("Engine KV probe total_blocks must match copied_tokens and layout.block_size")
     if record["copied_segments"] > copied_tokens:
         raise ValueError("Engine KV probe copied_segments cannot exceed copied_tokens")
-    _payload_mode_from_value(record.get("payload_mode"), field_name="payload_mode")
+    _payload_mode_from_value(
+        _required_str(record, "payload_mode"),
+        field_name="payload_mode",
+    )
     if record.get("native_probe") is not True:
         raise ValueError("Engine KV probe must be marked native_probe=true")
     metadata = _required_mapping(record, "metadata")
@@ -622,6 +1071,10 @@ def vllm_adapter_spec() -> EngineAdapterSpec:
             "materialized document KV payload into those blocks, then schedules "
             "decode through the vLLM scheduler."
         ),
+        supported_storage_layouts=(
+            KVStorageLayout.SEPARATE_KEY_VALUE,
+            KVStorageLayout.SHARED_KEY_VALUE,
+        ),
         metadata={"engine.scheduler": "vllm"},
     )
 
@@ -635,6 +1088,11 @@ def sglang_adapter_spec() -> EngineAdapterSpec:
             "External adapter binds the materialized document KV handle to an "
             "SGLang runtime request, then lets SGLang own scheduling and decode."
         ),
+        supported_storage_layouts=(
+            KVStorageLayout.SEPARATE_KEY_VALUE,
+            KVStorageLayout.SHARED_KEY_VALUE,
+        ),
+        supported_rerope_dtypes=_SGLANG_REROPE_DTYPES,
         metadata={"engine.scheduler": "sglang"},
     )
 
@@ -643,9 +1101,16 @@ def build_engine_adapter_request(
     ready_request: EngineReadyRequest,
     *,
     spec: EngineAdapterSpec,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> EngineAdapterRequest:
-    spec.validate_ready_request(ready_request)
+    reuse_plan = spec.validate_ready_request(
+        ready_request,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
     handle = ready_request.handle
+    artifact_identity = handle.artifact_identity
     metadata = {
         **handle.metadata,
         **spec.metadata,
@@ -654,7 +1119,20 @@ def build_engine_adapter_request(
         "document_kv.total_tokens": str(handle.total_tokens),
         "document_kv.total_bytes": str(handle.total_bytes),
         "document_kv.cache_method": handle.cache_method,
+        "document_kv.artifact_id": (
+            "" if artifact_identity is None else artifact_identity.artifact_id
+        ),
+        "document_kv.method_version": (
+            "" if artifact_identity is None else artifact_identity.method_version
+        ),
+        "document_kv.method_config_digest": (
+            ""
+            if artifact_identity is None
+            else artifact_identity.method_config_digest
+        ),
+        "document_kv.payload_checksum": handle.payload_checksum,
         "document_kv.payload_mode": payload_mode_for(ready_request).value,
+        "document_kv.reuse_capability_id": reuse_plan.capability_id,
         "engine.backend": spec.backend.value,
         "engine.connector_package": spec.connector_package,
         "engine.kv_injection_method": spec.kv_injection_method,
@@ -668,6 +1146,7 @@ def build_engine_adapter_request(
         payload_contract=spec.payload_contract,
         required_steps=spec.required_steps,
         metadata=metadata,
+        reuse_plan=reuse_plan,
     )
 
 
@@ -675,10 +1154,15 @@ def engine_adapter_request_to_record(
     request: EngineAdapterRequest,
     *,
     payload_uri: str | None = None,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> dict[str, Any]:
     """Serialize an engine handoff without embedding raw KV payload bytes."""
 
     request.ready_request.validate()
+    if request.reuse_plan is None:
+        raise ValueError("strict engine handoff requires a reuse_plan")
     payload_source_uri = _payload_source_uri(request.handle_uri, payload_uri)
     record = {
         "record_type": ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
@@ -693,10 +1177,17 @@ def engine_adapter_request_to_record(
         "required_steps": list(request.required_steps),
         "metadata": dict(request.metadata),
         "estimated_gpu_bytes": request.ready_request.estimated_gpu_bytes,
+        "reuse_plan": request.reuse_plan.to_record(),
         "payload_source": _payload_source_to_record(request, payload_source_uri),
         "handle": _handle_to_record(request.ready_request),
     }
-    validate_engine_adapter_request_record(record, require_external_payload_uri=False)
+    validate_engine_adapter_request_record(
+        record,
+        require_external_payload_uri=False,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
     return record
 
 
@@ -706,14 +1197,23 @@ def write_engine_adapter_request_json(
     *,
     payload_uri: str | None = None,
     require_external_payload_uri: bool = True,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> Path:
-    record = engine_adapter_request_to_record(request, payload_uri=payload_uri)
+    record = engine_adapter_request_to_record(
+        request,
+        payload_uri=payload_uri,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
     if require_external_payload_uri and record["payload_source"]["availability"] != EXTERNAL_URI_PAYLOAD_SOURCE:
         raise ValueError(
             "write_engine_adapter_request_json requires an adapter-readable payload_uri "
             "or external handle_uri; pass require_external_payload_uri=False for debug-only records"
         )
-    target_path = local_path(str(path))
+    target_path = Path(local_path(str(path)))
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n",
@@ -727,12 +1227,25 @@ def read_engine_adapter_request_json(
     *,
     expected_backend: ServingBackend | str | None = None,
     require_external_payload_uri: bool = True,
+    allow_legacy_reuse_plan: bool = False,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> dict[str, Any]:
-    record = json.loads(local_path(str(path)).read_text(encoding="utf-8"))
+    loaded: object = json.loads(
+        local_path(str(path)).read_text(encoding="utf-8")
+    )
+    if not isinstance(loaded, dict):
+        raise TypeError("Engine adapter handoff JSON must contain an object")
+    record = cast(dict[str, Any], loaded)
     validate_engine_adapter_request_record(
         record,
         expected_backend=expected_backend,
         require_external_payload_uri=require_external_payload_uri,
+        allow_legacy_reuse_plan=allow_legacy_reuse_plan,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
     )
     return record
 
@@ -742,13 +1255,39 @@ def validate_engine_adapter_request_record(
     *,
     expected_backend: ServingBackend | str | None = None,
     require_external_payload_uri: bool = True,
+    allow_legacy_reuse_plan: bool = False,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> None:
     if not isinstance(record, Mapping):
         raise TypeError("Engine adapter handoff record must be a mapping")
     if record.get("record_type") != ENGINE_ADAPTER_HANDOFF_RECORD_TYPE:
         raise ValueError(f"Unsupported engine adapter handoff record_type {record.get('record_type')!r}")
-    if record.get("schema_version") != ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION:
-        raise ValueError(f"Unsupported engine adapter handoff schema_version {record.get('schema_version')!r}")
+    schema_version = record.get("schema_version")
+    if schema_version not in _ENGINE_ADAPTER_HANDOFF_SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(
+            "Unsupported engine adapter handoff schema_version "
+            f"{schema_version!r}"
+        )
+    if (
+        schema_version == _ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION
+        and not allow_legacy_reuse_plan
+    ):
+        raise ValueError(
+            "schema_version 2 omits reuse_plan; pass "
+            "allow_legacy_reuse_plan=True only for legacy raw-KV handoffs"
+        )
+    expected_record_keys = (
+        _ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V4
+        if schema_version == ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION
+        else _ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V2
+    )
+    _reject_unsupported_keys(
+        record,
+        expected_record_keys,
+        label="engine adapter handoff record",
+    )
 
     backend = _backend_from_value(_required_str(record, "backend"), field_name="backend")
     if expected_backend is not None and backend != _backend_from_value(expected_backend, field_name="expected_backend"):
@@ -770,13 +1309,42 @@ def validate_engine_adapter_request_record(
     _required_nonnegative_int(record, "estimated_gpu_bytes")
 
     handle = _required_mapping(record, "handle")
+    reuse_plan = _reuse_plan_from_handoff_record(
+        record,
+        handle=handle,
+        allow_legacy=allow_legacy_reuse_plan,
+        method_registry=method_registry,
+    )
     payload_source = _required_mapping(record, "payload_source")
     _validate_payload_source_record(
         payload_source,
         payload_mode=payload_mode,
         require_external_payload_uri=require_external_payload_uri,
     )
-    _validate_handle_record(handle)
+    _validate_handle_record(handle, reuse_plan=reuse_plan)
+    if reuse_plan.method_id != _required_str(handle, "cache_method"):
+        raise ValueError("reuse_plan.method_id does not match handle.cache_method")
+    layout = _layout_from_record(_required_mapping(handle, "layout"))
+    resolved_adapter_spec = (
+        _adapter_spec_for_backend(backend)
+        if adapter_spec is None
+        else adapter_spec
+    )
+    if not isinstance(resolved_adapter_spec, EngineAdapterSpec):
+        raise TypeError("adapter_spec must be an EngineAdapterSpec or None")
+    if resolved_adapter_spec.backend != backend:
+        raise ValueError("adapter_spec.backend does not match handoff backend")
+    _validate_reuse_plan_artifact_identity(
+        reuse_plan,
+        _optional_artifact_identity(handle, "artifact_identity"),
+    )
+    resolved_adapter_spec.validate_reuse_plan(
+        reuse_plan,
+        layout=layout,
+        artifact_identity=_optional_artifact_identity(handle, "artifact_identity"),
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
     if _required_str(handle, "request_id") != _required_str(record, "request_id"):
         raise ValueError("Engine adapter handoff request_id does not match handle.request_id")
     if _required_str(handle, "handle_uri") != _required_str(record, "handle_uri"):
@@ -785,16 +1353,35 @@ def validate_engine_adapter_request_record(
         raise ValueError("payload_source.total_bytes does not match handle.total_bytes")
     if _required_nonnegative_int(payload_source, "segment_count") != len(_required_sequence(handle, "segments")):
         raise ValueError("payload_source.segment_count does not match handle.segments")
-    _validate_reserved_record_metadata(record, handle, metadata)
+    if (_optional_str(payload_source, "checksum") or "") != (
+        _optional_str(handle, "payload_checksum") or ""
+    ):
+        raise ValueError("payload_source.checksum does not match handle.payload_checksum")
+    _validate_reserved_record_metadata(
+        record,
+        handle,
+        metadata,
+        method_registry=method_registry,
+    )
 
 
 def view_engine_adapter_payload(
     record: Mapping[str, Any],
     payload: bytes | memoryview,
+    *,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> memoryview | tuple[memoryview, ...]:
     """Return zero-copy payload views matching a validated handoff record."""
 
-    validate_engine_adapter_request_record(record, require_external_payload_uri=False)
+    validate_engine_adapter_request_record(
+        record,
+        require_external_payload_uri=False,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
     if not isinstance(payload, bytes | memoryview):
         raise TypeError("Engine adapter payload must be bytes or memoryview")
     handle = _required_mapping(record, "handle")
@@ -802,6 +1389,9 @@ def view_engine_adapter_payload(
     payload_view = _byte_memoryview(payload)
     if payload_view.nbytes != total_bytes:
         raise ValueError(f"Engine adapter payload length {payload_view.nbytes} != handle.total_bytes {total_bytes}")
+    expected_checksum = _optional_str(handle, "payload_checksum") or ""
+    if expected_checksum and hashlib.sha256(payload_view).hexdigest() != expected_checksum:
+        raise ValueError("Engine adapter payload checksum does not match handle.payload_checksum")
     payload_mode = _payload_mode_from_value(_required_str(record, "payload_mode"), field_name="payload_mode")
     if payload_mode == PayloadMode.MERGED:
         return payload_view
@@ -813,10 +1403,23 @@ def view_engine_adapter_payload(
     )
 
 
-def split_engine_adapter_payload(record: Mapping[str, Any], payload: bytes | memoryview) -> bytes | tuple[bytes, ...]:
+def split_engine_adapter_payload(
+    record: Mapping[str, Any],
+    payload: bytes | memoryview,
+    *,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
+) -> bytes | tuple[bytes, ...]:
     """Return independent payload bytes for callers that cannot consume memoryviews."""
 
-    payload_view = view_engine_adapter_payload(record, payload)
+    payload_view = view_engine_adapter_payload(
+        record,
+        payload,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
     if isinstance(payload_view, memoryview):
         if isinstance(payload, bytes) and payload_view.nbytes == len(payload):
             return payload
@@ -829,17 +1432,31 @@ def build_engine_kv_injection_plan(
     *,
     expected_backend: ServingBackend | str | None = None,
     require_external_payload_uri: bool = True,
+    allow_legacy_reuse_plan: bool = False,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> EngineKVInjectionPlan:
     validate_engine_adapter_request_record(
         record,
         expected_backend=expected_backend,
         require_external_payload_uri=require_external_payload_uri,
+        allow_legacy_reuse_plan=allow_legacy_reuse_plan,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
     )
     handle = _required_mapping(record, "handle")
     layout = _layout_from_record(_required_mapping(handle, "layout"))
     total_tokens = _required_nonnegative_int(handle, "total_tokens")
     total_bytes = _required_nonnegative_int(handle, "total_bytes")
     payload_source = _required_mapping(record, "payload_source")
+    reuse_plan = _reuse_plan_from_handoff_record(
+        record,
+        handle=handle,
+        allow_legacy=allow_legacy_reuse_plan,
+        method_registry=method_registry,
+    )
     return EngineKVInjectionPlan(
         backend=_backend_from_value(_required_str(record, "backend"), field_name="backend"),
         request_id=_required_str(record, "request_id"),
@@ -860,19 +1477,30 @@ def build_engine_kv_injection_plan(
             for segment in _required_mapping_sequence(handle, "segments")
         ),
         metadata=_required_mapping(record, "metadata"),
+        reuse_plan=reuse_plan,
+        artifact_identity=_optional_artifact_identity(handle, "artifact_identity"),
+        payload_checksum=_optional_str(handle, "payload_checksum") or "",
     )
 
 
 def build_engine_kv_connector_actions(
     plan: EngineKVInjectionPlan,
     payload_or_segments: bytes | memoryview | tuple[bytes | memoryview, ...],
+    *,
+    method_registry: MethodRegistry | None = None,
 ) -> EngineKVConnectorActions:
     """Create native adapter action descriptors without embedding raw KV bytes."""
 
+    validate_registered_reuse_plan(
+        plan.reuse_plan,
+        artifact_identity=plan.artifact_identity,
+        registry=_method_registry(method_registry),
+    )
     payload_mode = _payload_mode_for_connector_payload(payload_or_segments)
     if payload_mode != plan.payload_mode:
         raise ValueError("Connector payload mode does not match injection plan payload_mode")
     _validate_connector_payload_lengths(plan, payload_or_segments)
+    _validate_connector_payload_checksum(plan, payload_or_segments)
     return EngineKVConnectorActions(
         reservation=EngineKVReservationAction(
             backend=plan.backend,
@@ -882,6 +1510,8 @@ def build_engine_kv_connector_actions(
             estimated_gpu_bytes=plan.estimated_gpu_bytes,
             layout=plan.layout,
             adapter_ids=plan.adapter_ids,
+            artifact_identity=plan.artifact_identity,
+            payload_checksum=plan.payload_checksum,
         ),
         copies=tuple(
             _copy_action_from_binding(
@@ -900,10 +1530,15 @@ def build_engine_kv_connector_actions(
             metadata=plan.metadata,
         ),
         release=EngineKVReleaseAction(request_id=plan.request_id),
+        reuse_plan=plan.reuse_plan,
     )
 
 
-def validate_engine_kv_connector_actions(actions: EngineKVConnectorActions) -> None:
+def validate_engine_kv_connector_actions(
+    actions: EngineKVConnectorActions,
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> None:
     """Validate that reserve/copy/bind/release descriptors cover one contiguous KV payload."""
 
     if not isinstance(actions, EngineKVConnectorActions):
@@ -913,6 +1548,35 @@ def validate_engine_kv_connector_actions(actions: EngineKVConnectorActions) -> N
         raise ValueError("Connector actions must include at least one copy action")
     if actions.bind.adapter_ids != actions.reservation.adapter_ids:
         raise ValueError("Connector bind adapter_ids do not match reservation adapter_ids")
+    artifact_identity = actions.reservation.artifact_identity
+    if artifact_identity is not None and actions.bind.cache_method != artifact_identity.method_id:
+        raise ValueError("Connector bind cache_method does not match artifact identity")
+    if actions.reuse_plan is None:  # pragma: no cover - normalized in __post_init__.
+        raise ValueError("Connector actions require a reuse_plan")
+    if actions.reuse_plan.method_id != actions.bind.cache_method:
+        raise ValueError("Connector reuse_plan does not match bind cache_method")
+    _validate_reuse_plan_artifact_identity(actions.reuse_plan, artifact_identity)
+    if artifact_identity is not None:
+        expected_identity_metadata = {
+            "document_kv.artifact_id": artifact_identity.artifact_id,
+            "document_kv.method_version": artifact_identity.method_version,
+            "document_kv.method_config_digest": (
+                artifact_identity.method_config_digest
+            ),
+            "document_kv.reuse_capability_id": (
+                actions.reuse_plan.capability_id
+            ),
+        }
+        identity_metadata_mismatches = tuple(
+            key
+            for key, expected in expected_identity_metadata.items()
+            if actions.bind.metadata.get(key) != expected
+        )
+        if identity_metadata_mismatches:
+            raise ValueError(
+                "Connector bind metadata does not match artifact identity: "
+                + ", ".join(identity_metadata_mismatches)
+            )
     metadata_backend = actions.bind.metadata.get("engine.backend", actions.reservation.backend.value)
     if _backend_from_value(metadata_backend, field_name="engine.backend") != actions.reservation.backend:
         raise ValueError("Connector bind engine.backend metadata does not match reservation backend")
@@ -921,7 +1585,10 @@ def validate_engine_kv_connector_actions(actions: EngineKVConnectorActions) -> N
         actions.bind.metadata.get("engine.connector_package", actions.reservation.backend.value),
     )
 
-    expected_total_bytes = actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
+    expected_runtime_bytes = (
+        actions.reservation.total_tokens
+        * actions.reservation.layout.bytes_per_token
+    )
     token_cursor = 0
     byte_cursor = 0
     for copy_action in actions.copies:
@@ -943,12 +1610,26 @@ def validate_engine_kv_connector_actions(actions: EngineKVConnectorActions) -> N
             )
         if copy_action.source_byte_length != copy_action.global_byte_end - copy_action.global_byte_start:
             raise ValueError(f"Copy action {copy_action.chunk_id!r} source length does not match global byte span")
-        expected_copy_bytes = copy_action.token_count * actions.reservation.layout.bytes_per_token
-        if copy_action.source_byte_length != expected_copy_bytes:
+        expected_copy_bytes = (
+            copy_action.token_count
+            * actions.reservation.layout.bytes_per_token
+        )
+        if (
+            actions.reuse_plan.artifact_format.encoding
+            == ArtifactEncoding.RAW_KV
+            and copy_action.source_byte_length != expected_copy_bytes
+        ):
             raise ValueError(
                 f"Copy action {copy_action.chunk_id!r} source length "
                 f"{copy_action.source_byte_length} != token_count * bytes_per_token {expected_copy_bytes}"
             )
+        if copy_action.token_contract is not None and artifact_identity is not None:
+            if copy_action.token_contract.tokenizer_id != artifact_identity.tokenizer_id:
+                raise ValueError("Copy token_contract tokenizer_id does not match artifact identity")
+            if copy_action.token_contract.tokenizer_revision != artifact_identity.tokenizer_revision:
+                raise ValueError(
+                    "Copy token_contract tokenizer_revision does not match artifact identity"
+                )
         if copy_action.last_block_index_exclusive > actions.reservation.total_blocks:
             raise ValueError(f"Copy action {copy_action.chunk_id!r} block range exceeds reservation")
         token_cursor = copy_action.token_end
@@ -959,16 +1640,33 @@ def validate_engine_kv_connector_actions(actions: EngineKVConnectorActions) -> N
             f"Connector copy token coverage {token_cursor} != reservation total_tokens "
             f"{actions.reservation.total_tokens}"
         )
-    if byte_cursor != expected_total_bytes:
+    if (
+        actions.reuse_plan.artifact_format.encoding
+        == ArtifactEncoding.RAW_KV
+        and byte_cursor != expected_runtime_bytes
+    ):
         raise ValueError(
-            f"Connector copy byte coverage {byte_cursor} != reservation expected bytes {expected_total_bytes}"
+            f"Connector copy byte coverage {byte_cursor} != reservation expected bytes {expected_runtime_bytes}"
         )
+    validate_registered_reuse_plan(
+        actions.reuse_plan,
+        artifact_identity=artifact_identity,
+        registry=_method_registry(method_registry),
+    )
 
 
-def engine_kv_connector_actions_to_record(actions: EngineKVConnectorActions) -> dict[str, Any]:
+def engine_kv_connector_actions_to_record(
+    actions: EngineKVConnectorActions,
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> dict[str, Any]:
     """Serialize connector action descriptors for an out-of-process native adapter."""
 
-    validate_engine_kv_connector_actions(actions)
+    validate_engine_kv_connector_actions(
+        actions,
+        method_registry=method_registry,
+    )
+    assert actions.reuse_plan is not None
     return {
         "record_type": ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
         "schema_version": ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
@@ -978,6 +1676,7 @@ def engine_kv_connector_actions_to_record(actions: EngineKVConnectorActions) -> 
         "copies": [_copy_action_to_record(copy_action) for copy_action in actions.copies],
         "bind": _bind_action_to_record(actions.bind),
         "release": _release_action_to_record(actions.release),
+        "reuse_plan": actions.reuse_plan.to_record(),
     }
 
 
@@ -985,6 +1684,7 @@ def engine_kv_connector_actions_from_record(
     record: Mapping[str, Any],
     *,
     expected_backend: str | ServingBackend | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> EngineKVConnectorActions:
     """Parse and validate connector action descriptors from a JSON-compatible record."""
 
@@ -1015,8 +1715,14 @@ def engine_kv_connector_actions_from_record(
         ),
         bind=_bind_action_from_record(_required_mapping(record, "bind")),
         release=_release_action_from_record(_required_mapping(record, "release")),
+        reuse_plan=ReusePlan.from_record(
+            _required_mapping(record, "reuse_plan")
+        ),
     )
-    validate_engine_kv_connector_actions(actions)
+    validate_engine_kv_connector_actions(
+        actions,
+        method_registry=method_registry,
+    )
     return actions
 
 
@@ -1024,10 +1730,15 @@ def validate_engine_kv_connector_actions_record(
     record: Mapping[str, Any],
     *,
     expected_backend: str | ServingBackend | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> None:
     """Validate a serialized connector actions record without returning descriptors."""
 
-    engine_kv_connector_actions_from_record(record, expected_backend=expected_backend)
+    engine_kv_connector_actions_from_record(
+        record,
+        expected_backend=expected_backend,
+        method_registry=method_registry,
+    )
 
 
 def probe_engine_kv_connector_actions(
@@ -1038,6 +1749,7 @@ def probe_engine_kv_connector_actions(
     engine_version: str = "unknown",
     native_probe: bool = True,
     metadata: Mapping[str, str] | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> EngineKVConnectorProbeResult:
     """Run reserve/import/bind/release descriptors against a native block-manager probe.
 
@@ -1045,7 +1757,10 @@ def probe_engine_kv_connector_actions(
     stops before decode scheduling so the serving engine remains the scheduler.
     """
 
-    validate_engine_kv_connector_actions(actions)
+    validate_engine_kv_connector_actions(
+        actions,
+        method_registry=method_registry,
+    )
     payload_mode = _payload_mode_for_connector_payload(payload_or_segments)
     reservation = probe.reserve_kv_blocks(actions.reservation)
     if reservation is None:
@@ -1109,7 +1824,7 @@ def _validate_connector_payload_lengths(
     plan: EngineKVInjectionPlan,
     payload_or_segments: bytes | memoryview | tuple[bytes | memoryview, ...],
 ) -> None:
-    if _is_payload_buffer(payload_or_segments):
+    if not isinstance(payload_or_segments, tuple):
         if _payload_nbytes(payload_or_segments) != plan.total_bytes:
             raise ValueError(
                 f"Connector payload length {_payload_nbytes(payload_or_segments)} "
@@ -1126,7 +1841,23 @@ def _validate_connector_payload_lengths(
             )
 
 
-def _is_payload_buffer(value: Any) -> bool:
+def _validate_connector_payload_checksum(
+    plan: EngineKVInjectionPlan,
+    payload_or_segments: bytes | memoryview | tuple[bytes | memoryview, ...],
+) -> None:
+    if not plan.payload_checksum:
+        return
+    digest = hashlib.sha256()
+    if not isinstance(payload_or_segments, tuple):
+        digest.update(_byte_memoryview(payload_or_segments))
+    else:
+        for payload in payload_or_segments:
+            digest.update(_byte_memoryview(payload))
+    if digest.hexdigest() != plan.payload_checksum:
+        raise ValueError("Connector payload checksum does not match injection plan")
+
+
+def _is_payload_buffer(value: object) -> TypeGuard[bytes | memoryview]:
     if isinstance(value, bytes):
         return True
     return isinstance(value, memoryview) and value.ndim == 1 and value.itemsize == 1
@@ -1200,6 +1931,7 @@ def _copy_action_from_binding(
         last_block_index_exclusive=binding.last_block_index_exclusive,
         content_hash=binding.content_hash,
         cache_tier=binding.cache_tier,
+        token_contract=binding.token_contract,
     )
 
 
@@ -1212,6 +1944,12 @@ def _reservation_action_to_record(action: EngineKVReservationAction) -> dict[str
         "estimated_gpu_bytes": action.estimated_gpu_bytes,
         "adapter_ids": list(action.adapter_ids),
         "layout": _layout_to_record(action.layout),
+        "artifact_identity": (
+            None
+            if action.artifact_identity is None
+            else action.artifact_identity.to_record()
+        ),
+        "payload_checksum": action.payload_checksum,
     }
 
 
@@ -1225,6 +1963,8 @@ def _reservation_action_from_record(record: Mapping[str, Any]) -> EngineKVReserv
         estimated_gpu_bytes=_required_nonnegative_int(record, "estimated_gpu_bytes"),
         layout=_layout_from_record(_required_mapping(record, "layout")),
         adapter_ids=_required_str_sequence(record, "adapter_ids"),
+        artifact_identity=_optional_artifact_identity(record, "artifact_identity"),
+        payload_checksum=_optional_str(record, "payload_checksum") or "",
     )
 
 
@@ -1246,7 +1986,13 @@ def _copy_action_to_record(action: EngineKVSegmentCopyAction) -> dict[str, Any]:
         "first_block_index": action.first_block_index,
         "last_block_index_exclusive": action.last_block_index_exclusive,
         "content_hash": action.content_hash,
-        "cache_tier": action.cache_tier.value,
+        "token_contract": (
+            None if action.token_contract is None else action.token_contract.to_record()
+        ),
+        "cache_tier": _cache_tier_from_value(
+            action.cache_tier,
+            field_name="cache_tier",
+        ).value,
     }
 
 
@@ -1275,6 +2021,7 @@ def _copy_action_from_record(record: Mapping[str, Any], *, index: int) -> Engine
         last_block_index_exclusive=_required_nonnegative_int(record, "last_block_index_exclusive"),
         content_hash=_optional_str(record, "content_hash") or "",
         cache_tier=_cache_tier_from_value(_required_str(record, "cache_tier"), field_name="copy.cache_tier"),
+        token_contract=_optional_token_contract(record, "token_contract"),
     )
 
 
@@ -1318,6 +2065,12 @@ def _handle_to_record(request: EngineReadyRequest) -> dict[str, Any]:
         "cache_method": handle.cache_method,
         "adapter_ids": list(handle.adapter_ids),
         "metadata": dict(handle.metadata),
+        "artifact_identity": (
+            None
+            if handle.artifact_identity is None
+            else handle.artifact_identity.to_record()
+        ),
+        "payload_checksum": handle.payload_checksum,
         "layout": _layout_to_record(handle.layout),
         "segments": [
             _segment_to_record(segment, cache_tier)
@@ -1335,6 +2088,7 @@ def _payload_source_to_record(request: EngineAdapterRequest, payload_uri: str | 
         "payload_mode": request.payload_mode.value,
         "total_bytes": request.ready_request.handle.total_bytes,
         "segment_count": len(request.ready_request.handle.segments),
+        "checksum": request.ready_request.handle.payload_checksum,
     }
 
 
@@ -1375,9 +2129,17 @@ def _validate_payload_source_record(
         raise ValueError("payload_source.payload_mode does not match record payload_mode")
     _required_nonnegative_int(payload_source, "total_bytes")
     _required_nonnegative_int(payload_source, "segment_count")
+    _validate_optional_sha256(
+        _optional_str(payload_source, "checksum") or "",
+        field_name="payload_source.checksum",
+    )
 
 
-def _validate_handle_record(handle: Mapping[str, Any]) -> None:
+def _validate_handle_record(
+    handle: Mapping[str, Any],
+    *,
+    reuse_plan: ReusePlan,
+) -> None:
     layout = _required_mapping(handle, "layout")
     kv_layout = _layout_from_record(layout)
     kv_layout.validate()
@@ -1390,6 +2152,34 @@ def _validate_handle_record(handle: Mapping[str, Any]) -> None:
         raise ValueError("handle.handle_uri must be non-empty")
     if not _required_str(handle, "cache_method"):
         raise ValueError("handle.cache_method must be non-empty")
+    artifact_identity = _optional_artifact_identity(handle, "artifact_identity")
+    payload_checksum = _optional_str(handle, "payload_checksum") or ""
+    _validate_optional_sha256(payload_checksum, field_name="handle.payload_checksum")
+    if artifact_identity is not None:
+        if artifact_identity.method_id != _required_str(handle, "cache_method"):
+            raise ValueError("handle.artifact_identity.method_id must match cache_method")
+        identity_layout = {
+            "model_id": kv_layout.model_id,
+            "lora_id": kv_layout.lora_id,
+            "layout_version": kv_layout.layout_version,
+            "runtime_kv_dtype": kv_layout.dtype,
+            "block_size": kv_layout.block_size,
+            "payload_axis_order": kv_layout.payload_axis_order.value,
+            "key_position_encoding": (
+                kv_layout.key_position_encoding.value
+            ),
+            "rope_theta": kv_layout.rope_theta,
+            "rope_rotary_dim": kv_layout.rope_rotary_dim,
+        }
+        mismatches = [
+            name
+            for name, value in identity_layout.items()
+            if getattr(artifact_identity, name) != value
+        ]
+        if mismatches:
+            raise ValueError(
+                "handle.artifact_identity does not match layout: " + ", ".join(mismatches)
+            )
     _required_adapter_ids(handle, "adapter_ids", field_name="handle.adapter_ids")
     _reject_reserved_metadata(_required_mapping(handle, "metadata"))
 
@@ -1414,7 +2204,10 @@ def _validate_handle_record(handle: Mapping[str, Any]) -> None:
         if byte_length == 0:
             raise ValueError(f"Segment {segment.get('chunk_id')!r} byte_length must be positive")
         expected_byte_length = token_count * kv_layout.bytes_per_token
-        if byte_length != expected_byte_length:
+        if (
+            reuse_plan.artifact_format.encoding == ArtifactEncoding.RAW_KV
+            and byte_length != expected_byte_length
+        ):
             raise ValueError(
                 f"Segment {segment.get('chunk_id')!r} byte_length {byte_length} "
                 f"!= token_count * bytes_per_token {expected_byte_length}"
@@ -1430,6 +2223,17 @@ def _validate_handle_record(handle: Mapping[str, Any]) -> None:
         content_hash = segment.get("content_hash", "")
         if not isinstance(content_hash, str):
             raise TypeError("segment.content_hash must be a string")
+        token_contract = _optional_token_contract(segment, "token_contract")
+        if token_contract is not None:
+            if token_contract.token_count != token_count:
+                raise ValueError("segment.token_contract token_count does not match segment")
+            if artifact_identity is not None:
+                if token_contract.tokenizer_id != artifact_identity.tokenizer_id:
+                    raise ValueError("segment.token_contract tokenizer_id does not match artifact")
+                if token_contract.tokenizer_revision != artifact_identity.tokenizer_revision:
+                    raise ValueError(
+                        "segment.token_contract tokenizer_revision does not match artifact"
+                    )
         token_cursor = token_end
         byte_cursor = byte_end
     if token_cursor != total_tokens:
@@ -1442,16 +2246,43 @@ def _validate_reserved_record_metadata(
     record: Mapping[str, Any],
     handle: Mapping[str, Any],
     metadata: Mapping[str, str],
+    *,
+    method_registry: MethodRegistry | None,
 ) -> None:
     backend = _backend_from_value(_required_str(record, "backend"), field_name="backend")
+    reuse_plan = _reuse_plan_from_handoff_record(
+        record,
+        handle=handle,
+        allow_legacy=(
+            record.get("schema_version")
+            == _ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION
+        ),
+        method_registry=method_registry,
+    )
     payload_mode = _payload_mode_from_value(_required_str(record, "payload_mode"), field_name="payload_mode")
+    artifact_identity = _optional_artifact_identity(handle, "artifact_identity")
     expected_values = {
         "document_kv.request_id": _required_str(record, "request_id"),
         "document_kv.handle_uri": _required_str(record, "handle_uri"),
         "document_kv.total_tokens": str(_required_nonnegative_int(handle, "total_tokens")),
         "document_kv.total_bytes": str(_required_nonnegative_int(handle, "total_bytes")),
         "document_kv.cache_method": _required_str(handle, "cache_method"),
+        "document_kv.artifact_id": (
+            ""
+            if artifact_identity is None
+            else artifact_identity.artifact_id
+        ),
+        "document_kv.method_version": (
+            "" if artifact_identity is None else artifact_identity.method_version
+        ),
+        "document_kv.method_config_digest": (
+            ""
+            if artifact_identity is None
+            else artifact_identity.method_config_digest
+        ),
+        "document_kv.payload_checksum": _optional_str(handle, "payload_checksum") or "",
         "document_kv.payload_mode": payload_mode.value,
+        "document_kv.reuse_capability_id": reuse_plan.capability_id,
         "engine.backend": backend.value,
         "engine.connector_package": _required_str(record, "connector_package"),
         "engine.kv_injection_method": _required_str(record, "kv_injection_method"),
@@ -1463,6 +2294,24 @@ def _validate_reserved_record_metadata(
     )
     if mismatches:
         raise ValueError(f"Reserved metadata does not match handoff fields: {', '.join(mismatches)}")
+    if record.get("schema_version") == ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION:
+        required_identity_keys = (
+            "document_kv.artifact_id",
+            "document_kv.method_version",
+            "document_kv.method_config_digest",
+            "document_kv.reuse_capability_id",
+        )
+        missing_or_mismatched = tuple(
+            key
+            for key in required_identity_keys
+            if metadata.get(key) != expected_values[key]
+        )
+        if missing_or_mismatched:
+            raise ValueError(
+                "schema_version 4 metadata must bind the handle artifact and "
+                "reuse capability: "
+                + ", ".join(missing_or_mismatched)
+            )
 
 
 def _layout_from_record(layout: Mapping[str, Any]) -> KVLayout:
@@ -1482,6 +2331,20 @@ def _layout_from_record(layout: Mapping[str, Any]) -> KVLayout:
         storage_layout=kv_storage_layout_from_value(
             _required_str(layout, "storage_layout"),
             field_name="layout.storage_layout",
+        ),
+        payload_axis_order=kv_payload_axis_order_from_value(
+            layout.get("payload_axis_order", "token_major"),
+            field_name="layout.payload_axis_order",
+        ),
+        pre_rope=bool(layout.get("pre_rope", False)),
+        rope_theta=layout.get("rope_theta"),
+        rope_rotary_dim=_optional_positive_int(layout, "rope_rotary_dim"),
+        key_position_encoding=kv_key_position_encoding_from_value(
+            layout.get(
+                "key_position_encoding",
+                "pre_rope" if layout.get("pre_rope", False) else "stored_post_rope",
+            ),
+            field_name="layout.key_position_encoding",
         ),
     )
     attention_mechanism = layout.get("attention_mechanism")
@@ -1528,6 +2391,7 @@ def _segment_binding_from_record(segment: Mapping[str, Any], *, block_size: int)
         last_block_index_exclusive=_block_count(token_end, block_size),
         content_hash=_optional_str(segment, "content_hash") or "",
         cache_tier=_cache_tier_from_value(_required_str(segment, "cache_tier"), field_name="segment.cache_tier"),
+        token_contract=_optional_token_contract(segment, "token_contract"),
     )
 
 
@@ -1535,6 +2399,173 @@ def _block_count(token_count: int, block_size: int) -> int:
     if token_count == 0:
         return 0
     return math.ceil(token_count / block_size)
+
+
+def _reuse_plan_for_ready_request(
+    request: EngineReadyRequest,
+    *,
+    method_registry: MethodRegistry | None,
+) -> ReusePlan:
+    registry = _method_registry(method_registry)
+    plan = request.reuse_plan
+    if plan is None:
+        try:
+            plan = registry.get(
+                request.handle.cache_method,
+                require_implemented=True,
+            ).reuse_plan()
+        except (KeyError, NotImplementedError) as exc:
+            raise ValueError(
+                f"cache method {request.handle.cache_method!r} requires an explicit "
+                "registered reuse plan"
+            ) from exc
+    if plan.method_id != request.handle.cache_method:
+        raise ValueError("reuse_plan.method_id must match handle.cache_method")
+    if not plan.requires_artifact:
+        raise ValueError("engine-native reuse plans cannot carry a Cachet artifact payload")
+    identity = request.handle.artifact_identity
+    if identity is not None and (
+        identity.artifact_format_id != plan.artifact_format.format_id
+        or identity.artifact_format_version != plan.artifact_format.version
+    ):
+        raise ValueError("reuse_plan artifact format does not match artifact identity")
+    if not isinstance(plan, ReusePlan):
+        raise TypeError("registered method reuse_plan() must return a ReusePlan")
+    return plan
+
+
+def _reuse_plan_from_handoff_record(
+    record: Mapping[str, Any],
+    *,
+    handle: Mapping[str, Any],
+    allow_legacy: bool,
+    method_registry: MethodRegistry | None,
+) -> ReusePlan:
+    registry = _method_registry(method_registry)
+    schema_version = record.get("schema_version")
+    if schema_version == ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION:
+        reuse_plan_record = record.get("reuse_plan")
+        if not isinstance(reuse_plan_record, Mapping):
+            raise TypeError("reuse_plan must be a mapping")
+        plan = ReusePlan.from_record(reuse_plan_record)
+        return plan
+    if (
+        schema_version != _ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION
+        or not allow_legacy
+    ):
+        raise ValueError("engine handoff does not contain a supported reuse plan")
+    method_id = _required_str(handle, "cache_method")
+    try:
+        plan = registry.get(
+            method_id,
+            require_implemented=True,
+        ).reuse_plan()
+    except (KeyError, NotImplementedError) as exc:
+        raise ValueError(
+            f"legacy handoff method {method_id!r} has no registered default reuse plan"
+        ) from exc
+    if (
+        plan.artifact_format.encoding != ArtifactEncoding.RAW_KV
+        or plan.payload_decode_stage != PayloadDecodeStage.NONE
+        or plan.token_recompute_policy != TokenRecomputePolicy.NONE
+    ):
+        raise ValueError(
+            "legacy handoffs are supported only for registered raw-KV methods "
+            "without decode or recomputation operations"
+        )
+    validate_registered_reuse_plan(
+        plan,
+        artifact_identity=_optional_artifact_identity(
+            handle,
+            "artifact_identity",
+        ),
+        registry=registry,
+    )
+    return plan
+
+
+def _adapter_spec_for_backend(backend: ServingBackend) -> EngineAdapterSpec:
+    if backend == ServingBackend.VLLM:
+        return vllm_adapter_spec()
+    return sglang_adapter_spec()
+
+
+def _operation_handler_registry(
+    registry: RuntimeOperationHandlerRegistry | None,
+) -> RuntimeOperationHandlerRegistry:
+    if registry is None:
+        return RuntimeOperationHandlerRegistry()
+    if not isinstance(registry, RuntimeOperationHandlerRegistry):
+        raise TypeError(
+            "operation_handlers must be a RuntimeOperationHandlerRegistry or None"
+        )
+    return registry
+
+
+def _method_registry(registry: MethodRegistry | None) -> MethodRegistry:
+    if registry is None:
+        return default_method_registry()
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("method_registry must be a MethodRegistry or None")
+    return registry
+
+
+def _validate_reuse_plan_artifact_identity(
+    reuse_plan: ReusePlan,
+    artifact_identity: ArtifactIdentity | None,
+) -> None:
+    if artifact_identity is None:
+        return
+    if reuse_plan.method_id != artifact_identity.method_id:
+        raise ValueError("reuse_plan.method_id does not match artifact identity")
+    artifact_format = reuse_plan.artifact_format
+    if (
+        artifact_identity.artifact_format_id != artifact_format.format_id
+        or artifact_identity.artifact_format_version != artifact_format.version
+    ):
+        raise ValueError(
+            "reuse_plan artifact format/version does not match artifact identity"
+        )
+    if (
+        artifact_format.encoding == ArtifactEncoding.RAW_KV
+        and artifact_identity.kv_dtype != artifact_identity.runtime_kv_dtype
+    ):
+        raise ValueError(
+            "raw-KV artifact dtype must match runtime_kv_dtype"
+        )
+
+
+def _nonempty_unique_string_tuple(
+    values: Iterable[str],
+    *,
+    field_name: str,
+) -> tuple[str, ...]:
+    if isinstance(values, str | bytes | bytearray):
+        raise TypeError(f"{field_name} must be an iterable of strings")
+    normalized = tuple(values)
+    if not normalized:
+        raise ValueError(f"{field_name} must contain at least one value")
+    for value in normalized:
+        _validate_nonempty_str_value(value, field_name=field_name)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{field_name} must not contain duplicates")
+    return normalized
+
+
+def _nonempty_unique_enum_tuple(
+    values: Iterable[_EnumT | str],
+    enum_type: type[_EnumT],
+    *,
+    field_name: str,
+) -> tuple[_EnumT, ...]:
+    if isinstance(values, str | bytes | bytearray):
+        raise TypeError(f"{field_name} must be an iterable of enum values")
+    normalized = tuple(enum_type(value) for value in values)
+    if not normalized:
+        raise ValueError(f"{field_name} must contain at least one value")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{field_name} must not contain duplicates")
+    return normalized
 
 
 def _backend_from_value(value: ServingBackend | str, *, field_name: str) -> ServingBackend:
@@ -1595,6 +2626,30 @@ def _required_mapping(record: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value
 
 
+def _optional_artifact_identity(
+    record: Mapping[str, Any],
+    key: str,
+) -> ArtifactIdentity | None:
+    value = record.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{key} must be null or a mapping")
+    return ArtifactIdentity.from_record(value)
+
+
+def _optional_token_contract(
+    record: Mapping[str, Any],
+    key: str,
+) -> TokenContract | None:
+    value = record.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{key} must be null or a mapping")
+    return TokenContract.from_record(value)
+
+
 def _reject_unsupported_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], *, label: str) -> None:
     unsupported = sorted(str(key) for key in record if key not in allowed_keys)
     if unsupported:
@@ -1647,6 +2702,13 @@ def _optional_str(record: Mapping[str, Any], key: str) -> str | None:
     return value
 
 
+def _validate_optional_sha256(value: str, *, field_name: str) -> None:
+    if not value:
+        return
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 hex digest")
+
+
 def _required_nonnegative_int(record: Mapping[str, Any], key: str) -> int:
     value = record.get(key)
     return _validate_nonnegative_int_value(value, field_name=key)
@@ -1683,10 +2745,19 @@ def _validate_plan_totals(
     total_bytes: int,
     total_blocks: int,
     layout: KVLayout,
+    reuse_plan: ReusePlan,
 ) -> None:
     expected_total_bytes = total_tokens * layout.bytes_per_token
-    if total_bytes != expected_total_bytes:
+    if (
+        reuse_plan.artifact_format.encoding == ArtifactEncoding.RAW_KV
+        and total_bytes != expected_total_bytes
+    ):
         raise ValueError("total_bytes does not match total_tokens * layout.bytes_per_token")
+    if (
+        reuse_plan.artifact_format.encoding != ArtifactEncoding.RAW_KV
+        and total_bytes <= 0
+    ):
+        raise ValueError("encoded artifact total_bytes must be positive")
     if total_blocks != _block_count(total_tokens, layout.block_size):
         raise ValueError("total_blocks does not match total_tokens and layout.block_size")
 
@@ -1697,6 +2768,7 @@ def _validate_injection_plan_segments(
     total_tokens: int,
     total_bytes: int,
     layout: KVLayout,
+    reuse_plan: ReusePlan,
 ) -> None:
     token_cursor = 0
     byte_cursor = 0
@@ -1728,7 +2800,10 @@ def _validate_injection_plan_segments(
         if segment.byte_start + segment.byte_length != segment.byte_end:
             raise ValueError(f"Segment binding {segment.chunk_id!r} byte_end does not match byte range")
         expected_byte_length = segment.token_count * layout.bytes_per_token
-        if segment.byte_length != expected_byte_length:
+        if (
+            reuse_plan.artifact_format.encoding == ArtifactEncoding.RAW_KV
+            and segment.byte_length != expected_byte_length
+        ):
             raise ValueError(
                 f"Segment binding {segment.chunk_id!r} byte_length {segment.byte_length} "
                 f"!= token_count * bytes_per_token {expected_byte_length}"
@@ -1792,6 +2867,11 @@ def _layout_to_record(layout: KVLayout) -> dict[str, Any]:
         "kv_stride_bytes": layout.kv_stride_bytes,
         "shares_kv_storage": layout.shares_kv_storage,
         "storage_layout": layout.storage_layout.value,
+        "payload_axis_order": layout.payload_axis_order.value,
+        "pre_rope": layout.pre_rope,
+        "rope_theta": layout.rope_theta,
+        "rope_rotary_dim": layout.rope_rotary_dim,
+        "key_position_encoding": layout.key_position_encoding.value,
         "attention_mechanism": attention_mechanism.value if attention_mechanism is not None else None,
         "query_heads_per_kv_head": layout.query_heads_per_kv_head,
     }
@@ -1810,6 +2890,9 @@ def _segment_to_record(segment: KVSegment, cache_tier: CacheTier | str) -> dict[
         "byte_length": segment.byte_length,
         "byte_end": segment.byte_end,
         "content_hash": segment.content_hash,
+        "token_contract": (
+            None if segment.token_contract is None else segment.token_contract.to_record()
+        ),
     }
 
 

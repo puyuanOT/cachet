@@ -55,7 +55,7 @@ class DocumentKVService:
         layout: KVLayout,
         handle_uri: str | None = None,
         metadata: Mapping[str, str] | None = None,
-        cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+        cache_method: CacheGenerationMethod | str | None = None,
         adapter_ids: Iterable[str] = (),
         segmented: bool = False,
     ) -> EngineReadyRequest:
@@ -79,7 +79,7 @@ class DocumentKVService:
         layout: KVLayout,
         handle_uri: str | None = None,
         metadata: Mapping[str, str] | None = None,
-        cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+        cache_method: CacheGenerationMethod | str | None = None,
         adapter_ids: Iterable[str] = (),
         segmented: bool = False,
     ) -> EngineReadyRequest:

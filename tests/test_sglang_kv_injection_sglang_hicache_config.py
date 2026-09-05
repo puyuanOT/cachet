@@ -1,8 +1,5 @@
 import json
 import math
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -66,7 +63,7 @@ def test_sglang_hicache_launch_config_builds_dynamic_backend_payload():
     assert extra["document_kv.backend"] == "sglang"
     assert extra["document_kv.kv_injection_method"] == "runtime-prefix-cache-bind"
     assert extra["document_kv.engine_handoff_record_type"] == "document_kv.engine_adapter_request.v1"
-    assert extra["document_kv.engine_handoff_schema_version"] == 2
+    assert extra["document_kv.engine_handoff_schema_version"] == 4
     assert extra["document_kv.requires_native_runtime"] is True
 
 

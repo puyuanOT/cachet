@@ -1,21 +1,12 @@
-# Databricks Benchmark Mirrors
+# Databricks Benchmark Provenance
 
-This folder is for audits, not first-time benchmark reading. Start with
-[`../current/`](../current/) for the user-facing performance summary.
+No Databricks benchmark result is currently published in this directory.
 
-The folders here mirror sanitized QA Databricks records for the public
-benchmark reports:
+The vLLM 0.27.1 campaign must reserve each workload before submission and bind
+the exact payload digest, returned run identities, terminal control-plane
+status, timestamps, duration, hardware, and result closure. Only sanitized
+records that pass the campaign publication gate may be added to
+[`../appendix/`](../appendix/).
 
-| Mirror | Public Report | Purpose |
-| --- | --- | --- |
-| [`vllm-qwen3-4b-g6-l4-vanilla-kv/`](vllm-qwen3-4b-g6-l4-vanilla-kv/) | [`../vllm/qwen3-4b-g6-l4-vanilla-kv/`](../vllm/qwen3-4b-g6-l4-vanilla-kv/) | Primary vLLM g6/L4 benchmark |
-| [`vllm-qwen3-4b-g5-a10g-vanilla-kv/`](vllm-qwen3-4b-g5-a10g-vanilla-kv/) | [`../vllm/qwen3-4b-g5-a10g-vanilla-kv/`](../vllm/qwen3-4b-g5-a10g-vanilla-kv/) | vLLM g5/A10G compatibility benchmark |
-| [`storage-g6-l4-reader-throughput/`](storage-g6-l4-reader-throughput/) | [`../storage/g6-l4-reader-throughput/`](../storage/g6-l4-reader-throughput/) | Storage-reader benchmark |
-| [`native-engine-g6-l4-vllm-sglang-vanilla-kv/`](native-engine-g6-l4-vllm-sglang-vanilla-kv/) | [`../native-engine/g6-l4-vllm-sglang-vanilla-kv/`](../native-engine/g6-l4-vllm-sglang-vanilla-kv/) | vLLM/SGLang native connector evidence |
-
-These mirrors contain compact schema-validated JSON such as
-`document_kv.benchmark_run.v1`, `document_kv.databricks_run_status.v1`,
-`document_kv.storage_benchmark.v1`, and engine connector probe/action records.
-
-Do not put raw Jobs API responses, credentials, wheels, logs, generated
-datasets, or local `databricks-runs/` output here.
+Never commit credentials, raw Jobs API responses, wheels, driver logs,
+generated datasets, prompt payloads, or local `databricks-runs/` output.

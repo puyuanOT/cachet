@@ -91,7 +91,7 @@ def test_write_native_probe_delegate_module_can_be_imported_and_rejects_wrong_ba
         "vllm"
     )
 
-    module._detect_engine_version = lambda: "0.23.0"
+    module._detect_engine_version = lambda: "0.27.1"
     result = module.build_probe(_context("vllm"))
     assert result.native_probe is True
     assert result.metadata["document_kv.adapter_scaffold"] == "vllm"

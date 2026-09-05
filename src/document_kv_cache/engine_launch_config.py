@@ -44,9 +44,15 @@ _SGLANG_LAUNCH_CONFIG_KEYS = frozenset(
 )
 _SGLANG_DYNAMIC_HICACHE_BACKEND = "dynamic"
 _VLLM_DOCUMENT_KV_CONNECTOR = "DocumentKVConnector"
+_VLLM_OFFLOADING_CONNECTOR = "OffloadingConnector"
 _VLLM_ALLOWED_KV_ROLES = frozenset({"kv_both", "kv_producer", "kv_consumer"})
+_VLLM_OFFLOADING_EVICTION_POLICIES = frozenset({"lru", "arc"})
 _SGLANG_DOCUMENT_KV_BACKEND_NAME = "document_kv"
 _SGLANG_DOCUMENT_KV_CLASS_NAME = "DocumentKVHiCacheBackend"
+_SGLANG_HICACHE_PREFETCH_POLICIES = frozenset({"best_effort", "wait_complete", "timeout"})
+_SGLANG_HICACHE_WRITE_POLICIES = frozenset({"write_back", "write_through", "write_through_selective"})
+_SGLANG_HICACHE_IO_BACKENDS = frozenset({"direct", "kernel"})
+_SGLANG_HICACHE_MEM_LAYOUTS = frozenset({"layer_first", "page_first", "page_first_direct"})
 _VLLM_DOCUMENT_KV_MODULE_LEAVES = (
     "vllm_dynamic_connector",
     "document_kv_connector",
@@ -79,7 +85,9 @@ __all__ = [
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION",
     "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS",
     "EngineLaunchConfigEvidence",
+    "build_sglang_hicache_server_args",
     "build_sglang_launch_config",
+    "build_vllm_kv_offloading_config",
     "build_vllm_launch_config",
     "engine_launch_config_evidence_to_record",
     "engine_launch_config_record_issues",
@@ -173,6 +181,13 @@ def build_sglang_launch_config(
     extra_config: Mapping[str, Any] | None = None,
     provider_factory: str | None = DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY,
     encode_extra_config_as_json: bool = True,
+    hicache_ratio: float | None = None,
+    hicache_size_gb: int | None = None,
+    page_size: int | None = None,
+    hicache_storage_prefetch_policy: str | None = None,
+    hicache_write_policy: str | None = None,
+    hicache_io_backend: str | None = None,
+    hicache_mem_layout: str | None = None,
 ) -> dict[str, Any]:
     """Build a validated SGLang HiCache config for the document KV backend."""
 
@@ -201,8 +216,120 @@ def build_sglang_launch_config(
             else hicache_extra_config
         ),
     }
+    record.update(
+        _sglang_hicache_runtime_options(
+            hicache_ratio=hicache_ratio,
+            hicache_size_gb=hicache_size_gb,
+            page_size=page_size,
+            hicache_storage_prefetch_policy=hicache_storage_prefetch_policy,
+            hicache_write_policy=hicache_write_policy,
+            hicache_io_backend=hicache_io_backend,
+            hicache_mem_layout=hicache_mem_layout,
+        )
+    )
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
     return record
+
+
+def build_vllm_kv_offloading_config(
+    *,
+    cpu_bytes_to_use: int,
+    kv_role: str = "kv_both",
+    block_size: int | None = None,
+    eviction_policy: str = "lru",
+    store_threshold: int | None = None,
+    offload_prompt_only: bool = True,
+    secondary_fs_root: str | None = None,
+    secondary_fs_read_threads: int | None = None,
+    secondary_fs_write_threads: int | None = None,
+) -> dict[str, Any]:
+    """Build a vLLM native ``OffloadingConnector`` config.
+
+    The offloading connector is platform-managed runtime KV offload. It is
+    intentionally separate from :func:`build_vllm_launch_config`, which builds
+    Cachet's document-KV import connector config.
+    """
+
+    if kv_role not in _VLLM_ALLOWED_KV_ROLES:
+        raise ValueError("kv_role must be one of " + repr(sorted(_VLLM_ALLOWED_KV_ROLES)))
+    extra_config: dict[str, Any] = {
+        "cpu_bytes_to_use": _positive_int(cpu_bytes_to_use, field_name="cpu_bytes_to_use"),
+        "eviction_policy": _choice(
+            eviction_policy,
+            field_name="eviction_policy",
+            choices=_VLLM_OFFLOADING_EVICTION_POLICIES,
+        ),
+        "offload_prompt_only": _bool_value(offload_prompt_only, field_name="offload_prompt_only"),
+    }
+    if block_size is not None:
+        extra_config["block_size"] = _positive_int(block_size, field_name="block_size")
+    if store_threshold is not None:
+        extra_config["store_threshold"] = _non_negative_int(store_threshold, field_name="store_threshold")
+    if secondary_fs_root is not None:
+        if not isinstance(secondary_fs_root, str) or not secondary_fs_root.strip():
+            raise ValueError("secondary_fs_root must be a non-empty string when provided")
+        if store_threshold is not None and store_threshold >= 2:
+            raise ValueError("store_threshold >= 2 is not supported with vLLM TieringOffloadingSpec")
+        secondary_tier: dict[str, Any] = {
+            "type": "fs",
+            "root_dir": secondary_fs_root,
+        }
+        if secondary_fs_read_threads is not None:
+            secondary_tier["n_read_threads"] = _positive_int(
+                secondary_fs_read_threads,
+                field_name="secondary_fs_read_threads",
+            )
+        if secondary_fs_write_threads is not None:
+            secondary_tier["n_write_threads"] = _positive_int(
+                secondary_fs_write_threads,
+                field_name="secondary_fs_write_threads",
+            )
+        extra_config["spec_name"] = "TieringOffloadingSpec"
+        extra_config["secondary_tiers"] = [secondary_tier]
+    return {
+        "kv_connector": _VLLM_OFFLOADING_CONNECTOR,
+        "kv_role": kv_role,
+        "kv_connector_extra_config": extra_config,
+    }
+
+
+def build_sglang_hicache_server_args(
+    *,
+    hicache_ratio: float | None = None,
+    hicache_size_gb: int | None = None,
+    page_size: int | None = None,
+    hicache_storage_backend: str | None = None,
+    hicache_storage_backend_extra_config: str | None = None,
+    hicache_storage_prefetch_policy: str | None = None,
+    hicache_write_policy: str | None = None,
+    hicache_io_backend: str | None = None,
+    hicache_mem_layout: str | None = None,
+) -> tuple[str, ...]:
+    """Return SGLang CLI flags for platform-managed HiCache offload."""
+
+    args = ["--enable-hierarchical-cache"]
+    options = _sglang_hicache_runtime_options(
+        hicache_ratio=hicache_ratio,
+        hicache_size_gb=hicache_size_gb,
+        page_size=page_size,
+        hicache_storage_prefetch_policy=hicache_storage_prefetch_policy,
+        hicache_write_policy=hicache_write_policy,
+        hicache_io_backend=hicache_io_backend,
+        hicache_mem_layout=hicache_mem_layout,
+    )
+    if hicache_storage_backend is not None:
+        options["hicache_storage_backend"] = _non_empty_string(
+            hicache_storage_backend,
+            field_name="hicache_storage_backend",
+        )
+    if hicache_storage_backend_extra_config is not None:
+        options["hicache_storage_backend_extra_config"] = _non_empty_string(
+            hicache_storage_backend_extra_config,
+            field_name="hicache_storage_backend_extra_config",
+        )
+    for key, value in options.items():
+        args.extend(["--" + key.replace("_", "-"), str(value)])
+    return tuple(args)
 
 
 def validate_engine_launch_config_record(
@@ -326,13 +453,20 @@ def write_engine_launch_config_evidence_json(
     return target_path
 
 
+def _write_json(record: Mapping[str, Any], path: str | Path) -> Path:
+    target_path = local_path(str(path))
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return target_path
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Build a validated vLLM or SGLang document KV launch-config sidecar."""
 
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
-        extra_config = _extra_config_from_items(args.extra_config)
+        extra_config = _extra_config_from_items(getattr(args, "extra_config", ()))
         if args.command == "build-vllm":
             record = build_vllm_launch_config(
                 module_path=args.module_path,
@@ -345,6 +479,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload_cache_max_bytes=args.payload_cache_max_bytes,
             )
             expected_backend = ServingBackend.VLLM
+        elif args.command == "build-vllm-offload":
+            record = build_vllm_kv_offloading_config(
+                cpu_bytes_to_use=args.cpu_bytes_to_use,
+                kv_role=args.kv_role,
+                block_size=args.block_size,
+                eviction_policy=args.eviction_policy,
+                store_threshold=args.store_threshold,
+                offload_prompt_only=not args.offload_all_tokens,
+                secondary_fs_root=args.secondary_fs_root,
+                secondary_fs_read_threads=args.secondary_fs_read_threads,
+                secondary_fs_write_threads=args.secondary_fs_write_threads,
+            )
+            expected_backend = None
         elif args.command == "build-sglang":
             record = build_sglang_launch_config(
                 module_path=args.module_path,
@@ -353,12 +500,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 kv_injection_method=args.kv_injection_method,
                 extra_config=extra_config,
                 provider_factory=args.provider_factory,
+                hicache_ratio=args.hicache_ratio,
+                hicache_size_gb=args.hicache_size_gb,
+                page_size=args.page_size,
+                hicache_storage_prefetch_policy=args.hicache_storage_prefetch_policy,
+                hicache_write_policy=args.hicache_write_policy,
+                hicache_io_backend=args.hicache_io_backend,
+                hicache_mem_layout=args.hicache_mem_layout,
             )
             expected_backend = ServingBackend.SGLANG
         else:  # pragma: no cover - argparse restricts this.
             raise ValueError(f"unsupported command {args.command!r}")
 
-        if args.output_json:
+        if args.output_json and expected_backend is None:
+            _write_json(record, args.output_json)
+        elif args.output_json:
             write_engine_launch_config_json(record, args.output_json, expected_backend=expected_backend)
         else:
             print(json.dumps(record, indent=2, sort_keys=True))
@@ -625,6 +781,83 @@ def _non_negative_int(value: Any, *, field_name: str) -> int:
     return value
 
 
+def _positive_int(value: Any, *, field_name: str) -> int:
+    if not _is_positive_int(value):
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _positive_number(value: Any, *, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive number")
+    return float(value)
+
+
+def _bool_value(value: Any, *, field_name: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{field_name} must be a boolean")
+    return value
+
+
+def _choice(value: Any, *, field_name: str, choices: frozenset[str]) -> str:
+    if not isinstance(value, str) or value not in choices:
+        raise ValueError(f"{field_name} must be one of {sorted(choices)!r}")
+    return value
+
+
+def _non_empty_string(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def _sglang_hicache_runtime_options(
+    *,
+    hicache_ratio: float | None,
+    hicache_size_gb: int | None,
+    page_size: int | None,
+    hicache_storage_prefetch_policy: str | None,
+    hicache_write_policy: str | None,
+    hicache_io_backend: str | None,
+    hicache_mem_layout: str | None,
+) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if hicache_ratio is not None:
+        ratio = _positive_number(hicache_ratio, field_name="hicache_ratio")
+        if ratio <= 1:
+            raise ValueError("hicache_ratio must be greater than 1")
+        options["hicache_ratio"] = ratio
+    if hicache_size_gb is not None:
+        options["hicache_size"] = _positive_int(hicache_size_gb, field_name="hicache_size_gb")
+    if page_size is not None:
+        options["page_size"] = _positive_int(page_size, field_name="page_size")
+    if hicache_storage_prefetch_policy is not None:
+        options["hicache_storage_prefetch_policy"] = _choice(
+            hicache_storage_prefetch_policy,
+            field_name="hicache_storage_prefetch_policy",
+            choices=_SGLANG_HICACHE_PREFETCH_POLICIES,
+        )
+    if hicache_write_policy is not None:
+        options["hicache_write_policy"] = _choice(
+            hicache_write_policy,
+            field_name="hicache_write_policy",
+            choices=_SGLANG_HICACHE_WRITE_POLICIES,
+        )
+    if hicache_io_backend is not None:
+        options["hicache_io_backend"] = _choice(
+            hicache_io_backend,
+            field_name="hicache_io_backend",
+            choices=_SGLANG_HICACHE_IO_BACKENDS,
+        )
+    if hicache_mem_layout is not None:
+        options["hicache_mem_layout"] = _choice(
+            hicache_mem_layout,
+            field_name="hicache_mem_layout",
+            choices=_SGLANG_HICACHE_MEM_LAYOUTS,
+        )
+    return options
+
+
 def _validate_module_attribute(value: Any, *, field_name: str) -> None:
     issues = _module_attribute_issues(value, field_name=field_name)
     if issues:
@@ -662,6 +895,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build validated document KV engine launch configs.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_vllm_parser(subparsers)
+    _add_vllm_offload_parser(subparsers)
     _add_sglang_parser(subparsers)
     return parser
 
@@ -686,6 +920,27 @@ def _add_vllm_parser(subparsers: Any) -> None:
     _add_common_build_args(parser, default_record_type=DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
 
 
+def _add_vllm_offload_parser(subparsers: Any) -> None:
+    parser = subparsers.add_parser(
+        "build-vllm-offload",
+        help="Build a vLLM native OffloadingConnector config.",
+    )
+    parser.add_argument("--output-json", help="Optional output JSON path. Defaults to stdout.")
+    parser.add_argument("--cpu-bytes-to-use", type=int, required=True)
+    parser.add_argument("--kv-role", default="kv_both", choices=sorted(_VLLM_ALLOWED_KV_ROLES))
+    parser.add_argument("--block-size", type=int)
+    parser.add_argument("--eviction-policy", default="lru", choices=sorted(_VLLM_OFFLOADING_EVICTION_POLICIES))
+    parser.add_argument("--store-threshold", type=int)
+    parser.add_argument(
+        "--offload-all-tokens",
+        action="store_true",
+        help="Offload decode blocks as well as prompt blocks. By default vLLM offloads prompt blocks only.",
+    )
+    parser.add_argument("--secondary-fs-root", help="Optional filesystem secondary tier root.")
+    parser.add_argument("--secondary-fs-read-threads", type=int)
+    parser.add_argument("--secondary-fs-write-threads", type=int)
+
+
 def _add_sglang_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("build-sglang", help="Build an SGLang HiCache config sidecar.")
     parser.add_argument("--module-path", default=DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH)
@@ -697,6 +952,13 @@ def _add_sglang_parser(subparsers: Any) -> None:
             "built-in HiCache page provider."
         ),
     )
+    parser.add_argument("--hicache-ratio", type=float)
+    parser.add_argument("--hicache-size-gb", type=int)
+    parser.add_argument("--page-size", type=int)
+    parser.add_argument("--hicache-storage-prefetch-policy", choices=sorted(_SGLANG_HICACHE_PREFETCH_POLICIES))
+    parser.add_argument("--hicache-write-policy", choices=sorted(_SGLANG_HICACHE_WRITE_POLICIES))
+    parser.add_argument("--hicache-io-backend", choices=sorted(_SGLANG_HICACHE_IO_BACKENDS))
+    parser.add_argument("--hicache-mem-layout", choices=sorted(_SGLANG_HICACHE_MEM_LAYOUTS))
     _add_common_build_args(parser, default_record_type=DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
 
 

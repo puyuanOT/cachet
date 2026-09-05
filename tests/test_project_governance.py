@@ -1,9 +1,10 @@
 import ast
-import hashlib
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 from textwrap import dedent
@@ -11,14 +12,12 @@ import tomllib
 
 import pytest
 
-from document_kv_cache.databricks_runs import databricks_run_status_sidecar_issues
 from document_kv_cache.legacy_compatibility import (
     LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES,
     build_legacy_compatibility_migration_evidence_from_scan_config,
     evaluate_legacy_compatibility_migration_record,
     legacy_compatibility_migration_to_record,
 )
-from document_kv_cache.release_bundle import STRICT_V1_RELEASE_REQUIRED_ARTIFACTS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -96,11 +95,13 @@ SECRET_PATTERNS = {
     "databricks_pat": re.compile(r"dapi[A-Za-z0-9]{32,}"),
     "github_pat": re.compile(r"gh[pousr]_[A-Za-z0-9_]{30,}"),
     "langsmith_token": re.compile(r"lsv2_pt_[A-Za-z0-9_]{20,}"),
-    "openai_api_key": re.compile(r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}"),
+    "openai_api_key": re.compile(r"(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{20,}"),
     "pem_private_key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 }
 STABLE_EXACT_VERSION_RE = re.compile(r"^(?:==)?(?:\d+!)?\d+(?:\.\d+)*(?:\.post\d+)?$")
-EXACT_REQUIREMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+])?==(.*?)(?:;.*)?$")
+EXACT_REQUIREMENT_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+])?==(.*?)(?:;.*)?$"
+)
 DEPRECATED_TOOL_POETRY_METADATA_KEYS = {
     "authors",
     "classifiers",
@@ -118,7 +119,10 @@ ALLOWED_LEGACY_SOURCE_REFERENCES = {}
 
 
 def _is_ignored(path: Path) -> bool:
-    return any(part in GENERATED_OR_TOOLING_DIRS or part.endswith(".egg-info") for part in path.parts)
+    return any(
+        part in GENERATED_OR_TOOLING_DIRS or part.endswith(".egg-info")
+        for part in path.parts
+    )
 
 
 def _package_docstring(path: Path) -> str | None:
@@ -141,6 +145,8 @@ def _git_known_directories() -> set[Path]:
     directories = {REPO_ROOT}
     for line in result.stdout.splitlines():
         relative_file = Path(line)
+        if not (REPO_ROOT / relative_file).exists():
+            continue
         if _is_ignored(relative_file):
             continue
         for relative_parent in relative_file.parents:
@@ -199,7 +205,9 @@ def _legacy_import_from_references(node: ast.ImportFrom) -> set[str]:
         return set()
     if node.module == LEGACY_PACKAGE_NAME:
         return {
-            f"{LEGACY_PACKAGE_NAME}.{alias.name}" if alias.name != "*" else f"{LEGACY_PACKAGE_NAME}.*"
+            f"{LEGACY_PACKAGE_NAME}.{alias.name}"
+            if alias.name != "*"
+            else f"{LEGACY_PACKAGE_NAME}.*"
             for alias in node.names
         }
     if node.module.startswith(LEGACY_PACKAGE_PREFIX):
@@ -213,13 +221,17 @@ def _legacy_string_reference(value: object) -> str | None:
     return None
 
 
-def _legacy_string_references_in_call(node: ast.Call, aliases: dict[str, str]) -> set[str]:
+def _legacy_string_references_in_call(
+    node: ast.Call, aliases: dict[str, str]
+) -> set[str]:
     call_name = _dotted_name(node.func)
     if call_name is None:
         return set()
     call_name = _resolve_import_alias(call_name, aliases)
     is_dynamic_import = call_name in DYNAMIC_LEGACY_IMPORT_CALLS
-    is_string_target = call_name in STRING_RESOLVED_TARGET_CALLS or call_name.endswith(STRING_RESOLVED_TARGET_SUFFIXES)
+    is_string_target = call_name in STRING_RESOLVED_TARGET_CALLS or call_name.endswith(
+        STRING_RESOLVED_TARGET_SUFFIXES
+    )
     if not is_dynamic_import and not is_string_target:
         return set()
 
@@ -273,7 +285,9 @@ def _literal_dict_key(value: ast.AST | None) -> object:
     return literal_key
 
 
-def _literal_dict_key_entries(node: ast.Dict, flattened_dicts: set[int] | None = None) -> list[tuple[object, int]]:
+def _literal_dict_key_entries(
+    node: ast.Dict, flattened_dicts: set[int] | None = None
+) -> list[tuple[object, int]]:
     entries = []
     for key, value in zip(node.keys, node.values, strict=True):
         if key is None:
@@ -299,9 +313,13 @@ def _duplicate_literal_dict_keys(path: Path) -> list[str]:
         if id(node) in flattened_dicts:
             continue
         seen = set()
-        for literal_key, line_number in _literal_dict_key_entries(node, flattened_dicts):
+        for literal_key, line_number in _literal_dict_key_entries(
+            node, flattened_dicts
+        ):
             if literal_key in seen:
-                duplicates.append(f"{_display_path(path)}:{line_number}:{literal_key!r}")
+                duplicates.append(
+                    f"{_display_path(path)}:{line_number}:{literal_key!r}"
+                )
             else:
                 seen.add(literal_key)
     return duplicates
@@ -323,7 +341,9 @@ def test_repository_directories_have_readme_or_package_docstring():
 
 
 def test_governance_directory_scan_skips_notebook_checkpoints():
-    assert _is_ignored(Path("notebooks/.ipynb_checkpoints/exploration-checkpoint.ipynb"))
+    assert _is_ignored(
+        Path("notebooks/.ipynb_checkpoints/exploration-checkpoint.ipynb")
+    )
 
 
 def test_source_layout_readme_reflects_document_owned_implementation():
@@ -332,11 +352,18 @@ def test_source_layout_readme_reflects_document_owned_implementation():
 
     assert "Cachet, the document KV-cache library" in compact_text
     assert "distribution package is `cachet-kv`" in text
-    assert "public product import namespace is the branded `cachet` facade" in compact_text
+    assert (
+        "public product import namespace is the branded `cachet` facade" in compact_text
+    )
     assert "`cachet/` is the branded import facade" in text
-    assert "`document_kv_cache/` is the canonical implementation and compatibility" in text
+    assert (
+        "`document_kv_cache/` is the canonical implementation and compatibility" in text
+    )
     assert "`restaurant_kv_serving/`" not in text
-    assert "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter" in compact_text
+    assert (
+        "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter"
+        in compact_text
+    )
     assert "contains the current implementation" not in text
 
 
@@ -363,7 +390,10 @@ def test_packaged_template_root_readmes_explain_subfolders():
 def test_document_package_readme_lists_public_modules_and_console_scripts():
     import document_kv_cache
 
-    text = (REPO_ROOT / "src" / "document_kv_cache" / "README.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "src" / "document_kv_cache" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    compact_text = " ".join(text.split())
     package_dir = REPO_ROOT / "src" / "document_kv_cache"
     package_modules = {
         path.stem
@@ -371,10 +401,17 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
         if path.stem != "__init__" and not path.stem.startswith("_")
     }
     public_modules = sorted(document_kv_cache._PUBLIC_SUBMODULES)
-    compatibility_only_modules = sorted(package_modules - set(public_modules))
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    internal_modules = sorted(document_kv_cache._INTERNAL_SUBMODULES)
+    compatibility_only_modules = sorted(
+        package_modules - set(public_modules) - set(internal_modules)
+    )
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     document_scripts = sorted(
-        name for name in pyproject["project"]["scripts"] if name.startswith("document-kv-")
+        name
+        for name in pyproject["project"]["scripts"]
+        if name.startswith("document-kv-")
     )
     cachet_scripts = sorted(
         name for name in pyproject["project"]["scripts"] if name.startswith("cachet-")
@@ -382,13 +419,19 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
 
     assert public_modules
     assert set(public_modules) <= package_modules
+    assert internal_modules == ["gpu_qualification_sentinels"]
+    assert set(internal_modules) <= package_modules
+    assert set(public_modules).isdisjoint(internal_modules)
     assert compatibility_only_modules == ["scheduler"]
     assert document_scripts
     assert cachet_scripts
     for module_name in public_modules:
         assert f"`{module_name}.py`" in text
+    for module_name in internal_modules:
+        assert f"`{module_name}.py`" in text
     for module_name in compatibility_only_modules:
         assert f"`{module_name}.py`" in text
+    assert "Internal Modules" in text
     assert "Compatibility-Only Modules" in text
     for script_name in document_scripts:
         assert f"`{script_name}`" in text
@@ -406,10 +449,39 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "merged-branch cleanup" in text
     assert "wrappers over implementation modules in `restaurant_kv_serving`" not in text
     assert "real wrapper modules" not in text
+    assert (
+        "`generation_throughput_with_writes` sentinel and v1 evidence validator "
+        "remain unchanged so historical records cannot be reinterpreted"
+        in compact_text
+    )
+    assert "same-hardware fresh-load byte reproducibility" in compact_text
+    assert "logical/token/layout/size equivalence" in compact_text
+    assert "73,728 raw bytes per cache-prefix token" in compact_text
+    assert "L40S is the sole publication handoff generator" in compact_text
+    assert "byte-identical segmented generation artifacts across SM89 GPUs" not in (
+        compact_text
+    )
+
+
+def test_method_docs_keep_custom_scorers_programmatic_and_remote_plans_v1_closed():
+    text = (REPO_ROOT / "docs" / "adding-a-kv-method.md").read_text(encoding="utf-8")
+    compact_text = " ".join(text.split())
+
+    for required in (
+        "versioned `DatasetScorer`",
+        "metric function and `prompt_function`",
+        "same immutable `DatasetScorerRegistry`",
+        "`run_openai_compatible_benchmark`",
+        "`generate_benchmark_handoff_bundles`",
+        "must share a prompt-template version",
+        "remote benchmark-plan CLI remains deliberately V1-closed",
+        "explicit programmatic integration rather than a dynamically imported command-line plugin",
+    ):
+        assert required in compact_text
 
 
 def test_legacy_source_package_directory_is_removed():
-    legacy_source_dir = REPO_ROOT / "src" / ("restaurant" "_kv_serving")
+    legacy_source_dir = REPO_ROOT / "src" / ("restaurant_kv_serving")
 
     assert not legacy_source_dir.exists()
 
@@ -419,8 +491,12 @@ def test_legacy_compatibility_removal_gate_is_documented():
     maintainer_reference = (
         REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
     ).read_text(encoding="utf-8")
-    matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
-    gate = (REPO_ROOT / "docs" / "legacy-compatibility-removal.md").read_text(encoding="utf-8")
+    matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(
+        encoding="utf-8"
+    )
+    gate = (REPO_ROOT / "docs" / "legacy-compatibility-removal.md").read_text(
+        encoding="utf-8"
+    )
     compact_gate = " ".join(gate.split())
 
     assert "`docs/legacy-compatibility-removal.md`" in maintainer_reference
@@ -430,37 +506,68 @@ def test_legacy_compatibility_removal_gate_is_documented():
     assert "`puyuanOT/cachet`" in gate
     assert "`cachet-kv`" in gate
     assert "primary import surface is the branded `cachet` facade" in compact_gate
-    assert "`document_kv_cache` remains the canonical implementation namespace" in compact_gate
-    assert "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts" in compact_gate
-    assert "New code must not add production dependencies on the legacy package" in compact_gate
+    assert (
+        "`document_kv_cache` remains the canonical implementation namespace"
+        in compact_gate
+    )
+    assert (
+        "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts"
+        in compact_gate
+    )
+    assert (
+        "New code must not add production dependencies on the legacy package"
+        in compact_gate
+    )
     assert "from `src/`" in compact_gate
     assert "Completed Compatibility Contract" in gate
     assert "`pyproject.toml` no longer packages `restaurant_kv_serving`" in compact_gate
     assert "`src/document_kv_cache/release_bundle.py` rejects" in compact_gate
     assert "`restaurant_kv_serving/__init__.py`" in gate
     assert "`restaurant_kv_serving/py.typed`" in gate
-    assert "`tests/test_public_package.py` proves the public package surface" in compact_gate
+    assert (
+        "`tests/test_public_package.py` proves the public package surface"
+        in compact_gate
+    )
     assert "`tests/test_project_governance.py` prevents new accidental" in compact_gate
     assert "PR evidence sidecars with Refactor-skill evidence" in compact_gate
     assert "completed GPT-5.5 review" in compact_gate
-    assert "Downstream Databricks benchmark runners and QA jobs have migrated" in compact_gate
+    assert (
+        "Downstream Databricks benchmark runners and QA jobs have migrated"
+        in compact_gate
+    )
     assert "record type `document_kv.legacy_compatibility_migration.v1`" in compact_gate
-    assert "python -m document_kv_cache.legacy_compatibility --validate-json" in compact_gate
-    assert "`release`, `benchmark`, `storage`, `native_probe`, and `smoke`" in compact_gate
+    assert (
+        "python -m document_kv_cache.legacy_compatibility --validate-json"
+        in compact_gate
+    )
+    assert (
+        "`release`, `benchmark`, `storage`, `native_probe`, and `smoke`" in compact_gate
+    )
     assert "no checked runner uses `restaurant_kv_serving` imports" in compact_gate
     assert "`restaurant-kv-*` commands" in compact_gate
     assert "`legacy_migration_evidence` artifact role" in compact_gate
     assert "Current AWS g6/L4 release evidence" in compact_gate
     assert "optional AWS g5/A10G compatibility evidence" in compact_gate
     assert "strict release-bundle package-wheel gates are updated" in compact_gate
-    assert "Keep `restaurant_kv_serving` absent from `pyproject.toml` package metadata" in compact_gate
+    assert (
+        "Keep `restaurant_kv_serving` absent from `pyproject.toml` package metadata"
+        in compact_gate
+    )
     assert "Keep `src/restaurant_kv_serving` absent" in compact_gate
-    assert "Run the focused governance, public-package, and release-bundle tests" in compact_gate
-    assert "Refresh the tested wheel and strict release bundle before publication" in compact_gate
+    assert (
+        "Run the focused governance, public-package, and release-bundle tests"
+        in compact_gate
+    )
+    assert (
+        "Refresh the tested wheel and strict release bundle before publication"
+        in compact_gate
+    )
 
 
 def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
-    evidence_dir = REPO_ROOT / "docs" / "release-ops" / "evidence" / "legacy-migration" / "current"
+    evidence_dir = (
+        REPO_ROOT / "docs" / "release-ops" / "evidence" / "legacy-migration" / "current"
+    )
     scan_config_path = evidence_dir / "legacy-migration-scan-config.json"
     evidence_path = evidence_dir / "legacy-migration-evidence.json"
     validation_path = evidence_dir / "legacy-migration-validation.json"
@@ -481,16 +588,24 @@ def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
     assert evidence.issues == ()
     assert validation_record["ok"] is True
     assert validation_record == committed_record
-    assert {job["category"] for job in committed_record["checked_downstream_jobs"]} == set(
-        LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES
+    assert {
+        job["category"] for job in committed_record["checked_downstream_jobs"]
+    } == set(LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES)
+    assert all(
+        job["legacy_imports_present"] is False
+        for job in committed_record["checked_downstream_jobs"]
     )
-    assert all(job["legacy_imports_present"] is False for job in committed_record["checked_downstream_jobs"])
     assert all(
         job["legacy_console_scripts_present"] is False
         for job in committed_record["checked_downstream_jobs"]
     )
-    assert all(job["legacy_reference_hits"] == [] for job in committed_record["checked_downstream_jobs"])
-    assert {evidence["hardware_target"] for evidence in committed_record["release_evidence"]} == {
+    assert all(
+        job["legacy_reference_hits"] == []
+        for job in committed_record["checked_downstream_jobs"]
+    )
+    assert {
+        evidence["hardware_target"] for evidence in committed_record["release_evidence"]
+    } == {
         "aws-g6-l4",
         "aws-g5-a10g",
     }
@@ -502,8 +617,8 @@ def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
         assert release_evidence["runner_uses_legacy_facade"] is False
         assert (REPO_ROOT / release_evidence["evidence_uri"]).is_file()
     assert "This is not the benchmark report directory" in readme
-    assert "`benchmarks/databricks/CURRENT.md`" in readme
-    assert "durable standalone benchmark artifacts" in readme
+    assert "`benchmarks/README.md`" in readme
+    assert "appendix is intentionally empty" in " ".join(readme.split())
     assert "document_kv.legacy_compatibility_migration.v1" in readme
     assert "generated from `legacy-migration-scan-config.json`" in readme
 
@@ -640,7 +755,9 @@ def test_duplicate_literal_dict_key_scanner_reports_silent_overwrites(tmp_path):
 
 def test_python_source_files_do_not_repeat_literal_dict_keys():
     duplicates = []
-    for path in sorted((REPO_ROOT / "src").rglob("*.py")) + sorted((REPO_ROOT / "tests").rglob("*.py")):
+    for path in sorted((REPO_ROOT / "src").rglob("*.py")) + sorted(
+        (REPO_ROOT / "tests").rglob("*.py")
+    ):
         relative = path.relative_to(REPO_ROOT)
         if _is_ignored(relative):
             continue
@@ -669,11 +786,16 @@ def test_contributing_doc_is_friendly_to_external_contributors():
     assert "custom serving engine" in text
     assert "handoff boundary" in text
     assert "Maintainer-Only Release Gates" in text
-    assert "External contributors do not need to produce those artifacts" in compact_text
+    assert (
+        "External contributors do not need to produce those artifacts" in compact_text
+    )
     assert "Refactor skill" not in text
     assert "GPT-5.5 review" not in text
     assert "Direct pushes to `main`" not in compact_text
-    assert "Internal PR workflow gates such as Refactor-skill evidence" in compact_maintainer_checklist
+    assert (
+        "Internal PR workflow gates such as Refactor-skill evidence"
+        in compact_maintainer_checklist
+    )
     assert "GPT-5.5 review" in maintainer_checklist
 
 
@@ -802,9 +924,9 @@ def test_readme_minimal_api_uses_cachet_public_imports():
 def test_maintainer_reference_engine_adapter_handoff_example_uses_public_payload_reader():
     import document_kv_cache
 
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     example = _first_python_fence_after(text, "For engine-specific integration code")
     tree = ast.parse(example)
     document_imports = {
@@ -816,11 +938,13 @@ def test_maintainer_reference_engine_adapter_handoff_example_uses_public_payload
 
     assert "adapter_storage" not in example
     assert "write_engine_adapter_handoff_bundle(" in example
-    assert ".open(\"wb\")" not in example
+    assert '.open("wb")' not in example
     assert "payload = read_engine_adapter_payload(" in example
-    assert "expected_bytes=record[\"payload_source\"][\"total_bytes\"]" in example
+    assert 'expected_bytes=record["payload_source"]["total_bytes"]' in example
     assert document_imports
-    missing_exports = sorted(name for name in document_imports if not hasattr(document_kv_cache, name))
+    missing_exports = sorted(
+        name for name in document_imports if not hasattr(document_kv_cache, name)
+    )
     assert missing_exports == []
 
 
@@ -829,26 +953,44 @@ def test_maintainer_reference_benchmark_plan_examples_include_release_actions_si
         REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
     ).read_text(encoding="utf-8")
     compact_root_text = " ".join(root_text.split())
-    root_example = _first_bash_fence_after(root_text, "To run the V1 benchmark contract")
+    root_example = _first_bash_fence_after(
+        root_text, "To run the V1 benchmark contract"
+    )
 
-    assert "--engine-probe-output-json vllm=/data/vllm-engine-probe.json" in root_example
-    assert "--engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json" in root_example
-    assert "--engine-probe-output-json sglang=/data/sglang-engine-probe.json" in root_example
-    assert "--engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json" in root_example
+    assert (
+        "--engine-probe-output-json vllm=/data/vllm-engine-probe.json" in root_example
+    )
+    assert (
+        "--engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json"
+        in root_example
+    )
+    assert (
+        "--engine-probe-output-json sglang=/data/sglang-engine-probe.json"
+        in root_example
+    )
+    assert (
+        "--engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json"
+        in root_example
+    )
     assert "--release-evidence-output-json /data/release-evidence.json" in root_example
 
-    assert "release evidence must include `--engine-probe-actions-output-json`" in compact_root_text
+    assert (
+        "release evidence must include `--engine-probe-actions-output-json`"
+        in compact_root_text
+    )
     assert "actions_output_json" in root_text
-    assert "native probe and connector-action records already exist" in compact_root_text
+    assert (
+        "native probe and connector-action records already exist" in compact_root_text
+    )
     assert "--release-engine-actions-json" in compact_root_text
 
 
 def test_maintainer_reference_model_profile_example_uses_portable_definition_artifact():
     import document_kv_cache
 
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     example = _first_python_fence_after(text, "Future Qwen3.5, MiniMax")
     tree = ast.parse(example)
     document_imports = {
@@ -864,12 +1006,16 @@ def test_maintainer_reference_model_profile_example_uses_portable_definition_art
     assert "Provider/Future-MQA-4B" in example
     assert "future-mqa-profile.json" in example
     assert document_imports
-    missing_exports = sorted(name for name in document_imports if not hasattr(document_kv_cache, name))
+    missing_exports = sorted(
+        name for name in document_imports if not hasattr(document_kv_cache, name)
+    )
     assert missing_exports == []
 
 
 def test_project_metadata_uses_cachet_branded_distribution():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     project = pyproject["project"]
 
     assert project["name"] == "cachet-kv"
@@ -877,7 +1023,9 @@ def test_project_metadata_uses_cachet_branded_distribution():
     assert "cachet" in project["keywords"]
     assert project["license"] == "Apache-2.0"
     assert project["license-files"] == ["LICENSE"]
-    assert "License :: OSI Approved :: Apache Software License" in project["classifiers"]
+    assert (
+        "License :: OSI Approved :: Apache Software License" in project["classifiers"]
+    )
 
 
 def test_readme_and_root_license_document_apache_2_license():
@@ -893,7 +1041,9 @@ def test_readme_and_root_license_document_apache_2_license():
 
 
 def test_project_metadata_exposes_repository_and_issue_urls():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
 
     assert pyproject["project"]["urls"] == {
         "Repository": "https://github.com/puyuanOT/cachet",
@@ -920,9 +1070,9 @@ def test_readme_avoids_workspace_local_script_references():
 
 
 def test_maintainer_reference_manifest_schema_mentions_storage_layout():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     logical_model = _markdown_section(text, "Logical Model")
     manifest_start = logical_model.index("Manifest table:")
     fence_start = logical_model.rindex("```text", 0, manifest_start)
@@ -933,13 +1083,13 @@ def test_maintainer_reference_manifest_schema_mentions_storage_layout():
 
 
 def test_maintainer_reference_remaining_work_keeps_serving_boundary_explicit():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     remaining_work = _markdown_section(text, "Remaining V1 Work")
 
     assert "connector action descriptors" in remaining_work
-    assert "native engine block managers" in remaining_work
+    assert "native engine block managers" in " ".join(remaining_work.lower().split())
     assert "do not add a proprietary scheduler or custom solver" in remaining_work
     assert "Add vLLM and SGLang adapters" not in remaining_work
 
@@ -949,105 +1099,63 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
     ).read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
-    compact_matrix = " ".join(matrix_text.split())
-    remaining_release_gates = _markdown_section(matrix_text, "Remaining V1 Release Gates")
-    compact_remaining_release_gates = " ".join(remaining_release_gates.split())
-    stale_release_blockers = (
-        "no-governance",
-        "21 artifacts",
-        "34 artifacts",
-        "allow_auto_merge=false",
-        "repository as private",
-        "repository visibility as private",
-        "still requires the GitHub governance sidecar",
-        "still needs target AWS g6/L4 or Unity Catalog evidence in the release bundle",
-        "previous complete g5-enriched strict bundle",
-        "next complete strict bundle refresh",
-        "PR #427 PR-evidence sidecar",
-        "426398182137665",
-        "315109189523858",
-        "cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main",
-        "cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main",
+    matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(
+        encoding="utf-8"
     )
+    remaining_release_gates = _markdown_section(
+        matrix_text, "Remaining V1 Release Gates"
+    )
+    compact_remaining_release_gates = " ".join(remaining_release_gates.split())
 
     assert "docs/v1-requirements-matrix.md" in maintainer_reference
-    assert "`v1-requirements-matrix.md`" in docs_readme
-    assert "`release-ops/evidence/dependency-freshness/current/README.md`" in docs_readme
-    assert "Status values" in matrix_text
-    assert "**Implemented:**" in matrix_text
-    assert "**Bundle-refresh pending:**" in matrix_text
-    assert "**Release-gated:**" in matrix_text
-    assert "**Remaining:**" in matrix_text
+    assert "v1-requirements-matrix.md" in docs_readme
+    assert "release-ops/evidence/dependency-freshness/current/README.md" in docs_readme
+    for status in (
+        "Implemented",
+        "Bundle-refresh pending",
+        "Release-gated",
+        "Remaining",
+    ):
+        assert f"**{status}:**" in matrix_text
 
     for required in (
         "vLLM/SGLang handoff boundary",
         "Memory, Disk, UC Volume, and routed readers",
         "AWS g6/L4",
-        "g5/A10G compatibility evidence",
-        "g5/A10G compatibility benchmark evidence",
-        "`aws-g5-a10g`",
-        "`g5.8xlarge`",
-        "`qwen3:4b-instruct`",
+        "qwen3:4b-instruct",
         "Biography",
         "HotpotQA",
         "MusiQue",
         "NIAH",
-        "`baseline_prefill` arm",
+        "baseline_prefill",
         "MQA/GQA",
         "KV Packet",
         "Qwen3.5",
         "MiniMax",
-        "Cachet",
         "GPT-5.5 review",
         "Refactor skill",
-        "one PR open",
-        "complete strict release bundle",
-        "strict V1 publication target",
-        "compatibility_benchmark",
-        "compatibility_databricks_run_status",
-        "37 artifacts",
-        "872615985402004",
-        "566743786103032",
-        "cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main",
-        "cachet_vllm_hot_payload_g5_longcmp_388ea0a_20260623_162302_repeat3_cache8g_cachet_kv_current_main",
-        "real vLLM and SGLang native block managers",
-        "docs/native-engine-integration.md",
-        "legacy restaurant facade",
-        "core runtime model layer no longer retains restaurant request",
-        "dependency_freshness.py",
-        "docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json",
-        "resolver-held `protobuf==6.33.6` drift",
-        "Databricks-validation upgrade reasons",
+        "vLLM 0.27.1-campaign-pending skeleton",
+        "five independent deployment blocks",
+        "corrected full-dataset score evaluation",
     ):
         assert required in matrix_text
 
-    assert "Release-gated | `databricks_job.py`" in compact_matrix
-    assert "Run connector action descriptor validation" in matrix_text
-    assert (
-        "release evidence `ok=true` when paired with the current storage and native engine sidecars"
-        in matrix_text
-    )
-    assert "cannot substitute for the strict release target" in matrix_text
-    assert "`compatibility_benchmark` artifact role" in matrix_text
-    assert "latest validated strict-bundle snapshot was built after PR #513 with the current wheel" in compact_matrix
-    assert "validates with 37 artifacts" in compact_matrix
-    assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_matrix
-    assert "`dependency_freshness` evidence" in compact_matrix
-    assert "Traceability-only PR evidence added after that snapshot must be included" in compact_matrix
-    assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_matrix
-    assert "compatibility Databricks run-status sidecar" in compact_matrix
-    assert "GitHub governance is release-ready" in compact_matrix
-    assert "auto-merge is enabled" in compact_matrix
-    assert "Add native engine integration examples after connector probes land" not in matrix_text
-    for stale_blocker in stale_release_blockers:
-        assert stale_blocker not in matrix_text
-    for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
-        assert label in compact_remaining_release_gates
+    for required_gate in (
+        "Freeze the exact vLLM 0.27.1 source",
+        "same-hardware fresh-load byte reproducibility",
+        "L40S as the sole publication handoff generator",
+        "16 independent L40S workers",
+        "concurrency 1, 2, and 4",
+        "Unsupported methods remain explicit",
+        "Publish no numeric result until",
+    ):
+        assert required_gate in compact_remaining_release_gates
 
 
 def test_native_engine_integration_doc_examples_are_validated():
-    text = (REPO_ROOT / "docs" / "native-engine-integration.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "native-engine-integration.md").read_text(
+        encoding="utf-8"
+    )
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -1074,8 +1182,8 @@ def test_native_engine_integration_doc_examples_are_validated():
         "aws-g5-a10g",
         "g5.8xlarge",
         "payload-summary",
-        "benchmarks/native-engine/g6-l4-vllm-sglang-vanilla-kv/",
-        "`benchmarks/databricks/` mirrors the Databricks",
+        "public numeric cells remain empty until the vLLM 0.27.1",
+        "compatibility evidence only",
         "commit tokens",
     ):
         assert required in text
@@ -1089,22 +1197,32 @@ def test_native_engine_integration_doc_examples_are_validated():
     assert isinstance(vllm_launch_config, dict)
     assert isinstance(sglang_launch_config, dict)
     assert vllm_launch_config["kv_connector"] == "DocumentKVConnector"
-    assert vllm_launch_config["kv_connector_extra_config"]["document_kv.backend"] == "vllm"
-    assert json.loads(sglang_launch_config["hicache_storage_backend_extra_config"])[
-        "document_kv.backend"
-    ] == "sglang"
+    assert (
+        vllm_launch_config["kv_connector_extra_config"]["document_kv.backend"] == "vllm"
+    )
+    assert (
+        json.loads(sglang_launch_config["hicache_storage_backend_extra_config"])[
+            "document_kv.backend"
+        ]
+        == "sglang"
+    )
 
 
 def test_repository_map_and_evidence_policy_are_documented():
     root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     repo_map = (REPO_ROOT / "docs" / "repo-map.md").read_text(encoding="utf-8")
-    evidence_policy = (REPO_ROOT / "docs" / "evidence-policy.md").read_text(encoding="utf-8")
+    evidence_policy = (REPO_ROOT / "docs" / "evidence-policy.md").read_text(
+        encoding="utf-8"
+    )
     compact_repo_map = " ".join(repo_map.split())
     compact_evidence_policy = " ".join(evidence_policy.split())
 
     assert "[`docs/repo-map.md`](docs/repo-map.md)" in root_readme
-    assert "`evidence-policy.md` defines which machine-readable records belong" in docs_readme
+    assert (
+        "`evidence-policy.md` defines which machine-readable records belong"
+        in docs_readme
+    )
     assert "`release-ops/` keeps maintainer-only release machinery" in docs_readme
     assert "`repo-map.md` is the human navigation map" in docs_readme
     assert "one project and one distribution package" in compact_repo_map
@@ -1139,16 +1257,28 @@ def test_repository_map_and_evidence_policy_are_documented():
         "repository hygiene",
     ):
         assert required_boundary in compact_evidence_policy
-    assert "Keep exploratory run payloads and task status files under ignored `databricks-runs/`" in (
-        compact_evidence_policy
+    assert (
+        "Keep exploratory run payloads and task status files under ignored `databricks-runs/`"
+        in (compact_evidence_policy)
     )
+    assert (
+        "Clear Databricks single-user principals are private control-plane material"
+        in compact_evidence_policy
+    )
+    assert (
+        "must not be copied into committed benchmark evidence"
+        in compact_evidence_policy
+    )
+    assert "only the SHA-256 principal attestation" in compact_evidence_policy
 
 
 def test_release_ops_doc_classifies_installed_cli_surface():
     release_ops = (REPO_ROOT / "docs" / "release-ops" / "README.md").read_text(
         encoding="utf-8"
     )
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     scripts = pyproject["project"]["scripts"]
     cachet_scripts = sorted(name for name in scripts if name.startswith("cachet-"))
 
@@ -1157,398 +1287,625 @@ def test_release_ops_doc_classifies_installed_cli_surface():
     assert "`cachet-engine-launch-config`" in release_ops
     for script_name in cachet_scripts:
         assert f"`{script_name}`" in release_ops
-    assert "The `document-kv-*` console scripts are compatibility aliases" in release_ops
+    assert (
+        "The `document-kv-*` console scripts are compatibility aliases" in release_ops
+    )
     assert "Prefer `cachet-*` in new documentation" in release_ops
 
 
-def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
+def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
+    from document_kv_cache.publication_campaign_finalizer import (
+        validate_vllm_0271_publication_report_pair,
+    )
+    from document_kv_cache.publication_campaign_tables import (
+        PUBLICATION_TABLE_REGION_MARKERS,
+        PUBLICATION_TABLE_SECTION_ORDER,
+        render_vllm_0271_publication_appendix_readme,
+        validate_vllm_0271_publication_table_regions,
+    )
+
     benchmark_root = REPO_ROOT / "benchmarks"
-    databricks_root = benchmark_root / "databricks"
-    archive_root = REPO_ROOT / "docs" / "release-ops" / "benchmark-archive"
-    sglang_archive_root = archive_root / "sglang-smoke"
 
-    root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
-    current_readme = (benchmark_root / "current" / "README.md").read_text(encoding="utf-8")
-    vllm_readme = (benchmark_root / "vllm" / "README.md").read_text(encoding="utf-8")
-    sglang_readme = (benchmark_root / "sglang" / "README.md").read_text(encoding="utf-8")
-    storage_readme = (benchmark_root / "storage" / "README.md").read_text(encoding="utf-8")
-    native_engine_readme = (benchmark_root / "native-engine" / "README.md").read_text(encoding="utf-8")
-    databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
-    current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
-    benchmark_template_readme = (benchmark_root / "_template" / "README.md").read_text(encoding="utf-8")
-    archive_readme = (archive_root / "README.md").read_text(encoding="utf-8")
-    sglang_archive_readme = (sglang_archive_root / "README.md").read_text(encoding="utf-8")
-    project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    maintainer_reference = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
-    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
+    def benchmark_tree_snapshot() -> tuple[tuple[str, str], ...]:
+        assert stat.S_ISDIR(benchmark_root.lstat().st_mode)
+        entries = list(benchmark_root.rglob("*"))
+        entry_types: list[tuple[str, str]] = []
+        for path in entries:
+            relative_path = str(path.relative_to(benchmark_root))
+            mode = path.lstat().st_mode
+            assert not stat.S_ISLNK(mode), relative_path
+            if stat.S_ISREG(mode):
+                entry_type = "file"
+            elif stat.S_ISDIR(mode):
+                entry_type = "directory"
+            else:
+                raise AssertionError(
+                    f"unexpected benchmark filesystem entry type: {relative_path}"
+                )
+            entry_types.append((relative_path, entry_type))
+        return tuple(sorted(entry_types))
 
+    initial_tree = benchmark_tree_snapshot()
+    initial_entry_types = dict(initial_tree)
+    byte_snapshots: dict[Path, bytes] = {}
+
+    def stable_read_bytes(path: Path) -> bytes:
+        raw = path.read_bytes()
+        previous = byte_snapshots.setdefault(path, raw)
+        assert raw == previous
+        return raw
+
+    def strict_markdown(path: Path) -> str:
+        raw = stable_read_bytes(path)
+        value = raw.decode("utf-8")
+        assert "\r" not in value
+        assert "\x00" not in value
+        assert value.encode("utf-8") == raw
+        return value
+
+    root_readme = strict_markdown(benchmark_root / "README.md")
+    appendix_readme = strict_markdown(benchmark_root / "appendix" / "README.md")
+    campaign_dir = benchmark_root / "appendix" / "vllm-0271-publication-v1"
+    campaign_readme_path = campaign_dir / "README.md"
+    report_path = campaign_dir / "campaign-report.json"
+    gate_path = campaign_dir / "benchmark-publication-gate.json"
+    final_paths = (campaign_readme_path, report_path, gate_path)
+    final_presence = tuple(
+        str(path.relative_to(benchmark_root)) in initial_entry_types
+        for path in final_paths
+    )
+    assert not any(final_presence) or all(final_presence), (
+        "the vLLM 0.27.1 publication folder must be wholly absent or contain "
+        "its complete README/report/gate triplet"
+    )
+    if all(final_presence):
+        assert initial_entry_types.get(
+            str(campaign_dir.relative_to(benchmark_root))
+        ) == "directory"
+        for path in final_paths:
+            assert initial_entry_types.get(
+                str(path.relative_to(benchmark_root))
+            ) == "file"
+
+    pending_region_sha256 = {
+        "status": "ceb545987a0a9a6b14e8617c5af605b265cd55c1c45474e056eaa4793685eb3f",
+        "core_latency": "e4012c18c6aa023d93919610f68c02385cfa76dbcd29ee608a23edbb791a23b8",
+        "latency_estimands": "341201526f4b28bc76ba5d1ddcf66df3240bfe2feedbcae56d081cf33add257d",
+        "dataset_scores": "4a6a9d3b30ef909e83ec9dea540b138f4e78795a98b5ef2e4361a27dee6483d2",
+        "niah_grid": "eb1fa55d0a856564926e9ea8c8254d7c0b931da8cdd28e09dd3d37f550fe60fe",
+        "precision": "d18bc5be5f573458b9800650fda6c721c43ef34c71d186c7b0aa2bf007c2ca2d",
+        "storage": "842216b24e5e49f7367f9df0715cf6f6c3d5b34a8ef64e06ddf4146993abfd8b",
+        "hardware": "eb992ebe448c2d5e3f00b875940173097a24ef79d25bb3522013950f20145190",
+        "platform": "97a00d7d436f66dfb7cb5397198aad028caa4350a32a17f55d3523cad15cdc12",
+        "resource_cache": "2bee80d43cbb3e3da6341a95299291ea976a9d546d4cf27239b134a0863af210",
+    }
+    observed_region_sha256: dict[str, str] = {}
+
+    previous_marker_end = -1
+    for section in PUBLICATION_TABLE_SECTION_ORDER:
+        begin, end = PUBLICATION_TABLE_REGION_MARKERS[section]
+        assert root_readme.count(begin) == 1
+        assert root_readme.count(end) == 1
+        begin_at = root_readme.index(begin)
+        end_at = root_readme.index(end)
+        assert previous_marker_end < begin_at < end_at
+        content_at = begin_at + len(begin)
+        observed_region_sha256[section] = sha256(
+            root_readme[content_at:end_at].encode("utf-8")
+        ).hexdigest()
+        previous_marker_end = end_at + len(end)
+
+    main_table = _markdown_section(root_readme, "Main Latency And Resource Table")
+    estimand_table = _markdown_section(root_readme, "Paired Latency Estimands")
+    score_table = _markdown_section(root_readme, "Benchmark Dataset Score Table")
     compact_root_readme = " ".join(root_readme.split())
-    compact_current_readme = " ".join(current_readme.split())
-    compact_vllm_readme = " ".join(vllm_readme.split())
-    compact_sglang_readme = " ".join(sglang_readme.split())
-    compact_databricks_readme = " ".join(databricks_readme.split())
-    compact_archive_readme = " ".join(archive_readme.split())
-    compact_sglang_archive_readme = " ".join(sglang_archive_readme.split())
-    compact_matrix_text = " ".join(matrix_text.split())
-    compact_maintainer_reference = " ".join(maintainer_reference.split())
-    compact_docs_readme = " ".join(docs_readme.split())
 
-    assert "public benchmark appendix for Cachet" in compact_root_readme
-    assert "speedup, quality, footprint evidence, and coverage gaps" in compact_root_readme
-    assert "Primary speedup result" in root_readme
-    assert "Missing footprint metrics" in root_readme
-    assert "Coverage Matrix" in root_readme
-    assert "KV Packet | not benchmarked yet" in root_readme
-    assert "Folder names should be stable and descriptive" in benchmark_template_readme
-    assert "Do not invent missing numbers" in benchmark_template_readme
-    for heading in (
-        "Experimental Setup",
-        "Main Latency Results",
-        "Quality Results",
-        "Memory / Footprint",
-        "Coverage Matrix",
-        "Limitations",
-        "Provenance",
-    ):
-        assert heading in current_readme
-        assert heading in benchmark_template_readme
-    assert "what was tested, on what hardware, how many times, how fast" in compact_root_readme
-    assert "5.27x-6.97x" in current_readme
-    assert "Serving peak GPU memory, CPU RSS, and cache-resident footprint are not measured" in compact_current_readme
-    assert "Storage throughput is not memory consumption" in current_readme
-    assert "`answer_found_rate` is the current quality gate" in current_readme
-    assert "exact-match rate is also shown" in compact_current_readme
-    assert "268,435,456 total bytes" in current_readme
-    assert "3,538,944 copied bytes" in current_readme
-    assert "not benchmarked yet" in current_readme
-    assert "compare vLLM no-cache prefill with Cachet vanilla external KV" in vllm_readme
-    assert "g5/A10G run is compatibility evidence" in compact_vllm_readme
-    assert "Correctness/cache-hit benchmark; no speedup" in sglang_readme
-    assert "Historical Runs" in sglang_readme
-    assert "not public benchmark results" in compact_sglang_readme
-    assert "not model-serving latency benchmarks" in storage_readme
-    assert "not memory-consumption measurements" in " ".join(storage_readme.split())
-    assert "Copied KV Footprint" in native_engine_readme
-    assert "not latency or quality benchmarks" in native_engine_readme
-    assert "audits, not first-time benchmark reading" in databricks_readme
-    assert "QA run provenance" in current_databricks_snapshot
-    assert "should not dominate the public benchmark experience" in compact_archive_readme
-    assert "not as the current public benchmark result surface" in compact_sglang_archive_readme
+    assert "L40S is the sole publication handoff generator" in compact_root_readme
+    assert "same-hardware fresh-load byte reproducibility" in compact_root_readme
+    assert "cross-hardware logical/token/layout/size equivalence" in compact_root_readme
 
-    assert "[`benchmarks/current/README.md`](benchmarks/current/)" in project_readme
-    assert "[`benchmarks/`](../../benchmarks/README.md)" in maintainer_reference
-    assert "`../benchmarks/README.md`" in docs_readme
-    assert "Standalone human-readable benchmark report folders" in matrix_text
-    assert "`benchmarks/current/` is the concise human-facing benchmark index" in matrix_text
-    assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
-
-    public_result_folders = {
-        "vllm/qwen3-4b-g6-l4-vanilla-kv",
-        "vllm/qwen3-4b-g5-a10g-vanilla-kv",
-        "sglang/qwen3-4b-g6-l4-vanilla-kv-prepared",
-        "sglang/qwen3-4b-g6-l4-vanilla-kv-synthetic-niah",
-        "storage/g6-l4-reader-throughput",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv",
-    }
-    for folder in public_result_folders:
-        assert (benchmark_root / folder / "README.md").is_file()
-        assert not any(part.startswith("2026-") for part in Path(folder).parts)
-        assert folder in root_readme or folder in current_readme
-
-    assert not (benchmark_root / "sglang" / "archive").exists()
-    archived_sglang_folders = {
-        "invalid-served-model-name": "failed_run.json",
-        "runtime-suffix-missing-prefix-binding": "failed_run.json",
-        "zero-cache-hit": "failed_run.json",
-        "partial-page-binding": "failed_run.json",
-        "chained-hash-binding": "failed_run.json",
-        "batch-prior-metadata": "failed_run.json",
-        "attach-hash-tracking": "failed_run.json",
-        "quality-failure-cache-hit": "failed_run.json",
-        "token-stable-cache-hit-quality-failure": "failed_run.json",
-        "qwen-chat-cache-hit-quality-failure": "failed_run.json",
-        "qwen-sampling-cache-hit-quality-failure": "failed_run.json",
-        "chat-completions-cache-hit-quality-failure": "failed_run.json",
-        "no-thinking-cache-hit-quality-failure": "failed_run.json",
-        "deterministic-cache-hit-quality-failure": "failed_run.json",
-        "triton-deterministic-cache-hit-quality-failure": "failed_run.json",
-        "minimal-no-thinking-cache-hit-quality-failure": "failed_run.json",
-        "canary-after-cache-hit-quality-failure": "failed_run.json",
-        "canary-flush-cache-hit-quality-failure": "failed_run.json",
-        "prepared-v1-config-swap-failure": "failed_run.json",
-        "prepared-v1-padded-token-validation-failure": "failed_run.json",
-        "baseline-isolated-success": "success_run.json",
-    }
-    for folder, record_name in archived_sglang_folders.items():
-        assert (sglang_archive_root / folder / "README.md").is_file()
-        assert (sglang_archive_root / folder / record_name).is_file()
-
-    expected_files = {
-        "_template/README.md",
-        "current/README.md",
-        "databricks/CURRENT.md",
-        "databricks/README.md",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/README.md",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
-        "databricks/storage-g6-l4-reader-throughput/README.md",
-        "databricks/storage-g6-l4-reader-throughput/databricks_run_status.json",
-        "databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
-        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/README.md",
-        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
-        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
-        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/README.md",
-        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
-        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
-        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
-        "native-engine/README.md",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/README.md",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
+    base_files = {
         "README.md",
+        "_template/README.md",
+        "appendix/README.md",
+        "databricks/README.md",
+        "native-engine/README.md",
         "sglang/README.md",
-        "sglang/qwen3-4b-g6-l4-vanilla-kv-prepared/README.md",
-        "sglang/qwen3-4b-g6-l4-vanilla-kv-prepared/success_run.json",
-        "sglang/qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/README.md",
-        "sglang/qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/success_run.json",
         "storage/README.md",
-        "storage/g6-l4-reader-throughput/README.md",
-        "storage/g6-l4-reader-throughput/databricks_run_status.json",
-        "storage/g6-l4-reader-throughput/storage_benchmark.json",
         "vllm/README.md",
-        "vllm/qwen3-4b-g5-a10g-vanilla-kv/README.md",
-        "vllm/qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
-        "vllm/qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
-        "vllm/qwen3-4b-g6-l4-vanilla-kv/README.md",
-        "vllm/qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
-        "vllm/qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
-        "vllm/qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
     }
+    base_directories = {
+        "_template",
+        "appendix",
+        "databricks",
+        "native-engine",
+        "sglang",
+        "storage",
+        "vllm",
+    }
+    if not any(final_presence):
+        assert observed_region_sha256 == pending_region_sha256
+        assert "Status: vLLM 0.27.1 campaign pending" in root_readme
+        assert "No latency, resource, ablation, or" in root_readme
+        assert "Deployment blocks | 5 matched fresh-cluster blocks" in root_readme
+        assert "Closed-loop request concurrency | 1, 2, and 4" in root_readme
+        assert main_table.count("| Baseline |") == 9
+        assert main_table.count("| Vanilla&nbsp;KV |") == 9
+        assert main_table.count("N/A (0.27.1 campaign pending)") == 162
+        assert "P50 decode tok/s" in main_table
+        assert "Peak GPU process memory" in main_table
+        assert estimand_table.count("| Vanilla KV vs Baseline |") == 9
+        assert estimand_table.count("N/A (0.27.1 campaign pending)") == 52
+        for auxiliary in (
+            "BF16 payload/runtime KV vs Q8",
+            "RAM vs Disk",
+            "Unity Catalog vs Disk",
+            "A10G vs L4",
+        ):
+            assert auxiliary in estimand_table
+        for context in ("8k", "16k", "32k"):
+            for concurrency in (1, 2, 4):
+                assert f"| Baseline | {context} | {concurrency} |" in main_table
+                assert (
+                    f"| Vanilla&nbsp;KV | {context} | {concurrency} |"
+                    in main_table
+                )
+
+        assert score_table.count("N/A (0.27.1 full evaluation pending)") == 81
+        assert "Baseline parser-status counts" in score_table
+        assert "Vanilla parser-status counts" in score_table
+        for parser_status in (
+            "ok",
+            "missing_block",
+            "multiple_or_malformed_blocks",
+            "extraneous_text",
+            "nested_block",
+            "empty_answer",
+        ):
+            assert f"`{parser_status}`" in score_table
+        assert "including explicit zeros for unobserved" in score_table
+        assert "Vanilla − Baseline" in score_table
+        assert score_table.count("| 8k |") == 3
+        assert score_table.count("| 16k |") == 3
+        assert score_table.count("| 32k |") == 3
+        assert "| Context | Needle position | n |" in score_table
+        assert "N/A (runner not implemented)" in score_table
+        assert "All 23 governed descriptive cells" in root_readme
+        assert "absence means that no campaign result is" in appendix_readme
+        assert "Superseded result folders are not retained" in appendix_readme
+        expected_files = base_files
+    else:
+
+        def canonical_json_record(path: Path) -> dict[str, object]:
+            def reject_duplicate_keys(
+                pairs: list[tuple[str, object]],
+            ) -> dict[str, object]:
+                value: dict[str, object] = {}
+                for key, item in pairs:
+                    assert key not in value
+                    value[key] = item
+                return value
+
+            raw = stable_read_bytes(path)
+            record = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=reject_duplicate_keys,
+            )
+            assert isinstance(record, dict)
+            canonical = (
+                json.dumps(
+                    record,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
+            assert raw == canonical
+            return record
+
+        report = canonical_json_record(report_path)
+        gate = canonical_json_record(gate_path)
+        validate_vllm_0271_publication_report_pair(report, gate)
+        validate_vllm_0271_publication_table_regions(root_readme, report, gate)
+        expected_campaign_readme = render_vllm_0271_publication_appendix_readme(
+            report,
+            gate,
+        )
+        expected_campaign_readme_bytes = expected_campaign_readme.encode("utf-8")
+        assert (
+            stable_read_bytes(campaign_readme_path)
+            == expected_campaign_readme_bytes
+        )
+        assert "Status: vLLM 0.27.1 campaign published" in root_readme
+        benchmark_markdown = "\n".join(
+            strict_markdown(benchmark_root / relative_path)
+            for relative_path, entry_type in initial_tree
+            if entry_type == "file" and relative_path.endswith(".md")
+        )
+        assert "N/A (0.27.1 campaign pending)" not in benchmark_markdown
+        assert "N/A (0.27.1 full evaluation pending)" not in benchmark_markdown
+        assert "| Dataset | Governed metric | n |" in root_readme
+        for unsupported in (
+            "KV&nbsp;Packet",
+            "CacheBlend",
+            "InfoFlow&nbsp;KV",
+            "LongBench v2",
+            "RULER",
+            "Packed Q4",
+            "Hybrid RAM/disk/Unity Catalog",
+            "SGLang",
+        ):
+            assert unsupported in root_readme
+        expected_files = base_files | {
+            "appendix/vllm-0271-publication-v1/README.md",
+            "appendix/vllm-0271-publication-v1/benchmark-publication-gate.json",
+            "appendix/vllm-0271-publication-v1/campaign-report.json",
+        }
+        base_directories = base_directories | {
+            "appendix/vllm-0271-publication-v1"
+        }
+
+    unsupported_method_section = _markdown_section(
+        root_readme,
+        "Unsupported Method Status",
+    )
+    assert sha256(unsupported_method_section.encode("utf-8")).hexdigest() == (
+        "eb927a995873e13379d1c4921c26c8149a5bf417a9f6f2f5c163460c22dded46"
+    )
+    assert "71.390128 reconciled GPU-hours" in root_readme
+    assert "exact 236/98/236 post-migration append-only prefix" in root_readme
+    assert "zero active reservations" in root_readme
     actual_files = {
-        path.relative_to(benchmark_root).as_posix()
-        for path in benchmark_root.rglob("*")
-        if path.is_file()
+        relative_path
+        for relative_path, entry_type in initial_tree
+        if entry_type == "file"
     }
     assert actual_files == expected_files
-
-    standalone_mirrors = {
-        "vllm/qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
-        "vllm/qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
-        "vllm/qwen3-4b-g6-l4-vanilla-kv/release_evidence.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
-        "vllm/qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json": "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
-        "vllm/qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json": "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
-        "storage/g6-l4-reader-throughput/storage_benchmark.json": "databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
-        "storage/g6-l4-reader-throughput/databricks_run_status.json": "databricks/storage-g6-l4-reader-throughput/databricks_run_status.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
-        "native-engine/g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
+    actual_directories = {
+        relative_path
+        for relative_path, entry_type in initial_tree
+        if entry_type == "directory"
     }
-    for standalone_path, mirror_path in standalone_mirrors.items():
-        assert (benchmark_root / standalone_path).read_bytes() == (
-            benchmark_root / mirror_path
-        ).read_bytes()
+    assert actual_directories == base_directories
+    for path, expected_bytes in byte_snapshots.items():
+        assert path.read_bytes() == expected_bytes
+    final_tree = benchmark_tree_snapshot()
+    assert final_tree == initial_tree
 
-    expected_databricks_folders = {
-        "vllm-qwen3-4b-g6-l4-vanilla-kv": {
-            "run_id": 872615985402004,
-            "hardware_target": "aws-g6-l4",
-            "node_type": "g6.8xlarge",
-        },
-        "vllm-qwen3-4b-g5-a10g-vanilla-kv": {
-            "run_id": 566743786103032,
-            "hardware_target": "aws-g5-a10g",
-            "node_type": "g5.8xlarge",
-        },
-        "storage-g6-l4-reader-throughput": {
-            "run_id": 948365719597221,
-            "hardware_target": "aws-g6-l4",
-            "node_type": "g6.8xlarge",
-        },
-        "native-engine-g6-l4-vllm-sglang-vanilla-kv": {
-            "run_id": 934698284395881,
-            "hardware_target": "aws-g6-l4",
-            "node_type": "g6.8xlarge",
-        },
+    ledger_doc = (REPO_ROOT / "docs" / "databricks-cluster-hour-ledger.md").read_text(
+        encoding="utf-8"
+    )
+    compact_ledger_doc = " ".join(ledger_doc.split())
+    assert (
+        "live-P90 projection applies to each producer and consumer phase of "
+        "every nonzero-indexed full-score wave (waves 1–9); both wave-zero "
+        "phases use hard cap/headroom admission"
+    ) in compact_ledger_doc
+    assert (
+        "retained opening is now the exact 236-reservation, 98-receipt, "
+        "236-terminal prefix"
+    ) in compact_ledger_doc
+    assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
+    assert (
+        "intermediate 138/0/138, 152/14/152, 166/28/166, 180/42/180, "
+        "194/56/194, 208/70/208, and 222/84/222 prefixes" in compact_ledger_doc
+    )
+    assert "analysis.opening_ledger_provenance" in compact_ledger_doc
+    assert (
+        "18,292-byte observed parameters JSON versus the 10,000-byte server limit"
+    ) in compact_ledger_doc
+    assert "zero observed active runs" in compact_ledger_doc
+    assert (
+        "Seven runs failed and the other seven were canceled after those failures"
+    ) in compact_ledger_doc
+    assert (
+        "All 14 runs were created and all 14 tasks failed with `INTERNAL_ERROR` "
+        "before package installation"
+    ) in compact_ledger_doc
+    assert (
+        "Its 4,585.718 terminal cluster-seconds add 1.273810555556 GPU-hours"
+    ) in compact_ledger_doc
+    assert (
+        "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
+        in compact_ledger_doc
+    )
+    assert (
+        "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
+        in compact_ledger_doc
+    )
+    assert (
+        "RuntimeError: Databricks cluster identity is unavailable; expected "
+        "DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID"
+    ) in compact_ledger_doc
+    assert (
+        "fbb1fd4250b3fc62b58778047b12fe3775e6cffbc8641b38a00c721a9d4c768d"
+        in compact_ledger_doc
+    )
+    assert (
+        "06c527102283bb379ecb26a345e76467d7e1614771d9a3c8313e9ebe6d941cf9"
+        in compact_ledger_doc
+    )
+    assert (
+        "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
+        in compact_ledger_doc
+    )
+    assert (
+        "f76cce3b68417f8d14a5e030d9eacaef3e61d17f123a2a2b5d38be5428a89b94"
+        in compact_ledger_doc
+    )
+    assert (
+        "Its 4,564.259 terminal cluster-seconds add 1.267849722222 GPU-hours"
+        in compact_ledger_doc
+    )
+    assert (
+        "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
+        in compact_ledger_doc
+    )
+    assert (
+        "pip requirements-file index precedence omitted the PyTorch CU129 "
+        "index and prevented hash-locked torch resolution"
+    ) in compact_ledger_doc
+    assert (
+        "exactly the five logged keys `error`, `error_trace`, `logs`, "
+        "`logs_truncated`, and `metadata`"
+    ) in compact_ledger_doc
+    assert (
+        "7544cab6366fc1813af8d04da00a8a1f76f1098e3b06c738d8ff8ddd392ae235"
+        in compact_ledger_doc
+    )
+    assert (
+        "5016ed50001b77b77f329e858c01b1a65c5e927f1c55eec7fbc01208d8f25886"
+        in compact_ledger_doc
+    )
+    assert "exactly 29 regular files and 1,564,133 bytes" in compact_ledger_doc
+    assert (
+        "2ee650e0e05ea059bd9f552d6975149c05cbda6dc8d3a715a73594913f078b29"
+        in compact_ledger_doc
+    )
+    assert (
+        "e0f56f1250c4ce213d1a8ba0384ccdad1a1b38fb964c1b6bfcf5729006150455"
+        in compact_ledger_doc
+    )
+    assert (
+        "Its 7,754.755 terminal cluster-seconds add 2.154098611111 GPU-hours"
+        in compact_ledger_doc
+    )
+    assert (
+        "predicted terminal prefix and final offline-reconciled prefix are "
+        "both the exact 194/56/194 prefix"
+    ) in compact_ledger_doc
+    assert (
+        "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
+        in compact_ledger_doc
+    )
+    assert (
+        "1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916"
+        in compact_ledger_doc
+    )
+    assert (
+        "be4cb0e80e17c99d9c4bd8abb89b24efb6e1202072fb734c739d322812218c9c"
+        in compact_ledger_doc
+    )
+    assert (
+        "c63521b29233addc1c5ab4435dfa0d639135765bce7a54298c0b0b1200741651"
+        in compact_ledger_doc
+    )
+    assert (
+        "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
+        in compact_ledger_doc
+    )
+    assert (
+        "All fourteen hash-locked qualification runtimes installed and "
+        "verified, then failed before sentinel worker launch because the "
+        "site-packages read-only freezer rejected a nonexistent Debian local "
+        "dist-packages scheme path reported by `site.getsitepackages()`"
+    ) in compact_ledger_doc
+    assert (
+        "8937fb907ae789c647754b2bbe9dbc4d9e167b67b8e437613260373b658c0da3"
+        in compact_ledger_doc
+    )
+    assert (
+        "2c555ea534fc3d41d3bc998fcaff8f07aedf42e1872200e39f9ed46796081607"
+        in compact_ledger_doc
+    )
+    assert "exactly 29 regular files and 1,945,499 bytes" in compact_ledger_doc
+    assert (
+        "a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7"
+        in compact_ledger_doc
+    )
+    assert (
+        "2996e67b6c6305544c11231266500dcb9c53aa2bbc701fa6d6e626299c2ab06e"
+        in compact_ledger_doc
+    )
+    assert (
+        "Its 11,498.35 terminal cluster-seconds add 3.193986111111 GPU-hours"
+        in compact_ledger_doc
+    )
+    assert (
+        "predicted terminal prefix and final offline-reconciled prefix are "
+        "both the exact 208/70/208 prefix"
+    ) in compact_ledger_doc
+    assert (
+        "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
+        in compact_ledger_doc
+    )
+    assert (
+        "fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87"
+        in compact_ledger_doc
+    )
+    assert (
+        "c0bede45ea211798c9a5eb31010a91074ded70e370f8ea4fcbeb59b3b9f95598"
+        in compact_ledger_doc
+    )
+    assert (
+        "fe59e32c44ab50f91bae5114a587268d44ebb9acfba74500aedb66158e2541b7"
+        in compact_ledger_doc
+    )
+    assert (
+        "all fourteen hash-locked qualification runtimes installed and "
+        "verified; the two packed-page-roundtrip workers returned measurements "
+        "before post-success runtime observation rejected the virtualenv-created "
+        "runtime/bin/python symlink, while the other twelve sentinel-worker "
+        "subprocesses exited nonzero and the reviewed launcher did not surface "
+        "their captured child stdout/stderr, so their underlying worker causes "
+        "remain unknown"
+    ) in compact_ledger_doc
+    assert (
+        "3662915979987aef1fe4bcf9e0e62f06c67992ee73da679e44f6b6a261e634f5"
+        in compact_ledger_doc
+    )
+    assert (
+        "3f1ddd73298cd46347cf57b84d6cf22f7d6e98802b50ded9457d7a999563786b"
+        in compact_ledger_doc
+    )
+    assert "exactly 29 regular files and 1,828,218 bytes" in compact_ledger_doc
+    assert (
+        "bb6636f3b9bdf5afae0b7d1beb97f5f3192017ba5b04abb651f2a389889aa57f"
+        in compact_ledger_doc
+    )
+    assert (
+        "6c4cca0ec4fbcf4ccb434573f965eeb8022909ce5bdd6afdf31d61085807fa9b"
+        in compact_ledger_doc
+    )
+    assert (
+        "53fd4b076a642101790d21ebbc03b1eb7e609428c2ccd7eafb8cbad5a9a3a112"
+        in compact_ledger_doc
+    )
+    assert (
+        "Its 12,410.279 terminal cluster-seconds add 3.447299722222222 GPU-hours"
+        in compact_ledger_doc
+    )
+    assert (
+        "predicted terminal prefix and final offline-reconciled prefix are "
+        "both the exact 222/84/222 prefix"
+    ) in compact_ledger_doc
+    assert (
+        "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
+        in compact_ledger_doc
+    )
+    assert (
+        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
+        in compact_ledger_doc
+    )
+    assert (
+        "c805c303a92dba3fdd0390699c757974c1f738ebc4c553bb651618cb27bf8056"
+        in compact_ledger_doc
+    )
+    assert (
+        "1f1682a99e69ad691dfab68a85cc9555eff4daea437d5095d93410af2430c490"
+        in compact_ledger_doc
+    )
+    assert (
+        "reconciled opening balance is therefore 67.930336 GPU-hours"
+    ) in compact_ledger_doc
+    assert (
+        "The immutable campaign-opening snapshot records 71.390128 GPU-hours, "
+        "zero active reservations, and 952.609872 hours remaining"
+    ) in compact_ledger_doc
+    assert (
+        "historical plan authority, not a claim about the live ledger"
+        in compact_ledger_doc
+    )
+    assert "extends that same ordered ledger to 265/127/265" in compact_ledger_doc
+    assert "extends it again to 279/141/279" in compact_ledger_doc
+    assert (
+        "not permission to reuse a stale controller freeze" in compact_ledger_doc
+    )
+    assert (
+        "later native-v2 14-job batch is retained as a cross-hardware raw-byte "
+        "identity gate failure" in compact_ledger_doc
+    )
+    assert (
+        "Terminal job success did not constitute global qualification success"
+        in compact_ledger_doc
+    )
+    assert (
+        "ValueError: L4 and L40S generation artifacts are not byte-identical"
+        in compact_ledger_doc
+    )
+    assert "Zero of twelve corresponding raw artifact SHA-256 values matched" in (
+        compact_ledger_doc
+    )
+    assert "this batch remains `FAILED`" in compact_ledger_doc
+    assert (
+        "diagnostic, non-authorizing evidence; they neither repair that failed "
+        "batch nor grant publication qualification" in compact_ledger_doc
+    )
+    assert "L40S run `506950471100618` reproduced all twelve" in compact_ledger_doc
+    assert "L4 run `71783401971590` likewise reproduced all twelve" in (
+        compact_ledger_doc
+    )
+    assert "exact 430/292/430 prefix" in compact_ledger_doc
+    assert "116.12134277777776 terminal GPU-hours" in compact_ledger_doc
+    assert "5bc44ed1fdde3b6ae13e0e0f4d9429714475dc47fb9d163f70b2236635591822" in (
+        compact_ledger_doc
+    )
+    assert "Thirteen attempt-zero jobs succeeded" in compact_ledger_doc
+    assert "L40S run `965422570602790`" in compact_ledger_doc
+    assert "could not provision `g6e.4xlarge` capacity" in compact_ledger_doc
+    assert "exact 446/308/446 prefix" in compact_ledger_doc
+    assert "120.3651655555555 terminal GPU-hours" in compact_ledger_doc
+    assert "this batch `FAILED`" in compact_ledger_doc
+    assert "uses automatic zone placement for L40S qualification" in (
+        compact_ledger_doc
+    )
+    assert (
+        "L40S is the sole publication handoff generator. Fresh native-v2 "
+        "eligibility requires same-hardware fresh-load byte reproducibility"
+        in compact_ledger_doc
+    )
+    assert "cross-hardware logical/token/layout/size equivalence" in (
+        compact_ledger_doc
+    )
+    assert "73,728 bytes per cache-prefix token" in compact_ledger_doc
+    assert "eligible only after the sealed L4/L40S artifact-equivalence" not in (
+        compact_ledger_doc
+    )
+    for provenance_sha256 in (
+        "694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830",
+        "7455fa1e30356bb79ccb75a8dbe24df32f33a365141505e0270eb13c7f39b71d",
+        "81817e833e6878ff5bfd45fff2a94ffafb341d7acecc6e4f7212d268646f8f72",
+        "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7",
+        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d",
+        "2d35875107c709d71e6f558d2a029afb53ee371d851e83a18fe0d194f6fc0e0c",
+        "353b8b3e77eca5347901232709a40c45a0f996be4fc6f25ed55511d38457dc85",
+        "7f8b82e271794501a86f61134f73c47519d9fa2d7f1d3d1202ee5b10e0d3653a",
+        "7e0d3fedba07a6ed0f7dd4ef23d4f0c82912626043586e54547a59016a195222",
+        "e103ca7dc7bbb630404013873a0c9a7909d6ac8f052ed5acf42050dd106930da",
+        "81d597ef57c85d109cad7f19c23da849566a39e581dd48d3113a49622dc1926b",
+        "26616b95cfe5efab2527e28eade5fad9dedb48f12e76c7eb41e5bd7f4ab081ca",
+        "51c72161bb2dff2d359ce03419a47f7415a7d1bd1659a2d6444450eba717bcdd",
+        "2ef0f0d30b40b164fd157627ed55ae881b15e28fdb9143ea35a3b599b334feb4",
+        "e78d2e5bc7b6cdc9e217f7d6cb821bbd763e8b7e290d1037d4a95b4308bbd2cf",
+        "19e8a6a6c5bbfeb8736d8fe61204262a6a367bf37a30cae0e6d7b15e5c26a9ab",
+        "116251d3ca5fce37ce5749565e1059fdf65b30ce17fd12ebc50b877835f9772b",
+    ):
+        assert provenance_sha256 in compact_ledger_doc
+
+    subindex_expectations = {
+        "databricks": "No Databricks benchmark result is currently published",
+        "sglang": "not implemented",
+        "storage": "vLLM 0.27.1 campaign defines",
+        "vllm": "vLLM 0.27.1",
     }
-    for folder_name, expected in expected_databricks_folders.items():
-        folder = databricks_root / folder_name
-        status = json.loads((folder / "databricks_run_status.json").read_text(encoding="utf-8"))
-        summary = status["summary"]
+    for folder, expected in subindex_expectations.items():
+        text = (benchmark_root / folder / "README.md").read_text(encoding="utf-8")
+        assert expected in text
 
-        assert folder_name in databricks_readme
-        assert str(expected["run_id"]) in current_databricks_snapshot
-        assert status["ok"] is True
-        assert status["action"] == "get"
-        assert summary["record_type"] == "document_kv.databricks_run_status.v1"
-        assert summary["run_id"] == expected["run_id"]
-        assert summary["terminal"] is True
-        assert summary["succeeded"] is True
-        assert summary["life_cycle_state"] == "TERMINATED"
-        assert summary["result_state"] == "SUCCESS"
-        assert summary["active_task_key"] is None
-        assert summary["submit_payload"]["hardware_targets"] == [expected["hardware_target"]]
-        assert summary["submit_payload"]["node_type_ids"] == [expected["node_type"]]
-        assert databricks_run_status_sidecar_issues(
-            status,
-            expected_hardware_target=expected["hardware_target"],
-            expected_node_type_id=expected["node_type"],
-        ) == ()
-
-    g6_benchmark = json.loads(
-        (databricks_root / "vllm-qwen3-4b-g6-l4-vanilla-kv" / "v1_benchmark.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert g6_benchmark["record_type"] == "document_kv.benchmark_run.v1"
-    assert g6_benchmark["suite"]["hardware_target"] == "aws-g6-l4"
-    assert g6_benchmark["suite"]["model_id"] == "qwen3:4b-instruct"
-    assert g6_benchmark["suite"]["datasets"] == ["biography", "hotpotqa", "musique", "niah"]
-    assert len(g6_benchmark["measurements"]) == 24
-    assert g6_benchmark["v1_evidence"]["ok"] is True
-    assert min(row["ttft_speedup"] for row in g6_benchmark["comparisons"]) == pytest.approx(5.2668743391)
-    assert max(row["ttft_speedup"] for row in g6_benchmark["comparisons"]) == pytest.approx(6.9722325045)
-
-    g5_benchmark = json.loads(
-        (databricks_root / "vllm-qwen3-4b-g5-a10g-vanilla-kv" / "v1_benchmark.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert g5_benchmark["suite"]["hardware_target"] == "aws-g5-a10g"
-    assert len(g5_benchmark["measurements"]) == 24
-    assert g5_benchmark["v1_evidence"]["ok"] is True
-    assert min(row["ttft_speedup"] for row in g5_benchmark["comparisons"]) == pytest.approx(4.6620010419)
-    assert max(row["ttft_speedup"] for row in g5_benchmark["comparisons"]) == pytest.approx(6.0430383626)
-
-    sglang_prepared = json.loads(
-        (benchmark_root / "sglang" / "qwen3-4b-g6-l4-vanilla-kv-prepared" / "success_run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert sglang_prepared["record_type"] == "cachet.benchmark_successful_sglang_live_v1_release.v1"
-    assert sglang_prepared["benchmark_result"] == "prepared_live_v1_release_pass_no_speedup"
-    assert sglang_prepared["live_benchmark"]["ok"] is True
-    assert sglang_prepared["live_benchmark"]["suite"]["scope"] == "live_v1_release"
-    assert sglang_prepared["live_benchmark"]["suite"]["release_v1_suite"] is True
-    assert sglang_prepared["live_benchmark"]["measurement_count"] == 16
-    assert len(sglang_prepared["live_benchmark"]["cache_hit_validations"]) == 8
-    assert all(
-        validation["ok"] is True
-        for validation in sglang_prepared["live_benchmark"]["cache_hit_validations"]
-    )
-    assert max(
-        row["ttft_speedup"]
-        for row in sglang_prepared["live_benchmark"]["comparisons"]
-    ) < 1.0
-
-    sglang_synthetic = json.loads(
-        (benchmark_root / "sglang" / "qwen3-4b-g6-l4-vanilla-kv-synthetic-niah" / "success_run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert sglang_synthetic["record_type"] == "cachet.benchmark_successful_sglang_live_benchmark.v1"
-    assert sglang_synthetic["benchmark_result"] == "synthetic_live_benchmark_pass_no_speedup"
-    assert sglang_synthetic["live_benchmark"]["suite"]["scope"] == "live_synthetic_niah"
-    assert sglang_synthetic["live_benchmark"]["cache_hit_validations"][0][
-        "cache_request_cached_tokens"
-    ] == 175
-    assert sglang_synthetic["live_benchmark"]["comparisons"][0]["ttft_speedup"] == pytest.approx(
-        0.8745573214
-    )
-
-    baseline_smoke = json.loads(
-        (sglang_archive_root / "baseline-isolated-success" / "success_run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert baseline_smoke["record_type"] == "cachet.benchmark_successful_databricks_smoke.v1"
-    assert baseline_smoke["benchmark_result"] == "readiness_pass"
-    assert baseline_smoke["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 175
-
-    archived_failure = json.loads(
-        (sglang_archive_root / "invalid-served-model-name" / "failed_run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert archived_failure["benchmark_result"] == "not_published"
-    assert archived_failure["failure_type"] == "sglang_invalid_served_model_name"
-
-    storage_benchmark = json.loads(
-        (databricks_root / "storage-g6-l4-reader-throughput" / "storage_benchmark.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert storage_benchmark["record_type"] == "document_kv.storage_benchmark.v1"
-    assert storage_benchmark["uc_volume_is_real"] is True
-    assert storage_benchmark["readers"] == ["memory", "disk", "unity_catalog"]
-    assert storage_benchmark["release_storage_evidence"]["ok"] is True
-    assert {row["reader_id"] for row in storage_benchmark["results"]} == {
-        "disk",
-        "memory",
-        "unity_catalog",
-    }
-    assert all(row["errors"] == 0 for row in storage_benchmark["results"])
-
-    native_probe_root = databricks_root / "native-engine-g6-l4-vllm-sglang-vanilla-kv"
-    for backend, provider_factory in {
-        "vllm": "vllm_kv_injection.vllm_native_provider:build_document_kv_provider",
-        "sglang": "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider",
-    }.items():
-        probe = json.loads((native_probe_root / f"{backend}_engine_probe.json").read_text(encoding="utf-8"))
-        actions = json.loads(
-            (native_probe_root / f"{backend}_connector_actions.json").read_text(encoding="utf-8")
-        )
-
-        assert probe["record_type"] == "document_kv.engine_kv_connector_probe.v1"
-        assert probe["backend"] == backend
-        assert probe["native_probe"] is True
-        assert probe["payload_mode"] == "merged"
-        assert probe["copied_tokens"] == 48
-        assert probe["metadata"][f"{backend}_kv_injection.provider_factory"] == provider_factory
-        assert actions["record_type"] == "document_kv.engine_kv_connector_actions.v1"
-        assert actions["backend"] == backend
-
-    g6_release_evidence = json.loads(
-        (databricks_root / "vllm-qwen3-4b-g6-l4-vanilla-kv" / "release_evidence.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert g6_release_evidence["record_type"] == "document_kv.release_evidence.v1"
-    assert g6_release_evidence["ok"] is True
-    assert g6_release_evidence["issues"] == []
-    assert g6_release_evidence["v1_benchmark_ok"] is True
-    assert g6_release_evidence["storage_benchmark_ok"] is True
-    assert set(g6_release_evidence["engine_probe_backends"]) == {"sglang", "vllm"}
-    artifact_source_paths = {source["path"] for source in g6_release_evidence["artifact_sources"]}
-    assert artifact_source_paths == {
-        "benchmarks/databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
-        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
-        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
-        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
-        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
-        "benchmarks/databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
-    }
-    for source in g6_release_evidence["artifact_sources"]:
-        artifact_path = REPO_ROOT / source["path"]
-        artifact_bytes = artifact_path.read_bytes()
-        assert source["size_bytes"] == len(artifact_bytes)
-        assert source["sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
+    archive_root = REPO_ROOT / "docs" / "release-ops" / "benchmark-archive"
+    assert (archive_root / "README.md").is_file()
+    for archive_directory in (
+        path for path in archive_root.rglob("*") if path.is_dir()
+    ):
+        assert (archive_directory / "README.md").is_file()
 
 
 def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     compact_text = " ".join(text.split())
     remaining_v1_work = _markdown_section(text, "Remaining V1 Work")
     compact_remaining_v1_work = " ".join(remaining_v1_work.split())
@@ -1572,7 +1929,10 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
 
     assert "package name/version for wheel artifacts" in compact_text
     assert "records the normalized package name and package version" in compact_text
-    assert "current project version from `pyproject.toml` or installed package metadata" in compact_text
+    assert (
+        "current project version from `pyproject.toml` or installed package metadata"
+        in compact_text
+    )
     assert "free of active task keys" in compact_text
     assert "task summaries carry non-empty `purpose` tags" in compact_text
     assert "summary arrays match the task summaries" in compact_text
@@ -1586,33 +1946,32 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "squash or rebase merging enabled" in compact_text
     assert "enable GitHub auto-merge" in compact_text
     assert "delete head branches after merge" in compact_text
-    assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
-    assert "--compatibility-benchmark-json" in compact_remaining_v1_work
-    assert "latest validated strict-bundle snapshot, built after PR #513 with the current wheel" in compact_remaining_v1_work
-    assert "validates with 37 artifacts" in compact_remaining_v1_work
-    assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_remaining_v1_work
-    assert "`dependency_freshness` evidence" in compact_remaining_v1_work
-    assert "Traceability-only PR evidence added after that snapshot must be included" in compact_remaining_v1_work
-    assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_remaining_v1_work
-    assert "compatibility_databricks_run_status" in compact_remaining_v1_work
-    assert "GitHub governance sidecar" in compact_remaining_v1_work
-    assert "Current governance evidence is green" in compact_remaining_v1_work
-    assert "566743786103032" in compact_remaining_v1_work
-    assert "release evidence `ok=true`" in compact_remaining_v1_work
+    assert "Freeze the vLLM 0.27.1 source snapshot" in compact_remaining_v1_work
     assert (
-        "does not change the strict V1 publication target from AWS g6/L4"
+        "complete five-block Baseline/Vanilla latency factorial"
         in compact_remaining_v1_work
+    )
+    assert "concurrency 1/2/4" in compact_remaining_v1_work
+    assert "paired full-dataset score pass" in compact_remaining_v1_work
+    assert "Do not publish partial or pre-reset numbers" in compact_remaining_v1_work
+    assert "new strict release bundle exclusively from the reset campaign" in (
+        compact_remaining_v1_work
+    )
+    assert "Native engine block managers remain owned by vLLM" in (
+        compact_remaining_v1_work
+    )
+    assert "Current governance evidence is green" in compact_remaining_v1_work
+    assert (
+        "`legacy_migration_evidence` release-bundle role" in compact_remaining_v1_work
     )
     for stale_blocker in stale_release_blockers:
         assert stale_blocker not in text
-    for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
-        assert label in compact_remaining_v1_work
 
 
 def test_maintainer_reference_native_probe_diagnostics_include_serving_environment_profile():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     serving_handoff = _markdown_section(text, "Serving Engine Handoff")
     compact_serving_handoff = " ".join(serving_handoff.split())
 
@@ -1623,16 +1982,18 @@ def test_maintainer_reference_native_probe_diagnostics_include_serving_environme
     assert "document-kv-native-probe-factories" in serving_handoff
     assert "fail closed" in compact_serving_handoff
     assert "pinned isolated serving-environment profile" in compact_serving_handoff
-    assert "target engine versions and dependency constraints" in compact_serving_handoff
+    assert (
+        "target engine versions and dependency constraints" in compact_serving_handoff
+    )
     assert "EngineKVInjectionPlan" in serving_handoff
     assert "layout-derived byte totals, block totals" in serving_handoff
     assert "before native block-manager calls" in compact_serving_handoff
 
 
 def test_maintainer_reference_workflow_api_shows_single_text_document_helper():
-    text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+        encoding="utf-8"
+    )
     storage_backends = _markdown_section(text, "Storage Backends")
     workflow_api = _markdown_section(text, "Workflow API")
 
@@ -1651,7 +2012,9 @@ def test_maintainer_reference_workflow_api_shows_single_text_document_helper():
 
 
 def test_pull_request_template_is_public_contributor_friendly():
-    text = (REPO_ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / ".github" / "pull_request_template.md").read_text(
+        encoding="utf-8"
+    )
 
     for required in (
         "# What Changed",
@@ -1671,11 +2034,20 @@ def test_pull_request_template_is_public_contributor_friendly():
 
 
 def test_github_main_branch_protection_payload_requires_pr_review_and_ci():
-    payload = json.loads((REPO_ROOT / ".github" / "main-branch-protection.json").read_text(encoding="utf-8"))
-    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    payload = json.loads(
+        (REPO_ROOT / ".github" / "main-branch-protection.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
     ci_job_names = re.findall(r"^    name: (.+)$", ci_text, flags=re.MULTILINE)
 
-    assert ci_job_names == ["Test and build"]
+    assert ci_job_names == [
+        "Test and build (Python ${{ matrix.python-version }})",
+        "Test and build",
+    ]
     assert len(ci_job_names) == len(set(ci_job_names))
     assert payload["enforce_admins"] is True
     assert payload["required_linear_history"] is True
@@ -1725,14 +2097,16 @@ def test_github_ci_workflow_runs_pr_quality_gate():
         "contents: read",
         "actions/checkout@v6",
         "actions/setup-python@v6",
-        'python-version: "3.11"',
+        'python-version: ["3.11", "3.12"]',
+        "python-version: ${{ matrix.python-version }}",
     ):
         assert required in text
 
     run_commands = [
         line.split("run:", maxsplit=1)[1].strip()
         for line in text.splitlines()
-        if line.lstrip().startswith("run: ") and line.split("run:", maxsplit=1)[1].strip() != "|"
+        if line.lstrip().startswith("run: ")
+        and line.split("run:", maxsplit=1)[1].strip() != "|"
     ]
     assert run_commands == [
         "python -m pip install poetry==2.4.1",
@@ -1741,25 +2115,37 @@ def test_github_ci_workflow_runs_pr_quality_gate():
         "poetry install --dry-run",
         "poetry install --dry-run --extras databricks --extras test",
         "poetry install -E test",
+        "poetry run python -m pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu",
+        ">-",
+        ">-",
         "poetry run pytest -q",
         "poetry build",
+        'test "${{ needs.test.result }}" = "success"',
     ]
+    assert "poetry run ruff check" in text
+    assert "poetry run mypy" in text
+    assert "src/document_kv_cache/reference_method.py" in text
 
 
 def test_github_ci_workflow_verifies_installed_console_scripts():
     text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "Verify console script entry points" in text
-    assert 'tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]' in text
+    assert (
+        'tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]'
+        in text
+    )
     assert "for script_name in sorted(scripts):" in text
     assert "shutil.which(script_name)" in text
-    assert 'subprocess.run(' in text
+    assert "subprocess.run(" in text
     assert '[script_path, "--help"]' in text
 
 
 def test_github_ci_workflow_smokes_built_wheel_imports():
     text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    workflow_readme = (REPO_ROOT / ".github" / "workflows" / "README.md").read_text(encoding="utf-8")
+    workflow_readme = (REPO_ROOT / ".github" / "workflows" / "README.md").read_text(
+        encoding="utf-8"
+    )
     compact_workflow_readme = " ".join(workflow_readme.split())
 
     assert "Verify PEP 517 wheel build" in text
@@ -1773,13 +2159,15 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert 'archive.read(f"{roots.pop()}/{filename}").decode("utf-8")' in text
     assert re.search(r"document_kv_cache-[^/\"']+\.dist-info/", text) is None
     assert "Requires-Python: >=3.11,<4.0" in text
-    assert "Requires-Dist: packaging (==26.2)" in text
+    assert "Requires-Dist: packaging (==26.3)" in text
     assert "Tag: py3-none-any" in text
     assert "cachet-benchmark-plan=cachet.benchmark_plan:main" in text
     assert "cachet-pr-evidence=cachet.pr_evidence:main" in text
     assert "Verify built wheel import smoke" in text
     assert "python -m venv /tmp/cachet-wheel-smoke" in text
-    assert "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/cachet_kv-*.whl" in text
+    assert (
+        "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/cachet_kv-*.whl" in text
+    )
     assert "import cachet" in text
     assert "import document_kv_cache" in text
     assert 'legacy_package = "restaurant" "_kv_serving"' in text
@@ -1901,7 +2289,10 @@ def _iter_repository_text_files():
             continue
         if not path.is_file():
             continue
-        if path.name in REPOSITORY_TEXT_FILE_NAMES or path.suffix in REPOSITORY_TEXT_FILE_SUFFIXES:
+        if (
+            path.name in REPOSITORY_TEXT_FILE_NAMES
+            or path.suffix in REPOSITORY_TEXT_FILE_SUFFIXES
+        ):
             yield path
 
 
@@ -1918,7 +2309,9 @@ def _requirement_version(requirement: str) -> str:
 
 def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
     dependency_versions = {}
-    assert "dependency-groups" not in pyproject, "Use [tool.poetry.group.*.dependencies] for dependency groups"
+    assert "dependency-groups" not in pyproject, (
+        "Use [tool.poetry.group.*.dependencies] for dependency groups"
+    )
 
     poetry_core_requirements = [
         requirement
@@ -1926,7 +2319,9 @@ def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
         if _requirement_name(requirement) == "poetry-core"
     ]
     assert len(poetry_core_requirements) == 1
-    dependency_versions["build-system.poetry-core"] = _requirement_version(poetry_core_requirements[0])
+    dependency_versions["build-system.poetry-core"] = _requirement_version(
+        poetry_core_requirements[0]
+    )
 
     poetry_config = pyproject["tool"]["poetry"]
     project_config = pyproject["project"]
@@ -1940,8 +2335,12 @@ def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
     )
 
     for requirement in project_config.get("dependencies", ()):
-        dependency_versions[f"project.dependencies.{_requirement_name(requirement)}"] = _requirement_version(requirement)
-    for extra_name, requirements in project_config.get("optional-dependencies", {}).items():
+        dependency_versions[
+            f"project.dependencies.{_requirement_name(requirement)}"
+        ] = _requirement_version(requirement)
+    for extra_name, requirements in project_config.get(
+        "optional-dependencies", {}
+    ).items():
         for requirement in requirements:
             dependency_versions[
                 f"project.optional-dependencies.{extra_name}.{_requirement_name(requirement)}"
@@ -1949,7 +2348,10 @@ def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
 
     dependency_tables = []
     dependency_tables.extend(
-        (f"tool.poetry.group.{group_name}.dependencies", group_config.get("dependencies", {}))
+        (
+            f"tool.poetry.group.{group_name}.dependencies",
+            group_config.get("dependencies", {}),
+        )
         for group_name, group_config in poetry_config.get("group", {}).items()
     )
     for table_name, dependencies in dependency_tables:
@@ -1966,7 +2368,14 @@ def test_exact_stable_version_pin_helper_rejects_ranges_and_prereleases():
     assert _is_exact_stable_version_pin("1.2.3.post1")
     assert _is_exact_stable_version_pin("1!2.0.0")
 
-    for version in ("^1.2.3", ">=1.2.3", "1.2.3rc1", "1.2.3.dev0", "1.2.3+local", "1.2.3, <2"):
+    for version in (
+        "^1.2.3",
+        ">=1.2.3",
+        "1.2.3rc1",
+        "1.2.3.dev0",
+        "1.2.3+local",
+        "1.2.3, <2",
+    ):
         assert not _is_exact_stable_version_pin(version)
 
 
@@ -2047,24 +2456,34 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
 
 
 def test_poetry_dependencies_use_exact_direct_pins():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
 
     dependency_versions = _collect_poetry_dependency_versions(pyproject)
     assert dependency_versions
     for name, version in dependency_versions.items():
-        assert _is_exact_stable_version_pin(version), f"{name} is not exactly pinned to a stable version: {version}"
+        assert _is_exact_stable_version_pin(version), (
+            f"{name} is not exactly pinned to a stable version: {version}"
+        )
 
 
 def test_poetry_lockfile_tracks_direct_runtime_pins():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     lock_path = REPO_ROOT / "poetry.lock"
 
     assert lock_path.is_file()
     lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
     assert lock["metadata"]["lock-version"] == "2.1"
-    assert lock["metadata"]["python-versions"] == pyproject["project"]["requires-python"]
+    assert (
+        lock["metadata"]["python-versions"] == pyproject["project"]["requires-python"]
+    )
 
-    locked_versions = {package["name"]: f"=={package['version']}" for package in lock["package"]}
+    locked_versions = {
+        package["name"]: f"=={package['version']}" for package in lock["package"]
+    }
     direct_requirements = list(pyproject["project"].get("dependencies", ()))
     for requirements in pyproject["project"].get("optional-dependencies", {}).values():
         direct_requirements.extend(requirements)
@@ -2081,14 +2500,30 @@ def test_poetry_lockfile_tracks_direct_runtime_pins():
 
 
 def test_runtime_packaging_pin_stays_databricks_ml_compatible():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     dependency_versions = _collect_poetry_dependency_versions(pyproject)
 
-    assert dependency_versions["project.dependencies.packaging"] == "==26.2"
+    assert dependency_versions["project.dependencies.packaging"] == "==26.3"
+    semantic_input = (
+        REPO_ROOT
+        / "src/document_kv_cache/runtime_locks/"
+        "publication-latency-semantic-py311-macos-arm64.in"
+    ).read_text(encoding="utf-8")
+    semantic_lock = (
+        REPO_ROOT
+        / "src/document_kv_cache/runtime_locks/"
+        "publication-latency-semantic-py311-macos-arm64.lock"
+    ).read_text(encoding="utf-8")
+    assert semantic_input.splitlines()[0] == "packaging==26.2"
+    assert "packaging==26.2 \\" in semantic_lock
 
 
 def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     dependencies = pyproject["project"].get("dependencies", ())
     optional_dependencies = pyproject["project"].get("optional-dependencies", {})
     dependency_names = {_requirement_name(requirement) for requirement in dependencies}
@@ -2096,7 +2531,9 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
         extra_name: {_requirement_name(requirement) for requirement in requirements}
         for extra_name, requirements in optional_dependencies.items()
     }
-    optional_dependency_names = set().union(*optional_dependency_names_by_extra.values())
+    optional_dependency_names = set().union(
+        *optional_dependency_names_by_extra.values()
+    )
 
     assert "vllm" not in dependency_names
     assert "sglang" not in dependency_names
@@ -2108,7 +2545,9 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
 
 
 def test_public_and_adapter_packages_publish_pep561_markers():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
     includes = {
         include["path"]
         for include in pyproject["tool"]["poetry"]["include"]
@@ -2124,5 +2563,5 @@ def test_public_and_adapter_packages_publish_pep561_markers():
     for marker_path in marker_paths:
         assert (REPO_ROOT / marker_path).is_file()
         assert marker_path in includes
-    assert not (REPO_ROOT / "src" / ("restaurant" "_kv_serving") / "py.typed").exists()
+    assert not (REPO_ROOT / "src" / ("restaurant_kv_serving") / "py.typed").exists()
     assert "src/restaurant_kv_serving/py.typed" not in includes

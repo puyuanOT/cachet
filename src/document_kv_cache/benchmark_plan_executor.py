@@ -6,9 +6,10 @@ import argparse
 import hashlib
 import inspect
 import json
+import math
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,13 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
         "datasets",
         "commands",
         "benchmark_output_json",
+        "evidence_gate_output_json",
+        "evidence_policy",
+        "artifact_identity_jsons",
+        "cache_state_attestation_jsons",
+        "benchmark_arm_specs_json",
+        "benchmark_arm_spec_json_files",
+        "experiment",
         "storage_benchmark_output_json",
         "release_evidence_output_json",
         "release_storage_benchmark_json",
@@ -58,6 +66,52 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
     }
 )
 _BENCHMARK_JOB_PLAN_COMMAND_KEYS = frozenset({"name", "argv", "shell"})
+_BENCHMARK_JOB_PLAN_EXPERIMENT_KEYS = frozenset(
+    {
+        "measurement_scopes",
+        "repeats",
+        "request_parallelism",
+        "warmups",
+        "shuffle",
+        "benchmark_seed",
+        "generation_seed",
+        "interleave_examples",
+        "isolate_arms",
+        "prefix_cache_salt_mode",
+        "model_revision",
+        "canonical_model_id",
+        "tokenizer_id",
+        "tokenizer_revision",
+        "lora_id",
+        "engine_id",
+        "engine_version",
+        "serving_platform",
+        "model_dtype",
+        "model_quantization",
+        "runtime_kv_dtype",
+        "layout_version",
+        "payload_axis_order",
+        "block_size",
+        "key_position_encoding",
+        "rope_theta",
+        "rope_rotary_dim",
+        "tensor_parallel_size",
+        "pipeline_parallel_size",
+        "package_revisions",
+        "prompt_template_version",
+        "input_tokens_target",
+        "max_output_tokens",
+        "hardware_fingerprint",
+        "runtime_id",
+        "runtime_version",
+        "storage_identity",
+        "cache_state",
+        "complete_dataset_split",
+        "comparison_mode",
+        "varied_setting",
+        "reference_arm_id",
+    }
+)
 _HANDOFF_GENERATION_PREFIX = "generate-"
 _HANDOFF_GENERATION_SUFFIX = "-handoff-bundles"
 _HANDOFF_ENRICHMENT_PREFIX = "enrich-"
@@ -244,7 +298,7 @@ def _benchmark_command_results_to_record(
     return record
 
 
-def _accepts_plan_source(function) -> bool:
+def _accepts_plan_source(function: Callable[..., object]) -> bool:
     try:
         parameters = inspect.signature(function).parameters
     except (TypeError, ValueError):
@@ -286,6 +340,8 @@ def _patch_result_json_plan_source(path: str | Path, plan_source: Mapping[str, A
 
 def _commands_from_plan(plan: Mapping[str, Any]) -> list[tuple[str, tuple[str, ...]]]:
     _reject_unsupported_keys(plan, _BENCHMARK_JOB_PLAN_KEYS, label="Benchmark plan JSON")
+    if "experiment" in plan:
+        _validate_experiment_record(plan["experiment"])
     raw_commands = plan.get("commands")
     if not isinstance(raw_commands, Sequence) or isinstance(raw_commands, (str, bytes)):
         raise ValueError("Benchmark plan JSON must include a commands array")
@@ -307,6 +363,72 @@ def _commands_from_plan(plan: Mapping[str, Any]) -> list[tuple[str, tuple[str, .
         argv = tuple(_argv_item(item, command_index=index, item_index=item_index) for item_index, item in enumerate(raw_argv))
         commands.append((name, argv))
     return commands
+
+
+def _validate_experiment_record(value: Any) -> None:
+    if not isinstance(value, Mapping):
+        raise ValueError("Benchmark plan JSON experiment must be an object")
+    _reject_unsupported_keys(
+        value,
+        _BENCHMARK_JOB_PLAN_EXPERIMENT_KEYS,
+        label="Benchmark plan JSON experiment",
+    )
+    for field_name in (
+        "canonical_model_id",
+        "lora_id",
+        "serving_platform",
+        "model_dtype",
+        "model_quantization",
+        "runtime_kv_dtype",
+        "layout_version",
+        "payload_axis_order",
+        "key_position_encoding",
+    ):
+        if field_name not in value:
+            continue
+        field_value = value[field_name]
+        if not isinstance(field_value, str) or (
+            field_name != "canonical_model_id" and not field_value
+        ):
+            raise ValueError(
+                f"Benchmark plan JSON experiment.{field_name} must be a string"
+            )
+    for field_name in (
+        "block_size",
+        "rope_rotary_dim",
+        "tensor_parallel_size",
+        "pipeline_parallel_size",
+    ):
+        field_value = value.get(field_name)
+        if field_value is not None and (
+            type(field_value) is not int or field_value <= 0
+        ):
+            raise ValueError(
+                f"Benchmark plan JSON experiment.{field_name} must be a positive integer or null"
+            )
+    rope_theta = value.get("rope_theta")
+    rope_rotary_dim = value.get("rope_rotary_dim")
+    if (rope_theta is None) != (rope_rotary_dim is None):
+        raise ValueError(
+            "Benchmark plan JSON experiment rope_theta and rope_rotary_dim must be provided together"
+        )
+    if rope_theta is not None and (
+        isinstance(rope_theta, bool)
+        or not isinstance(rope_theta, (int, float))
+        or not math.isfinite(rope_theta)
+        or rope_theta <= 0
+    ):
+        raise ValueError(
+            "Benchmark plan JSON experiment.rope_theta must be a positive finite number or null"
+        )
+    if rope_rotary_dim is not None and rope_rotary_dim % 2:
+        raise ValueError(
+            "Benchmark plan JSON experiment.rope_rotary_dim must be a positive even integer"
+        )
+    if value.get("key_position_encoding") == "pre_rope" and rope_theta is None:
+        raise ValueError(
+            "Benchmark plan JSON pre_rope experiment requires RoPE geometry"
+        )
 
 
 def _reject_unsupported_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], *, label: str) -> None:
