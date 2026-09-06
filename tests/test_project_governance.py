@@ -1882,6 +1882,40 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     )
     assert "must not be repaired, resumed, relabeled, or reused" in compact_ledger_doc
     assert "corrected runner uses a fresh source closure" in compact_ledger_doc
+    assert (
+        "source-revision `aa5247c` exact14 successor qualification then passed"
+        in compact_ledger_doc
+    )
+    assert "All fourteen planned attempt-zero jobs succeeded" in compact_ledger_doc
+    assert "13,095.136 terminal cluster-seconds" in compact_ledger_doc
+    assert "3.6375377777777773 GPU-hours" in compact_ledger_doc
+    assert "exact 490/352/490 prefix" in compact_ledger_doc
+    assert "130.28816611111108 terminal GPU-hours" in compact_ledger_doc
+    assert "893.7118338888889 hours remaining" in compact_ledger_doc
+    assert (
+        "following sixteen-job Q8-v2 latency-handoff wave is retained only as "
+        "failed or canceled, non-authorizing evidence" in compact_ledger_doc
+    )
+    assert (
+        "publication-q8-v2/404d0ed6ae2f-c903c3fa7dd4-f70a94086f59/"
+        "worker-{00..15}" in compact_ledger_doc
+    )
+    assert "standalone runner's stdlib `venv` bootstrap failed in `ensurepip`" in (
+        compact_ledger_doc
+    )
+    assert "Six parent runs reached `INTERNAL_ERROR`/`FAILED`" in compact_ledger_doc
+    assert "reached `TERMINATED`/`CANCELED`" in compact_ledger_doc
+    assert "receives zero publication credit" in compact_ledger_doc
+    assert "11,156.620 terminal cluster-seconds" in compact_ledger_doc
+    assert "3.099061111111111 GPU-hours" in compact_ledger_doc
+    assert "exact 506/368/506 prefix" in compact_ledger_doc
+    assert "133.38722722222224 terminal GPU-hours" in compact_ledger_doc
+    assert "890.6127727777778 hours remaining" in compact_ledger_doc
+    assert "remain preserved and are not resumable" in compact_ledger_doc
+    assert "pinned `virtualenv` fallback" in compact_ledger_doc
+    assert "a new source closure, and a fresh exact14 qualification" in (
+        compact_ledger_doc
+    )
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -1893,6 +1927,14 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "b62b66105cc9d048e4c94c88927f23c724f01c876ef9283c34a0d94a5afa7f46",
         "a9ba97f78ce2c3afc4df575f538bf13929ba8986916dabc315df627da79bcbc9",
         "ddaadeb6655d86beca7a0c74087f56c270df640e29c53bcc51f9540ce938ca3e",
+        "c903c3fa7dd4d1bc0869e3f3917266255dd451d7b1bc518e115ea41a33445118",
+        "8a1421f8874efb93c0ed3c37998b4fb37c53c391214a4bf39d9be85eebc0bf6f",
+        "85c2b949bf5d8f68cde9cc32f223963522496abd2da98be384abfb4e08f81d0c",
+        "f70a94086f59d062c0fa368326efecd2769219c5e989675652d5b5e5a0aa76ce",
+        "337e79f440c47649c3d2f7b8c4a0a3716de92bf163549f58fca9c2eea2af660b",
+        "ab6f347d876ae63280e794ba346a91016d43d3274865e198c94a7bbc9317eacc",
+        "e09e88a98b8e0510a2e6e6c8df162cd298356e903e236db1431331212471804c",
+        "9fd351c732aa9a2643fc2a23f462354c59594ab530a3cdc0b89adfd74241631d",
     ):
         assert digest in compact_ledger_doc
     assert (

@@ -76,6 +76,10 @@ from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
+from document_kv_cache.serving_env import (
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -520,6 +524,10 @@ def test_bf16_runner_inherits_native_v2_four_step_runtime_bootstrap() -> None:
         assert flag in script
     assert 'variable_name.upper().startswith(("PIP_", "_PIP_"))' in script
     assert '[sys.executable, "-m", "venv", "--copies", venv_dir]' in script
+    assert '[sys.executable, bootstrap, "--clear", "--copies", venv_dir]' in script
+    assert VIRTUALENV_BOOTSTRAP_URL in script
+    assert VIRTUALENV_BOOTSTRAP_SHA256 in script
+    assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in script
     assert "verify_gpu_qualification_v2_runtime_installation" in script
     install_markers = (
         '"--require-hashes", "--only-binary", ":all:"',

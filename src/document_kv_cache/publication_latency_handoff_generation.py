@@ -151,6 +151,9 @@ from document_kv_cache.serving_env import (
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
     TRANSFORMERS_CONSTRAINT,
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+    VIRTUALENV_BOOTSTRAP_VERSION,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
@@ -255,7 +258,8 @@ PUBLICATION_LATENCY_HANDOFF_RUNNER_FILENAME = (
     "publication_latency_handoff_generation_runner.py"
 )
 
-PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT = """from __future__ import annotations
+PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT = (
+    """from __future__ import annotations
 
 import argparse
 import hashlib
@@ -265,9 +269,13 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import urllib.request
 
 
 _FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 300.0
+VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
+VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
+VIRTUALENV_BOOTSTRAP_SHA256 = __CACHET_VIRTUALENV_BOOTSTRAP_SHA256__
 
 
 def _cluster_path(uri: str) -> str:
@@ -312,6 +320,67 @@ def _pip_subprocess_environment() -> dict[str, str]:
         }
     )
     return env
+
+
+def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    target = os.path.join(
+        output_dir,
+        "virtualenv-"
+        + VIRTUALENV_BOOTSTRAP_VERSION
+        + "-"
+        + VIRTUALENV_BOOTSTRAP_SHA256[:16]
+        + ".pyz",
+    )
+    if os.path.exists(target):
+        observed = _sha256(target)
+        if observed != VIRTUALENV_BOOTSTRAP_SHA256:
+            raise RuntimeError("virtualenv bootstrap SHA-256 mismatch: " + observed)
+        return target
+    temporary = target + ".tmp"
+    request = urllib.request.Request(
+        VIRTUALENV_BOOTSTRAP_URL,
+        headers={"User-Agent": "cachet-publication-bootstrap"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120.0) as response:
+            with open(temporary, "wb") as stream:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+        observed = _sha256(temporary)
+        if observed != VIRTUALENV_BOOTSTRAP_SHA256:
+            raise RuntimeError(
+                "downloaded virtualenv bootstrap SHA-256 mismatch: " + observed
+            )
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return target
+
+
+def _create_runtime_venv(
+    venv_dir: str,
+    *,
+    environment: dict[str, str],
+) -> None:
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "venv", "--copies", venv_dir],
+            env=environment,
+        )
+    except subprocess.CalledProcessError:
+        bootstrap = _materialize_virtualenv_bootstrap(os.path.dirname(venv_dir))
+        subprocess.check_call(
+            [sys.executable, bootstrap, "--clear", "--copies", venv_dir],
+            env=environment,
+        )
 
 
 def _direct_reference(distribution: str, path: str, expected: str) -> str:
@@ -465,10 +534,7 @@ def _bootstrap(argv: list[str]) -> None:
     if os.path.exists(venv_dir):
         raise FileExistsError("refusing to reuse an unverified handoff runtime")
     pip_environment = _pip_subprocess_environment()
-    subprocess.check_call(
-        [sys.executable, "-m", "venv", "--copies", venv_dir],
-        env=pip_environment,
-    )
+    _create_runtime_venv(venv_dir, environment=pip_environment)
     pip_environment["VIRTUAL_ENV"] = venv_dir
     pip_environment["PATH"] = (
         os.path.dirname(venv_python)
@@ -542,9 +608,23 @@ def _bootstrap(argv: list[str]) -> None:
 if __name__ == "__main__":
     _bootstrap(sys.argv[1:])
 """.replace(
-    "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
-    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
-).replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
+        "__CACHET_VIRTUALENV_BOOTSTRAP_VERSION__",
+        repr(VIRTUALENV_BOOTSTRAP_VERSION),
+    )
+    .replace(
+        "__CACHET_VIRTUALENV_BOOTSTRAP_URL__",
+        repr(VIRTUALENV_BOOTSTRAP_URL),
+    )
+    .replace(
+        "__CACHET_VIRTUALENV_BOOTSTRAP_SHA256__",
+        repr(VIRTUALENV_BOOTSTRAP_SHA256),
+    )
+    .replace(
+        "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+        GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    )
+    .replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
+)
 PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256 = sha256(
     PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT.encode("utf-8")
 ).hexdigest()

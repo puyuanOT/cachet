@@ -1,4 +1,5 @@
 import inspect
+import io
 import json
 import math
 import os
@@ -52,6 +53,9 @@ from document_kv_cache.publication_inputs import (
 from document_kv_cache.serving_env import (
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+    VIRTUALENV_BOOTSTRAP_VERSION,
 )
 
 
@@ -200,14 +204,14 @@ def test_reviewed_v2_constants_and_successor_verifier_use_ordered_streams(
         reviewed_v2_prefix.reservation_count,
         reviewed_v2_prefix.submission_receipt_count,
         reviewed_v2_prefix.terminal_actual_count,
-    ) == (476, 338, 476)
+    ) == (506, 368, 506)
     assert reviewed_v2_prefix.prefix_sha256 == (
-        "39fda42764dbe599d6f869d7bac0ea91034762438e636f3d1e7f90656baee1ce"
+        "e09e88a98b8e0510a2e6e6c8df162cd298356e903e236db1431331212471804c"
     )
     assert PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS == 71.39012833333337
     assert (
         qualification_v2.GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
-        == 126.65062833333326
+        == 133.38722722222224
     )
 
     ledger_path = tmp_path / "ordered-ledger.json"
@@ -2162,6 +2166,19 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     ]
     assert install_positions == sorted(install_positions)
     assert '"--copies"' in execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    assert (
+        '[sys.executable, bootstrap, "--clear", "--copies", venv_dir]'
+        in execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert VIRTUALENV_BOOTSTRAP_URL in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert VIRTUALENV_BOOTSTRAP_SHA256 in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
     assert "validate_gpu_qualification_v2_runtime_attestation" in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
@@ -2198,6 +2215,41 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
         len(execution._final_artifact_roles())
         - len(execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_EXCLUDED_ROLES)
     )
+
+
+def test_source_closure_runner_cleans_mismatched_virtualenv_download(
+    monkeypatch,
+    tmp_path,
+):
+    namespace = {"__name__": "latency_source_closure_bootstrap_test"}
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+            "publication_latency_source_closure_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    bad_payload = b"unreviewed virtualenv payload"
+
+    def urlopen(request, timeout):
+        assert request.full_url == VIRTUALENV_BOOTSTRAP_URL
+        assert timeout == 120.0
+        return io.BytesIO(bad_payload)
+
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", urlopen)
+    target = tmp_path / (
+        f"virtualenv-{VIRTUALENV_BOOTSTRAP_VERSION}-"
+        f"{VIRTUALENV_BOOTSTRAP_SHA256[:16]}.pyz"
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="downloaded virtualenv bootstrap SHA-256 mismatch",
+    ):
+        namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert not target.exists()
+    assert not target.with_name(target.name + ".tmp").exists()
 
 
 @pytest.mark.parametrize(

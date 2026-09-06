@@ -14,6 +14,9 @@ import document_kv_cache.full_score_execution as full_score
 from document_kv_cache.serving_env import (
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+    VIRTUALENV_BOOTSTRAP_VERSION,
 )
 import document_kv_cache.full_score_remote_control as full_score_remote
 import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
@@ -5770,10 +5773,43 @@ def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
         '"--no-deps", package_spec'
     )
     assert '"venv", "--copies"' in script
+    assert '[sys.executable, bootstrap, "--clear", "--copies", venv_dir]' in script
+    assert VIRTUALENV_BOOTSTRAP_URL in script
+    assert VIRTUALENV_BOOTSTRAP_SHA256 in script
+    assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in script
     assert "runtime-closure-manifest-sha256" in script
     assert "patched-flashinfer-wheel-sha256" in script
     assert 'pip, "check"' not in script
     assert "os.execve(" in script
+
+
+def test_full_score_runner_rejects_tampered_cached_virtualenv_pyz(
+    monkeypatch,
+    tmp_path,
+):
+    namespace = {"__name__": "full_score_bootstrap_tamper_test"}
+    exec(
+        compile(
+            full_score.FULL_SCORE_RUNNER_SCRIPT,
+            "full_score_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    target = tmp_path / (
+        f"virtualenv-{VIRTUALENV_BOOTSTRAP_VERSION}-"
+        f"{VIRTUALENV_BOOTSTRAP_SHA256[:16]}.pyz"
+    )
+    target.write_bytes(b"tampered cached virtualenv")
+
+    def reject_download(*args, **kwargs):
+        raise AssertionError("a tampered cache entry must fail before download")
+
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", reject_download)
+    with pytest.raises(RuntimeError, match="virtualenv bootstrap SHA-256 mismatch"):
+        namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert target.read_bytes() == b"tampered cached virtualenv"
 
 
 def test_native_v2_runtime_binding_rejects_attestation_and_artifact_drift():

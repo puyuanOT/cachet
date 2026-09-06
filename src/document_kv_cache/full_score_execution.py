@@ -147,6 +147,9 @@ from document_kv_cache._gpu_qualification_sentinels_v2 import (
 from document_kv_cache.serving_env import (
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+    VIRTUALENV_BOOTSTRAP_VERSION,
     gpu_runtime_warning_environment_overrides,
 )
 from document_kv_cache.gpu_qualification_databricks import (
@@ -345,7 +348,8 @@ FULL_SCORE_MIN_MAX_MODEL_LEN = (
     FULL_SCORE_MAX_NATURAL_PROMPT_TOKENS + FULL_SCORE_MAX_TOKENS
 )
 FULL_SCORE_VANILLA_ARM_ID = "document_kv_cache:vanilla_prefill"
-FULL_SCORE_RUNNER_SCRIPT = """from __future__ import annotations
+FULL_SCORE_RUNNER_SCRIPT = (
+    """from __future__ import annotations
 
 import argparse
 import hashlib
@@ -355,6 +359,12 @@ import os
 import pathlib
 import subprocess
 import sys
+import urllib.request
+
+
+VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
+VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
+VIRTUALENV_BOOTSTRAP_SHA256 = __CACHET_VIRTUALENV_BOOTSTRAP_SHA256__
 
 
 def _cluster_path(uri: str) -> str:
@@ -399,6 +409,67 @@ def _pip_subprocess_environment() -> dict[str, str]:
         }
     )
     return env
+
+
+def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    target = os.path.join(
+        output_dir,
+        "virtualenv-"
+        + VIRTUALENV_BOOTSTRAP_VERSION
+        + "-"
+        + VIRTUALENV_BOOTSTRAP_SHA256[:16]
+        + ".pyz",
+    )
+    if os.path.exists(target):
+        observed = _sha256(target)
+        if observed != VIRTUALENV_BOOTSTRAP_SHA256:
+            raise RuntimeError("virtualenv bootstrap SHA-256 mismatch: " + observed)
+        return target
+    temporary = target + ".tmp"
+    request = urllib.request.Request(
+        VIRTUALENV_BOOTSTRAP_URL,
+        headers={"User-Agent": "cachet-publication-bootstrap"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120.0) as response:
+            with open(temporary, "wb") as stream:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+        observed = _sha256(temporary)
+        if observed != VIRTUALENV_BOOTSTRAP_SHA256:
+            raise RuntimeError(
+                "downloaded virtualenv bootstrap SHA-256 mismatch: " + observed
+            )
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return target
+
+
+def _create_runtime_venv(
+    venv_dir: str,
+    *,
+    environment: dict[str, str],
+) -> None:
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "venv", "--copies", venv_dir],
+            env=environment,
+        )
+    except subprocess.CalledProcessError:
+        bootstrap = _materialize_virtualenv_bootstrap(os.path.dirname(venv_dir))
+        subprocess.check_call(
+            [sys.executable, bootstrap, "--clear", "--copies", venv_dir],
+            env=environment,
+        )
 
 
 def _bootstrap(argv: list[str]) -> None:
@@ -465,10 +536,7 @@ def _bootstrap(argv: list[str]) -> None:
     if os.path.exists(venv_dir):
         raise FileExistsError("refusing to reuse an unverified full-score runtime")
     pip_environment = _pip_subprocess_environment()
-    subprocess.check_call(
-        [sys.executable, "-m", "venv", "--copies", venv_dir],
-        env=pip_environment,
-    )
+    _create_runtime_venv(venv_dir, environment=pip_environment)
     pip_environment["VIRTUAL_ENV"] = venv_dir
     pip_environment["PATH"] = (
         os.path.dirname(venv_python)
@@ -517,9 +585,23 @@ def _bootstrap(argv: list[str]) -> None:
 if __name__ == "__main__":
     _bootstrap(sys.argv[1:])
 """.replace(
-    "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
-    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
-).replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
+        "__CACHET_VIRTUALENV_BOOTSTRAP_VERSION__",
+        repr(VIRTUALENV_BOOTSTRAP_VERSION),
+    )
+    .replace(
+        "__CACHET_VIRTUALENV_BOOTSTRAP_URL__",
+        repr(VIRTUALENV_BOOTSTRAP_URL),
+    )
+    .replace(
+        "__CACHET_VIRTUALENV_BOOTSTRAP_SHA256__",
+        repr(VIRTUALENV_BOOTSTRAP_SHA256),
+    )
+    .replace(
+        "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
+        GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    )
+    .replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
+)
 FULL_SCORE_RUNNER_SHA256 = sha256(FULL_SCORE_RUNNER_SCRIPT.encode("utf-8")).hexdigest()
 
 _SHA256_LENGTH = 64

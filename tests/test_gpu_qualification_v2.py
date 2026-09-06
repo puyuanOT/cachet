@@ -87,10 +87,10 @@ EXPECTED_JOB_IDS = (
     "aws-g5-a10g-auto-backend-diagnostic",
 )
 EXPECTED_PLAN_SHA256 = (
-    "082901b44aad92713a2dc3b5837e4b7e4e2f387b99d9c7a6c93963cf2663be2e"
+    "62a5f75fa8377cea4b0ea7ad8cff6409c6a05475d275a4e4e61b438938821d7f"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
-    "6c0efeffcfbc81b59925e1978c78cda58a922067b458b72d2afde45cc5bed6df"
+    "795c9def75fb0ac1c48465a88b6b0c08ac95a4cbdcd028018962491321546a68"
 )
 EXPECTED_VLLM_MEMBER_SHA256 = {
     "vllm/model_executor/layers/attention/attention.py": (
@@ -610,14 +610,14 @@ def test_v2_plan_is_deterministic_and_closes_exactly_fourteen_jobs() -> None:
     )
 
 
-def test_v2_opening_authority_includes_closed_failed_q8_wave() -> None:
-    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.reservation_count == 476
-    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.submission_receipt_count == 338
-    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.terminal_actual_count == 476
+def test_v2_opening_authority_includes_exact14_and_terminal_recovered_q8_r2() -> None:
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.reservation_count == 506
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.submission_receipt_count == 368
+    assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.terminal_actual_count == 506
     assert GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.prefix_sha256 == (
-        "39fda42764dbe599d6f869d7bac0ea91034762438e636f3d1e7f90656baee1ce"
+        "e09e88a98b8e0510a2e6e6c8df162cd298356e903e236db1431331212471804c"
     )
-    assert GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS == 126.65062833333326
+    assert GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS == 133.38722722222224
 
 
 def test_v2_plan_rejects_rebased_opening_authority() -> None:

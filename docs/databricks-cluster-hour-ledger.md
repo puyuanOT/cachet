@@ -515,6 +515,49 @@ This wave cannot authorize publication and must not be repaired, resumed,
 relabeled, or reused; a corrected runner uses a fresh source closure and the
 `publication-q8-v2/...` attempt namespace.
 
+The source-revision `aa5247c` exact14 successor qualification then passed. Its
+plan closes as
+`c903c3fa7dd4d1bc0869e3f3917266255dd451d7b1bc518e115ea41a33445118`
+and its evidence closes as
+`8a1421f8874efb93c0ed3c37998b4fb37c53c391214a4bf39d9be85eebc0bf6f`.
+All fourteen planned attempt-zero jobs succeeded. Their 13,095.136 terminal
+cluster-seconds add 3.6375377777777773 GPU-hours and close the exact
+490/352/490 prefix
+`85c2b949bf5d8f68cde9cc32f223963522496abd2da98be384abfb4e08f81d0c`
+at 130.28816611111108 terminal GPU-hours, with zero active reservations and
+893.7118338888889 hours remaining under the 1,024-hour aggregate cap.
+
+The following sixteen-job Q8-v2 latency-handoff wave is retained only as
+failed or canceled, non-authorizing evidence. Its assignment plan is
+`404d0ed6ae2f169d1777034c81a057e2af131d805ecd9672900bfc7221871246`,
+its qualification plan is
+`c903c3fa7dd4d1bc0869e3f3917266255dd451d7b1bc518e115ea41a33445118`,
+and its emitted runner has SHA-256
+`f70a94086f59d062c0fa368326efecd2769219c5e989675652d5b5e5a0aa76ce`.
+Its attempt IDs are exactly
+`publication-q8-v2/404d0ed6ae2f-c903c3fa7dd4-f70a94086f59/worker-{00..15}`.
+Before any benchmark payload ran, the standalone runner's stdlib `venv`
+bootstrap failed in `ensurepip`. Six parent runs reached
+`INTERNAL_ERROR`/`FAILED`; the other ten were stopped after the systemic
+bootstrap fault was established and reached `TERMINATED`/`CANCELED`. The wave
+receives zero publication credit. Its 11,156.620 terminal cluster-seconds add
+3.099061111111111 GPU-hours.
+
+The sealed terminal recovery authority is
+`337e79f440c47649c3d2f7b8c4a0a3716de92bf163549f58fca9c2eea2af660b`,
+and its result closes as
+`ab6f347d876ae63280e794ba346a91016d43d3274865e198c94a7bbc9317eacc`.
+Recovery closes the exact 506/368/506 prefix
+`e09e88a98b8e0510a2e6e6c8df162cd298356e903e236db1431331212471804c`
+at 133.38722722222224 terminal GPU-hours, with zero active reservations and
+890.6127727777778 hours remaining under the cap. The resulting canonical
+ledger file has SHA-256
+`9fd351c732aa9a2643fc2a23f462354c59594ab530a3cdc0b89adfd74241631d`.
+The failed controller, phase lease, attempts, and evidence remain preserved and
+are not resumable. A successor must use the pinned `virtualenv` fallback, a new
+source closure, and a fresh exact14 qualification before acquiring a new Q8
+wave authority.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local

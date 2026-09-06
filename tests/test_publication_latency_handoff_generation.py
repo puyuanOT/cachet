@@ -1,6 +1,9 @@
 import copy
+import io
 import json
 import os
+import subprocess
+import sys
 from collections import Counter
 from hashlib import sha256
 
@@ -57,6 +60,9 @@ from document_kv_cache.publication_campaign import (
 from document_kv_cache.serving_env import (
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
+    VIRTUALENV_BOOTSTRAP_SHA256,
+    VIRTUALENV_BOOTSTRAP_URL,
+    VIRTUALENV_BOOTSTRAP_VERSION,
 )
 from document_kv_cache.publication_latency_handoff_generation import (
     PUBLICATION_LATENCY_HANDOFF_TASK_COUNT,
@@ -719,6 +725,103 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
     output["stdout"] = json.dumps(attestation, indent=2, sort_keys=True) + "\n"
     with pytest.raises(RuntimeError, match="not canonical"):
         namespace["_verify_locked_runtime"](**verify_kwargs)
+
+
+def _compiled_handoff_runner_namespace():
+    namespace = {"__name__": "latency_handoff_bootstrap_test"}
+    exec(
+        compile(
+            generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT,
+            "publication_latency_handoff_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    return namespace
+
+
+def test_handoff_runner_uses_stdlib_venv_without_downloading(monkeypatch, tmp_path):
+    namespace = _compiled_handoff_runner_namespace()
+    environment = {"SAFE": "1"}
+    calls = []
+
+    def check_call(command, *, env):
+        calls.append((tuple(command), env))
+
+    def reject_download(*args, **kwargs):
+        raise AssertionError("virtualenv fallback must not download on stdlib success")
+
+    monkeypatch.setattr(namespace["subprocess"], "check_call", check_call)
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", reject_download)
+    venv_dir = tmp_path / "runtime"
+    namespace["_create_runtime_venv"](
+        str(venv_dir),
+        environment=environment,
+    )
+
+    assert calls == [
+        (
+            (sys.executable, "-m", "venv", "--copies", str(venv_dir)),
+            environment,
+        )
+    ]
+    assert calls[0][1] is environment
+
+
+def test_handoff_runner_falls_back_to_reviewed_virtualenv_pyz(monkeypatch, tmp_path):
+    namespace = _compiled_handoff_runner_namespace()
+    bootstrap_payload = b"reviewed publication virtualenv fixture"
+    bootstrap_digest = sha256(bootstrap_payload).hexdigest()
+    namespace["VIRTUALENV_BOOTSTRAP_SHA256"] = bootstrap_digest
+    environment = {"SAFE": "1"}
+    calls = []
+
+    def check_call(command, *, env):
+        calls.append((tuple(command), env))
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(1, command)
+
+    def urlopen(request, timeout):
+        assert request.full_url == VIRTUALENV_BOOTSTRAP_URL
+        assert request.get_header("User-agent") == "cachet-publication-bootstrap"
+        assert timeout == 120.0
+        return io.BytesIO(bootstrap_payload)
+
+    monkeypatch.setattr(namespace["subprocess"], "check_call", check_call)
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", urlopen)
+    venv_dir = tmp_path / "runtime"
+    namespace["_create_runtime_venv"](
+        str(venv_dir),
+        environment=environment,
+    )
+
+    bootstrap_path = tmp_path / (
+        f"virtualenv-{VIRTUALENV_BOOTSTRAP_VERSION}-{bootstrap_digest[:16]}.pyz"
+    )
+    assert bootstrap_path.read_bytes() == bootstrap_payload
+    assert calls == [
+        (
+            (sys.executable, "-m", "venv", "--copies", str(venv_dir)),
+            environment,
+        ),
+        (
+            (
+                sys.executable,
+                str(bootstrap_path),
+                "--clear",
+                "--copies",
+                str(venv_dir),
+            ),
+            environment,
+        ),
+    ]
+    assert all(call_environment is environment for _, call_environment in calls)
+    assert VIRTUALENV_BOOTSTRAP_SHA256 in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
+    assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
 
 
 def fake_hardware_qualification(monkeypatch, prepared):
