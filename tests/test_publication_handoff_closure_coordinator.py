@@ -1882,6 +1882,7 @@ def test_mirror_io_rejects_fifo_hardlink_symlink_and_permissive_descendant(
 
     permissive = root / "permissive"
     permissive.mkdir(mode=0o755)
+    permissive.chmod(0o755)
     with pytest.raises(ValueError, match="current-UID mode 0700"):
         getattr(module, writer)(root, "permissive/value.json", b"value")
 
