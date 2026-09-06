@@ -827,12 +827,12 @@ def test_successor_fresh_submit_uses_complete_live_opening_predecessor(
         historical.reservation_count,
         historical.submission_receipt_count,
         historical.terminal_actual_count,
-    ) == (446, 308, 446)
+    ) == (476, 338, 476)
     assert (
         live_predecessor.reservation_count,
         live_predecessor.submission_receipt_count,
         live_predecessor.terminal_actual_count,
-    ) == (447, 308, 447)
+    ) == (477, 338, 477)
 
     receipts = databricks_v2.submit_gpu_qualification_jobs_v2(
         case.config,

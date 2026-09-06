@@ -2450,7 +2450,9 @@ def test_generated_runner_falls_back_to_virtualenv_when_stdlib_venv_lacks_ensure
     ]
 
 
-def test_generated_runner_reexec_uses_argv0_when_databricks_exec_omits_file(tmp_path, monkeypatch):
+def test_generated_runner_reexec_uses_compiled_path_when_databricks_exec_omits_file(
+    tmp_path, monkeypatch
+):
     path = tmp_path / "run_engine_probe.py"
     write_databricks_engine_probe_runner_script(path)
     venv_dir = tmp_path / "serving-venv"
@@ -2463,7 +2465,7 @@ def test_generated_runner_reexec_uses_argv0_when_databricks_exec_omits_file(tmp_
         sys,
         "argv",
         [
-            str(path),
+            "/attacker/controlled/argv0.py",
             "--serving-venv-dir",
             str(venv_dir),
             "--package-wheel-uri",

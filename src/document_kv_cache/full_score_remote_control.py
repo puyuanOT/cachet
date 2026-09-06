@@ -186,7 +186,9 @@ def _main(argv: list[str]) -> int:
     parser.add_argument("--expected-request-file-sha256", required=True)
     parser.add_argument("--expected-request-record-sha256", required=True)
     args = parser.parse_args(argv)
-    if _sha256(__file__) != args.runner_sha256:
+    # Databricks compiles spark_python_task files without defining __file__.
+    runner_path = os.path.realpath(sys._getframe().f_code.co_filename)
+    if _sha256(runner_path) != args.runner_sha256:
         raise ValueError("full-score remote coordinator runner SHA-256 drift")
     wheel = _mount_path(args.package_wheel_uri)
     request = _mount_path(args.request_json)

@@ -1851,6 +1851,54 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "uses automatic zone placement for L40S qualification" in (
         compact_ledger_doc
     )
+    assert "fresh automatic-zone successor qualification subsequently passed" in (
+        compact_ledger_doc
+    )
+    assert "All fourteen planned attempt-zero jobs succeeded" in compact_ledger_doc
+    assert "exact 460/322/460 prefix" in compact_ledger_doc
+    assert "123.94509916666661 terminal GPU-hours" in compact_ledger_doc
+    assert "historical qualification evidence for those exact source inputs" in (
+        compact_ledger_doc
+    )
+    assert "does not authorize a patched source tree or corrected runner" in (
+        compact_ledger_doc
+    )
+    assert (
+        "first sixteen-job latency-handoff wave is retained only as failed, "
+        "non-authorizing evidence" in compact_ledger_doc
+    )
+    assert "_sha256(__file__)" in compact_ledger_doc
+    assert "every task was `TERMINATED`/`FAILED`" in compact_ledger_doc
+    assert "every parent was `INTERNAL_ERROR`/`FAILED`" in compact_ledger_doc
+    assert "with no repair attempt" in compact_ledger_doc
+    assert "ledger-summed 2.7055291666666665 GPU-hours" in compact_ledger_doc
+    assert "exact 476/338/476 prefix" in compact_ledger_doc
+    assert (
+        "at 126.65062833333326 terminal GPU-hours, with zero active reservations "
+        "and 897.3493716666667 hours remaining" in compact_ledger_doc
+    )
+    assert "publication-q8/404d0ed6ae2f169d1777/worker-{00..15}" in (
+        compact_ledger_doc
+    )
+    assert "must not be repaired, resumed, relabeled, or reused" in compact_ledger_doc
+    assert "corrected runner uses a fresh source closure" in compact_ledger_doc
+    for digest in (
+        "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
+        "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
+        "a12a67cfd82156cb54f8305196cd8d622170efaf10125cd23a6d56730de51a06",
+        "e2f8b682dddf5885f1c03355c2513a6fcfc485491f4ec4066d80a0e1fd69a703",
+        "404d0ed6ae2f169d1777034c81a057e2af131d805ecd9672900bfc7221871246",
+        "4fc227971ac165d639f5ba29d17e96df1e27aacb4ceff3e4412b417fbf7fdcdd",
+        "39fda42764dbe599d6f869d7bac0ea91034762438e636f3d1e7f90656baee1ce",
+        "b62b66105cc9d048e4c94c88927f23c724f01c876ef9283c34a0d94a5afa7f46",
+        "a9ba97f78ce2c3afc4df575f538bf13929ba8986916dabc315df627da79bcbc9",
+        "ddaadeb6655d86beca7a0c74087f56c270df640e29c53bcc51f9540ce938ca3e",
+    ):
+        assert digest in compact_ledger_doc
+    assert (
+        "publication-q8-v2/{q8-plan[:12]}-{qualification-plan[:12]}-"
+        "{runner[:12]}/worker-{index:02d}" in compact_ledger_doc
+    )
     assert (
         "L40S is the sole publication handoff generator. Fresh native-v2 "
         "eligibility requires same-hardware fresh-load byte reproducibility"

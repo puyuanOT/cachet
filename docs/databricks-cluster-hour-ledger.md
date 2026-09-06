@@ -475,12 +475,56 @@ complete prefix and uses automatic zone placement for L40S qualification,
 latency-handoff, BF16-handoff, and full-score producer jobs while retaining the
 reviewed on-demand `g6e.4xlarge` hardware contract.
 
+A fresh automatic-zone successor qualification subsequently passed under the
+then-bound source inputs. Its plan closes as
+`f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e`,
+its phase batch as
+`2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a`,
+and its qualification evidence as
+`a12a67cfd82156cb54f8305196cd8d622170efaf10125cd23a6d56730de51a06`.
+All fourteen planned attempt-zero jobs succeeded. Their 12,887.761 terminal
+seconds add 3.5799336111111115 GPU-hours and close the exact 460/322/460
+prefix
+`e2f8b682dddf5885f1c03355c2513a6fcfc485491f4ec4066d80a0e1fd69a703`
+at 123.94509916666661 terminal GPU-hours, with zero active reservations and
+900.0549008333334 hours remaining. This is historical qualification evidence
+for those exact source inputs; it does not authorize a patched source tree or
+corrected runner, which require a fresh qualification.
+
+The first sixteen-job latency-handoff wave is retained only as failed,
+non-authorizing evidence. Its frozen assignment plan closes as
+`404d0ed6ae2f169d1777034c81a057e2af131d805ecd9672900bfc7221871246`,
+its emitted runner has SHA-256
+`4fc227971ac165d639f5ba29d17e96df1e27aacb4ceff3e4412b417fbf7fdcdd`,
+and its attempt IDs are exactly
+`publication-q8/404d0ed6ae2f169d1777/worker-{00..15}`. All sixteen
+attempt-zero L40S tasks failed before handoff generation because the bootstrap
+evaluated `_sha256(__file__)` where `__file__` was undefined; every task was
+`TERMINATED`/`FAILED` and every parent was `INTERNAL_ERROR`/`FAILED`, with no
+repair attempt. Their 9,739.905 terminal seconds add a ledger-summed
+2.7055291666666665 GPU-hours and close the exact 476/338/476 prefix
+`39fda42764dbe599d6f869d7bac0ea91034762438e636f3d1e7f90656baee1ce`
+at 126.65062833333326 terminal GPU-hours, with zero active reservations and
+897.3493716666667 hours remaining. The failure-closure result closes as
+`b62b66105cc9d048e4c94c88927f23c724f01c876ef9283c34a0d94a5afa7f46`,
+its 32-record evidence manifest as
+`a9ba97f78ce2c3afc4df575f538bf13929ba8986916dabc315df627da79bcbc9`,
+and the resulting ledger file has SHA-256
+`ddaadeb6655d86beca7a0c74087f56c270df640e29c53bcc51f9540ce938ca3e`.
+This wave cannot authorize publication and must not be repaired, resumed,
+relabeled, or reused; a corrected runner uses a fresh source closure and the
+`publication-q8-v2/...` attempt namespace.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local
 submission, while an accepted request whose response was lost may be recovered
 only by replaying those exact bytes and token; Databricks then returns the same
-run identity. Payload or token drift remains fail-closed.
+run identity. Payload or token drift remains fail-closed. Q8 successor attempt
+identities use
+`publication-q8-v2/{q8-plan[:12]}-{qualification-plan[:12]}-{runner[:12]}/worker-{index:02d}`
+so a newly qualified package and corrected bootstrap runner cannot collide with
+an earlier terminal Q8 wave over the same frozen assignment plan.
 
 The record freezes five deployment blocks, matched Baseline/Vanilla jobs at
 8k/16k/32k and closed-loop concurrency 1/2/4, 32 examples per dataset, two

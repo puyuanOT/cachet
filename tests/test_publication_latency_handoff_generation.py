@@ -868,6 +868,87 @@ def production_launch_material(prepared, monkeypatch):
     return plan, payloads, job_config, qualification, authorization
 
 
+def test_q8_attempt_identity_binds_plan_qualification_and_runner(prepared, monkeypatch):
+    plan, payloads, _job_config, qualification, _authorization = (
+        production_launch_material(prepared, monkeypatch)
+    )
+    payload = payloads[0]
+    expected = (
+        f"publication-q8-v2/{plan['closed_record_sha256'][:12]}-"
+        f"{qualification.selection.plan_sha256[:12]}-"
+        f"{generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256[:12]}/worker-00"
+    )
+    observed = publication_latency_handoff_worker_attempt_id(
+        payload,
+        worker_index=0,
+    )
+
+    assert observed == expected
+
+    successor_payload = copy.deepcopy(payload)
+    successor_payload["generator_hardware_qualification"][
+        "plan_closed_record_sha256"
+    ] = "b" * 64
+    assert (
+        publication_latency_handoff_worker_attempt_id(
+            successor_payload,
+            worker_index=0,
+        )
+        != observed
+    )
+
+    monkeypatch.setattr(
+        generation,
+        "PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256",
+        "c" * 64,
+    )
+    assert (
+        publication_latency_handoff_worker_attempt_id(
+            payload,
+            worker_index=0,
+        )
+        != observed
+    )
+
+
+@pytest.mark.parametrize(
+    "qualification_plan_sha256",
+    (
+        None,
+        "",
+        "0" * 63,
+        "0" * 65,
+        "A" * 64,
+        "g" * 64,
+        7,
+        False,
+    ),
+)
+def test_q8_attempt_identity_rejects_missing_or_malformed_qualification_plan(
+    prepared,
+    monkeypatch,
+    qualification_plan_sha256,
+):
+    _plan, payloads, _job_config, _qualification, _authorization = (
+        production_launch_material(prepared, monkeypatch)
+    )
+    payload = copy.deepcopy(payloads[0])
+    qualification = payload["generator_hardware_qualification"]
+    if qualification_plan_sha256 is None:
+        del qualification["plan_closed_record_sha256"]
+    else:
+        qualification["plan_closed_record_sha256"] = qualification_plan_sha256
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "worker qualification plan_closed_record_sha256 must be a lowercase "
+            "SHA-256 digest"
+        ),
+    ):
+        publication_latency_handoff_worker_attempt_id(payload, worker_index=0)
+
+
 def test_native_v2_payload_binding_is_strict_and_v1_is_nonlaunchable(
     prepared, monkeypatch, tmp_path
 ):

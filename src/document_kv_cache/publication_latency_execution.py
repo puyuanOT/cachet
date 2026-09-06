@@ -420,7 +420,13 @@ def main() -> None:
     parser.add_argument("--task-run-id", required=True)
     args = parser.parse_args()
     _verified(args.runner_uri, args.runner_sha256, "publication latency runner")
-    _verified(__file__, args.runner_sha256, "executing publication latency runner")
+    # Databricks compiles spark_python_task files without defining __file__.
+    runner_path = os.path.realpath(sys._getframe().f_code.co_filename)
+    _verified(
+        runner_path,
+        args.runner_sha256,
+        "executing publication latency runner",
+    )
     wheel = _verified(
         args.package_wheel_uri,
         args.package_wheel_sha256,
@@ -631,7 +637,9 @@ def main() -> None:
     parser.add_argument("--request-closed-record-sha256", required=True)
     parser.add_argument("--coordinator-run-id", required=True)
     args = parser.parse_args()
-    if _sha256(__file__) != args.runner_sha256:
+    # Databricks compiles spark_python_task files without defining __file__.
+    runner_path = os.path.realpath(sys._getframe().f_code.co_filename)
+    if _sha256(runner_path) != args.runner_sha256:
         raise ValueError("source-closure runner SHA-256 drift")
     package_wheel = _verified(
         args.package_wheel_uri,

@@ -342,10 +342,12 @@ def _venv_subprocess_env(venv_dir: str) -> dict[str, str]:
 
 
 def _runner_script_path() -> str:
-    script_path = globals().get("__file__") or sys.argv[0]
+    # Databricks' wrapper does not define __file__, but compile() preserves the
+    # exact downloaded path on this function's code object.
+    script_path = sys._getframe().f_code.co_filename
     if not script_path:
         raise RuntimeError("Cannot determine generated engine-probe runner script path")
-    return script_path
+    return os.path.realpath(script_path)
 
 
 def _pip_package_name(package: str) -> str:

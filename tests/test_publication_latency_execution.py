@@ -200,14 +200,14 @@ def test_reviewed_v2_constants_and_successor_verifier_use_ordered_streams(
         reviewed_v2_prefix.reservation_count,
         reviewed_v2_prefix.submission_receipt_count,
         reviewed_v2_prefix.terminal_actual_count,
-    ) == (446, 308, 446)
+    ) == (476, 338, 476)
     assert reviewed_v2_prefix.prefix_sha256 == (
-        "3f2d86386b5431782cc07915ba61d6f103704a357548835001b6849b6ee4d963"
+        "39fda42764dbe599d6f869d7bac0ea91034762438e636f3d1e7f90656baee1ce"
     )
     assert PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS == 71.39012833333337
     assert (
         qualification_v2.GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
-        == 120.3651655555555
+        == 126.65062833333326
     )
 
     ledger_path = tmp_path / "ordered-ledger.json"
@@ -2012,7 +2012,7 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     assert '"--extra-index-url"' not in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
-    assert "_verified(__file__, args.runner_sha256" in (
+    assert "sys._getframe().f_code.co_filename" in (
         execution.PUBLICATION_LATENCY_RUNNER_SCRIPT
     )
     bound_runner = tmp_path / "bound-publication-latency-runner.py"
@@ -2022,10 +2022,7 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     )
     substituted_runner = tmp_path / "substituted-publication-latency-runner.py"
     substituted_runner.write_text("# unreviewed runner\n", encoding="utf-8")
-    runner_namespace = {
-        "__file__": str(substituted_runner),
-        "__name__": "latency_runner_provenance_test",
-    }
+    runner_namespace = {"__name__": "latency_runner_provenance_test"}
     exec(
         compile(
             execution.PUBLICATION_LATENCY_RUNNER_SCRIPT,
@@ -2062,10 +2059,7 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
 
     wheel = tmp_path / "cachet.whl"
     wheel.write_bytes(b"publication-latency-wheel")
-    valid_runner_namespace = {
-        "__file__": str(bound_runner),
-        "__name__": "latency_runner_child_test",
-    }
+    valid_runner_namespace = {"__name__": "latency_runner_child_test"}
     exec(
         compile(
             execution.PUBLICATION_LATENCY_RUNNER_SCRIPT,

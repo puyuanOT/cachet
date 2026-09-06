@@ -414,7 +414,10 @@ def _bootstrap(argv: list[str]) -> None:
     parser.add_argument("--runtime-closure-manifest-sha256", required=True)
     parser.add_argument("--runtime-venv-dir", required=True)
     args, remaining = parser.parse_known_args(argv)
-    if not hmac.compare_digest(_sha256(__file__), args.runner_sha256):
+    # Databricks compiles spark_python_task files without defining __file__.
+    # The code filename remains the exact downloaded file that is executing.
+    runner_path = os.path.realpath(sys._getframe().f_code.co_filename)
+    if not hmac.compare_digest(_sha256(runner_path), args.runner_sha256):
         raise ValueError("latency handoff runner SHA-256 does not match")
     package_wheel = _verified_path(
         args.package_wheel_uri, args.package_wheel_sha256, "Cachet wheel"
@@ -1842,7 +1845,7 @@ def publication_latency_handoff_worker_attempt_id(
     *,
     worker_index: int,
 ) -> str:
-    """Return the sole publication attempt identity for one Q8 worker."""
+    """Return the source-qualified successor identity for one Q8 worker."""
 
     _validate_producer_worker_index(worker_index)
     if _required_int(worker_payload, "worker_index") != worker_index:
@@ -1851,7 +1854,19 @@ def publication_latency_handoff_worker_attempt_id(
         _required_mapping(worker_payload, "plan").get("closed_record_sha256"),
         field_name="worker plan closed_record_sha256",
     )
-    return f"publication-q8/{plan_sha256[:20]}/worker-{worker_index:02d}"
+    qualification_plan_sha256 = _require_sha256(
+        _required_mapping(
+            worker_payload,
+            "generator_hardware_qualification",
+        ).get("plan_closed_record_sha256"),
+        field_name="worker qualification plan_closed_record_sha256",
+    )
+    return (
+        f"publication-q8-v2/{plan_sha256[:12]}-"
+        f"{qualification_plan_sha256[:12]}-"
+        f"{PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256[:12]}/"
+        f"worker-{worker_index:02d}"
+    )
 
 
 def write_publication_latency_handoff_runner_script(path: str | Path) -> Path:

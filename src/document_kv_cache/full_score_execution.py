@@ -416,7 +416,9 @@ def _bootstrap(argv: list[str]) -> None:
     parser.add_argument("--runtime-closure-manifest-sha256", required=True)
     parser.add_argument("--runtime-venv-dir", required=True)
     args, remaining = parser.parse_known_args(argv)
-    _verified_path(__file__, args.runner_sha256, "full-score runner")
+    # Databricks compiles spark_python_task files without defining __file__.
+    runner_path = os.path.realpath(sys._getframe().f_code.co_filename)
+    _verified_path(runner_path, args.runner_sha256, "full-score runner")
     package_wheel = _verified_path(
         args.package_wheel_uri, args.package_wheel_sha256, "Cachet wheel"
     )
