@@ -5906,6 +5906,9 @@ def test_runtime_verifier_requires_bounded_canonical_stdout_and_empty_stderr(
     assert bounded_call["timeout_seconds"] == (
         full_score.FULL_SCORE_RUNTIME_VERIFIER_TIMEOUT_SECONDS
     )
+    # The public verifier has its own 300-second bounded child.
+    assert bounded_call["timeout_seconds"] == 360.0
+    assert bounded_call["timeout_seconds"] - 300.0 == 60.0
     assert bounded_call["output_limit_bytes"] == (
         full_score.FULL_SCORE_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES
     )

@@ -266,15 +266,23 @@ import argparse
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
+import selectors
+import signal
 import subprocess
 import sys
 import urllib.request
+from time import monotonic, sleep
 
 __GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
 
-_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 300.0
+_FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES = 1_048_576
+_FINAL_RUNTIME_VERIFIER_READ_BYTES = 64 * 1024
+_FINAL_RUNTIME_VERIFIER_POLL_SECONDS = 0.05
+_FINAL_RUNTIME_VERIFIER_TERMINATE_GRACE_SECONDS = 1.0
+_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 360.0
 VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
 VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
 VIRTUALENV_BOOTSTRAP_SHA256 = __CACHET_VIRTUALENV_BOOTSTRAP_SHA256__
@@ -404,6 +412,288 @@ def _runtime_marker(args: argparse.Namespace) -> str:
     ).hexdigest()
 
 
+class _BoundedChildResult:
+    def __init__(
+        self,
+        *,
+        returncode: int,
+        stdout: bytes,
+        stderr: bytes,
+        timed_out: bool,
+        output_limit_exceeded: bool,
+    ) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+        self.output_limit_exceeded = output_limit_exceeded
+
+
+def _signal_child_process_group(
+    process: subprocess.Popen[bytes],
+    signal_number: int,
+    *,
+    label: str,
+) -> None:
+    try:
+        os.killpg(process.pid, signal_number)
+    except (PermissionError, ProcessLookupError):
+        return
+    except OSError:
+        raise RuntimeError(label + " process-group cleanup failed") from None
+
+
+def _child_process_group_exists(
+    process: subprocess.Popen[bytes],
+    *,
+    label: str,
+) -> bool:
+    try:
+        os.killpg(process.pid, 0)
+    except (PermissionError, ProcessLookupError):
+        return False
+    except OSError:
+        raise RuntimeError(label + " process-group cleanup failed") from None
+    return True
+
+
+def _wait_child_process_group_exit(
+    process: subprocess.Popen[bytes],
+    *,
+    label: str,
+) -> bool:
+    deadline = monotonic() + _FINAL_RUNTIME_VERIFIER_TERMINATE_GRACE_SECONDS
+    while True:
+        try:
+            process.poll()
+        except (OSError, ValueError):
+            raise RuntimeError(label + " process-group cleanup failed") from None
+        if not _child_process_group_exists(process, label=label):
+            return True
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return False
+        sleep(min(_FINAL_RUNTIME_VERIFIER_POLL_SECONDS, remaining))
+
+
+def _terminate_child_process_group(
+    process: subprocess.Popen[bytes],
+    *,
+    label: str,
+) -> None:
+    _signal_child_process_group(process, signal.SIGTERM, label=label)
+    if process.poll() is None:
+        try:
+            process.wait(timeout=_FINAL_RUNTIME_VERIFIER_TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            _signal_child_process_group(process, signal.SIGKILL, label=label)
+            try:
+                process.wait(
+                    timeout=_FINAL_RUNTIME_VERIFIER_TERMINATE_GRACE_SECONDS
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    label + " process-group cleanup failed"
+                ) from None
+        except (OSError, ValueError):
+            raise RuntimeError(label + " process-group cleanup failed") from None
+    if _wait_child_process_group_exit(process, label=label):
+        return
+    _signal_child_process_group(process, signal.SIGKILL, label=label)
+    if not _wait_child_process_group_exit(process, label=label):
+        raise RuntimeError(label + " process-group cleanup failed") from None
+
+
+def _run_bounded_child(
+    command: list[str],
+    *,
+    environment: dict[str, str],
+    timeout_seconds: float,
+    label: str,
+) -> _BoundedChildResult:
+    transport_failed = False
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            start_new_session=True,
+            bufsize=0,
+        )
+    except OSError:
+        raise RuntimeError(label + " process could not start") from None
+    if process.stdout is None or process.stderr is None:
+        _terminate_child_process_group(process, label=label)
+        raise RuntimeError(label + " transport failed")
+    stdout = bytearray()
+    stderr = bytearray()
+    streams = (process.stdout, process.stderr)
+    selector = selectors.DefaultSelector()
+    timed_out = False
+    output_limit_exceeded = False
+    deadline = monotonic() + timeout_seconds
+    try:
+        for stream in streams:
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            for key, _events in selector.select(
+                min(_FINAL_RUNTIME_VERIFIER_POLL_SECONDS, remaining)
+            ):
+                try:
+                    chunk = os.read(key.fd, _FINAL_RUNTIME_VERIFIER_READ_BYTES)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                    continue
+                target = stdout if key.fileobj is process.stdout else stderr
+                retained = _FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES + 1 - len(
+                    target
+                )
+                if retained > 0:
+                    target.extend(chunk[:retained])
+                if len(target) > _FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES:
+                    output_limit_exceeded = True
+                    break
+            if output_limit_exceeded:
+                break
+        if not timed_out and not output_limit_exceeded:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                timed_out = True
+            else:
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+    except BaseException:  # fixed transport classification; never leak stream data
+        transport_failed = True
+    finally:
+        try:
+            selector.close()
+        except BaseException:
+            transport_failed = True
+        for stream in streams:
+            try:
+                if not stream.closed:
+                    stream.close()
+            except BaseException:
+                transport_failed = True
+    _terminate_child_process_group(process, label=label)
+    if transport_failed:
+        raise RuntimeError(label + " transport failed") from None
+    returncode = process.returncode
+    if not isinstance(returncode, int):
+        raise RuntimeError(label + " transport failed")
+    return _BoundedChildResult(
+        returncode=returncode,
+        stdout=bytes(stdout),
+        stderr=bytes(stderr),
+        timed_out=timed_out,
+        output_limit_exceeded=output_limit_exceeded,
+    )
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_json_constant(_value: str) -> object:
+    raise ValueError("non-finite JSON constant")
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number")
+    return parsed
+
+
+def _canonical_runtime_attestation(record: dict[str, object]) -> bytes:
+    return (
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\\n"
+    ).encode("utf-8")
+
+
+def _parse_runtime_attestation(
+    stdout: object,
+    stderr: object,
+    *,
+    label: str,
+) -> tuple[dict[str, object], bytes]:
+    if not isinstance(stdout, bytes) or not isinstance(stderr, bytes):
+        raise RuntimeError(label + " verifier transport differs")
+    if (
+        len(stdout) > _FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES
+        or len(stderr) > _FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES
+    ):
+        raise RuntimeError(label + " verifier output exceeds its limit")
+    if stderr:
+        raise RuntimeError(label + " verifier wrote stderr")
+    if not stdout:
+        raise RuntimeError(label + " verifier output is invalid")
+    try:
+        value = json.loads(
+            stdout.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_nonfinite_json_constant,
+            parse_float=_finite_json_float,
+        )
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        raise RuntimeError(label + " verifier output is invalid") from None
+    if not isinstance(value, dict):
+        raise RuntimeError(label + " verifier did not emit an object")
+    try:
+        canonical = _canonical_runtime_attestation(value)
+    except (TypeError, ValueError):
+        raise RuntimeError(label + " verifier output is invalid") from None
+    if stdout != canonical:
+        raise RuntimeError(label + " verifier output is not canonical")
+    return value, canonical
+
+
+def _require_validator_success(completed: _BoundedChildResult) -> None:
+    if completed.timed_out:
+        raise RuntimeError(
+            "v2 locked runtime attestation validator process timed out"
+        )
+    if completed.output_limit_exceeded:
+        raise RuntimeError("v2 locked runtime validator output exceeds its limit")
+    if not isinstance(completed.stdout, bytes) or not isinstance(
+        completed.stderr, bytes
+    ):
+        raise RuntimeError("v2 locked runtime validator transport differs")
+    if (
+        len(completed.stdout) > _FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES
+        or len(completed.stderr) > _FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES
+    ):
+        raise RuntimeError("v2 locked runtime validator output exceeds its limit")
+    if completed.returncode != 0:
+        raise RuntimeError("v2 locked runtime attestation validator process failed")
+    if completed.stderr != b"" or completed.stdout != b"validated\\n":
+        raise RuntimeError("v2 locked runtime attestation validator output differs")
+
+
 def _verify_locked_runtime(
     *,
     venv_python: str,
@@ -416,14 +706,12 @@ def _verify_locked_runtime(
     environment: dict[str, str],
 ) -> None:
     verifier = (
-        "import json,sys; from document_kv_cache._gpu_qualification_sentinels_v2 "
-        "import verify_gpu_qualification_v2_runtime_installation as verify; "
-        "print(json.dumps(verify(runtime_lock=sys.argv[1],vllm_uri=sys.argv[2],"
-        "flashinfer_uri=sys.argv[3],runtime_closure_manifest=sys.argv[4],"
-        "package_uri=sys.argv[5],package_sha256=sys.argv[6]),sort_keys=True,"
-        "separators=(',',':')))"
+        "import os,sys\\n"
+        "from document_kv_cache._gpu_qualification_sentinels_v2 import "
+        "_gpu_runtime_final_verifier_main as main\\n"
+        "os._exit(main(sys.argv[1:]))\\n"
     )
-    completed = subprocess.run(
+    completed = _run_bounded_child(
         [
             venv_python,
             "-c",
@@ -435,43 +723,46 @@ def _verify_locked_runtime(
             Path(package_wheel).resolve().as_uri(),
             package_wheel_sha256,
         ],
-        capture_output=True,
-        text=True,
-        env=environment,
-        timeout=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
+        environment=environment,
+        timeout_seconds=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
+        label="v2 locked runtime verifier",
     )
+    if completed.timed_out:
+        raise RuntimeError("v2 locked runtime verifier process timed out")
+    if completed.output_limit_exceeded:
+        raise RuntimeError("v2 locked runtime verifier output exceeds its limit")
     if completed.returncode != 0:
         raise RuntimeError("v2 locked runtime verifier process failed")
-    if completed.stderr != "":
-        raise RuntimeError("v2 locked runtime verifier emitted stderr")
-    try:
-        attestation = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        raise RuntimeError("v2 locked runtime verifier emitted invalid JSON") from None
-    if not isinstance(attestation, dict):
-        raise RuntimeError("v2 locked runtime verifier did not emit an object")
-    canonical_stdout = (
-        json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\\n"
+    attestation, canonical_stdout = _parse_runtime_attestation(
+        completed.stdout,
+        completed.stderr,
+        label="v2 locked runtime",
     )
-    if completed.stdout != canonical_stdout:
-        raise RuntimeError("v2 locked runtime verifier output is not canonical")
-    validator = (
-        "import json,sys; from document_kv_cache.gpu_qualification_v2 "
-        "import validate_gpu_qualification_v2_runtime_attestation as validate; "
-        "validate(json.load(sys.stdin)); print('validated')"
+    validator = '''import json
+import os
+import sys
+
+from document_kv_cache.gpu_qualification_v2 import (
+    validate_gpu_qualification_v2_runtime_attestation as validate,
+)
+
+validate(json.loads(sys.argv[1]))
+payload = b"validated\\\\n"
+offset = 0
+while offset < len(payload):
+    written = os.write(1, payload[offset:])
+    if written <= 0:
+        raise RuntimeError("validator protocol write failed")
+    offset += written
+os._exit(0)
+'''
+    validated = _run_bounded_child(
+        [venv_python, "-c", validator, canonical_stdout.decode("utf-8")],
+        environment=environment,
+        timeout_seconds=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
+        label="v2 locked runtime attestation validator",
     )
-    validated = subprocess.run(
-        [venv_python, "-c", validator],
-        input=canonical_stdout,
-        capture_output=True,
-        text=True,
-        env=environment,
-        timeout=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
-    )
-    if validated.returncode != 0:
-        raise RuntimeError("v2 locked runtime attestation validator process failed")
-    if validated.stderr != "" or validated.stdout != "validated\\n":
-        raise RuntimeError("v2 locked runtime attestation validator output differs")
+    _require_validator_success(validated)
     expected_direct_urls = {
         "flashinfer_direct_url": Path(patched_flashinfer_wheel).resolve().as_uri(),
         "vllm_direct_url": Path(patched_vllm_wheel).resolve().as_uri(),

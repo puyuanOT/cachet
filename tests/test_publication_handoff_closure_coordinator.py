@@ -789,7 +789,7 @@ def test_closure_runner_inherits_native_v2_four_step_cpu_runtime() -> None:
     assert VIRTUALENV_BOOTSTRAP_URL in script
     assert VIRTUALENV_BOOTSTRAP_SHA256 in script
     assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in script
-    assert "verify_gpu_qualification_v2_runtime_installation" in script
+    assert "_gpu_runtime_final_verifier_main" in script
     install_markers = (
         '"--require-hashes", "--only-binary", ":all:"',
         '"vllm", patched_vllm_wheel',

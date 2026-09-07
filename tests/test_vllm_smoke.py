@@ -965,6 +965,12 @@ def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
     ]
     assert kwargs["capture_output"] is True
     assert kwargs["text"] is True
+    assert kwargs["timeout"] == (
+        public_vllm_smoke._NATIVE_RUNTIME_V2_FINAL_VERIFIER_TIMEOUT_SECONDS
+    )
+    # The public verifier has its own 300-second bounded child.
+    assert kwargs["timeout"] == 360
+    assert kwargs["timeout"] - 300 == 60
     assert kwargs["env"] == {
         "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
         "PYTHONSAFEPATH": "1",

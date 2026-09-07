@@ -2188,7 +2188,7 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
-    assert "verify_locked_runtime_v2_package_installation as verify" in (
+    assert "_locked_runtime_package_final_verifier_main as main" in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
     assert "validate_locked_runtime_v2_package_installation_attestation" in (
@@ -2212,12 +2212,37 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
     assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "print"
+        for node in ast.walk(source_runner_tree)
+    )
+    assert not any(
         isinstance(node, ast.ImportFrom)
         and isinstance(node.module, str)
         and node.module.startswith("document_kv_cache")
         for node in ast.walk(source_runner_tree)
     )
-    assert "timeout=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS" in (
+    assert "timeout_seconds=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS" in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 360.0" in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "_FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES = 1_048_576" in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "selectors.DefaultSelector()" in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "start_new_session=True" in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "os.killpg(" in execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    assert "pip_check = _run_bounded_child(" in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "capture_output=True" not in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
     execution.validate_publication_latency_source_closure_request(request)
@@ -2275,28 +2300,66 @@ def test_source_closure_runtime_verifier_and_validator_both_run_in_venv(
         "schema_version": 2,
         "vllm_direct_url": vllm_wheel.resolve().as_uri(),
     }
-    canonical = json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n"
+    canonical = (
+        json.dumps(
+            attestation,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
     calls = []
 
-    def run(command, *, capture_output, text, env, timeout, input=None):
-        calls.append((command, input))
+    def run(command, *, environment, timeout_seconds, label):
+        calls.append((command, label))
         assert command[0] == "venv-python"
         assert command[1] == "-c"
-        assert capture_output is True
-        assert text is True
-        assert env == {"SAFE": "1"}
-        assert timeout == 300.0
-        if input is None:
-            assert "verify_locked_runtime_v2_package_installation" in command[2]
-            assert "verify_gpu_qualification_v2_runtime_installation" not in command[2]
-            return SimpleNamespace(returncode=0, stderr="", stdout=canonical)
-        assert input == canonical
+        assert environment == {"SAFE": "1"}
+        assert timeout_seconds == 360.0
+        if len(calls) == 1:
+            assert "_locked_runtime_package_final_verifier_main" in command[2]
+            assert "_gpu_runtime_final_verifier_main" not in command[2]
+            assert "os._exit(main(sys.argv[1:]))" in command[2]
+            assert "SystemExit" not in command[2]
+            return SimpleNamespace(
+                output_limit_exceeded=False,
+                returncode=0,
+                stderr=b"",
+                stdout=canonical,
+                timed_out=False,
+            )
+        assert command[3] == canonical.decode("utf-8")
         assert (
             "validate_locked_runtime_v2_package_installation_attestation" in command[2]
         )
-        return SimpleNamespace(returncode=0, stderr="", stdout="validated\n")
+        validator_tree = ast.parse(command[2])
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+            for node in ast.walk(validator_tree)
+        )
+        assert any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+            and node.func.attr == "write"
+            for node in ast.walk(validator_tree)
+        )
+        assert any(isinstance(node, ast.While) for node in ast.walk(validator_tree))
+        assert "os._exit(0)" in command[2]
+        return SimpleNamespace(
+            output_limit_exceeded=False,
+            returncode=0,
+            stderr=b"",
+            stdout=b"validated\n",
+            timed_out=False,
+        )
 
-    monkeypatch.setattr(namespace["subprocess"], "run", run)
+    namespace["_run_bounded_child"] = run
     verified = namespace["_verify_locked_runtime"](
         venv_python="venv-python",
         runtime_lock=str(tmp_path / "base.lock"),
@@ -2310,8 +2373,440 @@ def test_source_closure_runtime_verifier_and_validator_both_run_in_venv(
 
     assert verified == attestation
     assert len(calls) == 2
-    assert calls[0][1] is None
-    assert calls[1][1] == canonical
+    assert calls[0][1] == "source-closure native-v2 verifier"
+    assert calls[1][1] == "source-closure native-v2 attestation validator"
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_message"),
+    (
+        ("empty", "verifier output is invalid"),
+        ("prefix", "verifier output is invalid"),
+        ("suffix", "verifier output is invalid"),
+        ("noncanonical", "verifier output is not canonical"),
+        ("duplicate", "verifier output is invalid"),
+        ("nonfinite", "verifier output is invalid"),
+        ("unicode-unescaped", "verifier output is not canonical"),
+        ("stderr", "verifier wrote stderr"),
+        ("nonzero", "verifier process failed"),
+        ("timeout", "verifier process timed out"),
+        ("oversize", "verifier output exceeds its limit"),
+    ),
+)
+def test_source_closure_runtime_verifier_protocol_fails_closed_without_raw_leakage(
+    monkeypatch,
+    tmp_path,
+    failure,
+    expected_message,
+):
+    namespace = {"__name__": "latency_source_closure_protocol_test"}
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+            "publication_latency_source_closure_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    vllm_wheel = tmp_path / "vllm.whl"
+    flashinfer_wheel = tmp_path / "flashinfer.whl"
+    attestation = {
+        "flashinfer_direct_url": flashinfer_wheel.resolve().as_uri(),
+        "gpu_execution_attested": False,
+        "ok": True,
+        "record_type": "cachet.locked_runtime_package_installation.v2",
+        "schema_version": 2,
+        "vllm_direct_url": vllm_wheel.resolve().as_uri(),
+    }
+    canonical = (
+        json.dumps(
+            attestation,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    secret = b"SENSITIVE-VERIFIER-OUTPUT"
+
+    def run(command, *, environment, timeout_seconds, label):
+        del command, environment, label
+        assert timeout_seconds == 360.0
+        stdout = canonical
+        stderr = b""
+        returncode = 0
+        timed_out = False
+        output_limit_exceeded = False
+        if failure == "empty":
+            stdout = b""
+        elif failure == "prefix":
+            stdout = secret + canonical
+        elif failure == "suffix":
+            stdout = canonical + secret
+        elif failure == "noncanonical":
+            stdout = (json.dumps(attestation, indent=2, sort_keys=True) + "\n").encode()
+        elif failure == "duplicate":
+            stdout = b'{"duplicate":1,"duplicate":2}\n'
+        elif failure == "nonfinite":
+            stdout = b'{"value":NaN}\n'
+        elif failure == "unicode-unescaped":
+            stdout = '{"value":"é"}\n'.encode("utf-8")
+        elif failure == "stderr":
+            stderr = secret
+        elif failure == "nonzero":
+            returncode = 9
+            stdout = secret
+        elif failure == "timeout":
+            returncode = -15
+            stderr = secret
+            stdout = secret
+            timed_out = True
+        elif failure == "oversize":
+            stdout = secret + b"x" * 1_048_576
+            output_limit_exceeded = True
+        return SimpleNamespace(
+            output_limit_exceeded=output_limit_exceeded,
+            returncode=returncode,
+            stderr=stderr,
+            stdout=stdout,
+            timed_out=timed_out,
+        )
+
+    namespace["_run_bounded_child"] = run
+    with pytest.raises(RuntimeError, match=expected_message) as raised:
+        namespace["_verify_locked_runtime"](
+            venv_python="venv-python",
+            runtime_lock=str(tmp_path / "base.lock"),
+            patched_vllm_wheel=str(vllm_wheel),
+            patched_flashinfer_wheel=str(flashinfer_wheel),
+            runtime_closure_manifest=str(tmp_path / "closure.json"),
+            package_wheel=str(tmp_path / "cachet.whl"),
+            package_wheel_sha256="a" * 64,
+            environment={"SAFE": "1"},
+        )
+    assert secret.decode() not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "returncode", "expected_message"),
+    (
+        (b"", b"", 0, "validator output differs"),
+        (b"SENSITIVEvalidated\n", b"", 0, "validator output differs"),
+        (b"validated\nSENSITIVE", b"", 0, "validator output differs"),
+        (b"validated\n", b"SENSITIVE", 0, "validator output differs"),
+        (b"SENSITIVE", b"SENSITIVE", 7, "validator process failed"),
+        (b"x" * 1_048_577, b"", 0, "validator output exceeds its limit"),
+    ),
+)
+def test_source_closure_runtime_validator_protocol_fails_closed_without_raw_leakage(
+    stdout,
+    stderr,
+    returncode,
+    expected_message,
+):
+    namespace = {"__name__": "latency_source_closure_validator_protocol_test"}
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+            "publication_latency_source_closure_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    completed = SimpleNamespace(
+        output_limit_exceeded=(
+            len(stdout) > 1_048_576 or len(stderr) > 1_048_576
+        ),
+        returncode=returncode,
+        stderr=stderr,
+        stdout=stdout,
+        timed_out=False,
+    )
+    with pytest.raises(RuntimeError, match=expected_message) as raised:
+        namespace["_require_validator_success"](completed)
+    assert "SENSITIVE" not in str(raised.value)
+
+
+def test_source_closure_runtime_validator_timeout_does_not_leak_output(
+    monkeypatch,
+    tmp_path,
+):
+    namespace = {"__name__": "latency_source_closure_validator_timeout_test"}
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+            "publication_latency_source_closure_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    vllm_wheel = tmp_path / "vllm.whl"
+    flashinfer_wheel = tmp_path / "flashinfer.whl"
+    attestation = {
+        "flashinfer_direct_url": flashinfer_wheel.resolve().as_uri(),
+        "vllm_direct_url": vllm_wheel.resolve().as_uri(),
+    }
+    canonical = namespace["_canonical_runtime_attestation"](attestation)
+    calls = 0
+    secret = b"SENSITIVE-VALIDATOR-OUTPUT"
+
+    def run(command, *, environment, timeout_seconds, label):
+        nonlocal calls
+        del environment, label
+        assert timeout_seconds == 360.0
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(
+                output_limit_exceeded=False,
+                returncode=0,
+                stderr=b"",
+                stdout=canonical,
+                timed_out=False,
+            )
+        assert command[3] == canonical.decode("utf-8")
+        return SimpleNamespace(
+            output_limit_exceeded=False,
+            returncode=-15,
+            stderr=secret,
+            stdout=secret,
+            timed_out=True,
+        )
+
+    namespace["_run_bounded_child"] = run
+    with pytest.raises(RuntimeError, match="validator process timed out") as raised:
+        namespace["_verify_locked_runtime"](
+            venv_python="venv-python",
+            runtime_lock=str(tmp_path / "base.lock"),
+            patched_vllm_wheel=str(vllm_wheel),
+            patched_flashinfer_wheel=str(flashinfer_wheel),
+            runtime_closure_manifest=str(tmp_path / "closure.json"),
+            package_wheel=str(tmp_path / "cachet.whl"),
+            package_wheel_sha256="a" * 64,
+            environment={"SAFE": "1"},
+        )
+    assert secret.decode() not in str(raised.value)
+
+
+def test_source_closure_bounded_child_enforces_stream_and_process_group_bounds():
+    namespace = {"__name__": "latency_source_closure_bounded_child_test"}
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+            "publication_latency_source_closure_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    environment = dict(os.environ)
+    exact = namespace["_run_bounded_child"](
+        [
+            sys.executable,
+            "-c",
+            "import os; os.write(1,b'out\\x00'); os.write(2,b'err\\xff')",
+        ],
+        environment=environment,
+        timeout_seconds=5.0,
+        label="bounded-child-test",
+    )
+    assert exact.returncode == 0
+    assert exact.stdout == b"out\x00"
+    assert exact.stderr == b"err\xff"
+    assert exact.timed_out is False
+    assert exact.output_limit_exceeded is False
+
+    oversized = namespace["_run_bounded_child"](
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; p=b'x'*1048577; o=0; "
+                "exec(\"while o < len(p):\\n w=os.write(1,p[o:])\\n o+=w\")"
+            ),
+        ],
+        environment=environment,
+        timeout_seconds=5.0,
+        label="bounded-child-test",
+    )
+    assert oversized.output_limit_exceeded is True
+    assert len(oversized.stdout) == 1_048_577
+
+    descendant_code = (
+        "import signal,time; "
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)"
+    )
+    descendant = namespace["_run_bounded_child"](
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os,subprocess,sys; "
+                f"p=subprocess.Popen([sys.executable,'-c',{descendant_code!r}]); "
+                "os.write(1,(str(p.pid)+'\\n').encode())"
+            ),
+        ],
+        environment=environment,
+        timeout_seconds=0.2,
+        label="bounded-descendant-test",
+    )
+    assert descendant.timed_out is True
+    descendant_pid = int(descendant.stdout)
+    with pytest.raises(ProcessLookupError):
+        os.kill(descendant_pid, 0)
+
+
+def test_source_closure_verifier_stub_bypasses_atexit_contamination(
+    tmp_path,
+):
+    namespace = {"__name__": "latency_source_closure_atexit_test"}
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+            "publication_latency_source_closure_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    captured = {}
+
+    class CapturedCommand(Exception):
+        pass
+
+    def capture(command, *, environment, timeout_seconds, label):
+        del environment, timeout_seconds, label
+        captured["command"] = command
+        raise CapturedCommand
+
+    namespace["_run_bounded_child"] = capture
+    with pytest.raises(CapturedCommand):
+        namespace["_verify_locked_runtime"](
+            venv_python="venv-python",
+            runtime_lock=str(tmp_path / "base.lock"),
+            patched_vllm_wheel=str(tmp_path / "vllm.whl"),
+            patched_flashinfer_wheel=str(tmp_path / "flashinfer.whl"),
+            runtime_closure_manifest=str(tmp_path / "closure.json"),
+            package_wheel=str(tmp_path / "cachet.whl"),
+            package_wheel_sha256="a" * 64,
+            environment={"SAFE": "1"},
+        )
+    verifier = captured["command"][2]
+    assert "os._exit(main(sys.argv[1:]))" in verifier
+
+    fake_root = tmp_path / "fake-package"
+    fake_package = fake_root / "document_kv_cache"
+    fake_package.mkdir(parents=True)
+    (fake_package / "__init__.py").write_text("", encoding="utf-8")
+    (fake_package / "_gpu_qualification_sentinels_v2.py").write_text(
+        """import atexit
+import os
+
+atexit.register(lambda: os.write(1, b"SENSITIVE-ATEXIT-CONTAMINATION"))
+
+def _locked_runtime_package_final_verifier_main(arguments):
+    if len(arguments) != 6:
+        return 2
+    payload = b'{"ok":true}\\n'
+    offset = 0
+    while offset < len(payload):
+        offset += os.write(1, payload[offset:])
+    return 0
+""",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(fake_root)
+    completed = subprocess.run(
+        [sys.executable, "-c", verifier, *("value" for _ in range(6))],
+        capture_output=True,
+        env=environment,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == b'{"ok":true}\n'
+    assert completed.stderr == b""
+
+
+def test_source_closure_validator_stub_bypasses_atexit_contamination(
+    tmp_path,
+):
+    namespace = {"__name__": "latency_source_closure_validator_atexit_test"}
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+            "publication_latency_source_closure_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    vllm_wheel = tmp_path / "vllm.whl"
+    flashinfer_wheel = tmp_path / "flashinfer.whl"
+    attestation = {
+        "flashinfer_direct_url": flashinfer_wheel.resolve().as_uri(),
+        "vllm_direct_url": vllm_wheel.resolve().as_uri(),
+    }
+    canonical = namespace["_canonical_runtime_attestation"](attestation)
+    captured = {}
+    calls = 0
+
+    class CapturedCommand(Exception):
+        pass
+
+    def capture(command, *, environment, timeout_seconds, label):
+        nonlocal calls
+        del environment, timeout_seconds, label
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(
+                output_limit_exceeded=False,
+                returncode=0,
+                stderr=b"",
+                stdout=canonical,
+                timed_out=False,
+            )
+        captured["command"] = command
+        raise CapturedCommand
+
+    namespace["_run_bounded_child"] = capture
+    with pytest.raises(CapturedCommand):
+        namespace["_verify_locked_runtime"](
+            venv_python="venv-python",
+            runtime_lock=str(tmp_path / "base.lock"),
+            patched_vllm_wheel=str(vllm_wheel),
+            patched_flashinfer_wheel=str(flashinfer_wheel),
+            runtime_closure_manifest=str(tmp_path / "closure.json"),
+            package_wheel=str(tmp_path / "cachet.whl"),
+            package_wheel_sha256="a" * 64,
+            environment={"SAFE": "1"},
+        )
+    validator_command = captured["command"]
+    validator = validator_command[2]
+    assert "os._exit(0)" in validator
+
+    fake_root = tmp_path / "fake-validator-package"
+    fake_package = fake_root / "document_kv_cache"
+    fake_package.mkdir(parents=True)
+    (fake_package / "__init__.py").write_text("", encoding="utf-8")
+    (fake_package / "gpu_qualification_v2.py").write_text(
+        """import atexit
+import os
+
+atexit.register(lambda: os.write(1, b"SENSITIVE-ATEXIT-CONTAMINATION"))
+
+def validate_locked_runtime_v2_package_installation_attestation(record):
+    if not isinstance(record, dict):
+        raise TypeError("record differs")
+""",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(fake_root)
+    completed = subprocess.run(
+        [sys.executable, "-c", validator, validator_command[3]],
+        capture_output=True,
+        env=environment,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == b"validated\n"
+    assert completed.stderr == b""
 
 
 def test_source_closure_runner_cleans_mismatched_virtualenv_download(

@@ -653,8 +653,8 @@ def run_gpu_qualification_sentinel_v2(
     environment.pop(_SYSTEM_CUDA_PARENT_ATTESTATION_ENV, None)
     environment.update(gpu_runtime_warning_environment_overrides())
     environment["PYTHONSAFEPATH"] = "1"
-    environment[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
-        canonical_gpu_qualification_json(system_cuda_parent_attestation)
+    environment[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = canonical_gpu_qualification_json(
+        system_cuda_parent_attestation
     )
     runtime_lock = artifact_paths["runtime_lock_sha256"]
     patched_vllm = artifact_paths["patched_vllm_wheel_sha256"]
@@ -885,6 +885,32 @@ def verify_locked_runtime_v2_package_installation(
 ) -> dict[str, Any]:
     """Verify the locked package installation without claiming GPU host provenance."""
 
+    record = _run_locked_runtime_package_final_verifier(
+        Path(sys.executable),
+        runtime_lock=Path(runtime_lock).absolute(),
+        vllm_uri=vllm_uri,
+        flashinfer_uri=flashinfer_uri,
+        closure_path=Path(runtime_closure_manifest).absolute(),
+        package_uri=package_uri,
+        package_sha256=package_sha256,
+        environment=os.environ,
+    )
+    validate_locked_runtime_v2_package_installation_attestation(record)
+    return record
+
+
+def _verify_locked_runtime_v2_package_installation_attestation(
+    *,
+    runtime_lock: str | Path,
+    vllm_uri: str,
+    flashinfer_uri: str,
+    runtime_closure_manifest: str | Path,
+    package_uri: str,
+    package_sha256: str,
+    stage_callback: Callable[[str], None] | None,
+) -> dict[str, Any]:
+    """Build the CPU-scoped attestation inside an isolated verifier child."""
+
     record = _verify_locked_runtime_v2_package_installation(
         runtime_lock=runtime_lock,
         vllm_uri=vllm_uri,
@@ -892,7 +918,7 @@ def verify_locked_runtime_v2_package_installation(
         runtime_closure_manifest=runtime_closure_manifest,
         package_uri=package_uri,
         package_sha256=package_sha256,
-        stage_callback=None,
+        stage_callback=stage_callback,
     )
     record.update(
         {
@@ -902,6 +928,8 @@ def verify_locked_runtime_v2_package_installation(
         }
     )
     validate_locked_runtime_v2_package_installation_attestation(record)
+    if stage_callback is not None:
+        stage_callback("complete")
     return record
 
 
@@ -916,15 +944,18 @@ def verify_gpu_qualification_v2_runtime_installation(
 ) -> dict[str, Any]:
     """Run the final GPU Linux/CPython/install/provenance/import verifier."""
 
-    return _verify_gpu_qualification_v2_runtime_installation(
-        runtime_lock=runtime_lock,
+    record = _run_final_runtime_verifier(
+        Path(sys.executable),
+        runtime_lock=Path(runtime_lock).absolute(),
         vllm_uri=vllm_uri,
         flashinfer_uri=flashinfer_uri,
-        runtime_closure_manifest=runtime_closure_manifest,
+        closure_path=Path(runtime_closure_manifest).absolute(),
         package_uri=package_uri,
         package_sha256=package_sha256,
-        stage_callback=None,
+        environment=os.environ,
     )
+    validate_gpu_qualification_v2_runtime_attestation(record)
+    return record
 
 
 def _verify_gpu_qualification_v2_runtime_installation(
@@ -946,9 +977,7 @@ def _verify_gpu_qualification_v2_runtime_installation(
         package_sha256=package_sha256,
         stage_callback=stage_callback,
     )
-    system_cuda_parent_attestation = (
-        _system_cuda_parent_attestation_from_environment()
-    )
+    system_cuda_parent_attestation = _system_cuda_parent_attestation_from_environment()
     gpu_record: dict[str, Any] = {}
     for field_name, field_value in record.items():
         if field_name == "unexpected_distributions":
@@ -1205,23 +1234,84 @@ def _run_final_runtime_verifier(
     package_sha256: str,
     environment: Mapping[str, str],
 ) -> dict[str, Any]:
-    _require_final_verifier_timeout_hierarchy()
-    code = (
-        "import sys;"
-        "from document_kv_cache._gpu_qualification_sentinels_v2 import "
-        "_final_runtime_verifier_child_main as main;"
-        "raise SystemExit(main(sys.argv[1:]))"
+    """Run the GPU-scoped final verifier in its bounded child."""
+
+    return _run_scoped_final_runtime_verifier(
+        runtime_python,
+        child_main_name="_gpu_final_runtime_verifier_child_main",
+        runtime_lock=runtime_lock,
+        vllm_uri=vllm_uri,
+        flashinfer_uri=flashinfer_uri,
+        closure_path=closure_path,
+        package_uri=package_uri,
+        package_sha256=package_sha256,
+        environment=environment,
     )
+
+
+def _run_locked_runtime_package_final_verifier(
+    runtime_python: Path,
+    *,
+    runtime_lock: Path,
+    vllm_uri: str,
+    flashinfer_uri: str,
+    closure_path: Path,
+    package_uri: str,
+    package_sha256: str,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    """Run the CPU-scoped final verifier in its bounded child."""
+
+    return _run_scoped_final_runtime_verifier(
+        runtime_python,
+        child_main_name="_locked_runtime_package_final_verifier_child_main",
+        runtime_lock=runtime_lock,
+        vllm_uri=vllm_uri,
+        flashinfer_uri=flashinfer_uri,
+        closure_path=closure_path,
+        package_uri=package_uri,
+        package_sha256=package_sha256,
+        environment=environment,
+    )
+
+
+def _run_scoped_final_runtime_verifier(
+    runtime_python: Path,
+    *,
+    child_main_name: str,
+    runtime_lock: Path,
+    vllm_uri: str,
+    flashinfer_uri: str,
+    closure_path: Path,
+    package_uri: str,
+    package_sha256: str,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    _require_final_verifier_timeout_hierarchy()
+    if child_main_name not in {
+        "_gpu_final_runtime_verifier_child_main",
+        "_locked_runtime_package_final_verifier_child_main",
+    }:
+        raise AssertionError("invalid final runtime verifier child")
+    code = (
+        "import os,sys;"
+        "from document_kv_cache._gpu_qualification_sentinels_v2 import "
+        + child_main_name
+        + " as main;"
+        "os._exit(main(sys.argv[1:]))"
+    )
+    absolute_runtime_lock = runtime_lock.absolute()
+    absolute_closure_path = closure_path.absolute()
     try:
         completed = _run_bounded_binary_subprocess(
             [
                 str(runtime_python),
                 "-c",
                 code,
-                str(runtime_lock),
+                str(absolute_runtime_lock),
                 vllm_uri,
                 flashinfer_uri,
-                str(closure_path),
+                str(absolute_closure_path),
                 package_uri,
                 package_sha256,
             ],
@@ -1261,11 +1351,111 @@ def _run_final_runtime_verifier(
     return cast(dict[str, Any], envelope["attestation"])
 
 
+def _locked_runtime_package_final_verifier_main(
+    arguments: Sequence[str],
+) -> int:
+    """Run and emit one CPU-scoped installed-package attestation."""
+
+    values = _final_runtime_verifier_arguments(arguments)
+    attestation = _run_locked_runtime_package_final_verifier(
+        Path(sys.executable),
+        runtime_lock=Path(values[0]).absolute(),
+        vllm_uri=values[1],
+        flashinfer_uri=values[2],
+        closure_path=Path(values[3]).absolute(),
+        package_uri=values[4],
+        package_sha256=values[5],
+        environment=os.environ,
+    )
+    validate_locked_runtime_v2_package_installation_attestation(attestation)
+    _write_final_runtime_verifier_attestation(attestation)
+    return 0
+
+
+def _gpu_runtime_final_verifier_main(arguments: Sequence[str]) -> int:
+    """Run and emit one GPU-scoped installed-package attestation."""
+
+    values = _final_runtime_verifier_arguments(arguments)
+    attestation = _run_final_runtime_verifier(
+        Path(sys.executable),
+        runtime_lock=Path(values[0]).absolute(),
+        vllm_uri=values[1],
+        flashinfer_uri=values[2],
+        closure_path=Path(values[3]).absolute(),
+        package_uri=values[4],
+        package_sha256=values[5],
+        environment=os.environ,
+    )
+    validate_gpu_qualification_v2_runtime_attestation(attestation)
+    _write_final_runtime_verifier_attestation(attestation)
+    return 0
+
+
+def _write_final_runtime_verifier_attestation(
+    attestation: Mapping[str, Any],
+) -> None:
+    try:
+        encoded = (
+            json.dumps(
+                dict(attestation),
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            "v2 final runtime verifier attestation serialization failed"
+        ) from None
+    if len(encoded) > _FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES:
+        raise RuntimeError("v2 final runtime verifier attestation exceeds its limit")
+    view = memoryview(encoded)
+    try:
+        while view:
+            written = os.write(1, view)
+            if written <= 0:
+                raise RuntimeError("v2 final runtime verifier output write failed")
+            view = view[written:]
+    except OSError:
+        raise RuntimeError("v2 final runtime verifier output write failed") from None
+
+
 def _final_runtime_verifier_child_main(arguments: Sequence[str]) -> int:
+    """Backward-compatible GPU child entry point."""
+
+    return _gpu_final_runtime_verifier_child_main(arguments)
+
+
+def _gpu_final_runtime_verifier_child_main(arguments: Sequence[str]) -> int:
+    """Emit one bounded GPU-scoped canonical verifier envelope."""
+
+    return _scoped_final_runtime_verifier_child_main(
+        arguments, envelope_factory=_gpu_final_runtime_verifier_child_envelope
+    )
+
+
+def _locked_runtime_package_final_verifier_child_main(
+    arguments: Sequence[str],
+) -> int:
+    """Emit one bounded CPU-scoped canonical verifier envelope."""
+
+    return _scoped_final_runtime_verifier_child_main(
+        arguments,
+        envelope_factory=_locked_runtime_package_final_verifier_child_envelope,
+    )
+
+
+def _scoped_final_runtime_verifier_child_main(
+    arguments: Sequence[str],
+    *,
+    envelope_factory: Callable[[Sequence[str]], dict[str, Any]],
+) -> int:
     """Emit one bounded canonical envelope without exception or stream text."""
 
     try:
-        envelope = _final_runtime_verifier_child_envelope(arguments)
+        envelope = envelope_factory(arguments)
         encoded = _canonical_final_runtime_verifier_child_envelope(envelope)
     except BaseException:  # noqa: BLE001 - the child must never serialize exceptions
         envelope = _final_runtime_verifier_failure_envelope(
@@ -1302,6 +1492,33 @@ def _final_runtime_verifier_child_main(arguments: Sequence[str]) -> int:
 
 def _final_runtime_verifier_child_envelope(
     arguments: Sequence[str],
+) -> dict[str, Any]:
+    """Backward-compatible GPU envelope wrapper."""
+
+    return _gpu_final_runtime_verifier_child_envelope(arguments)
+
+
+def _gpu_final_runtime_verifier_child_envelope(
+    arguments: Sequence[str],
+) -> dict[str, Any]:
+    return _scoped_final_runtime_verifier_child_envelope(
+        arguments, verifier=_verify_gpu_qualification_v2_runtime_installation
+    )
+
+
+def _locked_runtime_package_final_verifier_child_envelope(
+    arguments: Sequence[str],
+) -> dict[str, Any]:
+    return _scoped_final_runtime_verifier_child_envelope(
+        arguments,
+        verifier=_verify_locked_runtime_v2_package_installation_attestation,
+    )
+
+
+def _scoped_final_runtime_verifier_child_envelope(
+    arguments: Sequence[str],
+    *,
+    verifier: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
     stage = "arguments"
     category = "none"
@@ -1361,7 +1578,7 @@ def _final_runtime_verifier_child_envelope(
                 nonlocal stage
                 stage = value
 
-            attestation = _verify_gpu_qualification_v2_runtime_installation(
+            attestation = verifier(
                 runtime_lock=values[0],
                 vllm_uri=values[1],
                 flashinfer_uri=values[2],
@@ -1423,7 +1640,23 @@ def _final_runtime_verifier_child_envelope(
         stage = "attestation"
         category = "unexpected_exception"
         attestation = None
-    if succeeded and (stdout_bytes != 0 or stderr_bytes != 0):
+    elif (
+        limit_event.is_set()
+        or stdout_result.limit_exceeded
+        or stderr_result.limit_exceeded
+    ):
+        succeeded = False
+        stage = "attestation"
+        category = "verification_rejected"
+        attestation = None
+    elif not _bounded_stream_result_is_exact(
+        stdout_result
+    ) or not _bounded_stream_result_is_exact(stderr_result):
+        succeeded = False
+        stage = "attestation"
+        category = "unexpected_exception"
+        attestation = None
+    elif succeeded and stderr_bytes != 0:
         succeeded = False
         stage = "attestation"
         category = "verification_rejected"
@@ -1564,7 +1797,7 @@ def _parse_final_runtime_verifier_child_envelope(raw: bytes) -> dict[str, Any]:
             value["category"] != "none"
             or value["stage"] != "complete"
             or not isinstance(value["attestation"], dict)
-            or value["stdout_bytes"] != 0
+            or value["stdout_bytes"] > _FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES
             or value["stderr_bytes"] != 0
         ):
             raise RuntimeError("v2 final runtime verifier protocol failed")

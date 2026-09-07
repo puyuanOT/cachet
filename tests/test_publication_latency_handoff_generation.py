@@ -1,3 +1,4 @@
+import ast
 import copy
 import io
 import json
@@ -6,6 +7,7 @@ import subprocess
 import sys
 from collections import Counter
 from hashlib import sha256
+from types import SimpleNamespace
 
 import pytest
 
@@ -642,9 +644,29 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
         install_script.index("_verify_locked_runtime("),
     ]
     assert install_positions == sorted(install_positions)
-    assert "verify_gpu_qualification_v2_runtime_installation" in (
+    assert "_gpu_runtime_final_verifier_main as main" in (
         generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
     )
+    runner_tree = ast.parse(generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT)
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "print"
+        for node in ast.walk(runner_tree)
+    )
+    assert "_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 360.0" in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
+    assert "_FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES = 1_048_576" in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
+    assert "selectors.DefaultSelector()" in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
+    assert "start_new_session=True" in (
+        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    )
+    assert "os.killpg(" in generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
     marker = namespace["_runtime_marker"](
         type(
             "Args",
@@ -680,31 +702,69 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
         "ok": True,
         "vllm_direct_url": vllm_wheel.resolve().as_uri(),
     }
+    canonical = (
+        json.dumps(
+            attestation,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
     output = {
+        "output_limit_exceeded": False,
         "returncode": 0,
-        "stderr": "",
-        "stdout": json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n",
+        "stderr": b"",
+        "stdout": canonical,
+        "timed_out": False,
     }
     validator_inputs = []
 
-    def run_verifier(command, *, capture_output, text, env, timeout, input=None):
+    def run_verifier(command, *, environment, timeout_seconds, label):
         assert command[0] == "venv-python"
-        assert capture_output is True
-        assert text is True
-        assert env == {"SAFE": "1"}
-        assert timeout == 300.0
-        if input is not None:
+        assert environment == {"SAFE": "1"}
+        assert timeout_seconds == 360.0
+        if "validate_gpu_qualification_v2_runtime_attestation" in command[2]:
             assert command[1] == "-c"
             assert "validate_gpu_qualification_v2_runtime_attestation" in command[2]
-            validator_inputs.append(input)
+            validator_tree = ast.parse(command[2])
+            assert not any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"
+                for node in ast.walk(validator_tree)
+            )
+            assert any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "os"
+                and node.func.attr == "write"
+                for node in ast.walk(validator_tree)
+            )
+            assert any(isinstance(node, ast.While) for node in ast.walk(validator_tree))
+            assert "os._exit(0)" in command[2]
+            validator_inputs.append(command[3])
             return type(
                 "Completed",
                 (),
-                {"returncode": 0, "stderr": "", "stdout": "validated\n"},
+                {
+                    "output_limit_exceeded": False,
+                    "returncode": 0,
+                    "stderr": b"",
+                    "stdout": b"validated\n",
+                    "timed_out": False,
+                },
             )()
+        assert "_gpu_runtime_final_verifier_main" in command[2]
+        assert "_locked_runtime_package_final_verifier_main" not in command[2]
+        assert "os._exit(main(sys.argv[1:]))" in command[2]
+        assert "SystemExit" not in command[2]
+        assert label == "v2 locked runtime verifier"
         return type("Completed", (), output)()
 
-    monkeypatch.setattr(namespace["subprocess"], "run", run_verifier)
+    namespace["_run_bounded_child"] = run_verifier
     verify_kwargs = {
         "venv_python": "venv-python",
         "runtime_lock": str(tmp_path / "base.lock"),
@@ -716,17 +776,157 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
         "environment": {"SAFE": "1"},
     }
     namespace["_verify_locked_runtime"](**verify_kwargs)
-    assert validator_inputs == [
-        json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n"
-    ]
+    assert validator_inputs == [canonical.decode("utf-8")]
 
-    output["stderr"] = "unexpected\n"
-    with pytest.raises(RuntimeError, match="emitted stderr"):
+    output["stderr"] = b"unexpected\n"
+    with pytest.raises(RuntimeError, match="wrote stderr"):
         namespace["_verify_locked_runtime"](**verify_kwargs)
-    output["stderr"] = ""
-    output["stdout"] = json.dumps(attestation, indent=2, sort_keys=True) + "\n"
+    output["stderr"] = b""
+    output["stdout"] = (
+        json.dumps(attestation, indent=2, sort_keys=True) + "\n"
+    ).encode()
     with pytest.raises(RuntimeError, match="not canonical"):
         namespace["_verify_locked_runtime"](**verify_kwargs)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_message"),
+    (
+        ("empty", "verifier output is invalid"),
+        ("prefix", "verifier output is invalid"),
+        ("suffix", "verifier output is invalid"),
+        ("noncanonical", "verifier output is not canonical"),
+        ("duplicate", "verifier output is invalid"),
+        ("nonfinite", "verifier output is invalid"),
+        ("unicode-unescaped", "verifier output is not canonical"),
+        ("stderr", "verifier wrote stderr"),
+        ("oversize", "verifier output exceeds its limit"),
+    ),
+)
+def test_handoff_runtime_verifier_output_protocol_fails_closed_without_raw_leakage(
+    failure,
+    expected_message,
+):
+    namespace = _compiled_handoff_runner_namespace()
+    value = {"ok": True, "value": "safe"}
+    canonical = namespace["_canonical_runtime_attestation"](value)
+    stdout = canonical
+    stderr = b""
+    secret = b"SENSITIVE-HANDOFF-VERIFIER-OUTPUT"
+    if failure == "empty":
+        stdout = b""
+    elif failure == "prefix":
+        stdout = secret + canonical
+    elif failure == "suffix":
+        stdout = canonical + secret
+    elif failure == "noncanonical":
+        stdout = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+    elif failure == "duplicate":
+        stdout = b'{"duplicate":1,"duplicate":2}\n'
+    elif failure == "nonfinite":
+        stdout = b'{"value":Infinity}\n'
+    elif failure == "unicode-unescaped":
+        stdout = '{"value":"é"}\n'.encode("utf-8")
+    elif failure == "stderr":
+        stderr = secret
+    elif failure == "oversize":
+        stdout = secret + b"x" * 1_048_576
+    with pytest.raises(RuntimeError, match=expected_message) as raised:
+        namespace["_parse_runtime_attestation"](
+            stdout,
+            stderr,
+            label="v2 locked runtime",
+        )
+    assert secret.decode() not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("timed_out", "returncode", "expected_message"),
+    (
+        (False, 7, "verifier process failed"),
+        (True, -15, "verifier process timed out"),
+    ),
+)
+def test_handoff_runtime_verifier_process_failure_does_not_leak_output(
+    tmp_path,
+    timed_out,
+    returncode,
+    expected_message,
+):
+    namespace = _compiled_handoff_runner_namespace()
+    secret = b"SENSITIVE-HANDOFF-PROCESS-OUTPUT"
+
+    def run_bounded_child(command, *, environment, timeout_seconds, label):
+        del command, environment
+        assert timeout_seconds == 360.0
+        assert label == "v2 locked runtime verifier"
+        return SimpleNamespace(
+            output_limit_exceeded=False,
+            returncode=returncode,
+            stderr=secret,
+            stdout=secret,
+            timed_out=timed_out,
+        )
+
+    namespace["_run_bounded_child"] = run_bounded_child
+    with pytest.raises(RuntimeError, match=expected_message) as raised:
+        namespace["_verify_locked_runtime"](
+            venv_python="venv-python",
+            runtime_lock=str(tmp_path / "base.lock"),
+            patched_vllm_wheel=str(tmp_path / "vllm.whl"),
+            patched_flashinfer_wheel=str(tmp_path / "flashinfer.whl"),
+            runtime_closure_manifest=str(tmp_path / "closure.json"),
+            package_wheel=str(tmp_path / "cachet.whl"),
+            package_wheel_sha256="a" * 64,
+            environment={"SAFE": "1"},
+        )
+    assert secret.decode() not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "returncode", "timed_out", "limit", "message"),
+    (
+        (b"", b"", 0, False, False, "validator output differs"),
+        (b"SENSITIVEvalidated\n", b"", 0, False, False, "output differs"),
+        (b"validated\nSENSITIVE", b"", 0, False, False, "output differs"),
+        (b"validated\n", b"SENSITIVE", 0, False, False, "output differs"),
+        (b"SENSITIVE", b"SENSITIVE", 7, False, False, "process failed"),
+        (b"SENSITIVE", b"SENSITIVE", -15, True, False, "process timed out"),
+        (b"x" * 1_048_577, b"", -15, False, True, "exceeds its limit"),
+    ),
+)
+def test_handoff_runtime_validator_protocol_fails_closed_without_raw_leakage(
+    stdout,
+    stderr,
+    returncode,
+    timed_out,
+    limit,
+    message,
+):
+    namespace = _compiled_handoff_runner_namespace()
+    completed = SimpleNamespace(
+        output_limit_exceeded=limit,
+        returncode=returncode,
+        stderr=stderr,
+        stdout=stdout,
+        timed_out=timed_out,
+    )
+    with pytest.raises(RuntimeError, match=message) as raised:
+        namespace["_require_validator_success"](completed)
+    assert "SENSITIVE" not in str(raised.value)
+
+
+def test_handoff_runtime_protocol_uses_ascii_canonical_unicode_escaping():
+    namespace = _compiled_handoff_runner_namespace()
+    canonical = namespace["_canonical_runtime_attestation"]({"value": "é"})
+    assert canonical == b'{"value":"\\u00e9"}\n'
+    value, observed = namespace["_parse_runtime_attestation"](
+        canonical,
+        b"",
+        label="v2 locked runtime",
+    )
+    assert value == {"value": "é"}
+    assert observed == canonical
 
 
 def _compiled_handoff_runner_namespace():

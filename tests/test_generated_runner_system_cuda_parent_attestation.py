@@ -120,8 +120,12 @@ def test_generated_gpu_runner_captures_and_revalidates_exact_parent_cuda(
         namespace["_system_cuda_parent_attestation_json_from_environment"]()
 
     assert entrypoint in namespace
-    assert has_direct_verifier is (
-        "verify_gpu_qualification_v2_runtime_installation" in script
+    assert has_direct_verifier is any(
+        verifier_name in script
+        for verifier_name in (
+            "_gpu_runtime_final_verifier_main",
+            "verify_gpu_qualification_v2_runtime_installation",
+        )
     )
 
 
@@ -283,13 +287,17 @@ def test_handoff_parent_uses_venv_for_independent_attestation_validation(
         for node in ast.walk(tree)
     )
     assert "validate_gpu_qualification_v2_runtime_attestation as validate" in script
-    assert '[venv_python, "-c", validator]' in script
-    assert "input=canonical_stdout" in script
-    assert 'validated.stdout != "validated\\n"' in script
+    assert (
+        '[venv_python, "-c", validator, canonical_stdout.decode("utf-8")]'
+        in script
+    )
+    assert "input=canonical_stdout" not in script
+    assert 'completed.stdout != b"validated\\n"' in script
+    assert "os._exit(0)" in script
     verifier = script.split("def _verify_locked_runtime", maxsplit=1)[1].split(
         "def _bootstrap", maxsplit=1
     )[0]
-    assert verifier.count("env=environment") == 2
+    assert verifier.count("environment=environment") == 2
 
 
 def test_full_score_runtime_verifier_and_workers_preserve_bound_torch_library(
