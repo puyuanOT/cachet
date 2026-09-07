@@ -231,6 +231,8 @@ _V2_STATIC_ANALYSIS_TARGETS: Final = tuple(
             "src/document_kv_cache/gpu_qualification_sentinels.py",
             "src/document_kv_cache/_gpu_qualification_sentinels_v2.py",
             "src/document_kv_cache/_gpu_qualification_sentinel_worker.py",
+            "src/document_kv_cache/_isolated_runtime.py",
+            "src/document_kv_cache/_runtime_bootstrap_native_loader.py",
             "src/document_kv_cache/flashinfer_wheel_repack.py",
             "src/document_kv_cache/runtime_artifact_closure.py",
             "src/document_kv_cache/publication_campaign_finalizer.py",

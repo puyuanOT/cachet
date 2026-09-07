@@ -20,7 +20,7 @@ from hashlib import sha256
 from pathlib import Path
 from time import monotonic, sleep
 from types import MappingProxyType
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import unquote, urlsplit
 
 from document_kv_cache.flashinfer_wheel_repack import (
@@ -33,16 +33,6 @@ from document_kv_cache.flashinfer_wheel_repack import (
 )
 from document_kv_cache.gpu_qualification import canonical_gpu_qualification_json
 import document_kv_cache.gpu_qualification as qualification_v1
-from document_kv_cache.gpu_qualification_sentinels import (
-    _SYSTEM_CUDA_PARENT_ATTESTATION_ENV,
-    _capture_system_cuda_parent_attestation,
-    _make_site_packages_read_only,
-    _open_runtime_root_no_follow,
-    _run_bounded_worker_process,
-    _system_cuda_parent_attestation_from_environment,
-    _verify_input_bundle_in_isolated_runtime,
-    _worker_stream_diagnostic,
-)
 from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
     GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION,
@@ -58,6 +48,10 @@ from document_kv_cache.gpu_qualification_v2 import (
     validate_gpu_qualification_plan_v2_record,
     validate_gpu_qualification_v2_runtime_attestation,
     validate_locked_runtime_v2_package_installation_attestation,
+)
+from document_kv_cache._isolated_runtime import (
+    isolated_runtime_argv_main_command,
+    isolated_runtime_pip_check_command,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
@@ -80,11 +74,153 @@ from document_kv_cache.serving_env import (
     VLLM_PATCHED_WHEEL_URI_ENV,
     gpu_runtime_warning_environment_overrides,
 )
-from document_kv_cache.vllm_smoke import (
-    _attest_isolated_python,
-    _pip_subprocess_environment,
-    create_venv,
+
+if TYPE_CHECKING:
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _BoundedWorkerResult,
+        _BoundedWorkerStream,
+    )
+    from document_kv_cache.vllm_smoke import (
+        _CopiedVenvPythonBinding,
+        _IsolatedPythonIdentity,
+    )
+
+
+# The final-verifier protocol imports this module before it can redirect file
+# descriptors 1 and 2. These dependencies transitively import vLLM, whose
+# import-time logging would prefix the canonical child envelope. Keep the
+# existing names as lazy delegates so callers and test monkeypatch seams remain
+# unchanged. On the final-verifier path, the first delegate is called only after
+# the child has started capturing both output streams.
+_SYSTEM_CUDA_PARENT_ATTESTATION_ENV: Final = (
+    "CACHET_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION"
 )
+
+
+def _capture_system_cuda_parent_attestation() -> dict[str, Any]:
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _capture_system_cuda_parent_attestation as implementation,
+    )
+
+    return implementation()
+
+
+def _system_cuda_parent_attestation_from_environment() -> dict[str, Any]:
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _system_cuda_parent_attestation_from_environment as implementation,
+    )
+
+    return implementation()
+
+
+def _make_site_packages_read_only(runtime_python: Path) -> None:
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _make_site_packages_read_only as implementation,
+    )
+
+    implementation(runtime_python)
+
+
+def _open_runtime_root_no_follow(runtime_root: Path) -> int:
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _open_runtime_root_no_follow as implementation,
+    )
+
+    return implementation(runtime_root)
+
+
+def _run_bounded_worker_process(
+    argv: list[str],
+    *,
+    job_id: str,
+    timeout_seconds: float,
+    environment: Mapping[str, str],
+    cwd: Path,
+    stdout_tail_max_bytes: int = 2_000,
+    stderr_tail_max_bytes: int = 16_384,
+    drain_timeout_seconds: float = 2.0,
+    termination_grace_seconds: float = 2.0,
+) -> _BoundedWorkerResult:
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _run_bounded_worker_process as implementation,
+    )
+
+    return implementation(
+        argv,
+        job_id=job_id,
+        timeout_seconds=timeout_seconds,
+        environment=environment,
+        cwd=cwd,
+        stdout_tail_max_bytes=stdout_tail_max_bytes,
+        stderr_tail_max_bytes=stderr_tail_max_bytes,
+        drain_timeout_seconds=drain_timeout_seconds,
+        termination_grace_seconds=termination_grace_seconds,
+    )
+
+
+def _verify_input_bundle_in_isolated_runtime(
+    runtime_python: Path,
+    input_bundle: Path,
+    *,
+    expected_sha256: str,
+    environment: Mapping[str, str],
+) -> str:
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _verify_input_bundle_in_isolated_runtime as implementation,
+    )
+
+    return implementation(
+        runtime_python,
+        input_bundle,
+        expected_sha256=expected_sha256,
+        environment=environment,
+    )
+
+
+def _worker_stream_diagnostic(
+    label: str,
+    captured: _BoundedWorkerStream,
+) -> str:
+    from document_kv_cache.gpu_qualification_sentinels import (
+        _worker_stream_diagnostic as implementation,
+    )
+
+    return implementation(label, captured)
+
+
+def _attest_isolated_python(
+    runtime_root: Path,
+    *,
+    expected_python_version: str,
+    environment: Mapping[str, str] | None = None,
+    expected_file_binding: _CopiedVenvPythonBinding | None = None,
+) -> _IsolatedPythonIdentity:
+    from document_kv_cache.vllm_smoke import (
+        _attest_isolated_python as implementation,
+    )
+
+    return implementation(
+        runtime_root,
+        expected_python_version=expected_python_version,
+        environment=environment,
+        expected_file_binding=expected_file_binding,
+    )
+
+
+def _pip_subprocess_environment(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    from document_kv_cache.vllm_smoke import (
+        _pip_subprocess_environment as implementation,
+    )
+
+    return implementation(environ)
+
+
+def create_venv(venv_dir: Path, *, copies: bool = False) -> None:
+    from document_kv_cache.vllm_smoke import create_venv as implementation
+
+    implementation(venv_dir, copies=copies)
 
 
 _RUNTIME_LOCK_ATTESTATION_ENV: Final = (
@@ -1015,7 +1151,10 @@ def _verify_locked_runtime_v2_package_installation(
     verifier_environment["PYTHONSAFEPATH"] = "1"
     try:
         pip_check = _run_bounded_binary_subprocess(
-            [sys.executable, "-m", "pip", "check"],
+            isolated_runtime_pip_check_command(
+                sys.executable,
+                warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+            ),
             timeout_seconds=_FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS,
             output_limit_bytes=_FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES,
             environment=verifier_environment,
@@ -1293,28 +1432,28 @@ def _run_scoped_final_runtime_verifier(
         "_locked_runtime_package_final_verifier_child_main",
     }:
         raise AssertionError("invalid final runtime verifier child")
-    code = (
-        "import os,sys;"
-        "from document_kv_cache._gpu_qualification_sentinels_v2 import "
-        + child_main_name
-        + " as main;"
-        "os._exit(main(sys.argv[1:]))"
-    )
     absolute_runtime_lock = runtime_lock.absolute()
     absolute_closure_path = closure_path.absolute()
+    command = isolated_runtime_argv_main_command(
+        runtime_python,
+        module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+        module_relative_path=(
+            "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+        ),
+        attribute_name=child_main_name,
+        arguments=(
+            str(absolute_runtime_lock),
+            vllm_uri,
+            flashinfer_uri,
+            str(absolute_closure_path),
+            package_uri,
+            package_sha256,
+        ),
+        warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+    )
     try:
         completed = _run_bounded_binary_subprocess(
-            [
-                str(runtime_python),
-                "-c",
-                code,
-                str(absolute_runtime_lock),
-                vllm_uri,
-                flashinfer_uri,
-                str(absolute_closure_path),
-                package_uri,
-                package_sha256,
-            ],
+            command,
             timeout_seconds=_FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS,
             output_limit_bytes=_FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES,
             environment=environment,

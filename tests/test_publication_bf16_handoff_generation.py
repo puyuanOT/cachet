@@ -528,7 +528,12 @@ def test_bf16_runner_inherits_native_v2_four_step_runtime_bootstrap() -> None:
     assert VIRTUALENV_BOOTSTRAP_URL in script
     assert VIRTUALENV_BOOTSTRAP_SHA256 in script
     assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in script
-    assert "_gpu_runtime_final_verifier_main" in script
+    runtime_verifier = script.split("def _verify_locked_runtime", maxsplit=1)[1].split(
+        "def _bootstrap", maxsplit=1
+    )[0]
+    assert 'verifier_name="gpu_qualification"' in runtime_verifier
+    assert 'validator_name="gpu_qualification"' in runtime_verifier
+    assert all(flag in script for flag in ('"-I"', '"-S"', '"-B"'))
     install_markers = (
         '"--require-hashes", "--only-binary", ":all:"',
         '"vllm", patched_vllm_wheel',

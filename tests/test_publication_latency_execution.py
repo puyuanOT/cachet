@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 from copy import deepcopy
@@ -2188,15 +2189,20 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
-    assert "_locked_runtime_package_final_verifier_main as main" in (
-        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    runtime_verifier = (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT.split(
+            "def _verify_locked_runtime", maxsplit=1
+        )[1].split("def main", maxsplit=1)[0]
     )
+    assert 'verifier_name="locked_runtime"' in runtime_verifier
+    assert 'validator_name="locked_runtime"' in runtime_verifier
+    assert '"-I"' in execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    assert '"-S"' in execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    assert '"-B"' in execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     assert "validate_locked_runtime_v2_package_installation_attestation" in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
-    assert "verify_gpu_qualification_v2_runtime_installation" not in (
-        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
-    )
+    assert 'verifier_name="gpu_qualification"' not in runtime_verifier
     cuda_parent_environment = "CACHET_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION"
     assert (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT.count(
@@ -2314,15 +2320,23 @@ def test_source_closure_runtime_verifier_and_validator_both_run_in_venv(
 
     def run(command, *, environment, timeout_seconds, label):
         calls.append((command, label))
-        assert command[0] == "venv-python"
-        assert command[1] == "-c"
+        assert command[0] == "/reviewed/runtime/bin/python"
+        assert command[1:4] == ["-I", "-S", "-B"]
+        code_index = command.index("-c")
+        assert command[4:code_index] == [
+            item
+            for warning_filter in GPU_RUNTIME_PYTHONWARNINGS.split(",")
+            for item in ("-W", warning_filter)
+        ]
+        bootstrap = command[code_index + 1]
+        target_name = command[code_index + 5]
+        body = command[code_index + 6]
         assert environment == {"SAFE": "1"}
         assert timeout_seconds == 360.0
         if len(calls) == 1:
-            assert "_locked_runtime_package_final_verifier_main" in command[2]
-            assert "_gpu_runtime_final_verifier_main" not in command[2]
-            assert "os._exit(main(sys.argv[1:]))" in command[2]
-            assert "SystemExit" not in command[2]
+            assert target_name == "verify_locked_runtime_v2_package_installation"
+            assert "_cachet_protocol_exit" in body
+            assert "SystemExit" not in body
             return SimpleNamespace(
                 output_limit_exceeded=False,
                 returncode=0,
@@ -2330,27 +2344,28 @@ def test_source_closure_runtime_verifier_and_validator_both_run_in_venv(
                 stdout=canonical,
                 timed_out=False,
             )
-        assert command[3] == canonical.decode("utf-8")
-        assert (
-            "validate_locked_runtime_v2_package_installation_attestation" in command[2]
+        assert command[-1] == canonical.decode("utf-8")
+        assert target_name == (
+            "validate_locked_runtime_v2_package_installation_attestation"
         )
-        validator_tree = ast.parse(command[2])
+        validator_tree = ast.parse(body)
         assert not any(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "print"
             for node in ast.walk(validator_tree)
         )
+        bootstrap_tree = ast.parse(bootstrap)
         assert any(
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "os"
             and node.func.attr == "write"
-            for node in ast.walk(validator_tree)
+            for node in ast.walk(bootstrap_tree)
         )
-        assert any(isinstance(node, ast.While) for node in ast.walk(validator_tree))
-        assert "os._exit(0)" in command[2]
+        assert any(isinstance(node, ast.While) for node in ast.walk(bootstrap_tree))
+        assert "_cachet_protocol_exit" in body
         return SimpleNamespace(
             output_limit_exceeded=False,
             returncode=0,
@@ -2361,7 +2376,7 @@ def test_source_closure_runtime_verifier_and_validator_both_run_in_venv(
 
     namespace["_run_bounded_child"] = run
     verified = namespace["_verify_locked_runtime"](
-        venv_python="venv-python",
+        venv_python="/reviewed/runtime/bin/python",
         runtime_lock=str(tmp_path / "base.lock"),
         patched_vllm_wheel=str(vllm_wheel),
         patched_flashinfer_wheel=str(flashinfer_wheel),
@@ -2476,7 +2491,7 @@ def test_source_closure_runtime_verifier_protocol_fails_closed_without_raw_leaka
     namespace["_run_bounded_child"] = run
     with pytest.raises(RuntimeError, match=expected_message) as raised:
         namespace["_verify_locked_runtime"](
-            venv_python="venv-python",
+            venv_python="/reviewed/runtime/bin/python",
             runtime_lock=str(tmp_path / "base.lock"),
             patched_vllm_wheel=str(vllm_wheel),
             patched_flashinfer_wheel=str(flashinfer_wheel),
@@ -2564,7 +2579,7 @@ def test_source_closure_runtime_validator_timeout_does_not_leak_output(
                 stdout=canonical,
                 timed_out=False,
             )
-        assert command[3] == canonical.decode("utf-8")
+        assert command[-1] == canonical.decode("utf-8")
         return SimpleNamespace(
             output_limit_exceeded=False,
             returncode=-15,
@@ -2576,7 +2591,7 @@ def test_source_closure_runtime_validator_timeout_does_not_leak_output(
     namespace["_run_bounded_child"] = run
     with pytest.raises(RuntimeError, match="validator process timed out") as raised:
         namespace["_verify_locked_runtime"](
-            venv_python="venv-python",
+            venv_python="/reviewed/runtime/bin/python",
             runtime_lock=str(tmp_path / "base.lock"),
             patched_vllm_wheel=str(vllm_wheel),
             patched_flashinfer_wheel=str(flashinfer_wheel),
@@ -2655,7 +2670,11 @@ def test_source_closure_bounded_child_enforces_stream_and_process_group_bounds()
         os.kill(descendant_pid, 0)
 
 
-def test_source_closure_verifier_stub_bypasses_atexit_contamination(
+@pytest.mark.skipif(
+    sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11),
+    reason="the isolated runtime protocol is pinned to CPython 3.11",
+)
+def test_source_closure_verifier_stub_captures_atexit_contamination(
     tmp_path,
 ):
     namespace = {"__name__": "latency_source_closure_atexit_test"}
@@ -2666,6 +2685,28 @@ def test_source_closure_verifier_stub_bypasses_atexit_contamination(
             "exec",
         ),
         namespace,
+    )
+    fake_venv = tmp_path / "fake-verifier-venv"
+    fake_python = fake_venv / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    shutil.copy2(sys.executable, fake_python)
+    fake_package = (
+        fake_venv / "lib" / "python3.11" / "site-packages" / "document_kv_cache"
+    )
+    fake_package.mkdir(parents=True)
+    (fake_package / "__init__.py").write_text("", encoding="utf-8")
+    (fake_package / "_gpu_qualification_sentinels_v2.py").write_text(
+        """import atexit
+import os
+
+atexit.register(lambda: os.write(1, b"SENSITIVE-ATEXIT-CONTAMINATION"))
+
+def verify_locked_runtime_v2_package_installation(**kwargs):
+    if len(kwargs) != 6:
+        raise RuntimeError("arguments differ")
+    return {"ok": True}
+""",
+        encoding="utf-8",
     )
     captured = {}
 
@@ -2680,7 +2721,7 @@ def test_source_closure_verifier_stub_bypasses_atexit_contamination(
     namespace["_run_bounded_child"] = capture
     with pytest.raises(CapturedCommand):
         namespace["_verify_locked_runtime"](
-            venv_python="venv-python",
+            venv_python=str(fake_python),
             runtime_lock=str(tmp_path / "base.lock"),
             patched_vllm_wheel=str(tmp_path / "vllm.whl"),
             patched_flashinfer_wheel=str(tmp_path / "flashinfer.whl"),
@@ -2689,43 +2730,22 @@ def test_source_closure_verifier_stub_bypasses_atexit_contamination(
             package_wheel_sha256="a" * 64,
             environment={"SAFE": "1"},
         )
-    verifier = captured["command"][2]
-    assert "os._exit(main(sys.argv[1:]))" in verifier
-
-    fake_root = tmp_path / "fake-package"
-    fake_package = fake_root / "document_kv_cache"
-    fake_package.mkdir(parents=True)
-    (fake_package / "__init__.py").write_text("", encoding="utf-8")
-    (fake_package / "_gpu_qualification_sentinels_v2.py").write_text(
-        """import atexit
-import os
-
-atexit.register(lambda: os.write(1, b"SENSITIVE-ATEXIT-CONTAMINATION"))
-
-def _locked_runtime_package_final_verifier_main(arguments):
-    if len(arguments) != 6:
-        return 2
-    payload = b'{"ok":true}\\n'
-    offset = 0
-    while offset < len(payload):
-        offset += os.write(1, payload[offset:])
-    return 0
-""",
-        encoding="utf-8",
-    )
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = str(fake_root)
+    verifier_command = captured["command"]
+    assert verifier_command[1:4] == ["-I", "-S", "-B"]
     completed = subprocess.run(
-        [sys.executable, "-c", verifier, *("value" for _ in range(6))],
+        verifier_command,
         capture_output=True,
-        env=environment,
     )
-    assert completed.returncode == 0
-    assert completed.stdout == b'{"ok":true}\n'
+    assert completed.returncode == 72
+    assert completed.stdout == b""
     assert completed.stderr == b""
 
 
-def test_source_closure_validator_stub_bypasses_atexit_contamination(
+@pytest.mark.skipif(
+    sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11),
+    reason="the isolated runtime protocol is pinned to CPython 3.11",
+)
+def test_source_closure_validator_stub_captures_atexit_contamination(
     tmp_path,
 ):
     namespace = {"__name__": "latency_source_closure_validator_atexit_test"}
@@ -2744,6 +2764,27 @@ def test_source_closure_validator_stub_bypasses_atexit_contamination(
         "vllm_direct_url": vllm_wheel.resolve().as_uri(),
     }
     canonical = namespace["_canonical_runtime_attestation"](attestation)
+    fake_venv = tmp_path / "fake-validator-venv"
+    fake_python = fake_venv / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    shutil.copy2(sys.executable, fake_python)
+    fake_package = (
+        fake_venv / "lib" / "python3.11" / "site-packages" / "document_kv_cache"
+    )
+    fake_package.mkdir(parents=True)
+    (fake_package / "__init__.py").write_text("", encoding="utf-8")
+    (fake_package / "gpu_qualification_v2.py").write_text(
+        """import atexit
+import os
+
+atexit.register(lambda: os.write(1, b"SENSITIVE-ATEXIT-CONTAMINATION"))
+
+def validate_locked_runtime_v2_package_installation_attestation(record):
+    if not isinstance(record, dict):
+        raise TypeError("record differs")
+""",
+        encoding="utf-8",
+    )
     captured = {}
     calls = 0
 
@@ -2768,7 +2809,7 @@ def test_source_closure_validator_stub_bypasses_atexit_contamination(
     namespace["_run_bounded_child"] = capture
     with pytest.raises(CapturedCommand):
         namespace["_verify_locked_runtime"](
-            venv_python="venv-python",
+            venv_python=str(fake_python),
             runtime_lock=str(tmp_path / "base.lock"),
             patched_vllm_wheel=str(vllm_wheel),
             patched_flashinfer_wheel=str(flashinfer_wheel),
@@ -2778,34 +2819,13 @@ def test_source_closure_validator_stub_bypasses_atexit_contamination(
             environment={"SAFE": "1"},
         )
     validator_command = captured["command"]
-    validator = validator_command[2]
-    assert "os._exit(0)" in validator
-
-    fake_root = tmp_path / "fake-validator-package"
-    fake_package = fake_root / "document_kv_cache"
-    fake_package.mkdir(parents=True)
-    (fake_package / "__init__.py").write_text("", encoding="utf-8")
-    (fake_package / "gpu_qualification_v2.py").write_text(
-        """import atexit
-import os
-
-atexit.register(lambda: os.write(1, b"SENSITIVE-ATEXIT-CONTAMINATION"))
-
-def validate_locked_runtime_v2_package_installation_attestation(record):
-    if not isinstance(record, dict):
-        raise TypeError("record differs")
-""",
-        encoding="utf-8",
-    )
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = str(fake_root)
+    assert validator_command[1:4] == ["-I", "-S", "-B"]
     completed = subprocess.run(
-        [sys.executable, "-c", validator, validator_command[3]],
+        validator_command,
         capture_output=True,
-        env=environment,
     )
-    assert completed.returncode == 0
-    assert completed.stdout == b"validated\n"
+    assert completed.returncode == 72
+    assert completed.stdout == b""
     assert completed.stderr == b""
 
 

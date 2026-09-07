@@ -5899,10 +5899,18 @@ def test_runtime_verifier_requires_bounded_canonical_stdout_and_empty_stderr(
     )
     assert output_path.read_bytes() == canonical
     assert binding["attestation"] == _runtime_attestation()
-    assert (
+    verifier_command = bounded_call["arguments"]
+    assert verifier_command[1:4] == ["-I", "-S", "-B"]
+    code_index = verifier_command.index("-c")
+    assert verifier_command[4:code_index] == [
+        item
+        for warning_filter in GPU_RUNTIME_PYTHONWARNINGS.split(",")
+        for item in ("-W", warning_filter)
+    ]
+    assert verifier_command[code_index + 5] == (
         "verify_gpu_qualification_v2_runtime_installation"
-        in (bounded_call["arguments"][2])
     )
+    assert "indent=2" in verifier_command[code_index + 6]
     assert bounded_call["timeout_seconds"] == (
         full_score.FULL_SCORE_RUNTIME_VERIFIER_TIMEOUT_SECONDS
     )

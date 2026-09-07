@@ -644,9 +644,14 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
         install_script.index("_verify_locked_runtime("),
     ]
     assert install_positions == sorted(install_positions)
-    assert "_gpu_runtime_final_verifier_main as main" in (
-        generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
-    )
+    runtime_verifier = generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT.split(
+        "def _verify_locked_runtime", maxsplit=1
+    )[1].split("def _bootstrap", maxsplit=1)[0]
+    assert 'verifier_name="gpu_qualification"' in runtime_verifier
+    assert 'validator_name="gpu_qualification"' in runtime_verifier
+    assert '"-I"' in generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    assert '"-S"' in generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
+    assert '"-B"' in generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT
     runner_tree = ast.parse(generation.PUBLICATION_LATENCY_HANDOFF_RUNNER_SCRIPT)
     assert not any(
         isinstance(node, ast.Call)
@@ -722,30 +727,41 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
     validator_inputs = []
 
     def run_verifier(command, *, environment, timeout_seconds, label):
-        assert command[0] == "venv-python"
+        assert command[0] == "/reviewed/runtime/bin/python"
+        assert command[1:4] == ["-I", "-S", "-B"]
+        code_index = command.index("-c")
+        assert command[4:code_index] == [
+            item
+            for warning_filter in GPU_RUNTIME_PYTHONWARNINGS.split(",")
+            for item in ("-W", warning_filter)
+        ]
+        bootstrap = command[code_index + 1]
+        target_name = command[code_index + 5]
+        body = command[code_index + 6]
         assert environment == {"SAFE": "1"}
         assert timeout_seconds == 360.0
-        if "validate_gpu_qualification_v2_runtime_attestation" in command[2]:
-            assert command[1] == "-c"
-            assert "validate_gpu_qualification_v2_runtime_attestation" in command[2]
-            validator_tree = ast.parse(command[2])
+        if target_name == "validate_gpu_qualification_v2_runtime_attestation":
+            validator_tree = ast.parse(body)
             assert not any(
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
                 and node.func.id == "print"
                 for node in ast.walk(validator_tree)
             )
+            bootstrap_tree = ast.parse(bootstrap)
             assert any(
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "os"
                 and node.func.attr == "write"
-                for node in ast.walk(validator_tree)
+                for node in ast.walk(bootstrap_tree)
             )
-            assert any(isinstance(node, ast.While) for node in ast.walk(validator_tree))
-            assert "os._exit(0)" in command[2]
-            validator_inputs.append(command[3])
+            assert any(
+                isinstance(node, ast.While) for node in ast.walk(bootstrap_tree)
+            )
+            assert "_cachet_protocol_exit" in body
+            validator_inputs.append(command[-1])
             return type(
                 "Completed",
                 (),
@@ -757,16 +773,15 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
                     "timed_out": False,
                 },
             )()
-        assert "_gpu_runtime_final_verifier_main" in command[2]
-        assert "_locked_runtime_package_final_verifier_main" not in command[2]
-        assert "os._exit(main(sys.argv[1:]))" in command[2]
-        assert "SystemExit" not in command[2]
+        assert target_name == "verify_gpu_qualification_v2_runtime_installation"
+        assert "_cachet_protocol_exit" in body
+        assert "SystemExit" not in body
         assert label == "v2 locked runtime verifier"
         return type("Completed", (), output)()
 
     namespace["_run_bounded_child"] = run_verifier
     verify_kwargs = {
-        "venv_python": "venv-python",
+        "venv_python": "/reviewed/runtime/bin/python",
         "runtime_lock": str(tmp_path / "base.lock"),
         "patched_vllm_wheel": str(vllm_wheel),
         "patched_flashinfer_wheel": str(flashinfer_wheel),
@@ -871,7 +886,7 @@ def test_handoff_runtime_verifier_process_failure_does_not_leak_output(
     namespace["_run_bounded_child"] = run_bounded_child
     with pytest.raises(RuntimeError, match=expected_message) as raised:
         namespace["_verify_locked_runtime"](
-            venv_python="venv-python",
+            venv_python="/reviewed/runtime/bin/python",
             runtime_lock=str(tmp_path / "base.lock"),
             patched_vllm_wheel=str(tmp_path / "vllm.whl"),
             patched_flashinfer_wheel=str(tmp_path / "flashinfer.whl"),

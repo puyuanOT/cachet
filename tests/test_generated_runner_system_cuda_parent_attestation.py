@@ -286,14 +286,15 @@ def test_handoff_parent_uses_venv_for_independent_attestation_validation(
         and node.module == "document_kv_cache.gpu_qualification_v2"
         for node in ast.walk(tree)
     )
-    assert "validate_gpu_qualification_v2_runtime_attestation as validate" in script
-    assert (
-        '[venv_python, "-c", validator, canonical_stdout.decode("utf-8")]'
-        in script
-    )
+    assert "validate_gpu_qualification_v2_runtime_attestation" in script
+    assert "_isolated_runtime_validator_command(" in script
+    assert 'validator_name="gpu_qualification"' in script
+    assert '"-I"' in script
+    assert '"-S"' in script
+    assert '"-B"' in script
     assert "input=canonical_stdout" not in script
     assert 'completed.stdout != b"validated\\n"' in script
-    assert "os._exit(0)" in script
+    assert "body_source=_ISOLATED_RUNTIME_VALIDATOR_BODY" in script
     verifier = script.split("def _verify_locked_runtime", maxsplit=1)[1].split(
         "def _bootstrap", maxsplit=1
     )[0]

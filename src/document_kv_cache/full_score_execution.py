@@ -139,6 +139,7 @@ from document_kv_cache.gpu_qualification_v2 import (
     validate_gpu_qualification_evidence_v2_record,
     validate_gpu_qualification_v2_runtime_attestation,
 )
+from document_kv_cache._isolated_runtime import isolated_runtime_verifier_command
 from document_kv_cache._gpu_qualification_sentinels_v2 import (
     _BoundedSubprocessStartFailure,
     _BoundedSubprocessTransportFailure,
@@ -10038,28 +10039,21 @@ def _runtime_verifier_command(
     package_wheel_uri: str,
     package_wheel_sha256: str,
 ) -> list[str]:
-    code = (
-        "import json,sys; from "
-        "document_kv_cache._gpu_qualification_sentinels_v2 import "
-        "verify_gpu_qualification_v2_runtime_installation as verify; "
-        "record=verify(runtime_lock=sys.argv[1], vllm_uri=sys.argv[2], "
-        "flashinfer_uri=sys.argv[3], runtime_closure_manifest=sys.argv[4], "
-        "package_uri=sys.argv[5], package_sha256=sys.argv[6]); "
-        "sys.stdout.buffer.write((json.dumps(record, ensure_ascii=False, indent=2, "
-        "sort_keys=True)+'\\n').encode('utf-8'))"
-    )
     package_path = _cluster_path(package_wheel_uri).absolute().as_uri()
-    return [
+    return isolated_runtime_verifier_command(
         runtime.python_executable,
-        "-c",
-        code,
-        str(_cluster_path(runtime.runtime_lock_uri)),
-        _install_spec_uri(runtime.vllm_wheel_install_spec),
-        _install_spec_uri(runtime.flashinfer_wheel_install_spec),
-        str(_cluster_path(runtime.runtime_closure_manifest_uri)),
-        package_path,
-        package_wheel_sha256,
-    ]
+        verifier_name="gpu_qualification",
+        arguments=(
+            str(_cluster_path(runtime.runtime_lock_uri)),
+            _install_spec_uri(runtime.vllm_wheel_install_spec),
+            _install_spec_uri(runtime.flashinfer_wheel_install_spec),
+            str(_cluster_path(runtime.runtime_closure_manifest_uri)),
+            package_path,
+            package_wheel_sha256,
+        ),
+        warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+        pretty=True,
+    )
 
 
 def _runtime_artifact_binding(

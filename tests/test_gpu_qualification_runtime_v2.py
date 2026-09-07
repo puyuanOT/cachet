@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -85,6 +86,7 @@ _CLOSURE_PATH = (
 _PACKAGE_SHA256 = "a" * 64
 _SOURCE_SHA256 = "b" * 64
 _RUNNER_SHA256 = "c" * 64
+_REVIEWED_RUNTIME_PYTHON = "/reviewed/runtime/bin/python"
 
 
 def _bounded_stream_result(
@@ -219,9 +221,14 @@ def _cpu_attestation(*, vllm_uri: str, flashinfer_uri: str) -> dict[str, Any]:
 def _verify_gpu_direct(**kwargs: Any) -> dict[str, Any]:
     """Exercise the private in-child verifier in focused implementation tests."""
 
-    return runtime_v2._verify_gpu_qualification_v2_runtime_installation(
-        **kwargs, stage_callback=None
-    )
+    original_executable = runtime_v2.sys.executable
+    runtime_v2.sys.executable = _REVIEWED_RUNTIME_PYTHON
+    try:
+        return runtime_v2._verify_gpu_qualification_v2_runtime_installation(
+            **kwargs, stage_callback=None
+        )
+    finally:
+        runtime_v2.sys.executable = original_executable
 
 
 def _artifact_paths(tmp_path: Path) -> dict[str, Path]:
@@ -672,26 +679,25 @@ def test_standalone_verifier_pip_check_is_exact_bounded_binary_subprocess(
             package_sha256=_PACKAGE_SHA256,
         )
 
-    assert calls == [
-        (
-            [runtime_v2.sys.executable, "-m", "pip", "check"],
-            {
-                "cwd": Path(runtime_v2.sys.prefix),
-                "environment": {
-                    **environment,
-                    "FLASHINFER_LOGGING_LEVEL": (GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL),
-                    "PYTHONSAFEPATH": "1",
-                    "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
-                },
-                "output_limit_bytes": (
-                    runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES
-                ),
-                "timeout_seconds": (
-                    runtime_v2._FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS
-                ),
-            },
-        )
-    ]
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command == runtime_v2.isolated_runtime_pip_check_command(
+        _REVIEWED_RUNTIME_PYTHON,
+        warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+    )
+    assert command[1:4] == ["-I", "-S", "-B"]
+    assert command.count("-W") == len(GPU_RUNTIME_PYTHONWARNINGS.split(","))
+    assert kwargs == {
+        "cwd": Path(runtime_v2.sys.prefix),
+        "environment": {
+            **environment,
+            "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+            "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+        },
+        "output_limit_bytes": runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES,
+        "timeout_seconds": runtime_v2._FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS,
+    }
 
 
 def test_package_installation_verifier_is_disjoint_from_gpu_host_attestation(
@@ -1303,96 +1309,152 @@ def _process_or_group_exists(identifier: int, *, group: bool) -> bool:
     return True
 
 
-def test_outer_final_verifier_waits_for_nested_pip_group_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
+def test_outer_final_verifier_ignores_site_pth_and_pythonpath_startup_hooks(
     tmp_path: Path,
 ) -> None:
-    inner_marker = tmp_path / "inner-pid-pgid.txt"
-    outer_marker = tmp_path / "outer-pid-pgid.txt"
-    fake_python = tmp_path / "term-ignoring-python"
-    fake_python.write_text(
-        f"#!{runtime_v2.sys.executable}\n"
+    runtime_root = tmp_path / "runtime"
+    runtime_v2.create_venv(runtime_root, copies=True)
+    runtime_python = runtime_root / "bin" / "python"
+    site_packages = runtime_root / "lib/python3.11/site-packages"
+    package = site_packages / "document_kv_cache"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    attestation = {"isolated": True, "reviewed": "startup-hooks-not-run"}
+    response = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        _final_child_success_envelope(attestation)
+    )
+    (package / "_gpu_qualification_sentinels_v2.py").write_text(
         "import os\n"
-        "import signal\n"
-        "import time\n"
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "marker = os.environ['CACHET_TEST_INNER_MARKER']\n"
-        "with open(marker, 'w', encoding='ascii') as stream:\n"
-        "    stream.write(f'{os.getpid()} {os.getpgid(0)}\\n')\n"
-        "    stream.flush()\n"
-        "    os.fsync(stream.fileno())\n"
-        "while True:\n"
-        "    time.sleep(60)\n",
+        f"_RESPONSE = {response!r}\n"
+        "def _gpu_final_runtime_verifier_child_main(_arguments):\n"
+        "    view = memoryview(_RESPONSE)\n"
+        "    while view:\n"
+        "        written = os.write(1, view)\n"
+        "        if written <= 0:\n"
+        "            return 1\n"
+        "        view = view[written:]\n"
+        "    return 0\n",
         encoding="utf-8",
     )
-    fake_python.chmod(0o700)
-
-    hook_dir = tmp_path / "site-hook"
-    hook_dir.mkdir()
-    (hook_dir / "sitecustomize.py").write_text(
-        "import os\n"
-        "import document_kv_cache._gpu_qualification_sentinels_v2 as runtime_v2\n"
-        "runtime_v2._require_runtime_platform = lambda: None\n"
-        "runtime_v2._FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS = 1.5\n"
-        "runtime_v2.sys.executable = os.environ['CACHET_TEST_FAKE_PYTHON']\n"
-        "marker = os.environ['CACHET_TEST_OUTER_MARKER']\n"
-        "with open(marker, 'w', encoding='ascii') as stream:\n"
-        "    stream.write(f'{os.getpid()} {os.getpgid(0)}\\n')\n"
-        "    stream.flush()\n"
-        "    os.fsync(stream.fileno())\n",
+    site_marker = tmp_path / "sitecustomize-ran"
+    pth_marker = tmp_path / "pth-ran"
+    poison_marker = tmp_path / "pythonpath-ran"
+    (site_packages / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(site_marker)!r}).write_text('ran')\n",
         encoding="utf-8",
     )
-
-    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS", 1.5)
-    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS", 7.0)
-    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS", 1.5)
-    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_POST_PIP_BUDGET_SECONDS", 0.5)
-    monkeypatch.setattr(
-        runtime_v2, "_FINAL_VERIFIER_REQUIRED_HIERARCHY_MARGIN_SECONDS", 4.0
+    (site_packages / "cachet-startup-hook.pth").write_text(
+        f"import pathlib; pathlib.Path({str(pth_marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    poison_root = tmp_path / "poison"
+    poison_package = poison_root / "document_kv_cache"
+    poison_package.mkdir(parents=True)
+    (poison_package / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(poison_marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
     )
     environment = {
-        "CACHET_TEST_FAKE_PYTHON": str(fake_python),
-        "CACHET_TEST_INNER_MARKER": str(inner_marker),
-        "CACHET_TEST_OUTER_MARKER": str(outer_marker),
         "HOME": str(tmp_path),
         "LC_ALL": "C",
         "PATH": os.environ["PATH"],
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONEXECUTABLE": str(fake_python),
-        "PYTHONNOUSERSITE": "1",
-        "PYTHONPATH": os.pathsep.join((str(hook_dir), str(_ROOT / "src"))),
-        "PYTHONSAFEPATH": "1",
+        "PYTHONPATH": str(poison_root),
+        "PYTHONWARNINGS": "ignore",
+    }
+    observed = runtime_v2._run_final_runtime_verifier(
+        runtime_python,
+        runtime_lock=tmp_path / "unused-base.lock",
+        vllm_uri="file:///unused-vllm.whl",
+        flashinfer_uri="file:///unused-flashinfer.whl",
+        closure_path=tmp_path / "unused-closure.json",
+        package_uri="file:///unused-cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+        environment=environment,
+    )
+
+    assert observed == attestation
+    assert not site_marker.exists()
+    assert not pth_marker.exists()
+    assert not poison_marker.exists()
+
+
+@pytest.mark.skipif(
+    sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11),
+    reason="the isolated runtime protocol is pinned to CPython 3.11",
+)
+def test_outer_final_verifier_kills_nested_worker_process_group(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_v2.create_venv(runtime_root, copies=True)
+    runtime_python = runtime_root / "bin" / "python"
+    package = runtime_root / "lib/python3.11/site-packages/document_kv_cache"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    marker = tmp_path / "nested-pid-pgid.txt"
+    attestation = {"isolated": True, "reviewed": "nested-group-cleanup"}
+    response = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        _final_child_success_envelope(attestation)
+    )
+    (package / "_gpu_qualification_sentinels_v2.py").write_text(
+        "import os\n"
+        "import signal\n"
+        "import time\n"
+        f"_MARKER = {str(marker)!r}\n"
+        f"_RESPONSE = {response!r}\n"
+        "def _gpu_final_runtime_verifier_child_main(_arguments):\n"
+        "    child = os.fork()\n"
+        "    if child == 0:\n"
+        "        signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "        with open(_MARKER, 'w', encoding='ascii') as stream:\n"
+        "            stream.write(f'{os.getpid()} {os.getpgid(0)}\\n')\n"
+        "            stream.flush()\n"
+        "            os.fsync(stream.fileno())\n"
+        "        while True:\n"
+        "            time.sleep(60)\n"
+        "    deadline = time.monotonic() + 2.0\n"
+        "    while not os.path.exists(_MARKER):\n"
+        "        if time.monotonic() >= deadline:\n"
+        "            return 2\n"
+        "        time.sleep(0.01)\n"
+        "    view = memoryview(_RESPONSE)\n"
+        "    while view:\n"
+        "        written = os.write(1, view)\n"
+        "        if written <= 0:\n"
+        "            return 3\n"
+        "        view = view[written:]\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    environment = {
+        "HOME": str(tmp_path),
+        "LC_ALL": "C",
+        "PATH": os.environ["PATH"],
     }
 
-    started = runtime_v2.monotonic()
-    with pytest.raises(
-        RuntimeError,
-        match=r"rejected the installation \(pip_check/subprocess_timeout;",
-    ):
-        runtime_v2._run_final_runtime_verifier(
-            Path(runtime_v2.sys.executable),
-            runtime_lock=tmp_path / "unused-base.lock",
-            vllm_uri="file:///unused-vllm.whl",
-            flashinfer_uri="file:///unused-flashinfer.whl",
-            closure_path=tmp_path / "unused-closure.json",
-            package_uri="file:///unused-cachet.whl",
-            package_sha256=_PACKAGE_SHA256,
-            environment=environment,
-        )
-    assert runtime_v2.monotonic() - started < 7
+    observed = runtime_v2._run_final_runtime_verifier(
+        runtime_python,
+        runtime_lock=tmp_path / "unused-base.lock",
+        vllm_uri="file:///unused-vllm.whl",
+        flashinfer_uri="file:///unused-flashinfer.whl",
+        closure_path=tmp_path / "unused-closure.json",
+        package_uri="file:///unused-cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+        environment=environment,
+    )
 
-    outer_pid, outer_pgid = (
-        int(value) for value in outer_marker.read_text(encoding="ascii").split()
+    assert observed == attestation
+    child_pid, child_pgid = (
+        int(value) for value in marker.read_text(encoding="ascii").split()
     )
-    inner_pid, inner_pgid = (
-        int(value) for value in inner_marker.read_text(encoding="ascii").split()
-    )
-    assert outer_pid == outer_pgid
-    assert inner_pid == inner_pgid
-    assert not _process_or_group_exists(outer_pid, group=False)
-    assert not _process_or_group_exists(outer_pgid, group=True)
-    assert not _process_or_group_exists(inner_pid, group=False)
-    assert not _process_or_group_exists(inner_pgid, group=True)
+    deadline = runtime_v2.monotonic() + 3.0
+    while runtime_v2.monotonic() < deadline and (
+        _process_or_group_exists(child_pid, group=False)
+        or _process_or_group_exists(child_pgid, group=True)
+    ):
+        runtime_v2.sleep(0.01)
+    assert not _process_or_group_exists(child_pid, group=False)
+    assert not _process_or_group_exists(child_pgid, group=True)
 
 
 def test_bounded_binary_accumulator_retains_only_its_cap_incrementally() -> None:
@@ -1769,6 +1831,113 @@ def test_real_base_lock_has_exact_projection_and_verifier_rejects_tamper(
         )
 
 
+def _noisy_vllm_subprocess_environment(
+    tmp_path: Path,
+    *,
+    write_stderr: bool = True,
+) -> tuple[dict[str, str], Path]:
+    fake_root = tmp_path / "fake-packages"
+    fake_vllm = fake_root / "vllm"
+    fake_vllm.mkdir(parents=True)
+    fake_vllm_init = fake_vllm / "__init__.py"
+    fake_vllm_init.write_text(
+        "import os\n"
+        "os.write(1, b'noisy-vllm-stdout\\n')\n"
+        + (
+            "os.write(2, b'noisy-vllm-stderr\\n')\n"
+            if write_stderr
+            else ""
+        ),
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "CACHET_TEST_FAKE_VLLM_INIT": str(fake_vllm_init),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": os.pathsep.join((str(fake_root), str(_ROOT / "src"))),
+            "PYTHONSAFEPATH": "1",
+        }
+    )
+    return environment, fake_vllm_init
+
+
+def test_runtime_v2_module_import_is_silent_and_does_not_import_noisy_vllm(
+    tmp_path: Path,
+) -> None:
+    environment, fake_vllm_init = _noisy_vllm_subprocess_environment(tmp_path)
+    code = (
+        "import importlib.util,sys\n"
+        "spec = importlib.util.find_spec('vllm')\n"
+        f"assert spec is not None and spec.origin == {str(fake_vllm_init)!r}\n"
+        "import document_kv_cache._gpu_qualification_sentinels_v2\n"
+        "for name in (\n"
+        "    'document_kv_cache.gpu_qualification_sentinels',\n"
+        "    'document_kv_cache.vllm_smoke',\n"
+        "    'vllm',\n"
+        "):\n"
+        "    assert name not in sys.modules\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+
+    assert (completed.returncode, completed.stdout, completed.stderr) == (0, b"", b"")
+
+
+def test_cpu_child_captures_noisy_vllm_import_before_emitting_canonical_envelope(
+    tmp_path: Path,
+) -> None:
+    environment, fake_vllm_init = _noisy_vllm_subprocess_environment(
+        tmp_path, write_stderr=False
+    )
+    code = (
+        "import importlib.util,os,sys\n"
+        "import document_kv_cache._gpu_qualification_sentinels_v2 as module\n"
+        "def verifier(**kwargs):\n"
+        "    kwargs['stage_callback']('flashinfer_import')\n"
+        "    spec = importlib.util.find_spec('vllm')\n"
+        f"    assert spec is not None and spec.origin == {str(fake_vllm_init)!r}\n"
+        "    import vllm\n"
+        "    kwargs['stage_callback']('complete')\n"
+        "    return {'ok': True, 'scope': 'cpu', 'vllm_imported': "
+        "'vllm' in sys.modules}\n"
+        "module._verify_locked_runtime_v2_package_installation_attestation = "
+        "verifier\n"
+        "os._exit(module._locked_runtime_package_final_verifier_child_main("
+        "sys.argv[1:]))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code, *_final_child_arguments()],
+        cwd=tmp_path,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+
+    captured_stdout = b"noisy-vllm-stdout\n"
+    assert completed.returncode == 0
+    assert completed.stderr == b""
+    assert captured_stdout not in completed.stdout
+    envelope = runtime_v2._parse_final_runtime_verifier_child_envelope(completed.stdout)
+    assert envelope == {
+        **_final_child_success_envelope(
+            {"ok": True, "scope": "cpu", "vllm_imported": True}
+        ),
+        "stdout_bytes": len(captured_stdout),
+        "stdout_sha256": sha256(captured_stdout).hexdigest(),
+    }
+
+
 def _final_child_arguments() -> list[str]:
     return [
         "base.lock",
@@ -2119,6 +2288,7 @@ def test_final_verifier_child_classifies_pip_subprocess_start_failure(
 ) -> None:
     monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
     monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(runtime_v2.sys, "executable", _REVIEWED_RUNTIME_PYTHON)
 
     def fail_start(*_args: Any, **_kwargs: Any) -> None:
         raise runtime_v2._BoundedSubprocessStartFailure("start-failure-secret")
@@ -2168,16 +2338,25 @@ def test_final_verifier_parent_accepts_success_and_reports_rejection_metadata(
     assert observed == attestation
     assert len(calls) == 1
     arguments, kwargs = calls[0]
-    assert arguments[0:2] == [str(runtime_python), "-c"]
-    assert "_final_runtime_verifier_child_main" in arguments[2]
-    assert arguments[3:] == [
-        str(tmp_path / "base.lock"),
-        "file:///vllm.whl",
-        "file:///flashinfer.whl",
-        str(tmp_path / "closure.json"),
-        "file:///cachet.whl",
-        _PACKAGE_SHA256,
-    ]
+    assert arguments == runtime_v2.isolated_runtime_argv_main_command(
+        runtime_python,
+        module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+        module_relative_path=(
+            "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+        ),
+        attribute_name="_gpu_final_runtime_verifier_child_main",
+        arguments=(
+            str(tmp_path / "base.lock"),
+            "file:///vllm.whl",
+            "file:///flashinfer.whl",
+            str(tmp_path / "closure.json"),
+            "file:///cachet.whl",
+            _PACKAGE_SHA256,
+        ),
+        warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+    )
+    assert arguments[1:4] == ["-I", "-S", "-B"]
+    assert arguments.count("-W") == len(GPU_RUNTIME_PYTHONWARNINGS.split(","))
     assert kwargs == {
         "cwd": runtime_python.parent.parent,
         "environment": {"PYTHONSAFEPATH": "1"},
@@ -2314,21 +2493,40 @@ def test_scoped_final_verifier_parents_use_exact_children_and_normalize_paths(
     assert len(calls) == 2
     cpu_arguments, cpu_kwargs = calls[0]
     gpu_arguments, gpu_kwargs = calls[1]
-    assert "_locked_runtime_package_final_verifier_child_main" in cpu_arguments[2]
-    assert "_gpu_final_runtime_verifier_child_main" not in cpu_arguments[2]
-    assert "_gpu_final_runtime_verifier_child_main" in gpu_arguments[2]
-    assert "_locked_runtime_package_final_verifier_child_main" not in gpu_arguments[2]
-    for arguments in (cpu_arguments, gpu_arguments):
-        assert "os._exit(main(sys.argv[1:]))" in arguments[2]
-        assert "SystemExit" not in arguments[2]
-        assert arguments[3:] == [
-            str(tmp_path / "inputs/base.lock"),
-            "file:///vllm.whl",
-            "file:///flashinfer.whl",
-            str(tmp_path / "inputs/closure.json"),
-            "file:///cachet.whl",
-            _PACKAGE_SHA256,
-        ]
+    expected_child_arguments = (
+        str(tmp_path / "inputs/base.lock"),
+        "file:///vllm.whl",
+        "file:///flashinfer.whl",
+        str(tmp_path / "inputs/closure.json"),
+        "file:///cachet.whl",
+        _PACKAGE_SHA256,
+    )
+    expected_commands = (
+        runtime_v2.isolated_runtime_argv_main_command(
+            runtime_python,
+            module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+            module_relative_path=(
+                "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+            ),
+            attribute_name="_locked_runtime_package_final_verifier_child_main",
+            arguments=expected_child_arguments,
+            warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+        ),
+        runtime_v2.isolated_runtime_argv_main_command(
+            runtime_python,
+            module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+            module_relative_path=(
+                "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+            ),
+            attribute_name="_gpu_final_runtime_verifier_child_main",
+            arguments=expected_child_arguments,
+            warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+        ),
+    )
+    assert (cpu_arguments, gpu_arguments) == expected_commands
+    for arguments in expected_commands:
+        assert arguments[1:4] == ["-I", "-S", "-B"]
+        assert arguments.count("-W") == len(GPU_RUNTIME_PYTHONWARNINGS.split(","))
     assert cpu_kwargs["environment"] == {"SCOPE": "cpu"}
     assert gpu_kwargs["environment"] == {"SCOPE": "gpu"}
     assert cpu_kwargs["cwd"] == runtime_python.parent.parent

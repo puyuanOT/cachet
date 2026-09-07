@@ -117,6 +117,7 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_PATCHED_WHEEL_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
+from document_kv_cache._isolated_runtime import isolated_runtime_verifier_command
 from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -147,6 +148,7 @@ from document_kv_cache.serving_env import (
     VLLM_WHEEL_FILENAME,
     VLLM_WHEEL_SHA256,
     VLLM_WHEEL_URL,
+    GPU_RUNTIME_PYTHONWARNINGS,
     VIRTUALENV_BOOTSTRAP_FILENAME,
     VIRTUALENV_BOOTSTRAP_SHA256,
     VIRTUALENV_BOOTSTRAP_URL,
@@ -4976,31 +4978,23 @@ def _run_native_v2_final_runtime_verifier(
 ) -> dict[str, Any]:
     verifier_environment = dict(environment)
     verifier_environment.update(gpu_runtime_warning_environment_overrides())
-    code = (
-        "import json,sys;"
-        "from document_kv_cache._gpu_qualification_sentinels_v2 import "
-        "verify_gpu_qualification_v2_runtime_installation as verify;"
-        "record=verify(runtime_lock=sys.argv[1],vllm_uri=sys.argv[2],"
-        "flashinfer_uri=sys.argv[3],runtime_closure_manifest=sys.argv[4],"
-        "package_uri=sys.argv[5],package_sha256=sys.argv[6]);"
-        "print(json.dumps(record,allow_nan=False,ensure_ascii=True,"
-        "separators=(',',':'),sort_keys=True))"
-    )
     vllm_uri = paths["patched_vllm_wheel"].as_uri()
     flashinfer_uri = paths["patched_flashinfer_wheel"].as_uri()
     package_uri = paths["package_wheel"].as_uri()
     completed = subprocess.run(
-        [
-            str(python_executable),
-            "-c",
-            code,
-            str(paths["runtime_lock"]),
-            vllm_uri,
-            flashinfer_uri,
-            str(paths["runtime_closure_manifest"]),
-            package_uri,
-            bundle.package_wheel_sha256,
-        ],
+        isolated_runtime_verifier_command(
+            python_executable,
+            verifier_name="gpu_qualification",
+            arguments=(
+                str(paths["runtime_lock"]),
+                vllm_uri,
+                flashinfer_uri,
+                str(paths["runtime_closure_manifest"]),
+                package_uri,
+                bundle.package_wheel_sha256,
+            ),
+            warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+        ),
         check=True,
         capture_output=True,
         text=True,

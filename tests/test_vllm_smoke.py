@@ -954,7 +954,23 @@ def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
     assert observed == record
     assert validated == [record]
     argv, kwargs = calls[0]
-    assert argv[:2] == [str(tmp_path / "venv" / "bin" / "python"), "-c"]
+    assert argv[:4] == [
+        str(tmp_path / "venv" / "bin" / "python"),
+        "-I",
+        "-S",
+        "-B",
+    ]
+    code_index = argv.index("-c")
+    assert argv[4:code_index] == [
+        item
+        for warning_filter in GPU_RUNTIME_PYTHONWARNINGS.split(",")
+        for item in ("-W", warning_filter)
+    ]
+    assert argv[code_index + 5] == (
+        "verify_gpu_qualification_v2_runtime_installation"
+    )
+    assert "import site" not in argv[code_index + 1]
+    assert "sys.path.append(str(_cachet_site_packages))" in argv[code_index + 1]
     assert argv[-6:] == [
         str(paths["runtime_lock"]),
         paths["patched_vllm_wheel"].as_uri(),

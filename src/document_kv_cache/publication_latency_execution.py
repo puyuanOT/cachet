@@ -119,6 +119,7 @@ from document_kv_cache.gpu_qualification_v2 import (
     validate_gpu_qualification_plan_v2_record,
     validate_locked_runtime_v2_package_installation_attestation,
 )
+from document_kv_cache._isolated_runtime import isolated_runtime_runner_fragment
 from document_kv_cache.flashinfer_wheel_repack import (
     FLASHINFER_PATCHED_WHEEL_SHA256,
 )
@@ -493,6 +494,8 @@ import sys
 import urllib.request
 from pathlib import Path
 from time import monotonic, sleep
+
+__ISOLATED_RUNTIME_RUNNER_FRAGMENT__
 
 
 _FINAL_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES = 1_048_576
@@ -929,24 +932,20 @@ def _verify_locked_runtime(
     package_wheel_sha256: str,
     environment: dict[str, str],
 ) -> dict[str, object]:
-    verifier = (
-        "import os,sys\n"
-        "from document_kv_cache._gpu_qualification_sentinels_v2 import "
-        "_locked_runtime_package_final_verifier_main as main\n"
-        "os._exit(main(sys.argv[1:]))\n"
-    )
     completed = _run_bounded_child(
-        [
+        _isolated_runtime_verifier_command(
             venv_python,
-            "-c",
-            verifier,
-            runtime_lock,
-            Path(patched_vllm_wheel).resolve().as_uri(),
-            Path(patched_flashinfer_wheel).resolve().as_uri(),
-            runtime_closure_manifest,
-            Path(package_wheel).resolve().as_uri(),
-            package_wheel_sha256,
-        ],
+            verifier_name="locked_runtime",
+            arguments=[
+                runtime_lock,
+                Path(patched_vllm_wheel).resolve().as_uri(),
+                Path(patched_flashinfer_wheel).resolve().as_uri(),
+                runtime_closure_manifest,
+                Path(package_wheel).resolve().as_uri(),
+                package_wheel_sha256,
+            ],
+            warning_policy="__GPU_RUNTIME_PYTHONWARNINGS__",
+        ),
         environment=environment,
         timeout_seconds=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
         label="source-closure native-v2 verifier",
@@ -962,26 +961,13 @@ def _verify_locked_runtime(
         completed.stderr,
         label="source-closure native-v2",
     )
-    validator = '''import json
-import os
-import sys
-
-from document_kv_cache.gpu_qualification_v2 import (
-    validate_locked_runtime_v2_package_installation_attestation as validate,
-)
-
-validate(json.loads(sys.argv[1]))
-payload = b"validated\\n"
-offset = 0
-while offset < len(payload):
-    written = os.write(1, payload[offset:])
-    if written <= 0:
-        raise RuntimeError("validator protocol write failed")
-    offset += written
-os._exit(0)
-'''
     validated = _run_bounded_child(
-        [venv_python, "-c", validator, canonical.decode("utf-8")],
+        _isolated_runtime_validator_command(
+            venv_python,
+            validator_name="locked_runtime",
+            canonical_attestation=canonical.decode("utf-8"),
+            warning_policy="__GPU_RUNTIME_PYTHONWARNINGS__",
+        ),
         environment=environment,
         timeout_seconds=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
         label="source-closure native-v2 attestation validator",
@@ -1170,6 +1156,10 @@ if __name__ == "__main__":
     .replace(
         "__CACHET_VIRTUALENV_BOOTSTRAP_SHA256__",
         repr(VIRTUALENV_BOOTSTRAP_SHA256),
+    )
+    .replace(
+        "__ISOLATED_RUNTIME_RUNNER_FRAGMENT__",
+        isolated_runtime_runner_fragment(),
     )
     .replace(
         "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
