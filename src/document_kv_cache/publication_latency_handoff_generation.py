@@ -117,6 +117,7 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
     GPUQualificationArtifactPins,
     GPUQualificationSelection,
+    _GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT,
     canonical_gpu_qualification_json,
     validate_gpu_qualification_evidence_record,
 )
@@ -271,6 +272,7 @@ import subprocess
 import sys
 import urllib.request
 
+__GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
 
 _FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS = 300.0
 VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
@@ -308,6 +310,7 @@ def _pip_subprocess_environment() -> dict[str, str]:
             env.pop(variable_name)
     for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         env.pop(variable_name, None)
+    env.pop(_SYSTEM_CUDA_PARENT_ATTESTATION_ENV, None)
     env.update(
         {
             "FLASHINFER_LOGGING_LEVEL": "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
@@ -452,11 +455,23 @@ def _verify_locked_runtime(
     )
     if completed.stdout != canonical_stdout:
         raise RuntimeError("v2 locked runtime verifier output is not canonical")
-    from document_kv_cache.gpu_qualification_v2 import (
-        validate_gpu_qualification_v2_runtime_attestation,
+    validator = (
+        "import json,sys; from document_kv_cache.gpu_qualification_v2 "
+        "import validate_gpu_qualification_v2_runtime_attestation as validate; "
+        "validate(json.load(sys.stdin)); print('validated')"
     )
-
-    validate_gpu_qualification_v2_runtime_attestation(attestation)
+    validated = subprocess.run(
+        [venv_python, "-c", validator],
+        input=canonical_stdout,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
+    )
+    if validated.returncode != 0:
+        raise RuntimeError("v2 locked runtime attestation validator process failed")
+    if validated.stderr != "" or validated.stdout != "validated\\n":
+        raise RuntimeError("v2 locked runtime attestation validator output differs")
     expected_direct_urls = {
         "flashinfer_direct_url": Path(patched_flashinfer_wheel).resolve().as_uri(),
         "vllm_direct_url": Path(patched_vllm_wheel).resolve().as_uri(),
@@ -518,6 +533,13 @@ def _bootstrap(argv: list[str]) -> None:
     if marker == expected_marker:
         if os.path.realpath(sys.executable) != os.path.realpath(venv_python):
             raise RuntimeError("locked-runtime marker is set outside the bound venv")
+        system_cuda_parent_attestation_json = (
+            _system_cuda_parent_attestation_json_from_environment()
+        )
+        verifier_environment = _pip_subprocess_environment()
+        verifier_environment[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
+            system_cuda_parent_attestation_json
+        )
         _verify_locked_runtime(
             venv_python=venv_python,
             runtime_lock=runtime_lock,
@@ -526,13 +548,16 @@ def _bootstrap(argv: list[str]) -> None:
             runtime_closure_manifest=runtime_closure_manifest,
             package_wheel=package_wheel,
             package_wheel_sha256=args.package_wheel_sha256,
-            environment=_pip_subprocess_environment(),
+            environment=verifier_environment,
         )
         from document_kv_cache.publication_latency_handoff_generation import main
 
         raise SystemExit(main(remaining))
     if os.path.exists(venv_dir):
         raise FileExistsError("refusing to reuse an unverified handoff runtime")
+    system_cuda_parent_attestation_json = (
+        _capture_system_cuda_parent_attestation_json()
+    )
     pip_environment = _pip_subprocess_environment()
     _create_runtime_venv(venv_dir, environment=pip_environment)
     pip_environment["VIRTUAL_ENV"] = venv_dir
@@ -581,6 +606,10 @@ def _bootstrap(argv: list[str]) -> None:
         ],
         env=pip_environment,
     )
+    verifier_environment = dict(pip_environment)
+    verifier_environment[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
+        system_cuda_parent_attestation_json
+    )
     _verify_locked_runtime(
         venv_python=venv_python,
         runtime_lock=runtime_lock,
@@ -589,9 +618,12 @@ def _bootstrap(argv: list[str]) -> None:
         runtime_closure_manifest=runtime_closure_manifest,
         package_wheel=package_wheel,
         package_wheel_sha256=args.package_wheel_sha256,
-        environment=pip_environment,
+        environment=verifier_environment,
     )
     env = dict(pip_environment)
+    env[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
+        system_cuda_parent_attestation_json
+    )
     env["CACHET_LATENCY_HANDOFF_LOCKED_RUNTIME"] = expected_marker
     os.execve(
         venv_python,
@@ -618,6 +650,10 @@ if __name__ == "__main__":
     .replace(
         "__CACHET_VIRTUALENV_BOOTSTRAP_SHA256__",
         repr(VIRTUALENV_BOOTSTRAP_SHA256),
+    )
+    .replace(
+        "__GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__",
+        _GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT,
     )
     .replace(
         "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",

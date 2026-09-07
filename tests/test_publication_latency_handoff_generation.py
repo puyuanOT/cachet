@@ -10,7 +10,6 @@ from hashlib import sha256
 import pytest
 
 import document_kv_cache.gpu_qualification_databricks as qualification_job
-import document_kv_cache.gpu_qualification_v2 as qualification_v2
 import document_kv_cache.publication_latency_handoff_generation as generation
 from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
@@ -686,24 +685,25 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
         "stderr": "",
         "stdout": json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n",
     }
-    verifier_calls = []
+    validator_inputs = []
 
-    def validate_attestation(value):
-        verifier_calls.append(dict(value))
-
-    def run_verifier(command, *, capture_output, text, env, timeout):
+    def run_verifier(command, *, capture_output, text, env, timeout, input=None):
         assert command[0] == "venv-python"
         assert capture_output is True
         assert text is True
         assert env == {"SAFE": "1"}
         assert timeout == 300.0
+        if input is not None:
+            assert command[1] == "-c"
+            assert "validate_gpu_qualification_v2_runtime_attestation" in command[2]
+            validator_inputs.append(input)
+            return type(
+                "Completed",
+                (),
+                {"returncode": 0, "stderr": "", "stdout": "validated\n"},
+            )()
         return type("Completed", (), output)()
 
-    monkeypatch.setattr(
-        qualification_v2,
-        "validate_gpu_qualification_v2_runtime_attestation",
-        validate_attestation,
-    )
     monkeypatch.setattr(namespace["subprocess"], "run", run_verifier)
     verify_kwargs = {
         "venv_python": "venv-python",
@@ -716,7 +716,9 @@ def test_production_config_pins_q8_nf4_double_quant_and_loader_source(
         "environment": {"SAFE": "1"},
     }
     namespace["_verify_locked_runtime"](**verify_kwargs)
-    assert verifier_calls == [attestation]
+    assert validator_inputs == [
+        json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n"
+    ]
 
     output["stderr"] = "unexpected\n"
     with pytest.raises(RuntimeError, match="emitted stderr"):

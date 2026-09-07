@@ -1,3 +1,4 @@
+import ast
 import inspect
 import io
 import json
@@ -19,7 +20,6 @@ import document_kv_cache.publication_latency_execution as execution
 import document_kv_cache.vllm_smoke as vllm_smoke
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
-    build_gpu_qualification_system_cuda_parent_attestation,
 )
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.databricks_resource_ledger import (
@@ -1416,14 +1416,12 @@ def _native_v2_runtime_attestation(*, vllm_uri, flashinfer_uri):
         "runtime_closure_file_sha256": (
             qualification_v2.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
         ),
-        "system_cuda_parent_attestation": (
-            build_gpu_qualification_system_cuda_parent_attestation(
-                distribution_root="/databricks/python/lib/python3.11/site-packages",
-                libcudart_path=(
-                    "/databricks/python/lib/python3.11/site-packages/"
-                    "nvidia/cuda_runtime/lib/libcudart.so.12"
-                ),
-            )
+        "gpu_execution_attested": False,
+        "record_type": (
+            qualification_v2.LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE
+        ),
+        "schema_version": (
+            qualification_v2.LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION
         ),
         "unexpected_distributions": [],
         "vllm_direct_url": vllm_uri,
@@ -1986,6 +1984,10 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
     monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", "DEBUG")
     monkeypatch.setenv("PYTHONWARNINGS", "ignore")
+    monkeypatch.setenv(
+        "CACHET_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION",
+        "hostile-gpu-claim",
+    )
     for filename, script in (
         ("publication_latency_runner.py", execution.PUBLICATION_LATENCY_RUNNER_SCRIPT),
         (
@@ -2013,6 +2015,13 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
             variable not in environment
             for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
         )
+        cuda_parent_environment = (
+            "CACHET_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION"
+        )
+        if filename == "publication_latency_source_closure_runner.py":
+            assert cuda_parent_environment not in environment
+        else:
+            assert environment[cuda_parent_environment] == "hostile-gpu-claim"
     assert '"--extra-index-url"' not in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
@@ -2179,8 +2188,34 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
     assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
     )
-    assert "validate_gpu_qualification_v2_runtime_attestation" in (
+    assert "verify_locked_runtime_v2_package_installation as verify" in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "validate_locked_runtime_v2_package_installation_attestation" in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert "verify_gpu_qualification_v2_runtime_installation" not in (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    cuda_parent_environment = "CACHET_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION"
+    assert (
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT.count(
+            cuda_parent_environment
+        )
+        == 1
+    )
+    assert (
+        f'env.pop("{cuda_parent_environment}", None)'
+        in execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    source_runner_tree = ast.parse(
+        execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
+    )
+    assert not any(
+        isinstance(node, ast.ImportFrom)
+        and isinstance(node.module, str)
+        and node.module.startswith("document_kv_cache")
+        for node in ast.walk(source_runner_tree)
     )
     assert "timeout=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS" in (
         execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT
@@ -2215,6 +2250,68 @@ def test_source_closure_request_result_and_cpu_payload_are_closed(
         len(execution._final_artifact_roles())
         - len(execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_EXCLUDED_ROLES)
     )
+
+
+def test_source_closure_runtime_verifier_and_validator_both_run_in_venv(
+    monkeypatch,
+    tmp_path,
+):
+    namespace = {"__name__": "latency_source_closure_verifier_test"}
+    exec(
+        compile(
+            execution.PUBLICATION_LATENCY_SOURCE_CLOSURE_RUNNER_SCRIPT,
+            "publication_latency_source_closure_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    vllm_wheel = tmp_path / "vllm.whl"
+    flashinfer_wheel = tmp_path / "flashinfer.whl"
+    attestation = {
+        "flashinfer_direct_url": flashinfer_wheel.resolve().as_uri(),
+        "gpu_execution_attested": False,
+        "ok": True,
+        "record_type": "cachet.locked_runtime_package_installation.v2",
+        "schema_version": 2,
+        "vllm_direct_url": vllm_wheel.resolve().as_uri(),
+    }
+    canonical = json.dumps(attestation, sort_keys=True, separators=(",", ":")) + "\n"
+    calls = []
+
+    def run(command, *, capture_output, text, env, timeout, input=None):
+        calls.append((command, input))
+        assert command[0] == "venv-python"
+        assert command[1] == "-c"
+        assert capture_output is True
+        assert text is True
+        assert env == {"SAFE": "1"}
+        assert timeout == 300.0
+        if input is None:
+            assert "verify_locked_runtime_v2_package_installation" in command[2]
+            assert "verify_gpu_qualification_v2_runtime_installation" not in command[2]
+            return SimpleNamespace(returncode=0, stderr="", stdout=canonical)
+        assert input == canonical
+        assert (
+            "validate_locked_runtime_v2_package_installation_attestation" in command[2]
+        )
+        return SimpleNamespace(returncode=0, stderr="", stdout="validated\n")
+
+    monkeypatch.setattr(namespace["subprocess"], "run", run)
+    verified = namespace["_verify_locked_runtime"](
+        venv_python="venv-python",
+        runtime_lock=str(tmp_path / "base.lock"),
+        patched_vllm_wheel=str(vllm_wheel),
+        patched_flashinfer_wheel=str(flashinfer_wheel),
+        runtime_closure_manifest=str(tmp_path / "closure.json"),
+        package_wheel=str(tmp_path / "cachet.whl"),
+        package_wheel_sha256="a" * 64,
+        environment={"SAFE": "1"},
+    )
+
+    assert verified == attestation
+    assert len(calls) == 2
+    assert calls[0][1] is None
+    assert calls[1][1] == canonical
 
 
 def test_source_closure_runner_cleans_mismatched_virtualenv_download(

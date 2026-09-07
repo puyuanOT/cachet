@@ -117,7 +117,7 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPUQualificationArtifactPinsV2,
     validate_gpu_qualification_evidence_v2_record,
     validate_gpu_qualification_plan_v2_record,
-    validate_gpu_qualification_v2_runtime_attestation,
+    validate_locked_runtime_v2_package_installation_attestation,
 )
 from document_kv_cache.flashinfer_wheel_repack import (
     FLASHINFER_PATCHED_WHEEL_SHA256,
@@ -526,6 +526,7 @@ def _pip_subprocess_environment() -> dict[str, str]:
             env.pop(variable_name)
     for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         env.pop(variable_name, None)
+    env.pop("CACHET_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION", None)
     env.update(
         {
             "FLASHINFER_LOGGING_LEVEL": "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
@@ -632,7 +633,7 @@ def _verify_locked_runtime(
 ) -> dict[str, object]:
     verifier = (
         "import json,sys; from document_kv_cache._gpu_qualification_sentinels_v2 "
-        "import verify_gpu_qualification_v2_runtime_installation as verify; "
+        "import verify_locked_runtime_v2_package_installation as verify; "
         "print(json.dumps(verify(runtime_lock=sys.argv[1],vllm_uri=sys.argv[2],"
         "flashinfer_uri=sys.argv[3],runtime_closure_manifest=sys.argv[4],"
         "package_uri=sys.argv[5],package_sha256=sys.argv[6]),sort_keys=True,"
@@ -670,11 +671,27 @@ def _verify_locked_runtime(
     )
     if completed.stdout != canonical:
         raise RuntimeError("source-closure native-v2 verifier output is not canonical")
-    from document_kv_cache.gpu_qualification_v2 import (
-        validate_gpu_qualification_v2_runtime_attestation,
+    validator = (
+        "import json,sys; from document_kv_cache.gpu_qualification_v2 "
+        "import validate_locked_runtime_v2_package_installation_attestation "
+        "as validate; validate(json.load(sys.stdin)); print('validated')"
     )
-
-    validate_gpu_qualification_v2_runtime_attestation(verified)
+    validated = subprocess.run(
+        [venv_python, "-c", validator],
+        input=canonical,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
+    )
+    if validated.returncode != 0:
+        raise RuntimeError(
+            "source-closure native-v2 attestation validator process failed"
+        )
+    if validated.stderr != "" or validated.stdout != "validated\n":
+        raise RuntimeError(
+            "source-closure native-v2 attestation validator output differs"
+        )
     expected_direct_urls = {
         "flashinfer_direct_url": Path(patched_flashinfer_wheel).resolve().as_uri(),
         "vllm_direct_url": Path(patched_vllm_wheel).resolve().as_uri(),
@@ -9200,7 +9217,7 @@ def _validate_native_runtime_v2_attestation_binding(
     *,
     bundle: VLLMNativeRuntimeBundleV2,
 ) -> None:
-    validate_gpu_qualification_v2_runtime_attestation(value)
+    validate_locked_runtime_v2_package_installation_attestation(value)
     expected_urls = {
         "vllm_direct_url": bundle.local_path("patched_vllm_wheel").resolve().as_uri(),
         "flashinfer_direct_url": (

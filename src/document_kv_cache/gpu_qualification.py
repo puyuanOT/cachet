@@ -123,6 +123,284 @@ GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES: Final = 679_264
 GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256: Final = (
     "9335f6a29ca91010e2da9f40e82fb4b28e3a4ae22fd385e1293e93bf3c46c9e6"
 )
+
+# Publication runners start under the Databricks system interpreter, before the
+# reviewed Cachet wheel exists in their isolated runtime.  This stdlib-only
+# fragment is embedded verbatim into those generated runners so they can bind
+# the exact parent userspace-CUDA distribution without importing Cachet or
+# trusting a caller-provided environment value.
+_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT: Final = (
+    r"""import hashlib
+import hmac
+import importlib.metadata
+import json
+import os
+import pathlib
+import re
+import stat
+
+
+_SYSTEM_CUDA_PARENT_ATTESTATION_ENV = (
+    "CACHET_GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION"
+)
+_SYSTEM_CUDA_PARENT_ATTESTATION_RECORD_TYPE = __CACHET_PARENT_RECORD_TYPE__
+_SYSTEM_CUDA_PARENT_ATTESTATION_SCHEMA_VERSION = __CACHET_PARENT_SCHEMA_VERSION__
+_SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME = __CACHET_PARENT_DISTRIBUTION_NAME__
+_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION = __CACHET_PARENT_DISTRIBUTION_VERSION__
+_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER = __CACHET_PARENT_LIBCUDART_MEMBER__
+_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES = __CACHET_PARENT_LIBCUDART_SIZE_BYTES__
+_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256 = __CACHET_PARENT_LIBCUDART_SHA256__
+_SYSTEM_CUDA_PARENT_FILE_READ_BYTES = 64 * 1024
+
+
+def _canonical_system_cuda_parent_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def _system_cuda_parent_file_identity(
+    status: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_size,
+        status.st_mtime_ns,
+    )
+
+
+def _read_system_cuda_parent_member(path: pathlib.Path, *, label: str) -> bytes:
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"{label} could not be opened without following"
+            ) from exc
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_size != _SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES
+        ):
+            raise RuntimeError(f"{label} is not the exact-size regular file")
+        chunks: list[bytes] = []
+        byte_count = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(
+                    _SYSTEM_CUDA_PARENT_FILE_READ_BYTES,
+                    _SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES + 1 - byte_count,
+                ),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            byte_count += len(chunk)
+            if byte_count > _SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES:
+                raise RuntimeError(f"{label} exceeds its byte limit")
+        after = os.fstat(descriptor)
+        if (
+            _system_cuda_parent_file_identity(before)
+            != _system_cuda_parent_file_identity(after)
+            or byte_count != after.st_size
+        ):
+            raise RuntimeError(f"{label} changed while it was read")
+        try:
+            path_status = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            raise RuntimeError(f"{label} path changed after it was read") from exc
+        if _system_cuda_parent_file_identity(
+            path_status
+        ) != _system_cuda_parent_file_identity(after):
+            raise RuntimeError(f"{label} path changed after it was read")
+        content = b"".join(chunks)
+        if not hmac.compare_digest(
+            hashlib.sha256(content).hexdigest(),
+            _SYSTEM_CUDA_PARENT_LIBCUDART_SHA256,
+        ):
+            raise RuntimeError(f"{label} bytes differ")
+        return content
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _canonical_system_cuda_parent_path(value: object, *, label: str) -> str:
+    if (
+        type(value) is not str
+        or not value.startswith("/")
+        or value.startswith("//")
+        or value.endswith("/")
+        or "\\" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise RuntimeError(f"{label} is not a canonical absolute POSIX path")
+    pure = pathlib.PurePosixPath(value)
+    if str(pure) != value or any(part in {".", ".."} for part in pure.parts):
+        raise RuntimeError(f"{label} is not a canonical absolute POSIX path")
+    return value
+
+
+def _validate_system_cuda_parent_attestation_record(
+    record: dict[str, object],
+) -> None:
+    expected: dict[str, object] = {
+        "distribution_name": _SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME,
+        "distribution_version": _SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION,
+        "libcudart_member": _SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER,
+        "libcudart_sha256": _SYSTEM_CUDA_PARENT_LIBCUDART_SHA256,
+        "libcudart_size_bytes": _SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES,
+        "record_type": _SYSTEM_CUDA_PARENT_ATTESTATION_RECORD_TYPE,
+        "schema_version": _SYSTEM_CUDA_PARENT_ATTESTATION_SCHEMA_VERSION,
+    }
+    if set(record) != {*expected, "distribution_root", "libcudart_path"}:
+        raise RuntimeError("Databricks parent CUDA runtime attestation keys differ")
+    for field_name, expected_value in expected.items():
+        observed = record.get(field_name)
+        if type(observed) is not type(expected_value) or observed != expected_value:
+            raise RuntimeError(
+                f"Databricks parent CUDA runtime attestation {field_name} differs"
+            )
+    distribution_root = _canonical_system_cuda_parent_path(
+        record.get("distribution_root"),
+        label="Databricks parent CUDA runtime distribution root",
+    )
+    libcudart_path = _canonical_system_cuda_parent_path(
+        record.get("libcudart_path"),
+        label="Databricks parent CUDA runtime member path",
+    )
+    if libcudart_path != str(
+        pathlib.PurePosixPath(distribution_root)
+        / _SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER
+    ):
+        raise RuntimeError(
+            "Databricks parent CUDA runtime member is not distribution-owned"
+        )
+
+
+def _canonical_system_cuda_parent_json(record: dict[str, object]) -> str:
+    return json.dumps(
+        record,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _capture_system_cuda_parent_attestation_json() -> str:
+    matches = []
+    for distribution in importlib.metadata.distributions():
+        raw_name = distribution.metadata["Name"]
+        if (
+            isinstance(raw_name, str)
+            and _canonical_system_cuda_parent_distribution_name(raw_name)
+            == _SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME
+        ):
+            matches.append(distribution)
+    if (
+        len(matches) != 1
+        or matches[0].version != _SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION
+    ):
+        raise RuntimeError("Databricks parent CUDA runtime distribution differs")
+    distribution = matches[0]
+    files = distribution.files
+    members = (
+        []
+        if files is None
+        else [
+            member
+            for member in files
+            if str(member) == _SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER
+        ]
+    )
+    if len(members) != 1:
+        raise RuntimeError("Databricks parent CUDA runtime member inventory differs")
+    distribution_root = pathlib.Path(str(distribution.locate_file("")))
+    libcudart_path = pathlib.Path(str(distribution.locate_file(members[0])))
+    if libcudart_path != distribution_root / _SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER:
+        raise RuntimeError("Databricks parent CUDA runtime member path differs")
+    record: dict[str, object] = {
+        "distribution_name": _SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME,
+        "distribution_root": str(distribution_root),
+        "distribution_version": _SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION,
+        "libcudart_member": _SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER,
+        "libcudart_path": str(libcudart_path),
+        "libcudart_sha256": _SYSTEM_CUDA_PARENT_LIBCUDART_SHA256,
+        "libcudart_size_bytes": _SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES,
+        "record_type": _SYSTEM_CUDA_PARENT_ATTESTATION_RECORD_TYPE,
+        "schema_version": _SYSTEM_CUDA_PARENT_ATTESTATION_SCHEMA_VERSION,
+    }
+    _validate_system_cuda_parent_attestation_record(record)
+    _read_system_cuda_parent_member(
+        libcudart_path,
+        label="Databricks parent CUDA runtime member",
+    )
+    return _canonical_system_cuda_parent_json(record)
+
+
+def _system_cuda_parent_attestation_json_from_environment() -> str:
+    raw = os.environ.get(_SYSTEM_CUDA_PARENT_ATTESTATION_ENV)
+    if raw is None:
+        raise RuntimeError("Databricks parent CUDA runtime attestation is unavailable")
+    try:
+        record = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Databricks parent CUDA runtime attestation is invalid JSON"
+        ) from exc
+    if type(record) is not dict:
+        raise RuntimeError("Databricks parent CUDA runtime attestation is not an object")
+    try:
+        canonical = _canonical_system_cuda_parent_json(record)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Databricks parent CUDA runtime attestation is not canonical"
+        ) from exc
+    if not hmac.compare_digest(canonical, raw):
+        raise RuntimeError(
+            "Databricks parent CUDA runtime attestation is not canonical"
+        )
+    _validate_system_cuda_parent_attestation_record(record)
+    _read_system_cuda_parent_member(
+        pathlib.Path(record["libcudart_path"]),
+        label="attested Databricks parent CUDA runtime member",
+    )
+    return raw
+""".replace(
+        "__CACHET_PARENT_RECORD_TYPE__",
+        repr(GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RECORD_TYPE),
+    )
+    .replace(
+        "__CACHET_PARENT_SCHEMA_VERSION__",
+        repr(GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_SCHEMA_VERSION),
+    )
+    .replace(
+        "__CACHET_PARENT_DISTRIBUTION_NAME__",
+        repr(GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_NAME),
+    )
+    .replace(
+        "__CACHET_PARENT_DISTRIBUTION_VERSION__",
+        repr(GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_DISTRIBUTION_VERSION),
+    )
+    .replace(
+        "__CACHET_PARENT_LIBCUDART_MEMBER__",
+        repr(GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER),
+    )
+    .replace(
+        "__CACHET_PARENT_LIBCUDART_SIZE_BYTES__",
+        repr(GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES),
+    )
+    .replace(
+        "__CACHET_PARENT_LIBCUDART_SHA256__",
+        repr(GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_SHA256),
+    )
+)
 GPU_QUALIFICATION_GENERATION_HARDWARE_ID: Final = "aws-g6e-l40s"
 GPU_QUALIFICATION_GENERATION_GPU: Final = "NVIDIA L40S"
 GPU_QUALIFICATION_GENERATION_COMPUTE_CAPABILITY: Final = "8.9"

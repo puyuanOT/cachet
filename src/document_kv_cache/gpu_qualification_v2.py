@@ -83,6 +83,10 @@ GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE: Final = (
 GPU_QUALIFICATION_V2_LOCAL_PREFLIGHT_RECORD_TYPE: Final = (
     "cachet.vllm_0271_local_preflight_evidence.v2"
 )
+LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE: Final = (
+    "cachet.locked_runtime_package_installation.v2"
+)
+LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION: Final = 2
 GPU_QUALIFICATION_V2_SCHEMA_VERSION: Final = 2
 GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION: Final = "0.2.0"
 GPU_QUALIFICATION_V2_ARTIFACT_KEYS: Final = (
@@ -304,7 +308,7 @@ _GPU_QUALIFICATION_V2_RUNTIME_CLOSURE_JSON: Final = canonical_gpu_qualification_
 )
 del _GPU_QUALIFICATION_V2_RUNTIME_CLOSURE_TEMPLATE
 
-_RUNTIME_ATTESTATION_KEYS: Final = frozenset(
+_RUNTIME_PACKAGE_INSTALLATION_ATTESTATION_KEYS: Final = frozenset(
     {
         "base_lock_distribution_count",
         "base_lock_hash_count",
@@ -325,7 +329,6 @@ _RUNTIME_ATTESTATION_KEYS: Final = frozenset(
         "pip_check_ok",
         "runtime_closure_closed_record_sha256",
         "runtime_closure_file_sha256",
-        "system_cuda_parent_attestation",
         "unexpected_distributions",
         "vllm_direct_url",
         "vllm_member_sha256",
@@ -333,6 +336,17 @@ _RUNTIME_ATTESTATION_KEYS: Final = frozenset(
         "vllm_wheel_sha256",
         "with_flashinfer_distribution_count",
         "with_vllm_distribution_count",
+    }
+)
+_RUNTIME_ATTESTATION_KEYS: Final = frozenset(
+    {*_RUNTIME_PACKAGE_INSTALLATION_ATTESTATION_KEYS, "system_cuda_parent_attestation"}
+)
+_LOCKED_RUNTIME_PACKAGE_INSTALLATION_RECORD_KEYS: Final = frozenset(
+    {
+        *_RUNTIME_PACKAGE_INSTALLATION_ATTESTATION_KEYS,
+        "gpu_execution_attested",
+        "record_type",
+        "schema_version",
     }
 )
 _RUNTIME_VERIFICATION_KEYS: Final = frozenset(
@@ -1323,14 +1337,40 @@ def pins_from_gpu_qualification_plan_v2(
     )
 
 
-def validate_gpu_qualification_v2_runtime_attestation(
+def validate_locked_runtime_v2_package_installation_attestation(
     value: Mapping[str, Any],
 ) -> None:
-    """Validate the final isolated-runtime verifier's exact result."""
+    """Validate the exact package installation independent of GPU host provenance."""
 
-    normalized = _mapping_copy(value, "GPU qualification v2 runtime attestation")
+    normalized = _mapping_copy(value, "locked runtime v2 package attestation")
     _require_exact_keys(
-        normalized, _RUNTIME_ATTESTATION_KEYS, "GPU qualification v2 attestation"
+        normalized,
+        _LOCKED_RUNTIME_PACKAGE_INSTALLATION_RECORD_KEYS,
+        "locked runtime v2 package attestation",
+    )
+    if (
+        normalized.get("record_type")
+        != LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE
+        or type(normalized.get("schema_version")) is not int
+        or normalized.get("schema_version")
+        != LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION
+        or type(normalized.get("gpu_execution_attested")) is not bool
+        or normalized.get("gpu_execution_attested") is not False
+    ):
+        raise ValueError("locked runtime v2 package attestation envelope differs")
+    _validate_locked_runtime_v2_package_installation_fields(
+        {key: normalized[key] for key in _RUNTIME_PACKAGE_INSTALLATION_ATTESTATION_KEYS}
+    )
+
+
+def _validate_locked_runtime_v2_package_installation_fields(
+    value: Mapping[str, Any],
+) -> None:
+    normalized = _mapping_copy(value, "locked runtime v2 package fields")
+    _require_exact_keys(
+        normalized,
+        _RUNTIME_PACKAGE_INSTALLATION_ATTESTATION_KEYS,
+        "locked runtime v2 package fields",
     )
     expected: dict[str, Any] = {
         "base_lock_distribution_count": VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT,
@@ -1374,7 +1414,38 @@ def validate_gpu_qualification_v2_runtime_attestation(
         if type(normalized.get(field_name)) is not type(expected_value) or (
             normalized.get(field_name) != expected_value
         ):
-            raise ValueError(f"GPU qualification v2 attestation {field_name} differs")
+            raise ValueError(
+                f"locked runtime v2 package attestation {field_name} differs"
+            )
+    for field_name in (
+        "flashinfer_direct_url",
+        "vllm_direct_url",
+    ):
+        value_text = normalized.get(field_name)
+        if not isinstance(value_text, str) or not value_text:
+            raise ValueError(
+                f"locked runtime v2 package attestation {field_name} is empty"
+            )
+    for field_name in ("flashinfer_direct_url", "vllm_direct_url"):
+        if not _is_canonical_local_file_uri(cast(str, normalized[field_name])):
+            raise ValueError(
+                f"locked runtime v2 package attestation {field_name} is not canonical"
+            )
+
+
+def validate_gpu_qualification_v2_runtime_attestation(
+    value: Mapping[str, Any],
+) -> None:
+    """Validate the final isolated-runtime verifier's exact GPU result."""
+
+    normalized = _mapping_copy(value, "GPU qualification v2 runtime attestation")
+    _require_exact_keys(
+        normalized, _RUNTIME_ATTESTATION_KEYS, "GPU qualification v2 attestation"
+    )
+    package_attestation = {
+        key: normalized[key] for key in _RUNTIME_PACKAGE_INSTALLATION_ATTESTATION_KEYS
+    }
+    _validate_locked_runtime_v2_package_installation_fields(package_attestation)
     system_cuda_parent_attestation = _mapping_copy(
         normalized.get("system_cuda_parent_attestation"),
         "GPU qualification v2 attestation system_cuda_parent_attestation",
@@ -1382,18 +1453,6 @@ def validate_gpu_qualification_v2_runtime_attestation(
     qualification_v1.validate_gpu_qualification_system_cuda_parent_attestation(
         system_cuda_parent_attestation
     )
-    for field_name in (
-        "flashinfer_direct_url",
-        "vllm_direct_url",
-    ):
-        value_text = normalized.get(field_name)
-        if not isinstance(value_text, str) or not value_text:
-            raise ValueError(f"GPU qualification v2 attestation {field_name} is empty")
-    for field_name in ("flashinfer_direct_url", "vllm_direct_url"):
-        if not _is_canonical_local_file_uri(cast(str, normalized[field_name])):
-            raise ValueError(
-                f"GPU qualification v2 attestation {field_name} is not canonical"
-            )
 
 
 def _validate_bound_plan_v2(
@@ -1500,6 +1559,8 @@ __all__ = [
     "GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT",
     "GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT",
+    "LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE",
+    "LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION",
     "GPUQualificationArtifactPinsV2",
     "build_gpu_job_result_v2",
     "build_gpu_qualification_plan_v2",
@@ -1512,5 +1573,6 @@ __all__ = [
     "validate_gpu_qualification_plan_v2_record",
     "validate_gpu_qualification_v2_runtime_attestation",
     "validate_gpu_runtime_verification_v2_record",
+    "validate_locked_runtime_v2_package_installation_attestation",
     "validate_local_preflight_evidence_v2_record",
 ]

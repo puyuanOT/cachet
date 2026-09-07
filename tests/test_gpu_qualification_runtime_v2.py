@@ -685,6 +685,59 @@ def test_standalone_verifier_pip_check_is_exact_bounded_binary_subprocess(
     ]
 
 
+def test_package_installation_verifier_is_disjoint_from_gpu_host_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vllm_uri = "file:///runtime/vllm.whl"
+    flashinfer_uri = "file:///runtime/flashinfer.whl"
+    common = _attestation(vllm_uri=vllm_uri, flashinfer_uri=flashinfer_uri)
+    common.pop("system_cuda_parent_attestation")
+    calls: list[dict[str, Any]] = []
+
+    def verify_common(**kwargs: Any) -> dict[str, Any]:
+        calls.append(dict(kwargs))
+        return deepcopy(common)
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_locked_runtime_v2_package_installation", verify_common
+    )
+    monkeypatch.setattr(
+        runtime_v2,
+        "_system_cuda_parent_attestation_from_environment",
+        lambda: pytest.fail("CPU package verifier read GPU host provenance"),
+    )
+
+    record = runtime_v2.verify_locked_runtime_v2_package_installation(
+        runtime_lock="base.lock",
+        vllm_uri=vllm_uri,
+        flashinfer_uri=flashinfer_uri,
+        runtime_closure_manifest="closure.json",
+        package_uri="file:///runtime/cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+    )
+
+    assert calls == [
+        {
+            "runtime_lock": "base.lock",
+            "vllm_uri": vllm_uri,
+            "flashinfer_uri": flashinfer_uri,
+            "runtime_closure_manifest": "closure.json",
+            "package_uri": "file:///runtime/cachet.whl",
+            "package_sha256": _PACKAGE_SHA256,
+            "stage_callback": None,
+        }
+    ]
+    assert record == {
+        **common,
+        "gpu_execution_attested": False,
+        "record_type": runtime_v2.LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE,
+        "schema_version": (
+            runtime_v2.LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION
+        ),
+    }
+    assert "system_cuda_parent_attestation" not in record
+
+
 def test_standalone_verifier_strips_private_pip_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

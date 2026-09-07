@@ -23,6 +23,8 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE,
     GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT,
     GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT,
+    LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE,
+    LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION,
     GPUQualificationArtifactPinsV2,
     _build_governed_cloud_gpu_evidence_v2,
     _build_governed_gpu_qualification_evidence_v2,
@@ -37,6 +39,7 @@ from document_kv_cache.gpu_qualification_v2 import (
     validate_gpu_qualification_v2_runtime_attestation,
     validate_gpu_job_result_v2_record,
     validate_gpu_runtime_verification_v2_record,
+    validate_locked_runtime_v2_package_installation_attestation,
 )
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
@@ -254,6 +257,19 @@ def _valid_attestation() -> dict[str, Any]:
         "with_flashinfer_distribution_count": 196,
         "with_vllm_distribution_count": 197,
     }
+
+
+def _valid_package_installation_attestation() -> dict[str, Any]:
+    record = _valid_attestation()
+    record.pop("system_cuda_parent_attestation")
+    record.update(
+        {
+            "gpu_execution_attested": False,
+            "record_type": LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE,
+            "schema_version": LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION,
+        }
+    )
+    return record
 
 
 def _weight_quantizer_attestation() -> dict[str, Any]:
@@ -734,6 +750,60 @@ def test_v2_runtime_closure_freezes_install_order_counts_and_identities() -> Non
     assert GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE == (
         "cachet.vllm_0271_gpu_job_result.v2"
     )
+
+
+def test_v2_package_installation_attestation_is_explicitly_non_gpu() -> None:
+    attestation = _valid_package_installation_attestation()
+
+    assert attestation["record_type"] == (
+        "cachet.locked_runtime_package_installation.v2"
+    )
+    assert attestation["schema_version"] == 2
+    assert attestation["gpu_execution_attested"] is False
+    assert "system_cuda_parent_attestation" not in attestation
+    validate_locked_runtime_v2_package_installation_attestation(attestation)
+
+    with pytest.raises(ValueError, match="closed schema"):
+        validate_gpu_qualification_v2_runtime_attestation(attestation)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement"),
+    [
+        ("gpu_execution_attested", True),
+        ("gpu_execution_attested", 0),
+        ("record_type", "cachet.vllm_0271_gpu_runtime_verification.v2"),
+        ("schema_version", 1),
+        ("schema_version", False),
+    ],
+)
+def test_v2_package_installation_attestation_rejects_gpu_or_envelope_claims(
+    field_name: str,
+    replacement: Any,
+) -> None:
+    attestation = _valid_package_installation_attestation()
+    attestation[field_name] = replacement
+
+    with pytest.raises(ValueError, match="envelope differs"):
+        validate_locked_runtime_v2_package_installation_attestation(attestation)
+
+
+def test_v2_package_installation_attestation_rejects_cuda_parent_injection() -> None:
+    attestation = _valid_package_installation_attestation()
+    attestation["system_cuda_parent_attestation"] = _valid_attestation()[
+        "system_cuda_parent_attestation"
+    ]
+
+    with pytest.raises(ValueError, match="closed schema"):
+        validate_locked_runtime_v2_package_installation_attestation(attestation)
+
+
+def test_v2_gpu_runtime_attestation_still_requires_cuda_parent() -> None:
+    attestation = _valid_attestation()
+    attestation.pop("system_cuda_parent_attestation")
+
+    with pytest.raises(ValueError, match="closed schema"):
+        validate_gpu_qualification_v2_runtime_attestation(attestation)
 
 
 def test_v2_runtime_attestation_accepts_only_the_exact_closed_contract() -> None:

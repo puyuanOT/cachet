@@ -131,6 +131,7 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_GENERATION_HARDWARE_ID,
     GPU_QUALIFICATION_MIN_PREFIX_TOKENS_PER_SECOND,
     GPUQualificationSelection,
+    _GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT,
     canonical_gpu_qualification_json,
 )
 from document_kv_cache.gpu_qualification_v2 import (
@@ -361,6 +362,7 @@ import subprocess
 import sys
 import urllib.request
 
+__GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
 
 VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
 VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
@@ -397,6 +399,7 @@ def _pip_subprocess_environment() -> dict[str, str]:
             env.pop(variable_name)
     for variable_name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
         env.pop(variable_name, None)
+    env.pop(_SYSTEM_CUDA_PARENT_ATTESTATION_ENV, None)
     env.update(
         {
             "FLASHINFER_LOGGING_LEVEL": "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",
@@ -530,11 +533,15 @@ def _bootstrap(argv: list[str]) -> None:
     if marker == identity:
         if os.path.realpath(sys.executable) != os.path.realpath(venv_python):
             raise RuntimeError("locked-runtime marker is set outside the bound venv")
+        _system_cuda_parent_attestation_json_from_environment()
         from document_kv_cache.full_score_execution import main
 
         raise SystemExit(main(remaining))
     if os.path.exists(venv_dir):
         raise FileExistsError("refusing to reuse an unverified full-score runtime")
+    system_cuda_parent_attestation_json = (
+        _capture_system_cuda_parent_attestation_json()
+    )
     pip_environment = _pip_subprocess_environment()
     _create_runtime_venv(venv_dir, environment=pip_environment)
     pip_environment["VIRTUAL_ENV"] = venv_dir
@@ -574,6 +581,9 @@ def _bootstrap(argv: list[str]) -> None:
         env=pip_environment,
     )
     env = dict(pip_environment)
+    env[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
+        system_cuda_parent_attestation_json
+    )
     env["CACHET_FULL_SCORE_LOCKED_RUNTIME"] = identity
     os.execve(
         venv_python,
@@ -595,6 +605,10 @@ if __name__ == "__main__":
     .replace(
         "__CACHET_VIRTUALENV_BOOTSTRAP_SHA256__",
         repr(VIRTUALENV_BOOTSTRAP_SHA256),
+    )
+    .replace(
+        "__GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__",
+        _GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT,
     )
     .replace(
         "__GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL__",

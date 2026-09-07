@@ -50,11 +50,14 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT,
     GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT,
     GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT,
+    LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE,
+    LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION,
     build_gpu_runtime_verification_v2,
     gpu_qualification_v2_runtime_closure,
     pins_from_gpu_qualification_plan_v2,
     validate_gpu_qualification_plan_v2_record,
     validate_gpu_qualification_v2_runtime_attestation,
+    validate_locked_runtime_v2_package_installation_attestation,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
@@ -871,6 +874,37 @@ def _runtime_launch_environment(
     return launch_environment
 
 
+def verify_locked_runtime_v2_package_installation(
+    *,
+    runtime_lock: str | Path,
+    vllm_uri: str,
+    flashinfer_uri: str,
+    runtime_closure_manifest: str | Path,
+    package_uri: str,
+    package_sha256: str,
+) -> dict[str, Any]:
+    """Verify the locked package installation without claiming GPU host provenance."""
+
+    record = _verify_locked_runtime_v2_package_installation(
+        runtime_lock=runtime_lock,
+        vllm_uri=vllm_uri,
+        flashinfer_uri=flashinfer_uri,
+        runtime_closure_manifest=runtime_closure_manifest,
+        package_uri=package_uri,
+        package_sha256=package_sha256,
+        stage_callback=None,
+    )
+    record.update(
+        {
+            "gpu_execution_attested": False,
+            "record_type": LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE,
+            "schema_version": (LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION),
+        }
+    )
+    validate_locked_runtime_v2_package_installation_attestation(record)
+    return record
+
+
 def verify_gpu_qualification_v2_runtime_installation(
     *,
     runtime_lock: str | Path,
@@ -880,7 +914,7 @@ def verify_gpu_qualification_v2_runtime_installation(
     package_uri: str,
     package_sha256: str,
 ) -> dict[str, Any]:
-    """Run the final Linux/CPython/install/provenance/import verifier."""
+    """Run the final GPU Linux/CPython/install/provenance/import verifier."""
 
     return _verify_gpu_qualification_v2_runtime_installation(
         runtime_lock=runtime_lock,
@@ -894,6 +928,41 @@ def verify_gpu_qualification_v2_runtime_installation(
 
 
 def _verify_gpu_qualification_v2_runtime_installation(
+    *,
+    runtime_lock: str | Path,
+    vllm_uri: str,
+    flashinfer_uri: str,
+    runtime_closure_manifest: str | Path,
+    package_uri: str,
+    package_sha256: str,
+    stage_callback: Callable[[str], None] | None,
+) -> dict[str, Any]:
+    record = _verify_locked_runtime_v2_package_installation(
+        runtime_lock=runtime_lock,
+        vllm_uri=vllm_uri,
+        flashinfer_uri=flashinfer_uri,
+        runtime_closure_manifest=runtime_closure_manifest,
+        package_uri=package_uri,
+        package_sha256=package_sha256,
+        stage_callback=stage_callback,
+    )
+    system_cuda_parent_attestation = (
+        _system_cuda_parent_attestation_from_environment()
+    )
+    gpu_record: dict[str, Any] = {}
+    for field_name, field_value in record.items():
+        if field_name == "unexpected_distributions":
+            gpu_record["system_cuda_parent_attestation"] = (
+                system_cuda_parent_attestation
+            )
+        gpu_record[field_name] = field_value
+    validate_gpu_qualification_v2_runtime_attestation(gpu_record)
+    if stage_callback is not None:
+        stage_callback("complete")
+    return gpu_record
+
+
+def _verify_locked_runtime_v2_package_installation(
     *,
     runtime_lock: str | Path,
     vllm_uri: str,
@@ -1110,9 +1179,6 @@ def _verify_gpu_qualification_v2_runtime_installation(
         "pip_check_ok": pip_check_ok,
         "runtime_closure_closed_record_sha256": closure["closed_record_sha256"],
         "runtime_closure_file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
-        "system_cuda_parent_attestation": (
-            _system_cuda_parent_attestation_from_environment()
-        ),
         "unexpected_distributions": unexpected,
         "vllm_direct_url": vllm_direct_url,
         "vllm_member_sha256": vllm_members,
@@ -1125,8 +1191,6 @@ def _verify_gpu_qualification_v2_runtime_installation(
             GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT
         ),
     }
-    validate_gpu_qualification_v2_runtime_attestation(record)
-    enter_stage("complete")
     return record
 
 
@@ -1817,4 +1881,5 @@ def _is_sha256(value: Any) -> bool:
 __all__ = [
     "run_gpu_qualification_sentinel_v2",
     "verify_gpu_qualification_v2_runtime_installation",
+    "verify_locked_runtime_v2_package_installation",
 ]
