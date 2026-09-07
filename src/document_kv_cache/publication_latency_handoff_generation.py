@@ -524,9 +524,7 @@ def _bootstrap(argv: list[str]) -> None:
         args.runtime_closure_manifest_sha256,
         "runtime closure manifest",
     )
-    venv_dir = os.path.abspath(args.runtime_venv_dir)
-    if not venv_dir.startswith("/local_disk0/"):
-        raise ValueError("runtime venv must be rooted under /local_disk0")
+    venv_dir = _canonical_locked_runtime_venv_dir(args.runtime_venv_dir)
     marker = os.environ.get("CACHET_LATENCY_HANDOFF_LOCKED_RUNTIME")
     expected_marker = _runtime_marker(args)
     venv_python = os.path.join(venv_dir, "bin", "python")
@@ -536,7 +534,10 @@ def _bootstrap(argv: list[str]) -> None:
         system_cuda_parent_attestation_json = (
             _system_cuda_parent_attestation_json_from_environment()
         )
-        verifier_environment = _pip_subprocess_environment()
+        verifier_environment = _require_locked_runtime_launch_environment(
+            venv_dir=venv_dir,
+            environment=_pip_subprocess_environment(),
+        )
         verifier_environment[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
             system_cuda_parent_attestation_json
         )
@@ -606,7 +607,10 @@ def _bootstrap(argv: list[str]) -> None:
         ],
         env=pip_environment,
     )
-    verifier_environment = dict(pip_environment)
+    verifier_environment = _locked_runtime_launch_environment(
+        venv_dir=venv_dir,
+        install_environment=pip_environment,
+    )
     verifier_environment[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
         system_cuda_parent_attestation_json
     )
@@ -620,7 +624,7 @@ def _bootstrap(argv: list[str]) -> None:
         package_wheel_sha256=args.package_wheel_sha256,
         environment=verifier_environment,
     )
-    env = dict(pip_environment)
+    env = dict(verifier_environment)
     env[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
         system_cuda_parent_attestation_json
     )

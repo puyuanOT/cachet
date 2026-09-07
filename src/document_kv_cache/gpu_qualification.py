@@ -151,6 +151,10 @@ _SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER = __CACHET_PARENT_LIBCUDART_MEMBER__
 _SYSTEM_CUDA_PARENT_LIBCUDART_SIZE_BYTES = __CACHET_PARENT_LIBCUDART_SIZE_BYTES__
 _SYSTEM_CUDA_PARENT_LIBCUDART_SHA256 = __CACHET_PARENT_LIBCUDART_SHA256__
 _SYSTEM_CUDA_PARENT_FILE_READ_BYTES = 64 * 1024
+_LOCKED_RUNTIME_PARENT = pathlib.Path("/local_disk0")
+_LOCKED_RUNTIME_TORCH_LIBRARY_RELATIVE_PATH = pathlib.Path(
+    "lib/python3.11/site-packages/torch/lib"
+)
 
 
 def _canonical_system_cuda_parent_distribution_name(value: str) -> str:
@@ -167,6 +171,122 @@ def _system_cuda_parent_file_identity(
         status.st_size,
         status.st_mtime_ns,
     )
+
+
+def _locked_runtime_directory_open_flags() -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if type(no_follow) is not int or type(directory) is not int:
+        raise RuntimeError(
+            "locked runtime validation requires O_NOFOLLOW and O_DIRECTORY"
+        )
+    return os.O_RDONLY | no_follow | directory | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_locked_runtime_directory_no_follow(path: pathlib.Path) -> int:
+    if not path.is_absolute() or ".." in path.parts:
+        raise RuntimeError("locked runtime directory is not canonical")
+    try:
+        pre_open_status = path.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(pre_open_status.st_mode)
+            or path.resolve(strict=True) != path
+        ):
+            raise RuntimeError("locked runtime directory is invalid")
+    except OSError as exc:
+        raise RuntimeError("locked runtime directory is invalid") from exc
+    flags = _locked_runtime_directory_open_flags()
+    descriptor = os.open("/", flags)
+    try:
+        for component in path.parts[1:]:
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        path_status = path.stat(follow_symlinks=False)
+        opened_status = os.fstat(descriptor)
+        if (
+            _system_cuda_parent_file_identity(pre_open_status)
+            != _system_cuda_parent_file_identity(opened_status)
+            or _system_cuda_parent_file_identity(path_status)
+            != _system_cuda_parent_file_identity(opened_status)
+            or not stat.S_ISDIR(opened_status.st_mode)
+        ):
+            raise RuntimeError("locked runtime directory changed during validation")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _canonical_locked_runtime_venv_dir(venv_dir: str) -> str:
+    error = "locked runtime venv path differs"
+    try:
+        canonical_venv_dir = _canonical_system_cuda_parent_path(
+            venv_dir,
+            label="locked runtime venv",
+        )
+        runtime_dir = pathlib.Path(canonical_venv_dir)
+        if (
+            runtime_dir == _LOCKED_RUNTIME_PARENT
+            or not runtime_dir.is_relative_to(_LOCKED_RUNTIME_PARENT)
+        ):
+            raise RuntimeError(error)
+    except RuntimeError as exc:
+        raise RuntimeError(error) from exc
+    return canonical_venv_dir
+
+
+def _locked_runtime_torch_library_dir(venv_dir: str) -> str:
+    error = "locked runtime torch library directory differs"
+    try:
+        runtime_dir = pathlib.Path(_canonical_locked_runtime_venv_dir(venv_dir))
+        torch_library_dir = runtime_dir / _LOCKED_RUNTIME_TORCH_LIBRARY_RELATIVE_PATH
+        if (
+            os.pathsep in str(torch_library_dir)
+            or not torch_library_dir.is_relative_to(runtime_dir)
+        ):
+            raise RuntimeError(error)
+        for directory in (runtime_dir, torch_library_dir):
+            descriptor = _open_locked_runtime_directory_no_follow(directory)
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                raise RuntimeError(error) from exc
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(error) from exc
+    return str(torch_library_dir)
+
+
+def _locked_runtime_launch_environment(
+    *,
+    venv_dir: str,
+    install_environment: dict[str, str],
+) -> dict[str, str]:
+    torch_library_dir = _locked_runtime_torch_library_dir(venv_dir)
+    launch_environment = dict(install_environment)
+    existing_library_path = launch_environment.get("LD_LIBRARY_PATH")
+    launch_environment["LD_LIBRARY_PATH"] = torch_library_dir
+    if existing_library_path:
+        launch_environment["LD_LIBRARY_PATH"] += (
+            os.pathsep + existing_library_path
+        )
+    return launch_environment
+
+
+def _require_locked_runtime_launch_environment(
+    *,
+    venv_dir: str,
+    environment: dict[str, str],
+) -> dict[str, str]:
+    torch_library_dir = _locked_runtime_torch_library_dir(venv_dir)
+    observed_library_path = environment.get("LD_LIBRARY_PATH")
+    if (
+        type(observed_library_path) is not str
+        or observed_library_path.split(os.pathsep, maxsplit=1)[0]
+        != torch_library_dir
+    ):
+        raise RuntimeError("locked runtime torch library environment differs")
+    return dict(environment)
 
 
 def _read_system_cuda_parent_member(path: pathlib.Path, *, label: str) -> bytes:

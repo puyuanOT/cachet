@@ -514,9 +514,7 @@ def _bootstrap(argv: list[str]) -> None:
         args.runtime_closure_manifest_sha256,
         "runtime closure manifest",
     )
-    venv_dir = os.path.abspath(args.runtime_venv_dir)
-    if not venv_dir.startswith("/local_disk0/"):
-        raise ValueError("runtime venv must be rooted under /local_disk0")
+    venv_dir = _canonical_locked_runtime_venv_dir(args.runtime_venv_dir)
     identity = hashlib.sha256(
         (
             "cachet.full_score.locked_runtime.v2\\0"
@@ -534,6 +532,10 @@ def _bootstrap(argv: list[str]) -> None:
         if os.path.realpath(sys.executable) != os.path.realpath(venv_python):
             raise RuntimeError("locked-runtime marker is set outside the bound venv")
         _system_cuda_parent_attestation_json_from_environment()
+        _require_locked_runtime_launch_environment(
+            venv_dir=venv_dir,
+            environment=dict(os.environ),
+        )
         from document_kv_cache.full_score_execution import main
 
         raise SystemExit(main(remaining))
@@ -580,7 +582,10 @@ def _bootstrap(argv: list[str]) -> None:
         [*pip, "install", "--no-deps", package_spec],
         env=pip_environment,
     )
-    env = dict(pip_environment)
+    env = _locked_runtime_launch_environment(
+        venv_dir=venv_dir,
+        install_environment=pip_environment,
+    )
     env[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
         system_cuda_parent_attestation_json
     )
