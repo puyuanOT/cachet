@@ -1289,6 +1289,10 @@ def test_preflight_writes_exact_eight_children_and_parent_file_seals(
         "src/document_kv_cache/_runtime_bootstrap_native_loader.py"
         in freeze_v2._V2_STATIC_ANALYSIS_TARGETS
     )
+    assert (
+        "src/document_kv_cache/vllm_smoke.py"
+        in freeze_v2._V2_STATIC_ANALYSIS_TARGETS
+    )
 
 
 def test_preflight_rejects_resealed_semantic_child_tamper(

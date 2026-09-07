@@ -5911,12 +5911,17 @@ def test_runtime_verifier_requires_bounded_canonical_stdout_and_empty_stderr(
         "verify_gpu_qualification_v2_runtime_installation"
     )
     assert "indent=2" in verifier_command[code_index + 6]
+    assert verifier_command[code_index + 7] == "350"
     assert bounded_call["timeout_seconds"] == (
         full_score.FULL_SCORE_RUNTIME_VERIFIER_TIMEOUT_SECONDS
     )
-    # The public verifier has its own 300-second bounded child.
+    # The public verifier's internal supervisor leaves outer cleanup headroom.
     assert bounded_call["timeout_seconds"] == 360.0
-    assert bounded_call["timeout_seconds"] - 300.0 == 60.0
+    assert (
+        bounded_call["timeout_seconds"]
+        - full_score.ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        == 10.0
+    )
     assert bounded_call["output_limit_bytes"] == (
         full_score.FULL_SCORE_RUNTIME_VERIFIER_OUTPUT_LIMIT_BYTES
     )

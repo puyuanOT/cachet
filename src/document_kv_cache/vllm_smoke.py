@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TypedDict, cast
 import urllib.error
 import urllib.request
 
@@ -59,6 +59,7 @@ from document_kv_cache.canary_orchestration import (
 )
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
+    BenchmarkExample,
     CACHE_REUSE_ARM,
     CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV,
     DEFAULT_HARDWARE_TARGET,
@@ -117,7 +118,10 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_PATCHED_WHEEL_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
-from document_kv_cache._isolated_runtime import isolated_runtime_verifier_command
+from document_kv_cache._isolated_runtime import (
+    ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS,
+    isolated_runtime_verifier_command,
+)
 from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -215,6 +219,15 @@ PROMPT_TOKEN_PROBE_ADD_SPECIAL_TOKENS = False
 
 # Keep the runtime verifier and wheel builder on one authoritative closure.
 _VLLM_0271_E5M2_PATCH_CLOSURE = _APPROVED_VLLM_0271_E5M2_PATCH_CLOSURE
+
+
+class _MultiTurnConversation(TypedDict):
+    example: BenchmarkExample
+    prompt: str
+    output: str
+    base_id: str
+    turns: list[dict[str, object]]
+    failed: bool
 
 __all__ = [
     "VLLM_VERSION",
@@ -1475,21 +1488,18 @@ def _resolved_representative_vllm_provenance(
         and config.handoff_generation.cache_method
         == CacheGenerationMethod.VANILLA_PREFILL.value
     )
-    layout = layout_for_model(
-        config.model_id,
-        dtype=runtime_kv_dtype,
-        **(
-            {
-                "pre_rope": True,
-                "rope_theta": QWEN3_4B_ROPE_THETA,
-                "rope_rotary_dim": QWEN3_4B_ROPE_ROTARY_DIM,
-                "shares_kv_storage": False,
-                "storage_layout": "separate_key_value",
-            }
-            if pre_rope
-            else {}
-        ),
-    )
+    if pre_rope:
+        layout = layout_for_model(
+            config.model_id,
+            dtype=runtime_kv_dtype,
+            pre_rope=True,
+            rope_theta=QWEN3_4B_ROPE_THETA,
+            rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+            shares_kv_storage=False,
+            storage_layout="separate_key_value",
+        )
+    else:
+        layout = layout_for_model(config.model_id, dtype=runtime_kv_dtype)
     wheel_sha256 = _verified_document_kv_package_wheel_sha256()
     package_revisions: dict[str, str] = {
         package: version
@@ -3099,11 +3109,11 @@ def _generate_prepared_benchmark_handoff_inputs(
         }
 
     artifact_payload_bytes = sum(
-        int(dataset_record["artifact_payload_bytes"])
+        int(cast(Any, dataset_record["artifact_payload_bytes"]))
         for dataset_record in dataset_records.values()
     )
     artifact_storage_values = [
-        int(value)
+        int(cast(Any, value))
         for dataset_record in dataset_records.values()
         if (value := dataset_record["artifact_storage_bytes"]) is not None
     ]
@@ -3891,9 +3901,12 @@ def prime_payload_cache(
         )
     telemetry_by_request_id: dict[str, list[Mapping[str, Any]]] = {}
     for record in telemetry:
-        request_id = record.get("benchmark_request_id")
-        if isinstance(request_id, str) and request_id in expected_request_ids:
-            telemetry_by_request_id.setdefault(request_id, []).append(record)
+        telemetry_request_id = record.get("benchmark_request_id")
+        if (
+            isinstance(telemetry_request_id, str)
+            and telemetry_request_id in expected_request_ids
+        ):
+            telemetry_by_request_id.setdefault(telemetry_request_id, []).append(record)
     for request_id, (phase, dataset, arm_id) in expected_request_ids.items():
         records = telemetry_by_request_id.get(request_id, [])
         if len(records) != 1:
@@ -4331,7 +4344,7 @@ def run_multi_turn_hybrid_latency(
     # follow-ups must reload the conversation KV from LMCache's CPU-RAM / NVMe tier
     # instead of finding it resident in GPU HBM -- the limited-GPU, many-active-conversation
     # regime. Turn 1 carries the Cachet document handoff; follow-ups omit it (-> LMCache).
-    convs: list[dict[str, object]] = [
+    convs: list[_MultiTurnConversation] = [
         {
             "example": example,
             "prompt": build_prompt_parts(example).prefill_prompt,
@@ -4907,6 +4920,7 @@ _NATIVE_RUNTIME_V2_ARTIFACT_NAMES = (
 _NATIVE_RUNTIME_V2_INSTALL_TIMEOUT_SECONDS = 3_600
 _NATIVE_RUNTIME_V2_PIP_CHECK_TIMEOUT_SECONDS = 300
 _NATIVE_RUNTIME_V2_FINAL_VERIFIER_TIMEOUT_SECONDS = 360
+_NATIVE_RUNTIME_V2_FINAL_VERIFIER_TERMINATE_GRACE_SECONDS = 10.0
 _NATIVE_RUNTIME_V2_PIP_CHECK_STDOUT = "No broken requirements found.\n"
 
 
@@ -4968,6 +4982,64 @@ def _native_v2_direct_reference(
     return f"{distribution} @ {path.as_uri()}#sha256={expected_sha256}"
 
 
+def _run_checked_text_subprocess_with_term_cleanup(
+    command: list[str],
+    *,
+    timeout_seconds: float,
+    environment: Mapping[str, str],
+    cwd: Path,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+        cwd=cwd,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except BaseException:
+        try:
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(
+                        timeout=(
+                            _NATIVE_RUNTIME_V2_FINAL_VERIFIER_TERMINATE_GRACE_SECONDS
+                        )
+                    )
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    process.wait(
+                        timeout=(
+                            _NATIVE_RUNTIME_V2_FINAL_VERIFIER_TERMINATE_GRACE_SECONDS
+                        )
+                    )
+        finally:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        raise
+    returncode = process.returncode
+    if type(returncode) is not int:
+        raise RuntimeError("native-v2 verifier process status is unavailable")
+    completed = subprocess.CompletedProcess(
+        command,
+        returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    completed.check_returncode()
+    return completed
+
+
 def _run_native_v2_final_runtime_verifier(
     python_executable: Path,
     *,
@@ -4981,7 +5053,7 @@ def _run_native_v2_final_runtime_verifier(
     vllm_uri = paths["patched_vllm_wheel"].as_uri()
     flashinfer_uri = paths["patched_flashinfer_wheel"].as_uri()
     package_uri = paths["package_wheel"].as_uri()
-    completed = subprocess.run(
+    completed = _run_checked_text_subprocess_with_term_cleanup(
         isolated_runtime_verifier_command(
             python_executable,
             verifier_name="gpu_qualification",
@@ -4994,12 +5066,12 @@ def _run_native_v2_final_runtime_verifier(
                 bundle.package_wheel_sha256,
             ),
             warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+            execution_timeout_seconds=(
+                ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+            ),
         ),
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=_NATIVE_RUNTIME_V2_FINAL_VERIFIER_TIMEOUT_SECONDS,
-        env=verifier_environment,
+        timeout_seconds=_NATIVE_RUNTIME_V2_FINAL_VERIFIER_TIMEOUT_SECONDS,
+        environment=verifier_environment,
         cwd=cwd,
     )
     if completed.stderr != "":
@@ -5818,7 +5890,7 @@ def build_vllm_server_args(
 
 def start_vllm_server(
     config: VLLMSmokeBenchmarkConfig, python_executable: Path, log_path: Path
-) -> subprocess.Popen:
+) -> subprocess.Popen[str]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     argv = build_vllm_server_args(config, python_executable)
     print("+", " ".join(argv), flush=True)
@@ -5833,7 +5905,7 @@ def start_vllm_server(
 
 
 def wait_for_server(
-    server: subprocess.Popen,
+    server: subprocess.Popen[str],
     log_path: Path,
     config: VLLMSmokeBenchmarkConfig,
     *,
@@ -5997,7 +6069,7 @@ def _benchmark_extra_body(
     return extra_body
 
 
-def terminate_process(process: subprocess.Popen) -> None:
+def terminate_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
     process.send_signal(signal.SIGTERM)

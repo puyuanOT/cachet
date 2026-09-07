@@ -945,6 +945,9 @@ def _verify_locked_runtime(
                 package_wheel_sha256,
             ],
             warning_policy="__GPU_RUNTIME_PYTHONWARNINGS__",
+            execution_timeout_seconds=(
+                _ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+            ),
         ),
         environment=environment,
         timeout_seconds=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,
@@ -967,6 +970,9 @@ def _verify_locked_runtime(
             validator_name="locked_runtime",
             canonical_attestation=canonical.decode("utf-8"),
             warning_policy="__GPU_RUNTIME_PYTHONWARNINGS__",
+            execution_timeout_seconds=(
+                _ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS
+            ),
         ),
         environment=environment,
         timeout_seconds=_FINAL_RUNTIME_VERIFIER_TIMEOUT_SECONDS,

@@ -50,6 +50,9 @@ from document_kv_cache.gpu_qualification_v2 import (
     validate_locked_runtime_v2_package_installation_attestation,
 )
 from document_kv_cache._isolated_runtime import (
+    ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS,
+    ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS,
+    ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS,
     isolated_runtime_argv_main_command,
     isolated_runtime_pip_check_command,
 )
@@ -415,17 +418,29 @@ def _require_final_verifier_timeout_hierarchy() -> None:
         _FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS,
         _FINAL_VERIFIER_POST_PIP_BUDGET_SECONDS,
         _FINAL_VERIFIER_REQUIRED_HIERARCHY_MARGIN_SECONDS,
+        ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS,
+        ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS,
+        ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS,
     )
     if any(
         isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
         for value in values
     ) or not (
-        _FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS
-        + _FINAL_VERIFIER_POST_PIP_BUDGET_SECONDS
-        <= _FINAL_VERIFIER_REQUIRED_HIERARCHY_MARGIN_SECONDS
+        ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS
+        + _FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS
+        <= _FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS
         and _FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS
         + _FINAL_VERIFIER_REQUIRED_HIERARCHY_MARGIN_SECONDS
+        < ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS
+        and ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS
+        + _FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS
         < _FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS
+        and _FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS
+        + _FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS
+        < ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        and _FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS
+        + _FINAL_VERIFIER_POST_PIP_BUDGET_SECONDS
+        <= _FINAL_VERIFIER_REQUIRED_HIERARCHY_MARGIN_SECONDS
     ):
         raise RuntimeError("v2 final runtime verifier timeout hierarchy differs")
 
@@ -1154,6 +1169,9 @@ def _verify_locked_runtime_v2_package_installation(
             isolated_runtime_pip_check_command(
                 sys.executable,
                 warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+                execution_timeout_seconds=(
+                    ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS
+                ),
             ),
             timeout_seconds=_FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS,
             output_limit_bytes=_FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES,
@@ -1450,6 +1468,9 @@ def _run_scoped_final_runtime_verifier(
             package_sha256,
         ),
         warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+        execution_timeout_seconds=(
+            ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
     try:
         completed = _run_bounded_binary_subprocess(

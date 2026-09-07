@@ -139,7 +139,10 @@ from document_kv_cache.gpu_qualification_v2 import (
     validate_gpu_qualification_evidence_v2_record,
     validate_gpu_qualification_v2_runtime_attestation,
 )
-from document_kv_cache._isolated_runtime import isolated_runtime_verifier_command
+from document_kv_cache._isolated_runtime import (
+    ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS,
+    isolated_runtime_verifier_command,
+)
 from document_kv_cache._gpu_qualification_sentinels_v2 import (
     _BoundedSubprocessStartFailure,
     _BoundedSubprocessTransportFailure,
@@ -10053,6 +10056,9 @@ def _runtime_verifier_command(
         ),
         warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
         pretty=True,
+        execution_timeout_seconds=(
+            ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 
 

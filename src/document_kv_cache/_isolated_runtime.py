@@ -16,6 +16,14 @@ from pathlib import Path
 from typing import Final
 
 
+ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS: Final = 170.0
+ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS: Final = 280.0
+ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS: Final = 350.0
+ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS: Final = 100.0
+ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS: Final = 100.0
+
+_MAX_EXECUTION_TIMEOUT_SECONDS: Final = 3_600.0
+
 _RUNTIME_VERIFIER_MODULE: Final = (
     "document_kv_cache._gpu_qualification_sentinels_v2"
 )
@@ -77,14 +85,64 @@ import stat
 import sys
 import threading
 from pathlib import Path, PurePosixPath
-from time import monotonic
+from time import monotonic, sleep
 
 
 _cachet_capture_limit_bytes = 1_048_576
 _cachet_capture_join_seconds = 2.0
+_cachet_close_join_seconds = 0.25
+_cachet_reap_seconds = 2.0
+_cachet_wait_poll_seconds = 0.05
+_cachet_original_supervisor_pid = os.getpid()
+
+
+def _cachet_emergency_parent_cleanup():
+    if os.getpid() != _cachet_original_supervisor_pid:
+        return
+    _cachet_emergency_worker_pid = globals().get("_cachet_worker_pid", 0)
+    if (
+        type(_cachet_emergency_worker_pid) is not int
+        or _cachet_emergency_worker_pid <= 0
+        or globals().get("_cachet_worker_reaped") is True
+    ):
+        return
+    for _cachet_emergency_signal_group in (True, False, True):
+        try:
+            if _cachet_emergency_signal_group:
+                os.killpg(_cachet_emergency_worker_pid, signal.SIGKILL)
+            else:
+                os.kill(_cachet_emergency_worker_pid, signal.SIGKILL)
+        except OSError:
+            pass
+    _cachet_emergency_reap_deadline = monotonic() + _cachet_reap_seconds
+    while True:
+        try:
+            _cachet_emergency_wait_pid = os.waitpid(
+                _cachet_emergency_worker_pid,
+                os.WNOHANG,
+            )[0]
+        except InterruptedError:
+            continue
+        except ChildProcessError:
+            break
+        if _cachet_emergency_wait_pid == _cachet_emergency_worker_pid:
+            break
+        if monotonic() >= _cachet_emergency_reap_deadline:
+            break
+        sleep(_cachet_wait_poll_seconds)
+    try:
+        os.killpg(_cachet_emergency_worker_pid, signal.SIGKILL)
+    except OSError:
+        pass
+    globals()["_cachet_worker_reaped"] = True
+    globals()["_cachet_worker_pid"] = 0
 
 
 def _cachet_supervisor_fail(status=70):
+    try:
+        _cachet_emergency_parent_cleanup()
+    except BaseException:
+        pass
     os._exit(status)
 
 
@@ -110,14 +168,30 @@ try:
         or not hasattr(os, "fork")
     ):
         _cachet_supervisor_fail()
-    if len(sys.argv) < 6:
+    if len(sys.argv) < 7:
         _cachet_supervisor_fail()
     _cachet_runtime_root = Path(sys.argv[1])
     _cachet_module_name = sys.argv[2]
     _cachet_module_relative = PurePosixPath(sys.argv[3])
     _cachet_attribute_name = sys.argv[4]
     _cachet_body_source = sys.argv[5]
-    _cachet_arguments = sys.argv[6:]
+    _cachet_execution_timeout_text = sys.argv[6]
+    _cachet_arguments = sys.argv[7:]
+    try:
+        _cachet_execution_timeout_seconds = float(
+            _cachet_execution_timeout_text
+        )
+    except (TypeError, ValueError):
+        _cachet_supervisor_fail()
+    if (
+        not 0.0 < _cachet_execution_timeout_seconds <= 3_600.0
+        or format(_cachet_execution_timeout_seconds, ".17g")
+        != _cachet_execution_timeout_text
+    ):
+        _cachet_supervisor_fail()
+    _cachet_execution_deadline = (
+        monotonic() + _cachet_execution_timeout_seconds
+    )
     _cachet_target_spec = (
         _cachet_module_name,
         str(_cachet_module_relative),
@@ -128,40 +202,54 @@ try:
             "document_kv_cache._gpu_qualification_sentinels_v2",
             "document_kv_cache/_gpu_qualification_sentinels_v2.py",
             "verify_locked_runtime_v2_package_installation",
-        ): "strict",
+        ): ("strict", 350.0, 350.0),
         (
             "document_kv_cache._gpu_qualification_sentinels_v2",
             "document_kv_cache/_gpu_qualification_sentinels_v2.py",
             "verify_gpu_qualification_v2_runtime_installation",
-        ): "strict",
+        ): ("strict", 350.0, 350.0),
         (
             "document_kv_cache._gpu_qualification_sentinels_v2",
             "document_kv_cache/_gpu_qualification_sentinels_v2.py",
             "_gpu_final_runtime_verifier_child_main",
-        ): "captured",
+        ): ("captured", 280.0, 280.0),
         (
             "document_kv_cache._gpu_qualification_sentinels_v2",
             "document_kv_cache/_gpu_qualification_sentinels_v2.py",
             "_locked_runtime_package_final_verifier_child_main",
-        ): "captured",
+        ): ("captured", 280.0, 280.0),
         (
             "document_kv_cache.gpu_qualification_v2",
             "document_kv_cache/gpu_qualification_v2.py",
             "validate_locked_runtime_v2_package_installation_attestation",
-        ): "strict",
+        ): ("strict", 0.0, 100.0),
         (
             "document_kv_cache.gpu_qualification_v2",
             "document_kv_cache/gpu_qualification_v2.py",
             "validate_gpu_qualification_v2_runtime_attestation",
-        ): "strict",
+        ): ("strict", 0.0, 100.0),
         (
             "document_kv_cache._runtime_bootstrap_native_loader",
             "document_kv_cache/_runtime_bootstrap_native_loader.py",
             "main",
-        ): "native",
-        ("pip._internal.cli.main", "pip/_internal/cli/main.py", "main"): "captured",
+        ): ("native", 0.0, 100.0),
+        ("pip._internal.cli.main", "pip/_internal/cli/main.py", "main"): (
+            "captured",
+            0.0,
+            170.0,
+        ),
     }
-    _cachet_expected_protocol = _cachet_target_protocols[_cachet_target_spec]
+    (
+        _cachet_expected_protocol,
+        _cachet_minimum_execution_timeout_seconds,
+        _cachet_maximum_execution_timeout_seconds,
+    ) = _cachet_target_protocols[_cachet_target_spec]
+    if (
+        not _cachet_minimum_execution_timeout_seconds
+        <= _cachet_execution_timeout_seconds
+        <= _cachet_maximum_execution_timeout_seconds
+    ):
+        _cachet_supervisor_fail()
     if (
         not _cachet_runtime_root.is_absolute()
         or _cachet_runtime_root.resolve(strict=True) != _cachet_runtime_root
@@ -223,8 +311,34 @@ try:
     _cachet_target_stdout_pipe = _cachet_pipe()
     _cachet_target_stderr_pipe = _cachet_pipe()
     _cachet_protocol_pipe = _cachet_pipe()
+    _cachet_worker_pid = 0
+    _cachet_worker_reaped = False
+    _cachet_termination_requested = [False]
+
+    def _cachet_request_termination(_signal_number, _frame):
+        _cachet_termination_requested[0] = True
+        if _cachet_worker_reaped or _cachet_worker_pid <= 0:
+            return
+        try:
+            os.killpg(_cachet_worker_pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.kill(_cachet_worker_pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    _cachet_supervisor_signals = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+    for _cachet_signal in _cachet_supervisor_signals:
+        signal.signal(_cachet_signal, _cachet_request_termination)
+    if _cachet_termination_requested[0] or monotonic() >= _cachet_execution_deadline:
+        _cachet_supervisor_fail(75)
     _cachet_worker_pid = os.fork()
     if _cachet_worker_pid == 0:
+        for _cachet_signal in _cachet_supervisor_signals:
+            signal.signal(_cachet_signal, signal.SIG_DFL)
+        if _cachet_termination_requested[0]:
+            os._exit(70)
         for _cachet_read_fd in (
             _cachet_import_stdout_pipe[0],
             _cachet_import_stderr_pipe[0],
@@ -471,19 +585,22 @@ try:
     ):
         os.close(_cachet_write_fd)
 
-    def _cachet_terminate_worker_group(_signal_number, _frame):
+    def _cachet_kill_worker_group(worker_pid, include_worker=True):
+        if type(worker_pid) is not int or worker_pid <= 0:
+            return
         try:
-            os.killpg(_cachet_worker_pid, signal.SIGKILL)
+            os.killpg(worker_pid, signal.SIGKILL)
         except OSError:
             pass
-        try:
-            os.kill(_cachet_worker_pid, signal.SIGKILL)
-        except OSError:
-            pass
-        os._exit(70)
-
-    for _cachet_signal in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
-        signal.signal(_cachet_signal, _cachet_terminate_worker_group)
+        if include_worker:
+            try:
+                os.kill(worker_pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                os.killpg(worker_pid, signal.SIGKILL)
+            except OSError:
+                pass
     _cachet_stream_descriptors = {
         "import_stdout": _cachet_import_stdout_pipe[0],
         "import_stderr": _cachet_import_stderr_pipe[0],
@@ -538,21 +655,86 @@ try:
         )
         _cachet_threads.append(_cachet_thread)
         _cachet_thread.start()
-    while True:
-        try:
-            _cachet_wait_status = os.waitpid(_cachet_worker_pid, 0)[1]
+    _cachet_wait_status = None
+    _cachet_reaped_worker_pid = 0
+    _cachet_execution_timed_out = False
+    _cachet_interrupted = False
+    while _cachet_wait_status is None:
+        _cachet_now = monotonic()
+        if _cachet_termination_requested[0]:
+            _cachet_interrupted = True
             break
+        _cachet_remaining = _cachet_execution_deadline - _cachet_now
+        if _cachet_remaining <= 0.0:
+            _cachet_execution_timed_out = True
+            break
+        try:
+            _cachet_wait_pid, _cachet_polled_status = os.waitpid(
+                _cachet_worker_pid,
+                os.WNOHANG,
+            )
         except InterruptedError:
-            pass
-    try:
-        os.killpg(_cachet_worker_pid, signal.SIGKILL)
-    except OSError:
-        pass
-    _cachet_deadline = monotonic() + _cachet_capture_join_seconds
+            continue
+        if _cachet_wait_pid == _cachet_worker_pid:
+            _cachet_wait_status = _cachet_polled_status
+            if monotonic() >= _cachet_execution_deadline:
+                _cachet_execution_timed_out = True
+            _cachet_worker_reaped = True
+            _cachet_reaped_worker_pid = _cachet_worker_pid
+            _cachet_worker_pid = 0
+            break
+        if _cachet_wait_pid != 0:
+            _cachet_interrupted = True
+            break
+        _cachet_remaining = _cachet_execution_deadline - monotonic()
+        if _cachet_remaining > 0.0:
+            sleep(min(_cachet_wait_poll_seconds, _cachet_remaining))
+
+    if _cachet_wait_status is None:
+        _cachet_kill_worker_group(_cachet_worker_pid)
+        _cachet_reap_deadline = monotonic() + _cachet_reap_seconds
+        while _cachet_wait_status is None:
+            try:
+                _cachet_wait_pid, _cachet_polled_status = os.waitpid(
+                    _cachet_worker_pid,
+                    os.WNOHANG,
+                )
+            except InterruptedError:
+                continue
+            except ChildProcessError:
+                _cachet_supervisor_fail(75)
+            if _cachet_wait_pid == _cachet_worker_pid:
+                _cachet_wait_status = _cachet_polled_status
+                _cachet_worker_reaped = True
+                _cachet_reaped_worker_pid = _cachet_worker_pid
+                _cachet_worker_pid = 0
+                break
+            if _cachet_wait_pid != 0 or monotonic() >= _cachet_reap_deadline:
+                _cachet_kill_worker_group(_cachet_worker_pid)
+                _cachet_supervisor_fail(75)
+            _cachet_kill_worker_group(_cachet_worker_pid)
+            sleep(_cachet_wait_poll_seconds)
+    _cachet_kill_worker_group(_cachet_reaped_worker_pid, include_worker=False)
+
+    _cachet_drain_deadline = monotonic() + _cachet_capture_join_seconds
     for _cachet_thread in _cachet_threads:
-        _cachet_thread.join(max(0.0, _cachet_deadline - monotonic()))
+        _cachet_thread.join(max(0.0, _cachet_drain_deadline - monotonic()))
     if any(_cachet_thread.is_alive() for _cachet_thread in _cachet_threads):
+        for _cachet_descriptor in _cachet_stream_descriptors.values():
+            try:
+                os.close(_cachet_descriptor)
+            except OSError:
+                pass
+        _cachet_close_deadline = monotonic() + _cachet_close_join_seconds
+        for _cachet_thread in _cachet_threads:
+            _cachet_thread.join(
+                max(0.0, _cachet_close_deadline - monotonic())
+            )
         _cachet_supervisor_fail(73)
+    if _cachet_execution_timed_out:
+        _cachet_supervisor_fail(75)
+    if _cachet_interrupted or _cachet_termination_requested[0]:
+        _cachet_supervisor_fail()
     if any(
         _cachet_captures[_cachet_name][_cachet_field]
         for _cachet_name in _cachet_captures
@@ -824,6 +1006,29 @@ def _warning_filter_arguments(warning_policy: str) -> list[str]:
     return arguments
 
 
+def _execution_timeout_argument(
+    execution_timeout_seconds: float,
+    *,
+    minimum_execution_timeout_seconds: float,
+    maximum_execution_timeout_seconds: float,
+) -> str:
+    if (
+        type(execution_timeout_seconds) not in (int, float)
+        or type(minimum_execution_timeout_seconds) not in (int, float)
+        or type(maximum_execution_timeout_seconds) not in (int, float)
+        or not 0.0
+        <= minimum_execution_timeout_seconds
+        <= execution_timeout_seconds
+        <= maximum_execution_timeout_seconds
+        <= _MAX_EXECUTION_TIMEOUT_SECONDS
+        or execution_timeout_seconds == 0.0
+    ):
+        raise ValueError(
+            "isolated runtime execution timeout must be finite and within target bounds"
+        )
+    return format(float(execution_timeout_seconds), ".17g")
+
+
 def _isolated_runtime_python_command(
     python_executable: str | os.PathLike[str],
     *,
@@ -833,6 +1038,9 @@ def _isolated_runtime_python_command(
     body_source: str,
     arguments: Sequence[str],
     warning_policy: str,
+    execution_timeout_seconds: float,
+    minimum_execution_timeout_seconds: float,
+    maximum_execution_timeout_seconds: float,
 ) -> list[str]:
     executable = Path(python_executable)
     if (
@@ -859,6 +1067,11 @@ def _isolated_runtime_python_command(
         module_relative_path,
         attribute_name,
         body_source,
+        _execution_timeout_argument(
+            execution_timeout_seconds,
+            minimum_execution_timeout_seconds=minimum_execution_timeout_seconds,
+            maximum_execution_timeout_seconds=maximum_execution_timeout_seconds,
+        ),
         *runtime_arguments,
     ]
 
@@ -870,6 +1083,9 @@ def isolated_runtime_verifier_command(
     arguments: Sequence[str],
     warning_policy: str,
     pretty: bool = False,
+    execution_timeout_seconds: float = (
+        ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+    ),
 ) -> list[str]:
     """Render a captured six-argument runtime verifier command."""
 
@@ -885,6 +1101,13 @@ def isolated_runtime_verifier_command(
         body_source=_PRETTY_VERIFIER_BODY if pretty else _COMPACT_VERIFIER_BODY,
         arguments=arguments,
         warning_policy=warning_policy,
+        execution_timeout_seconds=execution_timeout_seconds,
+        minimum_execution_timeout_seconds=(
+            ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        ),
+        maximum_execution_timeout_seconds=(
+            ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -894,6 +1117,9 @@ def isolated_runtime_validator_command(
     validator_name: str,
     canonical_attestation: str,
     warning_policy: str,
+    execution_timeout_seconds: float = (
+        ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS
+    ),
 ) -> list[str]:
     """Render a validator command whose sole success payload is ``validated``."""
 
@@ -909,6 +1135,11 @@ def isolated_runtime_validator_command(
         body_source=_VALIDATOR_BODY,
         arguments=(canonical_attestation,),
         warning_policy=warning_policy,
+        execution_timeout_seconds=execution_timeout_seconds,
+        minimum_execution_timeout_seconds=0.0,
+        maximum_execution_timeout_seconds=(
+            ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -920,6 +1151,9 @@ def isolated_runtime_argv_main_command(
     attribute_name: str,
     arguments: Sequence[str],
     warning_policy: str,
+    execution_timeout_seconds: float = (
+        ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS
+    ),
 ) -> list[str]:
     """Render an isolated import followed by a canonical argv-main entrypoint."""
 
@@ -934,6 +1168,13 @@ def isolated_runtime_argv_main_command(
         body_source=_ARGV_MAIN_BODY,
         arguments=arguments,
         warning_policy=warning_policy,
+        execution_timeout_seconds=execution_timeout_seconds,
+        minimum_execution_timeout_seconds=(
+            ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS
+        ),
+        maximum_execution_timeout_seconds=(
+            ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -941,6 +1182,9 @@ def isolated_runtime_pip_check_command(
     python_executable: str | os.PathLike[str],
     *,
     warning_policy: str,
+    execution_timeout_seconds: float = (
+        ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS
+    ),
 ) -> list[str]:
     """Render an isolated exact ``pip check`` invocation.
 
@@ -957,6 +1201,11 @@ def isolated_runtime_pip_check_command(
         body_source=_PIP_CHECK_BODY,
         arguments=(),
         warning_policy=warning_policy,
+        execution_timeout_seconds=execution_timeout_seconds,
+        minimum_execution_timeout_seconds=0.0,
+        maximum_execution_timeout_seconds=(
+            ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -966,6 +1215,9 @@ def isolated_runtime_native_loader_command(
     expected_gpu_name: str,
     expected_ld_library_path: str,
     warning_policy: str,
+    execution_timeout_seconds: float = (
+        ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS
+    ),
 ) -> list[str]:
     """Render the one fixed native torch/vLLM loader attestation command."""
 
@@ -999,6 +1251,11 @@ def isolated_runtime_native_loader_command(
         body_source=_NATIVE_LOADER_BODY,
         arguments=(expected_gpu_name, expected_ld_library_path),
         warning_policy=warning_policy,
+        execution_timeout_seconds=execution_timeout_seconds,
+        minimum_execution_timeout_seconds=0.0,
+        maximum_execution_timeout_seconds=(
+            ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -1006,6 +1263,10 @@ _GENERATED_RUNNER_TEMPLATE: Final = r'''_ISOLATED_RUNTIME_BOOTSTRAP_SOURCE = __I
 _ISOLATED_RUNTIME_COMPACT_VERIFIER_BODY = __ISOLATED_RUNTIME_COMPACT_VERIFIER_BODY__
 _ISOLATED_RUNTIME_VALIDATOR_BODY = __ISOLATED_RUNTIME_VALIDATOR_BODY__
 _ISOLATED_RUNTIME_NATIVE_LOADER_BODY = __ISOLATED_RUNTIME_NATIVE_LOADER_BODY__
+_ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS = __ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS__
+_ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS = __ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS__
+_ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS = __ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS__
+_ISOLATED_RUNTIME_MAX_EXECUTION_TIMEOUT_SECONDS = __ISOLATED_RUNTIME_MAX_EXECUTION_TIMEOUT_SECONDS__
 
 
 def _isolated_runtime_warning_filter_arguments(warning_policy: str) -> list[str]:
@@ -1018,6 +1279,29 @@ def _isolated_runtime_warning_filter_arguments(warning_policy: str) -> list[str]
     return arguments
 
 
+def _isolated_runtime_execution_timeout_argument(
+    execution_timeout_seconds: float,
+    *,
+    minimum_execution_timeout_seconds: float,
+    maximum_execution_timeout_seconds: float,
+) -> str:
+    if (
+        type(execution_timeout_seconds) not in (int, float)
+        or type(minimum_execution_timeout_seconds) not in (int, float)
+        or type(maximum_execution_timeout_seconds) not in (int, float)
+        or not 0.0
+        <= minimum_execution_timeout_seconds
+        <= execution_timeout_seconds
+        <= maximum_execution_timeout_seconds
+        <= _ISOLATED_RUNTIME_MAX_EXECUTION_TIMEOUT_SECONDS
+        or execution_timeout_seconds == 0.0
+    ):
+        raise ValueError(
+            "isolated runtime execution timeout must be finite and within target bounds"
+        )
+    return format(float(execution_timeout_seconds), ".17g")
+
+
 def _isolated_runtime_python_command(
     python_executable: str,
     *,
@@ -1027,6 +1311,9 @@ def _isolated_runtime_python_command(
     body_source: str,
     arguments: list[str],
     warning_policy: str,
+    execution_timeout_seconds: float,
+    minimum_execution_timeout_seconds: float,
+    maximum_execution_timeout_seconds: float,
 ) -> list[str]:
     executable = Path(python_executable)
     if (
@@ -1052,6 +1339,11 @@ def _isolated_runtime_python_command(
         module_relative_path,
         attribute_name,
         body_source,
+        _isolated_runtime_execution_timeout_argument(
+            execution_timeout_seconds,
+            minimum_execution_timeout_seconds=minimum_execution_timeout_seconds,
+            maximum_execution_timeout_seconds=maximum_execution_timeout_seconds,
+        ),
         *arguments,
     ]
 
@@ -1062,6 +1354,9 @@ def _isolated_runtime_verifier_command(
     verifier_name: str,
     arguments: list[str],
     warning_policy: str,
+    execution_timeout_seconds: float = (
+        _ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+    ),
 ) -> list[str]:
     targets = {
         "locked_runtime": "verify_locked_runtime_v2_package_installation",
@@ -1081,6 +1376,13 @@ def _isolated_runtime_verifier_command(
         body_source=_ISOLATED_RUNTIME_COMPACT_VERIFIER_BODY,
         arguments=arguments,
         warning_policy=warning_policy,
+        execution_timeout_seconds=execution_timeout_seconds,
+        minimum_execution_timeout_seconds=(
+            _ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        ),
+        maximum_execution_timeout_seconds=(
+            _ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -1090,6 +1392,9 @@ def _isolated_runtime_validator_command(
     validator_name: str,
     canonical_attestation: str,
     warning_policy: str,
+    execution_timeout_seconds: float = (
+        _ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS
+    ),
 ) -> list[str]:
     targets = {
         "locked_runtime": (
@@ -1109,6 +1414,11 @@ def _isolated_runtime_validator_command(
         body_source=_ISOLATED_RUNTIME_VALIDATOR_BODY,
         arguments=[canonical_attestation],
         warning_policy=warning_policy,
+        execution_timeout_seconds=execution_timeout_seconds,
+        minimum_execution_timeout_seconds=0.0,
+        maximum_execution_timeout_seconds=(
+            _ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -1118,6 +1428,9 @@ def _isolated_runtime_native_loader_command(
     expected_gpu_name: str,
     expected_ld_library_path: str,
     warning_policy: str,
+    execution_timeout_seconds: float = (
+        _ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS
+    ),
 ) -> list[str]:
     if expected_gpu_name not in {"NVIDIA L40S", "NVIDIA L4"}:
         raise ValueError("unsupported native-loader GPU")
@@ -1150,6 +1463,11 @@ def _isolated_runtime_native_loader_command(
         body_source=_ISOLATED_RUNTIME_NATIVE_LOADER_BODY,
         arguments=[expected_gpu_name, expected_ld_library_path],
         warning_policy=warning_policy,
+        execution_timeout_seconds=execution_timeout_seconds,
+        minimum_execution_timeout_seconds=0.0,
+        maximum_execution_timeout_seconds=(
+            _ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS
+        ),
     )
 '''
 
@@ -1174,12 +1492,33 @@ def isolated_runtime_runner_fragment() -> str:
             "__ISOLATED_RUNTIME_NATIVE_LOADER_BODY__",
             repr(_NATIVE_LOADER_BODY),
         )
+        .replace(
+            "__ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS__",
+            repr(ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS),
+        )
+        .replace(
+            "__ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS__",
+            repr(ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS),
+        )
+        .replace(
+            "__ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS__",
+            repr(ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS),
+        )
+        .replace(
+            "__ISOLATED_RUNTIME_MAX_EXECUTION_TIMEOUT_SECONDS__",
+            repr(_MAX_EXECUTION_TIMEOUT_SECONDS),
+        )
         .rstrip()
     )
 
 
 __all__ = [
     "ISOLATED_RUNTIME_BOOTSTRAP_SOURCE",
+    "ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS",
+    "ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS",
+    "ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS",
+    "ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS",
+    "ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS",
     "isolated_runtime_argv_main_command",
     "isolated_runtime_native_loader_command",
     "isolated_runtime_pip_check_command",

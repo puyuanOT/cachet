@@ -936,7 +936,11 @@ def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
     validated = []
-    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "_run_checked_text_subprocess_with_term_cleanup",
+        fake_run,
+    )
     monkeypatch.setattr(
         gpu_qualification_v2,
         "validate_gpu_qualification_v2_runtime_attestation",
@@ -969,6 +973,7 @@ def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
     assert argv[code_index + 5] == (
         "verify_gpu_qualification_v2_runtime_installation"
     )
+    assert argv[code_index + 7] == "350"
     assert "import site" not in argv[code_index + 1]
     assert "sys.path.append(str(_cachet_site_packages))" in argv[code_index + 1]
     assert argv[-6:] == [
@@ -979,19 +984,105 @@ def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
         paths["package_wheel"].as_uri(),
         NATIVE_RUNTIME_PACKAGE_SHA256,
     ]
-    assert kwargs["capture_output"] is True
-    assert kwargs["text"] is True
-    assert kwargs["timeout"] == (
+    assert kwargs["timeout_seconds"] == (
         public_vllm_smoke._NATIVE_RUNTIME_V2_FINAL_VERIFIER_TIMEOUT_SECONDS
     )
-    # The public verifier has its own 300-second bounded child.
-    assert kwargs["timeout"] == 360
-    assert kwargs["timeout"] - 300 == 60
-    assert kwargs["env"] == {
+    # The public verifier's internal supervisor leaves outer cleanup headroom.
+    assert kwargs["timeout_seconds"] == 360
+    assert (
+        kwargs["timeout_seconds"]
+        - public_vllm_smoke.ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        == 10
+    )
+    assert kwargs["environment"] == {
         "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
         "PYTHONSAFEPATH": "1",
         "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
     }
+    assert kwargs["cwd"] == tmp_path
+
+
+def test_checked_text_subprocess_timeout_terms_then_kills_reaps_and_closes(
+    monkeypatch,
+    tmp_path,
+):
+    events = []
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.stdout = stdout
+            self.stderr = stderr
+            self.wait_count = 0
+
+        def communicate(self, *, timeout):
+            events.append(("communicate", timeout))
+            raise subprocess.TimeoutExpired(["verifier"], timeout)
+
+        def poll(self):
+            events.append(("poll", None))
+            return None
+
+        def terminate(self):
+            events.append(("terminate", None))
+
+        def kill(self):
+            events.append(("kill", None))
+
+        def wait(self, *, timeout):
+            events.append(("wait", timeout))
+            self.wait_count += 1
+            if self.wait_count == 1:
+                raise subprocess.TimeoutExpired(["verifier"], timeout)
+            self.returncode = -9
+            return self.returncode
+
+    process = FakeProcess()
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return process
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        public_vllm_smoke._run_checked_text_subprocess_with_term_cleanup(
+            ["verifier"],
+            timeout_seconds=360.0,
+            environment={"PYTHONSAFEPATH": "1"},
+            cwd=tmp_path,
+        )
+
+    assert popen_calls == [
+        (
+            ["verifier"],
+            {
+                "cwd": tmp_path,
+                "env": {"PYTHONSAFEPATH": "1"},
+                "stderr": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "text": True,
+            },
+        )
+    ]
+    grace = (
+        public_vllm_smoke._NATIVE_RUNTIME_V2_FINAL_VERIFIER_TERMINATE_GRACE_SECONDS
+    )
+    assert grace >= 10.0
+    assert events == [
+        ("communicate", 360.0),
+        ("poll", None),
+        ("terminate", None),
+        ("wait", grace),
+        ("kill", None),
+        ("wait", grace),
+    ]
+    assert process.returncode == -9
+    assert stdout.closed is True
+    assert stderr.closed is True
 
 
 def test_create_venv_fallback_is_hash_pinned_and_dependency_free(monkeypatch, tmp_path):

@@ -2,6 +2,7 @@ import fcntl
 import hashlib
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -12,9 +13,16 @@ from pathlib import Path
 import pytest
 
 from document_kv_cache._isolated_runtime import (
+    ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS,
+    ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS,
+    ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS,
+    ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS,
+    ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS,
+    isolated_runtime_argv_main_command,
     isolated_runtime_native_loader_command,
     isolated_runtime_pip_check_command,
     isolated_runtime_runner_fragment,
+    isolated_runtime_validator_command,
     isolated_runtime_verifier_command,
 )
 from document_kv_cache import _runtime_bootstrap_native_loader as native_loader
@@ -48,13 +56,139 @@ def _fake_runtime(tmp_path: Path, *, module_source: str) -> Path:
     return runtime_python
 
 
-def _verifier_command(runtime_python: Path) -> list[str]:
+def _fake_pip_runtime(tmp_path: Path, *, module_source: str) -> Path:
+    runtime_root = tmp_path / "pip-runtime"
+    runtime_python = runtime_root / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    shutil.copy2(sys.executable, runtime_python)
+    pip_package = runtime_root / "lib/python3.11/site-packages/pip"
+    cli_package = pip_package / "_internal" / "cli"
+    cli_package.mkdir(parents=True)
+    for package in (pip_package, pip_package / "_internal", cli_package):
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (cli_package / "main.py").write_text(module_source, encoding="utf-8")
+    return runtime_python
+
+
+def _verifier_command(
+    runtime_python: Path,
+    *,
+    execution_timeout_seconds: float = (
+        ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+    ),
+    arguments: tuple[str, ...] = (
+        "lock",
+        "vllm",
+        "flashinfer",
+        "closure",
+        "package",
+        "a" * 64,
+    ),
+) -> list[str]:
     return isolated_runtime_verifier_command(
         runtime_python,
         verifier_name="gpu_qualification",
-        arguments=("lock", "vllm", "flashinfer", "closure", "package", "a" * 64),
+        arguments=arguments,
         warning_policy=_WARNING_POLICY,
+        execution_timeout_seconds=execution_timeout_seconds,
     )
+
+
+def _pip_check_command(
+    runtime_python: Path,
+    *,
+    execution_timeout_seconds: float,
+) -> list[str]:
+    return isolated_runtime_pip_check_command(
+        runtime_python,
+        warning_policy=_WARNING_POLICY,
+        execution_timeout_seconds=execution_timeout_seconds,
+    )
+
+
+def _process_or_group_exists(identifier: int, *, group: bool = False) -> bool:
+    try:
+        if group:
+            os.killpg(identifier, 0)
+        else:
+            os.kill(identifier, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_process_or_group_exit(
+    identifier: int,
+    *,
+    group: bool = False,
+    timeout_seconds: float = 2.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while _process_or_group_exists(identifier, group=group):
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"isolated runtime left {'group' if group else 'process'} "
+                f"{identifier} alive"
+            )
+        time.sleep(0.02)
+
+
+def _kill_recorded_processes(record: dict[str, int]) -> None:
+    worker_pgid = record.get("worker_pgid", 0)
+    if worker_pgid > 0 and worker_pgid != os.getpgrp():
+        try:
+            os.killpg(worker_pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    for field_name in ("worker_pid", "descendant_pid"):
+        process_id = record.get(field_name, 0)
+        if process_id <= 0 or process_id == os.getpid():
+            continue
+        try:
+            os.kill(process_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _wait_for_exclusive_lock(path: Path, *, timeout_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    with path.open("a", encoding="utf-8") as stream:
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    pytest.fail("isolated runtime descendant retained its process lock")
+                time.sleep(0.02)
+                continue
+            fcntl.flock(stream, fcntl.LOCK_UN)
+            return
+
+
+def _wait_for_process_record(
+    path: Path,
+    process: subprocess.Popen[bytes],
+    *,
+    timeout_seconds: float = 3.0,
+) -> dict[str, int]:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            value = None
+        if isinstance(value, dict) and value and all(
+            isinstance(field_value, int) and field_value > 0
+            for field_value in value.values()
+        ):
+            return value
+        if process.poll() is not None:
+            pytest.fail("isolated runtime exited before its worker became ready")
+        if time.monotonic() >= deadline:
+            pytest.fail("isolated runtime worker did not become ready")
+        time.sleep(0.02)
 
 
 def _fake_native_runtime(tmp_path: Path, *, torch_output: bytes = b"") -> Path:
@@ -223,6 +357,15 @@ def test_isolated_runtime_command_repeats_warning_filters_and_has_exact_target()
         "document_kv_cache/_gpu_qualification_sentinels_v2.py",
         "verify_gpu_qualification_v2_runtime_installation",
     ]
+    assert command[code_index + 7] == "350"
+    assert command[code_index + 8 :] == [
+        "lock",
+        "vllm",
+        "flashinfer",
+        "closure",
+        "package",
+        "a" * 64,
+    ]
     bootstrap = command[code_index + 1]
     assert "import site" not in bootstrap
     assert "addsitedir" not in bootstrap
@@ -297,6 +440,448 @@ def test_generated_native_loader_renderer_matches_shared_command():
         warning_policy=_WARNING_POLICY,
     )
     assert generated == direct
+
+
+def test_generated_validator_renderer_matches_shared_command():
+    namespace = {"Path": Path}
+    exec(compile(isolated_runtime_runner_fragment(), "<fragment>", "exec"), namespace)
+    direct = isolated_runtime_validator_command(
+        "/reviewed/runtime/bin/python",
+        validator_name="gpu_qualification",
+        canonical_attestation='{"reviewed":true}\n',
+        warning_policy=_WARNING_POLICY,
+    )
+    generated = namespace["_isolated_runtime_validator_command"](
+        "/reviewed/runtime/bin/python",
+        validator_name="gpu_qualification",
+        canonical_attestation='{"reviewed":true}\n',
+        warning_policy=_WARNING_POLICY,
+    )
+    assert generated == direct
+
+
+@pytest.mark.parametrize(
+    "invalid_timeout",
+    [True, 0.0, -1.0, float("nan"), float("inf"), 349.0, 350.000_001],
+)
+def test_isolated_runtime_verifier_rejects_invalid_or_above_target_timeout(
+    invalid_timeout,
+):
+    with pytest.raises(ValueError, match="execution timeout"):
+        isolated_runtime_verifier_command(
+            "/reviewed/runtime/bin/python",
+            verifier_name="gpu_qualification",
+            arguments=["lock", "vllm", "flashinfer", "closure", "package", "hash"],
+            warning_policy=_WARNING_POLICY,
+            execution_timeout_seconds=invalid_timeout,
+        )
+
+
+@pytest.mark.parametrize(
+    ("renderer", "maximum"),
+    [
+        (
+            lambda timeout: isolated_runtime_pip_check_command(
+                "/reviewed/runtime/bin/python",
+                warning_policy=_WARNING_POLICY,
+                execution_timeout_seconds=timeout,
+            ),
+            ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS,
+        ),
+        (
+            lambda timeout: isolated_runtime_argv_main_command(
+                "/reviewed/runtime/bin/python",
+                module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+                module_relative_path=(
+                    "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+                ),
+                attribute_name="_gpu_final_runtime_verifier_child_main",
+                arguments=[],
+                warning_policy=_WARNING_POLICY,
+                execution_timeout_seconds=timeout,
+            ),
+            ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS,
+        ),
+        (
+            lambda timeout: isolated_runtime_validator_command(
+                "/reviewed/runtime/bin/python",
+                validator_name="gpu_qualification",
+                canonical_attestation="{}\n",
+                warning_policy=_WARNING_POLICY,
+                execution_timeout_seconds=timeout,
+            ),
+            ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS,
+        ),
+        (
+            lambda timeout: isolated_runtime_native_loader_command(
+                "/reviewed/runtime/bin/python",
+                expected_gpu_name="NVIDIA L4",
+                expected_ld_library_path=(
+                    "/reviewed/runtime/lib/python3.11/site-packages/torch/lib"
+                ),
+                warning_policy=_WARNING_POLICY,
+                execution_timeout_seconds=timeout,
+            ),
+            ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS,
+        ),
+    ],
+)
+def test_isolated_runtime_each_renderer_rejects_above_target_timeout(
+    renderer,
+    maximum,
+):
+    with pytest.raises(ValueError, match="execution timeout"):
+        renderer(maximum + 0.001)
+
+
+@pytest.mark.parametrize(
+    "renderer",
+    [
+        lambda: isolated_runtime_verifier_command(
+            "/reviewed/runtime/bin/python",
+            verifier_name="gpu_qualification",
+            arguments=["lock", "vllm", "flashinfer", "closure", "package", "hash"],
+            warning_policy=_WARNING_POLICY,
+            execution_timeout_seconds=(
+                ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS - 1.0
+            ),
+        ),
+        lambda: isolated_runtime_argv_main_command(
+            "/reviewed/runtime/bin/python",
+            module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+            module_relative_path=(
+                "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+            ),
+            attribute_name="_gpu_final_runtime_verifier_child_main",
+            arguments=[],
+            warning_policy=_WARNING_POLICY,
+            execution_timeout_seconds=(
+                ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS - 1.0
+            ),
+        ),
+    ],
+)
+def test_nested_isolated_runtime_renderers_reject_lower_deadlines(renderer):
+    with pytest.raises(ValueError, match="execution timeout"):
+        renderer()
+
+
+def test_isolated_runtime_deadline_families_leave_cleanup_margin():
+    cleanup_margin_seconds = 10.0
+    assert (
+        ISOLATED_RUNTIME_PIP_CHECK_EXECUTION_TIMEOUT_SECONDS
+        + cleanup_margin_seconds
+        <= 180.0
+    )
+    assert (
+        ISOLATED_RUNTIME_FINAL_CHILD_EXECUTION_TIMEOUT_SECONDS
+        + cleanup_margin_seconds
+        < 300.0
+    )
+    assert 300.0 < ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+    assert (
+        ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS
+        + cleanup_margin_seconds
+        <= 360.0
+    )
+    assert (
+        ISOLATED_RUNTIME_VALIDATOR_EXECUTION_TIMEOUT_SECONDS
+        + cleanup_margin_seconds
+        < 120.0
+    )
+    assert (
+        ISOLATED_RUNTIME_NATIVE_LOADER_EXECUTION_TIMEOUT_SECONDS
+        + cleanup_margin_seconds
+        < 120.0
+    )
+
+
+@_REQUIRES_CPYTHON_311_RUNTIME
+@pytest.mark.parametrize("tampered_timeout", ["349", "351"])
+def test_isolated_runtime_bootstrap_rejects_tampered_target_timeout(
+    tmp_path,
+    tampered_timeout,
+):
+    runtime_python = _fake_runtime(
+        tmp_path,
+        module_source='''def verify_gpu_qualification_v2_runtime_installation(**kwargs):
+    return {"ok": True}
+''',
+    )
+    command = _verifier_command(runtime_python)
+    code_index = command.index("-c")
+    command[code_index + 7] = tampered_timeout
+
+    completed = subprocess.run(command, capture_output=True, timeout=3.0)
+
+    assert completed.returncode == 70
+    assert completed.stdout == b""
+    assert completed.stderr == b""
+
+
+@_REQUIRES_CPYTHON_311_RUNTIME
+def test_isolated_runtime_deadline_kills_reaps_worker_and_same_group_descendant(
+    tmp_path,
+):
+    process_record = tmp_path / "processes.json"
+    descendant_lock = tmp_path / "descendant.lock"
+    runtime_python = _fake_pip_runtime(
+        tmp_path,
+        module_source=f'''import fcntl
+import json
+import os
+import signal
+import time
+
+def main(arguments):
+    if arguments != ["check"]:
+        return 2
+    raw_ready_read, raw_ready_write = os.pipe()
+    ready_read = fcntl.fcntl(raw_ready_read, fcntl.F_DUPFD_CLOEXEC, 64)
+    ready_write = fcntl.fcntl(raw_ready_write, fcntl.F_DUPFD_CLOEXEC, 64)
+    os.close(raw_ready_read)
+    os.close(raw_ready_write)
+    descendant = os.fork()
+    if descendant == 0:
+        os.close(ready_read)
+        for signal_number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            signal.signal(signal_number, signal.SIG_IGN)
+        with open({str(descendant_lock)!r}, "w", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            os.write(ready_write, b"1")
+            os.close(ready_write)
+            while True:
+                time.sleep(60.0)
+    os.close(ready_write)
+    if os.read(ready_read, 1) != b"1":
+        raise RuntimeError("descendant did not acquire its process lock")
+    os.close(ready_read)
+    record = {{
+        "worker_pid": os.getpid(),
+        "worker_pgid": os.getpgrp(),
+        "descendant_pid": descendant,
+        "descendant_pgid": os.getpgid(descendant),
+    }}
+    with open({str(process_record)!r}, "w", encoding="utf-8") as stream:
+        json.dump(record, stream)
+    while True:
+        time.sleep(60.0)
+''',
+    )
+    command = _pip_check_command(
+        runtime_python,
+        execution_timeout_seconds=1.0,
+    )
+    started = time.monotonic()
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    record: dict[str, int] = {}
+    try:
+        stdout, stderr = process.communicate(timeout=5.0)
+        elapsed = time.monotonic() - started
+        record = json.loads(process_record.read_text(encoding="utf-8"))
+
+        assert 0.8 <= elapsed < 4.0
+        assert process.returncode == 75
+        assert stdout == b""
+        assert stderr == b""
+        assert record["worker_pgid"] == record["worker_pid"]
+        assert record["descendant_pgid"] == record["worker_pgid"]
+        _wait_for_process_or_group_exit(record["worker_pid"])
+        _wait_for_exclusive_lock(descendant_lock)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2.0)
+        if not record and process_record.exists():
+            record = json.loads(process_record.read_text(encoding="utf-8"))
+        _kill_recorded_processes(record)
+
+
+@_REQUIRES_CPYTHON_311_RUNTIME
+def test_isolated_runtime_rejects_completion_observed_after_deadline(tmp_path):
+    process_record = tmp_path / "processes.json"
+    runtime_python = _fake_pip_runtime(
+        tmp_path,
+        module_source=f'''import json
+import os
+import time
+
+def main(arguments):
+    if arguments != ["check"]:
+        return 2
+    with open({str(process_record)!r}, "w", encoding="utf-8") as stream:
+        json.dump({{"worker_pid": os.getpid(), "worker_pgid": os.getpgrp()}}, stream)
+    time.sleep(0.25)
+    os.write(1, b"completed\\n")
+    return 0
+''',
+    )
+    process = subprocess.Popen(
+        _pip_check_command(
+            runtime_python,
+            execution_timeout_seconds=1.0,
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    record: dict[str, int] = {}
+    stopped = False
+    try:
+        record = _wait_for_process_record(process_record, process)
+        process.send_signal(signal.SIGSTOP)
+        stopped = True
+        time.sleep(1.2)
+        process.send_signal(signal.SIGCONT)
+        stopped = False
+        stdout, stderr = process.communicate(timeout=3.0)
+
+        assert process.returncode == 75
+        assert stdout == b""
+        assert stderr == b""
+        _wait_for_process_or_group_exit(record["worker_pid"])
+    finally:
+        if stopped and process.poll() is None:
+            process.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2.0)
+        if not record and process_record.exists():
+            record = json.loads(process_record.read_text(encoding="utf-8"))
+        _kill_recorded_processes(record)
+
+
+@_REQUIRES_CPYTHON_311_RUNTIME
+def test_isolated_runtime_term_signal_kills_and_reaps_worker_group(tmp_path):
+    process_record = tmp_path / "processes.json"
+    runtime_python = _fake_pip_runtime(
+        tmp_path,
+        module_source=f'''import json
+import os
+import time
+
+def main(arguments):
+    if arguments != ["check"]:
+        return 2
+    with open({str(process_record)!r}, "w", encoding="utf-8") as stream:
+        json.dump({{"worker_pid": os.getpid(), "worker_pgid": os.getpgrp()}}, stream)
+    while True:
+        time.sleep(60.0)
+''',
+    )
+    process = subprocess.Popen(
+        _pip_check_command(
+            runtime_python,
+            execution_timeout_seconds=10.0,
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    record: dict[str, int] = {}
+    try:
+        record = _wait_for_process_record(process_record, process)
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=4.0)
+
+        assert process.returncode == 70
+        assert stdout == b""
+        assert stderr == b""
+        _wait_for_process_or_group_exit(record["worker_pid"])
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2.0)
+        if not record and process_record.exists():
+            record = json.loads(process_record.read_text(encoding="utf-8"))
+        _kill_recorded_processes(record)
+
+
+@_REQUIRES_CPYTHON_311_RUNTIME
+def test_isolated_runtime_parent_setup_failure_emergency_cleans_worker_group(tmp_path):
+    process_record = tmp_path / "processes.json"
+    descendant_lock = tmp_path / "descendant.lock"
+    runtime_python = _fake_pip_runtime(
+        tmp_path,
+        module_source=f'''import fcntl
+import json
+import os
+import time
+
+def main(arguments):
+    if arguments != ["check"]:
+        return 2
+    raw_ready_read, raw_ready_write = os.pipe()
+    ready_read = fcntl.fcntl(raw_ready_read, fcntl.F_DUPFD_CLOEXEC, 64)
+    ready_write = fcntl.fcntl(raw_ready_write, fcntl.F_DUPFD_CLOEXEC, 64)
+    os.close(raw_ready_read)
+    os.close(raw_ready_write)
+    descendant = os.fork()
+    if descendant == 0:
+        os.close(ready_read)
+        with open({str(descendant_lock)!r}, "w", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            os.write(ready_write, b"1")
+            os.close(ready_write)
+            while True:
+                time.sleep(60.0)
+    os.close(ready_write)
+    if os.read(ready_read, 1) != b"1":
+        raise RuntimeError("descendant did not acquire its process lock")
+    os.close(ready_read)
+    record = {{
+        "worker_pid": os.getpid(),
+        "worker_pgid": os.getpgrp(),
+        "descendant_pid": descendant,
+        "descendant_pgid": os.getpgid(descendant),
+    }}
+    temporary_record = {str(process_record) + ".tmp"!r}
+    with open(temporary_record, "w", encoding="utf-8") as stream:
+        json.dump(record, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary_record, {str(process_record)!r})
+    while True:
+        time.sleep(60.0)
+''',
+    )
+    command = _pip_check_command(
+        runtime_python,
+        execution_timeout_seconds=10.0,
+    )
+    code_index = command.index("-c")
+    setup_marker = "    _cachet_stream_descriptors = {"
+    injected_failure = f'''    _cachet_injected_deadline = monotonic() + 3.0
+    while not Path({str(process_record)!r}).exists():
+        if monotonic() >= _cachet_injected_deadline:
+            break
+        sleep(0.01)
+    raise RuntimeError("injected post-fork parent setup failure")
+'''
+    bootstrap = command[code_index + 1]
+    assert bootstrap.count(setup_marker) == 1
+    command[code_index + 1] = bootstrap.replace(
+        setup_marker,
+        injected_failure + setup_marker,
+    )
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    record: dict[str, int] = {}
+    try:
+        stdout, stderr = process.communicate(timeout=6.0)
+        record = json.loads(process_record.read_text(encoding="utf-8"))
+
+        assert process.returncode == 70
+        assert stdout == b""
+        assert stderr == b""
+        assert record["worker_pgid"] == record["worker_pid"]
+        assert record["descendant_pgid"] == record["worker_pgid"]
+        _wait_for_process_or_group_exit(record["worker_pid"])
+        _wait_for_exclusive_lock(descendant_lock)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2.0)
+        if not record and process_record.exists():
+            record = json.loads(process_record.read_text(encoding="utf-8"))
+        _kill_recorded_processes(record)
 
 
 @_REQUIRES_CPYTHON_311_RUNTIME
