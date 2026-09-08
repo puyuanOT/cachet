@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import stat
 from typing import Any, Protocol, cast
 import urllib.error
@@ -814,14 +815,23 @@ def submit_pre_reserved_databricks_run(
         raise ValueError("pre-reserved attempt already has a submission receipt")
     if attempt_id in ledger.closed_attempt_ids:
         raise ValueError("pre-reserved attempt is already terminal")
-    claim_path = _write_pre_reserved_post_claim(
-        ledger_path,
-        attempt_id=attempt_id,
-        batch_authorization=batch_authorization,
-        submit_payload_sha256=payload_sha256,
-        idempotency_token=idempotency_token,
-    )
+    claim_path = _pre_reserved_post_claim_path(ledger_path, attempt_id=attempt_id)
+    _require_or_create_pre_reserved_post_claim_root(claim_path)
     with _exclusive_pre_reserved_recovery_lock(claim_path):
+        _validate_pre_reserved_batch_member(
+            ledger_path,
+            attempt_id=attempt_id,
+            payload_sha256=payload_sha256,
+            batch_authorization=batch_authorization,
+            allow_existing_receipt=False,
+        )
+        _write_pre_reserved_post_claim(
+            ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=batch_authorization,
+            submit_payload_sha256=payload_sha256,
+            idempotency_token=idempotency_token,
+        )
         response = _databricks_api_json(
             config,
             "POST",
@@ -873,7 +883,15 @@ def recover_pre_reserved_databricks_run(
         allow_existing_receipt=True,
     )
     claim_path = _pre_reserved_post_claim_path(ledger_path, attempt_id=attempt_id)
+    _require_or_create_pre_reserved_post_claim_root(claim_path)
     with _exclusive_pre_reserved_recovery_lock(claim_path):
+        _validate_pre_reserved_batch_member(
+            ledger_path,
+            attempt_id=attempt_id,
+            payload_sha256=payload_sha256,
+            batch_authorization=batch_authorization,
+            allow_existing_receipt=True,
+        )
         _require_pre_reserved_post_claim(
             claim_path,
             attempt_id=attempt_id,
@@ -925,39 +943,89 @@ def resume_pre_reserved_databricks_run(
 
     A missing durable POST claim means the member was never submitted and is
     claimed/submitted now.  An existing claim is recovered with the identical
-    idempotency token and wire bytes.  Races converge through O_EXCL claim
-    creation plus the per-member advisory lock, so at most one new cloud run is
+    idempotency token and wire bytes.  Claim publication and inspection happen
+    beneath the per-member advisory lock, so at most one new cloud run is
     created and all successful callers observe the same receipt-bound run ID.
     """
 
+    resolved_opener = (
+        cast(DatabricksURLOpener, _databricks_no_redirect_urlopen)
+        if opener is None
+        else opener
+    )
+    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
+    payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
+    idempotency_token = require_databricks_run_idempotency_token(
+        snapshot,
+        attempt_id=attempt_id,
+    )
+    _validate_pre_reserved_batch_member(
+        ledger_path,
+        attempt_id=attempt_id,
+        payload_sha256=payload_sha256,
+        batch_authorization=batch_authorization,
+        allow_existing_receipt=True,
+    )
     claim_path = _pre_reserved_post_claim_path(ledger_path, attempt_id=attempt_id)
-    if claim_path.exists() or claim_path.is_symlink():
-        return recover_pre_reserved_databricks_run(
-            config,
-            payload,
-            ledger_path=ledger_path,
+    _require_or_create_pre_reserved_post_claim_root(claim_path)
+    with _exclusive_pre_reserved_recovery_lock(claim_path):
+        _validate_pre_reserved_batch_member(
+            ledger_path,
             attempt_id=attempt_id,
+            payload_sha256=payload_sha256,
             batch_authorization=batch_authorization,
-            opener=opener,
+            allow_existing_receipt=True,
         )
-    try:
-        return submit_pre_reserved_databricks_run(
+        recovering = claim_path.exists() or claim_path.is_symlink()
+        ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+        receipt = next(
+            (
+                item
+                for item in ledger.submission_receipts
+                if item.attempt_id == attempt_id
+            ),
+            None,
+        )
+        if receipt is not None and not recovering:
+            raise ValueError(
+                "pre-reserved submission receipt lacks its durable POST claim"
+            )
+        if recovering:
+            _require_pre_reserved_post_claim(
+                claim_path,
+                attempt_id=attempt_id,
+                batch_authorization=batch_authorization,
+                submit_payload_sha256=payload_sha256,
+                idempotency_token=idempotency_token,
+            )
+        else:
+            _write_pre_reserved_post_claim(
+                ledger_path,
+                attempt_id=attempt_id,
+                batch_authorization=batch_authorization,
+                submit_payload_sha256=payload_sha256,
+                idempotency_token=idempotency_token,
+            )
+        if receipt is not None:
+            return {"run_id": receipt.run_id}
+        response = _databricks_api_json(
             config,
-            payload,
-            ledger_path=ledger_path,
-            attempt_id=attempt_id,
-            batch_authorization=batch_authorization,
-            opener=opener,
+            "POST",
+            "/api/2.1/jobs/runs/submit",
+            payload_json_bytes=canonical_payload,
+            opener=resolved_opener,
         )
-    except DatabricksPreReservedPostClaimExistsError:
-        return recover_pre_reserved_databricks_run(
-            config,
-            payload,
-            ledger_path=ledger_path,
+        updated = record_databricks_run_submission_receipt_json(
+            ledger_path,
             attempt_id=attempt_id,
-            batch_authorization=batch_authorization,
-            opener=opener,
+            submit_response=response,
         )
+        receipt = next(
+            item
+            for item in updated.submission_receipts
+            if item.attempt_id == attempt_id
+        )
+        return {"run_id": receipt.run_id}
 
 
 def _write_pre_reserved_post_claim(
@@ -968,21 +1036,126 @@ def _write_pre_reserved_post_claim(
     submit_payload_sha256: str,
     idempotency_token: str,
 ) -> Path:
-    """Durably claim one batch member once before its potentially ambiguous POST."""
+    """Atomically publish one durable claim before its potentially ambiguous POST."""
 
     path = Path(ledger_path).expanduser().absolute()
     claim_path = _pre_reserved_post_claim_path(path, attempt_id=attempt_id)
-    claim_root = claim_path.parent
-    if claim_root.is_symlink():
-        raise ValueError("pre-reserved POST claim root must not be a symlink")
+    claim_root = _require_or_create_pre_reserved_post_claim_root(claim_path)
+    content = _pre_reserved_post_claim_content(
+        attempt_id=attempt_id,
+        batch_authorization=batch_authorization,
+        submit_payload_sha256=submit_payload_sha256,
+        idempotency_token=idempotency_token,
+    )
+    _cleanup_recognized_pre_reserved_post_claim_pending_files(
+        claim_path,
+        expected_content=content,
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptor = -1
+    temporary_path: Path | None = None
+    for _attempt in range(128):
+        candidate = claim_root / (
+            f".{claim_path.name}.pending-{secrets.token_hex(16)}"
+        )
+        try:
+            descriptor = os.open(candidate, flags, 0o600)
+        except FileExistsError:
+            continue
+        temporary_path = candidate
+        break
+    if descriptor < 0 or temporary_path is None:
+        raise RuntimeError("could not allocate a pre-reserved POST claim temporary")
     try:
-        claim_root.mkdir(mode=0o700)
-        _fsync_local_directory(claim_root.parent)
-    except FileExistsError:
-        pass
-    if not claim_root.is_dir() or claim_root.is_symlink():
-        raise ValueError("pre-reserved POST claim root must be a real directory")
-    record = {
+        os.fchmod(descriptor, 0o600)
+        offset = 0
+        while offset < len(content):
+            try:
+                written = os.write(descriptor, content[offset:])
+            except InterruptedError:
+                continue
+            if written <= 0 or written > len(content) - offset:
+                raise OSError("pre-reserved POST claim write made no valid progress")
+            offset += written
+        os.fsync(descriptor)
+        staged = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(staged.st_mode)
+            or staged.st_uid != os.getuid()
+            or stat.S_IMODE(staged.st_mode) != 0o600
+            or staged.st_nlink != 1
+            or staged.st_size != len(content)
+        ):
+            raise ValueError("pre-reserved POST claim temporary identity drift")
+        try:
+            os.link(temporary_path, claim_path, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise DatabricksPreReservedPostClaimExistsError(
+                "pre-reserved POST already has a durable claim; its outcome may be "
+                "ambiguous and must be reconciled before any retry"
+            ) from exc
+        published = claim_path.lstat()
+        if (
+            claim_path.is_symlink()
+            or not stat.S_ISREG(published.st_mode)
+            or published.st_uid != os.getuid()
+            or stat.S_IMODE(published.st_mode) != 0o600
+            or published.st_nlink != 2
+            or published.st_size != len(content)
+            or (published.st_dev, published.st_ino)
+            != (staged.st_dev, staged.st_ino)
+        ):
+            raise ValueError("pre-reserved POST claim publication identity drift")
+        _fsync_local_directory(claim_root)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        descriptor = -1
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+        raise
+    else:
+        try:
+            _cleanup_recognized_pre_reserved_post_claim_pending_files(
+                claim_path,
+                expected_content=content,
+            )
+            final = claim_path.lstat()
+            if (
+                claim_path.is_symlink()
+                or not stat.S_ISREG(final.st_mode)
+                or final.st_uid != os.getuid()
+                or stat.S_IMODE(final.st_mode) != 0o600
+                or final.st_nlink != 1
+                or final.st_size != len(content)
+                or (final.st_dev, final.st_ino)
+                != (staged.st_dev, staged.st_ino)
+            ):
+                raise ValueError(
+                    "pre-reserved POST claim post-cleanup identity drift"
+                )
+        finally:
+            os.close(descriptor)
+            descriptor = -1
+    return claim_path
+
+
+def _pre_reserved_post_claim_record(
+    *,
+    attempt_id: str,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    submit_payload_sha256: str,
+    idempotency_token: str,
+) -> dict[str, str]:
+    return {
         "attempt_id": attempt_id,
         "batch_prefix_sha256": batch_authorization.batch_prefix.prefix_sha256,
         "idempotency_token": idempotency_token,
@@ -990,9 +1163,23 @@ def _write_pre_reserved_post_claim(
         "record_type": "cachet.databricks_pre_reserved_post_claim.v1",
         "submit_payload_sha256": submit_payload_sha256,
     }
-    content = (
+
+
+def _pre_reserved_post_claim_content(
+    *,
+    attempt_id: str,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+    submit_payload_sha256: str,
+    idempotency_token: str,
+) -> bytes:
+    return (
         json.dumps(
-            record,
+            _pre_reserved_post_claim_record(
+                attempt_id=attempt_id,
+                batch_authorization=batch_authorization,
+                submit_payload_sha256=submit_payload_sha256,
+                idempotency_token=idempotency_token,
+            ),
             allow_nan=False,
             ensure_ascii=False,
             indent=2,
@@ -1000,27 +1187,237 @@ def _write_pre_reserved_post_claim(
         )
         + "\n"
     ).encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+
+
+def _chmod_pre_reserved_path_no_follow_bound(
+    path: Path,
+    mode: int,
+    *,
+    before: os.stat_result,
+    label: str,
+) -> os.stat_result:
+    """Repair owner-only modes while preserving the exact non-symlink inode."""
+
+    if path.is_symlink():
+        raise ValueError(f"{label} must not be a symlink")
+    supports_no_follow = os.chmod in getattr(os, "supports_follow_symlinks", ())
+    if supports_no_follow:
+        try:
+            os.chmod(path, mode, follow_symlinks=False)
+        except NotImplementedError:
+            os.chmod(path, mode)
+    else:
+        # The containing claim directory is already current-UID and private.
+        # Rebind immediately after this portability fallback before using it.
+        os.chmod(path, mode)
+    after = path.lstat()
+    if (
+        path.is_symlink()
+        or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+        or stat.S_IFMT(after.st_mode) != stat.S_IFMT(before.st_mode)
+        or after.st_uid != before.st_uid
+        or after.st_gid != before.st_gid
+        or stat.S_IMODE(after.st_mode) != mode
+    ):
+        raise ValueError(f"{label} permission recovery identity drift")
+    if stat.S_ISREG(before.st_mode) and (
+        after.st_nlink != before.st_nlink
+        or after.st_size != before.st_size
+        or after.st_mtime_ns != before.st_mtime_ns
+    ):
+        raise ValueError(f"{label} changed during permission recovery")
+    return after
+
+
+def _require_or_create_pre_reserved_post_claim_root(claim_path: Path) -> Path:
+    claim_root = claim_path.parent
+    if claim_root.is_symlink():
+        raise ValueError("pre-reserved POST claim root must not be a symlink")
     try:
-        descriptor = os.open(claim_path, flags, 0o600)
-    except FileExistsError as exc:
-        raise DatabricksPreReservedPostClaimExistsError(
-            "pre-reserved POST already has a durable claim; its outcome may be "
-            "ambiguous and must be reconciled before any retry"
+        claim_root.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    if claim_root.is_symlink():
+        raise ValueError("pre-reserved POST claim root must not be a symlink")
+    try:
+        status = claim_root.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(
+            "pre-reserved POST claim root must be a real directory"
         ) from exc
-    try:
-        with os.fdopen(descriptor, "wb", closefd=True) as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        # A created claim is deliberately retained even if its durable write is
-        # interrupted: absence of a receipt is an ambiguous recovery state.
-        raise
-    _fsync_local_directory(claim_root)
-    return claim_path
+    root_mode = stat.S_IMODE(status.st_mode)
+    if (
+        not stat.S_ISDIR(status.st_mode)
+        or status.st_uid != os.getuid()
+        or root_mode & ~0o700
+    ):
+        raise ValueError(
+            "pre-reserved POST claim root must be a current-UID mode 0700 directory"
+        )
+    if root_mode != 0o700:
+        status = _chmod_pre_reserved_path_no_follow_bound(
+            claim_root,
+            0o700,
+            before=status,
+            label="pre-reserved POST claim root",
+        )
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or status.st_uid != os.getuid()
+            or stat.S_IMODE(status.st_mode) != 0o700
+        ):
+            raise ValueError(
+                "pre-reserved POST claim root permission recovery drift"
+            )
+    _fsync_local_directory(claim_root.parent)
+    return claim_root
+
+
+def _pre_reserved_post_claim_pending_prefix(claim_path: Path) -> str:
+    return f".{claim_path.name}.pending-"
+
+
+def _cleanup_recognized_pre_reserved_post_claim_pending_files(
+    claim_path: Path,
+    *,
+    expected_content: bytes,
+) -> None:
+    """Remove only claim-specific temp debris whose identity and bytes are safe."""
+
+    prefix = _pre_reserved_post_claim_pending_prefix(claim_path)
+    removed = False
+    for candidate in claim_path.parent.iterdir():
+        if not candidate.name.startswith(prefix):
+            continue
+        suffix = candidate.name.removeprefix(prefix)
+        if len(suffix) != 32 or any(
+            character not in "0123456789abcdef" for character in suffix
+        ):
+            continue
+        before = candidate.lstat()
+        pending_mode = stat.S_IMODE(before.st_mode)
+        if (
+            candidate.is_symlink()
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or before.st_nlink not in {1, 2}
+            or before.st_size > len(expected_content)
+            or (before.st_nlink == 1 and pending_mode & ~0o600)
+            or (before.st_nlink == 2 and pending_mode != 0o600)
+        ):
+            raise ValueError("pre-reserved POST claim pending identity drift")
+        if before.st_nlink == 1 and pending_mode != 0o600:
+            repaired = _chmod_pre_reserved_path_no_follow_bound(
+                candidate,
+                0o600,
+                before=before,
+                label="pre-reserved POST claim pending",
+            )
+            if (
+                candidate.is_symlink()
+                or not stat.S_ISREG(repaired.st_mode)
+                or repaired.st_uid != os.getuid()
+                or stat.S_IMODE(repaired.st_mode) != 0o600
+                or repaired.st_nlink != 1
+                or (repaired.st_dev, repaired.st_ino)
+                != (before.st_dev, before.st_ino)
+            ):
+                raise ValueError(
+                    "pre-reserved POST claim pending permission recovery drift"
+                )
+            before = repaired
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            descriptor = os.open(candidate, flags)
+        except OSError as exc:
+            raise ValueError(
+                "pre-reserved POST claim pending cannot be safely opened"
+            ) from exc
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_gid",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_uid != os.getuid()
+                or stat.S_IMODE(opened.st_mode) != 0o600
+                or opened.st_nlink not in {1, 2}
+                or (opened.st_dev, opened.st_ino)
+                != (before.st_dev, before.st_ino)
+            ):
+                raise ValueError("pre-reserved POST claim pending identity drift")
+            chunks: list[bytes] = []
+            remaining = len(expected_content) + 1
+            while remaining:
+                try:
+                    chunk = os.read(descriptor, remaining)
+                except InterruptedError:
+                    continue
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            observed = b"".join(chunks)
+            after = os.fstat(descriptor)
+            if any(
+                getattr(opened, field) != getattr(after, field)
+                for field in stable_fields
+            ):
+                raise ValueError(
+                    "pre-reserved POST claim pending changed while read"
+                )
+        finally:
+            os.close(descriptor)
+        visible_after = candidate.lstat()
+        if (
+            not stat.S_ISREG(visible_after.st_mode)
+            or candidate.is_symlink()
+            or (visible_after.st_dev, visible_after.st_ino)
+            != (after.st_dev, after.st_ino)
+        ):
+            raise ValueError(
+                "pre-reserved POST claim pending path changed while read"
+            )
+        if before.st_nlink == 1 and not expected_content.startswith(observed):
+            raise ValueError("pre-reserved POST claim pending bytes drift")
+        if before.st_nlink == 2 and observed != expected_content:
+            raise ValueError("pre-reserved POST claim pending bytes drift")
+        if before.st_nlink == 2:
+            try:
+                final = claim_path.lstat()
+            except FileNotFoundError as exc:
+                raise ValueError(
+                    "pre-reserved POST claim pending hard link is ambiguous"
+                ) from exc
+            if (
+                not stat.S_ISREG(final.st_mode)
+                or claim_path.is_symlink()
+                or (final.st_dev, final.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                raise ValueError(
+                    "pre-reserved POST claim pending hard link is ambiguous"
+                )
+        candidate.unlink()
+        if candidate.exists() or candidate.is_symlink():
+            raise ValueError(
+                "pre-reserved POST claim pending reappeared during cleanup"
+            )
+        removed = True
+    if removed:
+        _fsync_local_directory(claim_path.parent)
 
 
 def _pre_reserved_post_claim_path(
@@ -1042,33 +1439,135 @@ def _require_pre_reserved_post_claim(
     submit_payload_sha256: str,
     idempotency_token: str,
 ) -> None:
-    if claim_path.is_symlink() or not claim_path.is_file():
+    expected = _pre_reserved_post_claim_record(
+        attempt_id=attempt_id,
+        batch_authorization=batch_authorization,
+        submit_payload_sha256=submit_payload_sha256,
+        idempotency_token=idempotency_token,
+    )
+    canonical = _pre_reserved_post_claim_content(
+        attempt_id=attempt_id,
+        batch_authorization=batch_authorization,
+        submit_payload_sha256=submit_payload_sha256,
+        idempotency_token=idempotency_token,
+    )
+    if claim_path.is_symlink():
         raise ValueError("pre-reserved recovery requires the durable POST claim")
-    content = claim_path.read_bytes()
     try:
-        value = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("pre-reserved POST claim is invalid JSON") from exc
-    expected = {
-        "attempt_id": attempt_id,
-        "batch_prefix_sha256": batch_authorization.batch_prefix.prefix_sha256,
-        "idempotency_token": idempotency_token,
-        "ledger_path_sha256": batch_authorization.ledger_path_sha256,
-        "record_type": "cachet.databricks_pre_reserved_post_claim.v1",
-        "submit_payload_sha256": submit_payload_sha256,
-    }
-    canonical = (
-        json.dumps(
-            expected,
-            allow_nan=False,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
+        visible = claim_path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(
+            "pre-reserved recovery requires the durable POST claim"
+        ) from exc
+    visible_mode = stat.S_IMODE(visible.st_mode)
+    if (
+        not stat.S_ISREG(visible.st_mode)
+        or visible.st_uid != os.getuid()
+        or visible.st_nlink not in {1, 2}
+        or (visible.st_nlink == 1 and visible_mode & ~0o600)
+        or (visible.st_nlink == 2 and visible_mode != 0o600)
+    ):
+        raise ValueError("pre-reserved POST claim identity drift")
+    if visible.st_nlink == 1 and visible_mode != 0o600:
+        repaired = _chmod_pre_reserved_path_no_follow_bound(
+            claim_path,
+            0o600,
+            before=visible,
+            label="pre-reserved POST claim",
         )
-        + "\n"
-    ).encode("utf-8")
-    if value != expected or content != canonical:
-        raise ValueError("pre-reserved POST claim binding drift")
+        if (
+            not stat.S_ISREG(repaired.st_mode)
+            or repaired.st_uid != os.getuid()
+            or stat.S_IMODE(repaired.st_mode) != 0o600
+            or repaired.st_nlink != 1
+            or (repaired.st_dev, repaired.st_ino)
+            != (visible.st_dev, visible.st_ino)
+        ):
+            raise ValueError(
+                "pre-reserved POST claim permission recovery drift"
+            )
+        visible = repaired
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        descriptor = os.open(claim_path, flags)
+    except OSError as exc:
+        raise ValueError(
+            "pre-reserved recovery requires the durable POST claim"
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_nlink not in {1, 2}
+            or (before.st_dev, before.st_ino)
+            != (visible.st_dev, visible.st_ino)
+        ):
+            raise ValueError("pre-reserved POST claim identity drift")
+        chunks: list[bytes] = []
+        remaining = len(canonical) + 1
+        while remaining:
+            try:
+                chunk = os.read(descriptor, remaining)
+            except InterruptedError:
+                continue
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        after = os.fstat(descriptor)
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_gid",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if any(
+            getattr(before, field) != getattr(after, field)
+            for field in stable_fields
+        ):
+            raise ValueError("pre-reserved POST claim changed while read")
+        try:
+            value = json.loads(content)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("pre-reserved POST claim is invalid JSON") from exc
+        if value != expected or content != canonical:
+            raise ValueError("pre-reserved POST claim binding drift")
+        os.fsync(descriptor)
+        durable = os.fstat(descriptor)
+        if any(
+            getattr(after, field) != getattr(durable, field)
+            for field in stable_fields
+        ):
+            raise ValueError("pre-reserved POST claim changed while synchronized")
+        _cleanup_recognized_pre_reserved_post_claim_pending_files(
+            claim_path,
+            expected_content=canonical,
+        )
+        final = claim_path.lstat()
+        if (
+            not stat.S_ISREG(final.st_mode)
+            or claim_path.is_symlink()
+            or final.st_uid != os.getuid()
+            or stat.S_IMODE(final.st_mode) != 0o600
+            or final.st_nlink != 1
+            or (final.st_dev, final.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise ValueError("pre-reserved POST claim recovery identity drift")
+        _fsync_local_directory(claim_path.parent)
+    finally:
+        os.close(descriptor)
 
 
 def _validate_pre_reserved_batch_member(
@@ -1112,16 +1611,56 @@ def _validate_pre_reserved_batch_member(
 
 
 @contextmanager
-def _exclusive_pre_reserved_recovery_lock(claim_path: Path):
+def _exclusive_pre_reserved_recovery_lock(claim_path: Path) -> Iterator[None]:
+    claim_root = _require_or_create_pre_reserved_post_claim_root(claim_path)
     lock_path = claim_path.with_suffix(".lock")
     if lock_path.is_symlink():
         raise ValueError("pre-reserved recovery lock must not be a symlink")
+    try:
+        existing = lock_path.lstat()
+    except FileNotFoundError:
+        existing = None
+    if existing is not None:
+        existing_mode = stat.S_IMODE(existing.st_mode)
+        if (
+            not stat.S_ISREG(existing.st_mode)
+            or existing.st_uid != os.getuid()
+            or existing.st_nlink != 1
+            or existing.st_size != 0
+            or existing_mode & ~0o600
+        ):
+            raise ValueError("pre-reserved recovery lock identity drift")
+        if existing_mode != 0o600:
+            _chmod_pre_reserved_path_no_follow_bound(
+                lock_path,
+                0o600,
+                before=existing,
+                label="pre-reserved recovery lock",
+            )
     flags = os.O_RDWR | os.O_CREAT
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
     descriptor = os.open(lock_path, flags, 0o600)
     try:
+        os.fchmod(descriptor, 0o600)
+        locked = os.fstat(descriptor)
+        visible = lock_path.lstat()
+        if (
+            not stat.S_ISREG(locked.st_mode)
+            or locked.st_uid != os.getuid()
+            or stat.S_IMODE(locked.st_mode) != 0o600
+            or locked.st_nlink != 1
+            or locked.st_size != 0
+            or (visible.st_dev, visible.st_ino) != (locked.st_dev, locked.st_ino)
+        ):
+            raise ValueError("pre-reserved recovery lock binding drift")
+        _fsync_local_directory(claim_root)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
+        visible = lock_path.lstat()
+        if (visible.st_dev, visible.st_ino) != (locked.st_dev, locked.st_ino):
+            raise ValueError("pre-reserved recovery lock changed while acquired")
         yield
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -1129,7 +1668,14 @@ def _exclusive_pre_reserved_recovery_lock(claim_path: Path):
 
 
 def _fsync_local_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError("local durability target must be a real directory")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
     try:
         os.fsync(descriptor)
     finally:

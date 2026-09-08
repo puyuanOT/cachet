@@ -2,11 +2,14 @@ import hashlib
 import io
 import json
 import os
+import stat
 import sys
+import threading
 import traceback
 import types
 import urllib.error
 import urllib.response
+from contextlib import contextmanager
 from email.message import Message
 from concurrent.futures import ThreadPoolExecutor
 
@@ -57,6 +60,7 @@ from document_kv_cache.databricks_runs import (
     read_databricks_run_submit_payload,
     require_databricks_current_user_name,
     recover_pre_reserved_databricks_run,
+    resume_pre_reserved_databricks_run,
     reserve_and_submit_databricks_run,
     reserve_and_submit_databricks_run_json,
     stage_and_submit_databricks_run,
@@ -4257,6 +4261,827 @@ def test_concurrent_pre_reserved_recovery_posts_once_and_returns_one_run(tmp_pat
     assert results == [{"run_id": "701"}, {"run_id": "701"}]
     assert service.calls == 2
     assert len(read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts) == 1
+
+
+def _idempotency_claim_path(ledger_path, *, attempt_id="idempotent-attempt"):
+    return public_databricks_runs._pre_reserved_post_claim_path(
+        ledger_path,
+        attempt_id=attempt_id,
+    )
+
+
+def _idempotency_pending_claim_paths(claim_path):
+    prefix = public_databricks_runs._pre_reserved_post_claim_pending_prefix(
+        claim_path
+    )
+    return sorted(
+        (
+            path
+            for path in claim_path.parent.iterdir()
+            if path.name.startswith(prefix)
+        ),
+        key=lambda path: path.name,
+    )
+
+
+def test_resume_pre_reserved_claim_retries_positive_short_writes(tmp_path, monkeypatch):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    original_write = public_databricks_runs.os.write
+    write_calls = 0
+
+    def short_write(descriptor, content):
+        nonlocal write_calls
+        write_calls += 1
+        return original_write(descriptor, content[:7])
+
+    monkeypatch.setattr(public_databricks_runs.os, "write", short_write)
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+
+    claim_path = _idempotency_claim_path(ledger_path)
+    assert str(response["run_id"]) == "702"
+    assert write_calls > 1
+    assert service.calls == 1
+    assert stat.S_IMODE(claim_path.stat().st_mode) == 0o600
+    assert claim_path.stat().st_nlink == 1
+    assert _idempotency_pending_claim_paths(claim_path) == []
+
+
+def test_resume_pre_reserved_zero_write_leaves_no_final_and_retries(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    original_write = public_databricks_runs.os.write
+    monkeypatch.setattr(
+        public_databricks_runs.os,
+        "write",
+        lambda _descriptor, _content: 0,
+    )
+
+    with pytest.raises(OSError, match="no valid progress"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    claim_path = _idempotency_claim_path(ledger_path)
+    assert not claim_path.exists()
+    assert not claim_path.is_symlink()
+    assert _idempotency_pending_claim_paths(claim_path) == []
+    assert service.calls == 0
+    assert read_databricks_cluster_hour_ledger_json(
+        ledger_path
+    ).submission_receipts == ()
+
+    monkeypatch.setattr(public_databricks_runs.os, "write", original_write)
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+    assert str(response["run_id"]) == "702"
+    assert service.calls == 1
+    assert len(
+        read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts
+    ) == 1
+
+
+def test_resume_pre_reserved_temp_fsync_failure_leaves_no_final_and_retries(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    original_fsync = public_databricks_runs.os.fsync
+    failed = False
+
+    def fail_claim_temp_fsync(descriptor):
+        nonlocal failed
+        status = os.fstat(descriptor)
+        if not failed and stat.S_ISREG(status.st_mode) and status.st_size:
+            failed = True
+            raise OSError("injected claim temp fsync failure")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(
+        public_databricks_runs.os,
+        "fsync",
+        fail_claim_temp_fsync,
+    )
+    with pytest.raises(OSError, match="injected claim temp fsync failure"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    claim_path = _idempotency_claim_path(ledger_path)
+    assert not claim_path.exists()
+    assert _idempotency_pending_claim_paths(claim_path) == []
+    assert service.calls == 0
+
+    monkeypatch.setattr(public_databricks_runs.os, "fsync", original_fsync)
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+    assert str(response["run_id"]) == "702"
+    assert service.calls == 1
+
+
+def test_resume_pre_reserved_link_failure_leaves_no_final_and_retries(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    original_link = public_databricks_runs.os.link
+
+    def fail_claim_link(source, destination, *args, **kwargs):
+        if destination == claim_path:
+            raise OSError("injected claim link failure")
+        return original_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(public_databricks_runs.os, "link", fail_claim_link)
+    with pytest.raises(OSError, match="injected claim link failure"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    assert not claim_path.exists()
+    assert _idempotency_pending_claim_paths(claim_path) == []
+    assert service.calls == 0
+
+    monkeypatch.setattr(public_databricks_runs.os, "link", original_link)
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+    assert str(response["run_id"]) == "702"
+    assert service.calls == 1
+
+
+def test_resume_pre_reserved_rejects_staging_path_substitution_before_post(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    original_link = public_databricks_runs.os.link
+    substituted = b""
+
+    def substitute_claim_staging_path(source, destination, *args, **kwargs):
+        nonlocal substituted
+        if destination == claim_path:
+            complete = source.read_bytes()
+            substituted = complete[:17]
+            source.unlink()
+            source.write_bytes(substituted)
+            source.chmod(0o600)
+        return original_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(
+        public_databricks_runs.os,
+        "link",
+        substitute_claim_staging_path,
+    )
+    with pytest.raises(ValueError, match="publication identity drift"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    assert substituted
+    assert claim_path.read_bytes() == substituted
+    assert _idempotency_pending_claim_paths(claim_path) == []
+    assert service.calls == 0
+    assert read_databricks_cluster_hour_ledger_json(
+        ledger_path
+    ).submission_receipts == ()
+
+    with pytest.raises(ValueError):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    assert service.calls == 0
+
+
+def test_resume_pre_reserved_post_link_directory_fsync_failure_recovers(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    original_fsync_directory = public_databricks_runs._fsync_local_directory
+    failed = False
+
+    def fail_first_post_link_fsync(path):
+        nonlocal failed
+        if not failed and path == claim_path.parent and claim_path.exists():
+            failed = True
+            raise OSError("injected post-link directory fsync failure")
+        return original_fsync_directory(path)
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_fsync_local_directory",
+        fail_first_post_link_fsync,
+    )
+    with pytest.raises(OSError, match="injected post-link directory fsync failure"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    assert claim_path.is_file()
+    assert stat.S_IMODE(claim_path.stat().st_mode) == 0o600
+    assert service.calls == 0
+    assert read_databricks_cluster_hour_ledger_json(
+        ledger_path
+    ).submission_receipts == ()
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_fsync_local_directory",
+        original_fsync_directory,
+    )
+    original_fsync = public_databricks_runs.os.fsync
+    claim_inode = claim_path.stat().st_ino
+    durability_events = []
+
+    def record_claim_file_fsync(descriptor):
+        result = original_fsync(descriptor)
+        status = os.fstat(descriptor)
+        if stat.S_ISREG(status.st_mode) and status.st_ino == claim_inode:
+            durability_events.append("claim-file-fsync")
+        return result
+
+    def record_claim_root_fsync(path):
+        result = original_fsync_directory(path)
+        if path == claim_path.parent:
+            durability_events.append("claim-root-fsync")
+        return result
+
+    def require_durable_claim_before_post(request, *, timeout):
+        file_fsync = max(
+            index
+            for index, event in enumerate(durability_events)
+            if event == "claim-file-fsync"
+        )
+        assert any(
+            event == "claim-root-fsync" and index > file_fsync
+            for index, event in enumerate(durability_events)
+        )
+        durability_events.append("post")
+        return service(request, timeout=timeout)
+
+    monkeypatch.setattr(
+        public_databricks_runs.os,
+        "fsync",
+        record_claim_file_fsync,
+    )
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_fsync_local_directory",
+        record_claim_root_fsync,
+    )
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=require_durable_claim_before_post,
+    )
+    assert str(response["run_id"]) == "702"
+    assert service.calls == 1
+    assert claim_path.stat().st_nlink == 1
+    assert durability_events[-1] == "post"
+
+
+def test_resume_pre_reserved_recovers_post_link_pending_hardlink(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    original_cleanup = (
+        public_databricks_runs
+        ._cleanup_recognized_pre_reserved_post_claim_pending_files
+    )
+
+    def interrupt_post_link_cleanup(path, *, expected_content):
+        if path == claim_path and claim_path.exists():
+            raise RuntimeError("injected crash before pending-link cleanup")
+        return original_cleanup(path, expected_content=expected_content)
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_cleanup_recognized_pre_reserved_post_claim_pending_files",
+        interrupt_post_link_cleanup,
+    )
+    with pytest.raises(RuntimeError, match="before pending-link cleanup"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    pending = _idempotency_pending_claim_paths(claim_path)
+    assert claim_path.is_file()
+    assert claim_path.stat().st_nlink == 2
+    assert len(pending) == 1
+    assert pending[0].stat().st_ino == claim_path.stat().st_ino
+    assert service.calls == 0
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_cleanup_recognized_pre_reserved_post_claim_pending_files",
+        original_cleanup,
+    )
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+    assert str(response["run_id"]) == "702"
+    assert service.calls == 1
+    assert claim_path.stat().st_nlink == 1
+    assert _idempotency_pending_claim_paths(claim_path) == []
+
+
+def test_resume_pre_reserved_removes_recognized_partial_pre_link_debris(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    public_databricks_runs._require_or_create_pre_reserved_post_claim_root(claim_path)
+    snapshot, canonical_payload = (
+        public_databricks_runs.canonical_databricks_submit_payload_snapshot(payload)
+    )
+    content = public_databricks_runs._pre_reserved_post_claim_content(
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        submit_payload_sha256=hashlib.sha256(canonical_payload).hexdigest(),
+        idempotency_token=public_databricks_runs.require_databricks_run_idempotency_token(
+            snapshot,
+            attempt_id="idempotent-attempt",
+        ),
+    )
+    pending = claim_path.parent / (
+        public_databricks_runs._pre_reserved_post_claim_pending_prefix(claim_path)
+        + "0" * 32
+    )
+    pending.write_bytes(content[:23])
+    pending.chmod(0o600)
+
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+
+    assert str(response["run_id"]) == "702"
+    assert service.calls == 1
+    assert not pending.exists()
+    assert claim_path.stat().st_nlink == 1
+
+
+def test_resume_pre_reserved_repairs_owner_masked_root_lock_and_pending(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(public_databricks_runs.os, "supports_follow_symlinks", set())
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    claim_path.parent.mkdir(mode=0o700)
+    claim_path.parent.chmod(0o000)
+    public_databricks_runs._require_or_create_pre_reserved_post_claim_root(claim_path)
+    assert stat.S_IMODE(claim_path.parent.stat().st_mode) == 0o700
+
+    lock_path = claim_path.with_suffix(".lock")
+    lock_path.write_bytes(b"")
+    lock_path.chmod(0o000)
+    snapshot, canonical_payload = (
+        public_databricks_runs.canonical_databricks_submit_payload_snapshot(payload)
+    )
+    content = public_databricks_runs._pre_reserved_post_claim_content(
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        submit_payload_sha256=hashlib.sha256(canonical_payload).hexdigest(),
+        idempotency_token=public_databricks_runs.require_databricks_run_idempotency_token(
+            snapshot,
+            attempt_id="idempotent-attempt",
+        ),
+    )
+    pending = claim_path.parent / (
+        public_databricks_runs._pre_reserved_post_claim_pending_prefix(claim_path)
+        + "3" * 32
+    )
+    pending.write_bytes(content[:19])
+    pending.chmod(0o000)
+
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+
+    assert str(response["run_id"]) == "702"
+    assert service.calls == 1
+    assert not pending.exists()
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+    assert claim_path.stat().st_nlink == 1
+
+
+def test_resume_pre_reserved_repairs_owner_masked_legacy_final(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(public_databricks_runs.os, "supports_follow_symlinks", set())
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    public_databricks_runs._require_or_create_pre_reserved_post_claim_root(claim_path)
+    snapshot, canonical_payload = (
+        public_databricks_runs.canonical_databricks_submit_payload_snapshot(payload)
+    )
+    content = public_databricks_runs._pre_reserved_post_claim_content(
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        submit_payload_sha256=hashlib.sha256(canonical_payload).hexdigest(),
+        idempotency_token=public_databricks_runs.require_databricks_run_idempotency_token(
+            snapshot,
+            attempt_id="idempotent-attempt",
+        ),
+    )
+    claim_path.write_bytes(content)
+    claim_path.chmod(0o000)
+
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+
+    assert response == {"run_id": "702"}
+    assert service.calls == 1
+    assert stat.S_IMODE(claim_path.stat().st_mode) == 0o600
+    assert claim_path.stat().st_nlink == 1
+
+
+def test_resume_pre_reserved_nofollow_read_cannot_block_on_substituted_fifo(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    public_databricks_runs._require_or_create_pre_reserved_post_claim_root(claim_path)
+    claim_path.write_bytes(b"temporary regular placeholder")
+    claim_path.chmod(0o600)
+    original_open = public_databricks_runs.os.open
+    saw_nonblocking_claim_open = False
+
+    def substitute_fifo_on_claim_open(path, flags, *args, **kwargs):
+        nonlocal saw_nonblocking_claim_open
+        if path == claim_path:
+            saw_nonblocking_claim_open = bool(flags & os.O_NONBLOCK)
+            claim_path.unlink()
+            os.mkfifo(claim_path, mode=0o600)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        public_databricks_runs.os,
+        "open",
+        substitute_fifo_on_claim_open,
+    )
+    with pytest.raises(ValueError, match="claim identity drift"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    assert saw_nonblocking_claim_open
+    assert stat.S_ISFIFO(claim_path.lstat().st_mode)
+    assert service.calls == 0
+    assert read_databricks_cluster_hour_ledger_json(
+        ledger_path
+    ).submission_receipts == ()
+
+
+def test_resume_pre_reserved_pending_read_cannot_block_on_substituted_fifo(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    public_databricks_runs._require_or_create_pre_reserved_post_claim_root(claim_path)
+    snapshot, canonical_payload = (
+        public_databricks_runs.canonical_databricks_submit_payload_snapshot(payload)
+    )
+    content = public_databricks_runs._pre_reserved_post_claim_content(
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        submit_payload_sha256=hashlib.sha256(canonical_payload).hexdigest(),
+        idempotency_token=public_databricks_runs.require_databricks_run_idempotency_token(
+            snapshot,
+            attempt_id="idempotent-attempt",
+        ),
+    )
+    pending = claim_path.parent / (
+        public_databricks_runs._pre_reserved_post_claim_pending_prefix(claim_path)
+        + "4" * 32
+    )
+    pending.write_bytes(content[:29])
+    pending.chmod(0o600)
+    original_open = public_databricks_runs.os.open
+    saw_nonblocking_pending_open = False
+
+    def substitute_fifo_on_pending_open(path, flags, *args, **kwargs):
+        nonlocal saw_nonblocking_pending_open
+        if path == pending:
+            saw_nonblocking_pending_open = bool(flags & os.O_NONBLOCK)
+            pending.unlink()
+            os.mkfifo(pending, mode=0o600)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        public_databricks_runs.os,
+        "open",
+        substitute_fifo_on_pending_open,
+    )
+    with pytest.raises(ValueError, match="pending identity drift"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    assert saw_nonblocking_pending_open
+    assert stat.S_ISFIFO(pending.lstat().st_mode)
+    assert not claim_path.exists()
+    assert service.calls == 0
+    assert read_databricks_cluster_hour_ledger_json(
+        ledger_path
+    ).submission_receipts == ()
+
+
+def test_resume_pre_reserved_rejects_corrupt_final_claim_without_post(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    claim_path = _idempotency_claim_path(ledger_path)
+    public_databricks_runs._require_or_create_pre_reserved_post_claim_root(claim_path)
+    claim_path.write_bytes(b"{")
+    claim_path.chmod(0o600)
+
+    with pytest.raises(ValueError, match="invalid JSON"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    assert claim_path.read_bytes() == b"{"
+    assert service.calls == 0
+    assert read_databricks_cluster_hour_ledger_json(
+        ledger_path
+    ).submission_receipts == ()
+
+
+def test_resume_pre_reserved_rejects_receipt_without_durable_claim(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    response = resume_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+    assert str(response["run_id"]) == "702"
+    claim_path = _idempotency_claim_path(ledger_path)
+    claim_path.unlink()
+
+    with pytest.raises(ValueError, match="receipt lacks its durable POST claim"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    assert service.calls == 1
+    assert len(
+        read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts
+    ) == 1
+    assert not claim_path.exists()
+
+
+def test_resume_pre_reserved_rejects_ambiguous_pending_hardlinks_without_post(
+    tmp_path,
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode="preaccept_failure")
+    with pytest.raises(ConnectionError, match="before acceptance"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    claim_path = _idempotency_claim_path(ledger_path)
+    prefix = public_databricks_runs._pre_reserved_post_claim_pending_prefix(
+        claim_path
+    )
+    os.link(claim_path, claim_path.parent / f"{prefix}{'1' * 32}")
+    os.link(claim_path, claim_path.parent / f"{prefix}{'2' * 32}")
+    service.fail_mode = None
+
+    with pytest.raises(ValueError, match="claim identity drift"):
+        resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    assert claim_path.stat().st_nlink == 3
+    assert service.calls == 1
+    assert read_databricks_cluster_hour_ledger_json(
+        ledger_path
+    ).submission_receipts == ()
+
+
+def test_concurrent_absent_claim_resumes_post_once_and_share_receipt(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    start = threading.Barrier(3)
+    lock_boundary = threading.Barrier(2)
+    thread_state = threading.local()
+    original_lock = public_databricks_runs._exclusive_pre_reserved_recovery_lock
+    original_write = public_databricks_runs._write_pre_reserved_post_claim
+
+    @contextmanager
+    def synchronized_lock(claim_path):
+        lock_boundary.wait(timeout=10)
+        with original_lock(claim_path):
+            thread_state.lock_held = True
+            try:
+                yield
+            finally:
+                thread_state.lock_held = False
+
+    def require_lock_for_claim_write(*args, **kwargs):
+        assert getattr(thread_state, "lock_held", False)
+        return original_write(*args, **kwargs)
+
+    def require_lock_for_post(request, *, timeout):
+        assert getattr(thread_state, "lock_held", False)
+        return service(request, timeout=timeout)
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_exclusive_pre_reserved_recovery_lock",
+        synchronized_lock,
+    )
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_write_pre_reserved_post_claim",
+        require_lock_for_claim_write,
+    )
+
+    def resume():
+        start.wait(timeout=10)
+        return resume_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=require_lock_for_post,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(resume) for _index in range(2)]
+        start.wait(timeout=10)
+        results = [future.result(timeout=20) for future in futures]
+
+    claim_path = _idempotency_claim_path(ledger_path)
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert results == [{"run_id": "702"}, {"run_id": "702"}]
+    assert service.calls == 1
+    assert len(service.runs_by_token) == 1
+    assert [item.run_id for item in ledger.submission_receipts] == ["702"]
+    assert stat.S_IMODE(claim_path.stat().st_mode) == 0o600
+    assert claim_path.stat().st_nlink == 1
+    assert _idempotency_pending_claim_paths(claim_path) == []
 
 
 def _valid_databricks_run_status_record():
