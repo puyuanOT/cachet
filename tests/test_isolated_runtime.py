@@ -258,9 +258,7 @@ cuda = _Cuda()
     vllm_package.mkdir()
     native_origin = vllm_package / "_C_stable_libtorch.abi3.so"
     (vllm_package / "__init__.py").write_text(
-        '''import os
-os.write(1, b"VLLM-LOADER\\n")
-''',
+        'raise RuntimeError("vLLM package initialization is forbidden")\n',
         encoding="utf-8",
     )
     native_source = tmp_path / "native_loader.c"
@@ -1174,7 +1172,7 @@ def test_isolated_native_loader_hashes_loader_stdout_and_emits_one_record(tmp_pa
     assert completed.stderr == b""
     assert completed.stdout.count(b"\n") == 1
     record = json.loads(completed.stdout)
-    loader_output = torch_output + b"VLLM-LOADER\n"
+    loader_output = torch_output
     assert record == {
         "benchmark_executed": False,
         "cuda_available": True,
@@ -1233,7 +1231,7 @@ def test_isolated_native_loader_hashes_libc_output_flushed_after_target(tmp_path
     assert completed.returncode == 0
     assert completed.stderr == b""
     record = json.loads(completed.stdout)
-    loader_output = b"VLLM-LOADER\nC-BUFFERED"
+    loader_output = b"C-BUFFERED"
     assert record["loader_stdout_byte_count"] == len(loader_output)
     assert record["loader_stdout_sha256"] == hashlib.sha256(loader_output).hexdigest()
 
@@ -1303,6 +1301,26 @@ def test_isolated_native_loader_rejects_wrong_distribution_version(tmp_path):
         "Metadata-Version: 2.1\nName: torch\nVersion: 2.12.0+cu129\n",
         encoding="utf-8",
     )
+    environment, ld_library_path = _native_loader_environment(runtime_python)
+    command = isolated_runtime_native_loader_command(
+        runtime_python,
+        expected_gpu_name="NVIDIA L4",
+        expected_ld_library_path=ld_library_path,
+        warning_policy=_WARNING_POLICY,
+    )
+    completed = subprocess.run(command, capture_output=True, env=environment)
+    assert completed.returncode == 70
+    assert completed.stdout == b""
+    assert completed.stderr == b""
+
+
+@_REQUIRES_CPYTHON_311_RUNTIME
+def test_isolated_native_loader_requires_exact_vllm_package_initializer(tmp_path):
+    runtime_python = _fake_native_runtime(tmp_path)
+    (
+        runtime_python.parent.parent
+        / "lib/python3.11/site-packages/vllm/__init__.py"
+    ).unlink()
     environment, ld_library_path = _native_loader_environment(runtime_python)
     command = isolated_runtime_native_loader_command(
         runtime_python,

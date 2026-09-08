@@ -123,16 +123,11 @@ def _load_exact_vllm_native(site_packages: Path) -> tuple[object, str]:
     native_path = site_packages / "vllm" / "_C_stable_libtorch.abi3.so"
     if vllm_name in sys.modules or _VLLM_NATIVE_MODULE in sys.modules:
         _fail("vLLM modules were preloaded")
-    vllm_package = importlib.import_module(vllm_name)
-    _exact_source_module_origin(
-        vllm_package,
-        vllm_path,
-        label="vLLM package",
-        module_name=vllm_name,
-    )
-    if _VLLM_NATIVE_MODULE in sys.modules:
-        _fail("vLLM package preloaded the native module")
+    _require_exact_regular_file(vllm_path, label="vLLM package origin")
     _require_exact_regular_file(native_path, label="vLLM native module origin")
+    # Importing vLLM resolves the CUDA platform and eagerly imports this
+    # extension. Load only the attested extension so the canary never executes
+    # the package initializer or its wider plugin-discovery import graph.
     loader = _EXTENSION_FILE_LOADER(_VLLM_NATIVE_MODULE, str(native_path))
     spec = _SPEC_FROM_FILE_LOCATION(
         _VLLM_NATIVE_MODULE,
@@ -144,6 +139,8 @@ def _load_exact_vllm_native(site_packages: Path) -> tuple[object, str]:
         or spec.name != _VLLM_NATIVE_MODULE
         or spec.origin != str(native_path)
         or type(spec.loader) is not _EXTENSION_FILE_LOADER
+        or loader.name != _VLLM_NATIVE_MODULE
+        or loader.path != str(native_path)
     ):
         _fail("vLLM native module spec differs")
     try:
@@ -154,11 +151,17 @@ def _load_exact_vllm_native(site_packages: Path) -> tuple[object, str]:
         sys.modules.pop(_VLLM_NATIVE_MODULE, None)
         raise
     if (
-        getattr(native_module, "__spec__", None) is not spec
+        vllm_name in sys.modules
+        or getattr(native_module, "__name__", None) != _VLLM_NATIVE_MODULE
+        or getattr(native_module, "__spec__", None) is not spec
         or getattr(native_module, "__loader__", None) is not loader
         or getattr(native_module, "__file__", None) != str(native_path)
+        or loader.name != _VLLM_NATIVE_MODULE
+        or loader.path != str(native_path)
     ):
         _fail("vLLM native module loader provenance differs")
+    _require_exact_regular_file(vllm_path, label="vLLM package origin")
+    _require_exact_regular_file(native_path, label="vLLM native module origin")
     return native_module, native_path.relative_to(Path(sys.prefix)).as_posix()
 
 
