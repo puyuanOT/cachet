@@ -185,7 +185,10 @@ def test_adapter_scaffold_module_executes_with_python_m(tmp_path):
         ],
         check=True,
         cwd=repo_root,
-        env={"PYTHONPATH": str(repo_root / "src")},
+        env={
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPATH": str(repo_root / "src"),
+        },
         capture_output=True,
         text=True,
     )
