@@ -7,6 +7,7 @@ import subprocess
 import sys
 from collections import Counter
 from hashlib import sha256
+from itertools import count
 from types import SimpleNamespace
 
 import pytest
@@ -2043,10 +2044,16 @@ def test_q8_wave_resumes_exact_lease_before_atomic_batch(
     assert len(replayed) == 16
 
 
+@pytest.mark.parametrize(
+    "underreported_terminal_actual",
+    [False, True],
+    ids=["coherent-worker-clock", "underreported-terminal-actual"],
+)
 def test_distributed_workers_close_without_copy_and_render_independent_jobs(
     prepared,
     monkeypatch,
     tmp_path,
+    underreported_terminal_actual,
 ):
     tokenizer = CharacterTokenizer()
     plan = build_publication_latency_handoff_generation_plan(
@@ -2254,14 +2261,23 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
         "node_type_id": "g6e.4xlarge",
     }
     for index, path in enumerate(payload_paths):
-        run_publication_latency_handoff_worker(
+        # The synthetic Jobs receipts above describe exactly one-second tasks.
+        # Model their worker clock explicitly: real hashing/fsync wall time can
+        # exceed that fictional lifecycle on a busy runner. The second case
+        # deliberately meters more than one second to exercise the real guard.
+        worker_clock = count(0.0, 1.0 if underreported_terminal_actual else 0.001)
+        worker_result = run_publication_latency_handoff_worker(
             path,
             expected_worker_payload_sha256=sha256(path.read_bytes()).hexdigest(),
             tokenizer=tokenizer,
             worker_factory=worker_factory,
+            clock=worker_clock.__next__,
             local_work_root_override=tmp_path / f"local-worker-{index:02d}",
             hardware_probe=lambda: observed_hardware,
         )
+        metered = worker_result["accounting"]["producer_metered_seconds"]
+        assert metered > 0
+        assert (metered > 1.0) is underreported_terminal_actual
     with pytest.raises(FileExistsError, match="not fresh"):
         run_publication_latency_handoff_worker(
             payload_paths[0],
@@ -2491,22 +2507,32 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
             _remote_ledger_issuer=generation._REMOTE_CLOSURE_LEDGER_ISSUER,
         )
     first_path.write_bytes(original)
-    result = close_publication_latency_handoff_generation_from_workers(
-        plan,
-        prepared_input_dir=prepared.output_dir,
-        durable_output_root=durable_root,
-        tokenizer=tokenizer,
-        config=config,
-        ledger_path=ledger_path,
-        attempt_ids_by_worker=attempt_ids,
-        attestations_by_worker=attestations,
-        _ledger_snapshot=read_databricks_cluster_hour_ledger_json(ledger_path),
-        _ledger_path_sha256=databricks_ledger_path_sha256(ledger_path),
-        _expected_producer_batch_prefix=(
-            batch_authorization.batch_authorization.batch_prefix
-        ),
-        _remote_ledger_issuer=generation._REMOTE_CLOSURE_LEDGER_ISSUER,
-    )
+    def close_workers():
+        return close_publication_latency_handoff_generation_from_workers(
+            plan,
+            prepared_input_dir=prepared.output_dir,
+            durable_output_root=durable_root,
+            tokenizer=tokenizer,
+            config=config,
+            ledger_path=ledger_path,
+            attempt_ids_by_worker=attempt_ids,
+            attestations_by_worker=attestations,
+            _ledger_snapshot=read_databricks_cluster_hour_ledger_json(ledger_path),
+            _ledger_path_sha256=databricks_ledger_path_sha256(ledger_path),
+            _expected_producer_batch_prefix=(
+                batch_authorization.batch_authorization.batch_prefix
+            ),
+            _remote_ledger_issuer=generation._REMOTE_CLOSURE_LEDGER_ISSUER,
+        )
+
+    if underreported_terminal_actual:
+        with pytest.raises(ValueError, match="terminal GPU actual is shorter than worker metering"):
+            close_workers()
+        assert not (durable_root / "bundles").exists()
+        assert not (durable_root / "manifests").exists()
+        assert not (durable_root / generation.PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME).exists()
+        return
+    result = close_workers()
     assert sorted(tracker["created"]) == list(range(16))
     assert sorted(tracker["closed"]) == list(range(16))
     assert result.record["accounting"]["cost_model"] == (
