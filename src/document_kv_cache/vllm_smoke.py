@@ -6390,6 +6390,9 @@ def _populate_handoff_generation_env(
 ) -> None:
     if config.is_representative_submission:
         _set_or_validate_env(env, "DOCUMENT_KV_EVICT_PAGE_CACHE", "1")
+    if config.representative_supplement_provenance is not None:
+        # Background prefetch suppresses the per-request cold-page eviction.
+        _set_or_validate_env(env, "DOCUMENT_KV_PREFETCH_WORKERS", "0")
     if config.handoff_generation is None:
         return
     _set_or_validate_env(env, CACHET_TRANSFORMERS_MODEL_ID_ENV, config.model_id)

@@ -341,3 +341,19 @@ def test_premeasurement_hook_fails_closed_on_missing_or_invalid_qualification(tm
     with pytest.raises((ValueError, FileNotFoundError, subprocess.TimeoutExpired)):
         runner.run_representative_premeasurement_qualification(config)
     assert calls == ([] if mutation == "stage_binding" else ["qualification"])
+
+
+@pytest.mark.parametrize("ambient", (None, "0", "2"))
+def test_supplement_server_environment_preserves_cold_request_eviction(monkeypatch, ambient):
+    config = runner_config(supplement_job(), monkeypatch)
+    monkeypatch.delenv("DOCUMENT_KV_EVICT_PAGE_CACHE", raising=False)
+    monkeypatch.delenv("DOCUMENT_KV_PREFETCH_WORKERS", raising=False)
+    if ambient is not None:
+        monkeypatch.setenv("DOCUMENT_KV_PREFETCH_WORKERS", ambient)
+    if ambient == "2":
+        with pytest.raises(ValueError, match="DOCUMENT_KV_PREFETCH_WORKERS.*conflicts"):
+            runner.server_env(config)
+    else:
+        environment = runner.server_env(config)
+        assert environment["DOCUMENT_KV_EVICT_PAGE_CACHE"] == "1"
+        assert environment["DOCUMENT_KV_PREFETCH_WORKERS"] == "0"
