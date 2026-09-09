@@ -34,7 +34,7 @@ PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_F
 PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_CLOSED_RECORD_SHA256 = "5f90b531b30ac6f4b29e0151d688a005b0377b205ca39645376d7d43aef5e305"
 PUBLICATION_CAMPAIGN_PRE_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_CAMPAIGN_BYTE_COUNT = 66_635
 PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256 = (
-    "ae72cb4967bd61b4442261ac8a419e4b23730936da5cfe2dca3558836334ccb1"
+    "d8924952d79e56855490eddaa42ca539808cd0b220730163a1e5950f86e51a2d"
 )
 PUBLICATION_CAMPAIGN_ENGINE_VERSION = "0.27.1"
 PUBLICATION_CAMPAIGN_METHODS = ("baseline_prefill", "vanilla_prefill")
@@ -1081,7 +1081,7 @@ def publication_campaign_plan_to_record(
                 ),
                 "storage": "matched_fresh_cluster_disk_ram_uc_trio",
             },
-            "bootstrap": "paired_hierarchical_deployment_and_example",
+            "bootstrap": "paired_crossed_deployment_and_example",
             "bootstrap_draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
             "post_hoc_cell_significance_allowed": False,
             "quality_preservation_gate": False,

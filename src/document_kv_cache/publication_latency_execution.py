@@ -7,7 +7,7 @@ The module deliberately separates five authorities:
 * one Databricks run per cell proves physical deployment isolation;
 * direct ``jobs/runs/get`` plus the resource ledger proves terminal billing;
 * a sealed collection, never caller-supplied scalar measurements, authorizes the
-  hierarchical paired publication summary.
+  crossed paired publication summary.
 """
 
 from __future__ import annotations
@@ -4089,7 +4089,7 @@ def build_publication_latency_execution_plan(
     waves = _launch_waves(jobs, seed_sha256=sources_sha256)
     record: dict[str, Any] = {
         "analysis": {
-            "bootstrap": "paired_hierarchical_deployment_block_and_example",
+            "bootstrap": "paired_crossed_deployment_block_and_example",
             "bootstrap_draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
             "estimands": [
                 "geometric_mean_ttft_speedup",
@@ -4530,6 +4530,8 @@ def validate_publication_latency_execution_plan_record(
     if _mapping_sequence(record, "launch_waves") != expected_waves:
         raise ValueError("publication latency launch waves are not canonical")
     analysis = _mapping(record, "analysis")
+    if analysis.get("bootstrap") != "paired_crossed_deployment_block_and_example":
+        raise ValueError("publication latency bootstrap method drift")
     if analysis.get("bootstrap_draws") != PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS:
         raise ValueError("publication latency bootstrap draw count drift")
     multiplicity = _mapping(analysis, "multiplicity_policy")
@@ -8145,7 +8147,7 @@ def aggregate_publication_latency_campaign(
     bf16_handoff_serving_authorization: PublicationHandoffRemoteClosureAuthorization,
     source_closure_authorization: PublicationLatencySourceClosureAuthorization,
 ) -> dict[str, Any]:
-    """Produce estimation-only paired hierarchical bootstrap summaries."""
+    """Produce estimation-only paired crossed bootstrap summaries."""
 
     if type(authorization) is not PublicationLatencyCollectionAuthorization:
         raise TypeError(
@@ -8261,7 +8263,7 @@ def aggregate_publication_latency_campaign(
                 )[:16],
                 16,
             )
-            point, lower, upper = _paired_hierarchical_bootstrap(
+            point, lower, upper = _paired_crossed_bootstrap(
                 paired_logs[metric_name],
                 draws=PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
                 seed=seed,
@@ -8278,7 +8280,7 @@ def aggregate_publication_latency_campaign(
         )
     summary: dict[str, Any] = {
         "analysis": {
-            "bootstrap": "paired_hierarchical_deployment_block_and_example",
+            "bootstrap": "paired_crossed_deployment_block_and_example",
             "bootstrap_draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
             "confidence_intervals": "pointwise_95_percent",
             "decision_mode": "estimation_only",
@@ -8372,7 +8374,7 @@ def validate_publication_latency_summary_record(
         raise ValueError("publication latency descriptive-cell order drift")
     analysis = _mapping(record, "analysis")
     if analysis != {
-        "bootstrap": "paired_hierarchical_deployment_block_and_example",
+        "bootstrap": "paired_crossed_deployment_block_and_example",
         "bootstrap_draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
         "confidence_intervals": "pointwise_95_percent",
         "decision_mode": "estimation_only",
@@ -9029,6 +9031,7 @@ def _paired_log_ratios_by_block(
     expected_blocks = set(range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1))
     if set(control_jobs) != expected_blocks or set(treatment_jobs) != expected_blocks:
         raise ValueError("latency estimand does not cover all deployment blocks")
+    reference_request_keys: set[tuple[str, str, int]] | None = None
     for block in sorted(expected_blocks):
         control_id = control_jobs[block]
         treatment_id = treatment_jobs[block]
@@ -9056,6 +9059,10 @@ def _paired_log_ratios_by_block(
             or len(control_by_key) != (len(treatment.measurements))
         ):
             raise ValueError("latency paired request membership drift")
+        if reference_request_keys is None:
+            reference_request_keys = set(control_by_key)
+        elif set(control_by_key) != reference_request_keys:
+            raise ValueError("latency cross-block example/repeat membership drift")
         for metric_name in output:
             by_example: dict[tuple[str, str], list[float]] = defaultdict(list)
             for key in sorted(control_by_key):
@@ -9101,14 +9108,21 @@ def _paired_log_ratios_by_block(
     return output
 
 
-def _paired_hierarchical_bootstrap(
+def _paired_crossed_bootstrap(
     by_block: Mapping[int, Mapping[tuple[str, str], Sequence[float]]],
     *,
     draws: int,
     seed: int,
 ) -> tuple[float, float, float]:
+    """Resample blocks and shared example identities, retaining paired repeats.
+
+    Dataset strata have fixed weights. An example's bootstrap multiplicity is
+    shared across every selected block because the same identities are reused
+    in each deployment. These are approximate pointwise intervals, not an exact
+    coverage guarantee for five deployments.
+    """
     if set(by_block) != set(range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)):
-        raise ValueError("hierarchical bootstrap requires exactly five blocks")
+        raise ValueError("crossed bootstrap requires exactly five blocks")
     if type(draws) is not int or draws <= 0:
         raise ValueError("bootstrap draws must be a positive integer")
     block_ids = sorted(by_block)
@@ -9116,6 +9130,17 @@ def _paired_hierarchical_bootstrap(
         block: _dataset_stratified_example_identities(by_block[block])
         for block in block_ids
     }
+    reference_ids = example_ids[block_ids[0]]
+    reference_repeat_counts = {
+        example: len(values) for example, values in by_block[block_ids[0]].items()
+    }
+    for block in block_ids[1:]:
+        if example_ids[block] != reference_ids:
+            raise ValueError("crossed bootstrap example identities differ across blocks")
+        if {
+            example: len(values) for example, values in by_block[block].items()
+        } != reference_repeat_counts:
+            raise ValueError("crossed bootstrap paired repeat counts differ across blocks")
     all_logs = [
         value
         for block in block_ids
@@ -9129,11 +9154,11 @@ def _paired_hierarchical_bootstrap(
     for _draw in range(draws):
         total = 0.0
         count = 0
-        for _ in block_ids:
-            block = block_ids[rng.randrange(len(block_ids))]
-            identities = _draw_dataset_stratified_example_sample(
-                rng, example_ids[block]
-            )
+        sampled_blocks = [
+            block_ids[rng.randrange(len(block_ids))] for _ in block_ids
+        ]
+        identities = _draw_dataset_stratified_example_sample(rng, reference_ids)
+        for block in sampled_blocks:
             for example in identities:
                 values = by_block[block][example]
                 total += sum(values)
@@ -9146,24 +9171,26 @@ def _paired_hierarchical_bootstrap(
 def _dataset_stratified_example_identities(
     by_example: Mapping[tuple[str, str], Sequence[float]],
 ) -> dict[str, tuple[tuple[str, str], ...]]:
+    if any(key[0] not in SUPPORTED_V1_DATASETS for key in by_example):
+        raise ValueError("crossed bootstrap requires supported dataset strata")
     output = {
         dataset: tuple(sorted(key for key in by_example if key[0] == dataset))
         for dataset in SUPPORTED_V1_DATASETS
     }
     counts = {len(values) for values in output.values()}
     if len(counts) != 1 or not counts or next(iter(counts)) <= 0:
-        raise ValueError("hierarchical bootstrap requires balanced dataset strata")
+        raise ValueError("crossed bootstrap requires balanced dataset strata")
     repeat_counts = {
         len(by_example[key]) for values in output.values() for key in values
     }
     if len(repeat_counts) != 1 or not repeat_counts or next(iter(repeat_counts)) <= 0:
-        raise ValueError("hierarchical bootstrap requires complete paired repeats")
+        raise ValueError("crossed bootstrap requires complete paired repeats")
     if any(
         not math.isfinite(float(value))
         for values in by_example.values()
         for value in values
     ):
-        raise ValueError("hierarchical bootstrap observations must be finite")
+        raise ValueError("crossed bootstrap observations must be finite")
     return output
 
 

@@ -1531,6 +1531,8 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
             "KV&nbsp;Packet",
             "CacheBlend",
             "InfoFlow&nbsp;KV",
+            "LMCache",
+            "Multi connector",
             "LongBench v2",
             "RULER",
             "Packed Q4",
@@ -1552,7 +1554,7 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "Unsupported Method Status",
     )
     assert sha256(unsupported_method_section.encode("utf-8")).hexdigest() == (
-        "eb927a995873e13379d1c4921c26c8149a5bf417a9f6f2f5c163460c22dded46"
+        "29780187ca557ccd7ac5b0d58b95f3df582406783b44bd48cf0e51bec44d4bde"
     )
     assert "71.390128 reconciled GPU-hours" in root_readme
     assert "exact 236/98/236 post-migration append-only prefix" in root_readme

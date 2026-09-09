@@ -26,7 +26,117 @@ __all__ = [
     "PairedBenchmarkStatistics",
     "paired_benchmark_statistics",
     "paired_benchmark_statistics_to_record",
+    "five_deployment_paired_statistics",
 ]
+
+
+def five_deployment_paired_statistics(
+    paired_log_ratios: Mapping[int, Mapping[str, Sequence[float]]],
+    *,
+    bootstrap_samples: int = 20_000,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """Summarize one dataset and setting across five matched deployments.
+
+    Values are log(control / treatment), paired by example and repeat before
+    calling this function. Callers must validate execution provenance and raw
+    request pairing separately. The same examples and repeat counts are required
+    in every deployment. The target generalizes over deployments and examples:
+    resample these two factors independently, sharing each draw's example
+    indices across all selected deployments. All paired repeats of a cell stay
+    together. The estimate gives equal weight to deployments and examples.
+    The nominal percentile interval does not guarantee exact coverage with only
+    five deployments. This record is not a publication gate or significance claim.
+    """
+    if (
+        any(type(block) is not int for block in paired_log_ratios)
+        or set(paired_log_ratios) != set(range(1, 6))
+    ):
+        raise ValueError("exactly deployment blocks 1 through 5 are required")
+    if type(bootstrap_samples) is not int or bootstrap_samples <= 0:
+        raise ValueError("bootstrap_samples must be a positive integer")
+    if type(seed) is not int:
+        raise ValueError("seed must be an integer")
+    first = paired_log_ratios[1]
+    if len(first) < 4 or any(
+        not isinstance(example, str) or not example for example in first
+    ):
+        raise ValueError("at least four nonempty example identities are required")
+    examples = sorted(first)
+    repeats: int | None = None
+    example_means: dict[int, tuple[float, ...]] = {}
+    for block in range(1, 6):
+        observations = paired_log_ratios[block]
+        if set(observations) != set(examples):
+            raise ValueError("paired example membership differs across deployments")
+        means = []
+        for example in examples:
+            values = observations[example]
+            if not values or isinstance(values, (str, bytes)):
+                raise ValueError("each example requires paired repeat observations")
+            if repeats is None:
+                repeats = len(values)
+            if len(values) != repeats:
+                raise ValueError("paired repeat counts must be identical")
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in values
+            ):
+                raise ValueError("paired log ratios must be finite numbers")
+            try:
+                mean = math.fsum(values) / len(values)
+                speedup = math.exp(mean)
+            except OverflowError as exc:
+                raise ValueError("paired log ratios exceed the numeric range") from exc
+            if not math.isfinite(speedup) or speedup <= 0:
+                raise ValueError("paired log ratios exceed the numeric range")
+            means.append(mean)
+        example_means[block] = tuple(means)
+    block_means = {
+        block: math.fsum(values) / len(values)
+        for block, values in example_means.items()
+    }
+    estimate = math.exp(math.fsum(block_means.values()) / 5)
+    rng = random.Random(seed)
+    draws = []
+    for _ in range(bootstrap_samples):
+        sampled_blocks = [rng.randrange(1, 6) for _ in range(5)]
+        sampled_examples = [rng.randrange(len(examples)) for _ in examples]
+        log_mean = math.fsum(
+            example_means[block][example]
+            for block in sampled_blocks
+            for example in sampled_examples
+        ) / (5 * len(examples))
+        draws.append(math.exp(log_mean))
+    draws.sort()
+    return {
+        "record_type": "document_kv.five_deployment_paired_log_ratio_statistics.v1",
+        "dataset_count": 1,
+        "deployment_count": 5,
+        "distinct_examples": len(examples),
+        "paired_repeats_per_example": repeats,
+        "estimand": "geometric_mean_control_over_treatment_across_deployments_and_examples",
+        "estimator": "exponentiated_equal_weight_mean_of_paired_repeat_log_ratios",
+        "bootstrap_unit": "paired_crossed_deployment_and_example_with_paired_repeats_retained",
+        "bootstrap_samples": bootstrap_samples,
+        "bootstrap_seed": seed,
+        "random_generator": "CPython_random_MT19937",
+        "quantile_method": "type_7",
+        "confidence_level": 0.95,
+        "interval_scope": "pointwise_estimation_only",
+        "coverage_limitation": "nominal_percentile_interval_no_exact_coverage_guarantee_with_five_deployments",
+        "geometric_mean_speedup": estimate,
+        "confidence_interval": {
+            "lower": _percentile(draws, 0.025),
+            "upper": _percentile(draws, 0.975),
+        },
+        "deployment_effects": [
+            {"block": block, "geometric_mean_speedup": math.exp(block_means[block])}
+            for block in range(1, 6)
+        ],
+    }
 
 
 @runtime_checkable

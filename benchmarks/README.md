@@ -41,7 +41,7 @@ production job is submitted.
 | Full-score decode | Natural EOS with a 64-token maximum, temperature 0, closed-loop concurrency 4, one paired pass per method, and no prompt padding or tokenizer truncation |
 | No-retry job timeouts | 8k c1/c2/c4: 6/4/4h; 16k: 8/6/4h; 32k: 12/8/4h; all c4 auxiliary jobs: 4h |
 | Experimental units | Core Baseline/Vanilla pair; Disk/RAM/UC trio; 16k-c4 core pair plus BF16/A10G four-job wave |
-| Latency analysis | Paired hierarchical bootstrap over deployment blocks and examples; no post-hoc cell significance |
+| Latency analysis | Paired crossed bootstrap over deployment blocks and shared example identities; no post-hoc cell significance |
 | Full-score analysis | Per-example paired deltas with pointwise 95% paired-example bootstrap intervals, 20,000 draws, and dataset stratification |
 | Full-score scope | One complete paired pass over every selected dataset row; no padding, truncation, sampling replacement, or answer-quality preservation gate |
 | Budget | 1,024 aggregate GPU-hours, 900 active reserved hours, 124 hours unreserved headroom, at most 16 parallel jobs |
@@ -100,8 +100,15 @@ matched deployment blocks; no pre-reset measurement is carried forward.
 Each estimand is computed from five matched deployment blocks. A speedup is
 `reference latency / treatment latency`, so values above 1 mean that the named
 treatment is faster. The table reports estimation with pointwise 95% paired
-hierarchical-bootstrap intervals; it is not a grid of post-hoc significance
+crossed-bootstrap intervals; it is not a grid of post-hoc significance
 tests.
+
+The intervals describe uncertainty over deployments and shared example
+identities. Each bootstrap draw samples five matched blocks and independently
+samples example identities within each fixed dataset stratum. The same example
+multiset is used across all selected blocks, with paired request repeats kept
+together. These are approximate intervals; five deployments do not establish
+exact 95% coverage, and the storage ablation has only two identities per dataset.
 
 <!-- cachet:vllm-0271-publication-table:latency-estimands:begin -->
 | Treatment vs reference | Setting | TTFT geometric speedup | TTFT 95% CI | TTC geometric speedup | TTC 95% CI | Status |
@@ -128,6 +135,11 @@ tests.
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | N/A (method not implemented) | N/A (method not implemented) | No pinned executable integration or Cachet artifact/serving contract |
 | CacheBlend | N/A (method not implemented) | N/A (method not implemented) | Selective cross-document recomputation is not implemented |
 | InfoFlow&nbsp;KV | N/A (method not implemented) | N/A (method not implemented) | Cross-document information-flow method is not implemented |
+| LMCache | N/A (runtime not qualified) | N/A (runtime not qualified) | No combined hash-locked vLLM 0.27.1/LMCache runtime or GPU qualification |
+| Multi connector | N/A (runtime not qualified) | N/A (runtime not qualified) | No combined hash-locked vLLM 0.27.1/Multi runtime or GPU qualification |
+
+LMCache and Multi retain smoke implementations. Their vLLM 0.27.1 canary and
+publication paths require a combined hash-locked runtime and GPU qualification.
 
 ## Benchmark Dataset Score Table
 

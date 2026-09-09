@@ -983,9 +983,9 @@ def test_publication_campaign_preserves_predecessor_and_aligns_v2_authority(tmp_
     )
     record = publication_campaign_plan_to_record(plan)
     canonical = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    assert len(canonical) == 80_378
+    assert len(canonical) == 80_373
     assert hashlib.sha256(canonical).hexdigest() == (
-        "5c4e90b63f6c44ef7a924c6ec5cea6ab3f31d70ca592b2395b55c56825c5170d"
+        "97fea9bdf99aba1fb3bf810a2115bc0c84bf8a5a24de41537e6e13f0921020cd"
     )
     assert (
         publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TASK_INTERVAL_EPOCH_MILLISECONDS_BY_JOB

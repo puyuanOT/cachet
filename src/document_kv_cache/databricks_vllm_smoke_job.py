@@ -42,6 +42,7 @@ from document_kv_cache.vllm_smoke import (
     SERVER_PORT,
     VLLM_REPRESENTATIVE_WORKLOAD_PROFILES,
     VLLM_VERSION,
+    VLLMNativeRuntimeBundleV2,
     VLLMRepresentativeWorkloadProfile,
     _arm_spec_requires_cachet_handoff,
     _runtime_identity_from_json,
@@ -49,6 +50,7 @@ from document_kv_cache.vllm_smoke import (
     vllm_representative_workload_profile,
 )
 from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES
+from document_kv_cache.databricks_runs import bind_databricks_run_idempotency_token
 from document_kv_cache.canary_orchestration import (
     REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE,
     REPRESENTATIVE_VLLM_PACKAGE_PINS,
@@ -284,6 +286,8 @@ class DatabricksVLLMSmokeJobConfig:
     benchmark_suite_id: str | None = None
     benchmark_runtime_id: str | None = None
     benchmark_prewarm_payload_cache: bool = False
+    native_runtime_v2: VLLMNativeRuntimeBundleV2 | None = None
+    submission_attempt_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -322,6 +326,28 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("wheel_sha256 must be a lowercase SHA-256 digest")
         if self.wheel_sha256 is not None and self.wheel_uri is None:
             raise ValueError("wheel_sha256 requires wheel_uri")
+        if self.native_runtime_v2 is not None:
+            if not isinstance(self.native_runtime_v2, VLLMNativeRuntimeBundleV2):
+                raise TypeError("native_runtime_v2 must be a VLLMNativeRuntimeBundleV2")
+            if (
+                self.wheel_uri != self.native_runtime_v2.package_wheel_uri
+                or self.wheel_sha256 != self.native_runtime_v2.package_wheel_sha256
+            ):
+                raise ValueError(
+                    "native_runtime_v2 package must match the bootstrap wheel binding"
+                )
+        if self.submission_attempt_id is not None and (
+            not isinstance(self.submission_attempt_id, str)
+            or not self.submission_attempt_id.strip()
+        ):
+            raise ValueError("submission_attempt_id must be non-empty")
+        if self.representative_canary and (
+            (self.native_runtime_v2 is not None) != (self.submission_attempt_id is not None)
+        ):
+            raise ValueError(
+                "native-v2 representative submissions require both a runtime bundle "
+                "and submission_attempt_id"
+            )
         if self.model_id is not None and not self.model_id.strip():
             raise ValueError("model_id must be non-empty when provided")
         for field_name in ("model_revision", "tokenizer_revision"):
@@ -802,20 +828,18 @@ def _representative_vllm_provenance(
         )
     runtime_kv_dtype = config.kv_cache_dtype or config.model_dtype
     pre_rope = config.benchmark_handoff_cache_method == "vanilla_prefill"
-    layout = layout_for_model(
-        HF_MODEL_ID,
-        dtype=runtime_kv_dtype,
-        **(
-            {
-                "pre_rope": True,
-                "rope_theta": QWEN3_4B_ROPE_THETA,
-                "rope_rotary_dim": QWEN3_4B_ROPE_ROTARY_DIM,
-                "shares_kv_storage": False,
-                "storage_layout": "separate_key_value",
-            }
-            if pre_rope
-            else {}
-        ),
+    layout = (
+        layout_for_model(
+            HF_MODEL_ID,
+            dtype=runtime_kv_dtype,
+            pre_rope=True,
+            rope_theta=QWEN3_4B_ROPE_THETA,
+            rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+            shares_kv_storage=False,
+            storage_layout="separate_key_value",
+        )
+        if pre_rope
+        else layout_for_model(HF_MODEL_ID, dtype=runtime_kv_dtype)
     )
     _, wheel_sha256 = validated_representative_wheel_binding(
         config.wheel_uri,
@@ -912,11 +936,16 @@ def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJo
             task["spark_python_task"]["parameters"].extend(
                 ["--package-wheel-sha256", config.wheel_sha256]
             )
-    return {
+    payload = {
         "run_name": config.run_name,
         "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
+    if config.submission_attempt_id is not None:
+        return bind_databricks_run_idempotency_token(
+            payload, attempt_id=config.submission_attempt_id
+        )
+    return payload
 
 
 def write_databricks_vllm_smoke_run_submit_json(
@@ -1168,6 +1197,13 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
             parameters.append(
                 "--benchmark-handoff-allow-legacy-artifact-contract"
             )
+    if config.native_runtime_v2 is not None:
+        parameters.extend(
+            [
+                "--native-runtime-v2-json",
+                json.dumps(config.native_runtime_v2.to_record(), sort_keys=True),
+            ]
+        )
     return parameters
 
 
@@ -1229,6 +1265,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
     parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
     parser.add_argument("--wheel-sha256")
+    parser.add_argument(
+        "--native-runtime-v2-json",
+        help="Exact native-v2 runtime bundle, including the same verified bootstrap wheel.",
+    )
+    parser.add_argument(
+        "--submission-attempt-id",
+        help="Bind the Jobs idempotency token; required for native-v2 representative jobs.",
+    )
     parser.add_argument("--model-id", help="HF model path/id passed to vLLM --model.")
     parser.add_argument("--model-revision")
     parser.add_argument("--tokenizer-revision")
@@ -1442,6 +1486,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             single_user_name=args.single_user_name,
             wheel_uri=args.wheel_uri,
             wheel_sha256=args.wheel_sha256,
+            native_runtime_v2=(
+                None
+                if args.native_runtime_v2_json is None
+                else VLLMNativeRuntimeBundleV2.from_record(
+                    _json_object_from_cli(
+                        args.native_runtime_v2_json, "--native-runtime-v2-json"
+                    )
+                )
+            ),
+            submission_attempt_id=args.submission_attempt_id,
             model_id=args.model_id,
             model_revision=args.model_revision,
             tokenizer_revision=args.tokenizer_revision,

@@ -50,6 +50,7 @@ from document_kv_cache.databricks_resource_ledger import (
 from document_kv_cache.databricks_runs import (
     DatabricksURLOpener,
     DatabricksWorkspaceConfig,
+    require_databricks_run_idempotency_token,
     reserve_and_submit_databricks_run,
 )
 from document_kv_cache.engine_adapters import validate_engine_adapter_request_record
@@ -881,8 +882,15 @@ def validated_representative_wheel_binding(
 def validate_representative_canary_workload_payload(
     workload: RepresentativeCanaryWorkload,
     submit_payload: Mapping[str, Any],
+    *,
+    attempt_id: str | None = None,
 ) -> DatabricksClusterHourReservation:
-    """Validate one real job-builder payload against its fixed workload entry."""
+    """Validate one payload; native-v2 submissions require their real attempt ID.
+
+    Legacy payloads retain their original exact schema. The native-v2 successor
+    carries a complete runtime bundle and an attempt-bound Jobs token while
+    retaining the same representative scientific workload.
+    """
 
     if not isinstance(workload, RepresentativeCanaryWorkload):
         raise TypeError("workload must be a RepresentativeCanaryWorkload")
@@ -891,9 +899,13 @@ def validate_representative_canary_workload_payload(
     )
     if workload != manifest_workload:
         raise ValueError("workload does not match the canonical manifest entry")
+    if "idempotency_token" in submit_payload and attempt_id is None:
+        raise ValueError("native-v2 representative validation requires attempt_id")
     reservation = databricks_submit_payload_reservation(
         submit_payload,
-        attempt_id=f"manifest-validation-{workload.order}",
+        attempt_id=(
+            f"manifest-validation-{workload.order}" if attempt_id is None else attempt_id
+        ),
         workload_id=workload.workload_id,
     )
     _validate_representative_canary_payload_contract(
@@ -1002,11 +1014,6 @@ def _validate_representative_canary_payload_contract(
     submit_payload: Mapping[str, Any],
     reservation: DatabricksClusterHourReservation,
 ) -> None:
-    _require_exact_mapping_keys(
-        submit_payload,
-        _REPRESENTATIVE_SUBMIT_PAYLOAD_KEYS,
-        "representative submit payload",
-    )
     if reservation.run_timeout_seconds != 14_400:
         raise ValueError("representative run timeout_seconds must equal 14400")
     if reservation.task_timeout_seconds != (14_400,):
@@ -1116,6 +1123,20 @@ def _validate_representative_canary_payload_contract(
         spark_python_task.get("parameters"),
         "representative runner parameters",
     )
+    native_v2 = (
+        workload.serving_platform == "vllm"
+        and "--native-runtime-v2-json" in parameters
+    )
+    _require_exact_mapping_keys(
+        submit_payload,
+        _REPRESENTATIVE_SUBMIT_PAYLOAD_KEYS
+        | (frozenset({"idempotency_token"}) if native_v2 else frozenset()),
+        "representative submit payload",
+    )
+    if native_v2:
+        require_databricks_run_idempotency_token(
+            submit_payload, attempt_id=reservation.attempt_id
+        )
     _validate_closed_representative_parameter_schema(workload, parameters)
     if _single_parameter_value(parameters, "--benchmark-id") != workload.workload_id:
         raise ValueError(
@@ -1178,6 +1199,8 @@ def _validate_representative_vllm_payload_parameters(
     *,
     wheel_sha256: str,
 ) -> None:
+    if "--native-runtime-v2-json" in parameters:
+        _validate_representative_native_runtime_v2(parameters, wheel_sha256=wheel_sha256)
     expected_suite_id = workload.comparison_suite_id
     if (
         _single_parameter_value(parameters, "--benchmark-suite-id")
@@ -1470,6 +1493,35 @@ def _require_local_disk0_parameter(
         raise ValueError(f"{field_name} must be under /local_disk0") from exc
 
 
+def _validate_representative_native_runtime_v2(
+    parameters: Sequence[str], *, wheel_sha256: str,
+) -> None:
+    # vllm_smoke imports this module; defer the import until payload validation.
+    from document_kv_cache.vllm_smoke import VLLMNativeRuntimeBundleV2
+
+    raw = json.loads(_single_parameter_value(parameters, "--native-runtime-v2-json"))
+    if not isinstance(raw, Mapping):
+        raise ValueError("native-v2 representative runtime bundle must be an object")
+    bundle = VLLMNativeRuntimeBundleV2.from_record(raw)
+    if (
+        bundle.package_wheel_sha256 != wheel_sha256
+        or bundle.package_wheel_uri
+        != _single_parameter_value(parameters, "--package-wheel-uri")
+    ):
+        raise ValueError("native-v2 representative runtime must match the bootstrap wheel")
+    for name in (
+        "package_wheel", "runtime_lock", "patched_vllm_wheel",
+        "patched_flashinfer_wheel", "runtime_closure_manifest",
+    ):
+        uri = getattr(bundle, name + "_uri")
+        _require_persistent_databricks_path(
+            uri,
+            "native-v2 representative " + name,
+            expected_basename=Path(uri).name,
+            required_path_component=getattr(bundle, name + "_sha256"),
+        )
+
+
 def _validate_closed_representative_parameter_schema(
     workload: RepresentativeCanaryWorkload,
     parameters: Sequence[str],
@@ -1483,6 +1535,7 @@ def _validate_closed_representative_parameter_schema(
     allowed = set(_REPRESENTATIVE_COMMON_PARAMETER_FLAGS)
     if workload.serving_platform == "vllm":
         allowed.update(_REPRESENTATIVE_VLLM_PARAMETER_FLAGS)
+        allowed.add("--native-runtime-v2-json")
         if workload.arm_id != BASELINE_PREFILL_ARM:
             allowed.update(_REPRESENTATIVE_VLLM_HANDOFF_PARAMETER_FLAGS)
             if workload.arm_id == VANILLA_CANARY_ARM:

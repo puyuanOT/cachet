@@ -92,10 +92,15 @@ table.
 
 Report every preregistered comparison as `reference latency / treatment
 latency`, so a speedup above 1 means the treatment is faster. Include separate
-TTFT and TTC geometric speedups and pointwise 95% paired hierarchical-bootstrap
+TTFT and TTC geometric speedups and pointwise 95% paired crossed-bootstrap
 intervals. The 0.27.1 campaign has 13 rows: nine Baseline/Vanilla
 context-by-concurrency comparisons plus BF16/Q8, RAM/Disk, Unity Catalog/Disk,
 and A10G/L4.
+
+Resample deployments and shared example identities as crossed factors. Use one
+example multiset per dataset across every sampled block and retain paired
+repeats. State that these approximate intervals target deployment and example
+uncertainty; five deployments do not guarantee exact 95% coverage.
 
 | Treatment vs reference | Setting | TTFT geometric speedup | TTFT 95% CI | TTC geometric speedup | TTC 95% CI |
 | --- | --- | ---: | ---: | ---: | ---: |

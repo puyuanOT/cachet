@@ -180,7 +180,7 @@ def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 25315
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "15541597f0134ecb165a75805634bce8fdc560b66d97149c22344ee1acc810e4"
+        "b392cb9a468e6c6bb484f4b3276a64e322cfae0761c732cca539f6ec0bff91f7"
     )
     assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 17307
     payloads = _payloads()
@@ -189,7 +189,7 @@ def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     ).encode("utf-8")
     assert len(payload_bytes) == 116097
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "4f3cbfa73bf34d47e95ec811887a2ff088e76d654795cb042f273cca5f1aeff2"
+        "c948f9484f4724fa907e895d2ff3ef16b0732479d81ac71444abf6d98f40e67f"
     )
 
 
@@ -321,8 +321,8 @@ def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom()
         )
         for payload in production_payloads
     ]
-    assert min(production_sizes) == 8769
-    assert max(production_sizes) == 8841
+    assert min(production_sizes) == 8765
+    assert max(production_sizes) == 8837
     assert max(production_sizes) <= (
         databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES - 600
     )

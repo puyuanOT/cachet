@@ -317,7 +317,7 @@ def _synthetic_latency_summary(
     return _latency_closed_record(
         {
             "analysis": {
-                "bootstrap": "paired_hierarchical_deployment_block_and_example",
+                "bootstrap": "paired_crossed_deployment_block_and_example",
                 "bootstrap_draws": 20_000,
                 "confidence_intervals": "pointwise_95_percent",
                 "decision_mode": "estimation_only",
@@ -338,6 +338,23 @@ def _synthetic_latency_summary(
             "schema_version": campaign_finalizer.PUBLICATION_LATENCY_SCHEMA_VERSION,
         }
     )
+
+
+def test_latency_summary_rejects_superseded_nested_bootstrap_metadata() -> None:
+    summary = _synthetic_latency_summary(
+        collection_sha256="a" * 64,
+        execution_plan_sha256="b" * 64,
+    )
+    expected = {
+        "expected_collection_sha256": "a" * 64,
+        "expected_execution_plan_sha256": "b" * 64,
+    }
+    campaign_finalizer.validate_publication_latency_summary_record(summary, **expected)
+    summary["analysis"]["bootstrap"] = "paired_hierarchical_deployment_block_and_example"
+    summary = _latency_closed_record(summary)
+
+    with pytest.raises(ValueError, match="inference policy drift"):
+        campaign_finalizer.validate_publication_latency_summary_record(summary, **expected)
 
 
 def _synthetic_metric_summary(*, count: int, mean: float) -> dict[str, Any]:

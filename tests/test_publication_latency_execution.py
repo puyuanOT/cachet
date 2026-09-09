@@ -6,6 +6,7 @@ import math
 import os
 import random
 import shutil
+import statistics
 import subprocess
 import sys
 from copy import deepcopy
@@ -787,7 +788,7 @@ def test_storage_cache_policies_preserve_disk_ram_uc_semantics():
     )
 
 
-def test_hierarchical_bootstrap_resamples_examples_within_each_dataset():
+def test_crossed_bootstrap_resamples_examples_within_each_dataset():
     by_block = {
         block: {
             (dataset, f"{dataset}-{index:02d}"): (math.log(2.0), math.log(2.0))
@@ -803,7 +804,7 @@ def test_hierarchical_bootstrap_resamples_examples_within_each_dataset():
         dataset: sum(item[0] == dataset for item in sample)
         for dataset in SUPPORTED_V1_DATASETS
     } == {dataset: 32 for dataset in SUPPORTED_V1_DATASETS}
-    point, lower, upper = execution._paired_hierarchical_bootstrap(
+    point, lower, upper = execution._paired_crossed_bootstrap(
         by_block, draws=100, seed=7
     )
     assert (point, lower, upper) == pytest.approx((2.0, 2.0, 2.0))
@@ -819,10 +820,139 @@ def test_storage_bootstrap_keeps_two_identities_per_dataset_and_all_repeats():
         for block in range(1, 6)
     }
 
-    point, lower, upper = execution._paired_hierarchical_bootstrap(
+    point, lower, upper = execution._paired_crossed_bootstrap(
         by_block, draws=100, seed=11
     )
     assert (point, lower, upper) == pytest.approx((1.5, 1.5, 1.5))
+
+
+@pytest.mark.parametrize(("example_count", "repeats"), [(32, 2), (2, 32)])
+def test_crossed_bootstrap_shared_example_variance_is_not_divided_by_blocks(
+    monkeypatch, example_count, repeats
+):
+    by_block = {
+        block: {
+            (dataset, str(index)): (
+                float(-1 if index < example_count // 2 else 1),
+            ) * repeats
+            for dataset in SUPPORTED_V1_DATASETS
+            for index in range(example_count)
+        }
+        for block in range(1, 6)
+    }
+    sampled_logs = []
+    quantile = execution._type7_quantile
+
+    def capture_quantile(values, probability):
+        if not sampled_logs:
+            sampled_logs.extend(math.log(value) for value in values)
+        return quantile(values, probability)
+
+    monkeypatch.setattr(execution, "_type7_quantile", capture_quantile)
+    point, lower, upper = execution._paired_crossed_bootstrap(
+        by_block, draws=6000, seed=419
+    )
+
+    # Each fixed dataset stratum has empirical example variance one. Reusing
+    # the same examples in five blocks does not create five independent corpora.
+    expected_variance = 1 / (len(SUPPORTED_V1_DATASETS) * example_count)
+    assert statistics.pvariance(sampled_logs) == pytest.approx(
+        expected_variance, rel=0.08
+    )
+    assert point == 1.0
+    assert lower < point < upper
+
+
+def test_crossed_bootstrap_deployment_only_effect_resamples_matched_blocks(monkeypatch):
+    by_block = {
+        block: {
+            (dataset, str(index)): (float(block - 3),) * 2
+            for dataset in SUPPORTED_V1_DATASETS
+            for index in range(32)
+        }
+        for block in range(1, 6)
+    }
+    sampled_logs = []
+    quantile = execution._type7_quantile
+
+    def capture_quantile(values, probability):
+        if not sampled_logs:
+            sampled_logs.extend(math.log(value) for value in values)
+        return quantile(values, probability)
+
+    monkeypatch.setattr(execution, "_type7_quantile", capture_quantile)
+    point, lower, upper = execution._paired_crossed_bootstrap(
+        by_block, draws=6000, seed=419
+    )
+
+    # The five block effects have empirical variance two; the bootstrap mean
+    # of five independently sampled blocks therefore has variance two/five.
+    assert statistics.pvariance(sampled_logs) == pytest.approx(2 / 5, rel=0.08)
+    assert point == 1.0
+    assert lower < point < upper
+
+
+@pytest.mark.parametrize("drift", ["identity", "repeat_count", "unsupported_dataset"])
+def test_crossed_bootstrap_rejects_cross_block_membership_drift(drift):
+    by_block = {
+        block: {
+            (dataset, str(index)): (0.0, 0.0)
+            for dataset in SUPPORTED_V1_DATASETS
+            for index in range(32)
+        }
+        for block in range(1, 6)
+    }
+    if drift == "identity":
+        original = (SUPPORTED_V1_DATASETS[0], "0")
+        by_block[5][(SUPPORTED_V1_DATASETS[0], "replacement")] = by_block[5].pop(
+            original
+        )
+        match = "example identities differ across blocks"
+    elif drift == "repeat_count":
+        by_block[5] = {key: values * 2 for key, values in by_block[5].items()}
+        match = "paired repeat counts differ across blocks"
+    else:
+        for block in by_block.values():
+            block[("unsupported", "0")] = (0.0, 0.0)
+        match = "supported dataset strata"
+
+    with pytest.raises(ValueError, match=match):
+        execution._paired_crossed_bootstrap(by_block, draws=10, seed=419)
+
+
+def test_paired_log_ratios_reject_cross_block_repeat_identity_drift(monkeypatch):
+    parsed_results = {}
+    result_by_job = {}
+    for block in range(1, 6):
+        for arm in ("control", "treatment"):
+            job_id = f"{arm}-{block}"
+            parsed_results[job_id] = SimpleNamespace(
+                measurements=[
+                    SimpleNamespace(
+                        dataset=dataset,
+                        example_id=str(index),
+                        repeat_index=repeat + (2 if block == 5 else 0),
+                        ttft_seconds=2.0 if arm == "control" else 1.0,
+                        time_to_completion_seconds=4.0 if arm == "control" else 2.0,
+                    )
+                    for dataset in SUPPORTED_V1_DATASETS
+                    for index in range(32)
+                    for repeat in range(2)
+                ]
+            )
+            result_by_job[job_id] = {"benchmark_record": {"job_id": job_id}}
+    monkeypatch.setattr(
+        execution,
+        "benchmark_run_result_from_record",
+        lambda record, **_kwargs: parsed_results[record["job_id"]],
+    )
+    spec = {
+        "control_jobs": {block: f"control-{block}" for block in range(1, 6)},
+        "treatment_jobs": {block: f"treatment-{block}" for block in range(1, 6)},
+    }
+
+    with pytest.raises(ValueError, match="cross-block example/repeat membership drift"):
+        execution._paired_log_ratios_by_block(spec, result_by_job=result_by_job)
 
 
 def test_production_boundaries_require_nonrecord_qualification_capability():
