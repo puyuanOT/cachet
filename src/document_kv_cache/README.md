@@ -219,6 +219,9 @@ return as a production dependency.
 - `publication_handoff_artifacts.py` closes portable generated-KV bundles and
   stages their verified contents onto node-local storage without regenerating
   artifacts inside timed serving jobs.
+- `representative_handoff_artifacts.py` closes one immutable BF16 handoff set
+  for Full-prefix and Vanilla comparisons, verifies each deployment's staged
+  bytes, and binds the source, package, native runtime, and prepared inputs.
 - `publication_handoff_closure_coordinator.py` verifies Q8/BF16 handoff trees
   on governed CPU jobs and returns bounded, replayable closure records without
   mirroring durable KV payloads to the controller.
@@ -298,6 +301,11 @@ return as a production dependency.
 part of the public API.
 
 ## Internal Modules
+
+- `representative_runtime_qualification.py` checks BF16 native KV injection,
+  absolute-position RoPE, and the installed CUDA attention kernel before each
+  representative serving run. Its synthetic probe does not establish full-model
+  output equivalence or answer quality.
 
 - `gpu_qualification_sentinels.py` implements the fixed, package-owned GPU
   sentinel measurements accepted by the qualification executor; arbitrary

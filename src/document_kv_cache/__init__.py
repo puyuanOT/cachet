@@ -73,6 +73,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "publication_freeze",
         "publication_freeze_v2",
         "publication_handoff_artifacts",
+        "representative_handoff_artifacts",
         "publication_handoff_closure_coordinator",
         "publication_inputs",
         "publication_latency_handoff_generation",
@@ -102,7 +103,9 @@ _PUBLIC_SUBMODULES = frozenset(
         "workflow",
     }
 )
-_INTERNAL_SUBMODULES = frozenset({"gpu_qualification_sentinels"})
+_INTERNAL_SUBMODULES = frozenset({
+    "gpu_qualification_sentinels", "representative_runtime_qualification",
+})
 _DOCUMENT_ROOT_EXPORTS = {
     'AdmissionQueue': ('document_kv_cache.admission', 'AdmissionQueue'),
     'PreparedRequest': ('document_kv_cache.admission', 'PreparedRequest'),

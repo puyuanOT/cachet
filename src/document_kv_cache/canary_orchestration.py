@@ -1113,15 +1113,24 @@ def _validate_representative_canary_payload_contract(
         _REPRESENTATIVE_SPARK_PYTHON_TASK_KEYS,
         "representative task.spark_python_task",
     )
-    _require_persistent_databricks_path(
-        spark_python_task.get("python_file"),
-        "representative runner python_file",
-        expected_basename=workload.runner_basename,
-        required_path_component=workload.runner_sha256,
-    )
     parameters = _payload_string_sequence(
         spark_python_task.get("parameters"),
         "representative runner parameters",
+    )
+    runner_basename, runner_sha256 = workload.runner_basename, workload.runner_sha256
+    if "--representative-supplement-provenance-json" in parameters:
+        from document_kv_cache.databricks_vllm_smoke_job import (
+            REPRESENTATIVE_SUPPLEMENT_RUNNER_BASENAME,
+            REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256,
+        )
+        runner_basename, runner_sha256 = (
+            REPRESENTATIVE_SUPPLEMENT_RUNNER_BASENAME, REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256,
+        )
+    _require_persistent_databricks_path(
+        spark_python_task.get("python_file"),
+        "representative runner python_file",
+        expected_basename=runner_basename,
+        required_path_component=runner_sha256,
     )
     native_v2 = (
         workload.serving_platform == "vllm"
@@ -1312,6 +1321,29 @@ def _validate_representative_vllm_payload_parameters(
         )
     }
     expected_package_revisions["cachet-kv"] = f"wheel-sha256:{wheel_sha256}"
+    supplement = None
+    if "--representative-supplement-provenance-json" in parameters:
+        from document_kv_cache.databricks_vllm_smoke_job import REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256
+        from document_kv_cache.representative_handoff_artifacts import (
+            RepresentativeHandoffSourceV1,
+            RepresentativeSupplementProvenanceV1,
+        )
+        from document_kv_cache.vllm_smoke import VLLMNativeRuntimeBundleV2
+
+        supplement = RepresentativeSupplementProvenanceV1.from_record(json.loads(
+            _single_parameter_value(parameters, "--representative-supplement-provenance-json"),
+        ))
+        source = RepresentativeHandoffSourceV1.from_record(json.loads(
+            _single_parameter_value(parameters, "--representative-handoff-source-json"),
+        ))
+        native = VLLMNativeRuntimeBundleV2.from_record(json.loads(
+            _single_parameter_value(parameters, "--native-runtime-v2-json"),
+        ))
+        if supplement.runner_sha256 != REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256:
+            raise ValueError("supplement provenance runner differs from the versioned wrapper")
+        expected_package_revisions = {
+            **native.expected_package_revisions(), **supplement.software_identity_packages(source.bindings),
+        }
     expected_provenance: dict[str, object] = {
         "input_tokens_target": input_tokens,
         "canonical_model_id": REPRESENTATIVE_CANARY_MODEL_ID,
@@ -1331,6 +1363,8 @@ def _validate_representative_vllm_payload_parameters(
             workload.hardware_target
         )
     )
+    if supplement is not None:
+        expected_provenance["measurement_scopes"] = supplement.measurement_scopes
     for field_name, expected_value in expected_provenance.items():
         if provenance.get(field_name) != expected_value:
             raise ValueError(
@@ -1424,6 +1458,25 @@ def _validate_representative_vllm_handoff_parameters(
         "--benchmark-handoff-cache-method",
         "--benchmark-handoff-allow-legacy-artifact-contract",
     )
+    if "--representative-handoff-source-json" in parameters:
+        # The content wrapper imports the existing preparation validators here.
+        from document_kv_cache.representative_handoff_artifacts import RepresentativeHandoffSourceV1
+        from document_kv_cache.vllm_smoke import VLLMNativeRuntimeBundleV2
+
+        if any(flag in parameters for flag in handoff_flags):
+            raise ValueError("representative artifact consumption and generation are mutually exclusive")
+        source = RepresentativeHandoffSourceV1.from_record(json.loads(
+            _single_parameter_value(parameters, "--representative-handoff-source-json"),
+        ))
+        native = VLLMNativeRuntimeBundleV2.from_record(json.loads(
+            _single_parameter_value(parameters, "--native-runtime-v2-json"),
+        ))
+        source.validate_runtime(
+            context_tokens={"vllm-8k-64-v1": 8192, "vllm-16k-256-v1": 16384}[workload.profile_id],
+            arm_id=workload.arm_id, package_wheel_sha256=native.package_wheel_sha256,
+            runtime_closure_manifest_sha256=native.runtime_closure_manifest_sha256,
+        )
+        return
     if workload.arm_id == BASELINE_PREFILL_ARM:
         unexpected = tuple(flag for flag in handoff_flags if flag in parameters)
         if unexpected:
@@ -1536,6 +1589,8 @@ def _validate_closed_representative_parameter_schema(
     if workload.serving_platform == "vllm":
         allowed.update(_REPRESENTATIVE_VLLM_PARAMETER_FLAGS)
         allowed.add("--native-runtime-v2-json")
+        allowed.add("--representative-handoff-source-json")
+        allowed.add("--representative-supplement-provenance-json")
         if workload.arm_id != BASELINE_PREFILL_ARM:
             allowed.update(_REPRESENTATIVE_VLLM_HANDOFF_PARAMETER_FLAGS)
             if workload.arm_id == VANILLA_CANARY_ARM:
@@ -2704,7 +2759,17 @@ def _validate_shared_result_identity(records: Mapping[str, Mapping[str, Any]]) -
             raise ValueError(f"result {arm_id!r} suite identity differs from baseline")
         candidate = _required_mapping(records[arm_id]["experiment_manifest"], "experiment_manifest")
         for section in ("logical_workload", "decoding", "execution"):
-            if candidate.get(section) != baseline_manifest.get(section):
+            candidate_section = candidate.get(section)
+            baseline_section = baseline_manifest.get(section)
+            if section == "execution":
+                # Each producer binds its own resource sidecar. The ordinary
+                # record/merge validators authenticate these per-arm IDs;
+                # shared execution settings must still match exactly.
+                candidate_section = dict(_required_mapping(candidate_section, "execution"))
+                baseline_section = dict(_required_mapping(baseline_section, "execution"))
+                candidate_section.pop("resource_evidence_ids", None)
+                baseline_section.pop("resource_evidence_ids", None)
+            if candidate_section != baseline_section:
                 raise ValueError(
                     f"result {arm_id!r} manifest {section} differs from baseline"
                 )

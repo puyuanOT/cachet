@@ -771,7 +771,7 @@ _BUILTIN_METHOD_SPECS: tuple[MethodSpec, ...] = (
         handoff_topology=FULL_PREFIX_HANDOFF_TOPOLOGY,
         description=(
             "Reuse one KV artifact generated from the complete logical prefix. "
-            "This is an exact full-context cached-prefix control and is intentionally "
+            "This is a single contiguous offline-prefill KV method and is intentionally "
             "distinct from independently generated per-document segments."
         ),
     ),

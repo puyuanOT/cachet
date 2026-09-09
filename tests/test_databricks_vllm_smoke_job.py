@@ -60,8 +60,10 @@ REPRESENTATIVE_WHEEL_URI = (
 def test_payload_cache_option_is_appended_to_preserve_positional_job_config_api():
     field_names = [field.name for field in fields(DatabricksVLLMSmokeJobConfig)]
 
-    assert field_names[-3:] == [
-        "benchmark_prewarm_payload_cache", "native_runtime_v2", "submission_attempt_id"
+    assert field_names[-5:] == [
+        "benchmark_prewarm_payload_cache", "native_runtime_v2", "submission_attempt_id",
+        "representative_handoff_source",
+        "representative_supplement_provenance",
     ]
     assert field_names.index("benchmark_cache_runtime_prompt") == (
         field_names.index("benchmark_prewarm_cache_prefix") + 1

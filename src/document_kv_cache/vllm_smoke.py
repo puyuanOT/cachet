@@ -10,6 +10,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -39,9 +40,14 @@ from document_kv_cache.benchmark_handoffs import (
 )
 from document_kv_cache.benchmark_runner import (
     PREFIX_CACHE_SALT_MODES,
+    load_benchmark_jsonl,
     load_v1_jsonl_suite,
 )
 from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_CANARY_MODEL_ID,
+    REPRESENTATIVE_CANARY_MODEL_REVISION,
+    VANILLA_CANARY_ARM,
+    _logical_sample_digest,
     REPRESENTATIVE_VLLM_PACKAGE_PINS,
     benchmark_json_mapping_to_record,
     benchmark_manifest_provenance_runner_args,
@@ -90,10 +96,17 @@ from document_kv_cache.model_profiles import (
     layout_for_model,
 )
 from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PACKAGE_VERSION,
     FLASHINFER_PATCHED_WHEEL_SHA256,
 )
 from document_kv_cache.models import CacheGenerationMethod
+from document_kv_cache import representative_handoff_artifacts as representative_artifacts
+from document_kv_cache.representative_handoff_artifacts import (
+    RepresentativeHandoffSourceV1,
+    RepresentativeSupplementProvenanceV1,
+)
 from document_kv_cache.publication_handoff_artifacts import (
+    _closed_record_sha256,
     PUBLICATION_HANDOFF_STAGING_ATTESTATION_FILENAME,
     read_publication_latency_handoff_bundle,
     stage_publication_latency_handoff_bundle,
@@ -114,9 +127,11 @@ from document_kv_cache.runtime_telemetry import (
     bind_runtime_resource_evidence_record_file,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    _lock_projection,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_PATCHED_WHEEL_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_FILENAME,
 )
 from document_kv_cache._isolated_runtime import (
     ISOLATED_RUNTIME_PUBLIC_EXECUTION_TIMEOUT_SECONDS,
@@ -609,6 +624,21 @@ class VLLMNativeRuntimeBundleV2:
             raise ValueError("unknown native-v2 runtime artifact")
         return Path(_cluster_file_path(getattr(self, field_name)))
 
+    def expected_package_revisions(self) -> dict[str, str]:
+        """Versions bound by the exact native lock and direct patched wheels.
+
+        These are expected versions. The native installer verifies the actual
+        distribution set before the runner records successful runtime evidence.
+        """
+        path = Path(__file__).with_name("runtime_locks") / VLLM_RUNTIME_BASE_LOCK_FILENAME
+        content = path.read_bytes()
+        if sha256(content).hexdigest() != self.runtime_lock_sha256:
+            raise ValueError("packaged native base lock SHA-256 differs")
+        versions, _hashes = _lock_projection(content)
+        if len(versions) != 195 or "vllm" in versions or "flashinfer-python" in versions:
+            raise ValueError("native base distribution membership differs")
+        return {**versions, "vllm": VLLM_PACKAGE_VERSION, "flashinfer-python": FLASHINFER_PACKAGE_VERSION}
+
 
 @dataclass(frozen=True)
 class VLLMSmokeBenchmarkConfig:
@@ -685,8 +715,16 @@ class VLLMSmokeBenchmarkConfig:
     generation_seed: int | None = None
     payload_cache_prime_target_count: int | None = None
     native_runtime_v2: VLLMNativeRuntimeBundleV2 | None = None
+    representative_handoff_source: RepresentativeHandoffSourceV1 | None = None
+    representative_supplement_provenance: RepresentativeSupplementProvenanceV1 | None = None
 
     def __post_init__(self) -> None:
+        supplement = self.representative_supplement_provenance
+        if supplement is not None:
+            if not isinstance(supplement, RepresentativeSupplementProvenanceV1):
+                raise TypeError("representative_supplement_provenance must be RepresentativeSupplementProvenanceV1")
+            if not self.representative_canary or self.representative_handoff_source is None or self.native_runtime_v2 is None:
+                raise ValueError("supplement provenance requires representative immutable native-v2 consumption")
         if not self.benchmark_id:
             raise ValueError("benchmark_id must be non-empty")
         if self.output_dir is None:
@@ -887,7 +925,7 @@ class VLLMSmokeBenchmarkConfig:
                 "benchmark_manifest_provenance.tokenizer_revision must match tokenizer_revision"
             )
         object.__setattr__(self, "benchmark_manifest_provenance", provenance)
-        if "resource" in provenance.get("measurement_scopes", ()):
+        if "resource" in provenance.get("measurement_scopes", ()) and supplement is None:
             _resource_software_identity_from_package_revisions(
                 provenance.get("package_revisions", {})
             )
@@ -944,6 +982,8 @@ class VLLMSmokeBenchmarkConfig:
         if self.is_representative_submission:
             provenance = _resolved_representative_vllm_provenance(self, provenance)
             object.__setattr__(self, "benchmark_manifest_provenance", provenance)
+            if supplement is not None:
+                _resource_software_identity_from_package_revisions(provenance["package_revisions"])
         if (
             "input_tokens_target" in provenance
             and provenance.get("tokenizer_revision", self.tokenizer_revision) is None
@@ -1308,6 +1348,32 @@ class VLLMSmokeBenchmarkConfig:
             native_runtime, VLLMNativeRuntimeBundleV2
         ):
             raise TypeError("native_runtime_v2 must be a VLLMNativeRuntimeBundleV2")
+        source = self.representative_handoff_source
+        if source is not None:
+            if not isinstance(source, RepresentativeHandoffSourceV1):
+                raise TypeError("representative_handoff_source must be RepresentativeHandoffSourceV1")
+            if not self.is_representative_submission or native_runtime is None:
+                raise ValueError("representative artifact consumption requires representative native-v2")
+            if self.handoff_generation is not None or self.stages_publication_handoffs or self.uses_publication_latency_schedule:
+                raise ValueError("representative artifact consumption and other handoff modes are mutually exclusive")
+            assert isinstance(self.representative_workload_profile, VLLMRepresentativeWorkloadProfile)
+            source.validate_runtime(
+                context_tokens=self.representative_workload_profile.input_tokens_target,
+                arm_id=str(self.benchmark_arm_specs[0]["arm_id"]),
+                package_wheel_sha256=native_runtime.package_wheel_sha256,
+                runtime_closure_manifest_sha256=native_runtime.runtime_closure_manifest_sha256,
+            )
+            if self.model_quantization is not None or self.prewarm_payload_cache or self.data_parallel_size != 1:
+                raise ValueError("representative artifact consumption requires the fixed BF16 cold profile")
+            if (self.model_id, self.model_revision, self.tokenizer_revision) != (
+                REPRESENTATIVE_CANARY_MODEL_ID, REPRESENTATIVE_CANARY_MODEL_REVISION,
+                REPRESENTATIVE_CANARY_MODEL_REVISION,
+            ) or (self.runtime_identity is not None and self.runtime_identity.lora_id != "base"):
+                raise ValueError("representative artifact consumption requires the pinned base Qwen model")
+            if tuple(spec.split("=", 1)[0] for spec in self.dataset_specs) != ("hotpotqa",):
+                raise ValueError("representative artifact consumption requires exactly one HotpotQA input")
+            if not source.local_path("local_stage_root").is_relative_to(self.local_root):
+                raise ValueError("representative stage must be inside local_root")
         if native_runtime is not None and self.package_install_spec is not None:
             configured_package = os.path.normpath(
                 _cluster_file_path(self.package_install_spec)
@@ -1327,6 +1393,10 @@ class VLLMSmokeBenchmarkConfig:
     @property
     def local_dir(self) -> Path:
         return self.local_root / f"document-kv-vllm-smoke-{self.benchmark_id}"
+
+    @property
+    def representative_handoff_staging_attestation_path(self) -> Path:
+        return self.output_dir / representative_artifacts.REPRESENTATIVE_HANDOFF_STAGING_FILENAME
 
     @property
     def hf_cache_dir(self) -> Path:
@@ -1487,6 +1557,9 @@ def _resolved_representative_vllm_provenance(
         config.handoff_generation is not None
         and config.handoff_generation.cache_method
         == CacheGenerationMethod.VANILLA_PREFILL.value
+    ) or (
+        config.representative_handoff_source is not None
+        and config.representative_handoff_source.arm_id == VANILLA_CANARY_ARM
     )
     if pre_rope:
         layout = layout_for_model(
@@ -1508,12 +1581,21 @@ def _resolved_representative_vllm_provenance(
         )
     }
     package_revisions["cachet-kv"] = f"wheel-sha256:{wheel_sha256}"
+    supplement = config.representative_supplement_provenance
+    if supplement is not None:
+        assert config.native_runtime_v2 is not None
+        assert config.representative_handoff_source is not None
+        package_revisions = {
+            **config.native_runtime_v2.expected_package_revisions(),
+            **supplement.software_identity_packages(config.representative_handoff_source.bindings),
+        }
     record = dict(provenance)
     supplied_package_revisions = dict(record.pop("package_revisions", {}))
     package_conflicts = {
         package
         for package, revision in supplied_package_revisions.items()
-        if package in package_revisions and package_revisions[package] != revision
+        if (package in package_revisions and package_revisions[package] != revision)
+        or (supplement is not None and package not in package_revisions)
     }
     if package_conflicts:
         raise ValueError(
@@ -1550,6 +1632,8 @@ def _resolved_representative_vllm_provenance(
         "package_revisions": package_revisions,
     }
     expected.update(representative_vllm_environment_provenance(config.hardware_target))
+    if supplement is not None:
+        expected["measurement_scopes"] = supplement.measurement_scopes
     resolved_rope = resolved_layout_rope_provenance(layout)
     expected.update(resolved_rope)
     conflicts = {
@@ -1810,6 +1894,13 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     metadata["vllm_runtime_patch_closure"] = verify_vllm_runtime_patch_closure(config)
     metadata.update(installed_versions(config.venv_python))
     metadata["installed_package_freeze"] = installed_package_freeze(config.venv_python)
+    if config.representative_supplement_provenance is not None:
+        verification = verify_representative_supplement_provenance(
+            config, runtime_attestation=cast(Mapping[str, Any], metadata["native_runtime_v2_attestation"]),
+            installed_freeze=cast(Sequence[str], metadata["installed_package_freeze"]),
+        )
+        write_json(config.output_dir / "representative-supplement-provenance-verification.json", verification)
+        metadata["representative_supplement_provenance_verification"] = verification
     metadata["cuda_wheel_env_paths"] = cuda_wheel_env_paths(config)
     write_json(config.metadata_path, metadata)
     # Multi mode must import both vLLM and LMCache cleanly (ABI check) before boot.
@@ -1823,7 +1914,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
 
     dataset_paths = benchmark_dataset_paths(config)
     dataset_paths = prepare_publication_latency_inputs(config, dataset_paths)
-    dataset_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
+    dataset_paths = prepare_benchmark_handoff_inputs(config, dataset_paths)
     config = _config_with_generated_handoff_offline_costs(config)
     metadata["benchmark_arm_specs"] = [
         benchmark_json_mapping_to_record(spec) for spec in config.benchmark_arm_specs
@@ -1853,6 +1944,10 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         metadata["publication_handoff_staging_attestation_path"] = str(
             config.publication_handoff_staging_attestation_copy_path
         )
+    if config.representative_handoff_source is not None:
+        metadata["representative_handoff_staging_attestation_path"] = str(
+            config.representative_handoff_staging_attestation_path
+        )
     if config.prewarm_cache_prefix:
         metadata["prewarm_cache_prefix_path"] = str(config.prewarm_cache_prefix_path)
     if config.prewarm_payload_cache:
@@ -1862,6 +1957,8 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         )
     write_json(config.metadata_path, metadata)
 
+    if config.representative_supplement_provenance is not None:
+        run_representative_premeasurement_qualification(config)
     server = start_vllm_server(config, config.venv_python, config.server_log_path)
     runtime_telemetry = RuntimeTelemetrySampler(
         config.runtime_telemetry_path,
@@ -2017,6 +2114,10 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         ),
         "requires_kv_transfer_params": config.requires_prepared_handoff_metadata,
         "generates_prepared_handoffs": config.handoff_generation is not None,
+        **({"representative_handoff_source": config.representative_handoff_source.to_record()}
+           if config.representative_handoff_source is not None else {}),
+        **({"representative_supplement_provenance": config.representative_supplement_provenance.to_record()}
+           if config.representative_supplement_provenance is not None else {}),
         "benchmark_handoff_generation": (
             None
             if config.handoff_generation is None
@@ -2519,6 +2620,26 @@ def prepared_benchmark_handoff_coverage_record(
 def _prepared_generation_topology_attestation(
     config: VLLMSmokeBenchmarkConfig,
 ) -> dict[str, Any] | None:
+    source = config.representative_handoff_source
+    if source is not None:
+        if source.arm_id == BASELINE_PREFILL_ARM:
+            return None
+        manifest = source.read_manifest()
+        attestation = json.loads(config.representative_handoff_staging_attestation_path.read_bytes())
+        if (
+            attestation.get("record_type") != representative_artifacts.REPRESENTATIVE_HANDOFF_STAGING_RECORD_TYPE
+            or type(attestation.get("schema_version")) is not int or attestation["schema_version"] != 1
+            or attestation.get("closed_record_sha256") != _closed_record_sha256(attestation)
+            or attestation.get("bundle_closed_record_sha256") != source.bundle_closed_record_sha256
+            or attestation.get("bindings") != source.bindings.to_record()
+            or attestation.get("immutable_files") != manifest["files"]
+            or attestation.get("portable_identity_sha256") != manifest["portable_identity_sha256"]
+            or attestation.get("contexts") != manifest["contexts"]
+            or attestation.get("staged_root") != str(source.local_path("local_stage_root"))
+        ):
+            raise ValueError("representative staging topology binding differs")
+        context = next(c for c in manifest["contexts"] if c["context_tokens"] == source.context_tokens)
+        return validate_handoff_topology_attestation(context["methods"][source.arm_id]["topology_attestation"])
     if config.handoff_generation is None:
         return None
     try:
@@ -2683,6 +2804,165 @@ def write_prompt_token_budget_jsonl(
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def verify_representative_supplement_provenance(
+    config: VLLMSmokeBenchmarkConfig, *, runtime_attestation: Mapping[str, Any],
+    installed_freeze: Sequence[str],
+) -> dict[str, Any]:
+    """Bind real source readback, bootstrap observation and installed runtime."""
+    from document_kv_cache.databricks_vllm_smoke_job import (
+        REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256,
+        REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256_ENV,
+    )
+    from document_kv_cache.gpu_qualification_v2 import validate_gpu_qualification_v2_runtime_attestation
+    from document_kv_cache.publication_handoff_closure_coordinator import _verify_source_closure
+
+    supplement, source, native = (
+        config.representative_supplement_provenance, config.representative_handoff_source,
+        config.native_runtime_v2,
+    )
+    if supplement is None or source is None or native is None:
+        raise ValueError("supplement provenance verification requires all closed configs")
+    observed_runner = os.environ.get(REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256_ENV)
+    if observed_runner != supplement.runner_sha256 or observed_runner != REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256:
+        raise ValueError("supplement requires its verified executing bootstrap runner")
+    _verify_source_closure({
+        "source_closure_uri": supplement.source_closure_uri,
+        "cachet_source_tree_sha256": supplement.source_tree_sha256,
+        "source_revision": source.bindings.source_commit,
+        "runtime_lock_sha256": native.runtime_lock_sha256,
+        "patched_vllm_wheel_sha256": native.patched_vllm_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": native.patched_flashinfer_wheel_sha256,
+        "runtime_closure_manifest_sha256": native.runtime_closure_manifest_sha256,
+        "package_wheel_sha256": native.package_wheel_sha256,
+    })
+    validate_gpu_qualification_v2_runtime_attestation(runtime_attestation)
+    direct = {
+        name: (native.local_path(artifact).resolve().as_uri(), getattr(native, artifact + "_sha256"))
+        for name, artifact in (
+            ("vllm", "patched_vllm_wheel"), ("flashinfer-python", "patched_flashinfer_wheel"),
+            ("cachet-kv", "package_wheel"),
+        )
+    }
+    if runtime_attestation["vllm_direct_url"] != direct["vllm"][0] or runtime_attestation["flashinfer_direct_url"] != direct["flashinfer-python"][0]:
+        raise ValueError("supplement native installation origins differ")
+    expected = native.expected_package_revisions()
+    observed: set[str] = set()
+    for line in installed_freeze:
+        name, separator, value = line.partition(" @ ")
+        if not separator:
+            name, separator, value = line.partition("==")
+        name = re.sub(r"[-_.]+", "-", name).lower()
+        if not separator or name in observed:
+            raise ValueError("supplement installed freeze contains ambiguous distributions")
+        observed.add(name)
+        if name in direct:
+            uri, digest = direct[name]
+            if separator != " @ " or value not in {uri, uri + "#sha256=" + digest}:
+                raise ValueError("supplement installed direct wheel origin differs")
+        elif separator != "==" or expected.get(name) != value:
+            raise ValueError("supplement installed package version differs from native closure")
+    if observed != set(expected) | {"cachet-kv"}:
+        raise ValueError("supplement installed distribution membership differs")
+    result = {
+        "record_type": "cachet.representative_supplement_provenance_verification.v1",
+        "source": source.to_record(), "provenance": supplement.to_record(),
+        "observed_runner_sha256": observed_runner,
+        "native_runtime_attestation_sha256": sha256(json.dumps(
+            dict(runtime_attestation), sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest(),
+        "installed_package_freeze": list(installed_freeze),
+        "verified_runtime_package_versions": expected,
+    }
+    result["closed_record_sha256"] = _closed_record_sha256(result)
+    return result
+
+
+def run_representative_premeasurement_qualification(config: VLLMSmokeBenchmarkConfig) -> None:
+    """Run the real bounded GPU qualification before creating the serving engine."""
+    from document_kv_cache.representative_runtime_qualification import validate_representative_runtime_qualification_record
+
+    source, supplement, native = (
+        config.representative_handoff_source, config.representative_supplement_provenance,
+        config.native_runtime_v2,
+    )
+    if source is None or supplement is None or native is None:
+        raise ValueError("representative qualification requires verified supplement inputs")
+    manifest = source.read_manifest()
+    stage = json.loads(config.representative_handoff_staging_attestation_path.read_bytes())
+    if (
+        stage.get("closed_record_sha256") != _closed_record_sha256(stage)
+        or stage.get("bundle_closed_record_sha256") != source.bundle_closed_record_sha256
+        or stage.get("record_type") != "cachet.representative_handoff_staging.v1"
+        or stage.get("bindings") != source.bindings.to_record()
+        or stage.get("contexts") != manifest["contexts"]
+        or stage.get("immutable_files") != manifest["files"]
+        or stage.get("portable_identity_sha256") != manifest["portable_identity_sha256"]
+        or stage.get("staged_root") != str(source.local_path("local_stage_root"))
+    ):
+        raise ValueError("representative qualification staging identity differs")
+    bindings = {
+        "benchmark_id": config.benchmark_id, "runtime_id": config.benchmark_runtime_id,
+        "arm_id": source.arm_id, "context_tokens": source.context_tokens,
+        "source_commit": source.bindings.source_commit,
+        "source_tree_sha256": supplement.source_tree_sha256, "runner_sha256": supplement.runner_sha256,
+        "package_wheel_sha256": native.package_wheel_sha256,
+        "native_runtime_closure_sha256": native.runtime_closure_manifest_sha256,
+        "patched_vllm_wheel_sha256": native.patched_vllm_wheel_sha256,
+        "patched_flashinfer_wheel_sha256": native.patched_flashinfer_wheel_sha256,
+        "runtime_lock_sha256": native.runtime_lock_sha256,
+        "prepared_input_bundle_sha256": source.bindings.prepared_input_bundle_sha256,
+        "bundle_closed_record_sha256": source.bundle_closed_record_sha256,
+        "stage_attestation_closed_record_sha256": stage["closed_record_sha256"],
+    }
+    binding_path = config.output_dir / "representative-runtime-qualification-bindings.json"
+    output_path = config.output_dir / "representative-runtime-qualification.json"
+    write_json(binding_path, bindings)
+    _run_checked_text_subprocess_with_term_cleanup(
+        [str(config.venv_python), "-I", "-B", "-m", "document_kv_cache.representative_runtime_qualification",
+         "--bindings-json", str(binding_path), "--output-json", str(output_path)],
+        timeout_seconds=300, environment=server_env(config), cwd=config.local_dir,
+    )
+    record = json.loads(output_path.read_bytes())
+    validate_representative_runtime_qualification_record(record, expected_bindings=bindings)
+
+
+def prepare_benchmark_handoff_inputs(
+    config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path],
+) -> dict[str, Path]:
+    if config.representative_handoff_source is not None:
+        return prepare_representative_handoff_inputs(config, dataset_paths)
+    return prepare_generated_benchmark_handoffs(config, dataset_paths)
+
+
+def prepare_representative_handoff_inputs(
+    config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path],
+) -> dict[str, Path]:
+    """Verify and stage one immutable set before coverage/token-budget probes."""
+    source = config.representative_handoff_source
+    if source is None:
+        return dataset_paths
+    if config.handoff_generation is not None:
+        raise ValueError("representative artifact consumption forbids regeneration")
+    manifest = source.read_manifest()
+    if manifest["example_count"] != 32:
+        raise ValueError("representative publication candidates require exactly 32 examples")
+    contexts = [c for c in manifest["contexts"] if c["context_tokens"] == source.context_tokens]
+    if len(contexts) != 1 or set(dataset_paths) != {"hotpotqa"}:
+        raise ValueError("representative source context/dataset membership differs")
+    examples = load_benchmark_jsonl(dataset_paths["hotpotqa"], dataset="hotpotqa", require_dataset=True)
+    if _logical_sample_digest(examples) != contexts[0]["logical_sample_digest"]:
+        raise ValueError("representative source differs from frozen logical inputs")
+    staged = representative_artifacts.stage_representative_handoff_bundle(
+        manifest, source_root=source.local_path("source_root"),
+        local_nvme_dir=source.local_path("local_stage_root"), expected_bindings=source.bindings,
+        expected_bundle_sha256=source.bundle_closed_record_sha256,
+    )
+    _persist_publication_handoff_staging_attestation(
+        staged.attestation_path, config.representative_handoff_staging_attestation_path,
+    )
+    return {"hotpotqa": staged.dataset_paths[(source.context_tokens, source.arm_id)]}
 
 
 def prepare_generated_benchmark_handoffs(
@@ -6499,6 +6779,8 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
             "runtime. Required by publication evidence runs."
         ),
     )
+    parser.add_argument("--representative-handoff-source-json")
+    parser.add_argument("--representative-supplement-provenance-json")
     parser.add_argument(
         "--dataset",
         action="append",
@@ -6593,6 +6875,10 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     args = parser.parse_args(argv)
+    if args.representative_handoff_source_json is not None and any(
+        value.startswith("--benchmark-handoff-") for value in (sys.argv[1:] if argv is None else argv)
+    ):
+        parser.error("representative artifact consumption forbids generator flags")
     output_dir = Path(_cluster_file_path(args.output_dir))
     handoff_generation = _handoff_generation_config_from_args(
         args, output_dir=output_dir
@@ -6633,6 +6919,18 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         )
     )
     return VLLMSmokeBenchmarkConfig(
+        representative_supplement_provenance=(
+            None if args.representative_supplement_provenance_json is None
+            else RepresentativeSupplementProvenanceV1.from_record(_json_object_from_cli(
+                args.representative_supplement_provenance_json, "--representative-supplement-provenance-json",
+            ))
+        ),
+        representative_handoff_source=(
+            None if args.representative_handoff_source_json is None
+            else RepresentativeHandoffSourceV1.from_record(_json_object_from_cli(
+                args.representative_handoff_source_json, "--representative-handoff-source-json",
+            ))
+        ),
         benchmark_id=args.benchmark_id,
         benchmark_suite_id=args.benchmark_suite_id,
         benchmark_runtime_id=args.benchmark_runtime_id,

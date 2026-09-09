@@ -419,7 +419,9 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
 
     assert public_modules
     assert set(public_modules) <= package_modules
-    assert internal_modules == ["gpu_qualification_sentinels"]
+    assert internal_modules == [
+        "gpu_qualification_sentinels", "representative_runtime_qualification",
+    ]
     assert set(internal_modules) <= package_modules
     assert set(public_modules).isdisjoint(internal_modules)
     assert compatibility_only_modules == ["scheduler"]

@@ -236,6 +236,8 @@ def test_publication_options_are_appended_to_preserve_positional_config_api():
         "generation_seed",
         "payload_cache_prime_target_count",
         "native_runtime_v2",
+        "representative_handoff_source",
+        "representative_supplement_provenance",
     ]
 
     assert field_names == [*legacy_fields, *publication_fields]

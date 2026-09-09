@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from hashlib import sha256
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +35,10 @@ from document_kv_cache.databricks_job import (
     _validated_databricks_task_max_retries,
     build_single_node_gpu_cluster,
 )
+from document_kv_cache.representative_handoff_artifacts import (
+    RepresentativeHandoffSourceV1,
+    RepresentativeSupplementProvenanceV1,
+)
 from document_kv_cache.vllm_smoke import (
     BENCHMARK_ARM_IDS,
     DEFAULT_LOCAL_ROOT,
@@ -52,6 +58,8 @@ from document_kv_cache.vllm_smoke import (
 from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES
 from document_kv_cache.databricks_runs import bind_databricks_run_idempotency_token
 from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_CANARY_MODEL_REVISION,
+    VANILLA_CANARY_ARM,
     REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE,
     REPRESENTATIVE_VLLM_PACKAGE_PINS,
     benchmark_json_mapping_to_record,
@@ -63,6 +71,7 @@ from document_kv_cache.canary_orchestration import (
     validated_representative_wheel_binding,
     validated_benchmark_arm_specs,
     validated_benchmark_manifest_provenance,
+    _require_persistent_databricks_path,
 )
 from document_kv_cache.model_profiles import (
     QWEN3_4B_ROPE_ROTARY_DIM,
@@ -206,11 +215,51 @@ if __name__ == "__main__":
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
 ).replace("__GPU_RUNTIME_PYTHONWARNINGS__", GPU_RUNTIME_PYTHONWARNINGS)
 
+REPRESENTATIVE_SUPPLEMENT_RUNNER_BASENAME = "representative-vllm-immutable-runner-v1.py"
+REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256_ENV = "DOCUMENT_KV_REPRESENTATIVE_RUNNER_SHA256"
+# Preserve the legacy wrapper byte-for-byte. This successor verifies the outer
+# compiled Databricks script before bootstrap creates its isolated -c child.
+REPRESENTATIVE_SUPPLEMENT_RUNNER_SCRIPT = VLLM_SMOKE_RUNNER_SCRIPT.replace(
+    '    remaining_args = _install_package_wheel(sys.argv[1:])',
+    '''    import json
+    import stat
+    if "DOCUMENT_KV_REPRESENTATIVE_RUNNER_SHA256" in os.environ:
+        raise ValueError("inherited representative runner verification is forbidden")
+    _parser = argparse.ArgumentParser(add_help=False)
+    _parser.add_argument("--representative-supplement-provenance-json", required=True)
+    _args, _remaining = _parser.parse_known_args(sys.argv[1:])
+    _provenance = json.loads(_args.representative_supplement_provenance_json)
+    _expected = _provenance["runner_sha256"]
+    _runner_path = os.path.abspath(sys._getframe().f_code.co_filename)
+    if os.path.islink(_runner_path):
+        raise ValueError("representative runner must not be a symlink")
+    _fd = os.open(_runner_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(_fd, "rb") as _stream:
+        _before = os.fstat(_stream.fileno())
+        if not stat.S_ISREG(_before.st_mode):
+            raise ValueError("representative runner must be a regular file")
+        _actual = hashlib.sha256(_stream.read()).hexdigest()
+        _after = os.fstat(_stream.fileno())
+    if (_before.st_size, _before.st_mtime_ns, _before.st_ctime_ns) != (
+        _after.st_size, _after.st_mtime_ns, _after.st_ctime_ns
+    ) or not hmac.compare_digest(_actual, _expected):
+        raise ValueError("representative executing runner SHA-256 differs")
+    os.environ["DOCUMENT_KV_REPRESENTATIVE_RUNNER_SHA256"] = _actual
+    remaining_args = _install_package_wheel(sys.argv[1:])''',
+)
+REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256 = sha256(
+    REPRESENTATIVE_SUPPLEMENT_RUNNER_SCRIPT.encode("utf-8")
+).hexdigest()
+
 __all__ = [
     "DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME",
     "DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY",
     "DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE",
     "VLLM_SMOKE_RUNNER_SCRIPT",
+    "REPRESENTATIVE_SUPPLEMENT_RUNNER_BASENAME",
+    "REPRESENTATIVE_SUPPLEMENT_RUNNER_SCRIPT",
+    "REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256",
+    "REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256_ENV",
     "DatabricksVLLMSmokeJobConfig",
     "build_databricks_vllm_smoke_run_submit_payload",
     "write_databricks_vllm_smoke_run_submit_json",
@@ -288,8 +337,23 @@ class DatabricksVLLMSmokeJobConfig:
     benchmark_prewarm_payload_cache: bool = False
     native_runtime_v2: VLLMNativeRuntimeBundleV2 | None = None
     submission_attempt_id: str | None = None
+    representative_handoff_source: RepresentativeHandoffSourceV1 | None = None
+    representative_supplement_provenance: RepresentativeSupplementProvenanceV1 | None = None
 
     def __post_init__(self) -> None:
+        supplement = self.representative_supplement_provenance
+        if supplement is not None:
+            if not isinstance(supplement, RepresentativeSupplementProvenanceV1):
+                raise TypeError("representative_supplement_provenance must be RepresentativeSupplementProvenanceV1")
+            if not self.representative_canary or self.representative_handoff_source is None or self.native_runtime_v2 is None:
+                raise ValueError("supplement provenance requires representative immutable native-v2 consumption")
+            if supplement.runner_sha256 != REPRESENTATIVE_SUPPLEMENT_RUNNER_SHA256:
+                raise ValueError("supplement runner SHA-256 must match its versioned wrapper")
+            _require_persistent_databricks_path(
+                self.runner_python_file, "supplement runner",
+                expected_basename=REPRESENTATIVE_SUPPLEMENT_RUNNER_BASENAME,
+                required_path_component=supplement.runner_sha256,
+            )
         if not self.benchmark_id:
             raise ValueError("benchmark_id must be non-empty")
         if not self.output_dir:
@@ -348,6 +412,28 @@ class DatabricksVLLMSmokeJobConfig:
                 "native-v2 representative submissions require both a runtime bundle "
                 "and submission_attempt_id"
             )
+        if self.representative_handoff_source is not None:
+            source = self.representative_handoff_source
+            if not isinstance(source, RepresentativeHandoffSourceV1):
+                raise TypeError("representative_handoff_source must be RepresentativeHandoffSourceV1")
+            if not self.representative_canary or self.native_runtime_v2 is None:
+                raise ValueError("representative artifact consumption requires representative native-v2")
+            if (
+                self.benchmark_handoff_generator_factory is not None
+                or self.benchmark_handoff_output_dir is not None
+                or self.benchmark_handoff_cache_method is not None
+                or self.benchmark_handoff_segment_per_document
+                or self.benchmark_handoff_limit is not None
+                or not self.benchmark_handoff_require_artifact_contract
+                or self.benchmark_handoff_dtype != "bfloat16"
+                or self.benchmark_handoff_align_bytes != 4096
+                or self.benchmark_handoff_generation_timeout_seconds != 1800.0
+            ):
+                raise ValueError("representative artifact consumption and generation are mutually exclusive")
+            if self.model_quantization is not None or self.benchmark_prewarm_payload_cache:
+                raise ValueError("representative artifact consumption requires the fixed BF16 cold profile")
+            if self.runtime_identity is not None and self.runtime_identity.lora_id != "base":
+                raise ValueError("representative artifact consumption requires the base model")
         if self.model_id is not None and not self.model_id.strip():
             raise ValueError("model_id must be non-empty when provided")
         for field_name in ("model_revision", "tokenizer_revision"):
@@ -683,6 +769,19 @@ class DatabricksVLLMSmokeJobConfig:
                 self.wheel_sha256,
             )
             _validate_representative_vllm_workload(self)
+            if self.representative_handoff_source is not None:
+                assert self.native_runtime_v2 is not None
+                assert isinstance(self.representative_workload_profile, VLLMRepresentativeWorkloadProfile)
+                if (self.model_revision, self.tokenizer_revision) != (
+                    REPRESENTATIVE_CANARY_MODEL_REVISION, REPRESENTATIVE_CANARY_MODEL_REVISION,
+                ):
+                    raise ValueError("representative artifact consumption requires the frozen Qwen revisions")
+                self.representative_handoff_source.validate_runtime(
+                    context_tokens=self.representative_workload_profile.input_tokens_target,
+                    arm_id=str(self.benchmark_arm_specs[0]["arm_id"]),
+                    package_wheel_sha256=self.native_runtime_v2.package_wheel_sha256,
+                    runtime_closure_manifest_sha256=self.native_runtime_v2.runtime_closure_manifest_sha256,
+                )
         if self.runtime_identity is not None:
             if not isinstance(self.runtime_identity, RuntimeIdentity):
                 raise TypeError("runtime_identity must be a RuntimeIdentity or None")
@@ -827,7 +926,10 @@ def _representative_vllm_provenance(
             f"representative canary model_id must be the canonical {HF_MODEL_ID!r}"
         )
     runtime_kv_dtype = config.kv_cache_dtype or config.model_dtype
-    pre_rope = config.benchmark_handoff_cache_method == "vanilla_prefill"
+    pre_rope = config.benchmark_handoff_cache_method == "vanilla_prefill" or (
+        config.representative_handoff_source is not None
+        and config.representative_handoff_source.arm_id == VANILLA_CANARY_ARM
+    )
     layout = (
         layout_for_model(
             HF_MODEL_ID,
@@ -852,6 +954,14 @@ def _representative_vllm_provenance(
         )
     }
     package_revisions["cachet-kv"] = f"wheel-sha256:{wheel_sha256}"
+    supplement = config.representative_supplement_provenance
+    if supplement is not None:
+        assert config.native_runtime_v2 is not None
+        assert config.representative_handoff_source is not None
+        package_revisions = {
+            **config.native_runtime_v2.expected_package_revisions(),
+            **supplement.software_identity_packages(config.representative_handoff_source.bindings),
+        }
     expected: dict[str, Any] = {
         "canonical_model_id": HF_MODEL_ID,
         "model_revision": config.model_revision,
@@ -885,6 +995,8 @@ def _representative_vllm_provenance(
             str(config.hardware_target)
         )
     )
+    if supplement is not None:
+        expected["measurement_scopes"] = supplement.measurement_scopes
     resolved_rope = resolved_layout_rope_provenance(layout)
     expected.update(resolved_rope)
     record = dict(provenance)
@@ -1204,6 +1316,16 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
                 json.dumps(config.native_runtime_v2.to_record(), sort_keys=True),
             ]
         )
+    if config.representative_handoff_source is not None:
+        parameters.extend([
+            "--representative-handoff-source-json",
+            json.dumps(config.representative_handoff_source.to_record(), sort_keys=True),
+        ])
+    if config.representative_supplement_provenance is not None:
+        parameters.extend([
+            "--representative-supplement-provenance-json",
+            json.dumps(config.representative_supplement_provenance.to_record(), sort_keys=True),
+        ])
     return parameters
 
 
@@ -1265,6 +1387,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
     parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
     parser.add_argument("--wheel-sha256")
+    parser.add_argument("--representative-handoff-source-json")
+    parser.add_argument("--representative-supplement-provenance-json")
     parser.add_argument(
         "--native-runtime-v2-json",
         help="Exact native-v2 runtime bundle, including the same verified bootstrap wheel.",
@@ -1467,6 +1591,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
     parser.add_argument("--runner-script-output", help="Write the tiny vLLM smoke runner script to this path.")
     args = parser.parse_args(argv)
+    if args.representative_handoff_source_json is not None and any(
+        value.startswith("--benchmark-handoff-") for value in (sys.argv[1:] if argv is None else argv)
+    ):
+        parser.error("representative artifact consumption forbids generator flags")
 
     try:
         config = DatabricksVLLMSmokeJobConfig(
@@ -1524,6 +1652,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             benchmark_evidence_policy=args.benchmark_evidence_policy,
             representative_canary=args.representative_canary,
+            representative_supplement_provenance=(
+                None if args.representative_supplement_provenance_json is None
+                else RepresentativeSupplementProvenanceV1.from_record(_json_object_from_cli(
+                    args.representative_supplement_provenance_json, "--representative-supplement-provenance-json",
+                ))
+            ),
+            representative_handoff_source=(
+                None if args.representative_handoff_source_json is None
+                else RepresentativeHandoffSourceV1.from_record(_json_object_from_cli(
+                    args.representative_handoff_source_json, "--representative-handoff-source-json",
+                ))
+            ),
             representative_workload_profile=args.representative_workload_profile,
             benchmark_manifest_provenance=(
                 {}
