@@ -5728,7 +5728,7 @@ def test_consumer_recovery_finishes_a_partially_deleted_ready_tree(
     ]
 
 
-def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
+def test_bootstrap_builds_and_launches_only_the_locked_runtime(monkeypatch):
     script = full_score.FULL_SCORE_RUNNER_SCRIPT
     namespace = {"__name__": "full_score_runner_test"}
     exec(compile(script, "full_score_runner.py", "exec"), namespace)
@@ -5780,7 +5780,7 @@ def test_bootstrap_builds_and_reexecs_only_the_locked_runtime(monkeypatch):
     assert "runtime-closure-manifest-sha256" in script
     assert "patched-flashinfer-wheel-sha256" in script
     assert 'pip, "check"' not in script
-    assert "os.execve(" in script
+    assert "os.execve(" not in script
 
 
 def test_full_score_runner_rejects_tampered_cached_virtualenv_pyz(

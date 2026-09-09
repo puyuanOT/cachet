@@ -911,15 +911,15 @@ def _bootstrap(argv: list[str]) -> None:
         system_cuda_parent_attestation_json
     )
     env["CACHET_LATENCY_HANDOFF_LOCKED_RUNTIME"] = expected_marker
-    os.execve(
-        venv_python,
+    # Keep the Databricks task process alive while the locked runtime runs.
+    subprocess.check_call(
         [
             venv_python,
             "-m",
             "document_kv_cache.publication_latency_handoff_generation",
             *remaining,
         ],
-        env,
+        env=env,
     )
 
 

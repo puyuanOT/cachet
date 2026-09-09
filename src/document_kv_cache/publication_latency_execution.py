@@ -1129,8 +1129,8 @@ def main() -> None:
     env["CACHET_LATENCY_SOURCE_CLOSURE_RUNTIME_ATTESTATION"] = json.dumps(
         runtime_attestation, sort_keys=True, separators=(",", ":")
     )
-    os.execve(
-        venv_python,
+    # Keep the Databricks task process alive while the locked runtime runs.
+    subprocess.check_call(
         [
             venv_python,
             "-m",
@@ -1145,7 +1145,7 @@ def main() -> None:
             "--coordinator-run-id",
             args.coordinator_run_id,
         ],
-        env,
+        env=env,
     )
 
 

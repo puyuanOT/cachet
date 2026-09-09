@@ -594,10 +594,10 @@ def _bootstrap(argv: list[str]) -> None:
         system_cuda_parent_attestation_json
     )
     env["CACHET_FULL_SCORE_LOCKED_RUNTIME"] = identity
-    os.execve(
-        venv_python,
+    # Keep the Databricks task process alive while the locked runtime runs.
+    subprocess.check_call(
         [venv_python, "-m", "document_kv_cache.full_score_execution", *remaining],
-        env,
+        env=env,
     )
 
 

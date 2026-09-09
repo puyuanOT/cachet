@@ -182,7 +182,7 @@ def test_generated_gpu_runner_threads_only_fresh_parent_cuda_after_install(
         )
         assert inherited_torch_library_validation < child_import < capture
         assert "verifier_environment" not in entrypoint_body
-        assert launch_environment < entrypoint_body.index("os.execve(")
+        assert launch_environment < entrypoint_body.rindex("subprocess.check_call(")
 
 
 @pytest.mark.parametrize(("script", "entrypoint", "has_direct_verifier"), _GPU_RUNNERS)
