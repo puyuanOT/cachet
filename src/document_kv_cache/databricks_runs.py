@@ -1797,6 +1797,50 @@ def get_databricks_run(
     )
 
 
+def _validated_original_attempt_run_id(
+    run: Mapping[str, Any], *, expected_run_id: int | str
+) -> str:
+    """Prove one receipt-bound, unrepaired attempt without changing raw Jobs JSON.
+
+    Jobs may omit ``original_attempt_run_id`` for an original submission. The
+    effective original identity is then its receipt-bound parent, but only after
+    exact task attempt zero and no repairs are established. Optional identity
+    aliases are corroboration, never defaults inserted into the control-plane
+    record: its original bytes/digest remain the accounting evidence.
+    """
+
+    def canonical_id(value: Any, label: str) -> str:
+        if (
+            type(value) not in (int, str)
+            or re.fullmatch(r"[1-9][0-9]*", str(value)) is None
+        ):
+            raise ValueError(f"{label} must be a canonical positive Databricks ID")
+        return str(value)
+
+    parent = canonical_id(expected_run_id, "receipt run_id")
+    if canonical_id(run.get("run_id"), "terminal run_id") != parent:
+        raise ValueError("terminal run_id differs from the submitted receipt")
+    if run.get("repair_history") not in (None, []):
+        raise ValueError("original attempt proof forbids repair history")
+    if "attempt_number" in run and (
+        type(run["attempt_number"]) is not int or run["attempt_number"] != 0
+    ):
+        raise ValueError("parent must have exact attempt zero")
+    tasks = run.get("tasks")
+    if (
+        not isinstance(tasks, list)
+        or len(tasks) != 1
+        or not isinstance(tasks[0], Mapping)
+        or type(tasks[0].get("attempt_number")) is not int
+        or tasks[0]["attempt_number"] != 0
+    ):
+        raise ValueError("original attempt proof requires one task attempt zero")
+    for field_name in ("original_attempt_run_id", "job_run_id"):
+        if field_name in run and canonical_id(run[field_name], field_name) != parent:
+            raise ValueError(f"{field_name} differs from the submitted receipt")
+    return parent
+
+
 def get_databricks_run_output(
     config: DatabricksWorkspaceConfig,
     run_id: int | str,

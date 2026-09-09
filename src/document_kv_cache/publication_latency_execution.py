@@ -87,6 +87,7 @@ from document_kv_cache.databricks_resource_ledger import (
     reserve_databricks_run_attempt_batch_authorized_json,
 )
 from document_kv_cache.databricks_runs import (
+    _validated_original_attempt_run_id,
     DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
     DatabricksURLOpener,
     DatabricksWorkspaceConfig,
@@ -10899,8 +10900,7 @@ def _validate_latency_control_plane_run(
         raise ValueError("latency run is not a one-time submit run")
     if run.get("repair_history") not in (None, []):
         raise ValueError("latency run has repair history")
-    if run.get("original_attempt_run_id") not in (None, 0, "0"):
-        raise ValueError("latency run is not attempt zero")
+    _validated_original_attempt_run_id(run, expected_run_id=receipt_run_id)
     state = _mapping(run, "state")
     life_cycle = state.get("life_cycle_state")
     result_state = state.get("result_state")
@@ -10976,14 +10976,7 @@ def _validate_source_closure_control_plane_run(
     parent_run_id = _databricks_id(run.get("run_id"), "runs/get run_id")
     if parent_run_id != receipt_run_id:
         raise ValueError("runs/get run ID differs from source-closure submit receipt")
-    original_attempt_run_id = _databricks_id(
-        run.get("original_attempt_run_id"),
-        "source-closure original_attempt_run_id",
-    )
-    if original_attempt_run_id != parent_run_id:
-        raise ValueError(
-            "source-closure coordinator original attempt does not equal its parent run"
-        )
+    _validated_original_attempt_run_id(run, expected_run_id=receipt_run_id)
     if run.get("repair_history") not in (None, []):
         raise ValueError("source-closure coordinator has repair history")
     tasks = run.get("tasks")
@@ -11003,12 +10996,10 @@ def _validate_source_closure_control_plane_run(
             "source-closure coordinator task run ID must differ from its parent run"
         )
 
-    # The generic latency validator models Databricks' attempt-zero marker as zero.
-    # Prove the stronger source-coordinator parent identity above before adapting it.
-    normalized = json.loads(_canonical_json(run))
-    normalized["original_attempt_run_id"] = 0
+    # Both validators prove the optional original identity directly. Never
+    # insert a synthetic marker into the raw terminal accounting record.
     identity = _validate_latency_control_plane_run(
-        normalized,
+        run,
         job_record={"task_key": "publication_latency_source_closure"},
         submit_payload=submit_payload,
         receipt_run_id=receipt_run_id,

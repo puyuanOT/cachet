@@ -1193,8 +1193,9 @@ def test_handoff_singleton_rejects_alternate_attempt_output_and_attestation_root
         )
 
 
+@pytest.mark.parametrize("original_present", [False, True])
 def test_mac_collector_never_resolves_dbfs_and_issues_live_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, original_present: bool
 ) -> None:
     _allow_synthetic_manifests(monkeypatch)
     request = _request()
@@ -1205,6 +1206,11 @@ def test_mac_collector_never_resolves_dbfs_and_issues_live_authority(
     payload = _write_collection_reservation(root, request_authorization)
     request_bytes = coordinator._canonical_json_bytes(request, pretty=True)
     result_bytes = coordinator._canonical_json_bytes(result, pretty=True)
+    terminal = _terminal(payload)
+    terminal["job_run_id"] = terminal["run_id"]
+    if not original_present:
+        terminal.pop("original_attempt_run_id")
+    raw_terminal = copy.deepcopy(terminal)
 
     monkeypatch.setattr(
         coordinator,
@@ -1214,7 +1220,7 @@ def test_mac_collector_never_resolves_dbfs_and_issues_live_authority(
     monkeypatch.setattr(
         coordinator,
         "get_databricks_run",
-        lambda _workspace, _run_id: _terminal(payload),
+        lambda _workspace, _run_id: terminal,
     )
 
     def download(_workspace, uri, *, max_bytes=16 * 1024 * 1024):
@@ -1234,6 +1240,8 @@ def test_mac_collector_never_resolves_dbfs_and_issues_live_authority(
     assert authority.execution_record == result["execution"]["record"]
     assert len(authority.manifest_records) == 3
     assert (root / "runs-get.json").is_file()
+    assert terminal == raw_terminal
+    assert json.loads((root / "runs-get.json").read_bytes()) == raw_terminal
     assert (root / "coordinator-result.json").read_bytes() == result_bytes
     assert (
         coordinator.require_q8_handoff_remote_closure_authorization(

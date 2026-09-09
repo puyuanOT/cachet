@@ -2035,6 +2035,11 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
             index,
             cluster_index=cluster_index,
         )
+        terminal = terminals[str(10_000 + index)]
+        terminal["job_run_id"] = terminal["run_id"]
+        if index % 2 == 0:
+            terminal.pop("original_attempt_run_id")
+    raw_terminals = copy.deepcopy(terminals)
     monkeypatch.setattr(
         generation,
         "get_databricks_run",
@@ -2089,6 +2094,18 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
             attempt_id=attempts[index],
             q8_handoff_remote_closure_authorization=q8_authorization,
             submission_authorization=batch_authorization,
+        )
+        terminal = terminals[str(10_000 + index)]
+        assert terminal == raw_terminals[str(10_000 + index)]
+        record = json.loads(bindings[index].binding.path.read_bytes())
+        assert record["cloud_execution"]["original_attempt_run_id"] == str(
+            terminal["run_id"]
+        )
+        assert (
+            record["cloud_execution"]["control_plane_status_sha256"]
+            == sha256(
+                generation.canonical_databricks_submit_payload_snapshot(terminal)[1]
+            ).hexdigest()
         )
     bindings[0] = collect_publication_bf16_handoff_worker_attestation(
         workspace,

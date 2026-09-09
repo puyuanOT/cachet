@@ -93,6 +93,7 @@ from document_kv_cache.databricks_resource_ledger import (
     require_databricks_publication_batch_admission,
 )
 from document_kv_cache.databricks_runs import (
+    _validated_original_attempt_run_id,
     DatabricksURLOpener,
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
@@ -3635,7 +3636,12 @@ def build_publication_latency_handoff_databricks_attestation(
     qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     submission_authorization: PublicationLatencyHandoffSubmissionAuthorization,
 ) -> dict[str, Any]:
-    """Sanitize and close one direct attempt-0 ``runs/get`` response."""
+    """Sanitize and close one direct attempt-0 ``runs/get`` response.
+
+    The attestation's ``original_attempt_run_id`` is the proved effective
+    identity, including when the optional raw field is absent. Its status
+    digest always binds the unmodified observed control-plane record.
+    """
 
     return _build_publication_latency_handoff_databricks_attestation_core(
         submit_payload,
@@ -3747,12 +3753,11 @@ def _build_publication_latency_handoff_databricks_attestation_core(
     )
     if receipt.run_id != parent_run_id:
         raise ValueError("submission receipt belongs to another Databricks run")
-    original_attempt_run_id = _databricks_cloud_id(
-        terminal_snapshot.get("original_attempt_run_id"),
-        field_name="terminal original_attempt_run_id",
+    # This is a proved effective identity in the normalized attestation. Keep
+    # the raw terminal snapshot unchanged for its control-plane status digest.
+    original_attempt_run_id = _validated_original_attempt_run_id(
+        terminal_snapshot, expected_run_id=parent_run_id
     )
-    if original_attempt_run_id != parent_run_id:
-        raise ValueError("terminal run is not the original submitted attempt")
     raw_tasks = _mapping_sequence(
         terminal_snapshot.get("tasks"),
         field_name="terminal run tasks",

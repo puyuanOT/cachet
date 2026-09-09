@@ -2218,6 +2218,13 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
         index: successful_terminal_run(submit_payload, index)
         for index, submit_payload in enumerate(databricks_payloads)
     }
+    # Real original Jobs submissions can omit original_attempt_run_id while
+    # retaining job_run_id. Exercise both envelopes through ledger closure.
+    for index, terminal in terminal_runs.items():
+        terminal["job_run_id"] = terminal["run_id"]
+        if index % 2 == 0:
+            terminal.pop("original_attempt_run_id")
+    raw_terminals = copy.deepcopy(terminal_runs)
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert ledger.active_reserved_cluster_hours == 80.0
     assert len(submitted_wire_bodies) == 16
@@ -2291,7 +2298,7 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
         )
     retry_run = copy.deepcopy(terminal_runs[0])
     retry_run["tasks"][0]["attempt_number"] = 1
-    with pytest.raises(ValueError, match="attempt_number=0"):
+    with pytest.raises(ValueError, match="task attempt zero"):
         build_publication_latency_handoff_databricks_attestation(
             databricks_payloads[0],
             submit_responses[0],
@@ -2305,7 +2312,7 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
         )
     repaired_run = copy.deepcopy(terminal_runs[0])
     repaired_run["repair_history"] = [{"id": 1}]
-    with pytest.raises(ValueError, match="must not use a repaired run"):
+    with pytest.raises(ValueError, match="repair history"):
         build_publication_latency_handoff_databricks_attestation(
             databricks_payloads[0],
             submit_responses[0],
@@ -2371,6 +2378,17 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
             durable_root
             / generation.PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_DIRECTORY
             / f"worker-{index:02d}.json",
+        )
+        assert terminal_runs[index] == raw_terminals[index]
+        assert attestation_record["cloud_execution"]["original_attempt_run_id"] == str(
+            terminal_runs[index]["run_id"]
+        )
+        assert attestation_record["cloud_execution"]["control_plane_status_sha256"] == (
+            sha256(
+                generation.canonical_databricks_submit_payload_snapshot(
+                    raw_terminals[index]
+                )[1]
+            ).hexdigest()
         )
         assert (
             write_publication_latency_handoff_databricks_attestation(

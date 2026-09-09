@@ -29,6 +29,7 @@ from document_kv_cache.databricks_job import (
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
 )
 from document_kv_cache.databricks_runs import (
+    _validated_original_attempt_run_id,
     DATABRICKS_VOLUME_FILE_MAX_DOWNLOAD_BYTES,
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
@@ -2857,6 +2858,7 @@ def collect_full_score_remote_coordinator(
         canonical_run_id = _validate_successful_remote_coordinator_run(
             run,
             submit_payload=submit_payload,
+            expected_run_id=run_id,
         )
         if canonical_run_id != run_id:
             raise ValueError("remote coordinator runs/get response identity drift")
@@ -3949,6 +3951,7 @@ def _validate_controller_run_receipt(
     run_id = _validate_successful_remote_coordinator_run(
         run,
         submit_payload=submit_payload,
+        expected_run_id=cast(str, submit_response["run_id"]),
     )
     if (
         record.get("run_id") != run_id
@@ -4184,6 +4187,7 @@ def _replay_full_score_remote_coordinator_authorization_locked(
     remote_run_id = _validate_successful_remote_coordinator_run(
         remote_run,
         submit_payload=submit_payload,
+        expected_run_id=cast(str, authorization["coordinator_run_id"]),
     )
     if remote_run_id != authorization.get("coordinator_run_id"):
         raise ValueError("replayed remote coordinator run identity drift")
@@ -4618,6 +4622,7 @@ def _validate_successful_remote_coordinator_run(
     run: Mapping[str, Any],
     *,
     submit_payload: Mapping[str, Any],
+    expected_run_id: str,
 ) -> str:
     state = _required_mapping(run, "state")
     if (
@@ -4629,12 +4634,7 @@ def _validate_successful_remote_coordinator_run(
     canonical_run_id = _canonical_databricks_run_id(
         run.get("run_id"), "remote coordinator run_id"
     )
-    original_attempt_run_id = _canonical_databricks_run_id(
-        run.get("original_attempt_run_id"),
-        "remote coordinator original_attempt_run_id",
-    )
-    if original_attempt_run_id != canonical_run_id:
-        raise ValueError("remote coordinator run is not the original attempt")
+    _validated_original_attempt_run_id(run, expected_run_id=expected_run_id)
     if run.get("repair_history") not in (None, []):
         raise ValueError("remote coordinator repaired runs are not admissible")
     tasks = run.get("tasks")

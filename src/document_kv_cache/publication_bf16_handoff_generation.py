@@ -74,6 +74,7 @@ from document_kv_cache.databricks_resource_ledger import (
     require_databricks_publication_batch_admission,
 )
 from document_kv_cache.databricks_runs import (
+    _validated_original_attempt_run_id,
     DatabricksURLOpener,
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
@@ -3924,7 +3925,12 @@ def collect_publication_bf16_handoff_worker_attestation(
     submission_authorization: PublicationBF16HandoffSubmissionAuthorization,
     local_evidence_mirror_root: str | Path | None = None,
 ) -> PublicationBF16HandoffWorkerAuthorization:
-    """Collect one direct ``runs/get`` response and causally close its ledger event."""
+    """Collect one direct ``runs/get`` response and causally close its ledger event.
+
+    The normalized attestation records the proved effective original parent
+    even if Jobs omits that optional field. The status digest and ledger event
+    retain the unmodified observed control-plane record.
+    """
 
     _require_q8_remote_closure_type(q8_handoff_remote_closure_authorization)
     if not isinstance(workspace, DatabricksWorkspaceConfig):
@@ -4160,12 +4166,11 @@ def _build_databricks_attestation(
         != parent_run_id
     ):
         raise ValueError("BF16 terminal response belongs to another run")
-    original_attempt_run_id = _databricks_cloud_id(
-        terminal_snapshot.get("original_attempt_run_id"),
-        field_name="terminal original_attempt_run_id",
+    # Record the proved effective original identity, without changing the raw
+    # Jobs snapshot whose digest remains the accounting/evidence binding.
+    original_attempt_run_id = _validated_original_attempt_run_id(
+        terminal_snapshot, expected_run_id=parent_run_id
     )
-    if original_attempt_run_id != parent_run_id:
-        raise ValueError("BF16 terminal response is not the original attempt")
     raw_tasks = _mapping_sequence(terminal_snapshot.get("tasks"), "terminal tasks")
     if len(raw_tasks) != 1:
         raise ValueError("BF16 producer must finish exactly one task")

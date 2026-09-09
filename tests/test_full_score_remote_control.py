@@ -1,4 +1,5 @@
 import copy
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -1672,8 +1673,9 @@ def test_remote_worker_invokes_existing_exact_producer_validator(tmp_path, monke
     )
 
 
+@pytest.mark.parametrize("original_present", [False, True])
 def test_mac_collection_uses_runs_get_files_api_cas_and_no_dbfs_mount(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, original_present
 ):
     case = _request_case(phase_lease_root=tmp_path / "phase-leases")
     submit = remote.render_full_score_remote_coordinator_submit_payload(
@@ -1693,10 +1695,15 @@ def test_mac_collection_uses_runs_get_files_api_cas_and_no_dbfs_mount(
         case.request["attestation_uri"]: remote._pretty_json_bytes(attestation),
     }
     observed_uris = []
+    terminal = _successful_run(submit, 701)
+    terminal["job_run_id"] = terminal["run_id"]
+    if not original_present:
+        terminal.pop("original_attempt_run_id")
+    raw_terminal = copy.deepcopy(terminal)
     monkeypatch.setattr(
         remote,
         "get_databricks_run",
-        lambda _workspace, run_id: _successful_run(submit, int(run_id)),
+        lambda _workspace, run_id: terminal,
     )
 
     def download(_workspace, uri, *, max_bytes):
@@ -1729,6 +1736,10 @@ def test_mac_collection_uses_runs_get_files_api_cas_and_no_dbfs_mount(
     assert authority.coordinator_run_id == "701"
     assert authority.controller_authorization_record_sha256
     assert (controller_root / "runs-get-receipt.json").is_file()
+    receipt = json.loads((controller_root / "runs-get-receipt.json").read_bytes())
+    assert terminal == raw_terminal
+    assert receipt["run"] == raw_terminal
+    assert receipt["run_record_sha256"] == remote._canonical_sha256(raw_terminal)
     assert (controller_root / "authorization.json").is_file()
     assert cas.resolve(case.request["result_uri"]).is_file()
     assert all(item[1].startswith("dbfs:/Volumes/") for item in observed_uris)
@@ -1806,35 +1817,35 @@ def test_remote_run_requires_unrepaired_attempt_zero_and_bound_task_cluster_ids(
         mutated["tasks"][0]["attempt_number"] = attempt_number
         with pytest.raises(ValueError, match="attempt zero"):
             remote._validate_successful_remote_coordinator_run(
-                mutated, submit_payload=submit
+                mutated, submit_payload=submit, expected_run_id="701"
             )
 
     mutated = copy.deepcopy(run)
     mutated["original_attempt_run_id"] += 10
-    with pytest.raises(ValueError, match="original attempt"):
+    with pytest.raises(ValueError, match="original_attempt_run_id"):
         remote._validate_successful_remote_coordinator_run(
-            mutated, submit_payload=submit
+            mutated, submit_payload=submit, expected_run_id="701"
         )
 
     mutated = copy.deepcopy(run)
     mutated["repair_history"] = [{"type": "REPAIR_ALL"}]
-    with pytest.raises(ValueError, match="repaired runs"):
+    with pytest.raises(ValueError, match="repair history"):
         remote._validate_successful_remote_coordinator_run(
-            mutated, submit_payload=submit
+            mutated, submit_payload=submit, expected_run_id="701"
         )
 
     mutated = copy.deepcopy(run)
     mutated["tasks"][0]["run_id"] = mutated["run_id"]
     with pytest.raises(ValueError, match="must differ"):
         remote._validate_successful_remote_coordinator_run(
-            mutated, submit_payload=submit
+            mutated, submit_payload=submit, expected_run_id="701"
         )
 
     mutated = copy.deepcopy(run)
     mutated["tasks"][0]["cluster_instance"]["cluster_id"] = ""
     with pytest.raises(ValueError, match="cluster_id"):
         remote._validate_successful_remote_coordinator_run(
-            mutated, submit_payload=submit
+            mutated, submit_payload=submit, expected_run_id="701"
         )
 
     governed_cluster = submit["tasks"][0]["new_cluster"]
@@ -1859,14 +1870,14 @@ def test_remote_run_requires_unrepaired_attempt_zero_and_bound_task_cluster_ids(
         )
         with pytest.raises(ValueError, match="status/topology drift"):
             remote._validate_successful_remote_coordinator_run(
-                mutated, submit_payload=submit
+                mutated, submit_payload=submit, expected_run_id="701"
             )
 
     mutated = copy.deepcopy(run)
     del mutated["tasks"][0]["cluster_spec"]["new_cluster"]["single_user_name"]
     with pytest.raises(ValueError, match="status/topology drift"):
         remote._validate_successful_remote_coordinator_run(
-            mutated, submit_payload=submit
+            mutated, submit_payload=submit, expected_run_id="701"
         )
 
     mutated = copy.deepcopy(run)
@@ -1874,7 +1885,7 @@ def test_remote_run_requires_unrepaired_attempt_zero_and_bound_task_cluster_ids(
     mutated["tasks"][0]["node_type_id"] = "c5d.4xlarge"
     with pytest.raises(ValueError, match="topology is missing"):
         remote._validate_successful_remote_coordinator_run(
-            mutated, submit_payload=submit
+            mutated, submit_payload=submit, expected_run_id="701"
         )
 
     mutated = copy.deepcopy(run)
@@ -1883,7 +1894,7 @@ def test_remote_run_requires_unrepaired_attempt_zero_and_bound_task_cluster_ids(
     )
     with pytest.raises(ValueError, match="spark_python_task binding drift"):
         remote._validate_successful_remote_coordinator_run(
-            mutated, submit_payload=submit
+            mutated, submit_payload=submit, expected_run_id="701"
         )
 
     mutated = copy.deepcopy(run)
@@ -1891,7 +1902,7 @@ def test_remote_run_requires_unrepaired_attempt_zero_and_bound_task_cluster_ids(
     parameters[:4] = parameters[2:4] + parameters[:2]
     with pytest.raises(ValueError, match="spark_python_task binding drift"):
         remote._validate_successful_remote_coordinator_run(
-            mutated, submit_payload=submit
+            mutated, submit_payload=submit, expected_run_id="701"
         )
 
 

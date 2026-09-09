@@ -41,6 +41,7 @@ from document_kv_cache.databricks_resource_ledger import (
     require_databricks_ledger_prefix,
 )
 from document_kv_cache.databricks_runs import (
+    _validated_original_attempt_run_id,
     DatabricksURLOpener,
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
@@ -2866,13 +2867,7 @@ def _validate_coordinator_terminal_run(
     snapshot, canonical = canonical_databricks_submit_payload_snapshot(terminal)
     if _required_run_id(snapshot.get("run_id"), "terminal run_id") != expected_run_id:
         raise ValueError("coordinator terminal response belongs to another run")
-    if (
-        _required_run_id(
-            snapshot.get("original_attempt_run_id"), "original_attempt_run_id"
-        )
-        != expected_run_id
-    ):
-        raise ValueError("coordinator did not finish on its original attempt")
+    _validated_original_attempt_run_id(snapshot, expected_run_id=expected_run_id)
     repairs = snapshot.get("repair_history")
     if repairs not in (None, []):
         raise ValueError("coordinator run repair is forbidden")

@@ -3547,8 +3547,9 @@ def test_source_closure_lost_response_resume_is_idempotent_and_gpu_ledger_read_o
     assert ledger_path.read_bytes() == ledger_before
 
 
+@pytest.mark.parametrize("original_present", [False, True])
 def test_source_closure_collector_uses_direct_get_files_and_cas_without_gpu_ledger_write(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, original_present
 ):
     ledger_path = tmp_path / "gpu-ledger.json"
     ledger = create_databricks_cluster_hour_ledger_json(
@@ -3593,6 +3594,10 @@ def test_source_closure_collector_uses_direct_get_files_and_cas_without_gpu_ledg
             }
         ],
     }
+    run["job_run_id"] = run["run_id"]
+    if not original_present:
+        run.pop("original_attempt_run_id")
+    raw_run = deepcopy(run)
     get_calls = []
     monkeypatch.setattr(
         execution,
@@ -3638,6 +3643,10 @@ def test_source_closure_collector_uses_direct_get_files_and_cas_without_gpu_ledg
     )
 
     assert get_calls == ["101"]
+    assert run == raw_run
+    assert authorization.control_plane_status_sha256 == (
+        execution._control_plane_status_sha256(raw_run)
+    )
     assert ledger_path.read_bytes() == ledger_before
     assert authorization.ledger_prefix == execution.databricks_ledger_prefix(ledger)
     assert (
@@ -3652,7 +3661,10 @@ def test_source_closure_collector_uses_direct_get_files_and_cas_without_gpu_ledg
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda run: run.pop("original_attempt_run_id"), "original_attempt_run_id"),
+        (
+            lambda run: run.__setitem__("original_attempt_run_id", None),
+            "original_attempt_run_id",
+        ),
         (
             lambda run: run.__setitem__("original_attempt_run_id", 0),
             "original_attempt_run_id",
