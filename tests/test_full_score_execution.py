@@ -78,6 +78,42 @@ _VALIDATE_PUBLICATION_FULL_SCORE_INPUTS = (
 _REQUIRE_SHARED_DBFS_PATH = full_score._require_shared_dbfs_path
 
 
+@pytest.fixture
+def synthetic_publication_rng_runtime(monkeypatch):
+    """Isolate interpreter eligibility in synthetic controller/statistics cases.
+
+    The real eligibility check is covered below. These cases exercise the real
+    bootstrap algorithm and evidence contracts without publishing GPU evidence.
+    """
+    monkeypatch.setattr(full_score, "_require_publication_rng_runtime", lambda: None)
+
+
+@pytest.mark.parametrize(
+    ("implementation", "version", "eligible"),
+    [
+        ("cpython", (3, 11, 16), True),
+        ("cpython", (3, 12, 0), False),
+        ("pypy", (3, 11, 0), False),
+    ],
+)
+def test_publication_rng_runtime_requires_cpython311(
+    monkeypatch, implementation, version, eligible
+):
+    monkeypatch.setattr(
+        full_score,
+        "sys",
+        SimpleNamespace(
+            implementation=SimpleNamespace(name=implementation),
+            version_info=version,
+        ),
+    )
+    if eligible:
+        full_score._require_publication_rng_runtime()
+    else:
+        with pytest.raises(RuntimeError, match="requires CPython 3.11"):
+            full_score._require_publication_rng_runtime()
+
+
 class _CharacterTokenizer:
     def encode(self, text, *, add_special_tokens):
         assert add_special_tokens is False
@@ -4133,7 +4169,9 @@ def test_governed_reservation_rejects_projected_max16_before_write(campaign):
     assert ledger_path.read_bytes() == before
 
 
-def test_live_p90_gate_replays_matched_blocks_and_authorizes_next_phase(campaign):
+def test_live_p90_gate_replays_matched_blocks_and_authorizes_next_phase(
+    campaign, synthetic_publication_rng_runtime
+):
     wave_one_producers = _phase_payloads(campaign, 1, "producer")
     reservation = full_score.full_score_wave_worst_case_gpu_hours(wave_one_producers)
     assert reservation == 24.0
@@ -4312,6 +4350,7 @@ def test_remote_prior_wave_replay_uses_only_issuer_cas_on_mac(
 def test_remote_cas_threads_wave0_into_wave1_render_reserve_and_replay(
     campaign,
     monkeypatch,
+    synthetic_publication_rng_runtime,
 ):
     completion, remote_authorization, compact_files = (
         _remote_wave_completion_authorization(campaign, 0)
@@ -4572,6 +4611,7 @@ def test_remote_cas_threads_wave0_into_wave1_render_reserve_and_replay(
 def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
     campaign,
     monkeypatch,
+    synthetic_publication_rng_runtime,
 ):
     local_worker_files = campaign["worker_files"]
     campaign = _volume_campaign(campaign)
@@ -5249,6 +5289,7 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
 def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
     campaign,
     monkeypatch,
+    synthetic_publication_rng_runtime,
 ):
     blocks = []
     block_paths = []
@@ -6144,7 +6185,7 @@ def test_governed_paths_and_recursive_delete_reject_ancestor_symlinks(
 
 
 def test_full_score_aggregate_uses_paired_examples_and_all_niah_cells(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, synthetic_publication_rng_runtime
 ):
     assert full_score.FULL_SCORE_AGGREGATE_RECORD_TYPE == (
         "cachet.full_score_aggregate.v2"

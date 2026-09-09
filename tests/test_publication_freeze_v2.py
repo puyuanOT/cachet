@@ -59,6 +59,19 @@ from document_kv_cache.runtime_artifact_closure import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _portable_subprocess_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Keep the real environment/path validators while binding host-independent
+    # directories for synthetic preflight tests.
+    for attribute, name in (("_FREEZE_HOME", "empty-home"), ("_FREEZE_TMPDIR", "temp")):
+        directory = tmp_path / name
+        directory.mkdir()
+        monkeypatch.setattr(freeze_v1, attribute, directory)
+
+
 def _digest(label: str) -> str:
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
 

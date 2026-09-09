@@ -1068,12 +1068,10 @@ def test_publication_campaign_preserves_predecessor_and_aligns_v2_authority(tmp_
 
     repository_root = Path(__file__).resolve().parents[1]
     predecessor_path = repository_root / (
-        "databricks-runs/vllm-0271-publication-prep/"
-        "publication-campaign-plan-sha256-"
-        "eb306f9a8be50730bfef81121c2a83ebec7e50e89386addb7f77ce6001bcd85f.json"
+        "tests/fixtures/publication_campaign_pre_mixed_sentinel.json"
     )
-    predecessor_stat = predecessor_path.stat()
     predecessor_bytes = predecessor_path.read_bytes()
+    predecessor_stat = predecessor_path.stat()
     assert len(predecessor_bytes) == 66_635
     assert hashlib.sha256(predecessor_bytes).hexdigest() == (
         "eb306f9a8be50730bfef81121c2a83ebec7e50e89386addb7f77ce6001bcd85f"

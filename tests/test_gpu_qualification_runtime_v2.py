@@ -76,12 +76,9 @@ _LOCK_PATH = (
 )
 _CLOSURE_PATH = (
     _ROOT
-    / "databricks-runs"
-    / "_campaign-inputs"
-    / "vllm-0.27.1-runtime-closure"
-    / "sha256"
-    / RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
-    / "vllm-0.27.1-flashinfer-0.6.16.post3-runtime-closure.json"
+    / "tests"
+    / "fixtures"
+    / "vllm_0271_runtime_closure.json"
 )
 _PACKAGE_SHA256 = "a" * 64
 _SOURCE_SHA256 = "b" * 64
@@ -1315,7 +1312,9 @@ def test_outer_final_verifier_ignores_site_pth_and_pythonpath_startup_hooks(
     runtime_root = tmp_path / "runtime"
     runtime_v2.create_venv(runtime_root, copies=True)
     runtime_python = runtime_root / "bin" / "python"
-    site_packages = runtime_root / "lib/python3.11/site-packages"
+    site_packages = runtime_root / (
+        f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    )
     package = site_packages / "document_kv_cache"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
@@ -1361,18 +1360,24 @@ def test_outer_final_verifier_ignores_site_pth_and_pythonpath_startup_hooks(
         "PYTHONPATH": str(poison_root),
         "PYTHONWARNINGS": "ignore",
     }
-    observed = runtime_v2._run_final_runtime_verifier(
-        runtime_python,
-        runtime_lock=tmp_path / "unused-base.lock",
-        vllm_uri="file:///unused-vllm.whl",
-        flashinfer_uri="file:///unused-flashinfer.whl",
-        closure_path=tmp_path / "unused-closure.json",
-        package_uri="file:///unused-cachet.whl",
-        package_sha256=_PACKAGE_SHA256,
-        environment=environment,
-    )
+    def verify() -> dict[str, object]:
+        return runtime_v2._run_final_runtime_verifier(
+            runtime_python,
+            runtime_lock=tmp_path / "unused-base.lock",
+            vllm_uri="file:///unused-vllm.whl",
+            flashinfer_uri="file:///unused-flashinfer.whl",
+            closure_path=tmp_path / "unused-closure.json",
+            package_uri="file:///unused-cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment=environment,
+        )
 
-    assert observed == attestation
+    if sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 11):
+        assert verify() == attestation
+    else:
+        # An ineligible interpreter must fail before importing any startup hook.
+        with pytest.raises(RuntimeError, match="v2 final runtime verifier process failed"):
+            verify()
     assert not site_marker.exists()
     assert not pth_marker.exists()
     assert not poison_marker.exists()

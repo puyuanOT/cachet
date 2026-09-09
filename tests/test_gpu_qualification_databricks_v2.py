@@ -1451,14 +1451,10 @@ def test_v2_runtime_lock_and_closure_parsers_accept_tracked_authority() -> None:
     assert len(versions) == VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT
     assert hash_count == VLLM_RUNTIME_BASE_LOCK_HASH_COUNT
     assert "flashinfer-python" not in versions
-    closure_paths = tuple(
-        (Path(__file__).parents[1] / "databricks-runs" / "_campaign-inputs").glob(
-            "vllm-0.27.1-runtime-closure/sha256/*/"
-            "vllm-0.27.1-flashinfer-0.6.16.post3-runtime-closure.json"
-        )
+    closure_path = (
+        Path(__file__).parents[1] / "tests/fixtures/vllm_0271_runtime_closure.json"
     )
-    assert len(closure_paths) == 1
-    closure = sentinels_v2._read_exact_runtime_closure(closure_paths[0])
+    closure = sentinels_v2._read_exact_runtime_closure(closure_path)
     assert closure["closed_record_sha256"] == (
         RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256
     )

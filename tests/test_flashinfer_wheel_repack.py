@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import struct
+import sys
 import warnings
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
@@ -148,14 +149,20 @@ def test_exact_member_patch_only_adds_future_annotations():
     ]
 
 
-def test_exact_cpython311_annotation_failure_and_patched_success():
+def test_host_annotation_behavior_and_patched_success():
     function = (
         "def _fd_ancillary(fd: int) -> "
         "tuple[tuple[int, int, array.array[int]]]:\n"
         "    return ()\n"
     )
-    with pytest.raises(TypeError, match="array.array.*not subscriptable"):
-        exec(compile(function, "fd_exchange.py", "exec", dont_inherit=True), {"array": array})
+    unpatched_namespace: dict[str, object] = {"array": array}
+    unpatched = compile(function, "fd_exchange.py", "exec", dont_inherit=True)
+    if sys.version_info[:2] < (3, 12):
+        with pytest.raises(TypeError, match="array.array.*not subscriptable"):
+            exec(unpatched, unpatched_namespace)
+    else:
+        exec(unpatched, unpatched_namespace)
+        assert callable(unpatched_namespace["_fd_ancillary"])
 
     namespace: dict[str, object] = {"array": array}
     exec(

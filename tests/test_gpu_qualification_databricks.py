@@ -16,11 +16,18 @@ from typing import Any
 
 import pytest
 
+from qualification_ledger_fixture import (
+    bind_qualification_opening,
+    write_opening_ledger,
+)
+from qualification_failure_fixture import configure_failure
+
 import document_kv_cache.gpu_qualification as gpu_qualification
 import document_kv_cache.gpu_qualification_databricks as qualification_job
 import document_kv_cache._gpu_qualification_sentinel_worker as sentinel_worker
 import document_kv_cache.gpu_qualification_sentinels as qualification_sentinels
 import document_kv_cache.databricks_resource_ledger as resource_ledger
+import document_kv_cache.databricks_runs as runs_api
 from document_kv_cache._hardware_targets import SUPPORTED_V1_HARDWARE_TARGETS
 from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourLedger,
@@ -64,9 +71,6 @@ from document_kv_cache.gpu_qualification_databricks import (
     validate_gpu_qualification_submission_rejection_record,
     write_gpu_qualification_bootstrap_runner,
 )
-from document_kv_cache.gpu_qualification_v2 import (
-    GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
-)
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
     PUBLICATION_CAMPAIGN_ID,
@@ -89,30 +93,24 @@ CAMPAIGN_ID = PUBLICATION_CAMPAIGN_ID
 CAMPAIGN_LEDGER_ID = PUBLICATION_CAMPAIGN_LEDGER_ID
 CAMPAIGN_RECORD_SHA256 = PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
 SINGLE_USER_NAME = "publication@example.com"
-_RETAINED_LEDGER_PATH = (
-    Path(__file__).parents[1]
-    / "databricks-runs"
-    / "vllm-0271-publication-prep"
-    / "cluster-hours.json"
-)
-_RETAINED_LEDGER_REVIEWED_SUCCESSOR_PREFIX = DatabricksLedgerPrefix(
-    ledger_id=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.ledger_id,
-    cap_cluster_hours=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.cap_cluster_hours,
-    reservation_count=279,
-    submission_receipt_count=141,
-    terminal_actual_count=279,
-    prefix_sha256=(
-        "7bdfab96021910df7a06ac1cf87604eefe7c1f4181f49a242212f699c443ca1a"
-    ),
-)
-_RETAINED_LEDGER_V2_OPENING_PREFIX = DatabricksLedgerPrefix(
-    ledger_id=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.ledger_id,
-    cap_cluster_hours=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.cap_cluster_hours,
-    reservation_count=265,
-    submission_receipt_count=127,
-    terminal_actual_count=265,
-    prefix_sha256=("e3aaca37d5e01cbb5060800ef2e3e115e048fc35c7e1ae74539d0085c7b5c8e1"),
-)
+_RETAINED_LEDGER_PATH = Path("pytest-fixture-not-initialized")
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_campaign_opening(tmp_path, monkeypatch):
+    """No controller test reads or snapshots an operator's campaign ledger."""
+    path = tmp_path / "synthetic-opening-ledger.json"
+    opening = write_opening_ledger(path, ledger_id=CAMPAIGN_LEDGER_ID)
+    prefix, hours = bind_qualification_opening(monkeypatch, opening)
+    monkeypatch.setattr(
+        sys.modules[__name__], "_RETAINED_LEDGER_PATH", path, raising=False
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX", prefix
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS", hours
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -298,9 +296,7 @@ def test_worker_uses_canonical_wheel_environment_and_secure_model_inspection(
 
     for records in ([], "not-a-worker-sequence", [""], [b"binary"], [17]):
         with pytest.raises(RuntimeError, match="nonempty worker records"):
-            sentinel_worker._observed_attention_backends(
-                InvalidInspectionLLM(records)
-            )
+            sentinel_worker._observed_attention_backends(InvalidInspectionLLM(records))
     with pytest.raises(RuntimeError, match="no attention backend implementation"):
         sentinel_worker._observed_attention_backends(
             InvalidInspectionLLM(
@@ -357,109 +353,6 @@ def _canonical_ledger_bytes(ledger: DatabricksClusterHourLedger) -> bytes:
     ).encode("utf-8")
 
 
-def _current_live_and_prior_receipt_ledgers() -> tuple[
-    bytes,
-    os.stat_result,
-    DatabricksClusterHourLedger,
-]:
-    live_bytes = _RETAINED_LEDGER_PATH.read_bytes()
-    live_stat = _RETAINED_LEDGER_PATH.stat()
-    live = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
-    assert live_bytes == _canonical_ledger_bytes(live)
-    successor_prefix = _RETAINED_LEDGER_REVIEWED_SUCCESSOR_PREFIX
-    resource_ledger.require_databricks_ledger_prefix(live, successor_prefix)
-    reviewed_successor = replace(
-        live,
-        reservations=live.reservations[: successor_prefix.reservation_count],
-        submission_receipts=live.submission_receipts[
-            : successor_prefix.submission_receipt_count
-        ],
-        terminal_actuals=live.terminal_actuals[
-            : successor_prefix.terminal_actual_count
-        ],
-    )
-    reviewed_successor_bytes = _canonical_ledger_bytes(reviewed_successor)
-    assert len(reviewed_successor_bytes) == 274_180
-    assert hashlib.sha256(reviewed_successor_bytes).hexdigest() == (
-        "b1c89ac4c8eaa68287f9bf41aa31105156f7d73a650b7adabf319d291037e825"
-    )
-    assert reviewed_successor.active_reserved_task_count == 0
-    assert reviewed_successor.active_reserved_cluster_hours == 0
-    assert databricks_ledger_prefix(reviewed_successor) == successor_prefix
-    opening_prefix = _RETAINED_LEDGER_V2_OPENING_PREFIX
-    resource_ledger.require_databricks_ledger_prefix(
-        reviewed_successor,
-        opening_prefix,
-    )
-    reviewed_opening = replace(
-        reviewed_successor,
-        reservations=reviewed_successor.reservations[
-            : opening_prefix.reservation_count
-        ],
-        submission_receipts=reviewed_successor.submission_receipts[
-            : opening_prefix.submission_receipt_count
-        ],
-        terminal_actuals=reviewed_successor.terminal_actuals[
-            : opening_prefix.terminal_actual_count
-        ],
-    )
-    reviewed_opening_bytes = _canonical_ledger_bytes(reviewed_opening)
-    assert len(reviewed_opening_bytes) == 256_696
-    assert hashlib.sha256(reviewed_opening_bytes).hexdigest() == (
-        "65c02ffb7975898aee3fcfd77c4c46d07d5864452cef21bb3988f60e8e93c3bc"
-    )
-    assert (
-        len(reviewed_opening.reservations),
-        len(reviewed_opening.submission_receipts),
-        len(reviewed_opening.terminal_actuals),
-    ) == (265, 127, 265)
-    assert reviewed_opening.active_reserved_task_count == 0
-    assert reviewed_opening.active_reserved_cluster_hours == 0
-    assert reviewed_opening.terminal_actual_cluster_hours == 77.50443361111115
-    assert reviewed_opening.accounted_cluster_hours == 77.50443361111115
-    assert reviewed_opening.remaining_cluster_hours == 946.4955663888888
-    assert databricks_ledger_prefix(reviewed_opening) == opening_prefix
-
-    historical_opening = replace(
-        reviewed_opening,
-        reservations=reviewed_opening.reservations[:236],
-        submission_receipts=reviewed_opening.submission_receipts[:98],
-        terminal_actuals=reviewed_opening.terminal_actuals[:236],
-    )
-    historical_bytes = _canonical_ledger_bytes(historical_opening)
-    assert len(historical_bytes) == 220_426
-    assert hashlib.sha256(historical_bytes).hexdigest() == (
-        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d"
-    )
-    assert databricks_ledger_prefix(historical_opening).prefix_sha256 == (
-        "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
-    )
-
-    prior_receipt = replace(
-        historical_opening,
-        terminal_actuals=historical_opening.terminal_actuals[:222],
-    )
-    prior_bytes = _canonical_ledger_bytes(prior_receipt)
-    assert len(prior_bytes) == 213_024
-    assert hashlib.sha256(prior_bytes).hexdigest() == (
-        "1ea82ff83621d97448cf79138061d933a211ca2d7b619d13cc27c6357d1831be"
-    )
-    assert (
-        len(prior_receipt.reservations),
-        len(prior_receipt.submission_receipts),
-        len(prior_receipt.terminal_actuals),
-    ) == (236, 98, 222)
-    assert prior_receipt.active_reserved_task_count == 14
-    assert prior_receipt.active_reserved_cluster_hours == 56.0
-    assert prior_receipt.terminal_actual_cluster_hours == 67.93033611111115
-    assert prior_receipt.accounted_cluster_hours == 123.93033611111115
-    assert prior_receipt.remaining_cluster_hours == 900.0696638888888
-    assert databricks_ledger_prefix(prior_receipt).prefix_sha256 == (
-        "7c83650851e5b169adb85961226745d3082fecc9ae9c007ee84606f7b1329b07"
-    )
-    return live_bytes, live_stat, prior_receipt
-
-
 def _pins(*, runner_sha256: str = GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256):
     return GPUQualificationArtifactPins(
         runtime_lock_sha256=VLLM_RUNTIME_LOCK_SHA256,
@@ -476,9 +369,7 @@ def _plan(
     pins: GPUQualificationArtifactPins | None = None,
     campaign_ledger_prefix=None,
     campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-    campaign_opening_terminal_gpu_hours=(
-        PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
-    ),
+    campaign_opening_terminal_gpu_hours=None,
 ) -> dict[str, Any]:
     return build_gpu_qualification_plan(
         campaign_id=CAMPAIGN_ID,
@@ -490,7 +381,11 @@ def _plan(
             if campaign_ledger_prefix is not None
             else PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX
         ),
-        campaign_opening_terminal_gpu_hours=campaign_opening_terminal_gpu_hours,
+        campaign_opening_terminal_gpu_hours=(
+            PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            if campaign_opening_terminal_gpu_hours is None
+            else campaign_opening_terminal_gpu_hours
+        ),
         artifact_pins=pins or _pins(),
     )
 
@@ -545,9 +440,7 @@ def _publication_artifact_uris() -> dict[str, str]:
             f"{root}/cachet-source/{pins['cachet_source_tree_sha256']}/"
             "cachet-source-closure.json"
         ),
-        "input_bundle_sha256": (
-            f"{root}/main-latency/{pins['input_bundle_sha256']}"
-        ),
+        "input_bundle_sha256": (f"{root}/main-latency/{pins['input_bundle_sha256']}"),
         "package_wheel_sha256": (
             f"{root}/cachet-wheel/{pins['package_wheel_sha256']}/"
             "cachet_kv-0.2.0-py3-none-any.whl"
@@ -558,8 +451,7 @@ def _publication_artifact_uris() -> dict[str, str]:
             "cp38-abi3-manylinux_2_28_x86_64.whl"
         ),
         "runner_sha256": (
-            f"{root}/runner/{pins['runner_sha256']}/"
-            "gpu-qualification-bootstrap.py"
+            f"{root}/runner/{pins['runner_sha256']}/gpu-qualification-bootstrap.py"
         ),
         "runtime_lock_sha256": (
             f"{root}/runtime-lock/{pins['runtime_lock_sha256']}/"
@@ -605,9 +497,7 @@ def _submission_rejection_record(plan: dict[str, Any]) -> dict[str, Any]:
     }
     unsigned = dict(record)
     unsigned.pop("closed_record_sha256")
-    record["closed_record_sha256"] = _digest(
-        canonical_gpu_qualification_json(unsigned)
-    )
+    record["closed_record_sha256"] = _digest(canonical_gpu_qualification_json(unsigned))
     return record
 
 
@@ -619,9 +509,7 @@ def _closed_result_bytes(**values: Any) -> bytes:
 
 def _blank_field_closed_result_bytes(**values: Any) -> bytes:
     record = {"closed_record_sha256": "", **values}
-    record["closed_record_sha256"] = _digest(
-        canonical_gpu_qualification_json(record)
-    )
+    record["closed_record_sha256"] = _digest(canonical_gpu_qualification_json(record))
     return (canonical_gpu_qualification_json(record) + "\n").encode("utf-8")
 
 
@@ -936,10 +824,13 @@ def test_renderer_emits_fourteen_unique_single_task_no_retry_payloads():
         encoded_plans = _option_values(parameters, "--plan-record-zlib-base64")
         assert len(encoded_plans) == 1
         assert "--plan-record-json" not in parameters
-        assert qualification_job._decode_qualification_plan_parameter(
-            encoded_plans[0],
-            expected_plan_sha256=plan["closed_record_sha256"],
-        ) == plan
+        assert (
+            qualification_job._decode_qualification_plan_parameter(
+                encoded_plans[0],
+                expected_plan_sha256=plan["closed_record_sha256"],
+            )
+            == plan
+        )
         assert (
             qualification_job._qualification_parameters_json_bytes(parameters)
             <= GPU_QUALIFICATION_DATABRICKS_PARAMETERS_MAX_BYTES
@@ -973,9 +864,7 @@ def test_renderer_repairs_the_legacy_none_shape_for_l4_a10g_and_l40s():
     plan = _plan()
     payloads = _render(plan, _artifact_uris())
     clusters_by_hardware: dict[str, dict[str, Any]] = {}
-    for job, payload in zip(
-        plan["cloud_qualification"]["jobs"], payloads, strict=True
-    ):
+    for job, payload in zip(plan["cloud_qualification"]["jobs"], payloads, strict=True):
         clusters_by_hardware.setdefault(
             job["hardware_id"], payload["tasks"][0]["new_cluster"]
         )
@@ -1042,9 +931,7 @@ def test_l40s_zone_validation_requires_live_auto_and_keeps_reviewed_history(
         for index, payload in enumerate(pinned_payloads)
         if payload["tasks"][0]["new_cluster"]["node_type_id"] == "g6e.4xlarge"
     )
-    l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = (
-        "us-west-2a"
-    )
+    l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = "us-west-2a"
     l40s_payload.pop("idempotency_token")
     pinned_payloads[l40s_index] = (
         qualification_job.bind_databricks_run_idempotency_token(
@@ -1069,13 +956,16 @@ def test_l40s_zone_validation_requires_live_auto_and_keeps_reviewed_history(
         "_GPU_QUALIFICATION_REVIEWED_HISTORICAL_AUTO_ZONE_PLAN_SHA256S",
         frozenset({plan["closed_record_sha256"]}),
     )
-    assert len(
-        qualification_job._validated_qualification_payloads(
-            plan,
-            live_payloads,
-            historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
+    assert (
+        len(
+            qualification_job._validated_qualification_payloads(
+                plan,
+                live_payloads,
+                historical_l40s_auto_plan_sha256=plan["closed_record_sha256"],
+            )
         )
-    ) == 14
+        == 14
+    )
     with pytest.raises(ValueError, match="not the reviewed plan"):
         qualification_job._validated_qualification_payloads(
             plan,
@@ -1195,18 +1085,24 @@ def test_worker_decodes_only_the_exact_canonical_plan_and_sha():
     canonical = canonical_gpu_qualification_json(plan)
     encoded = qualification_job._encode_qualification_plan_parameter(canonical)
 
-    assert qualification_job._decode_qualification_plan_parameter(
-        encoded,
-        expected_plan_sha256=plan["closed_record_sha256"],
-    ) == plan
+    assert (
+        qualification_job._decode_qualification_plan_parameter(
+            encoded,
+            expected_plan_sha256=plan["closed_record_sha256"],
+        )
+        == plan
+    )
     alternate_encoding = base64.urlsafe_b64encode(
         zlib.compress(canonical.encode("utf-8"), level=1)
     ).decode("ascii")
     assert alternate_encoding != encoded
-    assert qualification_job._decode_qualification_plan_parameter(
-        alternate_encoding,
-        expected_plan_sha256=plan["closed_record_sha256"],
-    ) == plan
+    assert (
+        qualification_job._decode_qualification_plan_parameter(
+            alternate_encoding,
+            expected_plan_sha256=plan["closed_record_sha256"],
+        )
+        == plan
+    )
     with pytest.raises(ValueError, match="SHA-256 differs"):
         qualification_job._decode_qualification_plan_parameter(
             encoded,
@@ -1233,9 +1129,9 @@ def test_worker_cli_decodes_compact_plan_before_execution(
     monkeypatch: pytest.MonkeyPatch,
 ):
     plan = _plan()
-    parameters = _render(plan, _artifact_uris())[0]["tasks"][0][
-        "spark_python_task"
-    ]["parameters"]
+    parameters = _render(plan, _artifact_uris())[0]["tasks"][0]["spark_python_task"][
+        "parameters"
+    ]
     observed: dict[str, Any] = {}
 
     monkeypatch.setattr(
@@ -1702,9 +1598,9 @@ def test_invalid_plan_transport_rejects_before_ledger_or_post(
             for index, payload in enumerate(mutated)
             if payload["tasks"][0]["new_cluster"]["node_type_id"] == "g6e.4xlarge"
         )
-        l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"][
-            "zone_id"
-        ] = "us-west-2a"
+        l40s_payload["tasks"][0]["new_cluster"]["aws_attributes"]["zone_id"] = (
+            "us-west-2a"
+        )
         l40s_payload.pop("idempotency_token")
         mutated[l40s_index] = qualification_job.bind_databricks_run_idempotency_token(
             l40s_payload,
@@ -1724,8 +1620,8 @@ def test_invalid_plan_transport_rejects_before_ledger_or_post(
             ).decode("ascii")
         else:
             parameters[plan_option_index + 1] = (
-                ("A" if encoded[0] != "A" else "B") + encoded[1:]
-            )
+                "A" if encoded[0] != "A" else "B"
+            ) + encoded[1:]
     if case in {
         "raw-plan",
         "corrupt-encoded-plan",
@@ -1870,9 +1766,7 @@ def test_all_authority_boundaries_require_live_preflight_bundle_before_effects(
             evidence_output_json=tmp_path / "qualification-evidence.json",
         ),
         lambda: qualification_job.replay_gpu_qualification_launch_authorization(
-            config=DatabricksWorkspaceConfig(
-                "https://dbc.example", "secret-token"
-            ),
+            config=DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
             plan_record=plan,
             submit_payloads=payloads,
             ledger_path=ledger_path,
@@ -2398,16 +2292,16 @@ def test_retained_uc_failure_evidence_refuses_false_zero_reconciliation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep/"
-        "gpu-qualification-plan-sha256-"
-        "ebfeaf53cfa9c74400be59546b391b77ebde4e85defa1f1b11bc4b4255c80341"
-    ).resolve()
+    from qualification_legacy_uc_fixture import build_legacy_uc_failure_fixture
+
+    root, retained_ledger_path, expected_terminal_prefix = (
+        build_legacy_uc_failure_fixture(tmp_path, monkeypatch)
+    )
     plan = json.loads((root / "gpu-qualification-plan.json").read_text())
-    assert plan["runtime_contract"]["artifact_sha256"][
-        "runtime_lock_sha256"
-    ] == qualification_job.GPU_QUALIFICATION_LEGACY_UC_RUNTIME_LOCK_SHA256
+    assert (
+        plan["runtime_contract"]["artifact_sha256"]["runtime_lock_sha256"]
+        == qualification_job.GPU_QUALIFICATION_LEGACY_UC_RUNTIME_LOCK_SHA256
+    )
     payloads = json.loads((root / "submit-payloads.json").read_text())
     contracts = qualification_job._validated_qualification_payloads(
         plan,
@@ -2421,12 +2315,12 @@ def test_retained_uc_failure_evidence_refuses_false_zero_reconciliation(
     batch_authorization, marker = qualification_job._replay_qualification_batch_marker(
         plan=plan,
         contracts=contracts,
-        ledger_path=_RETAINED_LEDGER_PATH,
+        ledger_path=retained_ledger_path,
         submit_receipt_root=root / "submit-receipts",
         local_preflight_binding=binding,
     )
     ledger_path = tmp_path.resolve() / "cluster-hours.json"
-    shutil.copyfile(_RETAINED_LEDGER_PATH, ledger_path)
+    shutil.copyfile(retained_ledger_path, ledger_path)
     before = ledger_path.read_bytes()
     monkeypatch.setattr(
         qualification_job,
@@ -2439,24 +2333,18 @@ def test_retained_uc_failure_evidence_refuses_false_zero_reconciliation(
         lambda **_kwargs: (batch_authorization, marker),
     )
     terminal_prefix = qualification_job._require_qualification_phase_ledger_closure(
-        read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH),
+        read_databricks_cluster_hour_ledger_json(retained_ledger_path),
         batch_authorization=batch_authorization,
         contracts=contracts,
     )
-    assert terminal_prefix.to_record() == {
-        "cap_cluster_hours": 1024.0,
-        "ledger_id": "representative-canary-823bd9d82a5c1730",
-        "prefix_sha256": (
-            "4bbe1144d4ce037fd8cf3376fc20c4e19ad00641f84c0a54d0cc2c17e37bf728"
-        ),
-        "reservation_count": 152,
-        "submission_receipt_count": 14,
-        "terminal_actual_count": 152,
-    }
+    assert terminal_prefix == expected_terminal_prefix
+    assert (
+        terminal_prefix.reservation_count,
+        terminal_prefix.submission_receipt_count,
+        terminal_prefix.terminal_actual_count,
+    ) == (152, 14, 152)
 
-    reviewed_manifest_sha256 = (
-        qualification_job.GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256
-    )
+    reviewed_manifest_sha256 = qualification_job.GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256
     monkeypatch.setattr(
         qualification_job,
         "GPU_QUALIFICATION_LEGACY_UC_FAILURE_MANIFEST_CLOSED_RECORD_SHA256",
@@ -2495,7 +2383,7 @@ def test_retained_uc_failure_evidence_refuses_false_zero_reconciliation(
 
     assert ledger_path.read_bytes() == before
 
-    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
+    retained = read_databricks_cluster_hour_ledger_json(retained_ledger_path)
     pre_terminal = replace(
         retained,
         reservations=retained.reservations[:152],
@@ -2522,6 +2410,19 @@ def test_retained_uc_failure_evidence_refuses_false_zero_reconciliation(
         runs_get_evidence_root=root / "failed-attempt-uc-volume-access",
     )
     assert databricks_ledger_prefix(reconciled) == terminal_prefix
+    reconciled_bytes = ledger_path.read_bytes()
+    repeated = qualification_job.reconcile_gpu_qualification_failed_attempt_evidence(
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=root / "submit-receipts",
+        local_preflight_evidence_path=(
+            root / "local-preflight-valid/local-preflight-evidence.json"
+        ),
+        runs_get_evidence_root=root / "failed-attempt-uc-volume-access",
+    )
+    assert databricks_ledger_prefix(repeated) == terminal_prefix
+    assert ledger_path.read_bytes() == reconciled_bytes
 
 
 def _failed_v2_capture_fixture(
@@ -2566,7 +2467,11 @@ def _failed_v2_capture_fixture(
     plan = _plan()
     payloads = _render(plan, _artifact_uris())
     submit_root = tmp_path / "submit-receipts"
-    preflight_path = _write_local_preflight(plan, tmp_path / "local-preflight.json")
+    preflight_dir = tmp_path / "local-preflight-valid"
+    preflight_dir.mkdir()
+    preflight_path = _write_local_preflight(
+        plan, preflight_dir / "local-preflight-evidence.json"
+    )
     parent_run_ids = [70_000 + index for index in range(14)]
     submit_gpu_qualification_jobs(
         DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
@@ -2575,9 +2480,7 @@ def _failed_v2_capture_fixture(
         ledger_path=ledger_path,
         submit_receipt_root=submit_root,
         local_preflight_evidence_path=preflight_path,
-        opener=_SequentialOpener(
-            [{"run_id": run_id} for run_id in parent_run_ids]
-        ),
+        opener=_SequentialOpener([{"run_id": run_id} for run_id in parent_run_ids]),
         now=lambda: datetime(2026, 8, 24, 0, 0, tzinfo=UTC),
     )
     runs: dict[str, dict[str, Any]] = {}
@@ -2624,7 +2527,7 @@ def _failed_v2_capture_fixture(
             "error": "NameError: name '__file__' is not defined",
             "error_trace": (
                 "Traceback (most recent call last):\n"
-                "  File \"gpu-qualification-bootstrap.py\", line 1\n"
+                '  File "gpu-qualification-bootstrap.py", line 1\n'
                 "NameError: name '__file__' is not defined\n"
             ),
             "logs": "driver log prefix\nNameError: name '__file__' is not defined\n",
@@ -2657,6 +2560,152 @@ def _failed_v2_capture_fixture(
         runs,
         outputs,
     )
+
+
+def _synthetic_historical_failure_fixture(tmp_path, monkeypatch, family):
+    """Generate direct receipts and a complete failed phase through real APIs."""
+    monkeypatch.setattr(
+        resource_ledger,
+        "databricks_ledger_path_sha256",
+        lambda _path: PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+    )
+    monkeypatch.setattr(
+        runs_api,
+        "databricks_ledger_path_sha256",
+        lambda _path: PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+    )
+    plan_root = tmp_path / family.lower()
+    plan_root.mkdir()
+    plan, payloads, ledger_path, submit_root, preflight, runs, outputs = (
+        _failed_v2_capture_fixture(plan_root, monkeypatch)
+    )
+    for filename, record in [
+        ("gpu-qualification-plan.json", plan),
+        ("submit-payloads.json", payloads),
+    ]:
+        (plan_root / filename).write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n"
+        )
+    prefix = f"GPU_QUALIFICATION_{family}_FAILURE_"
+
+    def pin(name, value):
+        monkeypatch.setattr(qualification_job, prefix + name, value)
+
+    pin("PLAN_SHA256", plan["closed_record_sha256"])
+    monkeypatch.setattr(
+        qualification_job,
+        "_GPU_QUALIFICATION_REVIEWED_HISTORICAL_AUTO_ZONE_PLAN_SHA256S",
+        frozenset({plan["closed_record_sha256"]}),
+    )
+    pin("RUNNER_SHA256", plan["runtime_contract"]["artifact_sha256"]["runner_sha256"])
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    errors = {}
+    for index, contract in enumerate(contracts):
+        job_id = str(contract["job_id"])
+        output = outputs[str(80_000 + index)]
+        configure_failure(
+            family,
+            job_id,
+            plan["closed_record_sha256"],
+            runs[str(70_000 + index)],
+            output,
+        )
+        errors[job_id] = output["error"]
+    sha_by_job = tuple((job, _digest(error)) for job, error in sorted(errors.items()))
+    bytes_by_job = tuple(
+        (job, len(error.encode())) for job, error in sorted(errors.items())
+    )
+    for name, value in [
+        ("ERROR_SHA256_BY_JOB", sha_by_job),
+        ("ERROR_UTF8_BYTES_BY_JOB", bytes_by_job),
+    ]:
+        if hasattr(qualification_job, prefix + name):
+            pin(name, value)
+    monkeypatch.setattr(
+        qualification_job, "get_databricks_run", lambda _config, run_id: runs[run_id]
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run_output",
+        lambda _config, run_id: outputs[run_id],
+    )
+    evidence_root = plan_root / "failed-attempt"
+    manifest = (
+        qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
+            DatabricksWorkspaceConfig("https://dbc.example", "synthetic-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=submit_root,
+            local_preflight_evidence_path=preflight,
+            evidence_root=evidence_root,
+            failure_reason=getattr(qualification_job, prefix + "REASON"),
+            expected_errors_by_job=errors,
+        )
+    )
+    pin("MANIFEST_SHA256", manifest["closed_record_sha256"])
+    pin(
+        "MANIFEST_FILE_SHA256",
+        qualification_job._file_sha256(evidence_root / "reconciliation-manifest.json"),
+    )
+    pin(
+        "TERMINAL_PREFIX_SHA256",
+        manifest["ledger_lineage"]["terminal_prefix"]["prefix_sha256"],
+    )
+    tree_count, tree_size, tree_sha = (
+        qualification_job._failed_attempt_evidence_tree_binding(evidence_root)
+    )
+    for name, value in [
+        ("EVIDENCE_TREE_FILE_COUNT", tree_count),
+        ("EVIDENCE_TREE_TOTAL_BYTES", tree_size),
+        ("EVIDENCE_TREE_SHA256", tree_sha),
+    ]:
+        if hasattr(qualification_job, prefix + name):
+            pin(name, value)
+    expected_ledger = plan_root / "expected-terminal-ledger.json"
+    expected_ledger.write_bytes(ledger_path.read_bytes())
+    ordered = sorted(enumerate(contracts), key=lambda pair: pair[1]["job_id"])
+    for index, contract in ordered:
+        predicted = resource_ledger.record_databricks_verified_run_terminal_actual_json(
+            expected_ledger,
+            attempt_id=contract["reservation_attempt_id"],
+            run_record=runs[str(70_000 + index)],
+        )
+    expected_bytes = expected_ledger.read_bytes()
+    expected = {
+        "ledger_sha256": _digest(expected_bytes),
+        "ledger_bytes": len(expected_bytes),
+        "reservation_count": len(predicted.reservations),
+        "receipt_count": len(predicted.submission_receipts),
+        "terminal_count": len(predicted.terminal_actuals),
+        "terminal_hours": predicted.terminal_actual_cluster_hours,
+        "remaining_hours": predicted.remaining_cluster_hours,
+        "new_terminal_seconds": sum(
+            x.actual_cluster_duration_seconds for x in predicted.terminal_actuals[-14:]
+        ),
+        "terminal_prefix_sha256": databricks_ledger_prefix(predicted).prefix_sha256,
+        "error_bytes": sum(count for _, count in bytes_by_job),
+    }
+    for suffix, key in [
+        ("FINAL_LEDGER_SHA256", "ledger_sha256"),
+        ("FINAL_LEDGER_BYTES", "ledger_bytes"),
+        ("FINAL_RESERVATION_COUNT", "reservation_count"),
+        ("FINAL_SUBMISSION_RECEIPT_COUNT", "receipt_count"),
+        ("FINAL_TERMINAL_ACTUAL_COUNT", "terminal_count"),
+        ("FINAL_TERMINAL_HOURS", "terminal_hours"),
+        ("FINAL_REMAINING_HOURS", "remaining_hours"),
+        ("NEW_TERMINAL_SECONDS", "new_terminal_seconds"),
+    ]:
+        if hasattr(qualification_job, prefix + suffix):
+            pin(suffix, expected[key])
+    (plan_root / "expected-fixture.json").write_text(
+        json.dumps(expected, sort_keys=True) + "\n"
+    )
+    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
+
+
+def _fixture_expected(plan_root, key):
+    return json.loads((plan_root / "expected-fixture.json").read_text())[key]
 
 
 def _reviewed_logged_run_output() -> dict[str, Any]:
@@ -2778,18 +2827,16 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
     failure_reason = "bootstrap self-identity used an unavailable __file__ global"
     expected_error = "NameError: name '__file__' is not defined"
 
-    manifest = (
-        qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2(
-            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
-            plan_record=plan,
-            submit_payloads=payloads,
-            ledger_path=ledger_path,
-            submit_receipt_root=submit_root,
-            local_preflight_evidence_path=preflight_path,
-            evidence_root=evidence_root,
-            failure_reason=failure_reason,
-            expected_error=expected_error,
-        )
+    manifest = qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2(
+        DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_root,
+        local_preflight_evidence_path=preflight_path,
+        evidence_root=evidence_root,
+        failure_reason=failure_reason,
+        expected_error=expected_error,
     )
 
     assert ledger_path.read_bytes() == ledger_before_capture
@@ -2805,9 +2852,7 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
         for entry in manifest["entries"]
     )
     for entry in manifest["entries"]:
-        output_path = evidence_root / (
-            f"{entry['job_id']}.runs-get-output.json"
-        )
+        output_path = evidence_root / (f"{entry['job_id']}.runs-get-output.json")
         raw_output = json.loads(output_path.read_text(encoding="utf-8"))
         assert set(raw_output) == {
             "error",
@@ -2881,9 +2926,7 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
             runs_get_evidence_root=evidence_root,
             expected_plan_sha256=plan["closed_record_sha256"],
             expected_runner_sha256=GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
-            expected_manifest_closed_record_sha256=manifest[
-                "closed_record_sha256"
-            ],
+            expected_manifest_closed_record_sha256=manifest["closed_record_sha256"],
             expected_manifest_file_sha256=manifest_file_sha256,
             expected_terminal_prefix_sha256=terminal_prefix["prefix_sha256"],
             expected_failure_reason=failure_reason,
@@ -2930,9 +2973,7 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
             runs_get_evidence_root=evidence_root,
             expected_plan_sha256=plan["closed_record_sha256"],
             expected_runner_sha256=GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256,
-            expected_manifest_closed_record_sha256=manifest[
-                "closed_record_sha256"
-            ],
+            expected_manifest_closed_record_sha256=manifest["closed_record_sha256"],
             expected_manifest_file_sha256=manifest_file_sha256,
             expected_terminal_prefix_sha256=terminal_prefix["prefix_sha256"],
             expected_failure_reason=failure_reason,
@@ -3023,8 +3064,7 @@ def test_v2_failed_capture_accepts_digest_pins_and_exact_leading_runtime_html(
         job_id = str(contract["job_id"])
         detail = "café " if index == 0 else ""
         plain_error = (
-            f"RuntimeError: GPU sentinel {job_id!r} {detail}worker exited "
-            "with status 1"
+            f"RuntimeError: GPU sentinel {job_id!r} {detail}worker exited with status 1"
         )
         raw_error = plain_error.replace(
             "RuntimeError",
@@ -3034,8 +3074,7 @@ def test_v2_failed_capture_accepts_digest_pins_and_exact_leading_runtime_html(
         output = outputs[str(80_000 + index)]
         output["error"] = raw_error
         output["error_trace"] = (
-            "Traceback (most recent call last):\n"
-            f"\x1b[31m{plain_error}\x1b[0m\n"
+            f"Traceback (most recent call last):\n\x1b[31m{plain_error}\x1b[0m\n"
         )
         raw_errors[job_id] = raw_error
     expected_sha256, expected_utf8_bytes = _failed_capture_error_digest_maps(
@@ -3085,9 +3124,7 @@ def test_v2_failed_capture_accepts_digest_pins_and_exact_leading_runtime_html(
         evidence_root=evidence_root,
         failure_reason="reviewed bounded-worker failures",
         expected_error_sha256_by_job=dict(reversed(expected_sha256.items())),
-        expected_error_utf8_bytes_by_job=dict(
-            reversed(expected_utf8_bytes.items())
-        ),
+        expected_error_utf8_bytes_by_job=dict(reversed(expected_utf8_bytes.items())),
     )
 
     assert ledger_path.read_bytes() == ledger_before
@@ -3542,49 +3579,13 @@ def test_v2_legacy_capture_delegates_one_error_to_every_planned_job(
 
 
 def test_reviewed_bootstrap_file_global_wrapper_reconciles_retained_v2_closure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path, monkeypatch
 ):
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep/"
-        "gpu-qualification-plan-sha256-"
-        "2cf4ef1092a435c1e713f2a94115021ea7069ab6295d18ce5fcb5d4a479ce997"
-    ).resolve()
-    evidence_root = plan_root / "failed-attempt-bootstrap-file-global-v2"
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    manifest = json.loads(
-        (evidence_root / "reconciliation-manifest.json").read_text()
-    )
-    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
-    active_incident = replace(
-        retained,
-        reservations=retained.reservations[:166],
-        submission_receipts=retained.submission_receipts[:28],
-        terminal_actuals=retained.terminal_actuals[:152],
-    )
-    ledger_path = tmp_path / "cluster-hours.json"
-    ledger_path.write_text(
-        json.dumps(
-            databricks_cluster_hour_ledger_to_record(active_incident),
-            indent=2,
-            sort_keys=True,
+    plan_root, evidence_root, plan, payloads, manifest, ledger_path = (
+        _synthetic_historical_failure_fixture(
+            tmp_path, monkeypatch, "BOOTSTRAP_FILE_GLOBAL"
         )
-        + "\n",
-        encoding="utf-8",
     )
-    monkeypatch.setattr(
-        qualification_job,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    monkeypatch.setattr(
-        resource_ledger,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-
     reconciled = qualification_job.reconcile_gpu_qualification_bootstrap_file_global_failure_evidence(
         plan_record=plan,
         submit_payloads=payloads,
@@ -3605,63 +3606,24 @@ def test_reviewed_bootstrap_file_global_wrapper_reconciles_retained_v2_closure(
     assert manifest["closed_record_sha256"] == (
         qualification_job.GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_SHA256
     )
-    assert qualification_job._file_sha256(
-        evidence_root / "reconciliation-manifest.json"
-    ) == "1d0246ece1d6f844420d22a26b729d3f0d971ca0b30c0bf1ef0b5a84dcf6f360"
+    assert (
+        qualification_job._file_sha256(evidence_root / "reconciliation-manifest.json")
+        == qualification_job.GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_MANIFEST_FILE_SHA256
+    )
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_BOOTSTRAP_FILE_GLOBAL_FAILURE_TERMINAL_PREFIX_SHA256
     )
     assert sum(
         item.actual_cluster_duration_seconds
         for item in reconciled.terminal_actuals[-14:]
-    ) == pytest.approx(4585.717999999999)
+    ) == _fixture_expected(plan_root, "new_terminal_seconds")
     assert reconciled.active_reserved_cluster_hours == 0.0
 
 
-def _cluster_identity_failure_replay_fixture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep/"
-        "gpu-qualification-plan-sha256-"
-        "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
-    ).resolve()
-    evidence_root = plan_root / "failed-attempt-cluster-identity-v2"
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    manifest = json.loads(
-        (evidence_root / "reconciliation-manifest.json").read_text()
+def _cluster_identity_failure_replay_fixture(tmp_path, monkeypatch):
+    return _synthetic_historical_failure_fixture(
+        tmp_path, monkeypatch, "BOOTSTRAP_CLUSTER_IDENTITY"
     )
-    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
-    active_incident = replace(
-        retained,
-        reservations=retained.reservations[:180],
-        submission_receipts=retained.submission_receipts[:42],
-        terminal_actuals=retained.terminal_actuals[:166],
-    )
-    ledger_path = tmp_path / "cluster-hours.json"
-    ledger_path.write_text(
-        json.dumps(
-            databricks_cluster_hour_ledger_to_record(active_incident),
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        qualification_job,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    monkeypatch.setattr(
-        resource_ledger,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
 
 
 def _validated_retained_historical_contracts(
@@ -3753,7 +3715,10 @@ def test_reviewed_cluster_identity_wrapper_reconciles_exact_historical_closure(
         len(reconciled.reservations),
         len(reconciled.submission_receipts),
         len(reconciled.terminal_actuals),
-    ) == (180, 42, 180)
+    ) == tuple(
+        _fixture_expected(plan_root, key)
+        for key in ("reservation_count", "receipt_count", "terminal_count")
+    )
     assert reconciled.active_reserved_cluster_hours == 0.0
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_BOOTSTRAP_CLUSTER_IDENTITY_FAILURE_TERMINAL_PREFIX_SHA256
@@ -3769,7 +3734,7 @@ def test_reviewed_cluster_identity_wrapper_reconciles_exact_historical_closure(
     assert sum(
         item.actual_cluster_duration_seconds
         for item in reconciled.terminal_actuals[-14:]
-    ) == pytest.approx(4564.259)
+    ) == _fixture_expected(plan_root, "new_terminal_seconds")
     assert (
         "reconcile_gpu_qualification_bootstrap_cluster_identity_failure_evidence"
         in qualification_job.__all__
@@ -3841,7 +3806,10 @@ def test_cluster_identity_reconciliation_resumes_canonical_partial_append(
             ledger_path=ledger_path,
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(partial.terminal_actuals) == 171
+    assert (
+        len(partial.terminal_actuals)
+        == PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.terminal_actual_count + 5
+    )
     contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
@@ -3919,50 +3887,10 @@ def test_cluster_identity_reconciliation_rejects_inexact_closure_before_write(
     assert ledger_path.read_bytes() == ledger_before
 
 
-def _runtime_lock_index_failure_replay_fixture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep/"
-        "gpu-qualification-plan-sha256-"
-        "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
-    ).resolve()
-    evidence_root = plan_root / "failed-attempt-runtime-lock-index-v2"
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    manifest = json.loads(
-        (evidence_root / "reconciliation-manifest.json").read_text()
+def _runtime_lock_index_failure_replay_fixture(tmp_path, monkeypatch):
+    return _synthetic_historical_failure_fixture(
+        tmp_path, monkeypatch, "RUNTIME_LOCK_INDEX"
     )
-    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
-    active_incident = replace(
-        retained,
-        reservations=retained.reservations[:194],
-        submission_receipts=retained.submission_receipts[:56],
-        terminal_actuals=retained.terminal_actuals[:180],
-    )
-    ledger_path = tmp_path / "cluster-hours.json"
-    ledger_path.write_text(
-        json.dumps(
-            databricks_cluster_hour_ledger_to_record(active_incident),
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        qualification_job,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    monkeypatch.setattr(
-        resource_ledger,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
 
 
 def _reconcile_runtime_lock_index_failure(
@@ -3985,16 +3913,14 @@ def _reconcile_runtime_lock_index_failure(
     )
 
 
-def test_runtime_lock_index_failure_source_pins_normalize_exact_retained_outputs():
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep/"
-        "gpu-qualification-plan-sha256-"
-        "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
-    ).resolve()
-    evidence_root = plan_root / "failed-attempt-runtime-lock-index-v2"
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+def test_runtime_lock_index_failure_source_pins_normalize_exact_retained_outputs(
+    tmp_path, monkeypatch
+):
+    plan_root, evidence_root, plan, payloads, manifest, _ledger_path = (
+        _synthetic_historical_failure_fixture(
+            tmp_path, monkeypatch, "RUNTIME_LOCK_INDEX"
+        )
+    )
     contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_error_sha256 = dict(
         qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_ERROR_SHA256_BY_JOB
@@ -4011,8 +3937,9 @@ def test_runtime_lock_index_failure_source_pins_normalize_exact_retained_outputs
             (evidence_root / f"{job_id}.runs-get-output.json").read_text()
         )
         error = run_output["error"]
-        assert hashlib.sha256(error.encode("utf-8")).hexdigest() == (
-            expected_error_sha256[job_id]
+        assert (
+            hashlib.sha256(error.encode("utf-8")).hexdigest()
+            == (expected_error_sha256[job_id])
         )
         assert (
             qualification_job._validated_runtime_lock_index_failure_error(
@@ -4054,24 +3981,18 @@ def test_runtime_lock_index_failure_source_pins_normalize_exact_retained_outputs
     ],
 )
 def test_runtime_lock_index_failure_validator_rejects_adversarial_variants(
-    mutation: str,
-    message: str,
+    mutation, message, tmp_path, monkeypatch
 ):
-    plan_sha256 = (
-        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256
+    plan_root, evidence_root, plan, payloads, manifest, _ledger_path = (
+        _synthetic_historical_failure_fixture(
+            tmp_path, monkeypatch, "RUNTIME_LOCK_INDEX"
+        )
     )
-    evidence_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep/"
-        f"gpu-qualification-plan-sha256-{plan_sha256}/"
-        "failed-attempt-runtime-lock-index-v2"
-    ).resolve()
+    plan_sha256 = plan["closed_record_sha256"]
     output_path = sorted(evidence_root.glob("*.runs-get-output.json"))[0]
     job_id = output_path.name.removesuffix(".runs-get-output.json")
     run_output = json.loads(output_path.read_text())
-    marker = (
-        qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_LOG_MARKER
-    )
+    marker = qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_LOG_MARKER
     expected_error_sha256 = hashlib.sha256(
         run_output["error"].encode("utf-8")
     ).hexdigest()
@@ -4087,8 +4008,8 @@ def test_runtime_lock_index_failure_validator_rejects_adversarial_variants(
         ).hexdigest()
     elif mutation == "uuid":
         run_output["error"] = run_output["error"].replace(
-            "pythonEnv-359ea7ae-1c5f-473c-89df-3f693b82d1cd",
-            "pythonEnv-359ea7ae-1c5f-573c-89df-3f693b82d1cd",
+            "pythonEnv-00000000-0000-4000-8000-000000000001",
+            "pythonEnv-00000000-0000-5000-8000-000000000001",
         )
         expected_error_sha256 = hashlib.sha256(
             run_output["error"].encode("utf-8")
@@ -4157,7 +4078,7 @@ def test_runtime_lock_index_wrapper_is_deterministic_idempotent_and_source_pinne
     assert reconciled == second
     assert ledger_path.read_bytes() == second_ledger_path.read_bytes()
     assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
-        "1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916"
+        _fixture_expected(plan_root, "ledger_sha256")
     )
     assert plan["closed_record_sha256"] == (
         qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_PLAN_SHA256
@@ -4180,16 +4101,19 @@ def test_runtime_lock_index_wrapper_is_deterministic_idempotent_and_source_pinne
         len(reconciled.reservations),
         len(reconciled.submission_receipts),
         len(reconciled.terminal_actuals),
-    ) == (194, 56, 194)
+    ) == tuple(
+        _fixture_expected(plan_root, key)
+        for key in ("reservation_count", "receipt_count", "terminal_count")
+    )
     assert reconciled.active_reserved_task_count == 0
     assert reconciled.active_reserved_cluster_hours == 0.0
-    assert reconciled.terminal_actual_cluster_hours == pytest.approx(
-        61.28905027777782
+    assert reconciled.terminal_actual_cluster_hours == _fixture_expected(
+        plan_root, "terminal_hours"
     )
     assert sum(
         item.actual_cluster_duration_seconds
         for item in reconciled.terminal_actuals[-14:]
-    ) == pytest.approx(7754.755)
+    ) == _fixture_expected(plan_root, "new_terminal_seconds")
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_RUNTIME_LOCK_INDEX_FAILURE_TERMINAL_PREFIX_SHA256
     )
@@ -4274,7 +4198,10 @@ def test_runtime_lock_index_reconciliation_resumes_canonical_partial_append(
             ledger_path=ledger_path,
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(partial.terminal_actuals) == 185
+    assert (
+        len(partial.terminal_actuals)
+        == PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.terminal_actual_count + 5
+    )
     contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
@@ -4378,50 +4305,10 @@ def test_runtime_lock_index_reconciliation_rejects_tamper_before_write(
     assert ledger_path.read_bytes() == ledger_before
 
 
-def _site_packages_path_failure_replay_fixture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    plan_sha256 = (
-        qualification_job.GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256
+def _site_packages_path_failure_replay_fixture(tmp_path, monkeypatch):
+    return _synthetic_historical_failure_fixture(
+        tmp_path, monkeypatch, "SITE_PACKAGES_PATH"
     )
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep"
-        / f"gpu-qualification-plan-sha256-{plan_sha256}"
-    ).resolve()
-    evidence_root = plan_root / "failed-attempt-site-packages-path-v2"
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    manifest = json.loads((evidence_root / "reconciliation-manifest.json").read_text())
-    retained = read_databricks_cluster_hour_ledger_json(_RETAINED_LEDGER_PATH)
-    active_incident = replace(
-        retained,
-        reservations=retained.reservations[:208],
-        submission_receipts=retained.submission_receipts[:70],
-        terminal_actuals=retained.terminal_actuals[:194],
-    )
-    ledger_path = tmp_path / "cluster-hours.json"
-    ledger_path.write_text(
-        json.dumps(
-            databricks_cluster_hour_ledger_to_record(active_incident),
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        qualification_job,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    monkeypatch.setattr(
-        resource_ledger,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
 
 
 def _reconcile_site_packages_path_failure(
@@ -4444,18 +4331,15 @@ def _reconcile_site_packages_path_failure(
     )
 
 
-def test_site_packages_path_failure_source_pins_exact_retained_closure():
-    plan_sha256 = (
-        qualification_job.GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256
+def test_site_packages_path_failure_source_pins_exact_retained_closure(
+    tmp_path, monkeypatch
+):
+    plan_root, evidence_root, plan, payloads, manifest, _ledger_path = (
+        _synthetic_historical_failure_fixture(
+            tmp_path, monkeypatch, "SITE_PACKAGES_PATH"
+        )
     )
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep"
-        / f"gpu-qualification-plan-sha256-{plan_sha256}"
-    ).resolve()
-    evidence_root = plan_root / "failed-attempt-site-packages-path-v2"
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+    plan_sha256 = plan["closed_record_sha256"]
     contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_error_sha256 = dict(
         qualification_job.GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_ERROR_SHA256_BY_JOB
@@ -4524,19 +4408,14 @@ def test_site_packages_path_failure_source_pins_exact_retained_closure():
     ],
 )
 def test_site_packages_path_failure_validator_rejects_adversarial_variants(
-    monkeypatch: pytest.MonkeyPatch,
-    mutation: str,
-    message: str,
+    monkeypatch, mutation, message, tmp_path
 ):
-    plan_sha256 = (
-        qualification_job.GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256
+    plan_root, evidence_root, plan, payloads, manifest, _ledger_path = (
+        _synthetic_historical_failure_fixture(
+            tmp_path, monkeypatch, "SITE_PACKAGES_PATH"
+        )
     )
-    evidence_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep"
-        / f"gpu-qualification-plan-sha256-{plan_sha256}"
-        / "failed-attempt-site-packages-path-v2"
-    ).resolve()
+    plan_sha256 = plan["closed_record_sha256"]
     output_path = sorted(evidence_root.glob("*.runs-get-output.json"))[0]
     job_id = output_path.name.removesuffix(".runs-get-output.json")
     run_output = json.loads(output_path.read_text())
@@ -4632,7 +4511,7 @@ def test_site_packages_path_wrapper_is_deterministic_idempotent_and_source_pinne
     assert reconciled == second
     assert ledger_path.read_bytes() == second_ledger_path.read_bytes()
     assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
-        "fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87"
+        _fixture_expected(plan_root, "ledger_sha256")
     )
     assert plan["closed_record_sha256"] == (
         qualification_job.GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_PLAN_SHA256
@@ -4655,14 +4534,19 @@ def test_site_packages_path_wrapper_is_deterministic_idempotent_and_source_pinne
         len(reconciled.reservations),
         len(reconciled.submission_receipts),
         len(reconciled.terminal_actuals),
-    ) == (208, 70, 208)
+    ) == tuple(
+        _fixture_expected(plan_root, key)
+        for key in ("reservation_count", "receipt_count", "terminal_count")
+    )
     assert reconciled.active_reserved_task_count == 0
     assert reconciled.active_reserved_cluster_hours == 0.0
-    assert reconciled.terminal_actual_cluster_hours == pytest.approx(64.48303638888892)
+    assert reconciled.terminal_actual_cluster_hours == _fixture_expected(
+        plan_root, "terminal_hours"
+    )
     assert sum(
         item.actual_cluster_duration_seconds
         for item in reconciled.terminal_actuals[-14:]
-    ) == pytest.approx(11_498.35)
+    ) == _fixture_expected(plan_root, "new_terminal_seconds")
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_SITE_PACKAGES_PATH_FAILURE_TERMINAL_PREFIX_SHA256
     )
@@ -4747,7 +4631,10 @@ def test_site_packages_path_reconciliation_resumes_canonical_partial_append(
             ledger_path=ledger_path,
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(partial.terminal_actuals) == 199
+    assert (
+        len(partial.terminal_actuals)
+        == PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.terminal_actual_count + 5
+    )
     contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
@@ -4779,7 +4666,7 @@ def test_site_packages_path_reconciliation_resumes_canonical_partial_append(
     assert resumed == clean
     assert ledger_path.read_bytes() == clean_ledger_path.read_bytes()
     assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
-        "fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87"
+        _fixture_expected(plan_root, "ledger_sha256")
     )
 
 
@@ -4905,97 +4792,11 @@ def test_site_packages_path_reconciliation_rejects_tamper_before_write(
 
 
 def _runtime_observation_and_worker_subprocess_failure_replay_fixture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path, monkeypatch
 ):
-    plan_sha256 = (
-        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
+    return _synthetic_historical_failure_fixture(
+        tmp_path, monkeypatch, "RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS"
     )
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep"
-        / f"gpu-qualification-plan-sha256-{plan_sha256}"
-    ).resolve()
-    evidence_root = (
-        plan_root
-        / "failed-attempt-runtime-observation-and-worker-subprocess-v2"
-    )
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    manifest = json.loads((evidence_root / "reconciliation-manifest.json").read_text())
-    retained_bytes, retained_stat_before, retained = (
-        _current_live_and_prior_receipt_ledgers()
-    )
-    closed = replace(
-        retained,
-        reservations=retained.reservations[:222],
-        submission_receipts=retained.submission_receipts[:84],
-        terminal_actuals=retained.terminal_actuals[:222],
-    )
-    assert (
-        len(closed.reservations),
-        len(closed.submission_receipts),
-        len(closed.terminal_actuals),
-    ) == (222, 84, 222)
-    assert closed.active_reserved_task_count == 0
-    assert closed.active_reserved_cluster_hours == 0.0
-    assert closed.terminal_actual_cluster_hours == 67.93033611111115
-    assert closed.accounted_cluster_hours == 67.93033611111115
-    assert closed.remaining_cluster_hours == 956.0696638888888
-    assert databricks_ledger_prefix(closed).prefix_sha256 == (
-        "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
-    )
-    closed_bytes = _canonical_ledger_bytes(closed)
-    assert len(closed_bytes) == 202_986
-    assert hashlib.sha256(closed_bytes).hexdigest() == (
-        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
-    )
-    historical = replace(
-        closed,
-        terminal_actuals=closed.terminal_actuals[:208],
-    )
-    assert (
-        len(historical.reservations),
-        len(historical.submission_receipts),
-        len(historical.terminal_actuals),
-    ) == (222, 84, 208)
-    assert historical.active_reserved_task_count == 14
-    assert historical.active_reserved_cluster_hours == 56.0
-    assert historical.terminal_actual_cluster_hours == 64.48303638888892
-    assert historical.accounted_cluster_hours == 120.48303638888892
-    assert historical.remaining_cluster_hours == 903.5169636111111
-    assert databricks_ledger_prefix(historical).prefix_sha256 == (
-        "835c73c5ee8db08cfbdad857f41350b0168eed1c4605493bc7ed9093e17df99d"
-    )
-    ledger_path = tmp_path / "cluster-hours.json"
-    resource_ledger._atomic_write_ledger(ledger_path, historical)
-    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
-        "4d4db848de2e4c45d85341f517e093e205670877905e6f5299315c9c39d18bbe"
-    )
-    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
-    retained_stat_after = _RETAINED_LEDGER_PATH.stat()
-    assert (
-        retained_stat_after.st_ino,
-        retained_stat_after.st_mode,
-        retained_stat_after.st_mtime_ns,
-        retained_stat_after.st_size,
-    ) == (
-        retained_stat_before.st_ino,
-        retained_stat_before.st_mode,
-        retained_stat_before.st_mtime_ns,
-        retained_stat_before.st_size,
-    )
-    monkeypatch.setattr(
-        qualification_job,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    monkeypatch.setattr(
-        resource_ledger,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
 
 
 def _reconcile_runtime_observation_and_worker_subprocess_failure(
@@ -5018,21 +4819,15 @@ def _reconcile_runtime_observation_and_worker_subprocess_failure(
     )
 
 
-def test_runtime_observation_and_worker_subprocess_failure_source_pins_exact_closure():
-    plan_sha256 = (
-        qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
+def test_runtime_observation_and_worker_subprocess_failure_source_pins_exact_closure(
+    tmp_path, monkeypatch
+):
+    plan_root, evidence_root, plan, payloads, manifest, _ledger_path = (
+        _synthetic_historical_failure_fixture(
+            tmp_path, monkeypatch, "RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS"
+        )
     )
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep"
-        / f"gpu-qualification-plan-sha256-{plan_sha256}"
-    ).resolve()
-    evidence_root = (
-        plan_root
-        / "failed-attempt-runtime-observation-and-worker-subprocess-v2"
-    )
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+    plan_sha256 = plan["closed_record_sha256"]
     contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_error_sha256 = dict(
         qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_ERROR_SHA256_BY_JOB
@@ -5067,8 +4862,9 @@ def test_runtime_observation_and_worker_subprocess_failure_source_pins_exact_clo
             "logs_truncated",
             "metadata",
         }
-        assert hashlib.sha256(error.encode("utf-8")).hexdigest() == (
-            expected_error_sha256[job_id]
+        assert (
+            hashlib.sha256(error.encode("utf-8")).hexdigest()
+            == (expected_error_sha256[job_id])
         )
         assert len(error.encode("utf-8")) == expected_error_utf8_bytes[job_id]
         assert (
@@ -5147,9 +4943,9 @@ def test_runtime_observation_and_worker_subprocess_wrapper_is_deterministic_idem
 
     assert reconciled == second
     assert ledger_path.read_bytes() == second_ledger_path.read_bytes()
-    assert len(ledger_path.read_bytes()) == 202_986
+    assert len(ledger_path.read_bytes()) == _fixture_expected(plan_root, "ledger_bytes")
     assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
-        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
+        _fixture_expected(plan_root, "ledger_sha256")
     )
     assert plan["closed_record_sha256"] == (
         qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PLAN_SHA256
@@ -5172,16 +4968,25 @@ def test_runtime_observation_and_worker_subprocess_wrapper_is_deterministic_idem
         len(reconciled.reservations),
         len(reconciled.submission_receipts),
         len(reconciled.terminal_actuals),
-    ) == (222, 84, 222)
+    ) == tuple(
+        _fixture_expected(plan_root, key)
+        for key in ("reservation_count", "receipt_count", "terminal_count")
+    )
     assert reconciled.active_reserved_task_count == 0
     assert reconciled.active_reserved_cluster_hours == 0.0
-    assert reconciled.terminal_actual_cluster_hours == 67.93033611111115
-    assert reconciled.accounted_cluster_hours == 67.93033611111115
-    assert reconciled.remaining_cluster_hours == 956.0696638888888
+    assert reconciled.terminal_actual_cluster_hours == _fixture_expected(
+        plan_root, "terminal_hours"
+    )
+    assert reconciled.accounted_cluster_hours == _fixture_expected(
+        plan_root, "terminal_hours"
+    )
+    assert reconciled.remaining_cluster_hours == _fixture_expected(
+        plan_root, "remaining_hours"
+    )
     assert sum(
         item.actual_cluster_duration_seconds
         for item in reconciled.terminal_actuals[-14:]
-    ) == pytest.approx(12_410.279)
+    ) == _fixture_expected(plan_root, "new_terminal_seconds")
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
         qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_TERMINAL_PREFIX_SHA256
     )
@@ -5193,13 +4998,13 @@ def test_runtime_observation_and_worker_subprocess_wrapper_is_deterministic_idem
     assert [item.attempt_id for item in reconciled.terminal_actuals[-14:]] == (
         expected_attempt_order
     )
-    public_name = (
-        "reconcile_gpu_qualification_runtime_observation_and_worker_subprocess_failure_evidence"
-    )
+    public_name = "reconcile_gpu_qualification_runtime_observation_and_worker_subprocess_failure_evidence"
     assert public_name in qualification_job.__all__
     assert not any(
         name.startswith("expected_")
-        for name in inspect.signature(getattr(qualification_job, public_name)).parameters
+        for name in inspect.signature(
+            getattr(qualification_job, public_name)
+        ).parameters
     )
 
     closed_bytes = ledger_path.read_bytes()
@@ -5291,7 +5096,10 @@ def test_runtime_observation_and_worker_subprocess_reconciliation_resumes_canoni
             ledger_path=ledger_path,
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(partial.terminal_actuals) == 213
+    assert (
+        len(partial.terminal_actuals)
+        == PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.terminal_actual_count + 5
+    )
     contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         contract["reservation_attempt_id"]
@@ -5323,7 +5131,7 @@ def test_runtime_observation_and_worker_subprocess_reconciliation_resumes_canoni
     assert resumed == clean
     assert ledger_path.read_bytes() == clean_ledger_path.read_bytes()
     assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
-        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
+        _fixture_expected(plan_root, "ledger_sha256")
     )
 
 
@@ -5371,8 +5179,7 @@ def test_runtime_observation_and_worker_subprocess_reconciliation_rejects_tamper
     evidence_root = tmp_path / "c0bede-evidence-copy"
     shutil.copytree(source_evidence_root, evidence_root)
     output_path = (
-        evidence_root
-        / "aws-g5-a10g-packed-page-roundtrip.runs-get-output.json"
+        evidence_root / "aws-g5-a10g-packed-page-roundtrip.runs-get-output.json"
         if mutation == "observer-control-flow"
         else sorted(evidence_root.glob("*.runs-get-output.json"))[0]
     )
@@ -5450,7 +5257,10 @@ def test_runtime_observation_and_worker_subprocess_reconciliation_rejects_tamper
         monkeypatch.setattr(
             qualification_job,
             "GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS",
-            (*qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS, job_id),
+            (
+                *qualification_job.GPU_QUALIFICATION_RUNTIME_OBSERVATION_AND_WORKER_SUBPROCESS_FAILURE_PACKED_PAGE_ROUNDTRIP_JOB_IDS,
+                job_id,
+            ),
         )
     else:
         output = json.loads(output_path.read_text())
@@ -5544,54 +5354,10 @@ def test_runtime_observation_and_worker_subprocess_reconciliation_rejects_tamper
     )
 
 
-def _mixed_sentinel_and_result_validation_failure_replay_fixture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    plan_sha256 = (
-        qualification_job.GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PLAN_SHA256
+def _mixed_sentinel_and_result_validation_failure_replay_fixture(tmp_path, monkeypatch):
+    return _synthetic_historical_failure_fixture(
+        tmp_path, monkeypatch, "MIXED_SENTINEL_AND_RESULT_VALIDATION"
     )
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep"
-        / f"gpu-qualification-plan-sha256-{plan_sha256}"
-    ).resolve()
-    evidence_root = (
-        plan_root / "failed-attempt-mixed-sentinel-and-result-validation-v2"
-    )
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
-    manifest = json.loads((evidence_root / "reconciliation-manifest.json").read_text())
-    retained_bytes, retained_stat_before, retained = (
-        _current_live_and_prior_receipt_ledgers()
-    )
-    ledger_path = tmp_path / "cluster-hours.json"
-    resource_ledger._atomic_write_ledger(ledger_path, retained)
-    assert ledger_path.read_bytes() == _canonical_ledger_bytes(retained)
-    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
-    retained_stat_after = _RETAINED_LEDGER_PATH.stat()
-    assert (
-        retained_stat_after.st_ino,
-        retained_stat_after.st_mode,
-        retained_stat_after.st_mtime_ns,
-        retained_stat_after.st_size,
-    ) == (
-        retained_stat_before.st_ino,
-        retained_stat_before.st_mode,
-        retained_stat_before.st_mtime_ns,
-        retained_stat_before.st_size,
-    )
-    monkeypatch.setattr(
-        qualification_job,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    monkeypatch.setattr(
-        resource_ledger,
-        "databricks_ledger_path_sha256",
-        lambda _path: plan["campaign_ledger_path_sha256"],
-    )
-    return plan_root, evidence_root, plan, payloads, manifest, ledger_path
 
 
 def _reconcile_mixed_sentinel_and_result_validation_failure(
@@ -5619,22 +5385,16 @@ def _reconcile_mixed_sentinel_and_result_validation_failure(
     )
 
 
-def test_mixed_sentinel_and_result_validation_failure_source_pins_exact_closure():
-    plan_sha256 = (
-        qualification_job.GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_PLAN_SHA256
+def test_mixed_sentinel_and_result_validation_failure_source_pins_exact_closure(
+    tmp_path, monkeypatch
+):
+    plan_root, evidence_root, plan, payloads, manifest, _ledger_path = (
+        _synthetic_historical_failure_fixture(
+            tmp_path, monkeypatch, "MIXED_SENTINEL_AND_RESULT_VALIDATION"
+        )
     )
-    plan_root = (
-        Path(__file__).parents[1]
-        / "databricks-runs/vllm-0271-publication-prep"
-        / f"gpu-qualification-plan-sha256-{plan_sha256}"
-    ).resolve()
-    evidence_root = (
-        plan_root / "failed-attempt-mixed-sentinel-and-result-validation-v2"
-    )
-    plan = json.loads((plan_root / "gpu-qualification-plan.json").read_text())
-    payloads = json.loads((plan_root / "submit-payloads.json").read_text())
+    plan_sha256 = plan["closed_record_sha256"]
     manifest_path = evidence_root / "reconciliation-manifest.json"
-    manifest = json.loads(manifest_path.read_text())
     contracts = _validated_retained_historical_contracts(plan, payloads)
     error_sha256_by_job = dict(
         qualification_job.GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_SHA256_BY_JOB
@@ -5658,7 +5418,9 @@ def test_mixed_sentinel_and_result_validation_failure_source_pins_exact_closure(
     assert list(categories.values()).count("unresolved_native") == 2
     assert list(categories.values()).count("layout_conflict") == 8
     assert list(categories.values()).count("flashinfer") == 2
-    assert sum(error_utf8_bytes_by_job.values()) == 52_079
+    assert sum(error_utf8_bytes_by_job.values()) == _fixture_expected(
+        plan_root, "error_bytes"
+    )
     for contract in contracts:
         job_id = str(contract["job_id"])
         run = json.loads((evidence_root / f"{job_id}.runs-get.json").read_text())
@@ -5673,8 +5435,9 @@ def test_mixed_sentinel_and_result_validation_failure_source_pins_exact_closure(
             "metadata",
         }
         error = run_output["error"]
-        assert hashlib.sha256(error.encode("utf-8")).hexdigest() == (
-            error_sha256_by_job[job_id]
+        assert (
+            hashlib.sha256(error.encode("utf-8")).hexdigest()
+            == (error_sha256_by_job[job_id])
         )
         assert len(error.encode("utf-8")) == error_utf8_bytes_by_job[job_id]
         assert (
@@ -5703,9 +5466,7 @@ def test_mixed_sentinel_and_result_validation_failure_source_pins_exact_closure(
         qualification_job.GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_TOTAL_BYTES,
         qualification_job.GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_SHA256,
     )
-    public_name = (
-        "reconcile_gpu_qualification_mixed_sentinel_and_result_validation_failure_evidence"
-    )
+    public_name = "reconcile_gpu_qualification_mixed_sentinel_and_result_validation_failure_evidence"
     assert public_name in qualification_job.__all__
     signature = inspect.signature(getattr(qualification_job, public_name))
     assert list(signature.parameters) == [
@@ -5758,26 +5519,35 @@ def test_mixed_sentinel_and_result_validation_wrapper_is_deterministic_and_idemp
 
     assert reconciled == second
     assert ledger_path.read_bytes() == second_ledger_path.read_bytes()
-    assert len(ledger_path.read_bytes()) == 220_426
+    assert len(ledger_path.read_bytes()) == _fixture_expected(plan_root, "ledger_bytes")
     assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
-        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d"
+        _fixture_expected(plan_root, "ledger_sha256")
     )
     assert (
         len(reconciled.reservations),
         len(reconciled.submission_receipts),
         len(reconciled.terminal_actuals),
-    ) == (236, 98, 236)
+    ) == tuple(
+        _fixture_expected(plan_root, key)
+        for key in ("reservation_count", "receipt_count", "terminal_count")
+    )
     assert reconciled.active_reserved_task_count == 0
     assert reconciled.active_reserved_cluster_hours == 0.0
-    assert reconciled.terminal_actual_cluster_hours == 71.39012833333337
-    assert reconciled.accounted_cluster_hours == 71.39012833333337
-    assert reconciled.remaining_cluster_hours == 952.6098716666667
+    assert reconciled.terminal_actual_cluster_hours == _fixture_expected(
+        plan_root, "terminal_hours"
+    )
+    assert reconciled.accounted_cluster_hours == _fixture_expected(
+        plan_root, "terminal_hours"
+    )
+    assert reconciled.remaining_cluster_hours == _fixture_expected(
+        plan_root, "remaining_hours"
+    )
     assert sum(
         item.actual_cluster_duration_seconds
         for item in reconciled.terminal_actuals[-14:]
-    ) == 12_455.252
+    ) == _fixture_expected(plan_root, "new_terminal_seconds")
     assert databricks_ledger_prefix(reconciled).prefix_sha256 == (
-        "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7"
+        _fixture_expected(plan_root, "terminal_prefix_sha256")
     )
     contracts = _validated_retained_historical_contracts(plan, payloads)
     assert [item.attempt_id for item in reconciled.terminal_actuals[-14:]] == [
@@ -5825,9 +5595,10 @@ def test_mixed_sentinel_and_result_validation_wrapper_is_deterministic_and_idemp
         live_stat.st_mtime_ns,
         live_stat.st_size,
     )
-    assert qualification_job._failed_attempt_evidence_tree_binding(
-        evidence_root
-    ) == evidence_binding
+    assert (
+        qualification_job._failed_attempt_evidence_tree_binding(evidence_root)
+        == evidence_binding
+    )
 
 
 def test_mixed_sentinel_and_result_validation_reconciliation_resumes_five_appends(
@@ -5875,7 +5646,10 @@ def test_mixed_sentinel_and_result_validation_reconciliation_resumes_five_append
             ledger_path=ledger_path,
         )
     partial = read_databricks_cluster_hour_ledger_json(ledger_path)
-    assert len(partial.terminal_actuals) == 227
+    assert (
+        len(partial.terminal_actuals)
+        == PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.terminal_actual_count + 5
+    )
     contracts = _validated_retained_historical_contracts(plan, payloads)
     expected_attempt_order = [
         str(contract["reservation_attempt_id"])
@@ -5907,7 +5681,7 @@ def test_mixed_sentinel_and_result_validation_reconciliation_resumes_five_append
     assert resumed == clean
     assert ledger_path.read_bytes() == clean_ledger_path.read_bytes()
     assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
-        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d"
+        _fixture_expected(plan_root, "ledger_sha256")
     )
 
 
@@ -6131,7 +5905,9 @@ def test_mixed_sentinel_and_result_validation_tamper_fails_before_write(
             "count": "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_FILE_COUNT",
             "bytes": "GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_EVIDENCE_TREE_TOTAL_BYTES",
         }[suffix]
-        value = "0" * 64 if suffix == "sha" else (30 if suffix == "count" else 2_094_893)
+        value = (
+            "0" * 64 if suffix == "sha" else (30 if suffix == "count" else 2_094_893)
+        )
         monkeypatch.setattr(qualification_job, name, value)
     elif mutation.startswith("final-ledger-"):
         suffix = mutation.removeprefix("final-ledger-")
@@ -6158,9 +5934,7 @@ def test_mixed_sentinel_and_result_validation_tamper_fails_before_write(
         )
     elif mutation == "raw-bytes":
         pins = tuple(
-            (job_id, byte_count + 1)
-            if job_id == layout_job
-            else (job_id, byte_count)
+            (job_id, byte_count + 1) if job_id == layout_job else (job_id, byte_count)
             for job_id, byte_count in (
                 qualification_job.GPU_QUALIFICATION_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_ERROR_UTF8_BYTES_BY_JOB
             )
@@ -6251,8 +6025,11 @@ def test_mixed_sentinel_and_result_validation_tamper_fails_before_write(
         elif mutation == "truncation":
             record["logs_truncated"] = True
         elif mutation == "trace":
-            record["error_trace"] += "\n" + qualification_job._normalized_failed_run_exception_text(
-                record["error"]
+            record["error_trace"] += (
+                "\n"
+                + qualification_job._normalized_failed_run_exception_text(
+                    record["error"]
+                )
             )
         elif mutation == "log":
             record["logs"] = record["logs"].replace(
@@ -6581,9 +6358,7 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
         require_gpu_qualification_launch_authorization(
             object.__new__(SmuggledLaunchAuthorization),
             expected_plan_sha256=plan["closed_record_sha256"],
-            expected_evidence_file_sha256=qualification_job._file_sha256(
-                evidence_path
-            ),
+            expected_evidence_file_sha256=qualification_job._file_sha256(evidence_path),
         )
     assert evidence_path.is_file()
     assert len(list(terminal_root.glob("*.json"))) == 14
@@ -6753,9 +6528,10 @@ def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount(
     namespace: dict[str, Any] = {"__name__": "gpuq_bootstrap_test"}
     exec(GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT, namespace)
 
-    assert namespace["_cluster_path"](
-        "dbfs:/Volumes/catalog/schema/volume/package.whl"
-    ) == "/Volumes/catalog/schema/volume/package.whl"
+    assert (
+        namespace["_cluster_path"]("dbfs:/Volumes/catalog/schema/volume/package.whl")
+        == "/Volumes/catalog/schema/volume/package.whl"
+    )
     assert namespace["_cluster_path"]("dbfs:/legacy/package.whl") == (
         "/dbfs/legacy/package.whl"
     )
@@ -6772,9 +6548,7 @@ def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount(
     monkeypatch.setenv("PYTHONHOME", "/attacker/python-home")
     monkeypatch.setenv("PYTHONPATH", "/attacker/python-path")
     monkeypatch.setenv("VIRTUAL_ENV", "/attacker/venv")
-    monkeypatch.setenv(
-        "FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
-    )
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL)
     monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
     environments = (
         namespace["_pip_subprocess_environment"](),
@@ -6782,9 +6556,7 @@ def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount(
         sentinel_worker._pip_subprocess_environment(),
     )
     for environment in environments:
-        assert {
-            key for key in environment if key.upper().startswith("PIP_")
-        } == {
+        assert {key for key in environment if key.upper().startswith("PIP_")} == {
             "PIP_CONFIG_FILE",
             "PIP_DISABLE_PIP_VERSION_CHECK",
             "PIP_NO_INPUT",
@@ -6810,9 +6582,7 @@ def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount(
         == GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
     )
     assert gpu_runtime_environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
-    monkeypatch.setenv(
-        "FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
-    )
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL)
     monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
     runtime_root = tmp_path / "runtime"
     site_packages = runtime_root / "lib/python3.11/site-packages"
@@ -6839,9 +6609,7 @@ def test_emitted_bootstrap_and_worker_resolve_uc_volumes_at_official_mount(
         "run",
         discover_site_packages,
     )
-    qualification_sentinels._make_site_packages_read_only(
-        runtime_root / "bin/python"
-    )
+    qualification_sentinels._make_site_packages_read_only(runtime_root / "bin/python")
     assert len(discovery_calls) == 1
     assert discovery_calls[0][1]["env"] == environments[1]
 
@@ -6897,9 +6665,7 @@ def test_emitted_bootstrap_verifies_its_compiled_path_without_file_global(
     assert len(calls) == 1
     assert calls[0][0][-1] == str(package_path)
     environment = calls[0][1]["env"]
-    assert {
-        key for key in environment if key.upper().startswith("PIP_")
-    } == {
+    assert {key for key in environment if key.upper().startswith("PIP_")} == {
         "PIP_CONFIG_FILE",
         "PIP_DISABLE_PIP_VERSION_CHECK",
         "PIP_NO_INPUT",
@@ -6935,18 +6701,23 @@ def test_uc_volume_artifact_and_output_resolvers_preserve_uri_and_mount_identity
     job = plan["cloud_qualification"]["jobs"][0]
     root = "dbfs:/Volumes/catalog/schema/volume/results"
     output = (
-        f"{root}/{plan['closed_record_sha256']}/{job['job_id']}/"
-        "gpu-job-result.json"
+        f"{root}/{plan['closed_record_sha256']}/{job['job_id']}/gpu-job-result.json"
     )
 
-    assert qualification_job._validated_cluster_artifact_uri(
-        "dbfs:/Volumes/catalog/schema/volume/package.whl", "package"
-    ) == "dbfs:/Volumes/catalog/schema/volume/package.whl"
-    assert qualification_job._validated_result_output_json(
-        output,
-        plan_digest=plan["closed_record_sha256"],
-        job_id=job["job_id"],
-    ) == output
+    assert (
+        qualification_job._validated_cluster_artifact_uri(
+            "dbfs:/Volumes/catalog/schema/volume/package.whl", "package"
+        )
+        == "dbfs:/Volumes/catalog/schema/volume/package.whl"
+    )
+    assert (
+        qualification_job._validated_result_output_json(
+            output,
+            plan_digest=plan["closed_record_sha256"],
+            job_id=job["job_id"],
+        )
+        == output
+    )
     assert qualification_job._cluster_file_path(output).parts[:5] == (
         "/",
         "Volumes",
@@ -7136,7 +6907,9 @@ def test_observe_gpu_runtime_attests_identity_and_uses_distribution_version(
     def probe(argv, **kwargs):
         calls.append((argv, kwargs))
         if argv[0] == "nvidia-smi":
-            return subprocess.CompletedProcess(argv, 0, stdout="570.172.08\n", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="570.172.08\n", stderr=""
+            )
         assert argv[0] == str(python)
         assert kwargs["cwd"] == runtime
         assert "PYTHONHOME" not in kwargs["env"]
@@ -7209,7 +6982,9 @@ def test_observe_gpu_runtime_detects_python_mutation_across_probe(
 
     def probe(argv, **kwargs):
         if argv[0] == "nvidia-smi":
-            return subprocess.CompletedProcess(argv, 0, stdout="570.172.08\n", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="570.172.08\n", stderr=""
+            )
         if "torch.cuda.get_device_properties" in argv[2]:
             if mutation == "replace":
                 replacement = python.with_name("replacement")
@@ -7475,15 +7250,14 @@ def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_or
     )
 
     ordering = [
-        (item["distribution"], item["member"], item["path"])
-        for item in evidence
+        (item["distribution"], item["member"], item["path"]) for item in evidence
     ]
     assert ordering == sorted(ordering)
-    assert {item["distribution"] for item in evidence} == set(
-        files_by_distribution
-    )
-    assert len(evidence) == len(calls) == sum(
-        len(files) for files in files_by_distribution.values()
+    assert {item["distribution"] for item in evidence} == set(files_by_distribution)
+    assert (
+        len(evidence)
+        == len(calls)
+        == sum(len(files) for files in files_by_distribution.values())
     )
     assert all(str(unrelated) != call[0][1] for call in calls)
     alias = next(item for item in evidence if item["member"] == "vllm/libalias.so")
@@ -7506,8 +7280,7 @@ def test_native_shared_object_resolution_uses_only_owned_members_in_canonical_or
     ]
     assert all(call[1]["env"]["LC_ALL"] == "C" for call in calls)
     assert all(
-        call[1]["env"]["LD_LIBRARY_PATH"] == reviewed_torch_library
-        for call in calls
+        call[1]["env"]["LD_LIBRARY_PATH"] == reviewed_torch_library for call in calls
     )
     assert all(call[1]["encoding"] == "utf-8" for call in calls)
     assert {
@@ -7610,7 +7383,8 @@ def test_native_shared_object_resolution_accepts_only_reviewed_platform_subsets(
     def ldd(argv, **_kwargs):
         member = next(
             candidate
-            for candidate in platform_members | {
+            for candidate in platform_members
+            | {
                 "bitsandbytes/libbitsandbytes_cuda129.so",
                 "torch/lib/libtorch.so.2",
                 "triton/_C/libtriton_runtime.so",
@@ -7642,15 +7416,12 @@ def test_native_shared_object_resolution_accepts_only_reviewed_platform_subsets(
             binding["soname"]
             for binding in record["soname_bindings"]
             if binding["resolved_path"] is None
-        }.issubset(
-            _EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES[key]
-        )
+        }.issubset(_EXPECTED_PLATFORM_INAPPLICABLE_NATIVE_MISSING_SONAMES[key])
         for key, record in platform_evidence.items()
     )
     assert all(
         not any(
-            binding["resolved_path"] is None
-            for binding in record["soname_bindings"]
+            binding["resolved_path"] is None for binding in record["soname_bindings"]
         )
         for record in evidence
         if record["resolution_scope"] == "runtime_reachable"
@@ -7827,9 +7598,9 @@ def test_native_ldd_parser_matches_validator_reported_path_contract(
     assert sentinel_worker._ldd_soname_bindings(stdout) == [
         {"resolved_path": reported_path, "soname": "libcudart.so.12"}
     ]
-    assert gpu_qualification._native_ldd_soname_bindings(
-        stdout, label="reviewed"
-    ) == [("libcudart.so.12", reported_path)]
+    assert gpu_qualification._native_ldd_soname_bindings(stdout, label="reviewed") == [
+        ("libcudart.so.12", reported_path)
+    ]
 
     for rejected_path in rejected_paths:
         rejected_stdout = f"libc.so.6 => {rejected_path} (0x1234)\n"
@@ -7893,10 +7664,7 @@ def _install_weight_quantizer_fakes(
     mutation: str | None = None,
 ) -> tuple[Path, types.SimpleNamespace]:
     selected_path = (
-        tmp_path
-        / "site-packages"
-        / "bitsandbytes"
-        / "libbitsandbytes_cuda129.so"
+        tmp_path / "site-packages" / "bitsandbytes" / "libbitsandbytes_cuda129.so"
     )
     selected_path.parent.mkdir(parents=True)
     selected_path.write_bytes(b"selected")
@@ -7988,10 +7756,7 @@ def test_weight_quantizer_attestation_binds_real_nf4_call_to_selected_cdll(
         "bitsandbytes/libbitsandbytes_cuda129.so"
     )
     assert attestation["loaded_native_library_path"] == str(
-        tmp_path
-        / "site-packages"
-        / "bitsandbytes"
-        / "libbitsandbytes_cuda129.so"
+        tmp_path / "site-packages" / "bitsandbytes" / "libbitsandbytes_cuda129.so"
     )
     assert attestation["dynamic_quant_call"] == {
         "compress_statistics": True,
@@ -8078,21 +7843,23 @@ def test_runtime_handoff_reports_truthful_unresolved_native_counts_after_quantiz
         "_installed_vllm_member_hashes",
         lambda expected: dict(expected),
     )
-    monkeypatch.setattr(sentinel_worker, "_direct_url_matches_patched_wheel", lambda: True)
+    monkeypatch.setattr(
+        sentinel_worker, "_direct_url_matches_patched_wheel", lambda: True
+    )
     monkeypatch.setattr(sentinel_worker, "_pip_check_ok", lambda: True)
 
     def weight_attestation():
         events.append("weight")
-        return {"loaded_native_library_member": "bitsandbytes/libbitsandbytes_cuda129.so"}
+        return {
+            "loaded_native_library_member": "bitsandbytes/libbitsandbytes_cuda129.so"
+        }
 
     def native_evidence():
         events.append("native")
         return (
             {
                 "resolution_scope": "platform_inapplicable",
-                "soname_bindings": [
-                    {"resolved_path": None, "soname": "libtriton.so"}
-                ],
+                "soname_bindings": [{"resolved_path": None, "soname": "libtriton.so"}],
             },
             {
                 "resolution_scope": "runtime_reachable",
@@ -8102,20 +7869,22 @@ def test_runtime_handoff_reports_truthful_unresolved_native_counts_after_quantiz
             },
         )
 
-    monkeypatch.setattr(sentinel_worker, "_weight_quantizer_attestation", weight_attestation)
-    monkeypatch.setattr(sentinel_worker, "_native_shared_object_resolution", native_evidence)
+    monkeypatch.setattr(
+        sentinel_worker, "_weight_quantizer_attestation", weight_attestation
+    )
+    monkeypatch.setattr(
+        sentinel_worker, "_native_shared_object_resolution", native_evidence
+    )
     monkeypatch.setattr(sentinel_worker, "_libcudart_major_versions", lambda: [12])
     monkeypatch.setattr(sentinel_worker.platform, "python_version", lambda: "3.11.11")
     monkeypatch.setattr(sentinel_worker.platform, "libc_ver", lambda: ("glibc", "2.35"))
     parent_root = tmp_path / "parent-site-packages"
-    parent_attestation = (
-        gpu_qualification.build_gpu_qualification_system_cuda_parent_attestation(
-            distribution_root=str(parent_root),
-            libcudart_path=str(
-                parent_root
-                / gpu_qualification.GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER
-            ),
-        )
+    parent_attestation = gpu_qualification.build_gpu_qualification_system_cuda_parent_attestation(
+        distribution_root=str(parent_root),
+        libcudart_path=str(
+            parent_root
+            / gpu_qualification.GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_LIBCUDART_MEMBER
+        ),
     )
     monkeypatch.setattr(
         qualification_sentinels,
@@ -8184,15 +7953,14 @@ def test_native_shared_object_resolution_fails_closed_with_owned_ldd_evidence(
         ),
     )
 
-    with pytest.raises(RuntimeError, match="owned native shared-object audit failed") as exc:
+    with pytest.raises(
+        RuntimeError, match="owned native shared-object audit failed"
+    ) as exc:
         sentinel_worker._native_shared_object_resolution()
 
     assert expected in str(exc.value)
     assert '"distribution":"bitsandbytes"' in str(exc.value)
-    assert (
-        '"member":"bitsandbytes/libbitsandbytes_cuda129.so"'
-        in str(exc.value)
-    )
+    assert '"member":"bitsandbytes/libbitsandbytes_cuda129.so"' in str(exc.value)
 
 
 @pytest.mark.parametrize("member", ("../escape.so", "/absolute/escape.so"))
@@ -8711,6 +8479,7 @@ def _execute(
     monkeypatch.setattr(
         qualification_job, "_verify_artifact_files", lambda *a, **k: None
     )
+
     def observe_runtime(work_dir, *, expected_python_version):
         assert expected_python_version == "3.11.11"
         return _runtime_for(job)

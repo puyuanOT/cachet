@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from qualification_ledger_fixture import write_opening_ledger
+
 import document_kv_cache.databricks_resource_ledger as ledger_api
 import document_kv_cache.databricks_runs as runs_api
 import document_kv_cache.gpu_qualification as qualification_v1
@@ -51,12 +53,6 @@ from document_kv_cache.runtime_artifact_closure import (
 )
 
 
-_RETAINED_LEDGER_PATH = (
-    Path(__file__).parents[1]
-    / "databricks-runs"
-    / "vllm-0271-publication-prep"
-    / "cluster-hours.json"
-)
 _SINGLE_USER_NAME = "v2-controller@example.com"
 _OUTPUT_ROOT = "dbfs:/Volumes/catalog/schema/volume/gpuq-v2-results"
 
@@ -133,7 +129,7 @@ def _bind_isolated_ledger_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # These modules intentionally retain imported aliases to the path-binding
     # primitive.  Bind all package-owned call sites to the production identity
-    # while exercising an isolated copy of the retained ledger.
+    # while exercising an isolated synthetic ledger history.
     monkeypatch.setattr(
         databricks_v1,
         "databricks_ledger_path_sha256",
@@ -160,27 +156,25 @@ def _copy_opening_ledger(
     destination: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    retained_bytes = _RETAINED_LEDGER_PATH.read_bytes()
-    retained_stat = _stable_stat(_RETAINED_LEDGER_PATH)
-    retained = ledger_api.read_databricks_cluster_hour_ledger_json(
-        _RETAINED_LEDGER_PATH
+    # Controller mechanics use a small paid predecessor produced through the
+    # real ledger APIs. Bind only this unit fixture's historical opening pins;
+    # production campaign records and every ledger/payload validator stay real.
+    opening = write_opening_ledger(
+        destination, ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
     )
-    opening_prefix = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
-    ledger_api.require_databricks_ledger_prefix(retained, opening_prefix)
-    opening = replace(
-        retained,
-        reservations=retained.reservations[: opening_prefix.reservation_count],
-        submission_receipts=retained.submission_receipts[
-            : opening_prefix.submission_receipt_count
-        ],
-        terminal_actuals=retained.terminal_actuals[
-            : opening_prefix.terminal_actual_count
-        ],
+    prefix = ledger_api.databricks_ledger_prefix(opening)
+    hours = opening.terminal_actual_cluster_hours
+    monkeypatch.setitem(globals(), "GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX", prefix)
+    monkeypatch.setitem(
+        globals(), "GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS", hours,
     )
-    assert ledger_api.databricks_ledger_prefix(opening) == opening_prefix
-    _write_ledger(destination, opening)
-    assert _RETAINED_LEDGER_PATH.read_bytes() == retained_bytes
-    assert _stable_stat(_RETAINED_LEDGER_PATH) == retained_stat
+    monkeypatch.setattr(
+        qualification_v2, "GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX", prefix,
+    )
+    monkeypatch.setattr(
+        qualification_v2, "GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS", hours,
+    )
+    ledger_api.require_databricks_ledger_prefix(opening, prefix)
     _bind_isolated_ledger_path(monkeypatch)
 
 
@@ -188,7 +182,15 @@ def _copy_retained_live_ledger(
     destination: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _copy_opening_ledger(destination, monkeypatch)
+    if destination.exists():
+        # The lease-only interruption test already created this exact opening.
+        # Append its successor without resetting any pre-existing history.
+        existing = ledger_api.read_databricks_cluster_hour_ledger_json(destination)
+        assert ledger_api.databricks_ledger_prefix(existing) == (
+            GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+        )
+    else:
+        _copy_opening_ledger(destination, monkeypatch)
     opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
     payload = databricks_v2.render_gpu_qualification_submit_payloads_v2(
         _plan(),
@@ -827,12 +829,12 @@ def test_successor_fresh_submit_uses_complete_live_opening_predecessor(
         historical.reservation_count,
         historical.submission_receipt_count,
         historical.terminal_actual_count,
-    ) == (506, 368, 506)
+    ) == (1, 0, 1)
     assert (
         live_predecessor.reservation_count,
         live_predecessor.submission_receipt_count,
         live_predecessor.terminal_actual_count,
-    ) == (507, 368, 507)
+    ) == (2, 0, 2)
 
     receipts = databricks_v2.submit_gpu_qualification_jobs_v2(
         case.config,

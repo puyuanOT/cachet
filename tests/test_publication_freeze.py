@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
+import io
 import json
+import sys
+import tarfile
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +17,7 @@ import pytest
 
 import cachet.publication_freeze as cachet_freeze
 import document_kv_cache.databricks_runs as databricks_runs
+import document_kv_cache.publication_campaign as campaign
 import document_kv_cache.publication_freeze as freeze
 from document_kv_cache.gpu_qualification import (
     GPUQualificationArtifactPins,
@@ -29,31 +36,13 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
 )
+from document_kv_cache.release_bundle import RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS
 from document_kv_cache.serving_env import VLLM_RUNTIME_LOCK_SHA256
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_RETAINED_SOURCE_ROOT = (
-    _REPOSITORY_ROOT
-    / "databricks-runs/_campaign-inputs/cachet-source/sha256/"
-    "258b3260d86a3c91156f98103c31f4a8671e49c70e31c9d5ab22a798c1c0b644"
-)
-_RETAINED_SOURCE_CLOSURE = _RETAINED_SOURCE_ROOT / "cachet-source-closure.json"
-_STALE_LATENCY_HANDOFF_PLAN = (
-    _REPOSITORY_ROOT
-    / "databricks-runs/vllm-0271-publication-prep/"
-    "publication-latency-handoff-plan-"
-    "b4778f81d0f21fbd298ecf40e5833fe38d9baa4bc31f856e9de80ed42ac6c9e8.json"
-)
-_CORRECTED_LATENCY_HANDOFF_PLAN = (
-    _REPOSITORY_ROOT
-    / "databricks-runs/vllm-0271-publication-prep/"
-    "publication-latency-handoff-plan-"
-    "404d0ed6ae2f169d1777034c81a057e2af131d805ecd9672900bfc7221871246.json"
-)
 _SEMANTIC_RUNTIME_LOCK = (
-    _REPOSITORY_ROOT
-    / "src/document_kv_cache/runtime_locks/"
+    _REPOSITORY_ROOT / "src/document_kv_cache/runtime_locks/"
     "publication-latency-semantic-py311-macos-arm64.lock"
 )
 _WORKSPACE_CONFIG = freeze.DatabricksWorkspaceConfig(
@@ -61,6 +50,19 @@ _WORKSPACE_CONFIG = freeze.DatabricksWorkspaceConfig(
     "test-token",
 )
 _SINGLE_USER_NAME = "publication@example.com"
+
+
+@pytest.fixture(autouse=True)
+def _portable_subprocess_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Bind real, empty test directories; retain production path validation and
+    # environment sanitization without requiring the operator's macOS layout.
+    for attribute, name in (("_FREEZE_HOME", "empty-home"), ("_FREEZE_TMPDIR", "temp")):
+        directory = tmp_path / name
+        directory.mkdir()
+        monkeypatch.setattr(freeze, attribute, directory)
 
 
 @pytest.fixture(autouse=True)
@@ -76,105 +78,272 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _retained_record() -> dict[str, Any]:
-    return json.loads(_RETAINED_SOURCE_CLOSURE.read_text(encoding="utf-8"))
-
-
-def _patch_retained_repository_identity(
+@pytest.mark.parametrize(
+    ("implementation", "version", "build_version", "error"),
+    (
+        ("CPython", "3.11.16", "1.2.2.post1", None),
+        ("PyPy", "3.11.16", "1.2.2.post1", "requires CPython"),
+        ("CPython", "3.12.0", "1.2.2.post1", "requires CPython"),
+        ("CPython", "3.11.16", "1.2.2", "requires build=="),
+    ),
+)
+def test_source_freeze_requires_exact_toolchain(
     monkeypatch: pytest.MonkeyPatch,
-) -> dict[str, Any]:
-    retained = _retained_record()
-    git = retained["git"]
-    epoch = retained["build"]["source_date_epoch"]
-    identity = {
-        "branch": git["branch"],
-        "commit": git["commit"],
-        "commit_tree": git["commit_tree"],
-        "source_date_epoch": epoch,
-    }
-    monkeypatch.setattr(freeze, "_git_identity", lambda _root: identity)
+    implementation: str,
+    version: str,
+    build_version: str,
+    error: str | None,
+) -> None:
     monkeypatch.setattr(
-        freeze,
-        "validate_publication_campaign_plan_record",
-        lambda _record: None,
+        freeze.platform, "python_implementation", lambda: implementation
     )
-    return identity
+    monkeypatch.setattr(freeze.platform, "python_version", lambda: version)
+    monkeypatch.setattr(
+        freeze.importlib.metadata, "version", lambda _name: build_version
+    )
+    if error is None:
+        freeze._require_freeze_toolchain()
+    else:
+        with pytest.raises(RuntimeError, match=error):
+            freeze._require_freeze_toolchain()
 
 
-def _retained_inputs(
+@pytest.mark.parametrize("attribute", ("_FREEZE_HOME", "_FREEZE_TMPDIR"))
+@pytest.mark.parametrize("kind", ("missing", "symlink"))
+def test_subprocess_directory_bindings_retain_path_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attribute: str,
+    kind: str,
+) -> None:
+    invalid = tmp_path / "invalid-directory"
+    if kind == "symlink":
+        invalid.symlink_to(getattr(freeze, attribute), target_is_directory=True)
+    monkeypatch.setattr(freeze, attribute, invalid)
+    with pytest.raises(ValueError, match="regular directory|symlink"):
+        freeze._base_subprocess_environment()
+
+
+def _package_build_outputs(
+    *, package_content: bytes = b"VALUE = 1\n"
+) -> freeze._PackageBuildOutputs:
+    """Small valid archives; no installed wheel or retained Git object is used."""
+    dist_info = "cachet_kv-0.2.0.dist-info"
+    members = {
+        "cachet/__init__.py": package_content,
+        "cachet/__init__.pyi": b"",
+        "cachet/py.typed": b"",
+        "document_kv_cache/__init__.py": package_content,
+        "document_kv_cache/py.typed": b"",
+        f"{dist_info}/METADATA": (
+            b"Name: cachet-kv\nVersion: 0.2.0\nLicense-Expression: Apache-2.0\n"
+            b"License-File: LICENSE\n"
+        ),
+        f"{dist_info}/WHEEL": (
+            b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+        f"{dist_info}/licenses/LICENSE": b"Apache License 2.0\n",
+        f"{dist_info}/entry_points.txt": (
+            "[console_scripts]\n"
+            + "".join(
+                f"{name}={target}\n"
+                for name, target in sorted(
+                    RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS.items()
+                )
+            )
+        ).encode(),
+    }
+    record_lines = []
+    for name, content in sorted(members.items()):
+        digest = (
+            base64.urlsafe_b64encode(hashlib.sha256(content).digest())
+            .decode()
+            .rstrip("=")
+        )
+        record_lines.append(f"{name},sha256={digest},{len(content)}")
+    members[f"{dist_info}/RECORD"] = (
+        "\n".join([*record_lines, f"{dist_info}/RECORD,,"]) + "\n"
+    ).encode()
+    wheel = io.BytesIO()
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, content in sorted(members.items()):
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, content)
+    sdist = io.BytesIO()
+    with gzip.GzipFile(fileobj=sdist, mode="wb", mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w") as archive:
+            info = tarfile.TarInfo("cachet_kv-0.2.0/src/cachet/__init__.py")
+            info.size = len(package_content)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(package_content))
+    return freeze._PackageBuildOutputs(
+        "cachet_kv-0.2.0-py3-none-any.whl",
+        wheel.getvalue(),
+        "cachet_kv-0.2.0.tar.gz",
+        sdist.getvalue(),
+    )
+
+
+def _source_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> freeze.PublicationSourceClosureInputs:
-    _patch_retained_repository_identity(monkeypatch)
-    wheel = _RETAINED_SOURCE_ROOT / "cachet_kv-0.2.0-py3-none-any.whl"
-    sdist = _RETAINED_SOURCE_ROOT / "cachet_kv-0.2.0.tar.gz"
-    outputs = freeze._PackageBuildOutputs(
-        wheel_name=wheel.name,
-        wheel_bytes=wheel.read_bytes(),
-        sdist_name=sdist.name,
-        sdist_bytes=sdist.read_bytes(),
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["'
+        + freeze.PUBLICATION_FREEZE_BUILD_BACKEND
+        + '"]\nbuild-backend = "poetry.core.masonry.api"\n',
+        encoding="utf-8",
     )
+    references = repository / "references"
+    references.mkdir()
+    runtime_paths = {}
+    for role, filename in (
+        ("runtime_lock", "vllm-0.27.1-cu129-py311-manylinux_2_35.lock"),
+        ("runtime_lock_input", "vllm-0.27.1-cu129-py311-manylinux_2_35.in"),
+    ):
+        destination = references / filename
+        destination.write_bytes(
+            (
+                _REPOSITORY_ROOT / "src/document_kv_cache/runtime_locks" / filename
+            ).read_bytes()
+        )
+        runtime_paths[role] = destination
+    campaign_path = references / "campaign.json"
+    campaign.write_publication_campaign_plan_json(
+        campaign.build_publication_campaign_plan(
+            PUBLICATION_CAMPAIGN_ID,
+            campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+            campaign_opening_terminal_gpu_hours=PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
+        ),
+        campaign_path,
+    )
+    other_paths = {}
+    for role in (
+        "latency_handoff_plan",
+        "full_score_inventory",
+        "full_score_shard_plan",
+    ):
+        path = references / f"{role}.json"
+        path.write_bytes(
+            freeze._canonical_json_bytes(
+                {"synthetic_source_reference": role}, pretty=True
+            )
+        )
+        other_paths[role] = path
+    # Exercise actual clean-tree identity and Git archive reproduction with an
+    # object that also exists in a shallow CI checkout. No old Git commit needed.
+    freeze._git(repository, "init", "--quiet", "--initial-branch=codex/freeze-fixture")
+    freeze._git(repository, "add", ".")
+    freeze._git(
+        repository,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "Synthetic source fixture",
+    )
+    outputs = _package_build_outputs()
+    monkeypatch.setattr(freeze, "_require_freeze_toolchain", lambda: None)
     monkeypatch.setattr(
-        freeze,
-        "_build_package_twice",
-        lambda *_args, **_kwargs: (outputs, outputs),
+        freeze, "_build_package_twice", lambda *_args, **_kwargs: (outputs, outputs)
     )
+    # Tokenizer/runtime semantic execution is tested separately. File closure,
+    # package/tar validators, campaign schema and real Git reproduction stay on.
     monkeypatch.setattr(
         freeze,
         "_validate_publication_latency_handoff_reference",
         lambda *_args, **_kwargs: {},
     )
     return freeze.PublicationSourceClosureInputs(
-        repository_root=_REPOSITORY_ROOT,
+        repository_root=repository,
         artifact_output_root=tmp_path / "source-artifacts",
-        runtime_lock=(
-            _REPOSITORY_ROOT
-            / "src/document_kv_cache/runtime_locks/"
-            "vllm-0.27.1-cu129-py311-manylinux_2_35.lock"
-        ),
-        runtime_lock_input=(
-            _REPOSITORY_ROOT
-            / "src/document_kv_cache/runtime_locks/"
-            "vllm-0.27.1-cu129-py311-manylinux_2_35.in"
-        ),
-        campaign_plan=(
-            _REPOSITORY_ROOT
-            / "databricks-runs/vllm-0271-publication-prep/"
-            "publication-campaign-plan.json"
-        ),
-        latency_handoff_plan=(
-            _REPOSITORY_ROOT
-            / "databricks-runs/vllm-0271-publication-prep/"
-            "publication-latency-handoff-plan-"
-            "b4778f81d0f21fbd298ecf40e5833fe38d9baa4bc31f856e9de80ed42ac6c9e8.json"
-        ),
-        full_score_inventory=(
-            _REPOSITORY_ROOT
-            / "databricks-runs/vllm-0271-publication-prep/"
-            "full-score-plan-sha256-e19fefa656d89759-605c15ef5317bb0b/"
-            "full-score-inventory.json"
-        ),
-        full_score_shard_plan=(
-            _REPOSITORY_ROOT
-            / "databricks-runs/vllm-0271-publication-prep/"
-            "full-score-plan-sha256-e19fefa656d89759-605c15ef5317bb0b/"
-            "full-score-shard-plan.json"
-        ),
+        campaign_plan=campaign_path,
+        **runtime_paths,
+        **other_paths,
     )
 
 
-def test_source_closure_latency_semantics_reject_stale_b477_and_accept_current(
+def _latency_plan_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    """Synthetic reference-boundary records; external token replay is separate."""
+    workers = [
+        {
+            "items": [
+                {
+                    "segment_token_contracts": [],
+                    "segment_token_contracts_sha256": _digest("empty-contracts"),
+                }
+                for _ in range(24)
+            ]
+        }
+        for _ in range(16)
+    ]
+    record = {
+        "plan_id": "synthetic-latency-reference",
+        "input_bundle_sha256": _digest("synthetic-inputs"),
+        "workers_sha256": _digest(
+            json.dumps(
+                workers,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        ),
+        "workers": workers,
+        "sharding": {"worker_count": 16},
+        "coverage": {"task_count": 384, "cache_prefix_generation_tokens": 7_323_967},
+    }
+    record["closed_record_sha256"] = _digest(canonical_gpu_qualification_json(record))
+    current = tmp_path / "current-plan.json"
+    current.write_bytes(freeze._canonical_json_bytes(record, pretty=True))
+    for name, value in {
+        "PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_FILE_SHA256": hashlib.sha256(
+            current.read_bytes()
+        ).hexdigest(),
+        "PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_CLOSED_RECORD_SHA256": record[
+            "closed_record_sha256"
+        ],
+        "PUBLICATION_FREEZE_LATENCY_HANDOFF_PLAN_ID": record["plan_id"],
+        "PUBLICATION_FREEZE_INPUT_BUNDLE_SHA256": record["input_bundle_sha256"],
+        "PUBLICATION_FREEZE_LATENCY_HANDOFF_WORKERS_SHA256": record["workers_sha256"],
+        "_LATENCY_SEMANTIC_PREPARED_INPUT_RELATIVE_PATH": Path("prepared"),
+    }.items():
+        monkeypatch.setattr(freeze, name, value)
+    (tmp_path / "prepared").mkdir()
+    stale_record = json.loads(current.read_bytes())
+    del stale_record["workers"][0]["items"][0]["segment_token_contracts"]
+    del stale_record["closed_record_sha256"]
+    stale_record["closed_record_sha256"] = _digest(
+        canonical_gpu_qualification_json(stale_record)
+    )
+    stale = tmp_path / "stale-plan.json"
+    stale.write_bytes(freeze._canonical_json_bytes(stale_record, pretty=True))
+    return current, stale
+
+
+def test_source_closure_latency_semantics_reject_missing_contract_and_accept_current(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    current, stale = _latency_plan_fixture(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="semantically stale"):
         freeze._validate_publication_latency_handoff_reference(
-            _STALE_LATENCY_HANDOFF_PLAN,
-            repository_root=_REPOSITORY_ROOT,
+            stale,
+            repository_root=tmp_path,
         )
 
-    plan = freeze._validated_frozen_latency_handoff_plan(
-        _CORRECTED_LATENCY_HANDOFF_PLAN
-    )
+    plan = freeze._validated_frozen_latency_handoff_plan(current)
     expected = freeze._publication_latency_semantic_attestation(plan)
     monkeypatch.setattr(
         freeze,
@@ -182,8 +351,8 @@ def test_source_closure_latency_semantics_reject_stale_b477_and_accept_current(
         lambda **_kwargs: expected,
     )
     assert freeze._validate_publication_latency_handoff_reference(
-        _CORRECTED_LATENCY_HANDOFF_PLAN,
-        repository_root=_REPOSITORY_ROOT,
+        current,
+        repository_root=tmp_path,
     ) == expected
 
 
@@ -191,9 +360,8 @@ def test_latency_semantic_child_rejects_alternate_valid_plan_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    alternate = json.loads(
-        _CORRECTED_LATENCY_HANDOFF_PLAN.read_text(encoding="utf-8")
-    )
+    current, _stale = _latency_plan_fixture(tmp_path, monkeypatch)
+    alternate = json.loads(current.read_text(encoding="utf-8"))
     alternate["plan_id"] = "alternate-semantically-valid-plan"
     payload = dict(alternate)
     payload.pop("closed_record_sha256")
@@ -317,7 +485,7 @@ def test_source_closure_cannot_issue_when_latency_semantic_authority_rejects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    inputs = _retained_inputs(tmp_path, monkeypatch)
+    inputs = _source_inputs(tmp_path, monkeypatch)
 
     def reject(*_args, **_kwargs):
         raise ValueError("semantic authority rejected latency plan")
@@ -332,48 +500,29 @@ def test_source_closure_cannot_issue_when_latency_semantic_authority_rejects(
     assert not inputs.artifact_output_root.exists()
 
 
-def test_source_closure_builder_propagates_the_repaired_bootstrap_pin(
+def test_source_closure_builder_binds_current_bootstrap_and_reference_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    inputs = _retained_inputs(tmp_path, monkeypatch)
+    inputs = _source_inputs(tmp_path, monkeypatch)
 
     record = freeze.build_publication_source_closure(inputs)
 
-    expected = _retained_record()
     bootstrap = next(
         item
-        for item in expected["files"]
+        for item in record["files"]
         if item["role"] == "gpu_qualification_bootstrap"
     )
-    assert bootstrap["sha256"] == (
-        "acec0bf48ffcd67ee005e2c017b86540e3601ab3d9739f71f243069cae9007db"
-    )
-    bootstrap["byte_count"] = len(
-        freeze.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT.encode("utf-8")
-    )
-    bootstrap["sha256"] = freeze.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
-    campaign = next(
-        item
-        for item in expected["references"]
-        if item["role"] == "campaign_plan"
-    )
-    campaign["byte_count"] = inputs.campaign_plan.stat().st_size
-    campaign["sha256"] = hashlib.sha256(
-        inputs.campaign_plan.read_bytes()
-    ).hexdigest()
-    runtime_lock = next(
-        item
-        for item in expected["references"]
-        if item["role"] == "runtime_lock"
-    )
-    runtime_lock["byte_count"] = inputs.runtime_lock.stat().st_size
-    runtime_lock["sha256"] = hashlib.sha256(
-        inputs.runtime_lock.read_bytes()
-    ).hexdigest()
-    expected["runtime"]["runtime_lock_sha256"] = freeze.VLLM_RUNTIME_LOCK_SHA256
-    expected["closed_record_sha256"] = freeze._closed_record_sha256(expected)
-    assert record == expected
+    runner_bytes = freeze.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SCRIPT.encode("utf-8")
+    assert bootstrap["byte_count"] == len(runner_bytes)
+    assert bootstrap["sha256"] == hashlib.sha256(runner_bytes).hexdigest()
+    assert bootstrap["sha256"] == freeze.GPU_QUALIFICATION_BOOTSTRAP_RUNNER_SHA256
+    assert (inputs.artifact_output_root / bootstrap["relative_path"]).read_bytes() == runner_bytes
+    for reference in record["references"]:
+        raw = (inputs.repository_root / reference["path"]).read_bytes()
+        assert reference["byte_count"] == len(raw)
+        assert reference["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert record["runtime"]["runtime_lock_sha256"] == freeze.VLLM_RUNTIME_LOCK_SHA256
     output = inputs.artifact_output_root / "cachet-source-closure.json"
     freeze.write_publication_source_closure_json(
         record,
@@ -381,7 +530,7 @@ def test_source_closure_builder_propagates_the_repaired_bootstrap_pin(
         repository_root=inputs.repository_root,
         artifact_root=inputs.artifact_output_root,
     )
-    assert output.read_bytes() != _RETAINED_SOURCE_CLOSURE.read_bytes()
+    assert output.read_bytes() == freeze._canonical_json_bytes(record, pretty=True)
     with pytest.raises(FileExistsError):
         freeze.write_publication_source_closure_json(
             record,
@@ -395,7 +544,7 @@ def test_source_closure_rejects_resealed_file_tamper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    inputs = _retained_inputs(tmp_path, monkeypatch)
+    inputs = _source_inputs(tmp_path, monkeypatch)
     record = freeze.build_publication_source_closure(inputs)
     record["files"][0]["sha256"] = _digest("forged-wheel")
     record["closed_record_sha256"] = freeze._closed_record_sha256(record)
@@ -412,20 +561,13 @@ def test_source_closure_requires_independent_build_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    inputs = _retained_inputs(tmp_path, monkeypatch)
-    wheel = _RETAINED_SOURCE_ROOT / "cachet_kv-0.2.0-py3-none-any.whl"
-    sdist = _RETAINED_SOURCE_ROOT / "cachet_kv-0.2.0.tar.gz"
-    first = freeze._PackageBuildOutputs(
-        wheel.name,
-        wheel.read_bytes(),
-        sdist.name,
-        sdist.read_bytes(),
-    )
+    inputs = _source_inputs(tmp_path, monkeypatch)
+    first = _package_build_outputs()
     second = freeze._PackageBuildOutputs(
-        wheel.name,
-        wheel.read_bytes() + b"different",
-        sdist.name,
-        sdist.read_bytes(),
+        first.wheel_name,
+        first.wheel_bytes + b"different",
+        first.sdist_name,
+        first.sdist_bytes,
     )
     monkeypatch.setattr(
         freeze,
@@ -444,16 +586,11 @@ def test_source_validator_rejects_structurally_valid_unrelated_wheel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    inputs = _retained_inputs(tmp_path, monkeypatch)
+    inputs = _source_inputs(tmp_path, monkeypatch)
     record = freeze.build_publication_source_closure(inputs)
-    unrelated = (
-        _REPOSITORY_ROOT
-        / "databricks-runs/_campaign-inputs/cachet-source/sha256/"
-        "6b4ace4b4230d11cc807bff0271e46cda19a1adb56b7b6438eb16f7cffd44f66/"
-        "cachet_kv-0.2.0-py3-none-any.whl"
-    )
+    unrelated = _package_build_outputs(package_content=b"UNRELATED_PACKAGE = True\n")
     wheel_path = inputs.artifact_output_root / record["files"][0]["relative_path"]
-    wheel_path.write_bytes(unrelated.read_bytes())
+    wheel_path.write_bytes(unrelated.wheel_bytes)
     record["files"][0]["byte_count"] = wheel_path.stat().st_size
     record["files"][0]["sha256"] = hashlib.sha256(
         wheel_path.read_bytes()
@@ -1020,7 +1157,7 @@ def test_preflight_and_git_subprocesses_ignore_hostile_ambient_environment(
 
     collected = freeze._run_command(
         (
-            str(freeze._DEFAULT_PYTHON_EXECUTABLE),
+            sys.executable,
             "-m",
             "pytest",
             "--collect-only",
@@ -1045,7 +1182,7 @@ def test_preflight_and_git_subprocesses_ignore_hostile_ambient_environment(
     )
     imported = freeze._run_command(
         (
-            str(freeze._DEFAULT_PYTHON_EXECUTABLE),
+            sys.executable,
             "-c",
             "import bytecode_probe",
         ),
@@ -1357,17 +1494,19 @@ def test_authority_paths_reject_ancestor_and_tree_symlinks(tmp_path: Path):
         freeze._regular_tree(tree)
 
 
-def test_bundle_rejects_macos_var_alias_but_live_temp_uses_private_var(
+def test_bundle_rejects_parent_alias_but_accepts_canonical_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    if not str(tmp_path).startswith("/private/var/") or not Path("/var").is_symlink():
-        pytest.skip("macOS /var alias is unavailable")
-    plan, plan_path = _plan(tmp_path)
-    inputs = _preflight_inputs(tmp_path, plan_path)
+    canonical_root = tmp_path / "canonical"
+    canonical_root.mkdir()
+    alias_root = tmp_path / "alias"
+    alias_root.symlink_to(canonical_root, target_is_directory=True)
+    plan, plan_path = _plan(canonical_root)
+    inputs = _preflight_inputs(canonical_root, plan_path)
     _patch_in_process_checks(monkeypatch)
     monkeypatch.setattr(freeze, "_run_command", _fake_runner)
-    output = tmp_path / "preflight"
+    output = canonical_root / "preflight"
     freeze._run_gpu_qualification_local_preflight(
         inputs,
         output,
@@ -1381,7 +1520,7 @@ def test_bundle_rejects_macos_var_alias_but_live_temp_uses_private_var(
         submit_payloads=_bound_submit_payloads(inputs),
         workspace_config=_WORKSPACE_CONFIG,
     )
-    alias = Path(str(canonical).replace("/private/var/", "/var/", 1))
+    alias = alias_root / "preflight" / "local-preflight-evidence.json"
     with pytest.raises(ValueError, match="cannot traverse a symlink"):
         freeze.validate_gpu_qualification_local_preflight_bundle(
             alias,
