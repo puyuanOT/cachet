@@ -1,0 +1,2903 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+import document_kv_cache._gpu_qualification_sentinel_worker as sentinel_worker
+import document_kv_cache._gpu_qualification_sentinels_v2 as runtime_v2
+import document_kv_cache.gpu_qualification as qualification_v1
+from document_kv_cache.flashinfer_wheel_repack import (
+    FLASHINFER_PACKAGE_VERSION,
+    FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256,
+    FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
+    FLASHINFER_PATCHED_WHEEL_SHA256,
+    FLASHINFER_TARGET_MEMBER,
+    FLASHINFER_TARGET_PATCHED_SHA256,
+)
+from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+    GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+    GPU_QUALIFICATION_VLLM_VERSION,
+    canonical_gpu_qualification_json,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
+    GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION,
+    GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION,
+    GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+    GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
+    GPUQualificationArtifactPinsV2,
+    build_gpu_qualification_plan_v2,
+    gpu_qualification_v2_runtime_closure,
+    validate_gpu_runtime_verification_v2_record,
+)
+from document_kv_cache.publication_campaign import (
+    PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+    PUBLICATION_CAMPAIGN_ID,
+    PUBLICATION_CAMPAIGN_LEDGER_ID,
+    PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+)
+from document_kv_cache.runtime_artifact_closure import (
+    RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+    RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
+    VLLM_PATCHED_MANIFEST_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT,
+    VLLM_RUNTIME_BASE_LOCK_FILENAME,
+    VLLM_RUNTIME_BASE_LOCK_HASH_COUNT,
+    VLLM_RUNTIME_BASE_LOCK_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SIZE,
+)
+from document_kv_cache.serving_env import (
+    GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+    GPU_RUNTIME_PYTHONWARNINGS,
+    VLLM_PATCHED_WHEEL_SHA256_ENV,
+    VLLM_PATCHED_WHEEL_URI_ENV,
+)
+
+
+_ROOT = Path(__file__).resolve().parents[1]
+_LOCK_PATH = (
+    _ROOT
+    / "src"
+    / "document_kv_cache"
+    / "runtime_locks"
+    / VLLM_RUNTIME_BASE_LOCK_FILENAME
+)
+_CLOSURE_PATH = (
+    _ROOT
+    / "tests"
+    / "fixtures"
+    / "vllm_0271_runtime_closure.json"
+)
+_PACKAGE_SHA256 = "a" * 64
+_SOURCE_SHA256 = "b" * 64
+_RUNNER_SHA256 = "c" * 64
+_REVIEWED_RUNTIME_PYTHON = "/reviewed/runtime/bin/python"
+
+
+def _bounded_stream_result(
+    data: bytes,
+    *,
+    byte_count: int | None = None,
+    digest: str | None = None,
+    limit_exceeded: bool = False,
+) -> runtime_v2._BoundedBinaryStreamResult:
+    return runtime_v2._BoundedBinaryStreamResult(
+        retained=data,
+        byte_count=len(data) if byte_count is None else byte_count,
+        sha256=sha256(data).hexdigest() if digest is None else digest,
+        limit_exceeded=limit_exceeded,
+    )
+
+
+def _bounded_process_result(
+    *,
+    stdout: bytes = runtime_v2._FINAL_VERIFIER_PIP_CHECK_STDOUT,
+    stderr: bytes = b"",
+    returncode: int = 0,
+    timed_out: bool = False,
+    output_limit_exceeded: bool = False,
+) -> runtime_v2._BoundedBinarySubprocessResult:
+    return runtime_v2._BoundedBinarySubprocessResult(
+        returncode=returncode,
+        stdout=_bounded_stream_result(stdout, limit_exceeded=output_limit_exceeded),
+        stderr=_bounded_stream_result(stderr),
+        timed_out=timed_out,
+    )
+
+
+def _pins() -> GPUQualificationArtifactPinsV2:
+    return GPUQualificationArtifactPinsV2(
+        runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
+        patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        package_wheel_sha256=_PACKAGE_SHA256,
+        cachet_source_tree_sha256=_SOURCE_SHA256,
+        runner_sha256=_RUNNER_SHA256,
+        input_bundle_sha256=GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
+    )
+
+
+def _plan() -> dict[str, Any]:
+    return build_gpu_qualification_plan_v2(
+        campaign_id=PUBLICATION_CAMPAIGN_ID,
+        campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+        campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+        campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+        campaign_opening_terminal_gpu_hours=(
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+        ),
+        artifact_pins=_pins(),
+    )
+
+
+def _seal_v2(record: dict[str, Any]) -> None:
+    record["closed_record_sha256"] = ""
+    record["closed_record_sha256"] = sha256(
+        canonical_gpu_qualification_json(record).encode("utf-8")
+    ).hexdigest()
+
+
+def _attestation(*, vllm_uri: str, flashinfer_uri: str) -> dict[str, Any]:
+    closure = gpu_qualification_v2_runtime_closure()
+    return {
+        "base_lock_distribution_count": VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT,
+        "base_lock_hash_count": VLLM_RUNTIME_BASE_LOCK_HASH_COUNT,
+        "base_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+        "cachet_package_version": GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION,
+        "flashinfer_annotation": GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION,
+        "flashinfer_direct_url": flashinfer_uri,
+        "flashinfer_import_ok": True,
+        "closure_bound_flashinfer_manifest_closed_record_sha256": (
+            FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
+        ),
+        "closure_bound_flashinfer_manifest_file_sha256": (
+            FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
+        ),
+        "closure_bound_vllm_manifest_file_sha256": VLLM_PATCHED_MANIFEST_SHA256,
+        "flashinfer_member_sha256": FLASHINFER_TARGET_PATCHED_SHA256,
+        "flashinfer_package_version": FLASHINFER_PACKAGE_VERSION,
+        "flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "installed_distribution_count": 198,
+        "ok": True,
+        "packaged_base_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
+        "pip_check_ok": True,
+        "runtime_closure_closed_record_sha256": (
+            RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256
+        ),
+        "runtime_closure_file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "system_cuda_parent_attestation": (
+            qualification_v1.build_gpu_qualification_system_cuda_parent_attestation(
+                distribution_root="/databricks/python/lib/python3.11/site-packages",
+                libcudart_path=(
+                    "/databricks/python/lib/python3.11/site-packages/"
+                    "nvidia/cuda_runtime/lib/libcudart.so.12"
+                ),
+            )
+        ),
+        "unexpected_distributions": [],
+        "vllm_direct_url": vllm_uri,
+        "vllm_member_sha256": closure["vllm"]["member_sha256"],
+        "vllm_package_version": GPU_QUALIFICATION_VLLM_VERSION,
+        "vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
+        "with_flashinfer_distribution_count": 196,
+        "with_vllm_distribution_count": 197,
+    }
+
+
+def _cpu_attestation(*, vllm_uri: str, flashinfer_uri: str) -> dict[str, Any]:
+    record = _attestation(vllm_uri=vllm_uri, flashinfer_uri=flashinfer_uri)
+    record.pop("system_cuda_parent_attestation")
+    record.update(
+        {
+            "gpu_execution_attested": False,
+            "record_type": (
+                runtime_v2.LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE
+            ),
+            "schema_version": (
+                runtime_v2.LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION
+            ),
+        }
+    )
+    return record
+
+
+def _verify_gpu_direct(**kwargs: Any) -> dict[str, Any]:
+    """Exercise the private in-child verifier in focused implementation tests."""
+
+    original_executable = runtime_v2.sys.executable
+    runtime_v2.sys.executable = _REVIEWED_RUNTIME_PYTHON
+    try:
+        return runtime_v2._verify_gpu_qualification_v2_runtime_installation(
+            **kwargs, stage_callback=None
+        )
+    finally:
+        runtime_v2.sys.executable = original_executable
+
+
+def _artifact_paths(tmp_path: Path) -> dict[str, Path]:
+    tmp_path.mkdir()
+    paths: dict[str, Path] = {}
+    for key in GPU_QUALIFICATION_V2_ARTIFACT_KEYS:
+        path = tmp_path / key
+        if key == "input_bundle_sha256":
+            path.mkdir()
+        else:
+            path.write_text(key, encoding="utf-8")
+        paths[key] = path
+    return paths
+
+
+def test_worker_non_v2_attestation_dispatch_is_exact_legacy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = {"legacy": "exact"}
+    calls = 0
+
+    def legacy() -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return marker
+
+    monkeypatch.setattr(sentinel_worker, "_runtime_lock_attestation", legacy)
+    assert sentinel_worker._runtime_lock_attestation_for_plan({}) is marker
+    assert (
+        sentinel_worker._runtime_lock_attestation_for_plan(
+            {
+                "record_type": "cachet.vllm_0271_gpu_qualification_plan.v1",
+                "schema_version": 1,
+            }
+        )
+        is marker
+    )
+    assert calls == 2
+
+
+def test_runtime_installer_uses_exact_commands_environment_and_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pins = _pins()
+    plan = _plan()
+    job_id = plan["cloud_qualification"]["jobs"][0]["job_id"]
+    planned_job = deepcopy(qualification_v1._plan_job(plan, job_id))
+    artifact_paths = _artifact_paths(tmp_path / "artifacts")
+    work_dir = tmp_path / "work"
+    runtime_dir = work_dir / "runtime"
+    runtime_python = runtime_dir / "bin" / "python"
+    torch_library_dir = runtime_dir / "lib/python3.11/site-packages/torch/lib"
+    events: list[str] = []
+    subprocess_calls: list[tuple[list[str], dict[str, Any]]] = []
+    identity = SimpleNamespace(file_binding="reviewed-python-binding")
+    parent_attestation = (
+        qualification_v1.build_gpu_qualification_system_cuda_parent_attestation(
+            distribution_root="/databricks/python/lib/python3.11/site-packages",
+            libcudart_path=(
+                "/databricks/python/lib/python3.11/site-packages/"
+                "nvidia/cuda_runtime/lib/libcudart.so.12"
+            ),
+        )
+    )
+    parent_attestation_json = canonical_gpu_qualification_json(parent_attestation)
+
+    digest_by_path = {
+        artifact_paths[key]: pins.to_record()[key]
+        for key in GPU_QUALIFICATION_V2_ARTIFACT_KEYS
+        if key != "input_bundle_sha256"
+    }
+    monkeypatch.setattr(runtime_v2, "_file_sha256", lambda path: digest_by_path[path])
+    monkeypatch.setattr(runtime_v2, "_read_exact_runtime_closure", lambda _path: {})
+
+    def create_venv(path: Path, *, copies: bool) -> None:
+        events.append("create-venv")
+        assert copies is True
+        (path / "bin").mkdir(parents=True)
+        (path / "bin" / "python").write_bytes(b"python")
+        torch_library_dir.mkdir(parents=True)
+
+    attest_calls: list[tuple[str, str | None]] = []
+
+    def attest(
+        path: Path,
+        *,
+        expected_python_version: str,
+        expected_file_binding: str | None = None,
+    ) -> SimpleNamespace:
+        assert path == runtime_dir
+        assert expected_python_version == "3.11.11"
+        attest_calls.append((expected_python_version, expected_file_binding))
+        return identity
+
+    def run(
+        arguments: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        subprocess_calls.append((list(arguments), dict(kwargs)))
+        if arguments[-1] == "check":
+            events.append("pip-check")
+        else:
+            events.append(f"install-{len(subprocess_calls)}")
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(runtime_v2, "create_venv", create_venv)
+
+    def capture_parent_attestation() -> dict[str, Any]:
+        events.append("parent-attestation")
+        return deepcopy(parent_attestation)
+
+    monkeypatch.setattr(
+        runtime_v2,
+        "_capture_system_cuda_parent_attestation",
+        capture_parent_attestation,
+    )
+    monkeypatch.setattr(runtime_v2, "_attest_isolated_python", attest)
+    monkeypatch.setattr(
+        runtime_v2,
+        "_pip_subprocess_environment",
+        lambda: {
+            runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV: "hostile-ambient",
+            "FLASHINFER_LOGGING_LEVEL": "DEBUG",
+            "LD_LIBRARY_PATH": "/ambient/reviewed-lib",
+            "PYTHONWARNINGS": "ignore",
+        },
+    )
+    monkeypatch.setattr(runtime_v2.subprocess, "run", run)
+
+    vllm_uri = artifact_paths["patched_vllm_wheel_sha256"].resolve().as_uri()
+    flashinfer_uri = (
+        artifact_paths["patched_flashinfer_wheel_sha256"].resolve().as_uri()
+    )
+    package_uri = artifact_paths["package_wheel_sha256"].resolve().as_uri()
+
+    original_launch_environment = runtime_v2._runtime_launch_environment
+
+    def launch_environment(
+        *,
+        runtime_dir: Path,
+        install_environment: dict[str, str],
+    ) -> dict[str, str]:
+        events.append("launch-environment")
+        return original_launch_environment(
+            runtime_dir=runtime_dir,
+            install_environment=install_environment,
+        )
+
+    monkeypatch.setattr(runtime_v2, "_runtime_launch_environment", launch_environment)
+
+    def final_verifier(
+        observed_python: Path,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        events.append("final-verifier")
+        assert observed_python == runtime_python
+        assert kwargs == {
+            "closure_path": artifact_paths["runtime_closure_manifest_sha256"],
+            "environment": {
+                "FLASHINFER_LOGGING_LEVEL": (GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL),
+                "LD_LIBRARY_PATH": (
+                    f"{torch_library_dir}{os.pathsep}/ambient/reviewed-lib"
+                ),
+                "PYTHONSAFEPATH": "1",
+                "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+                runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV: (
+                    parent_attestation_json
+                ),
+            },
+            "flashinfer_uri": flashinfer_uri,
+            "package_sha256": _PACKAGE_SHA256,
+            "package_uri": package_uri,
+            "runtime_lock": artifact_paths["runtime_lock_sha256"],
+            "vllm_uri": vllm_uri,
+        }
+        return _attestation(vllm_uri=vllm_uri, flashinfer_uri=flashinfer_uri)
+
+    monkeypatch.setattr(runtime_v2, "_run_final_runtime_verifier", final_verifier)
+
+    def verify_input(
+        observed_python: Path,
+        input_bundle: Path,
+        *,
+        expected_sha256: str,
+        environment: dict[str, str],
+    ) -> None:
+        events.append("input-verifier")
+        assert observed_python == runtime_python
+        assert input_bundle == artifact_paths["input_bundle_sha256"]
+        assert expected_sha256 == GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256
+        assert environment["PYTHONSAFEPATH"] == "1"
+        assert environment["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
+        assert environment["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+        assert environment["LD_LIBRARY_PATH"] == (
+            f"{torch_library_dir}{os.pathsep}/ambient/reviewed-lib"
+        )
+        assert (
+            environment[runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV]
+            == parent_attestation_json
+        )
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_input_bundle_in_isolated_runtime", verify_input
+    )
+    monkeypatch.setattr(runtime_v2, "_make_site_packages_read_only", lambda _p: None)
+
+    def worker(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        events.append("worker")
+        output_path = Path(arguments[arguments.index("--output-json") + 1])
+        output_path.write_text("{}\n", encoding="utf-8")
+        assert kwargs["environment"]["PYTHONSAFEPATH"] == "1"
+        assert kwargs["environment"]["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
+        assert kwargs["environment"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+        assert kwargs["environment"]["LD_LIBRARY_PATH"] == (
+            f"{torch_library_dir}{os.pathsep}/ambient/reviewed-lib"
+        )
+        assert (
+            kwargs["environment"][runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV]
+            == parent_attestation_json
+        )
+        retained = json.loads(
+            kwargs["environment"][runtime_v2._RUNTIME_LOCK_ATTESTATION_ENV]
+        )["system_cuda_parent_attestation"]
+        assert retained == parent_attestation
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_worker_process", worker)
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, "prior-uri")
+    monkeypatch.setenv(VLLM_PATCHED_WHEEL_SHA256_ENV, "prior-sha")
+
+    result = runtime_v2.run_gpu_qualification_sentinel_v2(
+        plan_record=plan,
+        planned_job=planned_job,
+        artifact_paths=artifact_paths,
+        work_dir=work_dir,
+    )
+
+    expected_commands = [
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            "-r",
+            str(artifact_paths["runtime_lock_sha256"]),
+        ],
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            f"vllm @ {vllm_uri}#sha256={GPU_QUALIFICATION_PATCHED_WHEEL_SHA256}",
+        ],
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "flashinfer-python @ "
+            f"{flashinfer_uri}#sha256={FLASHINFER_PATCHED_WHEEL_SHA256}",
+        ],
+        [
+            str(runtime_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            f"cachet-kv @ {package_uri}#sha256={_PACKAGE_SHA256}",
+        ],
+        [str(runtime_python), "-m", "pip", "check"],
+    ]
+    assert [call[0] for call in subprocess_calls] == expected_commands
+    assert "--no-deps" not in subprocess_calls[0][0]
+    assert all("--no-deps" in call[0] for call in subprocess_calls[1:4])
+    for _arguments, kwargs in subprocess_calls:
+        assert kwargs["check"] is True
+        assert kwargs["cwd"] == runtime_dir
+        assert kwargs["env"]["PYTHONSAFEPATH"] == "1"
+        assert kwargs["env"]["FLASHINFER_LOGGING_LEVEL"] == "ERROR"
+        assert kwargs["env"]["LD_LIBRARY_PATH"] == "/ambient/reviewed-lib"
+        assert (
+            kwargs["env"][runtime_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV]
+            == parent_attestation_json
+        )
+        assert kwargs["env"]["PYTHONWARNINGS"] == GPU_RUNTIME_PYTHONWARNINGS
+    assert [call[1]["timeout"] for call in subprocess_calls] == [3600] * 4 + [300]
+    assert attest_calls == [("3.11.11", None), ("3.11.11", identity.file_binding)]
+    assert events == [
+        "parent-attestation",
+        "create-venv",
+        "install-1",
+        "install-2",
+        "install-3",
+        "install-4",
+        "pip-check",
+        "launch-environment",
+        "final-verifier",
+        "input-verifier",
+        "worker",
+    ]
+    assert result["measurements"] == {}
+    runtime_verification = result["runtime_verification"]
+    assert (
+        runtime_verification["attestation"]["system_cuda_parent_attestation"]
+        == parent_attestation
+    )
+    assert (
+        runtime_verification["closed_record_sha256"]
+        == sha256(
+            canonical_gpu_qualification_json(
+                {**runtime_verification, "closed_record_sha256": ""}
+            ).encode("utf-8")
+        ).hexdigest()
+    )
+    validate_gpu_runtime_verification_v2_record(
+        runtime_verification,
+        plan_record=plan,
+        expected_job_id=job_id,
+        expected_artifact_pins=pins,
+    )
+
+    validation_runtime = tmp_path / "validation-runtime"
+    validation_torch_library = (
+        validation_runtime / "lib/python3.11/site-packages/torch/lib"
+    )
+    validation_torch_library.mkdir(parents=True)
+    install_environment = {
+        "LD_LIBRARY_PATH": "/existing/one:/existing/two",
+        "UNCHANGED": "yes",
+    }
+    assert original_launch_environment(
+        runtime_dir=validation_runtime,
+        install_environment=install_environment,
+    ) == {
+        "LD_LIBRARY_PATH": (
+            f"{validation_torch_library}{os.pathsep}/existing/one:/existing/two"
+        ),
+        "UNCHANGED": "yes",
+    }
+    assert install_environment == {
+        "LD_LIBRARY_PATH": "/existing/one:/existing/two",
+        "UNCHANGED": "yes",
+    }
+
+    missing_runtime = tmp_path / "missing-torch-library-runtime"
+    missing_runtime.mkdir()
+    file_runtime = tmp_path / "file-torch-library-runtime"
+    file_torch_library = file_runtime / "lib/python3.11/site-packages/torch/lib"
+    file_torch_library.parent.mkdir(parents=True)
+    file_torch_library.write_bytes(b"not-a-directory")
+    linked_runtime = tmp_path / "linked-torch-library-runtime"
+    linked_torch_library = linked_runtime / "lib/python3.11/site-packages/torch/lib"
+    linked_torch_library.parent.mkdir(parents=True)
+    linked_target = tmp_path / "linked-torch-library-target"
+    linked_target.mkdir()
+    linked_torch_library.symlink_to(linked_target, target_is_directory=True)
+    escaping_runtime = tmp_path / "escaping-torch-library-runtime"
+    escaping_torch = escaping_runtime / "lib/python3.11/site-packages/torch"
+    escaping_torch.parent.mkdir(parents=True)
+    escaping_target = tmp_path / "escaping-torch-target"
+    (escaping_target / "lib").mkdir(parents=True)
+    escaping_torch.symlink_to(escaping_target, target_is_directory=True)
+    linked_runtime_root = tmp_path / "linked-runtime-root"
+    linked_runtime_root.symlink_to(validation_runtime, target_is_directory=True)
+    noncanonical_runtime = validation_runtime / ".." / validation_runtime.name
+    for rejected_runtime in (
+        missing_runtime,
+        file_runtime,
+        linked_runtime,
+        escaping_runtime,
+        linked_runtime_root,
+        noncanonical_runtime,
+    ):
+        with pytest.raises(
+            RuntimeError, match="v2 isolated torch library directory differs"
+        ):
+            original_launch_environment(
+                runtime_dir=rejected_runtime,
+                install_environment={},
+            )
+
+
+@pytest.mark.parametrize("tamper", ["plan", "job"])
+def test_runtime_installer_rejects_nonexact_sealed_plan_or_job_before_install(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    plan = _plan()
+    job_id = plan["cloud_qualification"]["jobs"][0]["job_id"]
+    planned_job = deepcopy(qualification_v1._plan_job(plan, job_id))
+    if tamper == "plan":
+        plan["cloud_qualification"]["jobs"][0]["gpu"] = "NVIDIA TAMPER"
+        _seal_v2(plan)
+    else:
+        planned_job["gpu"] = "NVIDIA TAMPER"
+
+    def unexpected_install(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("invalid plan/job reached installation")
+
+    monkeypatch.setattr(runtime_v2.subprocess, "run", unexpected_install)
+    monkeypatch.setattr(runtime_v2, "create_venv", unexpected_install)
+    with pytest.raises(ValueError):
+        runtime_v2.run_gpu_qualification_sentinel_v2(
+            plan_record=plan,
+            planned_job=planned_job,
+            artifact_paths={
+                key: tmp_path / key for key in GPU_QUALIFICATION_V2_ARTIFACT_KEYS
+            },
+            work_dir=tmp_path / "work",
+        )
+
+
+def test_standalone_verifier_pip_check_is_exact_bounded_binary_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = {
+        "PIP_CONFIG_FILE": "/reviewed/pip.conf",
+        "PYTHONWARNINGS": "ignore",
+    }
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(
+        runtime_v2, "_pip_subprocess_environment", lambda: dict(environment)
+    )
+
+    def run(
+        arguments: list[str], **kwargs: Any
+    ) -> runtime_v2._BoundedBinarySubprocessResult:
+        calls.append((list(arguments), dict(kwargs)))
+        return _bounded_process_result()
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    monkeypatch.setattr(runtime_v2, "_file_sha256", lambda _path: "0" * 64)
+    with pytest.raises(RuntimeError, match="base lock SHA-256 differs"):
+        _verify_gpu_direct(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command == runtime_v2.isolated_runtime_pip_check_command(
+        _REVIEWED_RUNTIME_PYTHON,
+        warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+    )
+    assert command[1:4] == ["-I", "-S", "-B"]
+    assert command.count("-W") == len(GPU_RUNTIME_PYTHONWARNINGS.split(","))
+    assert kwargs == {
+        "cwd": Path(runtime_v2.sys.prefix),
+        "environment": {
+            **environment,
+            "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
+            "PYTHONSAFEPATH": "1",
+            "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+        },
+        "output_limit_bytes": runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES,
+        "timeout_seconds": runtime_v2._FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS,
+    }
+
+
+def test_package_installation_verifier_is_disjoint_from_gpu_host_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vllm_uri = "file:///runtime/vllm.whl"
+    flashinfer_uri = "file:///runtime/flashinfer.whl"
+    common = _attestation(vllm_uri=vllm_uri, flashinfer_uri=flashinfer_uri)
+    common.pop("system_cuda_parent_attestation")
+    calls: list[dict[str, Any]] = []
+    stages: list[str] = []
+
+    def verify_common(**kwargs: Any) -> dict[str, Any]:
+        calls.append(dict(kwargs))
+        kwargs["stage_callback"]("platform")
+        return deepcopy(common)
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_locked_runtime_v2_package_installation", verify_common
+    )
+    monkeypatch.setattr(
+        runtime_v2,
+        "_system_cuda_parent_attestation_from_environment",
+        lambda: pytest.fail("CPU package verifier read GPU host provenance"),
+    )
+
+    record = runtime_v2._verify_locked_runtime_v2_package_installation_attestation(
+        runtime_lock="base.lock",
+        vllm_uri=vllm_uri,
+        flashinfer_uri=flashinfer_uri,
+        runtime_closure_manifest="closure.json",
+        package_uri="file:///runtime/cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+        stage_callback=stages.append,
+    )
+
+    expected = {
+        **common,
+        "gpu_execution_attested": False,
+        "record_type": runtime_v2.LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE,
+        "schema_version": (
+            runtime_v2.LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION
+        ),
+    }
+    assert len(calls) == 1
+    assert calls[0] == {
+        "runtime_lock": "base.lock",
+        "vllm_uri": vllm_uri,
+        "flashinfer_uri": flashinfer_uri,
+        "runtime_closure_manifest": "closure.json",
+        "package_uri": "file:///runtime/cachet.whl",
+        "package_sha256": _PACKAGE_SHA256,
+        "stage_callback": stages.append,
+    }
+    assert stages == ["platform", "complete"]
+    assert record == expected
+    assert "system_cuda_parent_attestation" not in record
+
+    parent_calls: list[tuple[Path, dict[str, Any]]] = []
+
+    def run_parent(runtime_python: Path, **kwargs: Any) -> dict[str, Any]:
+        parent_calls.append((runtime_python, dict(kwargs)))
+        return deepcopy(expected)
+
+    monkeypatch.setattr(
+        runtime_v2, "_run_locked_runtime_package_final_verifier", run_parent
+    )
+    assert (
+        runtime_v2.verify_locked_runtime_v2_package_installation(
+            runtime_lock="base.lock",
+            vllm_uri=vllm_uri,
+            flashinfer_uri=flashinfer_uri,
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///runtime/cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+        == expected
+    )
+    assert parent_calls == [
+        (
+            Path(runtime_v2.sys.executable),
+            {
+                "runtime_lock": Path("base.lock").absolute(),
+                "vllm_uri": vllm_uri,
+                "flashinfer_uri": flashinfer_uri,
+                "closure_path": Path("closure.json").absolute(),
+                "package_uri": "file:///runtime/cachet.whl",
+                "package_sha256": _PACKAGE_SHA256,
+                "environment": os.environ,
+            },
+        )
+    ]
+
+
+def test_standalone_verifier_strips_private_pip_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setenv("PIP_INDEX_URL", "https://attacker.invalid/simple")
+    monkeypatch.setenv("_PIP_USE_IMPORTLIB_METADATA", "0")
+    monkeypatch.setenv("_pip_standalone_cert", "/attacker/ca.pem")
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+
+    def run(
+        _arguments: list[str], **kwargs: Any
+    ) -> runtime_v2._BoundedBinarySubprocessResult:
+        calls.append(dict(kwargs))
+        return _bounded_process_result()
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    monkeypatch.setattr(runtime_v2, "_file_sha256", lambda _path: "0" * 64)
+    with pytest.raises(RuntimeError, match="base lock SHA-256 differs"):
+        _verify_gpu_direct(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+    assert len(calls) == 1
+    environment = calls[0]["environment"]
+    assert {
+        key: value
+        for key, value in environment.items()
+        if key.upper().startswith(("PIP_", "_PIP_"))
+    } == {
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
+    }
+    assert environment["PYTHONSAFEPATH"] == "1"
+
+
+def test_standalone_verifier_rejects_private_pip_warning_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warning = (
+        b"DEPRECATION: Using the pkg_resources metadata backend is deprecated. "
+        b"A possible replacement is to unset _PIP_USE_IMPORTLIB_METADATA.\n"
+    )
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(stderr=warning),
+    )
+
+    with pytest.raises(RuntimeError, match="pip check output differs") as raised:
+        _verify_gpu_direct(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+    assert "pkg_resources" not in str(raised.value)
+    assert "_PIP_USE_IMPORTLIB_METADATA" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        (b"No broken requirements found.\r\n", b""),
+        (b"No broken requirements found.\nextra\n", b""),
+        (b"No broken requirements found.\n", b"stderr-secret"),
+    ],
+)
+def test_standalone_verifier_rejects_pip_check_marker_mismatch_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(stdout=stdout, stderr=stderr),
+    )
+    with pytest.raises(RuntimeError, match="pip check output differs") as raised:
+        _verify_gpu_direct(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+    assert "stderr-secret" not in str(raised.value)
+
+
+def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
+    messages = (
+        (
+            "The cuda.cuda module is deprecated and will be removed in a future "
+            "release, please switch to use the cuda.bindings.driver module instead."
+        ),
+        (
+            "The cuda.cudart module is deprecated and will be removed in a future "
+            "release, please switch to use the cuda.bindings.runtime module instead."
+        ),
+        (
+            "The cuda.nvrtc module is deprecated and will be removed in a future "
+            "release, please switch to use the cuda.bindings.nvrtc module instead."
+        ),
+    )
+    bitsandbytes_message = (
+        "_check_is_size will be removed in a future PyTorch release along with "
+        "guard_size_oblivious.     Use _check(i >= 0) instead."
+    )
+    flashinfer_message = (
+        "\n    Prefer using device seq_lens directly to avoid implicit H<>D sync.\n"
+        "    If a CPU copy is needed, use `seq_lens.cpu()` instead.\n"
+        "    Will be removed in a future release, please migrate as soon as "
+        "possible.\n    "
+    )
+    assert len(flashinfer_message.encode("utf-8")) == 212
+    assert sha256(flashinfer_message.encode("utf-8")).hexdigest() == (
+        "4181d2e307079b3d05aadd829c221993da5c442ab6a8b972fca76ece24c3d8c9"
+    )
+    vllm_registry_message = (
+        "'vllm.model_executor.models.registry' found in sys.modules after import "
+        "of package 'vllm.model_executor.models', but prior to execution of "
+        "'vllm.model_executor.models.registry'; this may result in unpredictable "
+        "behaviour"
+    )
+    torch_jit_message = (
+        "`torch.jit.script_method` is deprecated. Please switch to "
+        "`torch.compile` or `torch.export`."
+    )
+    transcript = b"".join(
+        (
+            f"<frozen importlib._bootstrap_external>:1241: FutureWarning: {message}\n"
+        ).encode("utf-8")
+        for message in messages
+    )
+    assert len(transcript) == 597
+    assert (
+        sha256(transcript).hexdigest()
+        == "5ce62998bdbb2f2c0e3d268b77a220f1725deaf63143544be8c8bf24536dfdbe"
+    )
+    assert GPU_RUNTIME_PYTHONWARNINGS.split(",") == [
+        "error",
+        *(
+            "ignore:"
+            f"{message.partition(',')[0]}"
+            ":FutureWarning:importlib._bootstrap_external:1241"
+            for message in messages
+        ),
+        (
+            f"ignore:{bitsandbytes_message}"
+            ":FutureWarning:bitsandbytes.backends.cuda.ops:213"
+        ),
+        (
+            f"ignore:{bitsandbytes_message}"
+            ":FutureWarning:bitsandbytes.backends.cuda.ops:468"
+        ),
+        (f"ignore:{vllm_registry_message.partition(',')[0]}:RuntimeWarning:runpy:128"),
+        ("ignore::DeprecationWarning:vllm.v1.attention.backends.flashinfer:1234"),
+        (f"ignore:{torch_jit_message}:DeprecationWarning:torch.jit._script:365"),
+    ]
+
+    # Python startup message filters are case-insensitive prefix matches.  The
+    # locked interpreter and wheel hashes make those documented equivalences
+    # immutable.  FlashInfer necessarily has no message predicate because the
+    # startup grammar strips its leading whitespace and splits its later comma;
+    # the exact category, module, and pinned source line are its boundary.
+    child_code = "\n".join(
+        (
+            "import warnings",
+            "from typing_extensions import deprecated",
+            f"messages = {messages!r}",
+            f"bitsandbytes_message = {bitsandbytes_message!r}",
+            f"flashinfer_message = {flashinfer_message!r}",
+            f"vllm_registry_message = {vllm_registry_message!r}",
+            f"torch_jit_message = {torch_jit_message!r}",
+            "for message in messages:",
+            "    warnings.warn_explicit(",
+            "        message, FutureWarning,",
+            '        "<frozen importlib._bootstrap_external>", 1241,',
+            '        module="importlib._bootstrap_external",',
+            "    )",
+            "for bitsandbytes_lineno in (213, 468):",
+            "    warnings.warn_explicit(",
+            "        bitsandbytes_message, FutureWarning,",
+            '        "bitsandbytes/backends/cuda/ops.py", bitsandbytes_lineno,',
+            '        module="bitsandbytes.backends.cuda.ops",',
+            "    )",
+            "    for startup_equivalent in (",
+            '        bitsandbytes_message + " reviewed suffix",',
+            "        bitsandbytes_message.swapcase(),",
+            "    ):",
+            "        warnings.warn_explicit(",
+            "            startup_equivalent, FutureWarning,",
+            '            "bitsandbytes/backends/cuda/ops.py", bitsandbytes_lineno,',
+            '            module="bitsandbytes.backends.cuda.ops",',
+            "        )",
+            "warnings.warn_explicit(",
+            "    vllm_registry_message, RuntimeWarning,",
+            '    "<frozen runpy>", 128, module="runpy",',
+            ")",
+            "for startup_equivalent in (",
+            '    vllm_registry_message + " reviewed suffix",',
+            "    vllm_registry_message.swapcase(),",
+            "):",
+            "    warnings.warn_explicit(",
+            "        startup_equivalent, RuntimeWarning,",
+            '        "<frozen runpy>", 128, module="runpy",',
+            "    )",
+            "@deprecated(flashinfer_message, category=DeprecationWarning)",
+            "def deprecated_seq_lens_cpu():",
+            "    return None",
+            "flashinfer_scope = {",
+            '    "__name__": "vllm.v1.attention.backends.flashinfer",',
+            '    "deprecated_seq_lens_cpu": deprecated_seq_lens_cpu,',
+            "}",
+            "exec(",
+            "    compile(",
+            '        "\\n" * 1233 + "deprecated_seq_lens_cpu()\\n",',
+            '        "vllm/v1/attention/backends/flashinfer.py",',
+            '        "exec",',
+            "    ),",
+            "    flashinfer_scope,",
+            ")",
+            "warnings.warn_explicit(",
+            '    "any message at the sole pinned expression", DeprecationWarning,',
+            '    "vllm/v1/attention/backends/flashinfer.py", 1234,',
+            '    module="vllm.v1.attention.backends.flashinfer",',
+            ")",
+            "warnings.warn_explicit(",
+            "    torch_jit_message, DeprecationWarning,",
+            '    "torch/jit/_script.py", 365, module="torch.jit._script",',
+            ")",
+            "for startup_equivalent in (",
+            '    torch_jit_message + " reviewed suffix",',
+            "    torch_jit_message.swapcase(),",
+            "):",
+            "    warnings.warn_explicit(",
+            "        startup_equivalent, DeprecationWarning,",
+            '        "torch/jit/_script.py", 365, module="torch.jit._script",',
+            "    )",
+            "cases = (",
+            "    (",
+            '        "an unrelated future warning", FutureWarning,',
+            '        "importlib._bootstrap_external", 1241,',
+            "    ),",
+            "    (messages[0], RuntimeWarning, ",
+            '     "importlib._bootstrap_external", 1241),',
+            "    (messages[0], FutureWarning, ",
+            '     "another.module", 1241),',
+            "    (messages[0], FutureWarning, ",
+            '     "importlib._bootstrap_external", 1242),',
+            "    (",
+            '        "The cuda.cudaX module is deprecated and will be removed in a "',
+            '        "future release, near-prefix mutation", FutureWarning,',
+            '        "importlib._bootstrap_external", 1241,',
+            "    ),",
+            "    (bitsandbytes_message, RuntimeWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 213),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "document_kv_cache._gpu_qualification_sentinel_worker", 213),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 212),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 214),',
+            "    (bitsandbytes_message, RuntimeWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 468),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "document_kv_cache._gpu_qualification_sentinel_worker", 468),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 467),',
+            "    (bitsandbytes_message, FutureWarning,",
+            '     "bitsandbytes.backends.cuda.ops", 469),',
+            "    (bitsandbytes_message.replace(",
+            '         "_check_is_size", "_check_is_sizeX", 1), FutureWarning,',
+            '     "bitsandbytes.backends.cuda.ops", 213),',
+            "    (bitsandbytes_message.replace(",
+            '         "     Use", "    Use"), FutureWarning,',
+            '     "bitsandbytes.backends.cuda.ops", 213),',
+            "    (bitsandbytes_message.replace(",
+            '         "_check_is_size", "_check_is_sizeX", 1), FutureWarning,',
+            '     "bitsandbytes.backends.cuda.ops", 468),',
+            "    (",
+            '        "an unrelated bitsandbytes future warning", FutureWarning,',
+            '        "bitsandbytes.backends.cuda.ops", 213,',
+            "    ),",
+            '    (vllm_registry_message, FutureWarning, "runpy", 128),',
+            "    (vllm_registry_message, RuntimeWarning,",
+            '     "vllm.model_executor.models.registry", 128),',
+            '    (vllm_registry_message, RuntimeWarning, "runpy", 129),',
+            "    (vllm_registry_message.replace(",
+            '         "registry\' found", "registryX\' found", 1), RuntimeWarning,',
+            '     "runpy", 128),',
+            "    (vllm_registry_message.replace(",
+            "         \"'vllm.model_executor.models',\",",
+            "         \"'vllm.model_executor.modelsX',\", 1), RuntimeWarning,",
+            '     "runpy", 128),',
+            "    (",
+            '        "an unrelated frozen runpy warning", RuntimeWarning,',
+            '        "runpy", 128,',
+            "    ),",
+            "    (flashinfer_message, FutureWarning,",
+            '     "vllm.v1.attention.backends.flashinfer", 1234),',
+            "    (flashinfer_message, DeprecationWarning,",
+            '     "vllm.v1.attention.backends.flashinferX", 1234),',
+            "    (flashinfer_message, DeprecationWarning,",
+            '     "vllm.v1.attention.backends.flashinfer", 1233),',
+            "    (flashinfer_message, DeprecationWarning,",
+            '     "vllm.v1.attention.backends.flashinfer", 1235),',
+            '    (torch_jit_message, FutureWarning, "torch.jit._script", 365),',
+            "    (torch_jit_message, DeprecationWarning,",
+            '     "torch.jit._scriptX", 365),',
+            "    (torch_jit_message, DeprecationWarning,",
+            '     "torch.jit._script", 366),',
+            "    (torch_jit_message.replace(",
+            '         "script_method", "script_methods", 1), DeprecationWarning,',
+            '     "torch.jit._script", 365),',
+            "    (torch_jit_message.replace(",
+            '         "deprecated.", "deprecated!", 1), DeprecationWarning,',
+            '     "torch.jit._script", 365),',
+            "    (",
+            '        "an unrelated torch JIT deprecation", DeprecationWarning,',
+            '        "torch.jit._script", 365,',
+            "    ),",
+            ")",
+            "for message, category, module, lineno in cases:",
+            "    try:",
+            "        warnings.warn_explicit(",
+            '            message, category, "<frozen importlib._bootstrap_external>",',
+            "            lineno, module=module,",
+            "        )",
+            "    except Warning:",
+            "        continue",
+            '    raise AssertionError("non-allowlisted warning did not raise")',
+            'print("policy-ok")',
+        )
+    )
+    environment = dict(os.environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["FLASHINFER_LOGGING_LEVEL"] = GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL
+    environment["PYTHONWARNINGS"] = GPU_RUNTIME_PYTHONWARNINGS
+    completed = subprocess.run(
+        [runtime_v2.sys.executable, "-c", child_code],
+        check=False,
+        capture_output=True,
+        env=environment,
+    )
+    assert (completed.returncode, completed.stdout, completed.stderr) == (
+        0,
+        b"policy-ok\n",
+        b"",
+    )
+
+
+@pytest.mark.parametrize("failure", ["nonzero", "timeout"])
+def test_standalone_verifier_pip_failure_is_fixed_and_does_not_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+
+    def run(*_args: Any, **_kwargs: Any) -> runtime_v2._BoundedBinarySubprocessResult:
+        if failure == "timeout":
+            return _bounded_process_result(
+                stdout=b"stdout-secret",
+                stderr=b"stderr-secret",
+                timed_out=True,
+            )
+        return _bounded_process_result(
+            returncode=17,
+            stdout=b"stdout-secret",
+            stderr=b"stderr-secret",
+        )
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    expected = "timed out" if failure == "timeout" else "pip check failed"
+    with pytest.raises(RuntimeError, match=expected) as raised:
+        _verify_gpu_direct(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+    diagnostic = str(raised.value)
+    assert "command-secret" not in diagnostic
+    assert "stdout-secret" not in diagnostic
+    assert "stderr-secret" not in diagnostic
+
+
+def test_bounded_binary_subprocess_stops_incremental_oversize_and_caps_retention(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_popen = subprocess.Popen
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def popen(arguments: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        calls.append((list(arguments), dict(kwargs)))
+        return real_popen(arguments, **kwargs)
+
+    monkeypatch.setattr(runtime_v2.subprocess, "Popen", popen)
+    environment = {"PYTHONSAFEPATH": "1"}
+    arguments = [
+        runtime_v2.sys.executable,
+        "-c",
+        "import os\nchunk=b'x'*65536\nwhile True: os.write(1,chunk)",
+    ]
+    result = runtime_v2._run_bounded_binary_subprocess(
+        arguments,
+        timeout_seconds=5,
+        output_limit_bytes=4096,
+        environment=environment,
+        cwd=tmp_path,
+    )
+
+    assert result.timed_out is False
+    assert result.output_limit_exceeded is True
+    assert result.stdout.byte_count > 4096
+    assert result.stdout.retained == b"x" * 4096
+    assert result.stdout.sha256 != runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256
+    assert result.stderr == _bounded_stream_result(b"")
+    assert len(calls) == 1
+    observed_arguments, kwargs = calls[0]
+    assert observed_arguments == arguments
+    assert kwargs == {
+        "bufsize": 0,
+        "cwd": tmp_path,
+        "env": environment,
+        "start_new_session": True,
+        "stderr": subprocess.PIPE,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "text": False,
+    }
+
+
+def test_bounded_binary_subprocess_timeout_terminates_then_kills_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_signal = runtime_v2._signal_bounded_subprocess_group
+    signals: list[tuple[int, int]] = []
+
+    def record_signal(process: subprocess.Popen[bytes], signal_number: int) -> None:
+        signals.append((process.pid, signal_number))
+        real_signal(process, signal_number)
+
+    monkeypatch.setattr(runtime_v2, "_signal_bounded_subprocess_group", record_signal)
+    result = runtime_v2._run_bounded_binary_subprocess(
+        [
+            runtime_v2.sys.executable,
+            "-c",
+            (
+                "import signal,time;"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                "time.sleep(60)"
+            ),
+        ],
+        timeout_seconds=1,
+        output_limit_bytes=4096,
+        environment={"PYTHONSAFEPATH": "1"},
+        cwd=tmp_path,
+    )
+
+    assert result.timed_out is True
+    assert result.output_limit_exceeded is False
+    assert [signal_number for _pid, signal_number in signals[:2]] == [
+        signal.SIGTERM,
+        signal.SIGKILL,
+    ]
+    process_id = signals[0][0]
+    assert (
+        runtime_v2._bounded_subprocess_group_exists(SimpleNamespace(pid=process_id))
+        is False
+    )
+
+
+def test_final_verifier_timeout_hierarchy_has_strict_cleanup_and_import_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert runtime_v2._FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS == 180
+    assert runtime_v2._FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS == 300
+    assert runtime_v2._FINAL_VERIFIER_INNER_CLEANUP_BUDGET_SECONDS == 10
+    assert runtime_v2._FINAL_VERIFIER_POST_PIP_BUDGET_SECONDS == 60
+    assert runtime_v2._FINAL_VERIFIER_REQUIRED_HIERARCHY_MARGIN_SECONDS == 90
+    runtime_v2._require_final_verifier_timeout_hierarchy()
+
+    monkeypatch.setattr(runtime_v2, "_FINAL_VERIFIER_INNER_PIP_TIMEOUT_SECONDS", 211.0)
+    with pytest.raises(RuntimeError, match="timeout hierarchy differs"):
+        runtime_v2._require_final_verifier_timeout_hierarchy()
+
+
+def _process_or_group_exists(identifier: int, *, group: bool) -> bool:
+    try:
+        if group:
+            os.killpg(identifier, 0)
+        else:
+            os.kill(identifier, 0)
+    except (PermissionError, ProcessLookupError):
+        return False
+    return True
+
+
+def test_outer_final_verifier_ignores_site_pth_and_pythonpath_startup_hooks(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_v2.create_venv(runtime_root, copies=True)
+    runtime_python = runtime_root / "bin" / "python"
+    site_packages = runtime_root / (
+        f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    )
+    package = site_packages / "document_kv_cache"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    attestation = {"isolated": True, "reviewed": "startup-hooks-not-run"}
+    response = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        _final_child_success_envelope(attestation)
+    )
+    (package / "_gpu_qualification_sentinels_v2.py").write_text(
+        "import os\n"
+        f"_RESPONSE = {response!r}\n"
+        "def _gpu_final_runtime_verifier_child_main(_arguments):\n"
+        "    view = memoryview(_RESPONSE)\n"
+        "    while view:\n"
+        "        written = os.write(1, view)\n"
+        "        if written <= 0:\n"
+        "            return 1\n"
+        "        view = view[written:]\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    site_marker = tmp_path / "sitecustomize-ran"
+    pth_marker = tmp_path / "pth-ran"
+    poison_marker = tmp_path / "pythonpath-ran"
+    (site_packages / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(site_marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    (site_packages / "cachet-startup-hook.pth").write_text(
+        f"import pathlib; pathlib.Path({str(pth_marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    poison_root = tmp_path / "poison"
+    poison_package = poison_root / "document_kv_cache"
+    poison_package.mkdir(parents=True)
+    (poison_package / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(poison_marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    environment = {
+        "HOME": str(tmp_path),
+        "LC_ALL": "C",
+        "PATH": os.environ["PATH"],
+        "PYTHONPATH": str(poison_root),
+        "PYTHONWARNINGS": "ignore",
+    }
+    def verify() -> dict[str, object]:
+        return runtime_v2._run_final_runtime_verifier(
+            runtime_python,
+            runtime_lock=tmp_path / "unused-base.lock",
+            vllm_uri="file:///unused-vllm.whl",
+            flashinfer_uri="file:///unused-flashinfer.whl",
+            closure_path=tmp_path / "unused-closure.json",
+            package_uri="file:///unused-cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment=environment,
+        )
+
+    if sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 11):
+        assert verify() == attestation
+    else:
+        # An ineligible interpreter must fail before importing any startup hook.
+        with pytest.raises(RuntimeError, match="v2 final runtime verifier process failed"):
+            verify()
+    assert not site_marker.exists()
+    assert not pth_marker.exists()
+    assert not poison_marker.exists()
+
+
+@pytest.mark.skipif(
+    sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 11),
+    reason="the isolated runtime protocol is pinned to CPython 3.11",
+)
+def test_outer_final_verifier_kills_nested_worker_process_group(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_v2.create_venv(runtime_root, copies=True)
+    runtime_python = runtime_root / "bin" / "python"
+    package = runtime_root / "lib/python3.11/site-packages/document_kv_cache"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    marker = tmp_path / "nested-pid-pgid.txt"
+    attestation = {"isolated": True, "reviewed": "nested-group-cleanup"}
+    response = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        _final_child_success_envelope(attestation)
+    )
+    (package / "_gpu_qualification_sentinels_v2.py").write_text(
+        "import os\n"
+        "import signal\n"
+        "import time\n"
+        f"_MARKER = {str(marker)!r}\n"
+        f"_RESPONSE = {response!r}\n"
+        "def _gpu_final_runtime_verifier_child_main(_arguments):\n"
+        "    child = os.fork()\n"
+        "    if child == 0:\n"
+        "        signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "        with open(_MARKER, 'w', encoding='ascii') as stream:\n"
+        "            stream.write(f'{os.getpid()} {os.getpgid(0)}\\n')\n"
+        "            stream.flush()\n"
+        "            os.fsync(stream.fileno())\n"
+        "        while True:\n"
+        "            time.sleep(60)\n"
+        "    deadline = time.monotonic() + 2.0\n"
+        "    while not os.path.exists(_MARKER):\n"
+        "        if time.monotonic() >= deadline:\n"
+        "            return 2\n"
+        "        time.sleep(0.01)\n"
+        "    view = memoryview(_RESPONSE)\n"
+        "    while view:\n"
+        "        written = os.write(1, view)\n"
+        "        if written <= 0:\n"
+        "            return 3\n"
+        "        view = view[written:]\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    environment = {
+        "HOME": str(tmp_path),
+        "LC_ALL": "C",
+        "PATH": os.environ["PATH"],
+    }
+
+    observed = runtime_v2._run_final_runtime_verifier(
+        runtime_python,
+        runtime_lock=tmp_path / "unused-base.lock",
+        vllm_uri="file:///unused-vllm.whl",
+        flashinfer_uri="file:///unused-flashinfer.whl",
+        closure_path=tmp_path / "unused-closure.json",
+        package_uri="file:///unused-cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+        environment=environment,
+    )
+
+    assert observed == attestation
+    child_pid, child_pgid = (
+        int(value) for value in marker.read_text(encoding="ascii").split()
+    )
+    deadline = runtime_v2.monotonic() + 3.0
+    while runtime_v2.monotonic() < deadline and (
+        _process_or_group_exists(child_pid, group=False)
+        or _process_or_group_exists(child_pgid, group=True)
+    ):
+        runtime_v2.sleep(0.01)
+    assert not _process_or_group_exists(child_pid, group=False)
+    assert not _process_or_group_exists(child_pgid, group=True)
+
+
+def test_bounded_binary_accumulator_retains_only_its_cap_incrementally() -> None:
+    accumulator = runtime_v2._BoundedBinaryAccumulator(7)
+    assert accumulator.add(b"abc") is False
+    assert accumulator.add(b"defgh") is True
+    result = accumulator.result()
+    assert result.retained == b"abcdefg"
+    assert result.byte_count == 8
+    assert result.sha256 == sha256(b"abcdefgh").hexdigest()
+    assert result.limit_exceeded is True
+
+
+class _Distribution:
+    def __init__(
+        self,
+        name: str | None,
+        version: str,
+        *,
+        direct_url: dict[str, Any] | None = None,
+        root: Path | None = None,
+        omit_name: bool = False,
+    ) -> None:
+        self.metadata = {} if omit_name else {"Name": name}
+        self.version = version
+        self._direct_url = direct_url
+        self._root = root
+
+    def read_text(self, name: str) -> str | None:
+        assert name == "direct_url.json"
+        if self._direct_url is None:
+            return None
+        return json.dumps(self._direct_url)
+
+    def locate_file(self, name: str) -> Path:
+        assert name == ""
+        assert self._root is not None
+        return self._root
+
+
+def _patch_verifier_through_distribution_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    distributions: list[_Distribution],
+) -> Path:
+    explicit_roots = {
+        distribution._root
+        for distribution in distributions
+        if distribution._root is not None
+    }
+    assert len(explicit_roots) <= 1
+    site_packages = (
+        next(iter(explicit_roots))
+        if explicit_roots
+        else Path(runtime_v2.__file__).resolve().parents[1]
+    )
+    for distribution in distributions:
+        if distribution._root is None:
+            distribution._root = site_packages
+
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(),
+    )
+    monkeypatch.setattr(
+        runtime_v2, "_file_sha256", lambda _path: VLLM_RUNTIME_BASE_LOCK_SHA256
+    )
+    monkeypatch.setattr(
+        runtime_v2, "_base_lock_projection", lambda _path: ({"base-dist": "1"}, 1)
+    )
+    monkeypatch.setattr(runtime_v2, "VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT", 1)
+    monkeypatch.setattr(runtime_v2, "VLLM_RUNTIME_BASE_LOCK_HASH_COUNT", 1)
+    monkeypatch.setattr(
+        runtime_v2,
+        "_read_exact_runtime_closure",
+        lambda _path: {
+            "closed_record_sha256": RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256
+        },
+    )
+    monkeypatch.setattr(
+        runtime_v2, "_isolated_runtime_site_packages", lambda: site_packages
+    )
+
+    def installed_distributions(*, path: list[str]) -> list[_Distribution]:
+        assert path == [str(site_packages)]
+        return distributions
+
+    monkeypatch.setattr(
+        runtime_v2.importlib.metadata, "distributions", installed_distributions
+    )
+    return site_packages
+
+
+@pytest.mark.parametrize(
+    ("distributions", "error"),
+    [
+        (
+            [_Distribution("base-dist", "1"), _Distribution("base_dist", "1")],
+            "duplicate installed distribution",
+        ),
+        ([_Distribution(None, "1", omit_name=True)], "no package name"),
+        ([_Distribution("base-dist", "1")], "name closure differs"),
+    ],
+)
+def test_standalone_verifier_rejects_duplicate_anonymous_or_missing_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+    distributions: list[_Distribution],
+    error: str,
+) -> None:
+    site_packages = _patch_verifier_through_distribution_scan(
+        monkeypatch, distributions
+    )
+    with pytest.raises(RuntimeError, match=error):
+        _verify_gpu_direct(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+    distributions[0]._root = site_packages.parent
+    with pytest.raises(RuntimeError, match="outside private site-packages"):
+        _verify_gpu_direct(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+
+def test_pep610_validation_checks_uri_archive_hash_and_origin_rehash(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / "wheel+patched.whl"
+    other = tmp_path / "other.whl"
+    wheel.write_bytes(b"reviewed wheel")
+    other.write_bytes(b"reviewed wheel")
+    digest = sha256(b"reviewed wheel").hexdigest()
+    value = {
+        "archive_info": {"hashes": {"sha256": digest}},
+        "url": wheel.resolve().as_uri(),
+    }
+    distribution = _Distribution("example", "1", direct_url=value)
+    assert (
+        runtime_v2._validate_direct_url(
+            distribution,  # type: ignore[arg-type]
+            expected_uri=wheel.resolve().as_uri(),
+            expected_sha256=digest,
+        )
+        == wheel.resolve().as_uri()
+    )
+
+    distribution._direct_url = {**value, "url": other.resolve().as_uri()}
+    with pytest.raises(RuntimeError, match="direct URL differs"):
+        runtime_v2._validate_direct_url(
+            distribution,  # type: ignore[arg-type]
+            expected_uri=wheel.resolve().as_uri(),
+            expected_sha256=digest,
+        )
+
+    distribution._direct_url = {
+        **value,
+        "archive_info": {"hashes": {"sha256": "0" * 64}},
+    }
+    with pytest.raises(RuntimeError, match="archive SHA-256 differs"):
+        runtime_v2._validate_direct_url(
+            distribution,  # type: ignore[arg-type]
+            expected_uri=wheel.resolve().as_uri(),
+            expected_sha256=digest,
+        )
+
+    distribution._direct_url = value
+    wheel.write_bytes(b"tampered wheel")
+    with pytest.raises(RuntimeError, match="source bytes differ"):
+        runtime_v2._validate_direct_url(
+            distribution,  # type: ignore[arg-type]
+            expected_uri=wheel.resolve().as_uri(),
+            expected_sha256=digest,
+        )
+
+
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [
+        ("member", "installed member differs"),
+        ("origin", "imported FlashInfer module origin differs"),
+        ("annotation", "postponed return annotation differs"),
+    ],
+)
+def test_standalone_verifier_rejects_member_hash_or_import_annotation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+    error: str,
+) -> None:
+    flashinfer_root = tmp_path / "site-packages"
+    flashinfer_member = flashinfer_root / FLASHINFER_TARGET_MEMBER
+    flashinfer_member.parent.mkdir(parents=True)
+    flashinfer_member.write_bytes(b"reviewed FlashInfer member")
+    distributions = [
+        _Distribution("base-dist", "1"),
+        _Distribution("cachet-kv", GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION),
+        _Distribution(
+            "flashinfer-python",
+            FLASHINFER_PACKAGE_VERSION,
+            root=flashinfer_root,
+        ),
+        _Distribution("vllm", GPU_QUALIFICATION_VLLM_VERSION),
+    ]
+    _patch_verifier_through_distribution_scan(monkeypatch, distributions)
+    monkeypatch.setattr(
+        runtime_v2, "GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT", 4
+    )
+    monkeypatch.setattr(runtime_v2, "_uri_file_sha256", lambda _uri: _PACKAGE_SHA256)
+    monkeypatch.setattr(
+        runtime_v2,
+        "_validate_direct_url",
+        lambda _distribution, *, expected_uri, expected_sha256: expected_uri,
+    )
+    if failure == "member":
+
+        def member_failure(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+            raise RuntimeError("v2 installed member differs: reviewed.py")
+
+        monkeypatch.setattr(runtime_v2, "_installed_member_hashes", member_failure)
+    else:
+        monkeypatch.setattr(
+            runtime_v2,
+            "_installed_member_hashes",
+            lambda _distribution, expected: dict(expected),
+        )
+        monkeypatch.setattr(
+            runtime_v2,
+            "_file_sha256",
+            lambda path: (
+                FLASHINFER_TARGET_PATCHED_SHA256
+                if Path(path).name == Path(FLASHINFER_TARGET_MEMBER).name
+                else VLLM_RUNTIME_BASE_LOCK_SHA256
+            ),
+        )
+        function = SimpleNamespace(
+            __annotations__={
+                "return": (
+                    "wrong"
+                    if failure == "annotation"
+                    else GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION
+                )
+            }
+        )
+        module_path = flashinfer_member
+        if failure == "origin":
+            module_path = tmp_path / "shadow" / "fd_exchange.py"
+            module_path.parent.mkdir()
+            module_path.write_bytes(b"shadow module")
+        module = SimpleNamespace(_fd_ancillary=function, __file__=str(module_path))
+        monkeypatch.setattr(runtime_v2.importlib, "import_module", lambda _name: module)
+
+    with pytest.raises(RuntimeError, match=error):
+        _verify_gpu_direct(
+            runtime_lock="base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest="closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+
+def test_runtime_platform_requires_exact_python_3_11_11(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runtime_v2.platform, "python_implementation", lambda: "CPython")
+    monkeypatch.setattr(runtime_v2.platform, "python_version", lambda: "3.11.11")
+    monkeypatch.setattr(runtime_v2.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(runtime_v2.platform, "libc_ver", lambda: ("glibc", "2.35"))
+    monkeypatch.setattr(runtime_v2.sys, "version_info", (3, 11, 11, "final", 0))
+    monkeypatch.setattr(runtime_v2.sys, "platform", "linux")
+    monkeypatch.setenv("FLASHINFER_LOGGING_LEVEL", GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL)
+    monkeypatch.setenv("PYTHONWARNINGS", GPU_RUNTIME_PYTHONWARNINGS)
+    monkeypatch.setattr(
+        runtime_v2.sys,
+        "warnoptions",
+        GPU_RUNTIME_PYTHONWARNINGS.split(","),
+    )
+
+    runtime_v2._require_runtime_platform()
+    monkeypatch.setattr(runtime_v2.sys, "warnoptions", ["ignore"])
+    with pytest.raises(RuntimeError, match="pinned CUDA warning startup policy"):
+        runtime_v2._require_runtime_platform()
+    monkeypatch.setattr(
+        runtime_v2.sys,
+        "warnoptions",
+        GPU_RUNTIME_PYTHONWARNINGS.split(","),
+    )
+    monkeypatch.setattr(runtime_v2.platform, "python_version", lambda: "3.11.12")
+    with pytest.raises(RuntimeError, match="requires Linux CPython3.11"):
+        runtime_v2._require_runtime_platform()
+
+    runtime_root = tmp_path.resolve() / "runtime"
+    runtime_python = runtime_root / "bin/python"
+    site_packages = runtime_root / "lib/python3.11/site-packages"
+    verifier_source = site_packages / (
+        "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+    )
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_bytes(b"reviewed copied interpreter")
+    verifier_source.parent.mkdir(parents=True)
+    verifier_source.write_bytes(b"reviewed verifier")
+    monkeypatch.setattr(runtime_v2.sys, "prefix", str(runtime_root))
+    monkeypatch.setattr(runtime_v2.sys, "base_prefix", "/reviewed/base-python")
+    monkeypatch.setattr(runtime_v2.sys, "executable", str(runtime_python))
+    monkeypatch.setattr(runtime_v2, "__file__", str(verifier_source))
+    assert runtime_v2._isolated_runtime_site_packages() == site_packages
+
+    monkeypatch.setattr(runtime_v2, "__file__", str(tmp_path / "ambient.py"))
+    with pytest.raises(RuntimeError, match="runtime path identity differs"):
+        runtime_v2._isolated_runtime_site_packages()
+
+
+def test_real_runtime_closure_has_exact_identity_and_rejects_tamper(
+    tmp_path: Path,
+) -> None:
+    raw = _CLOSURE_PATH.read_bytes()
+    assert len(raw) == RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE == 6634
+    assert sha256(raw).hexdigest() == RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
+    closure = runtime_v2._read_exact_runtime_closure(_CLOSURE_PATH)
+    assert closure["closed_record_sha256"] == (
+        RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256
+    )
+
+    tampered = tmp_path / _CLOSURE_PATH.name
+    tampered.write_bytes(raw[:-2] + b" \n")
+    assert tampered.stat().st_size == 6634
+    with pytest.raises(ValueError, match="file identity differs"):
+        runtime_v2._read_exact_runtime_closure(tampered)
+
+
+def test_real_base_lock_has_exact_projection_and_verifier_rejects_tamper(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    raw = _LOCK_PATH.read_bytes()
+    assert len(raw) == VLLM_RUNTIME_BASE_LOCK_SIZE == 376326
+    assert sha256(raw).hexdigest() == VLLM_RUNTIME_BASE_LOCK_SHA256
+    versions, hash_count = runtime_v2._base_lock_projection(_LOCK_PATH)
+    assert len(versions) == VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT == 195
+    assert hash_count == VLLM_RUNTIME_BASE_LOCK_HASH_COUNT == 4137
+    assert not {"cachet-kv", "flashinfer-python", "vllm"} & versions.keys()
+
+    tampered = tmp_path / VLLM_RUNTIME_BASE_LOCK_FILENAME
+    tampered.write_bytes(raw[:-1] + (b" " if raw[-1:] != b" " else b"\n"))
+    assert tampered.stat().st_size == 376326
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(),
+    )
+    with pytest.raises(RuntimeError, match="base lock SHA-256 differs"):
+        _verify_gpu_direct(
+            runtime_lock=tampered,
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            runtime_closure_manifest=_CLOSURE_PATH,
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+        )
+
+
+def _noisy_vllm_subprocess_environment(
+    tmp_path: Path,
+    *,
+    write_stderr: bool = True,
+) -> tuple[dict[str, str], Path]:
+    fake_root = tmp_path / "fake-packages"
+    fake_vllm = fake_root / "vllm"
+    fake_vllm.mkdir(parents=True)
+    fake_vllm_init = fake_vllm / "__init__.py"
+    fake_vllm_init.write_text(
+        "import os\n"
+        "os.write(1, b'noisy-vllm-stdout\\n')\n"
+        + (
+            "os.write(2, b'noisy-vllm-stderr\\n')\n"
+            if write_stderr
+            else ""
+        ),
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "CACHET_TEST_FAKE_VLLM_INIT": str(fake_vllm_init),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": os.pathsep.join((str(fake_root), str(_ROOT / "src"))),
+            "PYTHONSAFEPATH": "1",
+        }
+    )
+    return environment, fake_vllm_init
+
+
+def test_runtime_v2_module_import_is_silent_and_does_not_import_noisy_vllm(
+    tmp_path: Path,
+) -> None:
+    environment, fake_vllm_init = _noisy_vllm_subprocess_environment(tmp_path)
+    code = (
+        "import importlib.util,sys\n"
+        "spec = importlib.util.find_spec('vllm')\n"
+        f"assert spec is not None and spec.origin == {str(fake_vllm_init)!r}\n"
+        "import document_kv_cache._gpu_qualification_sentinels_v2\n"
+        "for name in (\n"
+        "    'document_kv_cache.gpu_qualification_sentinels',\n"
+        "    'document_kv_cache.vllm_smoke',\n"
+        "    'vllm',\n"
+        "):\n"
+        "    assert name not in sys.modules\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+
+    assert (completed.returncode, completed.stdout, completed.stderr) == (0, b"", b"")
+
+
+def test_cpu_child_captures_noisy_vllm_import_before_emitting_canonical_envelope(
+    tmp_path: Path,
+) -> None:
+    environment, fake_vllm_init = _noisy_vllm_subprocess_environment(
+        tmp_path, write_stderr=False
+    )
+    code = (
+        "import importlib.util,os,sys\n"
+        "import document_kv_cache._gpu_qualification_sentinels_v2 as module\n"
+        "def verifier(**kwargs):\n"
+        "    kwargs['stage_callback']('flashinfer_import')\n"
+        "    spec = importlib.util.find_spec('vllm')\n"
+        f"    assert spec is not None and spec.origin == {str(fake_vllm_init)!r}\n"
+        "    import vllm\n"
+        "    kwargs['stage_callback']('complete')\n"
+        "    return {'ok': True, 'scope': 'cpu', 'vllm_imported': "
+        "'vllm' in sys.modules}\n"
+        "module._verify_locked_runtime_v2_package_installation_attestation = "
+        "verifier\n"
+        "os._exit(module._locked_runtime_package_final_verifier_child_main("
+        "sys.argv[1:]))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code, *_final_child_arguments()],
+        cwd=tmp_path,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+
+    captured_stdout = b"noisy-vllm-stdout\n"
+    assert completed.returncode == 0
+    assert completed.stderr == b""
+    assert captured_stdout not in completed.stdout
+    envelope = runtime_v2._parse_final_runtime_verifier_child_envelope(completed.stdout)
+    assert envelope == {
+        **_final_child_success_envelope(
+            {"ok": True, "scope": "cpu", "vllm_imported": True}
+        ),
+        "stdout_bytes": len(captured_stdout),
+        "stdout_sha256": sha256(captured_stdout).hexdigest(),
+    }
+
+
+def _final_child_arguments() -> list[str]:
+    return [
+        "base.lock",
+        "file:///vllm.whl",
+        "file:///flashinfer.whl",
+        "closure.json",
+        "file:///cachet.whl",
+        _PACKAGE_SHA256,
+    ]
+
+
+def _final_child_success_envelope(attestation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "attestation": attestation,
+        "category": "none",
+        "ok": True,
+        "record_type": runtime_v2._FINAL_VERIFIER_CHILD_RECORD_TYPE,
+        "schema_version": runtime_v2._FINAL_VERIFIER_CHILD_SCHEMA_VERSION,
+        "stage": "complete",
+        "stderr_bytes": 0,
+        "stderr_sha256": runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256,
+        "stdout_bytes": 0,
+        "stdout_sha256": runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256,
+    }
+
+
+def test_final_verifier_child_success_envelope_is_canonical_and_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attestation = {"ok": True, "reviewed": "attestation"}
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        callback = kwargs["stage_callback"]
+        callback("complete")
+        return attestation
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_gpu_qualification_v2_runtime_installation", verify
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    assert envelope == _final_child_success_envelope(attestation)
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert encoded.endswith(b"\n")
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+@pytest.mark.parametrize("scope", ["cpu", "gpu"])
+def test_final_verifier_accepts_exact_qa_stdout_noise_and_hashes_it(
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+) -> None:
+    captured_stdout = b"qa-flashinfer-stdout-secret-" + b"x" * (
+        2_891 - len(b"qa-flashinfer-stdout-secret-")
+    )
+    attestation = {"ok": True, "scope": scope}
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        kwargs["stage_callback"]("flashinfer_import")
+        assert os.write(1, captured_stdout) == len(captured_stdout)
+        kwargs["stage_callback"]("complete")
+        return attestation
+
+    verifier_name = (
+        "_verify_locked_runtime_v2_package_installation_attestation"
+        if scope == "cpu"
+        else "_verify_gpu_qualification_v2_runtime_installation"
+    )
+    envelope_factory = (
+        runtime_v2._locked_runtime_package_final_verifier_child_envelope
+        if scope == "cpu"
+        else runtime_v2._gpu_final_runtime_verifier_child_envelope
+    )
+    monkeypatch.setattr(runtime_v2, verifier_name, verify)
+    envelope = envelope_factory(_final_child_arguments())
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+
+    assert len(captured_stdout) == 2_891
+    assert envelope == {
+        **_final_child_success_envelope(attestation),
+        "stdout_bytes": 2_891,
+        "stdout_sha256": sha256(captured_stdout).hexdigest(),
+    }
+    assert captured_stdout not in encoded
+    assert b"qa-flashinfer-stdout-secret" not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_cpu_final_verifier_rejects_stderr_and_hashes_without_raw_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_stdout = b"bounded-cpu-stdout-secret"
+    captured_stderr = b"bounded-cpu-stderr-secret"
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        kwargs["stage_callback"]("complete")
+        assert os.write(1, captured_stdout) == len(captured_stdout)
+        assert os.write(2, captured_stderr) == len(captured_stderr)
+        return {"ok": True, "scope": "cpu"}
+
+    monkeypatch.setattr(
+        runtime_v2,
+        "_verify_locked_runtime_v2_package_installation_attestation",
+        verify,
+    )
+    envelope = runtime_v2._locked_runtime_package_final_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+
+    assert envelope["ok"] is False
+    assert envelope["attestation"] is None
+    assert envelope["stage"] == "attestation"
+    assert envelope["category"] == "verification_rejected"
+    assert envelope["stdout_bytes"] == len(captured_stdout)
+    assert envelope["stdout_sha256"] == sha256(captured_stdout).hexdigest()
+    assert envelope["stderr_bytes"] == len(captured_stderr)
+    assert envelope["stderr_sha256"] == sha256(captured_stderr).hexdigest()
+    assert captured_stdout not in encoded
+    assert captured_stderr not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_cpu_and_gpu_final_verifier_children_are_hard_coded_to_their_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def cpu_verify(**kwargs: Any) -> dict[str, Any]:
+        calls.append("cpu")
+        kwargs["stage_callback"]("complete")
+        return {"scope": "cpu"}
+
+    def gpu_verify(**kwargs: Any) -> dict[str, Any]:
+        calls.append("gpu")
+        kwargs["stage_callback"]("complete")
+        return {"scope": "gpu"}
+
+    monkeypatch.setattr(
+        runtime_v2,
+        "_verify_locked_runtime_v2_package_installation_attestation",
+        cpu_verify,
+    )
+    monkeypatch.setattr(
+        runtime_v2, "_verify_gpu_qualification_v2_runtime_installation", gpu_verify
+    )
+
+    cpu_envelope = runtime_v2._locked_runtime_package_final_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    gpu_envelope = runtime_v2._gpu_final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    assert calls == ["cpu", "gpu"]
+    assert cpu_envelope["attestation"] == {"scope": "cpu"}
+    assert gpu_envelope["attestation"] == {"scope": "gpu"}
+
+
+@pytest.mark.parametrize("scope", ["cpu", "gpu"])
+def test_final_verifier_child_catches_system_exit_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+) -> None:
+    verifier_name = (
+        "_verify_locked_runtime_v2_package_installation_attestation"
+        if scope == "cpu"
+        else "_verify_gpu_qualification_v2_runtime_installation"
+    )
+    envelope_factory = (
+        runtime_v2._locked_runtime_package_final_verifier_child_envelope
+        if scope == "cpu"
+        else runtime_v2._gpu_final_runtime_verifier_child_envelope
+    )
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        kwargs["stage_callback"]("flashinfer_import")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(runtime_v2, verifier_name, verify)
+    envelope = envelope_factory(_final_child_arguments())
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["attestation"] is None
+    assert envelope["stage"] == "flashinfer_import"
+    assert envelope["category"] == "unexpected_exception"
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [("nonzero", "subprocess_nonzero"), ("timeout", "subprocess_timeout")],
+)
+def test_final_verifier_child_failure_hashes_streams_and_never_leaks(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    category: str,
+) -> None:
+    captured_stdout = b"captured-stdout-secret"
+    captured_stderr = b"captured-stderr-secret"
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        callback = kwargs["stage_callback"]
+        callback("pip_check")
+        assert os.write(1, captured_stdout) == len(captured_stdout)
+        assert os.write(2, captured_stderr) == len(captured_stderr)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(
+                cmd=["exception-command-secret"],
+                timeout=300,
+                output=b"exception-stdout-secret",
+                stderr=b"exception-stderr-secret",
+            )
+        raise subprocess.CalledProcessError(
+            19,
+            ["exception-command-secret"],
+            output=b"exception-stdout-secret",
+            stderr=b"exception-stderr-secret",
+        )
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_gpu_qualification_v2_runtime_installation", verify
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["attestation"] is None
+    assert envelope["stage"] == "pip_check"
+    assert envelope["category"] == category
+    assert envelope["stdout_bytes"] == len(captured_stdout)
+    assert envelope["stdout_sha256"] == sha256(captured_stdout).hexdigest()
+    assert envelope["stderr_bytes"] == len(captured_stderr)
+    assert envelope["stderr_sha256"] == sha256(captured_stderr).hexdigest()
+    for secret in (
+        captured_stdout,
+        captured_stderr,
+        b"exception-command-secret",
+        b"exception-stdout-secret",
+        b"exception-stderr-secret",
+    ):
+        assert secret not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+@pytest.mark.parametrize("scope", ["cpu", "gpu"])
+def test_final_verifier_child_incremental_oversize_is_bounded_and_contaminated(
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+) -> None:
+    payload = b"captured-oversize-secret-" + b"x" * (
+        runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES + 4096
+    )
+
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        callback = kwargs["stage_callback"]
+        callback("complete")
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(1, payload[offset:])
+        return {"ok": True}
+
+    verifier_name = (
+        "_verify_locked_runtime_v2_package_installation_attestation"
+        if scope == "cpu"
+        else "_verify_gpu_qualification_v2_runtime_installation"
+    )
+    envelope_factory = (
+        runtime_v2._locked_runtime_package_final_verifier_child_envelope
+        if scope == "cpu"
+        else runtime_v2._gpu_final_runtime_verifier_child_envelope
+    )
+    monkeypatch.setattr(runtime_v2, verifier_name, verify)
+    envelope = envelope_factory(_final_child_arguments())
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["attestation"] is None
+    assert envelope["stage"] == "attestation"
+    assert envelope["category"] == "verification_rejected"
+    assert envelope["stdout_bytes"] == len(payload)
+    assert envelope["stdout_sha256"] == sha256(payload).hexdigest()
+    assert b"captured-oversize-secret" not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_final_verifier_child_invalid_arguments_have_exact_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_v2,
+        "_verify_gpu_qualification_v2_runtime_installation",
+        lambda **_kwargs: pytest.fail("invalid arguments reached verification"),
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(["incomplete"])
+    assert envelope["ok"] is False
+    assert envelope["stage"] == "arguments"
+    assert envelope["category"] == "invalid_arguments"
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+@pytest.mark.parametrize("failure", ["import", "os"])
+def test_final_verifier_child_maps_ordinary_import_or_os_error_to_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    def verify(**kwargs: Any) -> dict[str, Any]:
+        callback = kwargs["stage_callback"]
+        callback("flashinfer_import")
+        if failure == "import":
+            raise ImportError("import-error-secret")
+        raise OSError("os-error-secret-path")
+
+    monkeypatch.setattr(
+        runtime_v2, "_verify_gpu_qualification_v2_runtime_installation", verify
+    )
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["stage"] == "flashinfer_import"
+    assert envelope["category"] == "verification_rejected"
+    assert b"import-error-secret" not in encoded
+    assert b"os-error-secret-path" not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_final_verifier_child_classifies_pip_subprocess_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
+    monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
+    monkeypatch.setattr(runtime_v2.sys, "executable", _REVIEWED_RUNTIME_PYTHON)
+
+    def fail_start(*_args: Any, **_kwargs: Any) -> None:
+        raise runtime_v2._BoundedSubprocessStartFailure("start-failure-secret")
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", fail_start)
+    envelope = runtime_v2._final_runtime_verifier_child_envelope(
+        _final_child_arguments()
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    assert envelope["ok"] is False
+    assert envelope["stage"] == "pip_check"
+    assert envelope["category"] == "subprocess_start_failure"
+    assert b"start-failure-secret" not in encoded
+    assert runtime_v2._parse_final_runtime_verifier_child_envelope(encoded) == (
+        envelope
+    )
+
+
+def test_final_verifier_parent_accepts_success_and_reports_rejection_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_python = tmp_path / "runtime" / "bin" / "python"
+    attestation = {"ok": True, "reviewed": "attestation"}
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        _final_child_success_envelope(attestation)
+    )
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(
+        arguments: list[str], **kwargs: Any
+    ) -> runtime_v2._BoundedBinarySubprocessResult:
+        calls.append((list(arguments), dict(kwargs)))
+        return _bounded_process_result(stdout=encoded)
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    observed = runtime_v2._run_final_runtime_verifier(
+        runtime_python,
+        runtime_lock=tmp_path / "base.lock",
+        vllm_uri="file:///vllm.whl",
+        flashinfer_uri="file:///flashinfer.whl",
+        closure_path=tmp_path / "closure.json",
+        package_uri="file:///cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+        environment={"PYTHONSAFEPATH": "1"},
+    )
+    assert observed == attestation
+    assert len(calls) == 1
+    arguments, kwargs = calls[0]
+    assert arguments == runtime_v2.isolated_runtime_argv_main_command(
+        runtime_python,
+        module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+        module_relative_path=(
+            "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+        ),
+        attribute_name="_gpu_final_runtime_verifier_child_main",
+        arguments=(
+            str(tmp_path / "base.lock"),
+            "file:///vllm.whl",
+            "file:///flashinfer.whl",
+            str(tmp_path / "closure.json"),
+            "file:///cachet.whl",
+            _PACKAGE_SHA256,
+        ),
+        warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+    )
+    assert arguments[1:4] == ["-I", "-S", "-B"]
+    assert arguments.count("-W") == len(GPU_RUNTIME_PYTHONWARNINGS.split(","))
+    assert kwargs == {
+        "cwd": runtime_python.parent.parent,
+        "environment": {"PYTHONSAFEPATH": "1"},
+        "output_limit_bytes": (runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES),
+        "timeout_seconds": runtime_v2._FINAL_VERIFIER_OUTER_TIMEOUT_SECONDS,
+    }
+
+    stdout = b"authenticated-stdout-secret"
+    stderr = b"authenticated-stderr-secret"
+    rejected = runtime_v2._final_runtime_verifier_failure_envelope(
+        stage="flashinfer_import",
+        category="verification_rejected",
+        stdout_bytes=len(stdout),
+        stdout_sha256=sha256(stdout).hexdigest(),
+        stderr_bytes=len(stderr),
+        stderr_sha256=sha256(stderr).hexdigest(),
+    )
+    encoded_rejection = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        rejected
+    )
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: _bounded_process_result(stdout=encoded_rejection),
+    )
+    with pytest.raises(RuntimeError, match="rejected the installation") as raised:
+        runtime_v2._run_final_runtime_verifier(
+            runtime_python,
+            runtime_lock=tmp_path / "base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            closure_path=tmp_path / "closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment={"PYTHONSAFEPATH": "1"},
+        )
+    diagnostic = str(raised.value)
+    assert diagnostic == (
+        "v2 final runtime verifier rejected the installation "
+        f"(flashinfer_import/verification_rejected; stdout_bytes={len(stdout)}; "
+        f"stdout_sha256={sha256(stdout).hexdigest()}; stderr_bytes={len(stderr)}; "
+        f"stderr_sha256={sha256(stderr).hexdigest()})"
+    )
+    assert stdout.decode("ascii") not in diagnostic
+    assert stderr.decode("ascii") not in diagnostic
+
+
+def test_public_gpu_verifier_delegates_to_bounded_parent_with_effective_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    vllm_uri = "file:///runtime/vllm.whl"
+    flashinfer_uri = "file:///runtime/flashinfer.whl"
+    attestation = _attestation(vllm_uri=vllm_uri, flashinfer_uri=flashinfer_uri)
+    calls: list[tuple[Path, dict[str, Any]]] = []
+
+    def run_parent(runtime_python: Path, **kwargs: Any) -> dict[str, Any]:
+        calls.append((runtime_python, dict(kwargs)))
+        return deepcopy(attestation)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runtime_v2, "_run_final_runtime_verifier", run_parent)
+    monkeypatch.setattr(
+        runtime_v2,
+        "_verify_gpu_qualification_v2_runtime_installation",
+        lambda **_kwargs: pytest.fail("public GPU verifier recursed in process"),
+    )
+    record = runtime_v2.verify_gpu_qualification_v2_runtime_installation(
+        runtime_lock="relative/base.lock",
+        vllm_uri=vllm_uri,
+        flashinfer_uri=flashinfer_uri,
+        runtime_closure_manifest="relative/closure.json",
+        package_uri="file:///runtime/cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+    )
+
+    assert record == attestation
+    assert len(calls) == 1
+    runtime_python, kwargs = calls[0]
+    assert runtime_python == Path(runtime_v2.sys.executable)
+    assert kwargs.pop("environment") is os.environ
+    assert kwargs == {
+        "runtime_lock": tmp_path / "relative/base.lock",
+        "vllm_uri": vllm_uri,
+        "flashinfer_uri": flashinfer_uri,
+        "closure_path": tmp_path / "relative/closure.json",
+        "package_uri": "file:///runtime/cachet.whl",
+        "package_sha256": _PACKAGE_SHA256,
+    }
+
+
+def test_scoped_final_verifier_parents_use_exact_children_and_normalize_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_python = tmp_path / "runtime/bin/python"
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(
+        arguments: list[str], **kwargs: Any
+    ) -> runtime_v2._BoundedBinarySubprocessResult:
+        calls.append((list(arguments), dict(kwargs)))
+        attestation = {"scope": "cpu" if len(calls) == 1 else "gpu"}
+        encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+            _final_child_success_envelope(attestation)
+        )
+        return _bounded_process_result(stdout=encoded)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    cpu = runtime_v2._run_locked_runtime_package_final_verifier(
+        runtime_python,
+        runtime_lock=Path("inputs/base.lock"),
+        vllm_uri="file:///vllm.whl",
+        flashinfer_uri="file:///flashinfer.whl",
+        closure_path=Path("inputs/closure.json"),
+        package_uri="file:///cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+        environment={"SCOPE": "cpu"},
+    )
+    gpu = runtime_v2._run_final_runtime_verifier(
+        runtime_python,
+        runtime_lock=Path("inputs/base.lock"),
+        vllm_uri="file:///vllm.whl",
+        flashinfer_uri="file:///flashinfer.whl",
+        closure_path=Path("inputs/closure.json"),
+        package_uri="file:///cachet.whl",
+        package_sha256=_PACKAGE_SHA256,
+        environment={"SCOPE": "gpu"},
+    )
+
+    assert cpu == {"scope": "cpu"}
+    assert gpu == {"scope": "gpu"}
+    assert len(calls) == 2
+    cpu_arguments, cpu_kwargs = calls[0]
+    gpu_arguments, gpu_kwargs = calls[1]
+    expected_child_arguments = (
+        str(tmp_path / "inputs/base.lock"),
+        "file:///vllm.whl",
+        "file:///flashinfer.whl",
+        str(tmp_path / "inputs/closure.json"),
+        "file:///cachet.whl",
+        _PACKAGE_SHA256,
+    )
+    expected_commands = (
+        runtime_v2.isolated_runtime_argv_main_command(
+            runtime_python,
+            module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+            module_relative_path=(
+                "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+            ),
+            attribute_name="_locked_runtime_package_final_verifier_child_main",
+            arguments=expected_child_arguments,
+            warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+        ),
+        runtime_v2.isolated_runtime_argv_main_command(
+            runtime_python,
+            module_name="document_kv_cache._gpu_qualification_sentinels_v2",
+            module_relative_path=(
+                "document_kv_cache/_gpu_qualification_sentinels_v2.py"
+            ),
+            attribute_name="_gpu_final_runtime_verifier_child_main",
+            arguments=expected_child_arguments,
+            warning_policy=GPU_RUNTIME_PYTHONWARNINGS,
+        ),
+    )
+    assert (cpu_arguments, gpu_arguments) == expected_commands
+    for arguments in expected_commands:
+        assert arguments[1:4] == ["-I", "-S", "-B"]
+        assert arguments.count("-W") == len(GPU_RUNTIME_PYTHONWARNINGS.split(","))
+    assert cpu_kwargs["environment"] == {"SCOPE": "cpu"}
+    assert gpu_kwargs["environment"] == {"SCOPE": "gpu"}
+    assert cpu_kwargs["cwd"] == runtime_python.parent.parent
+    assert gpu_kwargs["cwd"] == runtime_python.parent.parent
+
+
+@pytest.mark.parametrize("scope", ["cpu", "gpu"])
+def test_installed_package_final_verifier_cli_is_scoped_and_partial_write_safe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    scope: str,
+) -> None:
+    vllm_uri = "file:///runtime/vllm.whl"
+    flashinfer_uri = "file:///runtime/flashinfer.whl"
+    attestation = (
+        _cpu_attestation(vllm_uri=vllm_uri, flashinfer_uri=flashinfer_uri)
+        if scope == "cpu"
+        else _attestation(vllm_uri=vllm_uri, flashinfer_uri=flashinfer_uri)
+    )
+    parent_name = (
+        "_run_locked_runtime_package_final_verifier"
+        if scope == "cpu"
+        else "_run_final_runtime_verifier"
+    )
+    main = (
+        runtime_v2._locked_runtime_package_final_verifier_main
+        if scope == "cpu"
+        else runtime_v2._gpu_runtime_final_verifier_main
+    )
+    calls: list[tuple[Path, dict[str, Any]]] = []
+    output = bytearray()
+
+    def run_parent(runtime_python: Path, **kwargs: Any) -> dict[str, Any]:
+        calls.append((runtime_python, dict(kwargs)))
+        return deepcopy(attestation)
+
+    def partial_write(descriptor: int, data: Any) -> int:
+        assert descriptor == 1
+        chunk = bytes(data[:17])
+        output.extend(chunk)
+        return len(chunk)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runtime_v2, parent_name, run_parent)
+    monkeypatch.setattr(runtime_v2.os, "write", partial_write)
+    assert (
+        main(
+            [
+                "relative/base.lock",
+                vllm_uri,
+                flashinfer_uri,
+                "relative/closure.json",
+                "file:///runtime/cachet.whl",
+                _PACKAGE_SHA256,
+            ]
+        )
+        == 0
+    )
+
+    expected = (
+        json.dumps(
+            attestation,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    assert bytes(output) == expected
+    assert len(calls) == 1
+    runtime_python, kwargs = calls[0]
+    assert runtime_python == Path(runtime_v2.sys.executable)
+    assert kwargs.pop("environment") is os.environ
+    assert kwargs == {
+        "runtime_lock": tmp_path / "relative/base.lock",
+        "vllm_uri": vllm_uri,
+        "flashinfer_uri": flashinfer_uri,
+        "closure_path": tmp_path / "relative/closure.json",
+        "package_uri": "file:///runtime/cachet.whl",
+        "package_sha256": _PACKAGE_SHA256,
+    }
+
+
+def test_final_verifier_attestation_writer_uses_ascii_canonical_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = bytearray()
+
+    def partial_write(_descriptor: int, data: Any) -> int:
+        chunk = bytes(data[:2])
+        output.extend(chunk)
+        return len(chunk)
+
+    monkeypatch.setattr(runtime_v2.os, "write", partial_write)
+    runtime_v2._write_final_runtime_verifier_attestation({"unicode": "café"})
+    assert bytes(output) == b'{"unicode":"caf\\u00e9"}\n'
+
+
+@pytest.mark.parametrize(
+    ("scope", "verifier_name", "child_name"),
+    [
+        (
+            "cpu",
+            "_verify_locked_runtime_v2_package_installation_attestation",
+            "_locked_runtime_package_final_verifier_child_main",
+        ),
+        (
+            "gpu",
+            "_verify_gpu_qualification_v2_runtime_installation",
+            "_gpu_final_runtime_verifier_child_main",
+        ),
+    ],
+)
+def test_final_verifier_os_exit_suppresses_registered_atexit_output(
+    scope: str,
+    verifier_name: str,
+    child_name: str,
+) -> None:
+    code = (
+        "import atexit,os,sys\n"
+        "import document_kv_cache._gpu_qualification_sentinels_v2 as module\n"
+        "def verifier(**kwargs):\n"
+        "    kwargs['stage_callback']('complete')\n"
+        "    atexit.register(lambda: os.write(1,b'atexit-stdout-secret'))\n"
+        "    atexit.register(lambda: os.write(2,b'atexit-stderr-secret'))\n"
+        f"    return {{'scope':{scope!r}}}\n"
+        f"module.{verifier_name}=verifier\n"
+        f"os._exit(module.{child_name}(sys.argv[1:]))\n"
+    )
+    environment = dict(os.environ)
+    python_path = str(_ROOT / "src")
+    if environment.get("PYTHONPATH"):
+        python_path += os.pathsep + environment["PYTHONPATH"]
+    environment["PYTHONPATH"] = python_path
+    completed = subprocess.run(
+        [runtime_v2.sys.executable, "-c", code, *_final_child_arguments()],
+        cwd=_ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stderr == b""
+    assert b"atexit-stdout-secret" not in completed.stdout
+    assert b"atexit-stderr-secret" not in completed.stderr
+    envelope = runtime_v2._parse_final_runtime_verifier_child_envelope(completed.stdout)
+    assert envelope["ok"] is True
+    assert envelope["attestation"] == {"scope": scope}
+
+
+@pytest.mark.parametrize(
+    ("verifier_name", "child_name"),
+    [
+        (
+            "_verify_locked_runtime_v2_package_installation_attestation",
+            "_locked_runtime_package_final_verifier_child_main",
+        ),
+        (
+            "_verify_gpu_qualification_v2_runtime_installation",
+            "_gpu_final_runtime_verifier_child_main",
+        ),
+    ],
+)
+def test_direct_os_exit_zero_is_an_empty_protocol_failure(
+    verifier_name: str,
+    child_name: str,
+) -> None:
+    code = (
+        "import os,sys\n"
+        "import document_kv_cache._gpu_qualification_sentinels_v2 as module\n"
+        "def verifier(**kwargs):\n"
+        "    kwargs['stage_callback']('flashinfer_import')\n"
+        "    os._exit(0)\n"
+        f"module.{verifier_name}=verifier\n"
+        f"os._exit(module.{child_name}(sys.argv[1:]))\n"
+    )
+    environment = dict(os.environ)
+    python_path = str(_ROOT / "src")
+    if environment.get("PYTHONPATH"):
+        python_path += os.pathsep + environment["PYTHONPATH"]
+    environment["PYTHONPATH"] = python_path
+    completed = subprocess.run(
+        [runtime_v2.sys.executable, "-c", code, *_final_child_arguments()],
+        cwd=_ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=15,
+        check=False,
+    )
+
+    assert (completed.returncode, completed.stdout, completed.stderr) == (0, b"", b"")
+    with pytest.raises(RuntimeError, match="protocol failed"):
+        runtime_v2._parse_final_runtime_verifier_child_envelope(completed.stdout)
+
+
+def _malformed_final_child_outputs() -> list[tuple[str, bytes]]:
+    empty_digest = runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256
+    envelope = runtime_v2._final_runtime_verifier_failure_envelope(
+        stage="pip_check",
+        category="verification_rejected",
+        stdout_bytes=0,
+        stdout_sha256=empty_digest,
+        stderr_bytes=0,
+        stderr_sha256=empty_digest,
+    )
+    canonical = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    duplicate = canonical.replace(
+        b'{"attestation":null,',
+        b'{"attestation":null,"attestation":null,',
+        1,
+    )
+    nan = canonical.replace(b'"attestation":null', b'"attestation":NaN', 1)
+    extra = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        {**envelope, "extra": None}
+    )
+    oversized_success = _final_child_success_envelope({"ok": True})
+    oversized_success.update(
+        {
+            "stdout_bytes": (runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES + 1),
+            "stdout_sha256": "d" * 64,
+        }
+    )
+    oversized_success_raw = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        oversized_success
+    )
+    noncanonical = (json.dumps(envelope, indent=2, sort_keys=True) + "\n").encode()
+    return [
+        ("duplicate", duplicate),
+        ("nan", nan),
+        ("extra", extra),
+        ("noncanonical", noncanonical),
+        ("oversized-success", oversized_success_raw),
+        ("empty", b""),
+        ("missing-lf", canonical[:-1]),
+        ("prefix", b"polluted-prefix" + canonical),
+        ("suffix", canonical + b"polluted-suffix"),
+        ("two-objects", canonical + canonical),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("_case", "raw"),
+    _malformed_final_child_outputs(),
+    ids=[case for case, _raw in _malformed_final_child_outputs()],
+)
+def test_final_verifier_parser_rejects_malformed_or_polluted_output(
+    _case: str,
+    raw: bytes,
+) -> None:
+    with pytest.raises(RuntimeError, match="protocol failed"):
+        runtime_v2._parse_final_runtime_verifier_child_envelope(raw)
+
+
+@pytest.mark.parametrize(
+    ("stage", "category"),
+    [
+        ("complete", "verification_rejected"),
+        ("arguments", "subprocess_timeout"),
+        ("platform", "invalid_arguments"),
+        ("base_lock", "subprocess_nonzero"),
+        ("attestation", "subprocess_start_failure"),
+    ],
+)
+def test_final_verifier_parser_rejects_invalid_stage_category_relation(
+    stage: str,
+    category: str,
+) -> None:
+    empty_digest = runtime_v2._FINAL_VERIFIER_EMPTY_STREAM_SHA256
+    envelope = runtime_v2._final_runtime_verifier_failure_envelope(
+        stage=stage,
+        category=category,
+        stdout_bytes=0,
+        stdout_sha256=empty_digest,
+        stderr_bytes=0,
+        stderr_sha256=empty_digest,
+    )
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(envelope)
+    with pytest.raises(RuntimeError, match="protocol failed"):
+        runtime_v2._parse_final_runtime_verifier_child_envelope(encoded)
+
+
+@pytest.mark.parametrize("failure", ["stderr", "oversize"])
+def test_final_verifier_parent_rejects_stderr_or_oversize_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    encoded = runtime_v2._canonical_final_runtime_verifier_child_envelope(
+        _final_child_success_envelope({"ok": True})
+    )
+    result = _bounded_process_result(
+        stdout=encoded,
+        stderr=b"parent-stderr-secret" if failure == "stderr" else b"",
+    )
+    if failure == "oversize":
+        result = runtime_v2._BoundedBinarySubprocessResult(
+            returncode=0,
+            stdout=_bounded_stream_result(
+                b"oversize-secret",
+                byte_count=(runtime_v2._FINAL_VERIFIER_PROCESS_OUTPUT_LIMIT_BYTES + 1),
+                digest="d" * 64,
+                limit_exceeded=True,
+            ),
+            stderr=_bounded_stream_result(b""),
+            timed_out=False,
+        )
+    monkeypatch.setattr(
+        runtime_v2,
+        "_run_bounded_binary_subprocess",
+        lambda *_args, **_kwargs: result,
+    )
+    expected = "protocol failed" if failure == "stderr" else "exceeds its limit"
+    with pytest.raises(RuntimeError, match=expected) as raised:
+        runtime_v2._run_final_runtime_verifier(
+            tmp_path / "runtime" / "bin" / "python",
+            runtime_lock=tmp_path / "base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            closure_path=tmp_path / "closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment={},
+        )
+    diagnostic = str(raised.value)
+    assert "parent-stderr-secret" not in diagnostic
+    assert "oversize-secret" not in diagnostic
+
+
+@pytest.mark.parametrize("failure", ["nonzero", "timeout"])
+def test_final_verifier_parent_process_failure_is_fixed_and_does_not_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    def run(*_args: Any, **_kwargs: Any) -> runtime_v2._BoundedBinarySubprocessResult:
+        if failure == "timeout":
+            return _bounded_process_result(
+                stdout=b"parent-stdout-secret",
+                stderr=b"parent-stderr-secret",
+                timed_out=True,
+            )
+        return _bounded_process_result(
+            returncode=23,
+            stdout=b"parent-stdout-secret",
+            stderr=b"parent-stderr-secret",
+        )
+
+    monkeypatch.setattr(runtime_v2, "_run_bounded_binary_subprocess", run)
+    expected = "timed out" if failure == "timeout" else "process failed"
+    with pytest.raises(RuntimeError, match=expected) as raised:
+        runtime_v2._run_final_runtime_verifier(
+            tmp_path / "runtime" / "bin" / "python",
+            runtime_lock=tmp_path / "base.lock",
+            vllm_uri="file:///vllm.whl",
+            flashinfer_uri="file:///flashinfer.whl",
+            closure_path=tmp_path / "closure.json",
+            package_uri="file:///cachet.whl",
+            package_sha256=_PACKAGE_SHA256,
+            environment={},
+        )
+    diagnostic = str(raised.value)
+    assert "parent-command-secret" not in diagnostic
+    assert "parent-stdout-secret" not in diagnostic
+    assert "parent-stderr-secret" not in diagnostic

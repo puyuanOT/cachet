@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Any
 
 from document_kv_cache.engine_adapters import (
+    EngineAdapterSpec,
     EngineAdapterRequest,
     EngineKVBlockManagerProbe,
     EngineKVConnectorProbeResult,
@@ -20,6 +21,7 @@ from document_kv_cache.engine_adapters import (
     build_engine_kv_connector_actions,
     build_engine_kv_injection_plan,
     engine_kv_connector_actions_to_record,
+    engine_adapter_request_to_record,
     engine_kv_connector_probe_result_to_record,
     probe_engine_kv_connector_actions,
     read_engine_adapter_request_json,
@@ -27,6 +29,8 @@ from document_kv_cache.engine_adapters import (
     view_engine_adapter_payload,
     write_engine_adapter_request_json,
 )
+from document_kv_cache.methods import MethodRegistry, validate_registered_reuse_plan
+from document_kv_cache.reuse_contract import RuntimeOperationHandlerRegistry
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage import local_path
 
@@ -143,26 +147,48 @@ class EngineKVProbeConfig:
         )
 
 
-def run_engine_kv_connector_probe(config: EngineKVProbeConfig) -> EngineKVConnectorProbeResult:
+def run_engine_kv_connector_probe(
+    config: EngineKVProbeConfig,
+    *,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
+) -> EngineKVConnectorProbeResult:
     """Load a handoff record and validate it against a native engine probe factory."""
 
     record = read_engine_adapter_request_json(
         config.handoff_json,
         expected_backend=config.expected_backend,
         require_external_payload_uri=config.payload_uri is None,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
     )
     plan = build_engine_kv_injection_plan(
         record,
         expected_backend=config.expected_backend,
         require_external_payload_uri=config.payload_uri is None,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
     )
     payload_uri = config.payload_uri or plan.payload_source_uri
     if payload_uri is None:
         raise ValueError("Engine KV probe requires a payload URI in the handoff record or config")
 
     payload = read_engine_adapter_payload(payload_uri, expected_bytes=plan.total_bytes)
-    payload_or_segments = view_engine_adapter_payload(record, payload)
-    actions = build_engine_kv_connector_actions(plan, payload_or_segments)
+    payload_or_segments = view_engine_adapter_payload(
+        record,
+        payload,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
+    actions = build_engine_kv_connector_actions(
+        plan,
+        payload_or_segments,
+        method_registry=method_registry,
+    )
 
     factory = load_engine_kv_probe_factory(config.probe_factory)
     factory_context = EngineKVProbeFactoryContext(
@@ -219,13 +245,18 @@ def run_engine_kv_connector_probe(config: EngineKVProbeConfig) -> EngineKVConnec
         engine_version=engine_version,
         native_probe=native_probe,
         metadata=metadata,
+        method_registry=method_registry,
     )
     if native_probe:
         validate_engine_kv_connector_probe_record(engine_kv_connector_probe_result_to_record(result))
     if config.output_json is not None:
         write_engine_kv_connector_probe_result_json(result, config.output_json)
     if config.actions_output_json is not None:
-        write_engine_kv_connector_actions_record_json(actions, config.actions_output_json)
+        write_engine_kv_connector_actions_record_json(
+            actions,
+            config.actions_output_json,
+            method_registry=method_registry,
+        )
     return result
 
 
@@ -245,13 +276,25 @@ def read_engine_adapter_payload(payload_uri: str, *, expected_bytes: int | None 
     return payload
 
 
-def write_engine_adapter_payload(request: EngineAdapterRequest, payload_uri: str) -> Path:
+def write_engine_adapter_payload(
+    request: EngineAdapterRequest,
+    payload_uri: str,
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> Path:
     """Write a materialized adapter payload to local disk, DBFS, or a UC Volume path."""
 
     if not isinstance(request, EngineAdapterRequest):
         raise TypeError("request must be an EngineAdapterRequest")
     _validate_local_payload_uri(payload_uri)
     request.ready_request.validate()
+    if request.reuse_plan is None:
+        raise ValueError("strict engine payload writes require a reuse_plan")
+    validate_registered_reuse_plan(
+        request.reuse_plan,
+        artifact_identity=request.ready_request.handle.artifact_identity,
+        registry=method_registry,
+    )
     output_path = local_path(payload_uri)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as payload_file:
@@ -273,6 +316,9 @@ def write_engine_adapter_handoff_bundle(
     *,
     payload_uri: str,
     require_external_payload_uri: bool = True,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> tuple[Path, Path]:
     """Write a coordinated engine handoff JSON and payload file.
 
@@ -280,16 +326,34 @@ def write_engine_adapter_handoff_bundle(
     visible handoff record always points at materialized bytes.
     """
 
+    if not isinstance(request, EngineAdapterRequest):
+        raise TypeError("request must be an EngineAdapterRequest")
     payload_path = _resolved_local_path(payload_uri)
     handoff_path = _resolved_local_path(str(handoff_json))
     if _local_paths_collide(payload_path, handoff_path):
         raise ValueError("handoff_json and payload_uri must resolve to different files")
-    payload_path = write_engine_adapter_payload(request, payload_uri)
+    # Authenticate the complete handoff before creating either output.  A
+    # planned/unknown method must not be able to materialize payload bytes.
+    engine_adapter_request_to_record(
+        request,
+        payload_uri=payload_uri,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
+    payload_path = write_engine_adapter_payload(
+        request,
+        payload_uri,
+        method_registry=method_registry,
+    )
     handoff_path = write_engine_adapter_request_json(
         request,
         handoff_json,
         payload_uri=payload_uri,
         require_external_payload_uri=require_external_payload_uri,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
     )
     return handoff_path, payload_path
 
@@ -310,13 +374,19 @@ def _local_paths_collide(first: Path, second: Path) -> bool:
 def write_engine_kv_connector_actions_record_json(
     actions,
     path: str | Path,
+    *,
+    method_registry: MethodRegistry | None = None,
 ) -> None:
     """Write the JSON descriptor for connector actions validated by a probe run."""
 
+    record = engine_kv_connector_actions_to_record(
+        actions,
+        method_registry=method_registry,
+    )
     output_path = local_path(str(path))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(engine_kv_connector_actions_to_record(actions), indent=2, sort_keys=True) + "\n",
+        json.dumps(record, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 

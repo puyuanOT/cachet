@@ -76,5 +76,5 @@ For real serving:
 
 - Read [`concepts.md`](concepts.md) for the vocabulary.
 - Read [`production.md`](production.md) for vLLM, SGLang, and managed-cloud notes.
-- Read [`../benchmarks/current/README.md`](../benchmarks/current/) for the
+- Read [`../benchmarks/README.md`](../benchmarks/) for the
   current benchmark summary.

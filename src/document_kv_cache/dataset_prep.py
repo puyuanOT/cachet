@@ -2,11 +2,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from document_kv_cache.benchmarks import validate_v1_dataset
+from document_kv_cache._representative_hotpotqa import (
+    REPRESENTATIVE_HOTPOTQA_ADD_SPECIAL_TOKENS,
+    REPRESENTATIVE_HOTPOTQA_RECORD_TYPE,
+    REPRESENTATIVE_HOTPOTQA_SCHEMA_VERSION,
+    REPRESENTATIVE_HOTPOTQA_TOKEN_TARGETS,
+    REPRESENTATIVE_HOTPOTQA_TOKENIZER_ID,
+    REPRESENTATIVE_HOTPOTQA_TOKENIZER_REVISION,
+    PreparedRepresentativeHotpotQA,
+    RepresentativeTokenizer,
+    load_representative_hotpotqa_tokenizer,
+    prepare_representative_hotpotqa_jsonl,
+    representative_hotpotqa_main,
+)
+from document_kv_cache.benchmarks import (
+    normalize_biography_title,
+    validate_v1_dataset,
+)
 from document_kv_cache.storage import local_path
 
 
@@ -18,6 +37,19 @@ __all__ = [
     "convert_v1_jsonl",
     "write_v1_jsonl",
     "build_niah_record",
+    "opaque_biography_example_id",
+    "redact_biography_document_text",
+    "REPRESENTATIVE_HOTPOTQA_RECORD_TYPE",
+    "REPRESENTATIVE_HOTPOTQA_SCHEMA_VERSION",
+    "REPRESENTATIVE_HOTPOTQA_TOKENIZER_ID",
+    "REPRESENTATIVE_HOTPOTQA_TOKENIZER_REVISION",
+    "REPRESENTATIVE_HOTPOTQA_TOKEN_TARGETS",
+    "REPRESENTATIVE_HOTPOTQA_ADD_SPECIAL_TOKENS",
+    "RepresentativeTokenizer",
+    "PreparedRepresentativeHotpotQA",
+    "prepare_representative_hotpotqa_jsonl",
+    "load_representative_hotpotqa_tokenizer",
+    "representative_hotpotqa_main",
     "main",
 ]
 
@@ -122,18 +154,70 @@ def build_niah_record(
     )
 
 
+def opaque_biography_example_id(
+    source_identity: str,
+    *,
+    split: str = "unknown",
+) -> str:
+    """Return an answer-independent identifier for Biography Entity Identification."""
+
+    source = _require_text(source_identity, field_name="source_identity")
+    split_name = _require_text(split, field_name="split")
+    digest = sha256(
+        (
+            "cachet.biography_entity_identification.v2\0"
+            f"{split_name}\0{source}"
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    return f"biography-{digest}"
+
+
 def _normalize_biography(record: Mapping[str, Any], *, line_number: int) -> dict[str, Any]:
     subject = _optional_text(record, "name", fallback_fields=("subject", "title", "person"))
-    example_id = _example_id(record, dataset="biography", line_number=line_number, fallback=subject)
-    query = _optional_text(record, "query", fallback_fields=("question",))
-    expected_answer = _optional_text(record, "expected_answer", fallback_fields=("answer", "target", "name", "subject"))
-    if query is None:
-        query = "Which person is described in the biography?"
-    documents = _documents_from_record(
+    source_identity = _example_id(
         record,
-        default_document_id=_slug_or_default(subject or example_id, default=f"biography-{line_number}"),
-        default_title=subject,
-        text_fields=("biography", "text", "body", "context", "article", "profile"),
+        dataset="biography",
+        line_number=line_number,
+        fallback=subject,
+    )
+    metadata = dict(_metadata_from_record(record))
+    split = metadata.get("split", "unknown")
+    example_id = opaque_biography_example_id(source_identity, split=split)
+    query = _optional_text(record, "query", fallback_fields=("question",))
+    expected_answer = _required_text(
+        record,
+        "expected_answer",
+        fallback_fields=("answer", "target", "name", "subject"),
+    )
+    if query is None:
+        query = "Which entity is described in the biography?"
+    documents = _redacted_biography_documents(
+        _opaque_biography_documents(
+            _documents_from_record(
+                record,
+                default_document_id=example_id,
+                text_fields=(
+                    "biography",
+                    "text",
+                    "body",
+                    "context",
+                    "article",
+                    "profile",
+                ),
+            ),
+            example_id=example_id,
+        ),
+        expected_answer=expected_answer,
+    )
+    for leakage_key in ("article_title", "title", "name", "person", "subject"):
+        metadata.pop(leakage_key, None)
+    metadata.update(
+        {
+            "benchmark_task": "biography_entity_identification",
+            "benchmark_task_version": "2",
+            "answer_bearing_document_metadata": "removed",
+            "answer_surface_in_document_context": "redacted",
+        }
     )
     return _canonical_record(
         dataset="biography",
@@ -141,7 +225,7 @@ def _normalize_biography(record: Mapping[str, Any], *, line_number: int) -> dict
         query=query,
         expected_answer=expected_answer,
         documents=documents,
-        metadata=_metadata_from_record(record),
+        metadata=metadata,
         kv_transfer_params=_kv_transfer_params_from_record(record),
     )
 
@@ -173,11 +257,21 @@ def _normalize_musique(record: Mapping[str, Any], *, line_number: int) -> dict[s
         text_fields=("text", "body"),
         preferred_fields=("documents", "contexts", "paragraphs", "context"),
     )
+    expected_answer = _optional_text(
+        record,
+        "expected_answer",
+        fallback_fields=("answer", "target"),
+    )
     return _canonical_record(
         dataset="musique",
         example_id=example_id,
         query=_required_text(record, "query", fallback_fields=("question",)),
-        expected_answer=_optional_text(record, "expected_answer", fallback_fields=("answer", "target")),
+        expected_answer=expected_answer,
+        references=_references_from_record(
+            record,
+            expected_answer=expected_answer,
+            alias_fields=("answer_aliases",),
+        ),
         documents=documents,
         metadata=_metadata_from_record(record),
         kv_transfer_params=_kv_transfer_params_from_record(record),
@@ -225,6 +319,7 @@ def _canonical_record(
     expected_answer: str | None,
     documents: Sequence[Mapping[str, Any]],
     metadata: Mapping[str, str],
+    references: Sequence[str] = (),
     kv_transfer_params: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_v1_dataset(dataset)
@@ -238,6 +333,17 @@ def _canonical_record(
     }
     if expected_answer is not None:
         record["expected_answer"] = _require_text(expected_answer, field_name="expected_answer")
+    normalized_references = tuple(
+        _require_text(reference, field_name="references entry")
+        for reference in references
+    )
+    if expected_answer is not None and normalized_references:
+        if normalized_references[0] != expected_answer:
+            raise ValueError("references must begin with expected_answer")
+    elif expected_answer is None and normalized_references:
+        record["expected_answer"] = normalized_references[0]
+    if normalized_references:
+        record["references"] = list(normalized_references)
     if metadata:
         record["metadata"] = dict(metadata)
     if kv_transfer_params:
@@ -255,6 +361,7 @@ def _canonical_record_for_write(record: Mapping[str, Any], *, line_number: int) 
             example_id=_required_text(record, "example_id"),
             query=_required_text(record, "query"),
             expected_answer=_optional_text(record, "expected_answer"),
+            references=_references_from_record(record),
             documents=_documents_from_record(
                 record,
                 default_document_id=f"{dataset}-{line_number}",
@@ -268,6 +375,149 @@ def _canonical_record_for_write(record: Mapping[str, Any], *, line_number: int) 
         return normalized
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Record line {line_number}: {exc}") from exc
+
+
+def _opaque_biography_documents(
+    documents: Sequence[Mapping[str, Any]],
+    *,
+    example_id: str,
+) -> tuple[Mapping[str, Any], ...]:
+    opaque_documents: list[Mapping[str, Any]] = []
+    for index, raw_document in enumerate(documents):
+        document = dict(raw_document)
+        document["document_id"] = f"{example_id}-doc-{index}"
+        document.pop("title", None)
+        metadata = dict(document.get("metadata", {}))
+        for leakage_key in ("article_title", "title", "name", "person", "subject"):
+            metadata.pop(leakage_key, None)
+        if metadata:
+            document["metadata"] = metadata
+        else:
+            document.pop("metadata", None)
+        opaque_documents.append(document)
+    return tuple(opaque_documents)
+
+
+def _redacted_biography_documents(
+    documents: Sequence[Mapping[str, Any]],
+    *,
+    expected_answer: str,
+) -> tuple[Mapping[str, Any], ...]:
+    """Remove the gold title surface from Biography document content.
+
+    WikiBio articles conventionally begin with their page title.  Making only
+    the document identifier/title opaque would therefore leave the gold answer
+    verbatim in the first sentence.  The benchmark keeps contextual clues but
+    replaces every case-insensitive occurrence of the complete gold title with
+    a neutral subject marker and then fails closed if a normalized occurrence
+    remains.
+    """
+
+    redacted_documents: list[Mapping[str, Any]] = []
+    for raw_document in documents:
+        document = dict(raw_document)
+        for field_name in ("static_text", "text"):
+            value = document.get(field_name)
+            if isinstance(value, str):
+                document[field_name] = redact_biography_document_text(
+                    value,
+                    expected_answer=expected_answer,
+                )
+        raw_chunks = document.get("chunks")
+        if isinstance(raw_chunks, Sequence) and not isinstance(
+            raw_chunks, (str, bytes, bytearray)
+        ):
+            chunks: list[Any] = []
+            for raw_chunk in raw_chunks:
+                if isinstance(raw_chunk, str):
+                    chunks.append(
+                        redact_biography_document_text(
+                            raw_chunk,
+                            expected_answer=expected_answer,
+                        )
+                    )
+                elif isinstance(raw_chunk, Mapping):
+                    chunk = dict(raw_chunk)
+                    text = chunk.get("text")
+                    if isinstance(text, str):
+                        chunk["text"] = redact_biography_document_text(
+                            text,
+                            expected_answer=expected_answer,
+                        )
+                    chunks.append(chunk)
+                else:
+                    chunks.append(raw_chunk)
+            document["chunks"] = chunks
+        redacted_documents.append(document)
+    return tuple(redacted_documents)
+
+
+def redact_biography_document_text(
+    value: str,
+    *,
+    expected_answer: str,
+) -> str:
+    """Remove the complete gold entity surface from one Biography text field."""
+
+    text = unicodedata.normalize(
+        "NFKC",
+        _require_text(value, field_name="biography document text"),
+    )
+    answer = normalize_biography_title(
+        unicodedata.normalize(
+            "NFKC",
+            _require_text(expected_answer, field_name="expected_answer"),
+        )
+    )
+    if not answer:
+        raise ValueError("expected_answer must contain a biography title")
+    answer_tokens = answer.split()
+    answer_pattern = re.compile(
+        r"(?<!\w)"
+        + r"\s+".join(re.escape(token) for token in answer_tokens)
+        + r"(?!\w)",
+        flags=re.IGNORECASE,
+    )
+    redacted = answer_pattern.sub("the subject", text)
+    if answer_pattern.search(redacted):
+        raise ValueError(
+            "Biography document content still contains the normalized gold "
+            "answer after redaction"
+        )
+    return redacted
+
+
+def _references_from_record(
+    record: Mapping[str, Any],
+    *,
+    expected_answer: str | None = None,
+    alias_fields: Sequence[str] = (),
+) -> tuple[str, ...]:
+    raw_references = _first_present(record, ("references", "answers"))
+    references: list[str] = []
+    if raw_references is not None:
+        if isinstance(raw_references, str) or not isinstance(raw_references, Sequence):
+            raise ValueError("references must be an array of non-empty strings")
+        references.extend(
+            _require_text(reference, field_name="references entry")
+            for reference in raw_references
+        )
+    for field_name in alias_fields:
+        raw_aliases = record.get(field_name)
+        if raw_aliases is None:
+            continue
+        if isinstance(raw_aliases, str) or not isinstance(raw_aliases, Sequence):
+            raise ValueError(f"{field_name} must be an array of non-empty strings")
+        references.extend(
+            _require_text(alias, field_name=f"{field_name} entry")
+            for alias in raw_aliases
+        )
+    if expected_answer is None:
+        expected_answer = _optional_text(record, "expected_answer")
+    if expected_answer is not None:
+        references = [reference for reference in references if reference != expected_answer]
+        references.insert(0, expected_answer)
+    return tuple(references)
 
 
 def _validate_written_record_for_runner(record: Mapping[str, Any], *, dataset: str, line_number: int) -> None:
@@ -599,7 +849,7 @@ def _synthetic_haystack(args: argparse.Namespace) -> str:
     if args.haystack_file:
         return local_path(args.haystack_file).read_text(encoding="utf-8")
     if args.haystack_text:
-        return args.haystack_text
+        return str(args.haystack_text)
     raise ValueError("Synthetic NIAH generation requires --haystack-text or --haystack-file")
 
 

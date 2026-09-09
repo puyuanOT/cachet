@@ -1,6 +1,6 @@
 import pytest
 
-from document_kv_cache.engine_protocol import AttentionMechanism, KVStorageLayout
+from document_kv_cache.engine_protocol import AttentionMechanism, KVPayloadAxisOrder, KVStorageLayout
 from document_kv_cache.model_profiles import (
     KVModelProfile,
     MODEL_PROFILE_RECORD_TYPE,
@@ -9,6 +9,8 @@ from document_kv_cache.model_profiles import (
     QWEN3_4B_BASE_HF_MODEL_ID,
     QWEN3_4B_INSTRUCT_HF_MODEL_ID,
     QWEN3_4B_INSTRUCT_PROFILE,
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
     builtin_model_profiles,
     default_model_profile_registry,
     dtype_byte_width,
@@ -75,6 +77,25 @@ def test_builtin_profile_aliases_and_layout_helper():
     assert alias_layout.storage_layout == KVStorageLayout.SHARED_KEY_VALUE
 
 
+def test_qwen3_pinned_pre_rope_layout_has_exact_geometry():
+    layout = layout_for_model(
+        QWEN3_4B_INSTRUCT_HF_MODEL_ID,
+        dtype="bf16",
+        shares_kv_storage=False,
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+        pre_rope=True,
+        rope_theta=QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+    )
+
+    assert QWEN3_4B_ROPE_THETA == 5_000_000.0
+    assert QWEN3_4B_ROPE_ROTARY_DIM == 128
+    assert layout.pre_rope is True
+    assert layout.key_position_encoding.value == "pre_rope"
+    assert layout.rope_theta == 5_000_000.0
+    assert layout.rope_rotary_dim == 128
+
+
 def test_custom_model_profile_registry_extends_aliases_without_mutating_builtins():
     future_profile = KVModelProfile(
         model_id="minimax:m2.5-4b",
@@ -106,6 +127,24 @@ def test_custom_model_profile_registry_extends_aliases_without_mutating_builtins
     assert layout.attention_mechanism == AttentionMechanism.GROUPED_QUERY
     assert layout.query_heads_per_kv_head == 8
     assert layout.bytes_per_token == future_profile.bytes_per_token("bf16")
+
+
+def test_layout_for_model_threads_payload_axis_order():
+    assert layout_for_model("qwen3:4b-instruct").payload_axis_order is KVPayloadAxisOrder.TOKEN_MAJOR
+    assert (
+        layout_for_model("qwen3:4b-instruct", payload_axis_order="layer_major").payload_axis_order
+        is KVPayloadAxisOrder.LAYER_MAJOR
+    )
+    assert (
+        QWEN3_4B_INSTRUCT_PROFILE.to_layout(payload_axis_order=KVPayloadAxisOrder.LAYER_MAJOR).payload_axis_order
+        is KVPayloadAxisOrder.LAYER_MAJOR
+    )
+    assert (
+        default_model_profile_registry()
+        .layout_for_model("qwen3:4b-instruct", payload_axis_order="layer_major")
+        .payload_axis_order
+        is KVPayloadAxisOrder.LAYER_MAJOR
+    )
 
 
 def test_model_profile_layout_derives_bytes_from_padded_kv_stride():

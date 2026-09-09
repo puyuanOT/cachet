@@ -25,7 +25,7 @@ classifiers = [
 ]
 
 dependencies = [
-  "packaging==26.2",
+  "packaging==26.3",
 ]
 
 [project.urls]
@@ -46,10 +46,16 @@ cachet-benchmark-plan = "cachet.benchmark_plan:main"
 cachet-benchmark-handoffs = "cachet.benchmark_handoffs:main"
 cachet-benchmark-handoff-manifest = "cachet.benchmark_handoffs:manifest_main"
 cachet-benchmark-handoff-bundles = "cachet.benchmark_handoffs:bundle_main"
+cachet-prepare-representative-hotpotqa = "cachet.dataset_prep:representative_hotpotqa_main"
+cachet-prepare-main-latency-inputs = "cachet.main_latency_inputs:main_latency_inputs_main"
 cachet-native-probe-scaffold = "cachet.adapter_scaffold:main"
+cachet-method-scaffold = "cachet.method_scaffold:main"
+cachet-method-conformance = "cachet.method_conformance:main"
 cachet-run-benchmark-plan = "cachet.benchmark_plan_executor:main"
 cachet-databricks-job = "cachet.databricks_job:main"
 cachet-databricks-runs = "cachet.databricks_runs:main"
+cachet-databricks-resource-ledger = "cachet.databricks_resource_ledger:main"
+cachet-publication-freeze = "cachet.publication_freeze:main"
 cachet-storage-benchmark = "cachet.storage_benchmark:main"
 cachet-storage-benchmark-databricks-job = "cachet.databricks_storage_benchmark_job:main"
 cachet-templates = "cachet.template_resources:main"
@@ -65,6 +71,7 @@ cachet-engine-probe = "cachet.engine_probe:main"
 cachet-engine-launch-config = "cachet.engine_launch_config:main"
 cachet-engine-probe-fixture = "cachet.probe_fixtures:main"
 cachet-engine-probe-databricks-job = "cachet.databricks_engine_probe_job:main"
+cachet-runtime-kv-offload-probe = "cachet.runtime_kv_offload_probe:main"
 cachet-vllm-runtime-preflight = "cachet.vllm_runtime_preflight:main"
 cachet-sglang-runtime-preflight = "cachet.sglang_runtime_preflight:main"
 cachet-vllm-smoke = "cachet.vllm_smoke:main"
@@ -75,10 +82,16 @@ document-kv-benchmark-plan = "document_kv_cache.benchmark_plan:main"
 document-kv-benchmark-handoffs = "document_kv_cache.benchmark_handoffs:main"
 document-kv-benchmark-handoff-manifest = "document_kv_cache.benchmark_handoffs:manifest_main"
 document-kv-benchmark-handoff-bundles = "document_kv_cache.benchmark_handoffs:bundle_main"
+document-kv-prepare-representative-hotpotqa = "document_kv_cache.dataset_prep:representative_hotpotqa_main"
+document-kv-prepare-main-latency-inputs = "document_kv_cache.main_latency_inputs:main_latency_inputs_main"
 document-kv-native-probe-scaffold = "document_kv_cache.adapter_scaffold:main"
+document-kv-method-scaffold = "document_kv_cache.method_scaffold:main"
+document-kv-method-conformance = "document_kv_cache.method_conformance:main"
 document-kv-run-benchmark-plan = "document_kv_cache.benchmark_plan_executor:main"
 document-kv-databricks-job = "document_kv_cache.databricks_job:main"
 document-kv-databricks-runs = "document_kv_cache.databricks_runs:main"
+document-kv-databricks-resource-ledger = "document_kv_cache.databricks_resource_ledger:main"
+document-kv-publication-freeze = "document_kv_cache.publication_freeze:main"
 document-kv-storage-benchmark = "document_kv_cache.storage_benchmark:main"
 document-kv-storage-benchmark-databricks-job = "document_kv_cache.databricks_storage_benchmark_job:main"
 document-kv-templates = "document_kv_cache.template_resources:main"
@@ -94,6 +107,7 @@ document-kv-engine-probe = "document_kv_cache.engine_probe:main"
 document-kv-engine-launch-config = "document_kv_cache.engine_launch_config:main"
 document-kv-engine-probe-fixture = "document_kv_cache.probe_fixtures:main"
 document-kv-engine-probe-databricks-job = "document_kv_cache.databricks_engine_probe_job:main"
+document-kv-runtime-kv-offload-probe = "document_kv_cache.runtime_kv_offload_probe:main"
 document-kv-vllm-runtime-preflight = "document_kv_cache.vllm_runtime_preflight:main"
 document-kv-sglang-runtime-preflight = "document_kv_cache.sglang_runtime_preflight:main"
 document-kv-vllm-smoke = "document_kv_cache.vllm_smoke:main"
@@ -115,7 +129,22 @@ include = [
   { path = "src/sglang_kv_injection/py.typed", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.yml", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.md", format = ["sdist", "wheel"] },
+  { path = "src/document_kv_cache/runtime_locks/*.in", format = ["sdist", "wheel"] },
+  { path = "src/document_kv_cache/runtime_locks/*.lock", format = ["sdist", "wheel"] },
 ]
+
+[tool.poetry.group.dev.dependencies]
+mypy = "==2.2.0"
+ruff = "==0.15.21"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+show_error_codes = true
+warn_unused_configs = true
+
+[tool.ruff]
+target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

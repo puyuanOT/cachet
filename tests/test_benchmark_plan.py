@@ -1,15 +1,10 @@
 import json
-import os
-import pickle
-import subprocess
 import sys
 from dataclasses import fields
 from pathlib import Path
 
 import pytest
 
-import document_kv_cache.benchmark_plan as public_benchmark_plan
-from document_kv_cache._native_probe_metadata import SGLANG_NATIVE_PROBE_DELEGATE_FACTORY
 from document_kv_cache.benchmark_plan import (
     BenchmarkDatasetPath,
     BenchmarkPlanConfig,
@@ -104,6 +99,9 @@ def test_benchmark_plan_config_keeps_native_probe_field_positional_compatibility
     )
     assert field_names.index("github_governance_output_json") < field_names.index(
         "release_preflight_output_json"
+    )
+    assert field_names.index("canonical_model_id") > field_names.index(
+        "engine_launch_config_sglang_provider_factory"
     )
 
 
@@ -235,6 +233,244 @@ def test_build_v1_benchmark_plan_prepares_all_datasets_then_runs_benchmark(tmp_p
     assert "--cache-runtime-prompt" in plan.benchmark_command.argv
     assert "--dataset" in plan.benchmark_command.argv
     assert "biography=" + str(tmp_path / "prepared" / "biography.jsonl") in plan.benchmark_command.argv
+
+
+def test_plan_propagates_n_way_arms_manifest_and_standalone_gate(tmp_path):
+    baseline_spec = json.dumps(
+        {
+            "arm_id": "baseline",
+            "uses_cache": False,
+            "description": "baseline",
+        },
+        sort_keys=True,
+    )
+    cache_spec = json.dumps(
+        {
+            "arm_id": "vanilla",
+            "uses_cache": True,
+            "description": "vanilla",
+            "cache_method": "vanilla_prefill",
+            "connector_mode": "cachet",
+            "implementation_kind": "cachet",
+            "method_version": "2",
+            "method_config_digest": "0" * 64,
+            "physical_transform_id": "cachet.vanilla",
+            "requires_cachet_handoff": True,
+        },
+        sort_keys=True,
+    )
+    arm_file = tmp_path / "upstream-arms.json"
+    config = BenchmarkPlanConfig(
+        suite_id="n-way-canary",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        benchmark_arm_specs_json=(baseline_spec, cache_spec),
+        benchmark_arm_spec_json_files=(str(arm_file),),
+        evidence_policy="canary",
+        evidence_gate_output_json=str(tmp_path / "gate.json"),
+        measurement_scopes=("latency", "resource"),
+        repeats=2,
+        request_parallelism=4,
+        warmups=1,
+        benchmark_seed=7,
+        generation_seed=9,
+        model_revision="model-revision",
+        tokenizer_id="tokenizer",
+        tokenizer_revision="tokenizer-revision",
+        engine_id="vllm",
+        engine_version="1",
+        package_revisions=("vllm=1",),
+        hardware_fingerprint="l4-node",
+        runtime_id="dbr",
+        runtime_version="15.4",
+        storage_identity="nvme-layout",
+        cache_state="cold",
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    argv = plan.benchmark_command.argv
+    record = benchmark_job_plan_to_record(plan)
+
+    assert _parameter_values(argv, "--arm-spec-json") == [baseline_spec, cache_spec]
+    assert _parameter_values(argv, "--arm-spec-json-file") == [str(arm_file)]
+    assert _parameter_values(argv, "--measurement-scope") == ["latency", "resource"]
+    assert _parameter_values(argv, "--evidence-gate-output-json") == [str(tmp_path / "gate.json")]
+    assert record["evidence_policy"] == "canary"
+    assert record["experiment"]["request_parallelism"] == 4
+    assert record["experiment"]["package_revisions"] == ["vllm=1"]
+
+
+def test_plan_threads_complete_runtime_provenance_to_record_and_runner(tmp_path):
+    config = BenchmarkPlanConfig(
+        suite_id="v1-provenance",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        model_revision="model-revision",
+        canonical_model_id="Qwen/Qwen3-4B-Instruct-2507",
+        tokenizer_id="Qwen/Qwen3-4B-Instruct-2507",
+        tokenizer_revision="tokenizer-revision",
+        lora_id="base",
+        engine_id="vllm",
+        engine_version="0.10.2",
+        serving_platform="vllm",
+        model_dtype="bfloat16",
+        model_quantization="none",
+        runtime_kv_dtype="bfloat16",
+        layout_version="qwen3-v1",
+        payload_axis_order="layer_kv_head_token_dim",
+        block_size=16,
+        key_position_encoding="pre_rope",
+        rope_theta=1_000_000.0,
+        rope_rotary_dim=128,
+        tensor_parallel_size=1,
+        pipeline_parallel_size=1,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    argv = plan.benchmark_command.argv
+
+    expected_experiment = {
+        "measurement_scopes": ["latency", "quality"],
+        "repeats": 1,
+        "request_parallelism": 1,
+        "warmups": 0,
+        "shuffle": False,
+        "benchmark_seed": None,
+        "generation_seed": None,
+        "interleave_examples": False,
+        "isolate_arms": True,
+        "prefix_cache_salt_mode": "static",
+        "model_revision": "model-revision",
+        "canonical_model_id": "Qwen/Qwen3-4B-Instruct-2507",
+        "tokenizer_id": "Qwen/Qwen3-4B-Instruct-2507",
+        "tokenizer_revision": "tokenizer-revision",
+        "lora_id": "base",
+        "engine_id": "vllm",
+        "engine_version": "0.10.2",
+        "serving_platform": "vllm",
+        "model_dtype": "bfloat16",
+        "model_quantization": "none",
+        "runtime_kv_dtype": "bfloat16",
+        "layout_version": "qwen3-v1",
+        "payload_axis_order": "layer_kv_head_token_dim",
+        "block_size": 16,
+        "key_position_encoding": "pre_rope",
+        "rope_theta": 1_000_000.0,
+        "rope_rotary_dim": 128,
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+        "package_revisions": [],
+        "prompt_template_version": "v2-final-answer",
+        "input_tokens_target": None,
+        "max_output_tokens": 128,
+        "hardware_fingerprint": "unresolved",
+        "runtime_id": "unresolved",
+        "runtime_version": "unresolved",
+        "storage_identity": "unresolved",
+        "cache_state": "unresolved",
+        "complete_dataset_split": False,
+        "comparison_mode": "methods_same_setting",
+        "varied_setting": None,
+        "reference_arm_id": None,
+    }
+    assert record["experiment"] == expected_experiment
+    runner_expected = {
+        key: expected_experiment[key]
+        for key in (
+            "canonical_model_id",
+            "lora_id",
+            "serving_platform",
+            "model_dtype",
+            "model_quantization",
+            "runtime_kv_dtype",
+            "layout_version",
+            "payload_axis_order",
+            "block_size",
+            "key_position_encoding",
+            "rope_theta",
+            "rope_rotary_dim",
+            "tensor_parallel_size",
+            "pipeline_parallel_size",
+        )
+    }
+    for field_name, expected_value in runner_expected.items():
+        flag = "--" + field_name.replace("_", "-")
+        assert _parameter_values(argv, flag) == [str(expected_value)]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"rope_theta": 1_000_000.0}, "provided together"),
+        ({"rope_rotary_dim": 128}, "provided together"),
+        (
+            {"rope_theta": 1_000_000.0, "rope_rotary_dim": 127},
+            "positive even integer",
+        ),
+        (
+            {"rope_theta": float("nan"), "rope_rotary_dim": 128},
+            "positive number",
+        ),
+        ({"key_position_encoding": "pre_rope"}, "requires RoPE geometry"),
+        ({"block_size": True}, "block_size must be a positive integer"),
+        ({"tensor_parallel_size": 0}, "tensor_parallel_size must be a positive integer"),
+    ],
+)
+def test_benchmark_plan_rejects_invalid_runtime_provenance(
+    tmp_path, overrides, message
+):
+    values = {
+        "suite_id": "v1-provenance",
+        "dataset_paths": dataset_paths(tmp_path),
+        "base_url": "http://localhost:8000",
+        "benchmark_output_json": str(tmp_path / "results.json"),
+        **overrides,
+    }
+
+    with pytest.raises(ValueError, match=message):
+        BenchmarkPlanConfig(**values)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "lora_id",
+        "serving_platform",
+        "model_dtype",
+        "model_quantization",
+        "runtime_kv_dtype",
+        "layout_version",
+        "payload_axis_order",
+        "key_position_encoding",
+    ),
+)
+def test_benchmark_plan_rejects_empty_runtime_provenance_strings(
+    tmp_path, field_name
+):
+    values = {
+        "suite_id": "v1-provenance",
+        "dataset_paths": dataset_paths(tmp_path),
+        "base_url": "http://localhost:8000",
+        "benchmark_output_json": str(tmp_path / "results.json"),
+        field_name: "",
+    }
+
+    with pytest.raises(ValueError, match=f"{field_name} must be non-empty"):
+        BenchmarkPlanConfig(**values)
+
+
+def test_benchmark_plan_rejects_non_string_canonical_model_id(tmp_path):
+    with pytest.raises(ValueError, match="canonical_model_id must be a string"):
+        BenchmarkPlanConfig(
+            suite_id="v1-provenance",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            canonical_model_id=1,  # type: ignore[arg-type]
+        )
 
 
 def test_build_v1_benchmark_plan_enriches_configured_handoff_datasets(tmp_path):
@@ -423,6 +659,8 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
+        evidence_policy="publication",
+        evidence_gate_output_json=str(tmp_path / "benchmark-gate.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
             workspace_dir="/local_disk0/document-kv-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
@@ -436,6 +674,7 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
                 str(tmp_path / "sglang-probe.json"),
             ),
             engine_actions_jsons=release_action_jsons(tmp_path),
+            benchmark_evidence_gate_json=str(tmp_path / "benchmark-gate.json"),
         ),
     )
 
@@ -470,6 +709,12 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
     )
     assert release_command.argv.count("--engine-probe-json") == 2
     assert release_command.argv.count("--engine-actions-json") == 2
+    assert _parameter_values(
+        plan.benchmark_command.argv, "--evidence-gate-output-json"
+    ) == [str(tmp_path / "benchmark-gate.json")]
+    assert _parameter_values(
+        release_command.argv, "--benchmark-evidence-gate-json"
+    ) == [str(tmp_path / "benchmark-gate.json")]
     assert str(tmp_path / "vllm-probe.json") in release_command.argv
     assert str(tmp_path / "sglang-probe.json") in release_command.argv
     assert str(tmp_path / "vllm-actions.json") in release_command.argv
@@ -2601,6 +2846,74 @@ def test_main_prints_plan_json_for_full_dataset_set(capsys, tmp_path):
     assert len(record["datasets"]) == 4
     assert record["commands"][0]["argv"][0] == sys.executable
     assert record["commands"][-1]["name"] == "run-benchmark"
+
+
+def test_main_round_trips_complete_runtime_provenance(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--canonical-model-id",
+            "Qwen/Qwen3-4B-Instruct-2507",
+            "--lora-id",
+            "base",
+            "--serving-platform",
+            "vllm",
+            "--model-dtype",
+            "bfloat16",
+            "--model-quantization",
+            "none",
+            "--runtime-kv-dtype",
+            "bfloat16",
+            "--layout-version",
+            "qwen3-v1",
+            "--payload-axis-order",
+            "layer_kv_head_token_dim",
+            "--block-size",
+            "16",
+            "--key-position-encoding",
+            "pre_rope",
+            "--rope-theta",
+            "1000000",
+            "--rope-rotary-dim",
+            "128",
+            "--tensor-parallel-size",
+            "1",
+            "--pipeline-parallel-size",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    record = json.loads(capsys.readouterr().out)
+    command = next(
+        command for command in record["commands"] if command["name"] == "run-benchmark"
+    )
+    expected = {
+        "canonical_model_id": "Qwen/Qwen3-4B-Instruct-2507",
+        "lora_id": "base",
+        "serving_platform": "vllm",
+        "model_dtype": "bfloat16",
+        "model_quantization": "none",
+        "runtime_kv_dtype": "bfloat16",
+        "layout_version": "qwen3-v1",
+        "payload_axis_order": "layer_kv_head_token_dim",
+        "block_size": 16,
+        "key_position_encoding": "pre_rope",
+        "rope_theta": 1_000_000.0,
+        "rope_rotary_dim": 128,
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+    }
+    assert {key: record["experiment"][key] for key in expected} == expected
+    for field_name, expected_value in expected.items():
+        flag = "--" + field_name.replace("_", "-")
+        assert _parameter_values(command["argv"], flag) == [str(expected_value)]
 
 
 def test_main_writes_json_and_shell_outputs(tmp_path):

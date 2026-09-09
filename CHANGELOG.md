@@ -7,6 +7,5 @@
   APIs.
 - Local memory and disk storage readers plus Unity Catalog Volume support.
 - vLLM and SGLang adapter modules shipped in the same distribution.
-- Human-readable benchmark summaries under `benchmarks/current/`.
+- Human-readable benchmark summaries in `benchmarks/README.md`.
 - Public quickstart and beginner documentation.
-

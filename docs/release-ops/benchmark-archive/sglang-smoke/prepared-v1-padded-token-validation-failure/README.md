@@ -30,7 +30,7 @@ repeats, and two Cachet cache-arm repeats.
 
 The live benchmark artifact contains 16 request measurements and four
 baseline-vs-cache comparisons. All request rows completed without request
-errors, and answer-found quality stayed unchanged between the baseline and
+errors, and `answer_found_rate` stayed unchanged between the baseline and
 Cachet arms.
 
 The run is not a published SGLang benchmark result because all eight cache-arm

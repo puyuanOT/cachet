@@ -18,6 +18,10 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.engine_probe import read_engine_adapter_payload
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_PROFILE
+from document_kv_cache.serving_env import VLLM_PACKAGE_VERSION
+from document_kv_cache.vllm_runtime_contract_data import (
+    VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
+)
 from document_kv_cache.probe_fixtures import (
     DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES,
     DEFAULT_ENGINE_PROBE_FIXTURE_REQUEST_ID,
@@ -224,8 +228,9 @@ def test_qwen3_v1_engine_probe_fixture_rejects_reserved_metadata(tmp_path):
 def _matching_installed_vllm_contract_record() -> dict:
     return installed_vllm_kv_connector_v1_contract_to_record(
         VLLMInstalledKVConnectorContract(
-            package_version="0.23.0",
+            package_version=VLLM_PACKAGE_VERSION,
             importable=True,
+            base_source_sha256=VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
             installed_methods=tuple(
                 sorted(
                     (
@@ -234,6 +239,10 @@ def _matching_installed_vllm_contract_record() -> dict:
                     )
                 )
             ),
-            installed_properties=("prefer_cross_layer_blocks", "role"),
+            installed_properties=(
+                "prefer_cross_layer_blocks",
+                "requires_kv_delivery",
+                "role",
+            ),
         )
     )

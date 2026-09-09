@@ -1,11 +1,11 @@
 import json
 import os
-import pickle
 from pathlib import Path
 import subprocess
 import sys
 
-import document_kv_cache.databricks_storage_benchmark_job as public_storage_benchmark_job
+import pytest
+
 from document_kv_cache.databricks_storage_benchmark_job import (
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE,
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
@@ -47,7 +47,10 @@ def test_build_databricks_storage_benchmark_payload_uses_single_node_g5_cluster(
     cluster = task["new_cluster"]
 
     assert payload["run_name"] == DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME
+    assert payload["timeout_seconds"] == 14400
     assert task["task_key"] == DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY
+    assert task["timeout_seconds"] == 14400
+    assert task["max_retries"] == 0
     assert "libraries" not in task
     assert cluster["node_type_id"] == "g6.8xlarge"
     assert cluster["driver_node_type_id"] == "g6.8xlarge"
@@ -116,6 +119,29 @@ def test_databricks_storage_benchmark_config_requires_single_user_name_and_valid
         assert "Unsupported storage benchmark readers" in str(exc)
     else:
         raise AssertionError("expected reader validation to fail")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"run_timeout_seconds": 0}, "run_timeout_seconds"),
+        ({"run_timeout_seconds": 14401}, "run_timeout_seconds"),
+        ({"task_max_retries": 1}, "task_max_retries"),
+    ),
+)
+def test_storage_benchmark_job_config_rejects_unbounded_execution(
+    overrides,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        DatabricksStorageBenchmarkJobConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
+            runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
+            uc_volume_root="/Volumes/catalog/schema/volume/storage",
+            single_user_name=SINGLE_USER_NAME,
+            **overrides,
+        )
 
 
 def test_write_databricks_storage_benchmark_runner_script_imports_storage_main(tmp_path):
@@ -258,6 +284,10 @@ def test_main_writes_storage_benchmark_payload_and_runner_script(tmp_path):
             "/Volumes/catalog/schema/volume/storage",
             "--single-user-name",
             SINGLE_USER_NAME,
+            "--run-timeout-seconds",
+            "3600",
+            "--task-max-retries",
+            "0",
             "--wheel-uri",
             WHEEL_URI,
             "--output-json",
@@ -268,7 +298,11 @@ def test_main_writes_storage_benchmark_payload_and_runner_script(tmp_path):
     )
 
     assert exit_code == 0
-    task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    task = payload["tasks"][0]
+    assert payload["timeout_seconds"] == 3600
+    assert task["timeout_seconds"] == 3600
+    assert task["max_retries"] == 0
     assert "libraries" not in task
     assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
     assert "storage_benchmark" in runner_path.read_text(encoding="utf-8")

@@ -1,0 +1,34 @@
+# Resolution-only source. Runtime installation uses the generated hash lock
+# plus the separately reviewed, content-addressed E5M2-patched vLLM wheel.
+vllm @ https://github.com/vllm-project/vllm/releases/download/v0.27.1/vllm-0.27.1%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl#sha256=bf0d52faa2a51e7a01c6856a7a8a2d1307fd0ff711415d34168a67ffac0fa47b
+pip==26.2.1
+setuptools==80.9.0
+wheel==0.48.0
+torch==2.13.0+cu129
+torchaudio==2.11.0+cu129
+torchvision==0.28.0+cu129
+triton==3.7.1
+numba==0.65.0
+torchcodec==0.16.0+cu129
+PyNvVideoCodec==2.0.4
+flashinfer-python==0.6.16.post3
+flashinfer-cubin==0.6.16.post3
+flashinfer-jit-cache==0.6.16.post3+cu129
+apache-tvm-ffi==0.1.11
+tilelang==0.1.12
+nvidia-cudnn-frontend==1.27.0
+nvtx==0.2.15
+fastsafetensors==0.3.3
+nvidia-cutlass-dsl==4.6.0
+quack-kernels==0.6.1
+tokenspeed-mla==0.1.8
+humming-kernels[cu12]==0.1.10
+transformers==5.12.1
+huggingface-hub==1.20.1
+tokenizers==0.22.2
+numpy==2.3.5
+fastapi[standard]==0.136.0
+prometheus-fastapi-instrumentator==8.0.0
+bitsandbytes==0.49.2
+accelerate==1.14.0
+opencv-python-headless==4.13.0.92

@@ -9,7 +9,10 @@ import hashlib
 import io
 import json
 import re
+import stat
+import struct
 import tomllib
+import unicodedata
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -2231,22 +2234,37 @@ def _wheel_zip_payload_issues(
             corrupt_member = wheel_zip.testzip()
             if corrupt_member is not None:
                 return (f"package wheel artifact zip member {corrupt_member!r} is corrupt",)
-            names = wheel_zip.namelist()
+            infos = wheel_zip.infolist()
+            names = [info.filename for info in infos]
             duplicate_member_issues = _duplicate_wheel_member_issues(names)
+            member_issues = _wheel_member_issues(
+                payload,
+                infos,
+                archive_comment=wheel_zip.comment,
+                central_start=wheel_zip.start_dir,
+            )
             dist_info_prefixes = tuple(sorted(_root_dist_info_prefixes(names)))
             metadata_names = tuple(name for name in names if _is_root_dist_info_file(name, "METADATA"))
             record_names = tuple(name for name in names if _is_root_dist_info_file(name, "RECORD"))
             wheel_names = tuple(name for name in names if _is_root_dist_info_file(name, "WHEEL"))
             entry_point_names = tuple(name for name in names if _is_root_dist_info_file(name, "entry_points.txt"))
-    except zipfile.BadZipFile:
+    except (NotImplementedError, RuntimeError, ValueError, zipfile.BadZipFile):
         return ("package wheel artifact must be a valid wheel zip payload",)
     if duplicate_member_issues:
         return duplicate_member_issues
+    if member_issues:
+        return member_issues
     if len(dist_info_prefixes) != 1:
         return ("package wheel artifact must contain exactly one root-level .dist-info directory",)
     dist_info_issues = _wheel_dist_info_prefix_issues(dist_info_prefixes[0], filename_match=filename_match)
     if dist_info_issues:
         return dist_info_issues
+    if filename_match is None:
+        return ()
+    expected_dist_info_prefix = _wheel_dist_info_prefix(filename_match)
+    dist_info_authority_issues = _wheel_dist_info_authority_issues(names, expected_prefix=expected_dist_info_prefix)
+    if dist_info_authority_issues:
+        return dist_info_authority_issues
     if len(wheel_names) != 1:
         return ("package wheel artifact must contain .dist-info/WHEEL metadata",)
     if len(metadata_names) != 1:
@@ -2264,16 +2282,20 @@ def _wheel_zip_payload_issues(
     typed_marker_issues = _wheel_typed_marker_issues(names)
     if typed_marker_issues:
         return typed_marker_issues
-    with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
-        wheel_payload = wheel_zip.read(wheel_names[0])
-        metadata_payload = wheel_zip.read(metadata_names[0])
-        entry_points_payload = wheel_zip.read(entry_point_names[0])
-        record_payload = wheel_zip.read(record_names[0])
-        record_issues = _wheel_record_issues(
-            record_payload,
-            wheel_zip=wheel_zip,
-            required_paths=(wheel_names[0], metadata_names[0], entry_point_names[0], record_names[0]),
-        )
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
+            wheel_payload = wheel_zip.read(wheel_names[0])
+            metadata_payload = wheel_zip.read(metadata_names[0])
+            entry_points_payload = wheel_zip.read(entry_point_names[0])
+            record_payload = wheel_zip.read(record_names[0])
+            record_issues = _wheel_record_issues(
+                record_payload,
+                wheel_zip=wheel_zip,
+                record_path=record_names[0],
+                required_paths=(wheel_names[0], metadata_names[0], entry_point_names[0], record_names[0]),
+            )
+    except (KeyError, NotImplementedError, RuntimeError, ValueError, zipfile.BadZipFile):
+        return ("package wheel artifact must be a valid wheel zip payload",)
     return (
         *_wheel_file_issues(wheel_payload),
         *_wheel_metadata_issues(
@@ -2290,14 +2312,368 @@ def _duplicate_wheel_member_issues(names: Sequence[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     duplicates: list[str] = []
     for name in names:
-        if name.endswith("/"):
-            continue
         if name in seen and name not in duplicates:
             duplicates.append(name)
         seen.add(name)
     if duplicates:
         duplicate_list = ", ".join(repr(name) for name in duplicates)
         return (f"package wheel artifact zip entries must not contain duplicate file paths: {duplicate_list}",)
+    return ()
+
+
+def _wheel_member_issues(
+    payload: bytes,
+    infos: Sequence[zipfile.ZipInfo],
+    *,
+    archive_comment: bytes,
+    central_start: int,
+) -> tuple[str, ...]:
+    canonical_names: dict[str, str] = {}
+    file_names: set[str] = set()
+    issues: list[str] = []
+    if archive_comment:
+        issues.append("package wheel artifact zip archive comment must be empty")
+    for info in infos:
+        name = info.filename
+        path_issue = _wheel_member_path_issue(name, original_name=info.orig_filename)
+        if path_issue is not None:
+            issues.append(path_issue)
+            continue
+        canonical_name = name.removesuffix("/")
+        alias_key = canonical_name.casefold()
+        prior_name = canonical_names.get(alias_key)
+        if prior_name is not None and prior_name != name:
+            issues.append(
+                "package wheel artifact zip entries must not contain aliasing paths: "
+                f"{prior_name!r}, {name!r}"
+            )
+        else:
+            canonical_names[alias_key] = name
+        if not info.is_dir():
+            file_names.add(canonical_name)
+        mode_issue = _wheel_member_mode_issue(info)
+        if mode_issue is not None:
+            issues.append(mode_issue)
+    folded_file_names = {
+        unicodedata.normalize("NFC", file_name.casefold()) for file_name in file_names
+    }
+    for file_name in sorted(file_names):
+        parts = file_name.split("/")
+        for index in range(1, len(parts)):
+            ancestor = "/".join(parts[:index])
+            folded_ancestor = unicodedata.normalize("NFC", ancestor.casefold())
+            if folded_ancestor in folded_file_names:
+                issues.append(
+                    "package wheel artifact zip entries must not use a file as a directory: "
+                    f"{ancestor!r}, {file_name!r}"
+                )
+    issues.extend(_wheel_local_header_issues(payload, infos, central_start=central_start))
+    issues.extend(
+        _wheel_central_directory_issues(payload, infos, central_start=central_start)
+    )
+    return tuple(issues)
+
+
+def _wheel_member_path_issue(name: str, *, original_name: str) -> str | None:
+    if name != original_name or not name:
+        return "package wheel artifact zip entry paths must be non-empty and unambiguous"
+    if name.startswith("/") or "\\" in name:
+        return f"package wheel artifact zip entry path {name!r} must be a relative POSIX path"
+    components = name.removesuffix("/").split("/")
+    if (
+        not components
+        or any(component in {"", ".", ".."} for component in components)
+        or any(":" in component for component in components)
+        or any(any(character in '<>"|?*' for character in component) for component in components)
+        or any(len(component.encode("utf-8")) > 255 for component in components)
+        or any(component.endswith((" ", ".")) for component in components)
+        or any(_is_windows_reserved_wheel_component(component) for component in components)
+        or any(
+            unicodedata.normalize("NFC", component) != component
+            or any(ord(character) < 32 or ord(character) == 127 for character in component)
+            for component in components
+        )
+    ):
+        return f"package wheel artifact zip entry path {name!r} must be canonical and safe"
+    return None
+
+
+def _is_windows_reserved_wheel_component(component: str) -> bool:
+    stem = component.split(".", 1)[0].casefold()
+    if stem in {"con", "prn", "aux", "nul"}:
+        return True
+    device_suffixes = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³"}
+    return any(stem == f"{prefix}{suffix}" for prefix in ("com", "lpt") for suffix in device_suffixes)
+
+
+def _wheel_member_mode_issue(info: zipfile.ZipInfo) -> str | None:
+    if info.is_dir():
+        return f"package wheel artifact zip entry {info.filename!r} must be a regular file"
+    if info.create_system != 3:
+        return (
+            f"package wheel artifact zip entry {info.filename!r} "
+            "must use Unix external attributes"
+        )
+    unix_mode = info.external_attr >> 16
+    file_type = stat.S_IFMT(unix_mode)
+    permissions = stat.S_IMODE(unix_mode)
+    if (
+        file_type not in {0, stat.S_IFREG}
+        or permissions not in {0o600, 0o644}
+        or unix_mode & ~0o100777
+    ):
+        return (
+            f"package wheel artifact zip entry {info.filename!r} "
+            "must describe a regular file with mode 0600 or 0644"
+        )
+    if info.external_attr & 0xFFFF:
+        return (
+            f"package wheel artifact zip entry {info.filename!r} "
+            "must not carry DOS or other low-word external attributes"
+        )
+    if info.internal_attr != 0:
+        return (
+            f"package wheel artifact zip entry {info.filename!r} "
+            "internal attributes must be zero"
+        )
+    if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+        return (
+            f"package wheel artifact zip entry {info.filename!r} "
+            "must use stored or deflated compression"
+        )
+    if info.extra:
+        return f"package wheel artifact zip entry {info.filename!r} extra fields must be empty"
+    if info.comment:
+        return f"package wheel artifact zip entry {info.filename!r} comment must be empty"
+    return None
+
+
+def _wheel_local_header_issues(
+    payload: bytes,
+    infos: Sequence[zipfile.ZipInfo],
+    *,
+    central_start: int,
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    local_header = struct.Struct("<4s5H3L2H")
+    ordered_infos = sorted(infos, key=lambda info: info.header_offset)
+    offsets = [info.header_offset for info in ordered_infos]
+    if infos and list(infos) != ordered_infos:
+        issues.append("package wheel artifact zip central entries must use local-header order")
+    if offsets and (offsets[0] != 0 or len(offsets) != len(set(offsets))):
+        issues.append("package wheel artifact zip local-header offsets must be unique and start at zero")
+    if central_start < 0 or central_start > len(payload):
+        issues.append("package wheel artifact zip central directory is out of bounds")
+    for index, info in enumerate(ordered_infos):
+        offset = info.header_offset
+        header_end = offset + local_header.size
+        if offset < 0 or header_end > len(payload):
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} local header is out of bounds"
+            )
+            continue
+        (
+            signature,
+            extract_version,
+            flag_bits,
+            compression,
+            modified_time,
+            modified_date,
+            crc,
+            compressed_size,
+            file_size,
+            name_length,
+            extra_length,
+        ) = local_header.unpack_from(payload, offset)
+        name_start = header_end
+        name_end = name_start + name_length
+        extra_end = name_end + extra_length
+        if signature != b"PK\x03\x04" or extra_end > len(payload):
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} local header is malformed"
+            )
+            continue
+        encoding = "utf-8" if flag_bits & 0x800 else "cp437"
+        try:
+            expected_name = info.orig_filename.encode(encoding)
+        except UnicodeEncodeError:
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} filename encoding differs"
+            )
+            continue
+        if (
+            payload[name_start:name_end] != expected_name
+            or extract_version != 20
+            or info.extract_version != 20
+            or flag_bits != 0
+            or info.flag_bits != 0
+            or compression != info.compress_type
+            or (modified_time, modified_date) != _wheel_dos_datetime(info)
+            or payload[name_end:extra_end] != info.extra
+        ):
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} local and central headers differ"
+            )
+            continue
+        if (
+            crc != info.CRC
+            or compressed_size != info.compress_size
+            or file_size != info.file_size
+        ):
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} local and central sizes differ"
+            )
+            continue
+        data_end = extra_end + compressed_size
+        expected_end = (
+            ordered_infos[index + 1].header_offset
+            if index + 1 < len(ordered_infos)
+            else central_start
+        )
+        if data_end != expected_end:
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} local payload span differs"
+            )
+    return tuple(issues)
+
+
+def _wheel_dos_datetime(info: zipfile.ZipInfo) -> tuple[int, int]:
+    year, month, day, hour, minute, second = info.date_time
+    return (
+        (hour << 11) | (minute << 5) | (second // 2),
+        ((year - 1980) << 9) | (month << 5) | day,
+    )
+
+
+def _wheel_central_directory_issues(
+    payload: bytes,
+    infos: Sequence[zipfile.ZipInfo],
+    *,
+    central_start: int,
+) -> tuple[str, ...]:
+    central_header = struct.Struct("<4s6H3L5H2L")
+    end_record = struct.Struct("<4s4H2LH")
+    end_offset = len(payload) - end_record.size
+    if end_offset < central_start or end_offset < 0:
+        return ("package wheel artifact zip end record is out of bounds",)
+    (
+        end_signature,
+        disk_number,
+        central_disk,
+        disk_entries,
+        total_entries,
+        central_size,
+        central_offset,
+        comment_length,
+    ) = end_record.unpack_from(payload, end_offset)
+    if (
+        end_signature != b"PK\x05\x06"
+        or disk_number != 0
+        or central_disk != 0
+        or disk_entries != len(infos)
+        or total_entries != len(infos)
+        or central_offset != central_start
+        or central_size != end_offset - central_start
+        or comment_length != 0
+    ):
+        return (
+            "package wheel artifact zip end record must exactly close its single-disk central directory",
+        )
+    issues: list[str] = []
+    cursor = central_start
+    for info in infos:
+        header_end = cursor + central_header.size
+        if header_end > end_offset:
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} central header is out of bounds"
+            )
+            break
+        (
+            signature,
+            made_version,
+            extract_version,
+            flag_bits,
+            compression,
+            modified_time,
+            modified_date,
+            crc,
+            compressed_size,
+            file_size,
+            name_length,
+            extra_length,
+            entry_comment_length,
+            disk_start,
+            internal_attr,
+            external_attr,
+            local_offset,
+        ) = central_header.unpack_from(payload, cursor)
+        name_start = header_end
+        name_end = name_start + name_length
+        extra_end = name_end + extra_length
+        comment_end = extra_end + entry_comment_length
+        if signature != b"PK\x01\x02" or comment_end > end_offset:
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} central header is malformed"
+            )
+            break
+        encoding = "utf-8" if flag_bits & 0x800 else "cp437"
+        try:
+            expected_name = info.orig_filename.encode(encoding)
+        except UnicodeEncodeError:
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} central filename encoding differs"
+            )
+            break
+        if (
+            payload[name_start:name_end] != expected_name
+            or payload[name_end:extra_end] != info.extra
+            or payload[extra_end:comment_end] != info.comment
+            or info.create_version != 20
+            or made_version != ((info.create_system << 8) | info.create_version)
+            or extract_version != 20
+            or info.extract_version != 20
+            or flag_bits != 0
+            or info.flag_bits != 0
+            or compression != info.compress_type
+            or (modified_time, modified_date) != _wheel_dos_datetime(info)
+            or crc != info.CRC
+            or compressed_size != info.compress_size
+            or file_size != info.file_size
+            or disk_start != info.volume
+            or internal_attr != info.internal_attr
+            or external_attr != info.external_attr
+            or local_offset != info.header_offset
+        ):
+            issues.append(
+                f"package wheel artifact zip entry {info.filename!r} central directory fields differ"
+            )
+        cursor = comment_end
+    if cursor != end_offset:
+        issues.append(
+            "package wheel artifact zip central entries must exactly span the central directory"
+        )
+    return tuple(issues)
+
+
+def _wheel_dist_info_authority_issues(
+    names: Sequence[str],
+    *,
+    expected_prefix: str,
+) -> tuple[str, ...]:
+    foreign_authorities: list[str] = []
+    for name in names:
+        components = name.removesuffix("/").split("/")
+        for index, component in enumerate(components):
+            if not component.casefold().endswith(".dist-info"):
+                continue
+            if index != 0 or component != expected_prefix:
+                foreign_authorities.append(name)
+    if foreign_authorities:
+        paths = ", ".join(repr(path) for path in sorted(set(foreign_authorities)))
+        return (
+            "package wheel artifact must contain metadata only in its expected "
+            f"root-level .dist-info directory: {paths}",
+        )
     return ()
 
 
@@ -2318,10 +2694,14 @@ def _is_root_dist_info_file(name: str, filename: str) -> bool:
 def _wheel_dist_info_prefix_issues(prefix: str, *, filename_match: re.Match[str] | None) -> tuple[str, ...]:
     if filename_match is None:
         return ()
-    expected_prefix = f"{filename_match.group('distribution')}-{filename_match.group('version')}.dist-info"
+    expected_prefix = _wheel_dist_info_prefix(filename_match)
     if prefix != expected_prefix:
         return ("package wheel artifact .dist-info directory must match wheel filename distribution and version",)
     return ()
+
+
+def _wheel_dist_info_prefix(filename_match: re.Match[str]) -> str:
+    return f"{filename_match.group('distribution')}-{filename_match.group('version')}.dist-info"
 
 
 def _wheel_metadata_issues(
@@ -2513,6 +2893,7 @@ def _wheel_record_issues(
     payload: bytes,
     *,
     wheel_zip: zipfile.ZipFile,
+    record_path: str,
     required_paths: Sequence[str],
 ) -> tuple[str, ...]:
     try:
@@ -2532,9 +2913,12 @@ def _wheel_record_issues(
         if len(row) != 3:
             issues.append("package wheel artifact RECORD rows must have path, hash, and size columns")
             continue
-        path, hash_value, size_value = (column.strip() for column in row)
+        path, hash_value, size_value = row
         if not path:
             issues.append("package wheel artifact RECORD rows must include a non-empty path")
+            continue
+        if path != path.strip() or hash_value != hash_value.strip() or size_value != size_value.strip():
+            issues.append("package wheel artifact RECORD columns must not contain surrounding whitespace")
             continue
         if path in recorded_paths:
             issues.append(f"package wheel artifact RECORD path {path!r} must be listed only once")
@@ -2545,7 +2929,15 @@ def _wheel_record_issues(
         if path not in zip_names:
             issues.append(f"package wheel artifact RECORD path {path!r} must exist in the wheel")
             continue
-        issues.extend(_wheel_record_file_field_issues(wheel_zip, path, hash_value=hash_value, size_value=size_value))
+        issues.extend(
+            _wheel_record_file_field_issues(
+                wheel_zip,
+                path,
+                hash_value=hash_value,
+                is_record_file=path == record_path,
+                size_value=size_value,
+            )
+        )
 
     missing_required = tuple(path for path in required_paths if path not in recorded_paths)
     if missing_required:
@@ -2565,10 +2957,15 @@ def _wheel_record_file_field_issues(
     path: str,
     *,
     hash_value: str,
+    is_record_file: bool,
     size_value: str,
 ) -> tuple[str, ...]:
-    is_record_file = path.endswith(".dist-info/RECORD")
     issues: list[str] = []
+    if is_record_file and (hash_value or size_value):
+        issues.append(
+            f"package wheel artifact RECORD self path {path!r} must have empty hash and size"
+        )
+        return tuple(issues)
     if not is_record_file and not hash_value:
         issues.append(f"package wheel artifact RECORD path {path!r} must include a hash")
     if hash_value:

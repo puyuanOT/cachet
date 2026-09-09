@@ -1,11 +1,6 @@
 import hashlib
-import importlib
-import os
-import subprocess
-import sys
 from dataclasses import replace
 from pathlib import Path
-from textwrap import dedent
 
 import pytest
 
@@ -15,7 +10,6 @@ from document_kv_cache.models import ChunkRef, DocumentChunkType, KVCacheKey
 from document_kv_cache.storage import (
     DiskRangeReader,
     MemoryRangeReader,
-    RangeBatchReader,
     RoutedRangeReader,
     UnityCatalogVolumeRangeReader,
     local_path,
@@ -260,6 +254,36 @@ def test_local_path_resolves_file_and_dbfs_uri_forms(tmp_path):
     assert local_path(f"file:{file_path}") == file_path
     assert local_path("file:shards/shard.kvpack", root=tmp_path) == tmp_path / "shards" / "shard.kvpack"
     assert local_path("dbfs:/benchmarks/shard.kvpack").as_posix() == "/dbfs/benchmarks/shard.kvpack"
+    assert local_path("dbfs:/Volumes-backup/shard.kvpack").as_posix() == "/dbfs/Volumes-backup/shard.kvpack"
+
+
+@pytest.mark.parametrize("prefix", ("", "disk:", "disk:disk:"))
+@pytest.mark.parametrize("suffix", ("", "/nested/shard.kvpack"))
+def test_local_path_resolves_dbfs_volume_uri_to_uc_mount(tmp_path, prefix, suffix):
+    uri = f"{prefix}dbfs:/Volumes/catalog/schema/volume{suffix}"
+
+    assert local_path(uri, root=tmp_path).as_posix() == f"/Volumes/catalog/schema/volume{suffix}"
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "Volumes",
+        "Volumes/catalog",
+        "Volumes/catalog/schema",
+        "Volumes/",
+        "Volumes//catalog/schema/volume/shard.kvpack",
+        "Volumes/./catalog/schema/volume/shard.kvpack",
+        "Volumes/../catalog/schema/volume/shard.kvpack",
+        "Volumes/catalog/schema/volume//shard.kvpack",
+        "Volumes/catalog/schema/volume/./shard.kvpack",
+        "Volumes/catalog/schema/volume/../shard.kvpack",
+        "Volumes/catalog/schema/volume/",
+    ),
+)
+def test_local_path_rejects_invalid_dbfs_volume_paths(path):
+    with pytest.raises(ValueError, match="/Volumes|cannot contain"):
+        local_path(f"dbfs:/{path}")
 
 
 @pytest.mark.parametrize("uri", RELATIVE_DISK_ESCAPE_URIS)

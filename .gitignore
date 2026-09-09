@@ -33,3 +33,6 @@ databricks-runs/
 .terraform/
 terraform.tfstate
 terraform.tfstate.*
+
+# Stray lock files from non-project package managers (this project uses poetry-core).
+uv.lock

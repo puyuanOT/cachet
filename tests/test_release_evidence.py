@@ -3,11 +3,17 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-import document_kv_cache.release_evidence as public_release_evidence
+import document_kv_cache.sglang_smoke as public_sglang_smoke
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_CANARY_MODEL_ID,
+    REPRESENTATIVE_CANARY_MODEL_REVISION,
+    build_handoff_topology_attestation_record,
+)
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
     EngineKVConnectorActions,
@@ -26,12 +32,22 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
-from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.benchmark_runner import (
+    BENCHMARK_RUN_RECORD_TYPE,
+    BenchmarkGeneration,
+    BenchmarkManifestContext,
+    benchmark_record_payload_digest,
+    benchmark_run_result_to_evidence_record,
+    merge_isolated_benchmark_run_records,
+    run_benchmark_suite,
+)
+from document_kv_cache.benchmarks import BenchmarkArm, BenchmarkExample, BenchmarkSuite
 from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_RECORD_TYPE,
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
     REQUIRED_ENGINE_PROBE_BACKENDS,
     SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
+    SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE,
     SGLANG_LIVE_V1_BENCHMARK_SCOPE,
     ReleaseEvidence,
     ReleaseEvidenceArtifactSource,
@@ -42,14 +58,28 @@ from document_kv_cache.release_evidence import (
     inspect_release_evidence_input_files,
     release_evidence_input_status_to_record,
     release_evidence_to_record,
+    sanitize_sglang_representative_canary_evidence,
     sglang_live_v1_benchmark_issues,
+    sglang_representative_canary_evidence_issues,
 )
 from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.methods import default_method_registry, method_spec
 from document_kv_cache.serving_env import serving_environment_profile
+from document_kv_cache.sglang_smoke import (
+    DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+    SGLangLiveHandoffGenerationConfig,
+    SGLangSmokeBenchmarkConfig,
+)
 from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
+from document_kv_cache.workflow import SourceDocument
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+REPRESENTATIVE_SGLANG_WHEEL_SHA256 = "f" * 64
+REPRESENTATIVE_SGLANG_PRE_ROPE_FACTORY = (
+    "document_kv_cache.transformers_generator:"
+    "build_pre_rope_transformers_kv_chunk_generator"
+)
 
 
 def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_records():
@@ -87,6 +117,324 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
         "artifact_sources": [],
         "issues": [],
     }
+
+
+def test_release_evidence_accepts_manifest_n_way_record_with_matching_standalone_gate():
+    benchmark = _manifest_benchmark_record()
+    gate = benchmark["evidence_gate"]
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=gate,
+    )
+
+    assert evidence.v1_benchmark_ok
+    assert evidence.ok, evidence.issues
+
+
+@pytest.mark.parametrize("mutation", ("missing", "invalid", "tampered"))
+def test_release_evidence_rejects_missing_or_tampered_request_customization_identity(
+    mutation,
+):
+    benchmark = json.loads(json.dumps(_manifest_benchmark_record()))
+    request_customization = benchmark["experiment_manifest"]["arms"][0][
+        "request_customization"
+    ]
+    if mutation == "missing":
+        benchmark["experiment_manifest"]["arms"][0].pop(
+            "request_customization"
+        )
+    elif mutation == "invalid":
+        request_customization["config_digest"] = "not-a-digest"
+    else:
+        request_customization["config_digest"] = "f" * 64
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert not evidence.v1_benchmark_ok
+    if mutation == "tampered":
+        assert any("benchmark_payload_digest" in issue for issue in evidence.issues)
+    else:
+        assert any("request customization" in issue for issue in evidence.issues)
+
+
+def test_release_evidence_recomputes_custom_method_gate_with_explicit_registry() -> None:
+    base_registry = default_method_registry()
+    custom = replace(
+        base_registry.get("lmcache", require_implemented=True),
+        method="vendor_custom_cache",
+        display_name="Vendor custom cache",
+        arm_id="vendor_custom_cache",
+    )
+    registry = base_registry.with_spec(custom)
+    arm = BenchmarkArm(
+        arm_id="vendor",
+        uses_cache=True,
+        description="vendor",
+        cache_method=custom.method_id,
+        connector_mode=custom.connector_mode,
+        implementation_kind="cachet",
+        method_version=custom.artifact_version,
+        method_config_digest="1" * 64,
+        physical_transform_id="vendor.cache",
+        requires_cachet_handoff=False,
+    )
+
+    class _Engine:
+        def generate(self, request):
+            return BenchmarkGeneration(
+                output_text="Paris",
+                prompt_tokens=32,
+                completion_tokens=1,
+                ttft_seconds=0.5,
+                time_to_completion_seconds=0.7,
+            )
+
+    result = run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="custom-registry-release",
+            examples=(
+                BenchmarkExample(
+                    example_id="custom-1",
+                    dataset="hotpotqa",
+                    documents=(
+                        SourceDocument.from_text(
+                            document_id="custom-document",
+                            text="Paris is the answer.",
+                        ),
+                    ),
+                    query="What is the answer?",
+                    expected_answer="Paris",
+                ),
+            ),
+            datasets=("hotpotqa",),
+        ),
+        {arm.arm_id: _Engine()},
+        arms=(arm,),
+        manifest_context=BenchmarkManifestContext(
+            reference_arm_id=arm.arm_id,
+            measurement_scopes=("latency",),
+        ),
+        evidence_policy="publication",
+        reference_arm_id=arm.arm_id,
+        method_registry=registry,
+    )
+    record = benchmark_run_result_to_evidence_record(
+        result,
+        method_registry=registry,
+    )
+
+    explicit = evaluate_release_evidence(
+        record,
+        _storage_record(ok=True),
+        method_registry=registry,
+    )
+    implicit = evaluate_release_evidence(
+        record,
+        _storage_record(ok=True),
+    )
+
+    mismatch = "evidence_gate does not match recomputed publication evidence"
+    assert not any(mismatch in issue for issue in explicit.issues)
+    assert any(mismatch in issue for issue in implicit.issues)
+
+
+def test_release_evidence_rejects_forged_sanitized_measurement_metadata():
+    benchmark = json.loads(json.dumps(_manifest_benchmark_record()))
+    benchmark["measurements"][0]["metadata"]["raw_prompt"] = "TOP_SECRET_PROMPT"
+    benchmark["evidence_gate"]["benchmark_payload_digest"] = (
+        benchmark_record_payload_digest(benchmark)
+    )
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert not evidence.v1_benchmark_ok
+    assert any("non-sanitized keys" in issue for issue in evidence.issues)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "issue_fragment"),
+    (
+        ("output_text", "TOP_SECRET_OUTPUT", "output_text must be empty"),
+        (
+            "expected_answer",
+            "TOP_SECRET_EXPECTED",
+            "expected_answer must be null",
+        ),
+        ("references", ["TOP_SECRET_REFERENCE"], "references must be empty"),
+        ("error", "TOP_SECRET_ERROR", "error must be null or redacted"),
+        ("request_id", "TOP_SECRET_REQUEST", "request_id must be SHA-256"),
+    ),
+)
+def test_release_evidence_rejects_forged_sanitized_measurement_content(
+    field_name,
+    value,
+    issue_fragment,
+):
+    benchmark = json.loads(json.dumps(_manifest_benchmark_record()))
+    benchmark["measurements"][0][field_name] = value
+    benchmark["evidence_gate"]["benchmark_payload_digest"] = (
+        benchmark_record_payload_digest(benchmark)
+    )
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert not evidence.v1_benchmark_ok
+    assert any(issue_fragment in issue for issue in evidence.issues)
+
+
+def test_release_evidence_rejects_missing_or_mismatched_standalone_manifest_gate():
+    benchmark = _manifest_benchmark_record()
+    missing = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+    mismatched_gate = {**benchmark["evidence_gate"], "checked_cache_requests": 99}
+    mismatched = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=mismatched_gate,
+    )
+
+    assert any("standalone evidence gate" in issue for issue in missing.issues)
+    assert any("does not match" in issue for issue in mismatched.issues)
+
+
+def test_release_evidence_rejects_tampered_manifest_physical_transform_digest():
+    benchmark = _manifest_benchmark_record()
+    benchmark["experiment_manifest"]["arms"][1]["physical_transform"][
+        "config_digest"
+    ] = "not-a-digest"
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert any("invalid physical transform" in issue for issue in evidence.issues)
+    assert not evidence.v1_benchmark_ok
+
+
+def test_release_evidence_rejects_decode_settings_without_matching_digest():
+    benchmark = _manifest_benchmark_record()
+    benchmark["experiment_manifest"]["decoding"]["settings"]["ignore_eos"] = True
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert any("decoding_config_digest" in issue for issue in evidence.issues)
+    assert not evidence.v1_benchmark_ok
+
+
+def test_release_evidence_recomputes_aggregates_even_with_forged_matching_gate():
+    benchmark = _manifest_benchmark_record()
+    benchmark["report_rows"][0]["ttft"]["p50"] = 999.0
+    benchmark["evidence_gate"]["benchmark_payload_digest"] = (
+        benchmark_record_payload_digest(benchmark)
+    )
+    benchmark["evidence_gate"]["ok"] = True
+    benchmark["evidence_gate"]["issues"] = []
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert not evidence.v1_benchmark_ok
+    assert any(
+        "report_rows do not match raw benchmark measurements" in issue
+        for issue in evidence.issues
+    )
 
 
 def test_evaluate_release_evidence_accepts_native_logical_cache_prompt_mode():
@@ -133,6 +481,902 @@ def test_sglang_live_v1_benchmark_issues_accept_release_suite_record():
     record = _sglang_live_v1_benchmark_record()
 
     assert sglang_live_v1_benchmark_issues(record) == ()
+
+    record["representative_canary"] = False
+    assert sglang_live_v1_benchmark_issues(record) == ()
+
+
+def test_sglang_live_v1_benchmark_issues_accept_real_representative_profile_record(
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+
+    assert any(
+        "requires an independently verified expected_cachet_wheel_sha256" in issue
+        for issue in sglang_live_v1_benchmark_issues(record)
+    )
+    assert (
+        sglang_live_v1_benchmark_issues(
+            record,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        )
+        == ()
+    )
+
+
+def test_sanitize_sglang_representative_canary_evidence_is_closed_and_valid(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
+    )
+
+    assert evidence["record_type"] == SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE
+    assert evidence["evidence_sanitized"] is True
+    assert evidence["publication_qualified"] is False
+    assert evidence["raw_record_sha256"] == _canonical_record_sha256(raw)
+    expected_handoff = _expected_representative_sglang_handoff_provenance(
+        generation
+    )
+    assert evidence["handoff_generation_provenance"] == expected_handoff
+    assert {row["example_identity_sha256"] for row in evidence["measurements"]} == {
+        _canonical_record_sha256(
+            {
+                "dataset": "niah",
+                "example_id": "niah-1",
+            }
+        )
+    }
+    assert evidence["model_provenance"]["package_revisions"]["cachet-kv"] == (
+        f"wheel-sha256:{REPRESENTATIVE_SGLANG_WHEEL_SHA256}"
+    )
+    assert (
+        sglang_representative_canary_evidence_issues(
+            evidence,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            expected_handoff_generation_provenance=expected_handoff,
+        )
+        == ()
+    )
+
+
+def test_sanitize_sglang_representative_canary_evidence_omits_raw_leak_surfaces(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    sentinels = {
+        "answer": "RAW_ANSWER_OUTPUT_SENTINEL",
+        "prompt": "RAW_PROMPT_SENTINEL",
+        "error": "RAW_ERROR_SENTINEL",
+        "log": "RAW_LOG_SENTINEL",
+        "local_path": "/local_disk0/RAW_LOCAL_PATH_SENTINEL",
+        "dbfs_path": "dbfs:/RAW_DBFS_PATH_SENTINEL",
+        "request_id": "RAW_REQUEST_ID_SENTINEL",
+        "handoff": "RAW_HANDOFF_SENTINEL",
+        "payload": "RAW_PAYLOAD_SENTINEL",
+        "page_key": "RAW_PAGE_KEY_SENTINEL",
+        "example_id": "RAW_EXAMPLE_ID_SENTINEL",
+    }
+    raw.update(
+        {
+            "raw_prompt": sentinels["prompt"],
+            "debug_error": sentinels["error"],
+            "server_log": sentinels["log"],
+            "local_output_path": sentinels["local_path"],
+            "dbfs_output_path": sentinels["dbfs_path"],
+            "handoff_uri": sentinels["handoff"],
+            "raw_payload": sentinels["payload"],
+            "page_keys": [sentinels["page_key"]],
+        }
+    )
+    generation.update(
+        {
+            "raw_prompt": sentinels["prompt"],
+            "debug_error": sentinels["error"],
+            "generator_python": sentinels["local_path"],
+            "handoff_json": sentinels["local_path"],
+            "payload_uri": sentinels["dbfs_path"],
+            "request_id": sentinels["request_id"],
+        }
+    )
+    for measurement in raw["measurements"]:
+        measurement["example_id"] = sentinels["example_id"]
+        measurement["output_text"] = sentinels["answer"]
+        measurement["expected_answer"] = sentinels["answer"]
+        measurement["metadata"].update(
+            {
+                "request_id": sentinels["request_id"],
+                "prompt_text": sentinels["prompt"],
+                "handoff": sentinels["handoff"],
+                "payload": sentinels["payload"],
+                "page_key": sentinels["page_key"],
+            }
+        )
+    for validation in raw["cache_hit_validations"]:
+        validation["example_id"] = sentinels["example_id"]
+        validation["request_id"] = sentinels["request_id"]
+        validation["error_detail"] = sentinels["error"]
+    topology_row = dict(
+        generation["handoff_topology_attestation"]["examples"][0]
+    )
+    topology_row["example_key_sha256"] = _canonical_record_sha256(
+        {"dataset": "niah", "example_id": sentinels["example_id"]}
+    )
+    generation["handoff_topology_attestation"] = (
+        build_handoff_topology_attestation_record((topology_row,))
+    )
+
+    assert (
+        sglang_live_v1_benchmark_issues(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        )
+        == ()
+    )
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
+    )
+
+    serialized = json.dumps(evidence, sort_keys=True)
+    for sentinel in sentinels.values():
+        assert sentinel not in serialized
+    assert all(
+        "example_id" not in measurement for measurement in evidence["measurements"]
+    )
+    assert all(
+        "request_id" not in measurement for measurement in evidence["measurements"]
+    )
+    assert all(
+        "output_text" not in measurement for measurement in evidence["measurements"]
+    )
+    assert all(
+        "expected_answer" not in measurement for measurement in evidence["measurements"]
+    )
+    assert all("error" not in measurement for measurement in evidence["measurements"])
+
+
+def test_sanitize_sglang_representative_canary_evidence_rejects_invalid_raw(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    raw["ok"] = False
+    raw["issues"] = ["raw canary failed"]
+
+    with pytest.raises(ValueError, match="cannot sanitize invalid"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=_representative_sglang_handoff_generation_record(),
+        )
+
+
+def test_sanitize_sglang_representative_canary_evidence_rejects_wheel_mismatch(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="does not match the verified submit payload"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256="e" * 64,
+            handoff_generation_record=_representative_sglang_handoff_generation_record(),
+        )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "backend",
+        "benchmark_id",
+        "cache_method",
+        "artifact_model_id",
+        "artifact_model_revision",
+        "artifact_tokenizer_id",
+        "artifact_tokenizer_revision",
+        "dtype",
+    ),
+)
+def test_sanitize_sglang_representative_canary_rejects_cross_binding_mismatch(
+    field_name,
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    generation[field_name] = "forged"
+
+    with pytest.raises(ValueError, match=field_name):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=generation,
+        )
+
+
+def test_sanitize_sglang_representative_canary_cross_binds_raw_benchmark_id(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    raw["benchmark_id"] = "forged-benchmark"
+
+    with pytest.raises(ValueError, match="benchmark_id must both be"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=(
+                _representative_sglang_handoff_generation_record()
+            ),
+        )
+
+
+def test_sanitize_sglang_representative_canary_cross_binds_example_identity(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    for measurement in raw["measurements"]:
+        measurement["example_id"] = "forged-example"
+    for validation in raw["cache_hit_validations"]:
+        validation["example_id"] = "forged-example"
+
+    with pytest.raises(ValueError, match="topology example keys"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=(
+                _representative_sglang_handoff_generation_record()
+            ),
+        )
+
+
+def test_sanitize_sglang_representative_canary_cross_binds_topology_example_key(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    row = dict(generation["handoff_topology_attestation"]["examples"][0])
+    row["example_key_sha256"] = "e" * 64
+    generation["handoff_topology_attestation"] = (
+        build_handoff_topology_attestation_record((row,))
+    )
+
+    with pytest.raises(ValueError, match="topology example keys"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=generation,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_error"),
+    (
+        ("cache_prefix_tokens", "cache_prefix_tokens"),
+        ("runtime_prompt_tokens", "runtime_prompt_tokens"),
+    ),
+)
+def test_sanitize_sglang_representative_canary_cross_binds_token_counts(
+    field_name,
+    expected_error,
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    generation[field_name] += 1
+
+    with pytest.raises(ValueError, match=expected_error):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=generation,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        (
+            lambda generation: generation.pop("handoff_topology_attestation"),
+            "topology is invalid",
+        ),
+        (
+            lambda generation: generation.__setitem__(
+                "generator_factory", "forged:post_rope_factory"
+            ),
+            "generator_factory",
+        ),
+        (
+            lambda generation: generation.__setitem__("generator_version", "0.0.0"),
+            "generator_version",
+        ),
+        (
+            lambda generation: generation["handoff_topology_attestation"]["examples"][
+                0
+            ].__setitem__("method_version", "1"),
+            "topology is invalid",
+        ),
+    ],
+)
+def test_sanitize_sglang_representative_canary_rejects_tampered_handoff(
+    mutate,
+    expected_error,
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    mutate(generation)
+
+    with pytest.raises(ValueError, match=expected_error):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=generation,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issue"),
+    [
+        (
+            lambda evidence: evidence.__setitem__("raw_log", "forged"),
+            "unknown fields",
+        ),
+        (
+            lambda evidence: evidence["measurements"][0].__setitem__(
+                "output_text",
+                "forged",
+            ),
+            "unknown fields",
+        ),
+        (
+            lambda evidence: evidence["measurements"][0].__setitem__(
+                "ttft_seconds",
+                0.5,
+            ),
+            "ttft mean must match measurements",
+        ),
+        (
+            lambda evidence: evidence["report_rows"][0]["ttft"].__setitem__(
+                "mean",
+                0.5,
+            ),
+            "ttft mean must match measurements",
+        ),
+        (
+            lambda evidence: evidence["comparisons"][0].__setitem__(
+                "ttft_speedup",
+                2.0,
+            ),
+            "ttft_speedup must match report rows",
+        ),
+        (
+            lambda evidence: evidence["cache_hit_validations"][0].__setitem__(
+                "cache_request_cached_tokens",
+                1,
+            ),
+            "at least minimum_cached_tokens",
+        ),
+        (
+            lambda evidence: evidence["model_provenance"][
+                "package_revisions"
+            ].__setitem__("cachet-kv", f"wheel-sha256:{'e' * 64}"),
+            "does not match the verified submit payload",
+        ),
+        (
+            lambda evidence: evidence.pop("handoff_generation_provenance"),
+            "handoff_generation_provenance must be a mapping",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"].__setitem__(
+                "generator_factory", "forged:post_rope_factory"
+            ),
+            "generator_factory must be",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"][
+                "topology"
+            ].__setitem__("segment_count", 1),
+            "one segment per document",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"][
+                "content_digests"
+            ][0].__setitem__("raw_path", "/forged/raw/path"),
+            "unknown fields",
+        ),
+        (
+            lambda evidence: (
+                evidence["handoff_generation_provenance"]["topology"].__setitem__(
+                    "document_count", 3
+                ),
+                evidence["handoff_generation_provenance"]["topology"].__setitem__(
+                    "segment_count", 3
+                ),
+            ),
+            "does not match the independently verified safe projection",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"][
+                "topology"
+            ].__setitem__("attestation_sha256", "e" * 64),
+            "does not match the independently verified safe projection",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"][
+                "topology"
+            ].__setitem__("examples_sha256", "e" * 64),
+            "does not match the independently verified safe projection",
+        ),
+        *[
+            (
+                lambda evidence, field_name=field_name: evidence[
+                    "handoff_generation_provenance"
+                ]["content_digests"][0].__setitem__(field_name, "e" * 64),
+                "does not match the independently verified safe projection",
+            )
+            for field_name in (
+                "artifact_sha256",
+                "logical_prompt_sha256",
+                "method_config_sha256",
+            )
+        ],
+        (
+            lambda evidence: evidence["handoff_generation_provenance"].__setitem__(
+                "raw_sidecar_sha256", "e" * 64
+            ),
+            "does not match the independently verified",
+        ),
+    ],
+)
+def test_sglang_representative_canary_evidence_detects_closed_schema_tampering(
+    mutate,
+    expected_issue,
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
+    )
+    mutate(evidence)
+
+    issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        expected_handoff_generation_provenance=(
+            _expected_representative_sglang_handoff_provenance(generation)
+        ),
+    )
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+def test_sglang_representative_canary_evidence_rejects_invalid_raw_digest(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
+    )
+    evidence["raw_record_sha256"] = "not-a-digest"
+
+    issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        expected_handoff_generation_provenance=(
+            _expected_representative_sglang_handoff_provenance(generation)
+        ),
+    )
+
+    assert any("raw_record_sha256 must be SHA-256" in issue for issue in issues)
+
+
+def test_sglang_representative_canary_requires_independent_handoff_digest(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
+    )
+
+    with pytest.raises(TypeError, match="expected_handoff_generation_provenance"):
+        sglang_representative_canary_evidence_issues(  # type: ignore[call-arg]
+            evidence,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        )
+    wrong_expected = _expected_representative_sglang_handoff_provenance(generation)
+    wrong_expected["raw_sidecar_sha256"] = "e" * 64
+    issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        expected_handoff_generation_provenance=wrong_expected,
+    )
+    assert any("does not match the independently verified" in issue for issue in issues)
+
+
+def test_sglang_representative_canary_evidence_binds_exact_expected_wheel(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
+    )
+
+    issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256="e" * 64,
+        expected_handoff_generation_provenance=(
+            _expected_representative_sglang_handoff_provenance(generation)
+        ),
+    )
+
+    assert any(
+        "does not match the verified submit payload" in issue for issue in issues
+    )
+
+
+def test_sglang_live_v1_benchmark_issues_require_representative_wheel_provenance(
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+    record.pop("benchmark_manifest_provenance")
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any("must include benchmark_manifest_provenance" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_issue"),
+    [
+        (
+            lambda revisions: revisions.pop("cachet-kv"),
+            "cachet-kv",
+        ),
+        (
+            lambda revisions: revisions.__setitem__(
+                "cachet-kv", f"git:{'f' * 40}"
+            ),
+            "wheel-sha256",
+        ),
+        (
+            lambda revisions: revisions.__setitem__("sglang", "0.0.0"),
+            "exact sglang pin",
+        ),
+        (
+            lambda revisions: revisions.__setitem__("extra-package", "1.0"),
+            "contain exactly",
+        ),
+    ],
+)
+def test_sglang_live_v1_benchmark_issues_reject_tampered_package_provenance(
+    tamper,
+    expected_issue,
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+    revisions = record["benchmark_manifest_provenance"]["package_revisions"]
+    tamper(revisions)
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issue"),
+    [
+        (
+            lambda record: record.__setitem__(
+                "representative_workload_profile",
+                "forged-profile",
+            ),
+            "workload profile",
+        ),
+        (
+            lambda record: record.__setitem__(
+                "hardware_target",
+                "aws-g5-a10g",
+            ),
+            "hardware_target",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "canonical_model_id",
+                "forged-model",
+            ),
+            "canonical_model_id",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].update(
+                {
+                    "model_revision": "b" * 40,
+                    "tokenizer_revision": "b" * 40,
+                }
+            ),
+            "model_revision",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "tokenizer_id",
+                "forged-tokenizer",
+            ),
+            "tokenizer_id",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "lora_id",
+                "forged-lora",
+            ),
+            "lora_id",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "engine_id",
+                "forged-engine",
+            ),
+            "engine_id",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "engine_version",
+                "0.0.0",
+            ),
+            "engine_version",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "serving_platform",
+                "forged-platform",
+            ),
+            "serving_platform",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "model_dtype",
+                "float16",
+            ),
+            "model_dtype",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "model_quantization",
+                "int8",
+            ),
+            "model_quantization",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "runtime_kv_dtype",
+                "float16",
+            ),
+            "runtime_kv_dtype",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "layout_version",
+                "forged-layout",
+            ),
+            "layout_version",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "payload_axis_order",
+                "layer_major",
+            ),
+            "payload_axis_order",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "block_size",
+                16,
+            ),
+            "block_size",
+        ),
+        (
+                lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                    "key_position_encoding",
+                    "stored_post_rope",
+                ),
+            "key_position_encoding",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "tensor_parallel_size",
+                2,
+            ),
+            "tensor_parallel_size",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "pipeline_parallel_size",
+                2,
+            ),
+            "pipeline_parallel_size",
+        ),
+        (
+                lambda record: record["benchmark_manifest_provenance"].update(
+                    {"rope_theta": 1_000_000.0, "rope_rotary_dim": 128}
+                ),
+                "rope_theta",
+        ),
+    ],
+)
+def test_sglang_live_v1_benchmark_issues_reject_representative_identity_drift(
+    mutate,
+    expected_issue,
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+    mutate(record)
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issue"),
+    [
+        (
+            lambda record: record.__setitem__("live_check_prompt_format", "plain"),
+            "live_check_prompt_format",
+        ),
+        (
+            lambda record: record.__setitem__(
+                "live_check_request_mode",
+                "completion",
+            ),
+            "live_check_request_mode",
+        ),
+        (
+            lambda record: record["suite"].__setitem__(
+                "suite_id",
+                "forged-suite",
+            ),
+            "suite.suite_id",
+        ),
+        (
+            lambda record: record["suite"].__setitem__(
+                "scope",
+                SGLANG_LIVE_V1_BENCHMARK_SCOPE,
+            ),
+            "suite.scope",
+        ),
+        (
+            lambda record: record["suite"].__setitem__(
+                "datasets",
+                ["hotpotqa"],
+            ),
+            "suite.datasets",
+        ),
+        (
+            lambda record: record["suite"].__setitem__("examples", 2),
+            "suite.examples",
+        ),
+        (
+            lambda record: record["suite"].__setitem__("repeats", 1),
+            "suite.repeats",
+        ),
+        (
+            lambda record: record["suite"].__setitem__(
+                "release_v1_suite",
+                True,
+            ),
+            "suite.release_v1_suite",
+        ),
+        (
+            lambda record: record["cache_hit_validations"].pop(),
+            "missing required dataset repeats",
+        ),
+        (
+            lambda record: record["measurements"][2]["metadata"].__setitem__(
+                "repeat_index",
+                "1",
+            ),
+            "measurements missing required arm/repeat records",
+        ),
+    ],
+)
+def test_sglang_live_v1_benchmark_issues_reject_representative_suite_drift(
+    mutate,
+    expected_issue,
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+    mutate(record)
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+def test_sglang_live_v1_benchmark_issues_bind_expected_representative_wheel(
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256="e" * 64,
+    )
+
+    assert any("does not match the verified submit payload" in issue for issue in issues)
+
+
+def test_sglang_live_v1_benchmark_issues_reject_invalid_expected_wheel_context():
+    with pytest.raises(ValueError, match="expected_cachet_wheel_sha256"):
+        sglang_live_v1_benchmark_issues(
+            _sglang_live_v1_benchmark_record(),
+            expected_cachet_wheel_sha256="not-a-digest",
+        )
 
 
 def test_sglang_live_v1_benchmark_issues_reject_synthetic_or_unvalidated_records():
@@ -2409,11 +3653,127 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g6-l4", model_id: str = 
     }
 
 
-def _sglang_live_v1_benchmark_record(*, ok: bool = True):
+def _manifest_benchmark_record():
+    class _Engine:
+        def generate(self, request):
+            return BenchmarkGeneration(
+                output_text="Paris",
+                prompt_tokens=128,
+                completion_tokens=8,
+                ttft_seconds=0.5 if request.arm.uses_cache else 1.0,
+                time_to_completion_seconds=1.0 if request.arm.uses_cache else 1.5,
+                metadata={"logical_prompt_tokens": "128"},
+            )
+
+    examples = tuple(
+        BenchmarkExample(
+            example_id=f"example-{index}",
+            dataset="hotpotqa",
+            documents=(
+                SourceDocument.from_text(
+                    document_id=f"document-{index}",
+                    text="Paris is the answer.",
+                ),
+            ),
+            query="What is the answer?",
+            expected_answer="Paris",
+        )
+        for index in range(4)
+    )
+    suite = BenchmarkSuite(
+        suite_id="manifest-n-way",
+        examples=examples,
+        datasets=("hotpotqa",),
+    )
+    arms = (
+        BenchmarkArm(
+            arm_id="baseline",
+            uses_cache=False,
+            description="baseline",
+        ),
+        BenchmarkArm(
+            arm_id="vanilla",
+            uses_cache=True,
+            description="vanilla upstream",
+            cache_method="vanilla",
+            variant_id="default",
+            implementation_kind="upstream",
+            method_version="1",
+            method_config_digest="1" * 64,
+            physical_transform_id="test.vanilla",
+            source_revision="vanilla-commit",
+            checkpoint_identity="vanilla-checkpoint",
+            requires_cachet_handoff=False,
+        ),
+        BenchmarkArm(
+            arm_id="upstream",
+            uses_cache=True,
+            description="upstream",
+            cache_method="upstream",
+            variant_id="default",
+            implementation_kind="upstream",
+            method_version="1",
+            method_config_digest="2" * 64,
+            physical_transform_id="test.upstream",
+            source_revision="upstream-commit",
+            checkpoint_identity="upstream-checkpoint",
+            requires_cachet_handoff=False,
+        ),
+    )
+    records = []
+    for index, arm in enumerate(arms):
+        context = BenchmarkManifestContext(
+            model_revision="model-revision",
+            canonical_model_id=suite.model_id,
+            tokenizer_id=suite.model_id,
+            tokenizer_revision="tokenizer-revision",
+            lora_id="none",
+            engine_id="test-engine",
+            engine_version="1",
+            serving_platform="test-serving-platform",
+            model_dtype="bfloat16",
+            runtime_kv_dtype="bfloat16",
+            layout_version="test-layout-v1",
+            payload_axis_order="token_major",
+            block_size=16,
+            key_position_encoding="stored_post_rope",
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            package_revisions=(("cachet", "test-revision"),),
+            input_tokens_target=128,
+            max_output_tokens=8,
+            temperature=0.0,
+            stream=False,
+            hardware_fingerprint="test-hardware",
+            runtime_id=f"test-runtime-{index}",
+            runtime_version="1",
+            storage_identity="test-storage",
+            cache_state="warm",
+            measurement_scopes=("latency",),
+        )
+        result = run_benchmark_suite(
+            suite,
+            {arm.arm_id: _Engine()},
+            arms=(arm,),
+            manifest_context=context,
+            evidence_policy="publication",
+        )
+        records.append(benchmark_run_result_to_evidence_record(result))
+    return merge_isolated_benchmark_run_records(
+        records,
+        reference_arm_id="baseline",
+        policy="publication",
+    )
+
+
+def _sglang_live_v1_benchmark_record(
+    *,
+    ok: bool = True,
+):
     datasets = ("biography", "hotpotqa", "musique", "niah")
     arms = ("baseline_prefill", "document_kv_cache")
     repeats = 2
-    return {
+    record = {
         "record_type": SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
         "ok": ok,
         "benchmark_id": "sglang-prepared-v1-g6-test",
@@ -2468,6 +3828,172 @@ def _sglang_live_v1_benchmark_record(*, ok: bool = True):
         ],
         "issues": [] if ok else ["cache hit validation failed"],
     }
+    return record
+
+
+def _canonical_record_sha256(value):
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _representative_sglang_handoff_generation_record():
+    topology = build_handoff_topology_attestation_record(
+        (
+            {
+                "example_key_sha256": _canonical_record_sha256(
+                    {"dataset": "niah", "example_id": "niah-1"}
+                ),
+                "method_id": "vanilla_prefill",
+                "method_version": "2",
+                "method_config_digest": "d" * 64,
+                "artifact_id": "a" * 64,
+                "document_count": 2,
+                "segment_count": 2,
+                "logical_token_count": 174,
+                "logical_prompt_sha256": "b" * 64,
+            },
+        )
+    )
+    return {
+        "ok": True,
+        "backend": "sglang",
+        "benchmark_id": "g6-sglang-4k-32-paired-smoke",
+        "cache_method": "vanilla_prefill",
+        "artifact_model_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "artifact_model_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "artifact_tokenizer_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "artifact_tokenizer_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "dtype": "bfloat16",
+        "cache_prefix_tokens": 128,
+        "runtime_prompt_tokens": 1024,
+        "generator_factory": REPRESENTATIVE_SGLANG_PRE_ROPE_FACTORY,
+        "generator_version": "5.3.0",
+        "handoff_topology_attestation": topology,
+        "generator_python": "/local/raw/python",
+        "handoff_json": "/local/raw/handoff.json",
+        "payload_uri": "disk:/local/raw/payload.kv",
+        "request_id": "raw-request-id",
+    }
+
+
+def _expected_representative_sglang_handoff_provenance(generation):
+    topology = generation["handoff_topology_attestation"]
+    row = topology["examples"][0]
+    return {
+        "raw_sidecar_sha256": _canonical_record_sha256(generation),
+        "method_id": "vanilla_prefill",
+        "method_version": "2",
+        "generator_factory": REPRESENTATIVE_SGLANG_PRE_ROPE_FACTORY,
+        "generator_version": "5.3.0",
+        "topology": {
+            "topology_id": "per_document",
+            "record_type": "document_kv.handoff_topology_attestation.v1",
+            "schema_version": 1,
+            "example_count": 1,
+            "document_count": row["document_count"],
+            "segment_count": row["segment_count"],
+            "attestation_sha256": _canonical_record_sha256(topology),
+            "examples_sha256": topology["examples_sha256"],
+        },
+        "content_digests": [
+            {
+                "artifact_sha256": row["artifact_id"],
+                "logical_prompt_sha256": row["logical_prompt_sha256"],
+                "method_config_sha256": row["method_config_digest"],
+            }
+        ],
+    }
+
+
+def _representative_sglang_live_v1_benchmark_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(
+        DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+        REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+    profile = public_sglang_smoke.sglang_representative_workload_profile(
+        "sglang-4k-32-v1"
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="g6-sglang-4k-32-paired-smoke",
+        output_dir=tmp_path / "out",
+        model_revision=REPRESENTATIVE_CANARY_MODEL_REVISION,
+        tokenizer_revision=REPRESENTATIVE_CANARY_MODEL_REVISION,
+        representative_canary=True,
+        representative_workload_profile=profile,
+        context_length=profile.context_length,
+        max_tokens=profile.max_tokens,
+        live_benchmark_repeats=profile.live_benchmark_repeats,
+        sglang_attention_backend=profile.attention_backend,
+        sglang_sampling_backend=profile.sampling_backend,
+        sglang_enable_deterministic_inference=(
+            profile.enable_deterministic_inference
+        ),
+        cache_prompt_text_mode=profile.cache_prompt_text_mode,
+        live_check_prompt_format=profile.live_check_prompt_format,
+        live_check_request_mode=profile.live_check_request_mode,
+        live_check_temperature=profile.live_check_temperature,
+        flush_cache_before_cache_arm=profile.flush_cache_before_cache_arm,
+        flush_cache_before_canary=profile.flush_cache_before_canary,
+        flush_cache_timeout_seconds=profile.flush_cache_timeout_seconds,
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "handoff",
+        ),
+    )
+    record = _sglang_live_v1_benchmark_record()
+    dataset = "niah"
+    record.update(
+        {
+            "benchmark_id": config.benchmark_id,
+            "representative_canary": config.representative_canary,
+            "representative_workload_profile": (
+                config.representative_workload_profile_id
+            ),
+            "benchmark_manifest_provenance": (
+                public_sglang_smoke._resolved_sglang_provenance(config)
+            ),
+            "hardware_target": config.hardware_target,
+            "live_check_prompt_format": config.live_check_prompt_format,
+            "live_check_request_mode": config.live_check_request_mode,
+            "live_check_temperature": config.live_check_temperature,
+            "suite": {
+                "suite_id": public_sglang_smoke.SGLANG_LIVE_BENCHMARK_SUITE_ID,
+                "scope": "live_synthetic_niah",
+                "datasets": [dataset],
+                "examples": 1,
+                "repeats": profile.live_benchmark_repeats,
+                "release_v1_suite": False,
+            },
+            "measurements": [
+                measurement
+                for measurement in record["measurements"]
+                if measurement["dataset"] == dataset
+            ],
+            "report_rows": [
+                row for row in record["report_rows"] if row["dataset"] == dataset
+            ],
+            "comparisons": [
+                comparison
+                for comparison in record["comparisons"]
+                if comparison["dataset"] == dataset
+            ],
+            "cache_hit_validations": [
+                validation
+                for validation in record["cache_hit_validations"]
+                if validation["dataset"] == dataset
+            ],
+        }
+    )
+    _use_logical_cache_prompt_mode(record)
+    return record
 
 
 def _sglang_live_v1_report_row_record(dataset: str, arm: str):
@@ -2536,7 +4062,7 @@ def _v1_report_row_record(dataset: str, arm: str):
         "time_to_completion": {"count": 1, "mean": 2.0, "p50": 2.0, "p95": 2.0},
         "exact_match_rate": 1.0,
         "answer_found_rate": 1.0,
-        "output_tokens_per_second": 8.0,
+        "output_tokens_per_second": 16.0,
     }
 
 
@@ -2684,7 +4210,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
             bind=EngineKVBindAction(
                 request_id=request_id,
                 handle_uri=f"engine://{backend.value}/{request_id}",
-                cache_method="vanilla",
+                cache_method="full_prefix_prefill",
                 adapter_ids=("base",),
                 metadata={
                     "engine.backend": backend.value,
@@ -2692,6 +4218,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
                 },
             ),
             release=EngineKVReleaseAction(request_id=request_id),
+            reuse_plan=method_spec("full_prefix_prefill").reuse_plan(),
         )
     )
 

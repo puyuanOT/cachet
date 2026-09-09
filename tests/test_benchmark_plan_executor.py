@@ -1,10 +1,7 @@
 import hashlib
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
-from textwrap import dedent
 
 import pytest
 
@@ -228,6 +225,20 @@ def test_execute_benchmark_job_plan_accepts_generated_benchmark_plan_record(tmp_
             ),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
+            canonical_model_id="Qwen/Qwen3-4B-Instruct-2507",
+            lora_id="base",
+            serving_platform="vllm",
+            model_dtype="bfloat16",
+            model_quantization="none",
+            runtime_kv_dtype="bfloat16",
+            layout_version="qwen3-v1",
+            payload_axis_order="layer_kv_head_token_dim",
+            block_size=16,
+            key_position_encoding="pre_rope",
+            rope_theta=1_000_000.0,
+            rope_rotary_dim=128,
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
         )
     )
     record = benchmark_job_plan_to_record(plan)
@@ -236,6 +247,17 @@ def test_execute_benchmark_job_plan_accepts_generated_benchmark_plan_record(tmp_
 
     assert len(results) == len(record["commands"])
     assert all(result.skipped for result in results)
+
+
+def test_execute_benchmark_job_plan_accepts_legacy_experiment_without_new_provenance():
+    plan = {
+        **plan_for((sys.executable, "-c", "pass")),
+        "experiment": {"model_revision": "legacy-revision"},
+    }
+
+    results = execute_benchmark_job_plan(plan, dry_run=True)
+
+    assert results[0].skipped is True
 
 
 def test_execute_benchmark_job_plan_validates_command_records():
@@ -250,6 +272,40 @@ def test_execute_benchmark_job_plan_rejects_unsupported_plan_keys():
     plan = {**plan_for((sys.executable, "-c", "pass")), "debug": True}
 
     with pytest.raises(ValueError, match=r"Benchmark plan JSON has unsupported keys: \['debug'\]"):
+        execute_benchmark_job_plan(plan, dry_run=True)
+
+
+@pytest.mark.parametrize("experiment", (None, []))
+def test_execute_benchmark_job_plan_rejects_non_object_experiment(experiment):
+    plan = {
+        **plan_for((sys.executable, "-c", "pass")),
+        "experiment": experiment,
+    }
+
+    with pytest.raises(ValueError, match="experiment must be an object"):
+        execute_benchmark_job_plan(plan, dry_run=True)
+
+
+def test_execute_benchmark_job_plan_rejects_unsupported_experiment_keys():
+    plan = {
+        **plan_for((sys.executable, "-c", "pass")),
+        "experiment": {"debug": True},
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"Benchmark plan JSON experiment has unsupported keys: \['debug'\]",
+    ):
+        execute_benchmark_job_plan(plan, dry_run=True)
+
+
+def test_execute_benchmark_job_plan_rejects_unpaired_rope_experiment():
+    plan = {
+        **plan_for((sys.executable, "-c", "pass")),
+        "experiment": {"rope_theta": 1_000_000.0},
+    }
+
+    with pytest.raises(ValueError, match="must be provided together"):
         execute_benchmark_job_plan(plan, dry_run=True)
 
 

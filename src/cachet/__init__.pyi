@@ -7,6 +7,21 @@ from document_kv_cache.admission import (
     PreparedRequest as PreparedRequest,
 )
 
+from document_kv_cache.artifact_identity import (
+    ARTIFACT_IDENTITY_RECORD_TYPE as ARTIFACT_IDENTITY_RECORD_TYPE,
+    RUNTIME_IDENTITY_RECORD_TYPE as RUNTIME_IDENTITY_RECORD_TYPE,
+    TOKEN_CONTRACT_RECORD_TYPE as TOKEN_CONTRACT_RECORD_TYPE,
+    UNRESOLVED_IDENTITY as UNRESOLVED_IDENTITY,
+    ArtifactIdentity as ArtifactIdentity,
+    CompatibilityIssue as CompatibilityIssue,
+    RuntimeCompatibilityHandshake as RuntimeCompatibilityHandshake,
+    RuntimeIdentity as RuntimeIdentity,
+    TokenContract as TokenContract,
+    canonical_json_sha256 as canonical_json_sha256,
+    method_config_digest as method_config_digest,
+    token_ids_digest as token_ids_digest,
+)
+
 from document_kv_cache.benchmark_plan import (
     BenchmarkCommand as BenchmarkCommand,
     BenchmarkDatasetPath as BenchmarkDatasetPath,
@@ -35,13 +50,42 @@ from document_kv_cache.benchmark_plan_executor import (
     write_benchmark_command_results_json as write_benchmark_command_results_json,
 )
 
+from document_kv_cache.benchmark_gates import (
+    BENCHMARK_PUBLICATION_GATE_RECORD_TYPE as BENCHMARK_PUBLICATION_GATE_RECORD_TYPE,
+    CACHE_STATE_ATTESTATION_RECORD_TYPE as CACHE_STATE_ATTESTATION_RECORD_TYPE,
+    BenchmarkPublicationGateConfig as BenchmarkPublicationGateConfig,
+    BenchmarkPublicationGateResult as BenchmarkPublicationGateResult,
+    CacheStateAttestation as CacheStateAttestation,
+    benchmark_publication_gate_to_record as benchmark_publication_gate_to_record,
+    cache_state_attestation_from_vllm_telemetry as cache_state_attestation_from_vllm_telemetry,
+    evaluate_benchmark_publication_gate as evaluate_benchmark_publication_gate,
+)
+
+from document_kv_cache.benchmark_metrics import (
+    aggregate_decode_tokens_per_second as aggregate_decode_tokens_per_second,
+    latency_speedup as latency_speedup,
+    quality_delta as quality_delta,
+)
+
+from document_kv_cache.benchmark_statistics import (
+    PAIRED_BENCHMARK_STATISTICS_RECORD_TYPE as PAIRED_BENCHMARK_STATISTICS_RECORD_TYPE,
+    ConfidenceInterval as ConfidenceInterval,
+    PairedBenchmarkStatistics as PairedBenchmarkStatistics,
+    paired_benchmark_statistics as paired_benchmark_statistics,
+    paired_benchmark_statistics_to_record as paired_benchmark_statistics_to_record,
+)
+
 from document_kv_cache.benchmark_runner import (
+    BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE as BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE,
     BENCHMARK_RUN_RECORD_TYPE as BENCHMARK_RUN_RECORD_TYPE,
     BenchmarkEngine as BenchmarkEngine,
     BenchmarkEngineRequest as BenchmarkEngineRequest,
     BenchmarkGeneration as BenchmarkGeneration,
+    BenchmarkResourceEvidence as BenchmarkResourceEvidence,
     BenchmarkRunResult as BenchmarkRunResult,
     OpenAICompatibleBenchmarkConfig as OpenAICompatibleBenchmarkConfig,
+    benchmark_resource_evidence_from_record as benchmark_resource_evidence_from_record,
+    benchmark_resource_evidence_to_record as benchmark_resource_evidence_to_record,
     benchmark_run_result_to_record as benchmark_run_result_to_record,
     default_benchmark_arms as default_benchmark_arms,
     load_benchmark_jsonl as load_benchmark_jsonl,
@@ -155,6 +199,7 @@ from document_kv_cache.databricks_runs import (
     databricks_workspace_config_from_profile as databricks_workspace_config_from_profile,
     databricks_workspace_config_from_sdk_profile as databricks_workspace_config_from_sdk_profile,
     get_databricks_run as get_databricks_run,
+    get_databricks_run_output as get_databricks_run_output,
     plan_databricks_stage_and_submit as plan_databricks_stage_and_submit,
     put_databricks_dbfs_file as put_databricks_dbfs_file,
     read_databricks_run_submit_payload as read_databricks_run_submit_payload,
@@ -232,6 +277,7 @@ from document_kv_cache.engine_adapters import (
     ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION as ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION,
     EngineAdapterRequest as EngineAdapterRequest,
     EngineAdapterSpec as EngineAdapterSpec,
+    RuntimeOperationSupport as RuntimeOperationSupport,
     EngineKVBindAction as EngineKVBindAction,
     EngineKVBlockManagerProbe as EngineKVBlockManagerProbe,
     EngineKVConnectorActions as EngineKVConnectorActions,
@@ -276,7 +322,9 @@ from document_kv_cache.engine_launch_config import (
     ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION as ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION,
     REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS as REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS,
     EngineLaunchConfigEvidence as EngineLaunchConfigEvidence,
+    build_sglang_hicache_server_args as build_sglang_hicache_server_args,
     build_sglang_launch_config as build_sglang_launch_config,
+    build_vllm_kv_offloading_config as build_vllm_kv_offloading_config,
     build_vllm_launch_config as build_vllm_launch_config,
     engine_launch_config_evidence_to_record as engine_launch_config_evidence_to_record,
     engine_launch_config_record_issues as engine_launch_config_record_issues,
@@ -311,10 +359,12 @@ from document_kv_cache.engine_protocol import (
     AttentionMechanism as AttentionMechanism,
     DTYPE_BYTE_WIDTHS as DTYPE_BYTE_WIDTHS,
     KVCacheHandle as KVCacheHandle,
+    KVKeyPositionEncoding as KVKeyPositionEncoding,
     KVLayout as KVLayout,
     KVSegment as KVSegment,
     KVStorageLayout as KVStorageLayout,
     dtype_byte_width as dtype_byte_width,
+    kv_key_position_encoding_from_value as kv_key_position_encoding_from_value,
     kv_storage_layout_from_value as kv_storage_layout_from_value,
 )
 
@@ -397,6 +447,64 @@ from document_kv_cache.models import (
     chunk_type_role as chunk_type_role,
     chunk_type_sort_order as chunk_type_sort_order,
     chunk_types_for_request as chunk_types_for_request,
+)
+
+from document_kv_cache.method_scaffold import (
+    MethodScaffoldConfig as MethodScaffoldConfig,
+    render_method_plugin as render_method_plugin,
+    write_method_plugin as write_method_plugin,
+)
+
+from document_kv_cache.method_conformance import (
+    METHOD_CONFORMANCE_RECORD_TYPE as METHOD_CONFORMANCE_RECORD_TYPE,
+    MethodConformanceResult as MethodConformanceResult,
+    inspect_method_conformance as inspect_method_conformance,
+    load_method_spec as load_method_spec,
+    method_conformance_to_record as method_conformance_to_record,
+)
+
+from document_kv_cache.methods import (
+    DEFAULT_METHOD_REGISTRY as DEFAULT_METHOD_REGISTRY,
+    METHOD_LIFECYCLE_RECORD_TYPE as METHOD_LIFECYCLE_RECORD_TYPE,
+    METHOD_SPECS as METHOD_SPECS,
+    MethodCodeStatus as MethodCodeStatus,
+    MethodLifecycle as MethodLifecycle,
+    MethodRegistry as MethodRegistry,
+    MethodSpec as MethodSpec,
+    MethodValidationStatus as MethodValidationStatus,
+    UpstreamReproductionStatus as UpstreamReproductionStatus,
+    builtin_method_specs as builtin_method_specs,
+    default_method_registry as default_method_registry,
+    method_spec as method_spec,
+)
+
+from document_kv_cache.reuse_contract import (
+    ARTIFACT_FORMAT_RECORD_TYPE as ARTIFACT_FORMAT_RECORD_TYPE,
+    ENGINE_NATIVE_ARTIFACT_FORMAT as ENGINE_NATIVE_ARTIFACT_FORMAT,
+    PACKED_Q4_ARTIFACT_FORMAT as PACKED_Q4_ARTIFACT_FORMAT,
+    RAW_KV_ARTIFACT_FORMAT as RAW_KV_ARTIFACT_FORMAT,
+    RUNTIME_OPERATION_DESCRIPTOR_RECORD_TYPE as RUNTIME_OPERATION_DESCRIPTOR_RECORD_TYPE,
+    REUSE_PLAN_RECORD_TYPE as REUSE_PLAN_RECORD_TYPE,
+    ArtifactEncoding as ArtifactEncoding,
+    ArtifactFormat as ArtifactFormat,
+    PayloadDecodeStage as PayloadDecodeStage,
+    PositionHandling as PositionHandling,
+    ReusePlan as ReusePlan,
+    RuntimeOperationDescriptor as RuntimeOperationDescriptor,
+    RuntimeOperationHandler as RuntimeOperationHandler,
+    RuntimeOperationHandlerBinding as RuntimeOperationHandlerBinding,
+    RuntimeOperationHandlerRegistry as RuntimeOperationHandlerRegistry,
+    RuntimeOperationPhase as RuntimeOperationPhase,
+    RuntimeOperationRequest as RuntimeOperationRequest,
+    RuntimeOperationResult as RuntimeOperationResult,
+    TokenRecomputePolicy as TokenRecomputePolicy,
+    apply_runtime_operation_handlers as apply_runtime_operation_handlers,
+    runtime_operation_config_digest as runtime_operation_config_digest,
+)
+
+from document_kv_cache.reference_method import (
+    CPUReferenceKVGenerator as CPUReferenceKVGenerator,
+    REFERENCE_METHOD_ID as REFERENCE_METHOD_ID,
 )
 
 from document_kv_cache.native_probe_factories import (
@@ -490,6 +598,8 @@ from document_kv_cache.service import (
 )
 
 from document_kv_cache.serving_env import (
+    ACCELERATE_CONSTRAINT as ACCELERATE_CONSTRAINT,
+    BITSANDBYTES_CONSTRAINT as BITSANDBYTES_CONSTRAINT,
     FASTAPI_CONSTRAINT as FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT as HUGGINGFACE_HUB_CONSTRAINT,
     NUMPY_CONSTRAINT as NUMPY_CONSTRAINT,
