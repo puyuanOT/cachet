@@ -8,6 +8,7 @@ import sys
 from collections import Counter
 from hashlib import sha256
 from itertools import count
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +121,29 @@ def _authenticated_q8_workspace(monkeypatch):
             "user_name_sha256": sha256(expected_user_name.encode("utf-8")).hexdigest(),
         },
     )
+
+
+def test_q8_worker_reads_dbfs_volume_payload_from_native_mount(monkeypatch):
+    class PayloadReadReached(Exception):
+        pass
+
+    reads = []
+
+    def stop_at_payload_read(path):
+        reads.append(path)
+        raise PayloadReadReached
+
+    # Exercise the real worker entry and storage resolver, stopping before any
+    # payload parsing, runtime initialization, or generation can take place.
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", stop_at_payload_read)
+        with pytest.raises(PayloadReadReached):
+            run_publication_latency_handoff_worker(
+                "dbfs:/Volumes/catalog/schema/volume/q8/worker-00.json",
+                expected_worker_payload_sha256="a" * 64,
+            )
+
+    assert reads == [Path("/Volumes/catalog/schema/volume/q8/worker-00.json")]
 
 
 def test_q8_serving_resolver_rejects_authority_subclasses():

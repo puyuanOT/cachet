@@ -1809,7 +1809,7 @@ def test_mirror_closure_path_requires_workspace_and_remote_byte_equality(
         mirror, f"{directory}/worker-00.json", content
     )
     canonical = (
-        Path("/dbfs/Volumes/catalog/schema/volume/output")
+        Path("/Volumes/catalog/schema/volume/output")
         / directory
         / "worker-00.json"
     )

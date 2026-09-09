@@ -96,6 +96,29 @@ def _authenticated_bf16_workspace(monkeypatch):
     )
 
 
+def test_bf16_worker_reads_dbfs_volume_payload_from_native_mount(monkeypatch):
+    class PayloadReadReached(Exception):
+        pass
+
+    reads = []
+
+    def stop_at_payload_read(path):
+        reads.append(path)
+        raise PayloadReadReached
+
+    # Keep the actual worker path resolution and symlink checks, stopping at
+    # the first read before any payload parsing or GPU runtime work.
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", stop_at_payload_read)
+        with pytest.raises(PayloadReadReached):
+            generation.run_publication_bf16_handoff_worker(
+                "dbfs:/Volumes/catalog/schema/volume/bf16/worker-00.json",
+                expected_worker_payload_sha256="a" * 64,
+            )
+
+    assert reads == [Path("/Volumes/catalog/schema/volume/bf16/worker-00.json")]
+
+
 def test_bf16_serving_resolver_rejects_authority_subclasses():
     class SmuggledAuthorization(PublicationBF16HandoffServingAuthorization):
         pass
@@ -2175,7 +2198,7 @@ def test_direct_runs_get_attestations_close_all_16_unique_jobs(
             submission_authorization=batch_authorization,
             local_evidence_mirror_root=mirror,
         )
-        assert str(mirrored.binding.path).startswith("/dbfs/Volumes/")
+        assert str(mirrored.binding.path).startswith("/Volumes/")
         with pytest.raises(
             ValueError, match="workspace/principal differs from submission"
         ):
