@@ -2367,6 +2367,298 @@ def test_publication_vanilla_stages_closed_handoffs_and_persists_attestation(
     )
 
 
+def _storage_source_row(dataset, example_id, *, query="Who is described?"):
+    return {
+        "dataset": dataset,
+        "documents": [{"document_id": "ada", "text": "Ada Lovelace biography"}],
+        "example_id": example_id,
+        "expected_answer": "Ada Lovelace",
+        "query": query,
+    }
+
+
+def _write_sorted_jsonl(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def _storage_subset_paths(root, rows_by_dataset):
+    paths = {}
+    for dataset, rows in rows_by_dataset.items():
+        path = root / f"{dataset}.jsonl"
+        _write_sorted_jsonl(path, rows)
+        paths[dataset] = path
+    return paths
+
+
+def _patch_publication_staging(monkeypatch, *, staged_paths, attestation_path, calls):
+    digest_generation = "6" * 64
+
+    def read_generation(root):
+        calls.append(("read_generation", root))
+        return SimpleNamespace(
+            record={
+                "closed_record_sha256": digest_generation,
+                "execution_mode": (
+                    public_vllm_smoke.PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED
+                ),
+            }
+        )
+
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "read_publication_latency_handoff_generation_result",
+        read_generation,
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "resolve_publication_latency_worker_handoff_bundle",
+        lambda result, *, context_tokens: SimpleNamespace(
+            manifest={
+                "context_tokens": 8192,
+                "datasets": [
+                    {"entries": [{"cache_method": "vanilla_prefill"}]}
+                    for _dataset in SMOKE_DATASETS
+                ],
+                "input_bundle_sha256": "5" * 64,
+            },
+            source_root=attestation_path.parent / "durable-bundle",
+        ),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "stage_publication_latency_handoff_bundle",
+        lambda record, *, source_root, local_nvme_dir: SimpleNamespace(
+            dataset_paths=staged_paths,
+            attestation_path=attestation_path,
+        ),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "validate_publication_latency_block_schedule",
+        lambda record, *, examples, expected_input_bundle_sha256: calls.append(
+            (
+                "validate_schedule",
+                tuple((example.dataset, example.example_id) for example in examples),
+            )
+        ),
+    )
+
+
+def test_publication_storage_vanilla_projects_staged_handoff_subset(
+    monkeypatch,
+    tmp_path,
+):
+    digest = "5" * 64
+    snapshot_rows = {
+        dataset: [_storage_source_row(dataset, f"{dataset}-keep")]
+        for dataset in SMOKE_DATASETS
+    }
+    staged_rows = {}
+    for dataset in SMOKE_DATASETS:
+        keep = _storage_source_row(dataset, f"{dataset}-keep")
+        extra = _storage_source_row(dataset, f"{dataset}-extra")
+        keep["arm_kv_transfer_params"] = {
+            "vanilla": {
+                DOCUMENT_KV_REQUEST_ID_PARAM: f"cachet-{dataset}-keep",
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: str(tmp_path / f"{dataset}-keep.json"),
+                DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{tmp_path / f'{dataset}-keep.bin'}",
+            }
+        }
+        extra["arm_kv_transfer_params"] = {
+            "vanilla": {
+                DOCUMENT_KV_REQUEST_ID_PARAM: f"cachet-{dataset}-extra",
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: str(tmp_path / f"{dataset}-extra.json"),
+                DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{tmp_path / f'{dataset}-extra.bin'}",
+            }
+        }
+        staged_rows[dataset] = [extra, keep]
+    snapshot_paths = _storage_subset_paths(tmp_path / "snapshot", snapshot_rows)
+    staged_paths = _storage_subset_paths(tmp_path / "staged", staged_rows)
+    snapshot_bytes = {
+        dataset: path.read_bytes() for dataset, path in snapshot_paths.items()
+    }
+    generation_root = tmp_path / "reviewed-generation"
+    generation_root.mkdir()
+    execution_path = generation_root / (
+        public_vllm_smoke.PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME
+    )
+    execution_path.write_text('{"closed":true}\n', encoding="utf-8")
+    attestation_path = tmp_path / "fake-stage-attestation.json"
+    attestation_path.write_text('{"closed":true}\n', encoding="utf-8")
+    calls = []
+    _patch_publication_staging(
+        monkeypatch,
+        staged_paths=staged_paths,
+        attestation_path=attestation_path,
+        calls=calls,
+    )
+    schedule = {
+        "input_bundle_sha256": digest,
+        "protocol": {"workload_id": "storage"},
+        "requests": [
+            {"dataset": dataset, "example_id": f"{dataset}-keep"}
+            for dataset in SMOKE_DATASETS
+            for _repeat in range(2)
+        ],
+    }
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="publication-storage-vanilla",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+        benchmark_evidence_policy="publication",
+        benchmark_arms=(CACHE_REUSE_ARM,),
+        benchmark_manifest_provenance={"input_tokens_target": 8192},
+        dataset_specs=tuple(
+            f"{dataset}={path}" for dataset, path in snapshot_paths.items()
+        ),
+        publication_latency_schedule_record=schedule,
+        publication_latency_expected_input_bundle_sha256=digest,
+        publication_handoff_generation_output_root=generation_root,
+        publication_handoff_generation_execution_file_sha256=(
+            hashlib.sha256(execution_path.read_bytes()).hexdigest()
+        ),
+        publication_handoff_generation_execution_closed_record_sha256="6" * 64,
+        publication_handoff_local_nvme_dir=tmp_path / "local" / "publication-handoffs",
+        native_runtime_v2=native_runtime_v2(tmp_path / "runtime"),
+    )
+
+    result = prepare_publication_latency_inputs(config, snapshot_paths)
+
+    assert set(result) == set(SMOKE_DATASETS)
+    assert result != staged_paths
+    for dataset, path in result.items():
+        projected = [
+            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert [row["example_id"] for row in projected] == [f"{dataset}-keep"]
+        assert projected[0]["arm_kv_transfer_params"]["vanilla"][
+            DOCUMENT_KV_HANDOFF_JSON_PARAM
+        ] == str(tmp_path / f"{dataset}-keep.json")
+        assert snapshot_paths[dataset].read_bytes() == snapshot_bytes[dataset]
+    assert calls[-1][0] == "validate_schedule"
+    assert {example_id for _dataset, example_id in calls[-1][1]} == {
+        f"{dataset}-keep" for dataset in SMOKE_DATASETS
+    } | {f"{dataset}-extra" for dataset in SMOKE_DATASETS}
+
+
+def test_publication_storage_baseline_keeps_unenriched_snapshot(monkeypatch, tmp_path):
+    digest = "7" * 64
+    snapshot_paths = _storage_subset_paths(
+        tmp_path / "snapshot",
+        {
+            dataset: [_storage_source_row(dataset, f"{dataset}-keep")]
+            for dataset in SMOKE_DATASETS
+        },
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "validate_publication_latency_block_schedule",
+        lambda record, *, examples, expected_input_bundle_sha256: None,
+    )
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="publication-storage-baseline",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+        benchmark_evidence_policy="smoke",
+        benchmark_arms=("baseline_prefill",),
+        dataset_specs=tuple(
+            f"{dataset}={path}" for dataset, path in snapshot_paths.items()
+        ),
+        publication_latency_schedule_record={
+            "input_bundle_sha256": digest,
+            "protocol": {"workload_id": "storage"},
+            "requests": [
+                {"dataset": dataset, "example_id": f"{dataset}-keep"}
+                for dataset in SMOKE_DATASETS
+            ],
+        },
+        publication_latency_expected_input_bundle_sha256=digest,
+    )
+
+    result = prepare_publication_latency_inputs(config, snapshot_paths)
+
+    assert result == snapshot_paths
+    assert not (
+        config.local_dir / "publication-storage-handoff-subset"
+    ).exists()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        ("drift", "does not preserve the storage snapshot"),
+        ("missing", "missing storage identity"),
+    ],
+)
+def test_publication_storage_handoff_projection_fails_closed(
+    tmp_path,
+    mutate,
+    match,
+):
+    snapshot_rows = {
+        dataset: [_storage_source_row(dataset, f"{dataset}-keep")]
+        for dataset in SMOKE_DATASETS
+    }
+    if mutate == "drift":
+        snapshot_rows["biography"][0]["query"] = "changed after the bundle closed"
+    staged_rows = {}
+    for dataset in SMOKE_DATASETS:
+        if mutate == "missing" and dataset == "biography":
+            staged_rows[dataset] = [
+                _storage_source_row(dataset, f"{dataset}-other")
+                | {
+                    "arm_kv_transfer_params": {
+                        "vanilla": {
+                            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(tmp_path / "other.json"),
+                            DOCUMENT_KV_PAYLOAD_URI_PARAM: "disk:/other.bin",
+                        }
+                    }
+                }
+            ]
+            continue
+        row = _storage_source_row(dataset, f"{dataset}-keep")
+        row["arm_kv_transfer_params"] = {
+            "vanilla": {
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: str(tmp_path / f"{dataset}.json"),
+                DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{tmp_path / f'{dataset}.bin'}",
+            }
+        }
+        staged_rows[dataset] = [row]
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="publication-storage-projection",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+        benchmark_evidence_policy="smoke",
+    )
+    schedule = {
+        "protocol": {"workload_id": "storage"},
+        "requests": [
+            {"dataset": dataset, "example_id": f"{dataset}-keep"}
+            for dataset in SMOKE_DATASETS
+        ],
+    }
+
+    with pytest.raises(ValueError, match=match):
+        public_vllm_smoke._project_publication_storage_handoff_datasets(
+            config,
+            snapshot_paths=_storage_subset_paths(tmp_path / "snapshot", snapshot_rows),
+            staged_paths=_storage_subset_paths(tmp_path / "staged", staged_rows),
+            schedule=schedule,
+        )
+
+    assert not (config.local_dir / "publication-storage-handoff-subset").exists()
+
+
 def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",

@@ -117,7 +117,7 @@ PUBLICATION_FREEZE_MAX_COMMAND_OUTPUT_BYTES: Final = 1024 * 1024
 PUBLICATION_FREEZE_COMMAND_TAIL_BYTES: Final = 8 * 1024
 PUBLICATION_FREEZE_COMMAND_TIMEOUT_SECONDS: Final = 30 * 60
 # Keep synchronized with the full tests/ collection when adding regressions.
-PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 4_530
+PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 4_534
 _DEFAULT_PYTHON_EXECUTABLE: Final = Path(
     "/opt/homebrew/opt/python@3.11/bin/python3.11"
 ).resolve()

@@ -113,6 +113,7 @@ from document_kv_cache.publication_handoff_artifacts import (
     validate_publication_latency_handoff_bundle,
 )
 from document_kv_cache.publication_latency_handoff_generation import (
+    PUBLICATION_LATENCY_HANDOFF_ARM_ID,
     PUBLICATION_LATENCY_HANDOFF_EXECUTION_FILENAME,
     PUBLICATION_LATENCY_HANDOFF_EXECUTION_MODE_DISTRIBUTED,
     read_publication_latency_handoff_generation_result,
@@ -5731,14 +5732,22 @@ def write_smoke_datasets(local_dir: Path) -> dict[str, Path]:
     return paths
 
 
+_PUBLICATION_STORAGE_HANDOFF_OVERLAY_FIELDS = frozenset(
+    {"arm_kv_transfer_params", "kv_transfer_params"}
+)
+
+
 def prepare_publication_latency_inputs(
     config: VLLMSmokeBenchmarkConfig,
     dataset_paths: dict[str, Path],
 ) -> dict[str, Path]:
     """Validate the closed schedule and optionally stage reusable Vanilla KV.
 
-    Baseline cells retain ``dataset_paths`` verbatim.  Vanilla cells replace them
-    only with the paths returned by the closed-bundle staging API.
+    Baseline cells retain ``dataset_paths`` verbatim.  Vanilla cells stage the
+    closed bundle, then storage schedules keep only the scheduled identities
+    copied from those staged rows so the Vanilla handoffs stay attached.
+    Callers must use that returned mapping; substituting the unenriched
+    snapshot drops the staged ``arm_kv_transfer_params``.
     """
 
     if not config.uses_publication_latency_schedule:
@@ -5863,6 +5872,16 @@ def prepare_publication_latency_inputs(
         expected_input_bundle_sha256=expected_bundle_sha256,
     )
     _publication_latency_schedule_runner_path(config, schedule=schedule)
+    if (
+        config.stages_publication_handoffs
+        and _publication_schedule_workload_id(schedule) == "storage"
+    ):
+        runner_dataset_paths = _project_publication_storage_handoff_datasets(
+            config,
+            snapshot_paths=dataset_paths,
+            staged_paths=runner_dataset_paths,
+            schedule=schedule,
+        )
     return runner_dataset_paths
 
 
@@ -5924,6 +5943,214 @@ def _publication_latency_schedule_runner_path(
                 "concurrent materialized publication latency schedule differs"
             ) from None
     return path
+
+
+def _publication_schedule_workload_id(schedule: Mapping[str, Any]) -> str | None:
+    protocol = schedule.get("protocol")
+    if not isinstance(protocol, Mapping):
+        return None
+    workload_id = protocol.get("workload_id")
+    if workload_id is None:
+        return None
+    if not isinstance(workload_id, str) or not workload_id:
+        raise ValueError("latency schedule workload_id must be a non-empty string")
+    return workload_id
+
+
+def _project_publication_storage_handoff_datasets(
+    config: VLLMSmokeBenchmarkConfig,
+    *,
+    snapshot_paths: Mapping[str, Path],
+    staged_paths: Mapping[str, Path],
+    schedule: Mapping[str, Any],
+) -> dict[str, Path]:
+    """Copy staged Vanilla rows for the storage schedule's identities only.
+
+    The closed bundle contains the full context suite.  A storage cell must
+    serve the scheduled subset, and those rows have to carry the staged
+    ``arm_kv_transfer_params`` rather than the unenriched snapshot bytes.
+    """
+
+    scheduled = _storage_schedule_identities(schedule)
+    output_root = config.local_dir / "publication-storage-handoff-subset"
+    if output_root.exists() or output_root.is_symlink():
+        raise FileExistsError(
+            "refusing to replace publication storage handoff subset: "
+            f"{output_root}"
+        )
+    output_root.mkdir(parents=True, exist_ok=False)
+    projected: dict[str, Path] = {}
+    try:
+        for dataset in SUPPORTED_V1_DATASETS:
+            snapshot_rows = _read_publication_jsonl_objects(
+                snapshot_paths[dataset],
+                field_name=f"{dataset} storage snapshot",
+            )
+            staged_rows = _read_publication_jsonl_objects(
+                staged_paths[dataset],
+                field_name=f"{dataset} staged handoff dataset",
+            )
+            staged_by_id: dict[str, tuple[bytes, dict[str, Any]]] = {}
+            for line, row in staged_rows:
+                example_id = _publication_jsonl_example_id(
+                    row,
+                    field_name=f"{dataset} staged handoff dataset",
+                )
+                if example_id in staged_by_id:
+                    raise ValueError(
+                        f"staged {dataset} handoff dataset repeats {example_id}"
+                    )
+                staged_by_id[example_id] = (line, row)
+            snapshot_ids: list[str] = []
+            selected_lines: list[bytes] = []
+            for _line, row in snapshot_rows:
+                example_id = _publication_jsonl_example_id(
+                    row,
+                    field_name=f"{dataset} storage snapshot",
+                )
+                if example_id in snapshot_ids:
+                    raise ValueError(
+                        f"storage snapshot {dataset} repeats {example_id}"
+                    )
+                snapshot_ids.append(example_id)
+                staged = staged_by_id.get(example_id)
+                if staged is None:
+                    raise ValueError(
+                        "staged publication handoff dataset is missing storage "
+                        f"identity {dataset}/{example_id}"
+                    )
+                _require_staged_storage_handoff_row(
+                    staged[1],
+                    snapshot_row=row,
+                    dataset=dataset,
+                    example_id=example_id,
+                )
+                selected_lines.append(staged[0])
+            if set(snapshot_ids) != scheduled[dataset]:
+                raise ValueError(
+                    f"storage snapshot identities for {dataset} do not match "
+                    "the storage schedule"
+                )
+            target = output_root / f"{dataset}.jsonl"
+            _write_exclusive_bytes(target, b"".join(selected_lines))
+            projected[dataset] = target
+    except BaseException:
+        shutil.rmtree(output_root, ignore_errors=True)
+        raise
+    return projected
+
+
+def _storage_schedule_identities(
+    schedule: Mapping[str, Any],
+) -> dict[str, set[str]]:
+    requests = schedule.get("requests")
+    if not isinstance(requests, list) or not requests:
+        raise ValueError("storage handoff projection requires schedule requests")
+    identities = {dataset: set() for dataset in SUPPORTED_V1_DATASETS}
+    for index, request in enumerate(requests):
+        if not isinstance(request, Mapping):
+            raise ValueError("storage schedule request must be an object")
+        dataset = request.get("dataset")
+        example_id = request.get("example_id")
+        if dataset not in identities or not isinstance(example_id, str) or (
+            not example_id
+        ):
+            raise ValueError(
+                f"storage schedule request {index} has an invalid identity"
+            )
+        identities[dataset].add(example_id)
+    missing = [dataset for dataset, ids in identities.items() if not ids]
+    if missing:
+        raise ValueError(
+            "storage schedule is missing identities for " + ", ".join(missing)
+        )
+    return identities
+
+
+def _read_publication_jsonl_objects(
+    path: Path,
+    *,
+    field_name: str,
+) -> tuple[tuple[bytes, dict[str, Any]], ...]:
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"could not read {field_name}: {exc}") from exc
+    if not content:
+        raise ValueError(f"{field_name} is empty")
+    rows: list[tuple[bytes, dict[str, Any]]] = []
+    for line_number, line in enumerate(content.splitlines(keepends=True), start=1):
+        if not line.endswith(b"\n"):
+            raise ValueError(f"{field_name} line {line_number} is not a JSON line")
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field_name} line {line_number} is not JSON") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"{field_name} line {line_number} must be an object")
+        rows.append((line, value))
+    return tuple(rows)
+
+
+def _publication_jsonl_example_id(
+    row: Mapping[str, Any],
+    *,
+    field_name: str,
+) -> str:
+    example_id = row.get("example_id")
+    if not isinstance(example_id, str) or not example_id:
+        raise ValueError(f"{field_name} row is missing example_id")
+    return example_id
+
+
+def _require_staged_storage_handoff_row(
+    staged_row: Mapping[str, Any],
+    *,
+    snapshot_row: Mapping[str, Any],
+    dataset: str,
+    example_id: str,
+) -> None:
+    preserved = {
+        key: value
+        for key, value in staged_row.items()
+        if key not in _PUBLICATION_STORAGE_HANDOFF_OVERLAY_FIELDS
+    }
+    if preserved != snapshot_row:
+        raise ValueError(
+            "staged publication handoff row does not preserve the storage "
+            f"snapshot source row for {dataset}/{example_id}"
+        )
+    arms = staged_row.get("arm_kv_transfer_params")
+    if not isinstance(arms, Mapping):
+        raise ValueError(
+            "staged publication handoff row is missing arm_kv_transfer_params "
+            f"for {dataset}/{example_id}"
+        )
+    params = arms.get(PUBLICATION_LATENCY_HANDOFF_ARM_ID)
+    if not isinstance(params, Mapping) or not params:
+        raise ValueError(
+            "staged publication handoff row is missing Vanilla "
+            f"kv_transfer_params for {dataset}/{example_id}"
+        )
+    for key in (DOCUMENT_KV_HANDOFF_JSON_PARAM, DOCUMENT_KV_PAYLOAD_URI_PARAM):
+        value = params.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                "staged Vanilla handoff params are missing "
+                f"{key} for {dataset}/{example_id}"
+            )
+
+
+def _write_exclusive_bytes(path: Path, content: bytes) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _persist_publication_handoff_staging_attestation(
