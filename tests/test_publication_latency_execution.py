@@ -4616,6 +4616,102 @@ def _realistic_local_path_connector_load(
     }
 
 
+def _ram_payload_cache_prime_loads() -> list[dict]:
+    loads = []
+    for phase in ("populate", "verify"):
+        for index in range(execution.PUBLICATION_LATENCY_RAM_PRIME_TARGETS):
+            load = _realistic_local_path_connector_load(
+                f"{execution.PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX}"
+                f"{phase}:{index:064x}",
+                cold_read_attested=False,
+                payload_cache_hit=phase == "verify",
+            )
+            if phase == "populate":
+                load["payload"]["payload_cache_enabled"] = True
+                load["counts"]["payload_cache_misses"] = 1
+            loads.append(load)
+    return loads
+
+
+def test_ram_cache_telemetry_excludes_exact_payload_cache_prime_loads(monkeypatch):
+    request_ids = [
+        f"block-04-request-{index:03d}"
+        for index in range(execution.PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL)
+    ]
+    benchmark = SimpleNamespace(
+        measurements=tuple(
+            SimpleNamespace(
+                metadata={
+                    execution.PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY: request_id
+                }
+            )
+            for request_id in request_ids
+        )
+    )
+    monkeypatch.setattr(
+        execution,
+        "benchmark_run_result_from_record",
+        lambda *_args, **_kwargs: benchmark,
+    )
+    monkeypatch.setattr(execution, "_file_sha256", lambda _path: "a" * 64)
+
+    def summarize(records: list[dict], host_cache_state: str) -> dict:
+        monkeypatch.setattr(
+            execution,
+            "_read_jsonl_file",
+            lambda *_args, **_kwargs: records,
+        )
+        return execution._publication_latency_cache_telemetry_summary(
+            Path("connector-telemetry.jsonl"),
+            job_record={
+                "cache_telemetry_policy": {"host_cache_state": host_cache_state},
+                "cell": {"method_id": "vanilla_prefill"},
+                "runtime": {"runtime_kv_dtype": "bfloat16"},
+            },
+            benchmark_record={},
+        )
+
+    prime = _ram_payload_cache_prime_loads()
+    measured = [
+        _realistic_local_path_connector_load(
+            request_id, cold_read_attested=False, payload_cache_hit=True
+        )
+        for request_id in request_ids
+    ]
+    ram = summarize(prime + measured, "prewarmed_payload_cache")
+    assert ram["load_count"] == len(request_ids)
+    assert ram["payload_cache_hit_count"] == len(request_ids)
+    assert ram["payload_cache_miss_count"] == 0
+    assert ram["backend_bytes_read"] == 0
+
+    for forged, message in (
+        (prime[1:] + measured, "prime telemetry count drift"),
+        (prime + prime[:1] + measured, "prime telemetry count drift"),
+        (measured, "prime telemetry count drift"),
+        (prime + measured[1:], "request coverage is not exact"),
+        (prime + measured + measured[:1], "request coverage is not exact"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            summarize(forged, "prewarmed_payload_cache")
+
+    cold = [
+        _realistic_local_path_connector_load(
+            request_id, cold_read_attested=True, payload_cache_hit=False
+        )
+        for request_id in request_ids
+    ]
+    with pytest.raises(ValueError, match="request coverage is not exact"):
+        summarize(prime + cold, "cold_eviction_required")
+
+
+def test_payload_cache_prime_request_id_prefix_matches_vllm_smoke():
+    source = inspect.getsource(vllm_smoke.prime_payload_cache)
+    assert (
+        f'request_id = f"{execution.PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX}'
+        '{phase}:{identity_digest}"'
+    ) in source
+
+
 def test_mounted_path_load_count_requires_verified_uc_backend_reads(monkeypatch):
     request_ids = [
         f"request-{index:03d}"
@@ -4652,6 +4748,8 @@ def test_mounted_path_load_count_requires_verified_uc_backend_reads(monkeypatch)
             )
             for request_id in request_ids
         ]
+        if host_cache_state == "prewarmed_payload_cache":
+            records = _ram_payload_cache_prime_loads() + records
         monkeypatch.setattr(
             execution,
             "_read_jsonl_file",

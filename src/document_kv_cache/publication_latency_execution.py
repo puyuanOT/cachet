@@ -264,6 +264,8 @@ PUBLICATION_LATENCY_DATABRICKS_ZONES: Final = (
 )
 PUBLICATION_LATENCY_RAM_PAYLOAD_CACHE_BYTES: Final = 16 * 1024**3
 PUBLICATION_LATENCY_RAM_PRIME_TARGETS: Final = 8
+# Must match the request IDs minted by vllm_smoke.prime_payload_cache.
+PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX: Final = "cachet-payload-prime:"
 PUBLICATION_LATENCY_Q8_DTYPE: Final = "fp8_e5m2"
 PUBLICATION_LATENCY_BF16_DTYPE: Final = "bfloat16"
 PUBLICATION_LATENCY_MODEL_QUANTIZATION: Final = "bitsandbytes"
@@ -10424,6 +10426,33 @@ def _publication_latency_cache_telemetry_summary(
         and item.get("event") == "load_request"
         and item.get("success") is True
     ]
+    policy = _mapping(job_record, "cache_telemetry_policy")
+    ram_payload_cache = policy.get("host_cache_state") == "prewarmed_payload_cache"
+    uc_mounted_backend = (
+        policy.get("host_cache_state") == "mounted_path_evicted_backend_cache_unproven"
+    )
+    if ram_payload_cache:
+        # Payload-cache priming shares the connector telemetry file; its loads are
+        # proven by the prime record, not by measurement request coverage.
+        prime_ids = [
+            item.get("benchmark_request_id")
+            for item in loads
+            if str(item.get("benchmark_request_id")).startswith(
+                PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX
+            )
+        ]
+        if (
+            len(prime_ids) != 2 * PUBLICATION_LATENCY_RAM_PRIME_TARGETS
+            or len(set(prime_ids)) != len(prime_ids)
+        ):
+            raise ValueError("RAM payload-cache prime telemetry count drift")
+        loads = [
+            item
+            for item in loads
+            if not str(item.get("benchmark_request_id")).startswith(
+                PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX
+            )
+        ]
     benchmark = benchmark_run_result_from_record(
         benchmark_record,
         evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
@@ -10449,11 +10478,6 @@ def _publication_latency_cache_telemetry_summary(
     mounted_path_loads = 0
     runtime_dtype = _required_string(
         _mapping(job_record, "runtime"), "runtime_kv_dtype"
-    )
-    policy = _mapping(job_record, "cache_telemetry_policy")
-    ram_payload_cache = policy.get("host_cache_state") == "prewarmed_payload_cache"
-    uc_mounted_backend = (
-        policy.get("host_cache_state") == "mounted_path_evicted_backend_cache_unproven"
     )
     for load in loads:
         counts = _mapping(load, "counts")
