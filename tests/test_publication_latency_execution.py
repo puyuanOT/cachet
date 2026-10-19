@@ -4971,3 +4971,15 @@ def test_latency_estimand_validator_rejects_schema_lineage_and_order_tampering()
     }
     with pytest.raises(ValueError, match="schema is not closed"):
         execution._validate_publication_latency_estimate_records(forged)
+
+
+def test_remote_result_tree_allows_the_runner_import_probe_script():
+    probe_path = vllm_smoke.VLLMSmokeBenchmarkConfig.import_probe_path.fget(
+        SimpleNamespace(output_dir=Path("result"))
+    )
+
+    assert probe_path.name == execution.PUBLICATION_LATENCY_IMPORT_PROBE_FILENAME
+    assert (
+        probe_path.with_name(f"{probe_path.stem}.py").name
+        in execution.PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES
+    )

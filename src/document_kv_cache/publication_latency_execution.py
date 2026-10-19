@@ -319,6 +319,7 @@ PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES: Final = frozenset(
         "prepared-handoff-coverage.json",
         "prepared-handoff-generation.json",
         "prewarm-cache-prefix.json",
+        "vllm-import-probe.py",
         "vllm-server.log",
     }
 )
