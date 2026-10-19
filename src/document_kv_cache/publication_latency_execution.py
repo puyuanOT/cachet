@@ -6130,7 +6130,15 @@ def _build_databricks_publication_latency_run_submit_payload(
 ) -> dict[str, Any]:
     """Internal exact no-retry, condition-timeout, single-GPU renderer."""
 
-    job = _render_publication_latency_job_record(execution_plan_record, job_id)
+    return _render_publication_latency_submit_payload_from_job_record(
+        _render_publication_latency_job_record(execution_plan_record, job_id)
+    )
+
+
+def _render_publication_latency_submit_payload_from_job_record(
+    job: Mapping[str, Any],
+) -> dict[str, Any]:
+    job_id = _required_string(job, "job_id")
     runtime = _mapping(job, "runtime")
     artifact_files = {
         _required_string(item, "role"): item
@@ -8026,148 +8034,7 @@ def validate_publication_latency_collection_record(
             _mapping(receipt, "ledger_terminal_actual")
         ):
             raise ValueError("publication latency terminal actual digest drift")
-        result_tree = _mapping(receipt, "result_tree")
-        _require_exact_keys(
-            result_tree,
-            {
-                "auxiliary_files",
-                "directory_uri",
-                "file_count",
-                "files",
-                "total_bytes",
-            },
-            "publication latency remote result tree",
-        )
-        result_file_byte_count = _positive_int(
-            receipt.get("result_file_byte_count"),
-            "latency result file byte count",
-        )
-        result_tree_file_count = _positive_int(
-            receipt.get("result_tree_file_count"),
-            "latency result tree file count",
-        )
-        result_tree_total_bytes = _positive_int(
-            receipt.get("result_tree_total_bytes"),
-            "latency result tree total bytes",
-        )
-        if (
-            receipt.get("result_tree_sha256") != _canonical_sha256(result_tree)
-            or result_tree_file_count != len(_mapping_sequence(result_tree, "files"))
-            or result_tree_file_count != len(_mapping_sequence(result, "files")) + 1
-            or result_tree_total_bytes
-            != _positive_int(
-                result_tree.get("total_bytes"),
-                "latency result tree total bytes",
-            )
-            or result_tree.get("file_count") != result_tree_file_count
-            or result_tree.get("total_bytes") != result_tree_total_bytes
-            or _required_string(result_tree, "directory_uri")
-            != _databricks_volume_uri(
-                _required_string(_mapping(job, "output"), "directory_uri"),
-                "latency collection result directory URI",
-            )
-        ):
-            raise ValueError("publication latency result tree receipt binding drift")
-        tree_files = _mapping_sequence(result_tree, "files")
-        auxiliary_files = _mapping_sequence(result_tree, "auxiliary_files")
-        result_directory_path = _normalized_volume_path(
-            _required_string(result_tree, "directory_uri"),
-            "latency result tree directory URI",
-        )
-        auxiliary_uris: set[str] = set()
-        auxiliary_total_bytes = 0
-        for auxiliary in auxiliary_files:
-            _require_exact_keys(
-                auxiliary,
-                {"byte_count", "uri"},
-                "publication latency auxiliary result file",
-            )
-            auxiliary_uri = _databricks_volume_uri(
-                _required_string(auxiliary, "uri"),
-                "publication latency auxiliary result URI",
-            )
-            auxiliary_path = _normalized_volume_path(
-                auxiliary_uri,
-                "publication latency auxiliary result URI",
-            )
-            auxiliary_total_bytes += _nonnegative_int(
-                auxiliary.get("byte_count"),
-                "publication latency auxiliary result byte count",
-            )
-            if (
-                auxiliary_path.parent != result_directory_path
-                or auxiliary_path.name
-                not in PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES
-                or auxiliary_uri in auxiliary_uris
-            ):
-                raise ValueError("publication latency auxiliary result tree drift")
-            auxiliary_uris.add(auxiliary_uri)
-        referenced_tree_uris = {
-            _databricks_volume_uri(
-                _required_string(item, "uri"),
-                "publication latency referenced result tree URI",
-            )
-            for item in tree_files
-        }
-        if auxiliary_uris.intersection(referenced_tree_uris):
-            raise ValueError("publication latency auxiliary/referenced tree overlap")
-        if (
-            auxiliary_total_bytes + result_tree_total_bytes
-            > PUBLICATION_LATENCY_REMOTE_DIRECTORY_MAX_BYTES
-        ):
-            raise ValueError("publication latency result directory exceeds byte cap")
-        result_seal = tree_files[0]
-        for tree_file in tree_files:
-            _require_exact_keys(
-                tree_file,
-                {"byte_count", "role", "sha256", "uri"},
-                "publication latency referenced result tree file",
-            )
-            _safe_id(tree_file.get("role"), "latency result tree file role")
-            _required_sha256(tree_file, "sha256")
-            _databricks_volume_uri(tree_file.get("uri"), "latency result tree file URI")
-        if (
-            sum(
-                _positive_int(item.get("byte_count"), "latency tree file byte count")
-                for item in tree_files
-            )
-            != result_tree_total_bytes
-        ):
-            raise ValueError("publication latency result tree byte sum drift")
-        if (
-            result_seal.get("role") != "result_seal"
-            or result_seal.get("sha256") != receipt.get("result_file_sha256")
-            or result_seal.get("byte_count") != result_file_byte_count
-            or result_seal.get("uri")
-            != _databricks_volume_uri(
-                _required_string(_mapping(job, "output"), "result_uri"),
-                "latency collection result URI",
-            )
-            or result_file_byte_count > PUBLICATION_LATENCY_REMOTE_RESULT_MAX_BYTES
-            or result_tree_file_count > PUBLICATION_LATENCY_REMOTE_TREE_MAX_FILES
-            or result_tree_total_bytes > PUBLICATION_LATENCY_REMOTE_TREE_MAX_BYTES
-        ):
-            raise ValueError("publication latency result seal tree binding drift")
-        for result_file, tree_file in zip(
-            _mapping_sequence(result, "files"),
-            tree_files[1:],
-            strict=True,
-        ):
-            if (
-                result_file.get("role") != tree_file.get("role")
-                or result_file.get("sha256") != tree_file.get("sha256")
-                or _databricks_volume_uri(
-                    _required_string(result_file, "uri"),
-                    "latency collection referenced result URI",
-                )
-                != tree_file.get("uri")
-                or _positive_int(
-                    tree_file.get("byte_count"),
-                    "latency result tree file byte count",
-                )
-                > PUBLICATION_LATENCY_REMOTE_ARTIFACT_MAX_BYTES
-            ):
-                raise ValueError("publication latency referenced result tree drift")
+        _validate_latency_result_tree_receipt(receipt, result=result, job=job)
     if (
         len({item.get("run_id") for item in receipts}) != len(receipts)
         or len({item.get("task_run_id") for item in receipts}) != len(receipts)
@@ -8176,6 +8043,156 @@ def validate_publication_latency_collection_record(
         raise ValueError(
             "publication latency collected physical identities are not unique"
         )
+
+
+def _validate_latency_result_tree_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    result: Mapping[str, Any],
+    job: Mapping[str, Any],
+) -> None:
+    result_tree = _mapping(receipt, "result_tree")
+    _require_exact_keys(
+        result_tree,
+        {
+            "auxiliary_files",
+            "directory_uri",
+            "file_count",
+            "files",
+            "total_bytes",
+        },
+        "publication latency remote result tree",
+    )
+    result_file_byte_count = _positive_int(
+        receipt.get("result_file_byte_count"),
+        "latency result file byte count",
+    )
+    result_tree_file_count = _positive_int(
+        receipt.get("result_tree_file_count"),
+        "latency result tree file count",
+    )
+    result_tree_total_bytes = _positive_int(
+        receipt.get("result_tree_total_bytes"),
+        "latency result tree total bytes",
+    )
+    if (
+        receipt.get("result_tree_sha256") != _canonical_sha256(result_tree)
+        or result_tree_file_count != len(_mapping_sequence(result_tree, "files"))
+        or result_tree_file_count != len(_mapping_sequence(result, "files")) + 1
+        or result_tree_total_bytes
+        != _positive_int(
+            result_tree.get("total_bytes"),
+            "latency result tree total bytes",
+        )
+        or result_tree.get("file_count") != result_tree_file_count
+        or result_tree.get("total_bytes") != result_tree_total_bytes
+        or _required_string(result_tree, "directory_uri")
+        != _databricks_volume_uri(
+            _required_string(_mapping(job, "output"), "directory_uri"),
+            "latency collection result directory URI",
+        )
+    ):
+        raise ValueError("publication latency result tree receipt binding drift")
+    tree_files = _mapping_sequence(result_tree, "files")
+    auxiliary_files = _mapping_sequence(result_tree, "auxiliary_files")
+    result_directory_path = _normalized_volume_path(
+        _required_string(result_tree, "directory_uri"),
+        "latency result tree directory URI",
+    )
+    auxiliary_uris: set[str] = set()
+    auxiliary_total_bytes = 0
+    for auxiliary in auxiliary_files:
+        _require_exact_keys(
+            auxiliary,
+            {"byte_count", "uri"},
+            "publication latency auxiliary result file",
+        )
+        auxiliary_uri = _databricks_volume_uri(
+            _required_string(auxiliary, "uri"),
+            "publication latency auxiliary result URI",
+        )
+        auxiliary_path = _normalized_volume_path(
+            auxiliary_uri,
+            "publication latency auxiliary result URI",
+        )
+        auxiliary_total_bytes += _nonnegative_int(
+            auxiliary.get("byte_count"),
+            "publication latency auxiliary result byte count",
+        )
+        if (
+            auxiliary_path.parent != result_directory_path
+            or auxiliary_path.name
+            not in PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES
+            or auxiliary_uri in auxiliary_uris
+        ):
+            raise ValueError("publication latency auxiliary result tree drift")
+        auxiliary_uris.add(auxiliary_uri)
+    referenced_tree_uris = {
+        _databricks_volume_uri(
+            _required_string(item, "uri"),
+            "publication latency referenced result tree URI",
+        )
+        for item in tree_files
+    }
+    if auxiliary_uris.intersection(referenced_tree_uris):
+        raise ValueError("publication latency auxiliary/referenced tree overlap")
+    if (
+        auxiliary_total_bytes + result_tree_total_bytes
+        > PUBLICATION_LATENCY_REMOTE_DIRECTORY_MAX_BYTES
+    ):
+        raise ValueError("publication latency result directory exceeds byte cap")
+    result_seal = tree_files[0]
+    for tree_file in tree_files:
+        _require_exact_keys(
+            tree_file,
+            {"byte_count", "role", "sha256", "uri"},
+            "publication latency referenced result tree file",
+        )
+        _safe_id(tree_file.get("role"), "latency result tree file role")
+        _required_sha256(tree_file, "sha256")
+        _databricks_volume_uri(tree_file.get("uri"), "latency result tree file URI")
+    if (
+        sum(
+            _positive_int(item.get("byte_count"), "latency tree file byte count")
+            for item in tree_files
+        )
+        != result_tree_total_bytes
+    ):
+        raise ValueError("publication latency result tree byte sum drift")
+    if (
+        result_seal.get("role") != "result_seal"
+        or result_seal.get("sha256") != receipt.get("result_file_sha256")
+        or result_seal.get("byte_count") != result_file_byte_count
+        or result_seal.get("uri")
+        != _databricks_volume_uri(
+            _required_string(_mapping(job, "output"), "result_uri"),
+            "latency collection result URI",
+        )
+        or result_file_byte_count > PUBLICATION_LATENCY_REMOTE_RESULT_MAX_BYTES
+        or result_tree_file_count > PUBLICATION_LATENCY_REMOTE_TREE_MAX_FILES
+        or result_tree_total_bytes > PUBLICATION_LATENCY_REMOTE_TREE_MAX_BYTES
+    ):
+        raise ValueError("publication latency result seal tree binding drift")
+    for result_file, tree_file in zip(
+        _mapping_sequence(result, "files"),
+        tree_files[1:],
+        strict=True,
+    ):
+        if (
+            result_file.get("role") != tree_file.get("role")
+            or result_file.get("sha256") != tree_file.get("sha256")
+            or _databricks_volume_uri(
+                _required_string(result_file, "uri"),
+                "latency collection referenced result URI",
+            )
+            != tree_file.get("uri")
+            or _positive_int(
+                tree_file.get("byte_count"),
+                "latency result tree file byte count",
+            )
+            > PUBLICATION_LATENCY_REMOTE_ARTIFACT_MAX_BYTES
+        ):
+            raise ValueError("publication latency referenced result tree drift")
 
 
 def _publication_latency_estimand_projection_design() -> list[dict[str, Any]]:
@@ -8298,6 +8315,94 @@ def aggregate_publication_latency_campaign(
         _required_string(item, "job_id"): item
         for item in _mapping_sequence(collection, "results")
     }
+    descriptive_cells, estimates = _publication_latency_estimation(
+        descriptors=descriptors,
+        result_by_job=result_by_job,
+        collection_sha256=authorization.collection_sha256,
+    )
+    summary: dict[str, Any] = {
+        "analysis": _publication_latency_summary_analysis(),
+        "campaign_id": _required_string(collection, "campaign_id"),
+        "closed_record_sha256": "",
+        "collection_sha256": authorization.collection_sha256,
+        "descriptive_cell_count": len(descriptive_cells),
+        "descriptive_cells": descriptive_cells,
+        "estimand_count": len(estimates),
+        "estimates": estimates,
+        "execution_plan_sha256": _required_sha256(
+            execution_plan_record, "closed_record_sha256"
+        ),
+        "record_type": PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
+        "schema_version": PUBLICATION_LATENCY_SCHEMA_VERSION,
+    }
+    summary["closed_record_sha256"] = _closed_record_sha256(summary)
+    validate_publication_latency_summary_record(
+        summary,
+        expected_collection_sha256=authorization.collection_sha256,
+        expected_execution_plan_sha256=_required_sha256(
+            execution_plan_record, "closed_record_sha256"
+        ),
+    )
+    return summary
+
+
+def validate_publication_latency_summary_record(
+    record: Mapping[str, Any],
+    *,
+    expected_collection_sha256: str,
+    expected_execution_plan_sha256: str,
+) -> None:
+    _require_exact_keys(
+        record,
+        {
+            "analysis",
+            "campaign_id",
+            "closed_record_sha256",
+            "collection_sha256",
+            "descriptive_cell_count",
+            "descriptive_cells",
+            "estimand_count",
+            "estimates",
+            "execution_plan_sha256",
+            "record_type",
+            "schema_version",
+        },
+        "publication latency summary",
+    )
+    if (
+        record.get("record_type") != PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE
+        or record.get("schema_version") != PUBLICATION_LATENCY_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+    ):
+        raise ValueError("publication latency summary envelope is invalid")
+    if record.get("collection_sha256") != _require_sha256_value(
+        expected_collection_sha256, "expected_collection_sha256"
+    ) or record.get("execution_plan_sha256") != _require_sha256_value(
+        expected_execution_plan_sha256, "expected_execution_plan_sha256"
+    ):
+        raise ValueError("publication latency summary source binding drift")
+    _validate_publication_latency_summary_tables(record)
+
+
+def _publication_latency_summary_analysis() -> dict[str, Any]:
+    return {
+        "bootstrap": "paired_crossed_deployment_block_and_example",
+        "bootstrap_draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
+        "confidence_intervals": "pointwise_95_percent",
+        "decision_mode": "estimation_only",
+        "null_hypothesis_rejections": False,
+        "post_hoc_significance_claims": False,
+        "descriptive_quantiles": "empirical_nearest_rank",
+        "storage_workload": "2_examples_per_dataset_x_32_repeats",
+    }
+
+
+def _publication_latency_estimation(
+    *,
+    descriptors: Mapping[str, Mapping[str, Any]],
+    result_by_job: Mapping[str, Mapping[str, Any]],
+    collection_sha256: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     estimand_specs: list[dict[str, Any]] = []
     for input_tokens in PUBLICATION_CAMPAIGN_CONTEXT_TOKENS:
         for concurrency in (1, 2, 4):
@@ -8370,7 +8475,7 @@ def aggregate_publication_latency_campaign(
             seed = int(
                 _canonical_sha256(
                     {
-                        "collection_sha256": authorization.collection_sha256,
+                        "collection_sha256": collection_sha256,
                         "domain": "cachet.publication_latency.bootstrap.v1",
                         "estimand_id": spec["estimand_id"],
                         "metric": metric_name,
@@ -8393,76 +8498,10 @@ def aggregate_publication_latency_campaign(
                 "metrics": metric_records,
             }
         )
-    summary: dict[str, Any] = {
-        "analysis": {
-            "bootstrap": "paired_crossed_deployment_block_and_example",
-            "bootstrap_draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
-            "confidence_intervals": "pointwise_95_percent",
-            "decision_mode": "estimation_only",
-            "null_hypothesis_rejections": False,
-            "post_hoc_significance_claims": False,
-            "descriptive_quantiles": "empirical_nearest_rank",
-            "storage_workload": "2_examples_per_dataset_x_32_repeats",
-        },
-        "campaign_id": _required_string(collection, "campaign_id"),
-        "closed_record_sha256": "",
-        "collection_sha256": authorization.collection_sha256,
-        "descriptive_cell_count": len(descriptive_cells),
-        "descriptive_cells": descriptive_cells,
-        "estimand_count": len(estimates),
-        "estimates": estimates,
-        "execution_plan_sha256": _required_sha256(
-            execution_plan_record, "closed_record_sha256"
-        ),
-        "record_type": PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
-        "schema_version": PUBLICATION_LATENCY_SCHEMA_VERSION,
-    }
-    summary["closed_record_sha256"] = _closed_record_sha256(summary)
-    validate_publication_latency_summary_record(
-        summary,
-        expected_collection_sha256=authorization.collection_sha256,
-        expected_execution_plan_sha256=_required_sha256(
-            execution_plan_record, "closed_record_sha256"
-        ),
-    )
-    return summary
+    return descriptive_cells, estimates
 
 
-def validate_publication_latency_summary_record(
-    record: Mapping[str, Any],
-    *,
-    expected_collection_sha256: str,
-    expected_execution_plan_sha256: str,
-) -> None:
-    _require_exact_keys(
-        record,
-        {
-            "analysis",
-            "campaign_id",
-            "closed_record_sha256",
-            "collection_sha256",
-            "descriptive_cell_count",
-            "descriptive_cells",
-            "estimand_count",
-            "estimates",
-            "execution_plan_sha256",
-            "record_type",
-            "schema_version",
-        },
-        "publication latency summary",
-    )
-    if (
-        record.get("record_type") != PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE
-        or record.get("schema_version") != PUBLICATION_LATENCY_SCHEMA_VERSION
-        or record.get("closed_record_sha256") != _closed_record_sha256(record)
-    ):
-        raise ValueError("publication latency summary envelope is invalid")
-    if record.get("collection_sha256") != _require_sha256_value(
-        expected_collection_sha256, "expected_collection_sha256"
-    ) or record.get("execution_plan_sha256") != _require_sha256_value(
-        expected_execution_plan_sha256, "expected_execution_plan_sha256"
-    ):
-        raise ValueError("publication latency summary source binding drift")
+def _validate_publication_latency_summary_tables(record: Mapping[str, Any]) -> None:
     estimates = _mapping_sequence(record, "estimates")
     if record.get("estimand_count") != 13 or len(estimates) != 13:
         raise ValueError("publication latency summary must contain 13 estimands")
@@ -8488,16 +8527,7 @@ def validate_publication_latency_summary_record(
     ):
         raise ValueError("publication latency descriptive-cell order drift")
     analysis = _mapping(record, "analysis")
-    if analysis != {
-        "bootstrap": "paired_crossed_deployment_block_and_example",
-        "bootstrap_draws": PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
-        "confidence_intervals": "pointwise_95_percent",
-        "decision_mode": "estimation_only",
-        "null_hypothesis_rejections": False,
-        "post_hoc_significance_claims": False,
-        "descriptive_quantiles": "empirical_nearest_rank",
-        "storage_workload": "2_examples_per_dataset_x_32_repeats",
-    }:
+    if analysis != _publication_latency_summary_analysis():
         raise ValueError("publication latency summary inference policy drift")
     _validate_publication_latency_estimate_records(estimates)
 
