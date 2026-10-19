@@ -602,6 +602,7 @@ EXPECTED_PUBLIC_SUBMODULES = frozenset(
     'representative_handoff_artifacts',
     'publication_handoff_closure_coordinator',
     'publication_inputs',
+    'publication_l4_handoff_regeneration',
     'publication_latency_handoff_generation',
     'publication_latency_execution',
     'release_bundle',

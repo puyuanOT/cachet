@@ -141,7 +141,10 @@ return as a production dependency.
   requires logical/token/layout/size equivalence and does not compare L4 and
   L40S raw artifact digests. Every Q8 artifact must contain exactly 73,728 raw
   bytes per cache-prefix token. L40S is the sole publication handoff generator
-  and must independently pass the 35-token/GPU-second throughput gate.
+  and must independently pass the 35-token/GPU-second throughput gate. A lost
+  bundle may be rebuilt on L4 only through
+  `publication_l4_handoff_regeneration.py`, and serving labels it
+  L4-regenerated.
 - `gpu_qualification_databricks_v2.py` renders and executes the isolated v2
   bootstrap contract without reinterpreting retained v1 records.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
@@ -225,6 +228,12 @@ return as a production dependency.
 - `publication_handoff_closure_coordinator.py` verifies Q8/BF16 handoff trees
   on governed CPU jobs and returns bounded, replayable closure records without
   mirroring durable KV payloads to the controller.
+- `publication_l4_handoff_regeneration.py` regenerates one lost Q8 or BF16
+  publication handoff bundle on single-GPU L4 producers with the same pinned
+  pre-RoPE generator and locked runtime, reproduces the original 16-worker
+  layout, compares every regenerated file with a surviving L40S staging
+  attestation or bundle manifest, and seals the tree with the coordinator's
+  bundle manifest builder under a separate regeneration root.
 - `publication_latency_handoff_generation.py` token-balances all 384 latency
   generation identities across 16 independent one-GPU persistent producers,
   hash-verifies their shared-durable outputs, closes content-addressed Q8
