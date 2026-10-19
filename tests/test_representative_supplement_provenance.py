@@ -74,10 +74,10 @@ def test_successor_scope_roundtrip_uses_exact_native_and_resource_identities(mon
     provenance = parsed.benchmark_manifest_provenance
     assert provenance["measurement_scopes"] == ("latency", "resource")
     packages = provenance["package_revisions"]
-    assert len(packages) == 201  # 197 native distributions +4 software identity entries.
+    assert len(packages) == 203  # 199 native distributions +4 software identity entries.
     assert packages["torch"] == "2.13.0+cu129"
-    assert packages["vllm"] == "0.27.1+cu129"
-    assert packages["flashinfer-python"] == "0.6.16.post3"
+    assert packages["vllm"] == "0.30.0+cu129"
+    assert packages["flashinfer-python"] == "0.6.18.post1"
     assert "fastapi" in packages and "fastapi[standard]" not in packages
     assert _resource_software_identity_from_package_revisions(packages) == {
         "source_revision": parsed.representative_handoff_source.bindings.source_commit,
@@ -284,7 +284,7 @@ def mocked_qualification_process(config, calls, *, mutation=None):
 def test_runner_stages_then_qualifies_before_starting_each_serving_arm(tmp_path, monkeypatch, index):
     config, datasets = prepared_supplement(tmp_path, monkeypatch, index)
     calls = []
-    monkeypatch.setattr(runner, "create_venv", lambda *args: None)
+    monkeypatch.setattr(runner, "create_venv", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "install_native_v2_runtime", lambda *args: {})
     monkeypatch.setattr(runner, "verify_vllm_runtime_patch_closure", lambda *args: {})
     monkeypatch.setattr(runner, "installed_versions", lambda *args: {})

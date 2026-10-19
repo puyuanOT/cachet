@@ -136,7 +136,7 @@ def _request_case(*, action="producer_ready", wave_index=0, phase_lease_root=Non
     role = "producer" if action == "producer_ready" else "consumer"
     package_wheel_sha256 = _digest("package-wheel")
     patched_wheel_sha256 = remote.full_score.VLLM_PATCHED_WHEEL_SHA256
-    patched_flashinfer_sha256 = remote.full_score.FLASHINFER_PATCHED_WHEEL_SHA256
+    patched_flashinfer_sha256 = remote.full_score.FLASHINFER_RUNTIME_WHEEL_SHA256
     runtime_closure_sha256 = remote.full_score.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
     runner_sha256 = remote.full_score.FULL_SCORE_RUNNER_SHA256
     qualification_runner_sha256 = _digest("qualification-runner")

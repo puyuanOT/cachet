@@ -365,7 +365,7 @@ def _is_patched_vllm_spec(package: str) -> bool:
     decoded_package = urllib.parse.unquote(package)
     return (
         _pip_package_name(package) == "vllm"
-        and "vllm-0.27.1+cu129-1cachete5m2" in decoded_package
+        and "vllm-0.30.0+cu129-1cachete5m2" in decoded_package
         and "#sha256=" in package
     )
 

@@ -23,14 +23,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import unquote, urlsplit
 
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PACKAGE_VERSION,
-    FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-    FLASHINFER_TARGET_MEMBER,
-    FLASHINFER_TARGET_PATCHED_SHA256,
-)
+from document_kv_cache.flashinfer_wheel_repack import FLASHINFER_TARGET_MEMBER
 from document_kv_cache.gpu_qualification import canonical_gpu_qualification_json
 import document_kv_cache.gpu_qualification as qualification_v1
 from document_kv_cache.gpu_qualification_v2 import (
@@ -57,6 +50,9 @@ from document_kv_cache._isolated_runtime import (
     isolated_runtime_pip_check_command,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_MEMBER_SHA256,
+    FLASHINFER_RUNTIME_VERSION,
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
@@ -752,6 +748,70 @@ def _run_bounded_binary_subprocess(
     )
 
 
+_BNB_PLUGIN_LOCK_STANZA = (
+    b"vllm-bnb-plugin==0.0.3 \\\n"
+    b"    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c \\\n"
+    b"    --hash=sha256:e884654a25a8b2a15f41644e0be28b811a176ffbe31a58a9ccc22aefc6525c7c\n"
+    b"    # via -r src/document_kv_cache/runtime_locks/"
+    b"vllm-0.30.0-cu129-py311-manylinux_2_35.in\n"
+    b"    # from https://pypi.org/simple\n"
+)
+_BNB_PLUGIN_REQUIREMENTS = (
+    b"vllm-bnb-plugin==0.0.3 \\\n"
+    b"    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c\n"
+)
+
+
+def _base_lock_requirements_for_install(
+    runtime_lock: Path,
+    work_dir: Path,
+) -> tuple[Path, bool]:
+    """Install the pinned lock without letting the plugin pull unpinned vLLM.
+
+    ``vllm-bnb-plugin`` depends on ``vllm``, and the patched vLLM wheel is
+    installed by the following direct step.  Under ``--require-hashes`` that
+    dependency is unpinned, so the plugin stanza is removed from the lock
+    install and installed afterwards with ``--no-deps``.
+    """
+
+    raw = runtime_lock.read_bytes()
+    count = raw.count(_BNB_PLUGIN_LOCK_STANZA)
+    if count == 0:
+        return runtime_lock, False
+    if count != 1:
+        raise RuntimeError("v2 runtime lock bitsandbytes plugin stanza is not unique")
+    filtered = raw.replace(_BNB_PLUGIN_LOCK_STANZA, b"", 1)
+    if b"vllm-bnb-plugin==" in filtered:
+        raise RuntimeError(
+            "v2 runtime lock still requires vllm-bnb-plugin after stanza removal"
+        )
+    destination = work_dir / "runtime-lock-without-vllm-bnb-plugin.txt"
+    plugin_requirements = work_dir / "vllm-bnb-plugin-requirements.txt"
+    _exclusive_write(destination, filtered)
+    _exclusive_write(plugin_requirements, _BNB_PLUGIN_REQUIREMENTS)
+    return destination, True
+
+
+def _exclusive_write(path: Path, payload: bytes) -> None:
+    if path.exists() or path.is_symlink():
+        raise RuntimeError(f"v2 install requirements path already exists: {path.name}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if type(nofollow) is int:
+        flags |= nofollow
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("v2 install requirements write did not advance")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def run_gpu_qualification_sentinel_v2(
     *,
     plan_record: Mapping[str, Any],
@@ -759,7 +819,7 @@ def run_gpu_qualification_sentinel_v2(
     artifact_paths: Mapping[str, Path],
     work_dir: Path,
 ) -> Mapping[str, Any]:
-    """Install the exact four-step runtime and run the bounded GPU worker."""
+    """Install the locked runtime and run the bounded GPU worker."""
 
     if tuple(artifact_paths) != GPU_QUALIFICATION_V2_ARTIFACT_KEYS:
         raise ValueError("v2 sentinel artifacts lack canonical eight-role coverage")
@@ -814,7 +874,11 @@ def run_gpu_qualification_sentinel_v2(
     vllm_uri = patched_vllm.resolve(strict=True).as_uri()
     flashinfer_uri = patched_flashinfer.resolve(strict=True).as_uri()
     package_uri = package_wheel.resolve(strict=True).as_uri()
-    commands = (
+    base_lock_requirements, install_bnb_plugin = _base_lock_requirements_for_install(
+        runtime_lock,
+        work_dir,
+    )
+    commands = [
         (
             "base_lock",
             (
@@ -822,7 +886,7 @@ def run_gpu_qualification_sentinel_v2(
                 "--only-binary",
                 ":all:",
                 "-r",
-                str(runtime_lock),
+                str(base_lock_requirements),
             ),
         ),
         (
@@ -832,28 +896,44 @@ def run_gpu_qualification_sentinel_v2(
                 f"vllm @ {vllm_uri}#sha256={pins.patched_vllm_wheel_sha256}",
             ),
         ),
-        (
-            "flashinfer",
+    ]
+    if install_bnb_plugin:
+        commands.append(
             (
-                "--no-deps",
-                "flashinfer-python @ "
-                f"{flashinfer_uri}#sha256={pins.patched_flashinfer_wheel_sha256}",
-            ),
-        ),
+                "bnb_plugin",
+                (
+                    "--no-deps",
+                    "--require-hashes",
+                    "--only-binary",
+                    ":all:",
+                    "-r",
+                    str(work_dir / "vllm-bnb-plugin-requirements.txt"),
+                ),
+            )
+        )
+    commands.extend(
         (
-            "cachet",
             (
-                "--no-deps",
-                f"cachet-kv @ {package_uri}#sha256={pins.package_wheel_sha256}",
+                "flashinfer",
+                (
+                    "--no-deps",
+                    "flashinfer-python @ "
+                    f"{flashinfer_uri}#sha256={pins.patched_flashinfer_wheel_sha256}",
+                ),
             ),
-        ),
+            (
+                "cachet",
+                (
+                    "--no-deps",
+                    f"cachet-kv @ {package_uri}#sha256={pins.package_wheel_sha256}",
+                ),
+            ),
+        )
     )
-    if tuple(label for label, _arguments in commands) != (
-        "base_lock",
-        "vllm",
-        "flashinfer",
-        "cachet",
-    ):
+    expected_labels = ["base_lock", "vllm", "flashinfer", "cachet"]
+    if install_bnb_plugin:
+        expected_labels.insert(2, "bnb_plugin")
+    if [label for label, _arguments in commands] != expected_labels:
         raise RuntimeError("v2 runtime install order differs")
     for _label, arguments in commands:
         subprocess.run(
@@ -1264,7 +1344,7 @@ def _verify_locked_runtime_v2_package_installation(
         raise RuntimeError("v2 installed distribution count differs")
     if installed.get("vllm") != [VLLM_PACKAGE_VERSION]:
         raise RuntimeError("v2 installed vLLM version differs")
-    if installed.get("flashinfer-python") != [FLASHINFER_PACKAGE_VERSION]:
+    if installed.get("flashinfer-python") != [FLASHINFER_RUNTIME_VERSION]:
         raise RuntimeError("v2 installed FlashInfer version differs")
     cachet_versions = installed.get("cachet-kv")
     if cachet_versions != [GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION]:
@@ -1284,7 +1364,7 @@ def _verify_locked_runtime_v2_package_installation(
     flashinfer_direct_url = _validate_direct_url(
         distributions["flashinfer-python"],
         expected_uri=flashinfer_uri,
-        expected_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        expected_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
     )
     enter_stage("package_origin")
     _validate_direct_url(
@@ -1297,12 +1377,12 @@ def _verify_locked_runtime_v2_package_installation(
     enter_stage("flashinfer_members")
     flashinfer_members = _installed_member_hashes(
         distributions["flashinfer-python"],
-        {FLASHINFER_TARGET_MEMBER: FLASHINFER_TARGET_PATCHED_SHA256},
+        {FLASHINFER_TARGET_MEMBER: FLASHINFER_RUNTIME_MEMBER_SHA256},
     )
     if flashinfer_members[FLASHINFER_TARGET_MEMBER] != (
-        FLASHINFER_TARGET_PATCHED_SHA256
+        FLASHINFER_RUNTIME_MEMBER_SHA256
     ):
-        raise RuntimeError("v2 installed FlashInfer patched member differs")
+        raise RuntimeError("v2 installed FlashInfer member differs")
     enter_stage("flashinfer_import")
     module = importlib.import_module("flashinfer.comm.fd_exchange")
     module_file = getattr(module, "__file__", None)
@@ -1321,7 +1401,7 @@ def _verify_locked_runtime_v2_package_installation(
         ) from exc
     if (
         observed_module_file != reviewed_module_file
-        or _file_sha256(observed_module_file) != FLASHINFER_TARGET_PATCHED_SHA256
+        or _file_sha256(observed_module_file) != FLASHINFER_RUNTIME_MEMBER_SHA256
     ):
         raise RuntimeError("v2 imported FlashInfer module origin differs")
     function = getattr(module, "_fd_ancillary", None)
@@ -1349,16 +1429,12 @@ def _verify_locked_runtime_v2_package_installation(
         "flashinfer_annotation": GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION,
         "flashinfer_direct_url": flashinfer_direct_url,
         "flashinfer_import_ok": True,
-        "closure_bound_flashinfer_manifest_closed_record_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
-        ),
-        "closure_bound_flashinfer_manifest_file_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
-        ),
+        "closure_bound_flashinfer_manifest_closed_record_sha256": None,
+        "closure_bound_flashinfer_manifest_file_sha256": None,
         "closure_bound_vllm_manifest_file_sha256": VLLM_PATCHED_MANIFEST_SHA256,
         "flashinfer_member_sha256": flashinfer_members[FLASHINFER_TARGET_MEMBER],
-        "flashinfer_package_version": FLASHINFER_PACKAGE_VERSION,
-        "flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "flashinfer_package_version": FLASHINFER_RUNTIME_VERSION,
+        "flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
         "installed_distribution_count": len(installed),
         "ok": True,
         "packaged_base_lock_sha256": packaged_lock_sha256,

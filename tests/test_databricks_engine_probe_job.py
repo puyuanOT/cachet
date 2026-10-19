@@ -72,7 +72,7 @@ CUSTOM_SGLANG_EXTENSION_WHEEL_URI = (
 )
 VLLM_PATCHED_WHEEL_SHA256 = "c" * 64
 VLLM_PATCHED_WHEEL_URI = (
-    "https://artifacts.example/vllm-0.27.1+cu129-"
+    "https://artifacts.example/vllm-0.30.0+cu129-"
     "1cachete5m2cccccccccccccccc-cp38-abi3-manylinux_2_28_x86_64.whl"
 )
 VLLM_RUNTIME_PACKAGE = (

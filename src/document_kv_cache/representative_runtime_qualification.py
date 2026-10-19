@@ -206,7 +206,7 @@ def _validate_runtime(runtime: object) -> None:
         not isinstance(runtime["python"], str)
         or not runtime["python"].startswith("3.11.")
         or runtime["torch"] != "2.13.0+cu129"
-        or runtime["vllm"] != "0.27.1+cu129"
+        or runtime["vllm"] != "0.30.0+cu129"
         or runtime["triton"] != "3.7.1"
         or runtime["cuda"] != "12.9"
         or runtime["device_type"] != "cuda"

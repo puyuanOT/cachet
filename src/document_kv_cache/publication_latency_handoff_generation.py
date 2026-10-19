@@ -21,6 +21,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from collections import Counter
@@ -124,14 +125,13 @@ from document_kv_cache.gpu_qualification import (
     validate_gpu_qualification_evidence_record,
 )
 from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
     GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
     GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_SCHEMA_VERSION,
     GPUQualificationArtifactPinsV2,
     validate_gpu_qualification_evidence_v2_record,
     validate_gpu_qualification_plan_v2_record,
-)
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
@@ -159,6 +159,7 @@ from document_kv_cache.serving_env import (
     VIRTUALENV_BOOTSTRAP_VERSION,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
@@ -850,9 +851,66 @@ def _bootstrap(argv: list[str]) -> None:
         + os.pathsep
         + pip_environment.get("PATH", "")
     )
+    def _bnb_plugin_install_paths(runtime_lock_path, work_dir):
+        continuation = chr(92)
+        newline = chr(10)
+        stanza = newline.join((
+            "vllm-bnb-plugin==0.0.3 " + continuation,
+            "    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c " + continuation,
+            "    --hash=sha256:e884654a25a8b2a15f41644e0be28b811a176ffbe31a58a9ccc22aefc6525c7c",
+            "    # via -r src/document_kv_cache/runtime_locks/vllm-0.30.0-cu129-py311-manylinux_2_35.in",
+            "    # from https://pypi.org/simple",
+        )) + newline
+        plugin_requirements_text = newline.join((
+            "vllm-bnb-plugin==0.0.3 " + continuation,
+            "    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c",
+        )) + newline
+        with open(runtime_lock_path, "rb") as handle:
+            raw = handle.read()
+        encoded_stanza = stanza.encode("ascii")
+        count = raw.count(encoded_stanza)
+        if count == 0:
+            return runtime_lock_path, None
+        if count != 1:
+            raise RuntimeError("runtime lock bitsandbytes plugin stanza is not unique")
+        filtered = raw.replace(encoded_stanza, b"", 1)
+        if b"vllm-bnb-plugin==" in filtered:
+            raise RuntimeError(
+                "runtime lock still requires vllm-bnb-plugin after stanza removal"
+            )
+        lock_path = os.path.join(work_dir, "runtime-lock-without-vllm-bnb-plugin.txt")
+        plugin_path = os.path.join(work_dir, "vllm-bnb-plugin-requirements.txt")
+        for path, payload in (
+            (lock_path, filtered),
+            (plugin_path, plugin_requirements_text.encode("ascii")),
+        ):
+            if os.path.lexists(path):
+                raise FileExistsError(
+                    "refusing to reuse install requirements: " + os.path.basename(path)
+                )
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                view = payload
+                while view:
+                    written = os.write(descriptor, view)
+                    if written <= 0:
+                        raise OSError("install requirements write did not advance")
+                    view = view[written:]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        return lock_path, plugin_path
+
     pip = [venv_python, "-m", "pip"]
+    base_lock, plugin_requirements = _bnb_plugin_install_paths(
+        runtime_lock, os.path.dirname(venv_dir)
+    )
     subprocess.check_call(
-        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", runtime_lock],
+        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", base_lock],
         env=pip_environment,
     )
     subprocess.check_call(
@@ -866,6 +924,20 @@ def _bootstrap(argv: list[str]) -> None:
         ],
         env=pip_environment,
     )
+    if plugin_requirements is not None:
+        subprocess.check_call(
+            [
+                *pip,
+                "install",
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                plugin_requirements,
+            ],
+            env=pip_environment,
+        )
     subprocess.check_call(
         [
             *pip,
@@ -1275,7 +1347,7 @@ class DatabricksPublicationLatencyHandoffJobConfig:
         expected_runtime_artifacts = {
             "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
             "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
             "runtime_closure_manifest_sha256": (RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
         }
         for field_name, expected in expected_runtime_artifacts.items():
@@ -3372,13 +3444,23 @@ def _read_q8_stable_regular_file_at(
     )
     try:
         before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_nlink not in allowed_nlinks
-            or before.st_uid != os.getuid()
-            or (require_mode_0600 and stat.S_IMODE(before.st_mode) != 0o600)
+        # Durable UC volume files are authenticated by their closed SHA-256.
+        # The mount does not preserve the writer UID or a meaningful link count.
+        # Private evidence mirrors still require the current user, mode 0600,
+        # and the allowed link count.
+        if not stat.S_ISREG(before.st_mode) or (
+            require_mode_0600
+            and (
+                before.st_nlink not in allowed_nlinks
+                or before.st_uid != os.getuid()
+                or stat.S_IMODE(before.st_mode) != 0o600
+            )
         ):
-            raise ValueError("Q8 mirrored evidence must be a single-link regular file")
+            raise ValueError(
+                "Q8 mirrored evidence must be a single-link regular file "
+                f"(mode={oct(stat.S_IMODE(before.st_mode))}, "
+                f"nlink={before.st_nlink}, uid={before.st_uid})"
+            )
         with os.fdopen(os.dup(descriptor), "rb") as handle:
             content = handle.read(16 * 1024 * 1024 + 1)
         if len(content) > 16 * 1024 * 1024:
@@ -4143,6 +4225,7 @@ def read_publication_latency_handoff_databricks_attestation(
     *,
     durable_output_root: str | Path,
     local_evidence_mirror_root: str | Path | None = None,
+    require_current_artifact_authority: bool = True,
 ) -> dict[str, Any]:
     """Re-authenticate an attestation and its exact worker-result file join."""
 
@@ -4199,11 +4282,18 @@ def read_publication_latency_handoff_databricks_attestation(
         require_mode_0600=local_evidence_mirror_root is not None,
         mirror_root=root if local_evidence_mirror_root is not None else None,
     )
-    result = _read_worker_result(result_path, _content=result_content)
+    result = _read_worker_result(
+        result_path,
+        _content=result_content,
+        require_current_artifact_authority=require_current_artifact_authority,
+    )
     if record.get("schema_version") == (
         PUBLICATION_LATENCY_HANDOFF_DATABRICKS_ATTESTATION_SCHEMA_VERSION
     ):
-        _require_v2_worker_result_envelope(result)
+        _require_v2_worker_result_envelope(
+            result,
+            require_current_artifact_authority=require_current_artifact_authority,
+        )
     if result.get("worker_index") != binding.worker_index:
         raise ValueError("Databricks attestation worker-result identity drift")
     if result.get("closed_record_sha256") != worker_binding.get(
@@ -5678,11 +5768,18 @@ def publication_latency_generator_hardware_qualification_v2_record(
     return record
 
 
-def _validate_hardware_qualification_record(record: Mapping[str, Any]) -> None:
+def _validate_hardware_qualification_record(
+    record: Mapping[str, Any],
+    *,
+    require_current_artifact_authority: bool = True,
+) -> None:
     if record.get("record_type") is None and record.get("schema_version") is None:
         _validate_hardware_qualification_record_v1(record)
         return
-    _require_v2_hardware_qualification_record(record)
+    _require_v2_hardware_qualification_record(
+        record,
+        require_current_artifact_authority=require_current_artifact_authority,
+    )
 
 
 def _validate_hardware_qualification_record_v1(record: Mapping[str, Any]) -> None:
@@ -5710,7 +5807,58 @@ def _validate_hardware_qualification_record_v1(record: Mapping[str, Any]) -> Non
     )
 
 
-def _require_v2_hardware_qualification_record(record: Mapping[str, Any]) -> None:
+def _historical_v2_artifact_pin_digests(
+    record: Mapping[str, Any],
+) -> dict[str, str]:
+    """Parse sealed generator pins without requiring the current serving wheels."""
+
+    _require_exact_mapping_keys(
+        record,
+        set(GPU_QUALIFICATION_V2_ARTIFACT_KEYS),
+        label="historical native-v2 GPU qualification artifact pins",
+    )
+    return {
+        field_name: _require_sha256(
+            _required_string(record, field_name),
+            field_name=field_name,
+        )
+        for field_name in GPU_QUALIFICATION_V2_ARTIFACT_KEYS
+    }
+
+
+def _require_historical_v2_hardware_qualification_record(
+    record: Mapping[str, Any],
+) -> None:
+    pins = _historical_v2_artifact_pin_digests(
+        _required_mapping(record, "expected_artifact_pins")
+    )
+    if hmac.compare_digest(
+        pins["runner_sha256"],
+        PUBLICATION_LATENCY_HANDOFF_RUNNER_SHA256,
+    ):
+        raise ValueError("qualification runner and Q8 handoff runner must be distinct")
+    plan = _required_mapping(record, "plan_record")
+    if plan.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE:
+        raise ValueError("Q8 binding requires a native-v2 qualification plan")
+    if plan.get("schema_version") != GPU_QUALIFICATION_V2_SCHEMA_VERSION:
+        raise ValueError("Q8 binding requires a native-v2 qualification plan schema")
+    if plan.get("closed_record_sha256") != record.get("plan_closed_record_sha256"):
+        raise ValueError("Q8 qualification plan record closure binding drift")
+    plan_pins = _historical_v2_artifact_pin_digests(
+        _required_mapping(
+            _required_mapping(plan, "runtime_contract"),
+            "artifact_sha256",
+        )
+    )
+    if plan_pins != pins:
+        raise ValueError("historical Q8 qualification plan artifact pins differ")
+
+
+def _require_v2_hardware_qualification_record(
+    record: Mapping[str, Any],
+    *,
+    require_current_artifact_authority: bool = True,
+) -> None:
     _require_exact_mapping_keys(
         record,
         {
@@ -5740,6 +5888,9 @@ def _require_v2_hardware_qualification_record(record: Mapping[str, Any]) -> None
     ):
         raise ValueError("native-v2 GPU qualification binding schema is invalid")
     _validate_hardware_qualification_record_common(record)
+    if not require_current_artifact_authority:
+        _require_historical_v2_hardware_qualification_record(record)
+        return
     pins = _gpu_qualification_artifact_pins_v2_from_record(
         _required_mapping(record, "expected_artifact_pins")
     )
@@ -6641,10 +6792,54 @@ def gpu_qualification_artifact_pins_v2_from_record(
     )
 
 
+def _verify_historical_generator_qualification_files(
+    binding: Mapping[str, Any],
+    *,
+    evidence: Mapping[str, Any],
+    plan: Mapping[str, Any],
+) -> None:
+    """Bind a sealed generator qualification without rebuilding today's plan."""
+
+    if binding.get("record_type") is None:
+        raise ValueError(
+            "historical Q8 serving reuse requires a native-v2 qualification binding"
+        )
+    if evidence.get("record_type") != GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE:
+        raise ValueError("Q8 launch requires native-v2 qualification evidence")
+    if evidence.get("schema_version") != GPU_QUALIFICATION_V2_SCHEMA_VERSION:
+        raise ValueError("historical GPU qualification evidence schema is invalid")
+    if evidence.get("qualification_status") != "passed":
+        raise ValueError("historical GPU qualification evidence must declare passed")
+    if plan.get("record_type") != GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE:
+        raise ValueError("Q8 launch requires a native-v2 qualification plan")
+    if dict(plan) != dict(_required_mapping(binding, "plan_record")):
+        raise ValueError("bound native-v2 qualification plan bytes drift")
+    if evidence.get("plan_sha256") != plan.get("closed_record_sha256"):
+        raise ValueError("historical GPU qualification evidence plan binding drift")
+    if evidence.get("campaign_id") != binding.get("expected_campaign_id"):
+        raise ValueError("historical GPU qualification evidence campaign drift")
+    pins = _historical_v2_artifact_pin_digests(
+        _required_mapping(binding, "expected_artifact_pins")
+    )
+    plan_pins = _historical_v2_artifact_pin_digests(
+        _required_mapping(
+            _required_mapping(plan, "runtime_contract"),
+            "artifact_sha256",
+        )
+    )
+    if plan_pins != pins:
+        raise ValueError("historical Q8 qualification plan artifact pins differ")
+
+
 def _verify_bound_hardware_qualification_file(
     binding: Mapping[str, Any],
+    *,
+    require_current_artifact_authority: bool = True,
 ) -> None:
-    _validate_hardware_qualification_record(binding)
+    _validate_hardware_qualification_record(
+        binding,
+        require_current_artifact_authority=require_current_artifact_authority,
+    )
     evidence = _read_bound_gpu_qualification_json(
         _required_string(binding, "evidence_uri"),
         file_sha256=_required_string(binding, "evidence_file_sha256"),
@@ -6663,6 +6858,13 @@ def _verify_bound_hardware_qualification_file(
         ),
         field_name="GPU qualification plan",
     )
+    if not require_current_artifact_authority:
+        _verify_historical_generator_qualification_files(
+            binding,
+            evidence=evidence,
+            plan=plan,
+        )
+        return
     if binding.get("record_type") is None:
         selection = validate_gpu_qualification_evidence_record(
             evidence,
@@ -6782,7 +6984,7 @@ def _verify_installed_vllm_bitsandbytes_loader_source(
     config: PublicationLatencyHandoffExecutionConfig,
 ) -> None:
     module = importlib.import_module(
-        "vllm.model_executor.model_loader.bitsandbytes_loader"
+        "vllm_bnb_plugin.bitsandbytes_loader"
     )
     source = getattr(module, "__file__", None)
     if not isinstance(source, str) or not source:
@@ -6867,7 +7069,12 @@ def _worker_bundle_file_records(
     return records
 
 
-def _read_worker_result(path: Path, *, _content: bytes | None = None) -> dict[str, Any]:
+def _read_worker_result(
+    path: Path,
+    *,
+    _content: bytes | None = None,
+    require_current_artifact_authority: bool = True,
+) -> dict[str, Any]:
     if _content is None:
         content = _read_q8_stable_regular_file(path, require_mode_0600=False)
     else:
@@ -6914,15 +7121,25 @@ def _read_worker_result(path: Path, *, _content: bytes | None = None) -> dict[st
         _required_mapping(record, "generator_hardware"),
         "qualification",
     )
-    _validate_hardware_qualification_record(qualification)
+    _validate_hardware_qualification_record(
+        qualification,
+        require_current_artifact_authority=require_current_artifact_authority,
+    )
     if version[1] == PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_SCHEMA_VERSION:
-        _require_v2_hardware_qualification_record(qualification)
+        _require_v2_hardware_qualification_record(
+            qualification,
+            require_current_artifact_authority=require_current_artifact_authority,
+        )
     elif qualification.get("record_type") is not None:
         raise ValueError("legacy worker result cannot contain a v2 qualification")
     return record
 
 
-def _require_v2_worker_result_envelope(record: Mapping[str, Any]) -> None:
+def _require_v2_worker_result_envelope(
+    record: Mapping[str, Any],
+    *,
+    require_current_artifact_authority: bool = True,
+) -> None:
     if (
         record.get("record_type")
         != PUBLICATION_LATENCY_HANDOFF_WORKER_RESULT_RECORD_TYPE
@@ -6934,7 +7151,8 @@ def _require_v2_worker_result_envelope(record: Mapping[str, Any]) -> None:
         _required_mapping(
             _required_mapping(record, "generator_hardware"),
             "qualification",
-        )
+        ),
+        require_current_artifact_authority=require_current_artifact_authority,
     )
 
 
@@ -7677,6 +7895,7 @@ def validate_publication_latency_handoff_generation_execution_record(
                     ),
                 ),
                 durable_output_root=root,
+                require_current_artifact_authority=False,
             )
             if version[1] == PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION:
                 _require_v2_databricks_attestation_record(attestation)
@@ -7720,9 +7939,15 @@ def validate_publication_latency_handoff_generation_execution_record(
                 field_name="distributed worker result",
             )
             expected_result_paths.add(result_path)
-            worker_result = _read_worker_result(result_path)
+            worker_result = _read_worker_result(
+                result_path,
+                require_current_artifact_authority=False,
+            )
             if version[1] == PUBLICATION_LATENCY_HANDOFF_EXECUTION_SCHEMA_VERSION:
-                _require_v2_worker_result_envelope(worker_result)
+                _require_v2_worker_result_envelope(
+                    worker_result,
+                    require_current_artifact_authority=False,
+                )
             if worker_result.get("worker_index") != index:
                 raise ValueError("distributed worker result identity is invalid")
             if worker_result.get("closed_record_sha256") != worker_summary.get(
@@ -7768,7 +7993,10 @@ def validate_publication_latency_handoff_generation_execution_record(
                 raise ValueError("distributed worker billed duration is invalid")
             worker_hardware = _required_mapping(worker_result, "generator_hardware")
             qualification = _required_mapping(worker_hardware, "qualification")
-            _validate_hardware_qualification_record(qualification)
+            _validate_hardware_qualification_record(
+                qualification,
+                require_current_artifact_authority=False,
+            )
             qualification_records.append(qualification)
             if qualification.get("evidence_closed_record_sha256") != (
                 qualification_closure
@@ -7814,7 +8042,10 @@ def validate_publication_latency_handoff_generation_execution_record(
             raise ValueError("distributed worker-results tree is incomplete")
         if len({_canonical_sha256(item) for item in qualification_records}) != 1:
             raise ValueError("distributed workers used different qualification records")
-        _verify_bound_hardware_qualification_file(qualification_records[0])
+        _verify_bound_hardware_qualification_file(
+            qualification_records[0],
+            require_current_artifact_authority=False,
+        )
         recorded_hardware_hashes = hardware_summary.get(
             "observed_hardware_identity_sha256"
         )
@@ -9475,6 +9706,14 @@ def _closed_record_sha256(record: Mapping[str, Any]) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one hash-bound production producer payload."""
 
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in {
+        "run-l4-regeneration-shard",
+        "close-l4-regeneration",
+    }:
+        from document_kv_cache import publication_l4_handoff_regeneration
+
+        return publication_l4_handoff_regeneration.main(arguments)
     parser = argparse.ArgumentParser(
         description="Execute one publication latency handoff producer."
     )

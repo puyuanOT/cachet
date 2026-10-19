@@ -23,15 +23,6 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksLedgerPrefix,
     databricks_ledger_prefix_from_record,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PACKAGE_VERSION,
-    FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_SIZE,
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-    FLASHINFER_PATCHED_WHEEL_SIZE,
-    FLASHINFER_TARGET_PATCHED_SHA256,
-)
 import document_kv_cache.gpu_qualification as qualification_v1
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
@@ -42,6 +33,10 @@ from document_kv_cache.gpu_qualification import (
     canonical_gpu_qualification_json,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_MEMBER_SHA256,
+    FLASHINFER_RUNTIME_VERSION,
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
+    FLASHINFER_RUNTIME_WHEEL_SIZE,
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
@@ -109,9 +104,9 @@ GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS: Final = (
     "ruff",
     "mypy",
 )
-GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT: Final = 198
-GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT: Final = 196
-GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT: Final = 197
+GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT: Final = 200
+GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT: Final = 198
+GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT: Final = 199
 GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION: Final = (
     "tuple[tuple[int, int, array.array[int]]]"
 )
@@ -245,10 +240,10 @@ _TERMINAL_RECEIPT_KEYS: Final = frozenset(
 _VLLM_PATCH_MEMBER_SHA256: Final = MappingProxyType(
     {
         "vllm/model_executor/layers/attention/attention.py": (
-            "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839"
+            "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce"
         ),
         "vllm/v1/attention/backends/triton_attn.py": (
-            "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390"
+            "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a"
         ),
         "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py": (
             "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08"
@@ -269,15 +264,13 @@ _GPU_QUALIFICATION_V2_RUNTIME_CLOSURE_TEMPLATE = {
         "with_vllm": GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT,
     },
     "flashinfer": {
-        "manifest_closed_record_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
-        ),
-        "manifest_file_bytes": FLASHINFER_PATCHED_MANIFEST_SIZE,
-        "manifest_file_sha256": FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
-        "patched_member_sha256": FLASHINFER_TARGET_PATCHED_SHA256,
-        "version": FLASHINFER_PACKAGE_VERSION,
-        "wheel_bytes": FLASHINFER_PATCHED_WHEEL_SIZE,
-        "wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "manifest_closed_record_sha256": None,
+        "manifest_file_bytes": 0,
+        "manifest_file_sha256": None,
+        "patched_member_sha256": FLASHINFER_RUNTIME_MEMBER_SHA256,
+        "version": FLASHINFER_RUNTIME_VERSION,
+        "wheel_bytes": FLASHINFER_RUNTIME_WHEEL_SIZE,
+        "wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
     },
     "install_order": [
         "runtime_lock_sha256",
@@ -394,7 +387,7 @@ class GPUQualificationArtifactPinsV2:
             _require_sha256(getattr(self, field_name), field_name)
         fixed = {
             "input_bundle_sha256": GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
-            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
             "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
             "runtime_closure_manifest_sha256": (RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
             "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
@@ -1380,15 +1373,15 @@ def _validate_locked_runtime_v2_package_installation_fields(
         "flashinfer_annotation": GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION,
         "flashinfer_import_ok": True,
         "closure_bound_flashinfer_manifest_closed_record_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
+            None
         ),
         "closure_bound_flashinfer_manifest_file_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
+            None
         ),
         "closure_bound_vllm_manifest_file_sha256": VLLM_PATCHED_MANIFEST_SHA256,
-        "flashinfer_member_sha256": FLASHINFER_TARGET_PATCHED_SHA256,
-        "flashinfer_package_version": FLASHINFER_PACKAGE_VERSION,
-        "flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "flashinfer_member_sha256": FLASHINFER_RUNTIME_MEMBER_SHA256,
+        "flashinfer_package_version": FLASHINFER_RUNTIME_VERSION,
+        "flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
         "installed_distribution_count": (
             GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT
         ),

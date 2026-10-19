@@ -1523,18 +1523,14 @@ def _native_v2_runtime_attestation(*, vllm_uri, flashinfer_uri):
         ),
         "flashinfer_direct_url": flashinfer_uri,
         "flashinfer_import_ok": True,
-        "closure_bound_flashinfer_manifest_closed_record_sha256": (
-            qualification_v2.FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
-        ),
-        "closure_bound_flashinfer_manifest_file_sha256": (
-            qualification_v2.FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
-        ),
+        "closure_bound_flashinfer_manifest_closed_record_sha256": None,
+        "closure_bound_flashinfer_manifest_file_sha256": None,
         "closure_bound_vllm_manifest_file_sha256": (
             qualification_v2.VLLM_PATCHED_MANIFEST_SHA256
         ),
-        "flashinfer_member_sha256": (qualification_v2.FLASHINFER_TARGET_PATCHED_SHA256),
-        "flashinfer_package_version": qualification_v2.FLASHINFER_PACKAGE_VERSION,
-        "flashinfer_wheel_sha256": qualification_v2.FLASHINFER_PATCHED_WHEEL_SHA256,
+        "flashinfer_member_sha256": (qualification_v2.FLASHINFER_RUNTIME_MEMBER_SHA256),
+        "flashinfer_package_version": qualification_v2.FLASHINFER_RUNTIME_VERSION,
+        "flashinfer_wheel_sha256": qualification_v2.FLASHINFER_RUNTIME_WHEEL_SHA256,
         "installed_distribution_count": (
             qualification_v2.GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT
         ),
@@ -1585,7 +1581,7 @@ def _native_v2_job_record(*, method_id="baseline_prefill"):
         "runner": execution.PUBLICATION_LATENCY_RUNNER_SHA256,
         "package_wheel": "a" * 64,
         "patched_vllm_wheel": execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        "patched_flashinfer_wheel": execution.FLASHINFER_PATCHED_WHEEL_SHA256,
+        "patched_flashinfer_wheel": execution.FLASHINFER_RUNTIME_WHEEL_SHA256,
         "runtime_closure_manifest": (execution.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
         "runtime_lock": execution.VLLM_RUNTIME_BASE_LOCK_SHA256,
     }
@@ -1819,7 +1815,7 @@ def _source_closure_records():
                 "patched_vllm_wheel": (
                     execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256
                 ),
-                "patched_flashinfer_wheel": (execution.FLASHINFER_PATCHED_WHEEL_SHA256),
+                "patched_flashinfer_wheel": (execution.FLASHINFER_RUNTIME_WHEEL_SHA256),
                 "runtime_closure_manifest": (
                     execution.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
                 ),
@@ -1853,7 +1849,7 @@ def _source_closure_records():
         patched_flashinfer_wheel_uri=final_artifacts.file(
             "patched_flashinfer_wheel"
         ).uri,
-        patched_flashinfer_wheel_sha256=(execution.FLASHINFER_PATCHED_WHEEL_SHA256),
+        patched_flashinfer_wheel_sha256=(execution.FLASHINFER_RUNTIME_WHEEL_SHA256),
         runtime_closure_manifest_uri=final_artifacts.file(
             "runtime_closure_manifest"
         ).uri,
@@ -1953,7 +1949,7 @@ def _source_closure_records():
             ),
             "package_wheel_sha256": digest,
             "patched_flashinfer_wheel_sha256": (
-                execution.FLASHINFER_PATCHED_WHEEL_SHA256
+                execution.FLASHINFER_RUNTIME_WHEEL_SHA256
             ),
             "patched_vllm_wheel_sha256": (
                 execution.GPU_QUALIFICATION_PATCHED_WHEEL_SHA256

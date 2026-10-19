@@ -62,8 +62,8 @@ from document_kv_cache.publication_inputs import (
     build_full_score_shard_plan,
     load_full_score_inventory,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
+from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
@@ -267,22 +267,18 @@ def _runtime_attestation():
         ),
         "flashinfer_direct_url": "file:///dbfs/runtime/patched-flashinfer.whl",
         "flashinfer_import_ok": True,
-        "closure_bound_flashinfer_manifest_closed_record_sha256": (
-            flashinfer_wheel_repack.FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
-        ),
-        "closure_bound_flashinfer_manifest_file_sha256": (
-            flashinfer_wheel_repack.FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
-        ),
+        "closure_bound_flashinfer_manifest_closed_record_sha256": None,
+        "closure_bound_flashinfer_manifest_file_sha256": None,
         "closure_bound_vllm_manifest_file_sha256": (
             runtime_artifact_closure.VLLM_PATCHED_MANIFEST_SHA256
         ),
         "flashinfer_member_sha256": (
-            flashinfer_wheel_repack.FLASHINFER_TARGET_PATCHED_SHA256
+            runtime_artifact_closure.FLASHINFER_RUNTIME_MEMBER_SHA256
         ),
         "flashinfer_package_version": (
-            flashinfer_wheel_repack.FLASHINFER_PACKAGE_VERSION
+            runtime_artifact_closure.FLASHINFER_RUNTIME_VERSION
         ),
-        "flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
         "installed_distribution_count": (
             gpu_qualification_v2.GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT
         ),
@@ -321,7 +317,7 @@ def _runtime_verification():
     artifacts = {
         "package_wheel_sha256": package_sha256,
         "package_wheel_uri": "dbfs:/runtime/cachet.whl",
-        "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
         "patched_flashinfer_wheel_uri": "dbfs:/runtime/patched-flashinfer.whl",
         "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
         "patched_vllm_wheel_uri": "dbfs:/runtime/patched-vllm.whl",
@@ -482,7 +478,7 @@ def campaign(tmp_path, monkeypatch):
     pins = GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=patched_sha,
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256=package_sha,
         cachet_source_tree_sha256=_digest("source-tree"),
@@ -510,7 +506,7 @@ def campaign(tmp_path, monkeypatch):
         patched_vllm_wheel_uri="dbfs:/runtime/patched-vllm.whl",
         patched_vllm_wheel_sha256=patched_sha,
         patched_flashinfer_wheel_uri="dbfs:/runtime/patched-flashinfer.whl",
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_uri="dbfs:/runtime/closure.json",
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         vllm_wheel_install_spec=(
@@ -518,7 +514,7 @@ def campaign(tmp_path, monkeypatch):
         ),
         flashinfer_wheel_install_spec=(
             "flashinfer-python @ file:///dbfs/runtime/patched-flashinfer.whl"
-            f"#sha256={FLASHINFER_PATCHED_WHEEL_SHA256}"
+            f"#sha256={FLASHINFER_RUNTIME_WHEEL_SHA256}"
         ),
         kv_transfer_config={
             "kv_connector": "DocumentKVConnector",
@@ -5805,9 +5801,12 @@ def test_bootstrap_builds_and_launches_only_the_locked_runtime(monkeypatch):
     assert '"--require-hashes"' in script
     assert '"--only-binary"' in script
     assert '"--extra-index-url"' not in script
-    assert script.count('"--no-deps"') == 3
+    assert script.count('"--no-deps"') == 4
     assert script.index('"--require-hashes"') < script.index('"--no-deps", vllm_spec')
     assert script.index('"--no-deps", vllm_spec') < script.index(
+        "plugin_requirements,"
+    )
+    assert script.index("plugin_requirements,") < script.index(
         '"--no-deps", flashinfer_spec'
     )
     assert script.index('"--no-deps", flashinfer_spec') < script.index(

@@ -95,10 +95,6 @@ from document_kv_cache.model_profiles import (
     QWEN3_4B_ROPE_THETA,
     layout_for_model,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PACKAGE_VERSION,
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-)
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache import representative_handoff_artifacts as representative_artifacts
 from document_kv_cache.representative_handoff_artifacts import (
@@ -129,6 +125,8 @@ from document_kv_cache.runtime_telemetry import (
 )
 from document_kv_cache.runtime_artifact_closure import (
     _lock_projection,
+    FLASHINFER_RUNTIME_VERSION,
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_PATCHED_WHEEL_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
@@ -200,7 +198,7 @@ from vllm_kv_injection.vllm_dynamic_connector import (
     NoOpDocumentKVProvider,
 )
 from document_kv_cache.vllm_wheel_repack import (
-    VLLM_0271_E5M2_PATCH_CLOSURE as _APPROVED_VLLM_0271_E5M2_PATCH_CLOSURE,
+    VLLM_0300_E5M2_PATCH_CLOSURE as _APPROVED_VLLM_E5M2_PATCH_CLOSURE,
     validate_patched_vllm_member_bytes,
 )
 
@@ -234,7 +232,7 @@ VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
 PROMPT_TOKEN_PROBE_ADD_SPECIAL_TOKENS = False
 
 # Keep the runtime verifier and wheel builder on one authoritative closure.
-_VLLM_0271_E5M2_PATCH_CLOSURE = _APPROVED_VLLM_0271_E5M2_PATCH_CLOSURE
+_VLLM_E5M2_PATCH_CLOSURE = _APPROVED_VLLM_E5M2_PATCH_CLOSURE
 
 
 class _MultiTurnConversation(TypedDict):
@@ -578,7 +576,7 @@ class VLLMNativeRuntimeBundleV2:
         fixed = {
             "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
             "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
-            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
             "runtime_closure_manifest_sha256": (
                 RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
             ),
@@ -636,9 +634,9 @@ class VLLMNativeRuntimeBundleV2:
         if sha256(content).hexdigest() != self.runtime_lock_sha256:
             raise ValueError("packaged native base lock SHA-256 differs")
         versions, _hashes = _lock_projection(content)
-        if len(versions) != 195 or "vllm" in versions or "flashinfer-python" in versions:
+        if len(versions) != 197 or "vllm" in versions or "flashinfer-python" in versions:
             raise ValueError("native base distribution membership differs")
-        return {**versions, "vllm": VLLM_PACKAGE_VERSION, "flashinfer-python": FLASHINFER_PACKAGE_VERSION}
+        return {**versions, "vllm": VLLM_PACKAGE_VERSION, "flashinfer-python": FLASHINFER_RUNTIME_VERSION}
 
 
 @dataclass(frozen=True)
@@ -855,7 +853,7 @@ class VLLMSmokeBenchmarkConfig:
                 MULTI_KV_CONNECTOR_MODE,
             }:
                 raise ValueError(
-                    "vLLM 0.27.1 canary/publication runs do not support "
+                    "vLLM 0.30.0 canary/publication runs do not support "
                     f"kv_connector_mode={self.kv_connector_mode!r}: LMCache and "
                     "Multi are explicitly N/A until they have a separate "
                     "content-addressed, hash-locked runtime closure"
@@ -864,7 +862,7 @@ class VLLMSmokeBenchmarkConfig:
                 object.__setattr__(self, "attention_backend", "TRITON_ATTN")
             elif self.attention_backend != "TRITON_ATTN":
                 raise ValueError(
-                    "vLLM 0.27.1 canary/publication runs require "
+                    "vLLM 0.30.0 canary/publication runs require "
                     "attention_backend='TRITON_ATTN' for the campaign sentinel "
                     "and measurement matrix"
                 )
@@ -1860,7 +1858,10 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     metadata["kv_connector_mode"] = config.kv_connector_mode
     write_json(config.metadata_path, metadata)
 
-    create_venv(config.venv_dir)
+    create_venv(
+        config.venv_dir,
+        copies=config.native_runtime_v2 is not None,
+    )
     if config.native_runtime_v2 is None:
         install_vllm(config.venv_python)
         install_document_kv_package(
@@ -1984,11 +1985,6 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     finally:
         terminate_process(server)
         runtime_telemetry.stop()
-        if config.benchmark_output_path.exists():
-            bind_runtime_resource_evidence_record_file(
-                config.benchmark_output_path,
-                config.runtime_telemetry_path,
-            )
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
         copy_file_if_exists(
             config.connector_telemetry_path, config.connector_telemetry_copy_path
@@ -1996,6 +1992,11 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         copy_file_if_exists(
             config.runtime_telemetry_path, config.runtime_telemetry_copy_path
         )
+        if config.benchmark_output_path.exists():
+            bind_runtime_resource_evidence_record_file(
+                config.benchmark_output_path,
+                config.runtime_telemetry_path,
+            )
 
 
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
@@ -5163,6 +5164,16 @@ def _pip_subprocess_environment(
 def install_vllm(python_executable: Path) -> None:
     validate_vllm_runtime_lock_platform()
     runtime_lock = vllm_runtime_lock_path()
+    from document_kv_cache._gpu_qualification_sentinels_v2 import (
+        _base_lock_requirements_for_install,
+    )
+
+    work_dir = python_executable.resolve().parent.parent
+    work_dir.mkdir(parents=True, exist_ok=True)
+    base_lock, install_plugin = _base_lock_requirements_for_install(
+        runtime_lock,
+        work_dir,
+    )
     pip_environment = _pip_subprocess_environment()
     run(
         [
@@ -5174,7 +5185,7 @@ def install_vllm(python_executable: Path) -> None:
             "--only-binary",
             ":all:",
             "--requirement",
-            str(runtime_lock),
+            str(base_lock),
         ],
         env=pip_environment,
     )
@@ -5189,6 +5200,22 @@ def install_vllm(python_executable: Path) -> None:
         ],
         env=pip_environment,
     )
+    if install_plugin:
+        run(
+            [
+                str(python_executable),
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "--requirement",
+                str(work_dir / "vllm-bnb-plugin-requirements.txt"),
+            ],
+            env=pip_environment,
+        )
 
 
 _NATIVE_RUNTIME_V2_ARTIFACT_NAMES = (
@@ -5331,6 +5358,15 @@ def _run_native_v2_final_runtime_verifier(
 ) -> dict[str, Any]:
     verifier_environment = dict(environment)
     verifier_environment.update(gpu_runtime_warning_environment_overrides())
+    from document_kv_cache._gpu_qualification_sentinels_v2 import (
+        _SYSTEM_CUDA_PARENT_ATTESTATION_ENV,
+        _capture_system_cuda_parent_attestation,
+    )
+    from document_kv_cache.gpu_qualification import canonical_gpu_qualification_json
+
+    verifier_environment[_SYSTEM_CUDA_PARENT_ATTESTATION_ENV] = (
+        canonical_gpu_qualification_json(_capture_system_cuda_parent_attestation())
+    )
     vllm_uri = paths["patched_vllm_wheel"].as_uri()
     flashinfer_uri = paths["patched_flashinfer_wheel"].as_uri()
     package_uri = paths["package_wheel"].as_uri()
@@ -5397,6 +5433,15 @@ def install_native_v2_runtime(
     if bundle is None:
         raise ValueError("native_runtime_v2 is required")
     paths, opening_snapshot = _native_runtime_v2_artifact_snapshot(bundle)
+    from document_kv_cache._gpu_qualification_sentinels_v2 import (
+        _base_lock_requirements_for_install,
+    )
+
+    install_root = config.venv_dir.resolve()
+    base_lock, install_plugin = _base_lock_requirements_for_install(
+        paths["runtime_lock"],
+        install_root,
+    )
     environment = _pip_subprocess_environment()
     environment.update(gpu_runtime_warning_environment_overrides())
     environment["PYTHONSAFEPATH"] = "1"
@@ -5410,7 +5455,7 @@ def install_native_v2_runtime(
             "--only-binary",
             ":all:",
             "--requirement",
-            str(paths["runtime_lock"]),
+            str(base_lock),
         ],
         [
             str(config.venv_python),
@@ -5424,6 +5469,24 @@ def install_native_v2_runtime(
                 bundle.patched_vllm_wheel_sha256,
             ),
         ],
+    ]
+    if install_plugin:
+        commands.append(
+            [
+                str(config.venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "--requirement",
+                str(install_root / "vllm-bnb-plugin-requirements.txt"),
+            ]
+        )
+    commands.extend(
+        [
         [
             str(config.venv_python),
             "-m",
@@ -5448,7 +5511,8 @@ def install_native_v2_runtime(
                 bundle.package_wheel_sha256,
             ),
         ],
-    ]
+        ]
+    )
     for command in commands:
         print("+", " ".join(command), flush=True)
         subprocess.run(
@@ -5497,7 +5561,7 @@ def install_document_kv_package(python_executable: Path, install_spec: str) -> N
 def verify_vllm_runtime_patch_closure(
     config: VLLMSmokeBenchmarkConfig,
 ) -> list[dict[str, object]]:
-    """Read-only preflight for the prepatched vLLM 0.27.1 cu129 runtime."""
+    """Read-only preflight for the prepatched vLLM 0.30.0 cu129 runtime."""
 
     observed_version = installed_package_version(config.venv_python, "vllm")
     if observed_version != VLLM_PACKAGE_VERSION:
@@ -5507,7 +5571,7 @@ def verify_vllm_runtime_patch_closure(
         )
 
     records: list[dict[str, object]] = []
-    for patch in _VLLM_0271_E5M2_PATCH_CLOSURE:
+    for patch in _VLLM_E5M2_PATCH_CLOSURE:
         relative_path = Path(str(patch["relative_path"]))
         candidates = [
             site_packages / relative_path
@@ -5523,7 +5587,7 @@ def verify_vllm_runtime_patch_closure(
         digest = validate_patched_vllm_member_bytes(
             relative_path.as_posix(),
             raw,
-            patch_closure=_VLLM_0271_E5M2_PATCH_CLOSURE,
+            patch_closure=_VLLM_E5M2_PATCH_CLOSURE,
         )
         records.append(
             {
@@ -5732,11 +5796,6 @@ def write_smoke_datasets(local_dir: Path) -> dict[str, Path]:
     return paths
 
 
-_PUBLICATION_STORAGE_HANDOFF_OVERLAY_FIELDS = frozenset(
-    {"arm_kv_transfer_params", "kv_transfer_params"}
-)
-
-
 def prepare_publication_latency_inputs(
     config: VLLMSmokeBenchmarkConfig,
     dataset_paths: dict[str, Path],
@@ -5943,6 +6002,12 @@ def _publication_latency_schedule_runner_path(
                 "concurrent materialized publication latency schedule differs"
             ) from None
     return path
+
+
+
+_PUBLICATION_STORAGE_HANDOFF_OVERLAY_FIELDS = frozenset(
+    {"arm_kv_transfer_params", "kv_transfer_params"}
+)
 
 
 def _publication_schedule_workload_id(schedule: Mapping[str, Any]) -> str | None:
@@ -6392,6 +6457,10 @@ def build_vllm_server_args(
         args.extend(["--kv-cache-dtype", config.kv_cache_dtype])
     if config.attention_backend is not None:
         args.extend(["--attention-backend", config.attention_backend])
+    # The sealed 0.27.1 publication wrapper appended this flag. vLLM 0.30.0
+    # otherwise compiles and captures CUDA graphs for bitsandbytes.
+    if "--enforce-eager" not in args:
+        args.append("--enforce-eager")
     return args
 
 

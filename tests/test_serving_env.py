@@ -20,6 +20,7 @@ from document_kv_cache.serving_env import (
     FLASHINFER_PYTHON_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
     HUMMING_KERNELS_CONSTRAINT,
+    INSTANTTENSOR_CONSTRAINT,
     NVIDIA_CUTLASS_DSL_CONSTRAINT,
     NVIDIA_CUDNN_FRONTEND_CONSTRAINT,
     NVTX_CONSTRAINT,
@@ -90,7 +91,7 @@ def test_vllm_runtime_lock_is_packaged_hashed_and_excludes_vllm(monkeypatch):
     assert lock_path.name == VLLM_RUNTIME_LOCK_FILENAME
     assert sha256(lock_bytes).hexdigest() == VLLM_RUNTIME_LOCK_SHA256
     assert VLLM_RUNTIME_LOCK_SHA256 == (
-        "71c2c3e344ebdf1d8996adf2127a519328b6bad78a4eb7134c73e2a3f6115c44"
+        "8b6f8618fff84070d44b35a2d6a54d5fc5831ecd8c375b5cbe9d847aeb3fae5d"
     )
     index_lines = tuple(
         f"{line}\n"
@@ -119,8 +120,9 @@ def test_vllm_runtime_lock_is_packaged_hashed_and_excludes_vllm(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="index header differs"):
         augment_vllm_runtime_lock_indexes(headerless)
-    assert len(requirement_lines) == VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT == 196
-    assert not any(line.startswith("vllm") for line in requirement_lines)
+    assert len(requirement_lines) == VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT == 198
+    assert not any(line.startswith("vllm==") for line in requirement_lines)
+    assert any(line.startswith("vllm-bnb-plugin==") for line in requirement_lines)
     assert "pip==26.2.1 \\" in lock_text
     assert "setuptools==80.9.0 \\" in lock_text
     assert "wheel==0.48.0 \\" in lock_text
@@ -207,7 +209,7 @@ def test_installed_vllm_runtime_lock_verifies_versions_and_direct_url(monkeypatc
     ]
     digest = "d" * 64
     wheel_uri = (
-        "https://artifacts.example/vllm-0.27.1%2Bcu129-"
+        "https://artifacts.example/vllm-0.30.0%2Bcu129-"
         "1cachete5m2dddddddddddddddd-cp38-abi3-manylinux_2_28_x86_64.whl"
     )
     vllm_distribution = FakeDistribution(
@@ -235,7 +237,7 @@ def test_installed_vllm_runtime_lock_verifies_versions_and_direct_url(monkeypatc
 
     assert record == {
         "runtime_lock_sha256": VLLM_RUNTIME_LOCK_SHA256,
-        "locked_distribution_count": 196,
+        "locked_distribution_count": 198,
         "vllm_package_version": VLLM_PACKAGE_VERSION,
         "vllm_direct_url": wheel_uri,
         "vllm_wheel_sha256": digest,
@@ -260,8 +262,8 @@ def test_serving_environment_profiles_are_backend_scoped_and_exactly_pinned():
 
     assert vllm_profile.backend == ServingBackend.VLLM
     assert vllm_profile.engine_package == "vllm"
-    assert VLLM_VERSION == "0.27.1"
-    assert vllm_profile.engine_version == "0.27.1+cu129"
+    assert VLLM_VERSION == "0.30.0"
+    assert vllm_profile.engine_version == "0.30.0+cu129"
     assert vllm_profile.dependency_constraints == VLLM_DEPENDENCY_CONSTRAINTS
     assert VLLM_DEPENDENCY_CONSTRAINTS == (
         f"vllm=={VLLM_PACKAGE_VERSION}",
@@ -280,6 +282,7 @@ def test_serving_environment_profiles_are_backend_scoped_and_exactly_pinned():
         NVIDIA_CUDNN_FRONTEND_CONSTRAINT,
         NVTX_CONSTRAINT,
         FASTSAFETENSORS_CONSTRAINT,
+        INSTANTTENSOR_CONSTRAINT,
         NVIDIA_CUTLASS_DSL_CONSTRAINT,
         QUACK_KERNELS_CONSTRAINT,
         TOKENSPEED_MLA_CONSTRAINT,
@@ -298,7 +301,7 @@ def test_serving_environment_profiles_are_backend_scoped_and_exactly_pinned():
     assert VLLM_CUDA_VERSION == "12.9"
     assert VLLM_CUDA_VARIANT == "cu129"
     assert VLLM_CUDA_REQUIREMENTS_SHA256 == (
-        "30091f418325ea9f97bc546cb03eb1a35e1cc20b2500b522b3dabd3b1aaee241"
+        "9393effcd139d93e343195924c455efd97bd914053d4f68365c0467e5dba1272"
     )
     assert VLLM_PACKAGE_INDEX_URLS == (
         VLLM_PYTORCH_INDEX_URL,
@@ -321,6 +324,7 @@ def test_serving_environment_profiles_are_backend_scoped_and_exactly_pinned():
         NVIDIA_CUDNN_FRONTEND_CONSTRAINT,
         NVTX_CONSTRAINT,
         FASTSAFETENSORS_CONSTRAINT,
+        INSTANTTENSOR_CONSTRAINT,
         NVIDIA_CUTLASS_DSL_CONSTRAINT,
         QUACK_KERNELS_CONSTRAINT,
         TOKENSPEED_MLA_CONSTRAINT,
@@ -332,14 +336,14 @@ def test_serving_environment_profiles_are_backend_scoped_and_exactly_pinned():
     assert "[cu12]" in HUMMING_KERNELS_CONSTRAINT
     assert "[cu13]" not in NVIDIA_CUTLASS_DSL_CONSTRAINT
     assert VLLM_DOCKERFILE_SHA256 == (
-        "9876efaec74111cad4ce074225740fafa9461166973d1837dc0d4cd23c2f2509"
+        "fde129b8d5072fae409147b81b85a7f3283c10669d7071d01d0251a2c927b926"
     )
     assert VLLM_WHEEL_FILENAME == (
-        "vllm-0.27.1+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
+        "vllm-0.30.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
     )
     assert VLLM_WHEEL_URL.endswith(VLLM_WHEEL_FILENAME.replace("+", "%2B"))
     assert VLLM_WHEEL_SHA256 == (
-        "bf0d52faa2a51e7a01c6856a7a8a2d1307fd0ff711415d34168a67ffac0fa47b"
+        "e98cb69659bfcfc849cf11ce0781a7161d40b02b51a6c3636924a5909f2aabcc"
     )
     assert VLLM_WHEEL_INSTALL_SPEC == (
         f"vllm @ {VLLM_WHEEL_URL}#sha256={VLLM_WHEEL_SHA256}"

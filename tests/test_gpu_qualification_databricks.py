@@ -7741,6 +7741,21 @@ def _install_weight_quantizer_fakes(
         "version",
         lambda name: "0.49.2" if name == "bitsandbytes" else "unexpected",
     )
+    plugin_root = tmp_path / "site-packages"
+    loader = plugin_root / "vllm_bnb_plugin" / "bitsandbytes_loader.py"
+    loader.parent.mkdir(parents=True)
+    loader.write_bytes(b"# reviewed vllm-bnb-plugin loader\n")
+    plugin = types.SimpleNamespace(locate_file=lambda member: plugin_root / member)
+    monkeypatch.setattr(
+        sentinel_worker.importlib.metadata,
+        "distribution",
+        lambda name: plugin if name == "vllm-bnb-plugin" else None,
+    )
+    monkeypatch.setattr(
+        sentinel_worker,
+        "GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256",
+        hashlib.sha256(loader.read_bytes()).hexdigest(),
+    )
     return selected_path, native_library
 
 

@@ -19,8 +19,8 @@ import document_kv_cache.publication_inputs as full_score_inputs
 import document_kv_cache.publication_freeze as freeze_v1
 import document_kv_cache.publication_freeze_v2 as freeze_v2
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
+from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
 )
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
@@ -80,7 +80,7 @@ def _pins() -> GPUQualificationArtifactPinsV2:
     return GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=VLLM_PATCHED_WHEEL_SHA256,
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256=_digest("v2-package-wheel"),
         cachet_source_tree_sha256=_digest("v2-source-closure"),

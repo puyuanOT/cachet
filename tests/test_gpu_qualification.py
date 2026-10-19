@@ -80,9 +80,9 @@ PINS = GPUQualificationArtifactPins(
 )
 CORE_VERSIONS = {
     "bitsandbytes": "0.49.2",
-    "flashinfer-cubin": "0.6.16.post3",
-    "flashinfer-jit-cache": "0.6.16.post3+cu129",
-    "flashinfer-python": "0.6.16.post3",
+    "flashinfer-cubin": "0.6.18.post1",
+    "flashinfer-jit-cache": "0.6.18.post1+cu129",
+    "flashinfer-python": "0.6.18.post1",
     "torch": "2.13.0+cu129",
     "torchaudio": "2.11.0+cu129",
     "torchcodec": "0.16.0+cu129",
@@ -91,10 +91,10 @@ CORE_VERSIONS = {
 }
 PATCH_MEMBERS = {
     "vllm/model_executor/layers/attention/attention.py": (
-        "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839"
+        "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce"
     ),
     "vllm/v1/attention/backends/triton_attn.py": (
-        "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390"
+        "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a"
     ),
     "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py": (
         "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08"

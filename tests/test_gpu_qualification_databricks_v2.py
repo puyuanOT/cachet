@@ -14,13 +14,6 @@ import pytest
 import document_kv_cache._gpu_qualification_sentinels_v2 as sentinels_v2
 import document_kv_cache.gpu_qualification_databricks as databricks_v1
 import document_kv_cache.gpu_qualification_databricks_v2 as databricks_v2
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PACKAGE_VERSION,
-    FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-    FLASHINFER_TARGET_PATCHED_SHA256,
-)
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
     GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
@@ -47,6 +40,9 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_MEMBER_SHA256,
+    FLASHINFER_RUNTIME_VERSION,
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_PATCHED_MANIFEST_SHA256,
@@ -78,7 +74,7 @@ def _pins() -> GPUQualificationArtifactPinsV2:
     return GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256="a" * 64,
         cachet_source_tree_sha256="b" * 64,
@@ -110,24 +106,20 @@ def _artifact_uris() -> dict[str, str]:
 
 def _attestation() -> dict[str, Any]:
     return {
-        "base_lock_distribution_count": 195,
-        "base_lock_hash_count": 4137,
+        "base_lock_distribution_count": 197,
+        "base_lock_hash_count": 4236,
         "base_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
         "cachet_package_version": "0.2.0",
         "flashinfer_annotation": GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION,
         "flashinfer_direct_url": "file:///runtime/flashinfer.whl",
         "flashinfer_import_ok": True,
-        "closure_bound_flashinfer_manifest_closed_record_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
-        ),
-        "closure_bound_flashinfer_manifest_file_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
-        ),
+        "closure_bound_flashinfer_manifest_closed_record_sha256": None,
+        "closure_bound_flashinfer_manifest_file_sha256": None,
         "closure_bound_vllm_manifest_file_sha256": VLLM_PATCHED_MANIFEST_SHA256,
-        "flashinfer_member_sha256": FLASHINFER_TARGET_PATCHED_SHA256,
-        "flashinfer_package_version": FLASHINFER_PACKAGE_VERSION,
-        "flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
-        "installed_distribution_count": 198,
+        "flashinfer_member_sha256": FLASHINFER_RUNTIME_MEMBER_SHA256,
+        "flashinfer_package_version": FLASHINFER_RUNTIME_VERSION,
+        "flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
+        "installed_distribution_count": 200,
         "ok": True,
         "packaged_base_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
         "pip_check_ok": True,
@@ -145,13 +137,13 @@ def _attestation() -> dict[str, Any]:
             )
         ),
         "unexpected_distributions": [],
-        "vllm_direct_url": "file:///runtime/vllm-0.27.1%2Bcu129.whl",
+        "vllm_direct_url": "file:///runtime/vllm-0.30.0%2Bcu129.whl",
         "vllm_member_sha256": {
             "vllm/model_executor/layers/attention/attention.py": (
-                "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839"
+                "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce"
             ),
             "vllm/v1/attention/backends/triton_attn.py": (
-                "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390"
+                "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a"
             ),
             "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py": (
                 "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08"
@@ -159,8 +151,8 @@ def _attestation() -> dict[str, Any]:
         },
         "vllm_package_version": GPU_QUALIFICATION_VLLM_VERSION,
         "vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        "with_flashinfer_distribution_count": 196,
-        "with_vllm_distribution_count": 197,
+        "with_flashinfer_distribution_count": 198,
+        "with_vllm_distribution_count": 199,
     }
 
 
@@ -175,21 +167,21 @@ def _payloads() -> tuple[dict[str, Any], ...]:
 
 def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256 == (
-        "322606772efcfc5209bd4c7426f5f05605f7c0fd5ff5ea541128b0a36eb93493"
+        "ab487e5e54fa469f8527ac55c1a6fce758aa6039e04eec6431a74131222643fb"
     )
-    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 25315
+    assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 27403
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "b392cb9a468e6c6bb484f4b3276a64e322cfae0761c732cca539f6ec0bff91f7"
+        "c52a6cde14bf8cea84452c0863ff329e39bba7c7cdff66d4a41f6039de896792"
     )
-    assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 17307
+    assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 17180
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 116097
+    assert len(payload_bytes) == 114529
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "c948f9484f4724fa907e895d2ff3ef16b0732479d81ac71444abf6d98f40e67f"
+        "a9c3b0b2fd01dfd2f3994d87b9fd42a73e1e6e9924ed0e8f7eb0a7fec9c74e73"
     )
 
 
@@ -223,8 +215,8 @@ def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom()
             == (_artifact_uris()["runner_sha256"])
         )
         assert "spark_env_vars" not in task["new_cluster"]
-    assert min(sizes) == 7208
-    assert max(sizes) == 7280
+    assert min(sizes) == 7096
+    assert max(sizes) == 7168
     assert (
         max(sizes) < databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
     )
@@ -235,7 +227,7 @@ def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom()
     production_pins = GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256=production_hash("production-package"),
         cachet_source_tree_sha256=production_hash("production-source"),
@@ -274,13 +266,12 @@ def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom()
         "patched_flashinfer_wheel_sha256": (
             f"{production_base}/inputs/flashinfer-wheel/"
             f"{production_pins.patched_flashinfer_wheel_sha256}/"
-            "flashinfer_python-0.6.16.post3-1cachetpy31104e032c70234e876-"
-            "py3-none-any.whl"
+            "flashinfer_python-0.6.18.post1-py3-none-any.whl"
         ),
         "patched_vllm_wheel_sha256": (
             f"{production_base}/inputs/vllm-wheel/"
             f"{production_pins.patched_vllm_wheel_sha256}/"
-            "vllm-0.27.1+cu129-1cachete5m265120c48a9352b9e-cp38-abi3-"
+            "vllm-0.30.0+cu129-1cachete5m207efe2f8245ff6c1-cp38-abi3-"
             "manylinux_2_28_x86_64.whl"
         ),
         "runner_sha256": (
@@ -291,12 +282,12 @@ def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom()
         "runtime_closure_manifest_sha256": (
             f"{production_base}/inputs/runtime-closure/"
             f"{production_pins.runtime_closure_manifest_sha256}/"
-            "vllm-0.27.1-flashinfer-0.6.16.post3-runtime-closure.json"
+            "vllm-0.30.0-flashinfer-0.6.18.post1-runtime-closure.json"
         ),
         "runtime_lock_sha256": (
             f"{production_base}/inputs/runtime-lock/"
             f"{production_pins.runtime_lock_sha256}/"
-            "vllm-0.27.1-cu129-py311-manylinux_2_35-flashinfer-direct.lock"
+            "vllm-0.30.0-cu129-py311-manylinux_2_35-flashinfer-direct.lock"
         ),
     }
     production_output_root = (
@@ -321,8 +312,8 @@ def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom()
         )
         for payload in production_payloads
     ]
-    assert min(production_sizes) == 8765
-    assert max(production_sizes) == 8837
+    assert min(production_sizes) == 8628
+    assert max(production_sizes) == 8700
     assert max(production_sizes) <= (
         databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES - 600
     )
@@ -504,7 +495,7 @@ def _bootstrap_case(
     pins = GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256=digest["package_wheel_sha256"],
         cachet_source_tree_sha256=digest["cachet_source_tree_sha256"],
@@ -544,7 +535,7 @@ def _bootstrap_case(
         artifact_uris={key: path.as_uri() for key, path in paths.items()},
     )
     reviewed_fixed = {
-        "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
         "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
         "runtime_closure_manifest_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
@@ -1452,7 +1443,7 @@ def test_v2_runtime_lock_and_closure_parsers_accept_tracked_authority() -> None:
     assert hash_count == VLLM_RUNTIME_BASE_LOCK_HASH_COUNT
     assert "flashinfer-python" not in versions
     closure_path = (
-        Path(__file__).parents[1] / "tests/fixtures/vllm_0271_runtime_closure.json"
+        Path(__file__).parents[1] / "tests/fixtures/vllm_0300_runtime_closure.json"
     )
     closure = sentinels_v2._read_exact_runtime_closure(closure_path)
     assert closure["closed_record_sha256"] == (

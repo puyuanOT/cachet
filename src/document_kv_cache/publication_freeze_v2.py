@@ -25,15 +25,6 @@ from document_kv_cache.databricks_runs import (
     list_databricks_volume_directory,
     require_databricks_current_user_name,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_SIZE,
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-    FLASHINFER_PATCHED_WHEEL_SIZE,
-    FLASHINFER_SOURCE_WHEEL_SHA256,
-    FLASHINFER_SOURCE_WHEEL_SIZE,
-)
 from document_kv_cache.full_score_execution import (
     FULL_SCORE_PUBLICATION_CACHE_PREFIX_TOKENS,
     FULL_SCORE_PUBLICATION_INVENTORY_SHA256,
@@ -73,6 +64,8 @@ from document_kv_cache.publication_campaign import (
 )
 import document_kv_cache.publication_freeze as freeze_v1
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
+    FLASHINFER_RUNTIME_WHEEL_SIZE,
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
@@ -1613,13 +1606,27 @@ def _require_runtime_artifact_file_pins(
         "runtime_lock": (pins.runtime_lock_sha256, VLLM_RUNTIME_BASE_LOCK_SIZE),
         "patched_vllm_wheel": (pins.patched_vllm_wheel_sha256, VLLM_PATCHED_WHEEL_SIZE),
         "patched_vllm_manifest": (VLLM_PATCHED_MANIFEST_SHA256, VLLM_PATCHED_MANIFEST_SIZE),
-        "pristine_flashinfer_wheel": (FLASHINFER_SOURCE_WHEEL_SHA256, FLASHINFER_SOURCE_WHEEL_SIZE),
-        "patched_flashinfer_wheel": (pins.patched_flashinfer_wheel_sha256, FLASHINFER_PATCHED_WHEEL_SIZE),
-        "patched_flashinfer_manifest": (FLASHINFER_PATCHED_MANIFEST_FILE_SHA256, FLASHINFER_PATCHED_MANIFEST_SIZE),
-        "runtime_closure_manifest": (pins.runtime_closure_manifest_sha256, RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE),
+        "pristine_flashinfer_wheel": (
+            FLASHINFER_RUNTIME_WHEEL_SHA256,
+            FLASHINFER_RUNTIME_WHEEL_SIZE,
+        ),
+        "patched_flashinfer_wheel": (
+            pins.patched_flashinfer_wheel_sha256,
+            FLASHINFER_RUNTIME_WHEEL_SIZE,
+        ),
+        "runtime_closure_manifest": (
+            pins.runtime_closure_manifest_sha256,
+            RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
+        ),
     }
-    if tuple(paths) != tuple(expected):
+    if tuple(paths) != (
+        *tuple(expected)[:6],
+        "patched_flashinfer_manifest",
+        *tuple(expected)[6:],
+    ):
         raise ValueError("v2 runtime artifact path coverage differs")
+    if pins.patched_flashinfer_wheel_sha256 != FLASHINFER_RUNTIME_WHEEL_SHA256:
+        raise ValueError("v2 runtime artifact 'patched_flashinfer_wheel' differs")
     for label, (expected_sha256, expected_size) in expected.items():
         path = paths[label]
         if (
@@ -1901,7 +1908,7 @@ def _validate_live_workspace_and_remote_artifacts_v2(
 def _require_fixed_v2_pins(pins: GPUQualificationArtifactPinsV2) -> None:
     expected = {
         "input_bundle_sha256": GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
-        "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
         "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
         "runner_sha256": GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SHA256,
         "runtime_closure_manifest_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
@@ -2205,15 +2212,13 @@ def _v2_runtime_identity() -> dict[str, Any]:
             "sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
         },
         "flashinfer": {
-            "manifest_closed_record_sha256": (
-                FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
-            ),
-            "manifest_file_byte_count": FLASHINFER_PATCHED_MANIFEST_SIZE,
-            "manifest_file_sha256": FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
-            "patched_wheel_byte_count": FLASHINFER_PATCHED_WHEEL_SIZE,
-            "patched_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
-            "pristine_wheel_byte_count": FLASHINFER_SOURCE_WHEEL_SIZE,
-            "pristine_wheel_sha256": FLASHINFER_SOURCE_WHEEL_SHA256,
+            "manifest_closed_record_sha256": None,
+            "manifest_file_byte_count": 0,
+            "manifest_file_sha256": None,
+            "patched_wheel_byte_count": FLASHINFER_RUNTIME_WHEEL_SIZE,
+            "patched_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
+            "pristine_wheel_byte_count": FLASHINFER_RUNTIME_WHEEL_SIZE,
+            "pristine_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
         },
         "input_bundle_sha256": GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
         "runtime_closure": {

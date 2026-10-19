@@ -52,13 +52,11 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_JOBS,
     PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_TIMEOUT_SECONDS,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-)
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_PATCHED_WHEEL_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
@@ -1379,7 +1377,7 @@ def _require_worker_package_binding(
             or qualification_runner_sha == runner_sha
             or runtime_lock_sha != VLLM_RUNTIME_BASE_LOCK_SHA256
             or patched_wheel_sha != VLLM_PATCHED_WHEEL_SHA256
-            or patched_flashinfer_sha != FLASHINFER_PATCHED_WHEEL_SHA256
+            or patched_flashinfer_sha != FLASHINFER_RUNTIME_WHEEL_SHA256
             or runtime_closure_sha != RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
             or locked_runtime_sha
             != full_score._locked_runtime_identity_sha256(

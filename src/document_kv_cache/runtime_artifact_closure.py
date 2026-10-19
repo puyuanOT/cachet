@@ -1,8 +1,8 @@
 """Seal the local vLLM plus patched-FlashInfer runtime artifact closure.
 
-This stage owns only local artifact authority.  It derives the 195-package
-base lock from the reviewed 196-package lock and binds that lock to the
-unchanged patched vLLM wheel and the separately reviewed FlashInfer wheel.
+This stage owns only local artifact authority.  It derives the 197-package
+base lock from the reviewed 198-package lock and binds that lock to the
+patched vLLM 0.30.0 wheel and the pristine FlashInfer 0.6.18.post1 wheel.
 No installer, qualification plan, or cloud transport is invoked here.
 """
 
@@ -18,85 +18,79 @@ import stat
 from typing import Any, Mapping
 from zipfile import ZipFile
 
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PACKAGE_VERSION,
-    FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_FILENAME,
-    FLASHINFER_PATCHED_MANIFEST_SIZE,
-    FLASHINFER_PATCHED_RECORD_SHA256,
-    FLASHINFER_PATCHED_WHEEL_FILENAME,
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-    FLASHINFER_PATCHED_WHEEL_SIZE,
-    FLASHINFER_SOURCE_WHEEL_FILENAME,
-    FLASHINFER_SOURCE_WHEEL_SHA256,
-    FLASHINFER_SOURCE_WHEEL_SIZE,
-    FLASHINFER_TARGET_MEMBER,
-    FLASHINFER_TARGET_PATCHED_SHA256,
-    validate_patched_flashinfer_wheel,
-)
-VLLM_PACKAGE_VERSION = "0.27.1+cu129"
-VLLM_RUNTIME_LOCK_FILENAME = "vllm-0.27.1-cu129-py311-manylinux_2_35.lock"
+VLLM_PACKAGE_VERSION = "0.30.0+cu129"
+VLLM_RUNTIME_LOCK_FILENAME = "vllm-0.30.0-cu129-py311-manylinux_2_35.lock"
 VLLM_RUNTIME_LOCK_SHA256 = (
-    "71c2c3e344ebdf1d8996adf2127a519328b6bad78a4eb7134c73e2a3f6115c44"
+    "8b6f8618fff84070d44b35a2d6a54d5fc5831ecd8c375b5cbe9d847aeb3fae5d"
 )
-VLLM_RUNTIME_SOURCE_LOCK_SIZE = 376_593
-VLLM_RUNTIME_SOURCE_LOCK_DISTRIBUTION_COUNT = 196
-VLLM_RUNTIME_SOURCE_LOCK_HASH_COUNT = 4_138
+VLLM_RUNTIME_SOURCE_LOCK_SIZE = 385_393
+VLLM_RUNTIME_SOURCE_LOCK_DISTRIBUTION_COUNT = 198
+VLLM_RUNTIME_SOURCE_LOCK_HASH_COUNT = 4_237
 VLLM_RUNTIME_BASE_LOCK_FILENAME = (
-    "vllm-0.27.1-cu129-py311-manylinux_2_35-flashinfer-direct.lock"
+    "vllm-0.30.0-cu129-py311-manylinux_2_35-flashinfer-direct.lock"
 )
 VLLM_RUNTIME_BASE_LOCK_SHA256 = (
-    "c4fc0e055f0838ff397012f52bd4c4f0d22426db8a5fc8faf01689510e258903"
+    "cf5f7dab9ee409f23436087d3ccd835a25b801c6d1538bc5eb20321dd1e4c1f4"
 )
-VLLM_RUNTIME_BASE_LOCK_SIZE = 376_326
-VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT = 195
-VLLM_RUNTIME_BASE_LOCK_HASH_COUNT = 4_137
+VLLM_RUNTIME_BASE_LOCK_SIZE = 385_126
+VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT = 197
+VLLM_RUNTIME_BASE_LOCK_HASH_COUNT = 4_236
 VLLM_RUNTIME_BASE_LOCK_VERSION_MAP_SHA256 = (
-    "57ee2eb51449d71bd1e151fab5b196f86be29ca378642ee4789cd6561413f1b8"
+    "805c53f6ea8ad77101549ade41245e30d7c1efd6e649cb59d4ad735b761045b1"
 )
 VLLM_RUNTIME_BASE_LOCK_VERSION_HASH_MAP_SHA256 = (
-    "28a4da095d20a10c9db8bc48a4987cf8d4a2bf4b2ff069a4b0121519e87fe4dd"
+    "ffa58a9ad69208fe403c63ac14e1e69ca39c3a84768f91e596b16e0fcdc60c78"
 )
 _FLASHINFER_LOCK_STANZA = (
-    b"flashinfer-python==0.6.16.post3 \\\n"
-    b"    --hash=sha256:caf686b9b079abe1c9d65ab505698bd325e8072de40afd822f2c74f2ac3bc601\n"
+    b"flashinfer-python==0.6.18.post1 \\\n"
+    b"    --hash=sha256:adb6d2952b47131138e108bd2999b1fe18b71f1a4c0b2684f168753db9563991\n"
     b"    # via\n"
     b"    #   -r src/document_kv_cache/runtime_locks/"
-    b"vllm-0.27.1-cu129-py311-manylinux_2_35.in\n"
+    b"vllm-0.30.0-cu129-py311-manylinux_2_35.in\n"
     b"    #   vllm\n"
     b"    # from https://flashinfer.ai/whl/\n"
 )
+FLASHINFER_RUNTIME_VERSION = "0.6.18.post1"
+FLASHINFER_RUNTIME_WHEEL_FILENAME = (
+    "flashinfer_python-0.6.18.post1-py3-none-any.whl"
+)
+FLASHINFER_RUNTIME_WHEEL_SHA256 = (
+    "adb6d2952b47131138e108bd2999b1fe18b71f1a4c0b2684f168753db9563991"
+)
+FLASHINFER_RUNTIME_WHEEL_SIZE = 18_348_022
+FLASHINFER_RUNTIME_MEMBER_SHA256 = (
+    "b6b5883440287d05cd353e3c8c02201847b84bda7dc9ba3fa6d1b5d189658246"
+)
 
 VLLM_PATCHED_WHEEL_FILENAME = (
-    "vllm-0.27.1+cu129-1cachete5m265120c48a9352b9e-"
+    "vllm-0.30.0+cu129-1cachete5m207efe2f8245ff6c1-"
     "cp38-abi3-manylinux_2_28_x86_64.whl"
 )
 VLLM_PATCHED_WHEEL_SHA256 = (
-    "65120c48a9352b9eb65bab7a67090558d27af985ad366e469d3b87751073cff4"
+    "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247"
 )
-VLLM_PATCHED_WHEEL_SIZE = 537_751_595
+VLLM_PATCHED_WHEEL_SIZE = 537_513_535
 VLLM_PATCHED_MANIFEST_FILENAME = (
-    "vllm-0.27.1+cu129-1cachete5m265120c48a9352b9e-"
+    "vllm-0.30.0+cu129-1cachete5m207efe2f8245ff6c1-"
     "cp38-abi3-manylinux_2_28_x86_64.manifest.json"
 )
 VLLM_PATCHED_MANIFEST_SHA256 = (
-    "14611e163e720f0fdeae6ef2704cecd9202eef6adc6336f892afd94a96726ef6"
+    "8d2902856daff1ee0b1080deb6c36c0d7cc369c26df67a3498b07416ed1ffbc6"
 )
-VLLM_PATCHED_MANIFEST_SIZE = 2_615
+VLLM_PATCHED_MANIFEST_SIZE = 2_609
 _VLLM_PATCHED_MEMBER_CLOSURE: tuple[Mapping[str, str], ...] = (
     {
         "id": "vllm-qwen-attention-disable-e5m2-query-quant",
         "patched_sha256": (
-            "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839"
+            "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce"
         ),
         "reason": (
-            "vLLM 0.27.1 constructs an E4M3-only query quantizer for fp8_e5m2; "
+            "vLLM 0.30.0 constructs an E4M3-only query quantizer for fp8_e5m2; "
             "E5M2 queries must stay in the model compute dtype."
         ),
         "relative_path": "vllm/model_executor/layers/attention/attention.py",
         "source_sha256": (
-            "dae6d1f09448adc1d67c776089e77e8b75378332166844a234cd8fa45c18195e"
+            "bc897e452f3aea603e353ca42a365d3be8836e9485d78cbf8cc4677baca2fb42"
         ),
     },
     {
@@ -105,7 +99,7 @@ _VLLM_PATCHED_MEMBER_CLOSURE: tuple[Mapping[str, str], ...] = (
             "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08"
         ),
         "reason": (
-            "vLLM 0.27.1 otherwise views fp8_e5m2 pages through the platform "
+            "vLLM 0.30.0 otherwise views fp8_e5m2 pages through the platform "
             "E4M3 dtype and rejects the SM80-SM88 E5M2 software path."
         ),
         "relative_path": (
@@ -118,15 +112,15 @@ _VLLM_PATCHED_MEMBER_CLOSURE: tuple[Mapping[str, str], ...] = (
     {
         "id": "vllm-triton-attention-e5m2-closure",
         "patched_sha256": (
-            "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390"
+            "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a"
         ),
         "reason": (
-            "vLLM 0.27.1 otherwise binds Triton KV views to E4M3 and rejects "
+            "vLLM 0.30.0 otherwise binds Triton KV views to E4M3 and rejects "
             "fp8_e5m2 on A10G despite the targeted SM80+ E5M2 path."
         ),
         "relative_path": "vllm/v1/attention/backends/triton_attn.py",
         "source_sha256": (
-            "20b4dd5f8c15cd2d6f9598268368f5fc572f2c980eb75327c5992100c49ff3ed"
+            "1057663d110e1d5229495a799027b27277c1eca325d5b6780fa2259afbf58a1a"
         ),
     },
 )
@@ -136,16 +130,16 @@ RUNTIME_ARTIFACT_CLOSURE_RECORD_TYPE = (
 )
 RUNTIME_ARTIFACT_CLOSURE_SCHEMA_VERSION = 1
 RUNTIME_ARTIFACT_CLOSURE_FILENAME = (
-    "vllm-0.27.1-flashinfer-0.6.16.post3-runtime-closure.json"
+    "vllm-0.30.0-flashinfer-0.6.18.post1-runtime-closure.json"
 )
 
 RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256 = (
-    "b2cc4f90bf3e5e47ca23bc7b2117725faa9b114f0d1d803af6c89ae18ca05aaf"
+    "fc15bbd35142de8c0c79ce51607e8c761db005859824e154658cc9e86153a271"
 )
 RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256 = (
-    "c13c25a4e116f15db31e2efdbaebdd2d76418c5e4eb2f72fb2af3d8b8090e7df"
+    "193c095deeb1636a4cf5f873ed6b07bedf0f466c91e3df34417b357e9f125c03"
 )
-RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE = 6_634
+RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE = 6_332
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _REQUIREMENT_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^ ]+?)(?: \\)?$")
@@ -175,7 +169,7 @@ def derive_flashinfer_direct_base_lock(
         expected_name=VLLM_RUNTIME_LOCK_FILENAME,
         expected_sha256=VLLM_RUNTIME_LOCK_SHA256,
         expected_size=VLLM_RUNTIME_SOURCE_LOCK_SIZE,
-        label="reviewed 196-distribution runtime lock",
+        label="reviewed 198-distribution runtime lock",
     )
     target_bytes = _derived_base_lock_bytes(source_bytes)
     if target.name != VLLM_RUNTIME_BASE_LOCK_FILENAME:
@@ -187,7 +181,7 @@ def derive_flashinfer_direct_base_lock(
             expected_name=VLLM_RUNTIME_BASE_LOCK_FILENAME,
             expected_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
             expected_size=VLLM_RUNTIME_BASE_LOCK_SIZE,
-            label="derived 195-distribution runtime lock",
+            label="derived 197-distribution runtime lock",
         )
         if observed != target_bytes:
             raise FileExistsError("derived runtime base-lock path differs")
@@ -207,14 +201,14 @@ def validate_flashinfer_direct_base_lock(
         expected_name=VLLM_RUNTIME_LOCK_FILENAME,
         expected_sha256=VLLM_RUNTIME_LOCK_SHA256,
         expected_size=VLLM_RUNTIME_SOURCE_LOCK_SIZE,
-        label="reviewed 196-distribution runtime lock",
+        label="reviewed 198-distribution runtime lock",
     )
     target_bytes = _read_exact_small_file(
         Path(base_lock),
         expected_name=VLLM_RUNTIME_BASE_LOCK_FILENAME,
         expected_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         expected_size=VLLM_RUNTIME_BASE_LOCK_SIZE,
-        label="derived 195-distribution runtime lock",
+        label="derived 197-distribution runtime lock",
     )
     if target_bytes != _derived_base_lock_bytes(source_bytes):
         raise ValueError("derived runtime base-lock byte projection differs")
@@ -422,20 +416,8 @@ def _build_runtime_closure_record(
 ) -> dict[str, Any]:
     lock = validate_flashinfer_direct_base_lock(source_lock, base_lock)
     vllm = _validate_vllm_artifacts(vllm_wheel, vllm_manifest)
-    flashinfer = validate_patched_flashinfer_wheel(
-        pristine_flashinfer_wheel,
-        patched_flashinfer_wheel,
-        flashinfer_manifest,
-    )
-    if (
-        flashinfer.get("patched_wheel_sha256") != FLASHINFER_PATCHED_WHEEL_SHA256
-        or flashinfer.get("patched_wheel_size") != FLASHINFER_PATCHED_WHEEL_SIZE
-        or flashinfer.get("manifest_file_sha256")
-        != FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
-        or flashinfer.get("manifest_closed_record_sha256")
-        != FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
-    ):
-        raise RuntimeError("patched FlashInfer closure authority differs")
+    flashinfer = _validate_pristine_flashinfer_wheel(pristine_flashinfer_wheel)
+    del patched_flashinfer_wheel, flashinfer_manifest
     record: dict[str, Any] = {
         "record_type": RUNTIME_ARTIFACT_CLOSURE_RECORD_TYPE,
         "schema_version": RUNTIME_ARTIFACT_CLOSURE_SCHEMA_VERSION,
@@ -453,24 +435,22 @@ def _build_runtime_closure_record(
             "vllm": vllm,
             "flashinfer": {
                 "distribution": "flashinfer-python",
-                "version": FLASHINFER_PACKAGE_VERSION,
-                "source_wheel_filename": FLASHINFER_SOURCE_WHEEL_FILENAME,
-                "source_wheel_sha256": FLASHINFER_SOURCE_WHEEL_SHA256,
-                "source_wheel_bytes": FLASHINFER_SOURCE_WHEEL_SIZE,
-                "patched_wheel_filename": FLASHINFER_PATCHED_WHEEL_FILENAME,
-                "patched_wheel_sha256": flashinfer["patched_wheel_sha256"],
-                "patched_wheel_bytes": flashinfer["patched_wheel_size"],
-                "patched_manifest_filename": FLASHINFER_PATCHED_MANIFEST_FILENAME,
-                "patched_manifest_file_sha256": flashinfer["manifest_file_sha256"],
-                "patched_manifest_file_bytes": FLASHINFER_PATCHED_MANIFEST_SIZE,
-                "patched_manifest_closed_record_sha256": flashinfer[
-                    "manifest_closed_record_sha256"
-                ],
+                "version": FLASHINFER_RUNTIME_VERSION,
+                "source_wheel_filename": FLASHINFER_RUNTIME_WHEEL_FILENAME,
+                "source_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
+                "source_wheel_bytes": FLASHINFER_RUNTIME_WHEEL_SIZE,
+                "patched_wheel_filename": FLASHINFER_RUNTIME_WHEEL_FILENAME,
+                "patched_wheel_sha256": flashinfer["wheel_sha256"],
+                "patched_wheel_bytes": flashinfer["wheel_bytes"],
+                "patched_manifest_filename": None,
+                "patched_manifest_file_sha256": None,
+                "patched_manifest_file_bytes": 0,
+                "patched_manifest_closed_record_sha256": None,
                 "patched_member": {
-                    "relative_path": FLASHINFER_TARGET_MEMBER,
-                    "sha256": FLASHINFER_TARGET_PATCHED_SHA256,
+                    "relative_path": "flashinfer/comm/fd_exchange.py",
+                    "sha256": FLASHINFER_RUNTIME_MEMBER_SHA256,
                 },
-                "patched_record_sha256": FLASHINFER_PATCHED_RECORD_SHA256,
+                "patched_record_sha256": None,
             },
         },
         "install_contract": {
@@ -501,7 +481,7 @@ def _build_runtime_closure_record(
                     "arguments": [
                         "--no-deps",
                         "flashinfer-python @ {patched_flashinfer_wheel_uri}#sha256="
-                        + FLASHINFER_PATCHED_WHEEL_SHA256,
+                        + FLASHINFER_RUNTIME_WHEEL_SHA256,
                     ],
                 },
                 {
@@ -523,15 +503,15 @@ def _build_runtime_closure_record(
                 "flashinfer-python": {
                     "distribution": "flashinfer-python",
                     "runtime_uri_binding": "patched_flashinfer_wheel_uri",
-                    "archive_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+                    "archive_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
                 },
                 "require_normalized_url_equality": True,
                 "require_archive_info_sha256": True,
             },
             "distribution_counts": {
-                "base_lock": 195,
-                "with_flashinfer": 196,
-                "with_vllm": 197,
+                "base_lock": 197,
+                "with_flashinfer": 198,
+                "with_vllm": 199,
                 "separately_allowed_cachet": 1,
             },
             "pip_check_required": True,
@@ -542,7 +522,7 @@ def _build_runtime_closure_record(
             "passed": [],
             "required": [
                 "pip_check",
-                "exact_196_dependency_version_equivalence",
+                "exact_198_dependency_version_equivalence",
                 "vllm_pep610_url_and_sha256",
                 "flashinfer_pep610_url_and_sha256",
                 "flashinfer_fd_exchange_installed_member_sha256",
@@ -556,6 +536,43 @@ def _build_runtime_closure_record(
     record["closed_record_sha256"] = _canonical_json_sha256(unsigned)
     _validate_runtime_closure_record(record)
     return record
+
+
+def _validate_pristine_flashinfer_wheel(wheel_path: Path) -> dict[str, Any]:
+    """Accept the released FlashInfer wheel whose annotation import is already present."""
+
+    digest = sha256()
+    descriptor = _open_regular_nofollow(wheel_path, label="pristine FlashInfer wheel")
+    try:
+        before = os.fstat(descriptor)
+        if wheel_path.name != FLASHINFER_RUNTIME_WHEEL_FILENAME:
+            raise ValueError("pristine FlashInfer wheel filename differs")
+        while True:
+            chunk = os.read(descriptor, 4 * 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        if before.st_size != FLASHINFER_RUNTIME_WHEEL_SIZE or digest.hexdigest() != (
+            FLASHINFER_RUNTIME_WHEEL_SHA256
+        ):
+            raise ValueError("pristine FlashInfer wheel identity differs")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        with os.fdopen(os.dup(descriptor), "rb", closefd=True) as stream:
+            with ZipFile(stream, "r") as archive:
+                member = archive.read("flashinfer/comm/fd_exchange.py")
+        if sha256(member).hexdigest() != FLASHINFER_RUNTIME_MEMBER_SHA256:
+            raise ValueError("pristine FlashInfer fd_exchange.py differs")
+        if b"from __future__ import annotations\n" not in member:
+            raise ValueError("pristine FlashInfer fd_exchange.py lacks future annotations")
+        after = os.fstat(descriptor)
+        if _stable_stat(before) != _stable_stat(after):
+            raise ValueError("pristine FlashInfer wheel changed while reading")
+    finally:
+        os.close(descriptor)
+    return {
+        "wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
+        "wheel_bytes": FLASHINFER_RUNTIME_WHEEL_SIZE,
+    }
 
 
 def _validate_vllm_artifacts(

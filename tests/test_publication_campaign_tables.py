@@ -387,7 +387,7 @@ def _report() -> dict[str, Any]:
         "campaign_id": "vllm-0271-publication-v1",
         "closed_record_sha256": "3" * 64,
         "coverage": _coverage(),
-        "engine_version": "0.27.1",
+        "engine_version": "0.30.0",
         "latency": {
             "analysis": {},
             "descriptive_cells": _descriptive_cells(),
@@ -473,7 +473,7 @@ def test_render_is_deterministic_and_uses_frozen_row_orders() -> None:
         report,
         {"synthetic": True},
     )
-    assert appendix.startswith("# vLLM 0.27.1 Publication Campaign\n")
+    assert appendix.startswith("# vLLM 0.30.0 Publication Campaign\n")
     expected_digest = "3" * 64
     assert f"`{expected_digest}`" in appendix
     assert appendix.endswith("intentionally excluded.\n")

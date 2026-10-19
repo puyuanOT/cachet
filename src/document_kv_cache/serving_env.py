@@ -20,22 +20,22 @@ from document_kv_cache.engine_adapters import ServingBackend
 
 SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE = "document_kv.serving_environment_profiles.v1"
 
-VLLM_VERSION = "0.27.1"
-# vLLM 0.27.1 defaults to CUDA 13.0.  Cachet deliberately selects the separate
+VLLM_VERSION = "0.30.0"
+# vLLM 0.30.0 defaults to CUDA 13.0.  Cachet deliberately selects the separate
 # official CUDA 12.9 x86_64 release asset for the benchmark fleet.  The asset
 # hash, indexes, and tagged-source digests make that binary choice auditable.
 VLLM_CUDA_VERSION = "12.9"
 VLLM_CUDA_VARIANT = "cu129"
 VLLM_PACKAGE_VERSION = f"{VLLM_VERSION}+{VLLM_CUDA_VARIANT}"
 VLLM_WHEEL_FILENAME = (
-    "vllm-0.27.1+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
+    "vllm-0.30.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
 )
 VLLM_WHEEL_URL = (
-    "https://github.com/vllm-project/vllm/releases/download/v0.27.1/"
-    "vllm-0.27.1%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl"
+    "https://github.com/vllm-project/vllm/releases/download/v0.30.0/"
+    "vllm-0.30.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl"
 )
 VLLM_WHEEL_SHA256 = (
-    "bf0d52faa2a51e7a01c6856a7a8a2d1307fd0ff711415d34168a67ffac0fa47b"
+    "e98cb69659bfcfc849cf11ce0781a7161d40b02b51a6c3636924a5909f2aabcc"
 )
 VLLM_WHEEL_INSTALL_SPEC = (
     f"vllm @ {VLLM_WHEEL_URL}#sha256={VLLM_WHEEL_SHA256}"
@@ -88,6 +88,36 @@ GPU_RUNTIME_PYTHONWARNINGS = ",".join(
             "vllm.v1.attention.backends.flashinfer:1234"
         ),
         (
+            "ignore:`vllm.entrypoints.openai.api_server` is deprecated and will "
+            "likely beunsupported in a future version. Use the corresponding "
+            "function from `vllm.entrypoints.launchers` instead."
+            ":DeprecationWarning:vllm.entrypoints.openai.api_server:24"
+        ),
+        (
+            "ignore:`vllm.entrypoints.openai.api_server` is deprecated and will "
+            "likely beunsupported in a future version. Use the corresponding "
+            "function from `vllm.entrypoints.launchers` instead."
+            ":DeprecationWarning:__main__:24"
+        ),
+        (
+            "ignore:The `python -m vllm.entrypoints.openai.api_server` command "
+            "is deprecated and may be removed in a future release. Please use "
+            "`vllm server` instead."
+            ":DeprecationWarning:__main__:51"
+        ),
+        (
+            "ignore:`vllm.entrypoints.openai.api_server` is deprecated and will "
+            "likely beunsupported in a future version. Use the corresponding "
+            "function from `vllm.entrypoints.launchers` instead."
+            ":DeprecationWarning:__mp_main__:24"
+        ),
+        (
+            "ignore:The `python -m vllm.entrypoints.openai.api_server` command "
+            "is deprecated and may be removed in a future release. Please use "
+            "`vllm server` instead."
+            ":DeprecationWarning:__mp_main__:51"
+        ),
+        (
             "ignore:`torch.jit.script_method` is deprecated. Please switch to "
             "`torch.compile` or `torch.export`."
             ":DeprecationWarning:torch.jit._script:365"
@@ -107,10 +137,10 @@ def gpu_runtime_warning_environment_overrides() -> dict[str, str]:
 
 
 VLLM_CUDA_REQUIREMENTS_SHA256 = (
-    "30091f418325ea9f97bc546cb03eb1a35e1cc20b2500b522b3dabd3b1aaee241"
+    "9393effcd139d93e343195924c455efd97bd914053d4f68365c0467e5dba1272"
 )
 VLLM_DOCKERFILE_SHA256 = (
-    "9876efaec74111cad4ce074225740fafa9461166973d1837dc0d4cd23c2f2509"
+    "fde129b8d5072fae409147b81b85a7f3283c10669d7071d01d0251a2c927b926"
 )
 VLLM_PYTORCH_INDEX_URL = "https://download.pytorch.org/whl/cu129"
 VLLM_FLASHINFER_INDEX_URL = "https://flashinfer.ai/whl/"
@@ -121,13 +151,13 @@ VLLM_PACKAGE_INDEX_URLS = (
     VLLM_FLASHINFER_JIT_INDEX_URL,
 )
 VLLM_RUNTIME_LOCK_FILENAME = (
-    "vllm-0.27.1-cu129-py311-manylinux_2_35.lock"
+    "vllm-0.30.0-cu129-py311-manylinux_2_35.lock"
 )
 VLLM_RUNTIME_LOCK_PRE_AUGMENT_SHA256 = (
-    "5788ee492a9a9ff48c8e1eae68cd0576fcec625263858129cc9dd918bcb856a6"
+    "8cc92b1829969e9e1ff811b42fb5d8972fa80d4f6b2ca3e148af0baaae7a29e9"
 )
 VLLM_RUNTIME_LOCK_SHA256 = (
-    "71c2c3e344ebdf1d8996adf2127a519328b6bad78a4eb7134c73e2a3f6115c44"
+    "8b6f8618fff84070d44b35a2d6a54d5fc5831ecd8c375b5cbe9d847aeb3fae5d"
 )
 _VLLM_RUNTIME_LOCK_COMPILED_INDEX_HEADER = (
     "--index-url https://pypi.org/simple\n"
@@ -140,10 +170,10 @@ VLLM_RUNTIME_LOCK_INDEX_HEADER = (
     f"--extra-index-url {VLLM_FLASHINFER_JIT_INDEX_URL}\n"
     f"--extra-index-url {VLLM_FLASHINFER_INDEX_URL}\n"
 )
-# The generated lock has 196 hashed distributions. vLLM is deliberately
+# The generated lock has 198 hashed distributions. vLLM is deliberately
 # excluded and installed separately from the reviewed patched wheel, yielding
-# a 197-distribution runtime closure.
-VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT = 196
+# a 199-distribution runtime closure.
+VLLM_RUNTIME_LOCK_DISTRIBUTION_COUNT = 198
 
 # The isolated-runtime bootstrap is exact as well; an unbounded toolchain
 # upgrade would make otherwise identical benchmark jobs resolve differently.
@@ -175,18 +205,19 @@ TRITON_CONSTRAINT = "triton==3.7.1"
 NUMBA_CONSTRAINT = "numba==0.65.0"
 TORCHCODEC_CONSTRAINT = "torchcodec==0.16.0+cu129"
 PYNVVIDEOCODEC_CONSTRAINT = "PyNvVideoCodec==2.0.4"
-FLASHINFER_PYTHON_CONSTRAINT = "flashinfer-python==0.6.16.post3"
-FLASHINFER_CUBIN_CONSTRAINT = "flashinfer-cubin==0.6.16.post3"
-FLASHINFER_JIT_CACHE_CONSTRAINT = "flashinfer-jit-cache==0.6.16.post3+cu129"
+FLASHINFER_PYTHON_CONSTRAINT = "flashinfer-python==0.6.18.post1"
+FLASHINFER_CUBIN_CONSTRAINT = "flashinfer-cubin==0.6.18.post1"
+FLASHINFER_JIT_CACHE_CONSTRAINT = "flashinfer-jit-cache==0.6.18.post1+cu129"
 APACHE_TVM_FFI_CONSTRAINT = "apache-tvm-ffi==0.1.11"
 TILELANG_CONSTRAINT = "tilelang==0.1.12"
 NVIDIA_CUDNN_FRONTEND_CONSTRAINT = "nvidia-cudnn-frontend==1.27.0"
 NVTX_CONSTRAINT = "nvtx==0.2.15"
 FASTSAFETENSORS_CONSTRAINT = "fastsafetensors==0.3.3"
-NVIDIA_CUTLASS_DSL_CONSTRAINT = "nvidia-cutlass-dsl==4.6.0"
-QUACK_KERNELS_CONSTRAINT = "quack-kernels==0.6.1"
+INSTANTTENSOR_CONSTRAINT = "instanttensor==0.2.0"
+NVIDIA_CUTLASS_DSL_CONSTRAINT = "nvidia-cutlass-dsl==4.7.1"
+QUACK_KERNELS_CONSTRAINT = "quack-kernels==0.6.5"
 TOKENSPEED_MLA_CONSTRAINT = "tokenspeed-mla==0.1.8"
-HUMMING_KERNELS_CONSTRAINT = "humming-kernels[cu12]==0.1.10"
+HUMMING_KERNELS_CONSTRAINT = "humming-kernels[cu12]==0.1.12"
 # Backwards-compatible name for callers that only need the Python frontend.
 FLASHINFER_CONSTRAINT = FLASHINFER_PYTHON_CONSTRAINT
 VLLM_PINNED_CUDA_DIRECT_CONSTRAINTS = (
@@ -205,13 +236,14 @@ VLLM_PINNED_CUDA_DIRECT_CONSTRAINTS = (
     NVIDIA_CUDNN_FRONTEND_CONSTRAINT,
     NVTX_CONSTRAINT,
     FASTSAFETENSORS_CONSTRAINT,
+    INSTANTTENSOR_CONSTRAINT,
     NVIDIA_CUTLASS_DSL_CONSTRAINT,
     QUACK_KERNELS_CONSTRAINT,
     TOKENSPEED_MLA_CONSTRAINT,
     HUMMING_KERNELS_CONSTRAINT,
 )
 TRANSFORMERS_CONSTRAINT = "transformers==5.12.1"
-HUGGINGFACE_HUB_CONSTRAINT = "huggingface-hub==1.20.1"
+HUGGINGFACE_HUB_CONSTRAINT = "huggingface-hub==1.32.0"
 TOKENIZERS_CONSTRAINT = "tokenizers==0.22.2"
 NUMPY_CONSTRAINT = "numpy==2.3.5"
 FASTAPI_CONSTRAINT = "fastapi[standard]==0.136.0"
@@ -279,7 +311,7 @@ def patched_vllm_wheel_install_spec() -> str:
     if wheel_name != expected_name:
         raise ValueError(
             "patched vLLM wheel filename must bind its SHA-256 prefix and exact "
-            "0.27.1+cu129 ABI/platform tags"
+            f"{VLLM_PACKAGE_VERSION} ABI/platform tags"
         )
     return f"vllm @ {uri}#sha256={digest}"
 
@@ -683,6 +715,7 @@ __all__ = [
     "BITSANDBYTES_CONSTRAINT",
     "FASTAPI_CONSTRAINT",
     "FASTSAFETENSORS_CONSTRAINT",
+    "INSTANTTENSOR_CONSTRAINT",
     "FLASHINFER_CUBIN_CONSTRAINT",
     "FLASHINFER_CONSTRAINT",
     "FLASHINFER_JIT_CACHE_CONSTRAINT",

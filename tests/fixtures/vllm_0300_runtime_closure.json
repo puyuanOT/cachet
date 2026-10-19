@@ -1,0 +1,153 @@
+{
+  "artifacts": {
+    "base_lock": {
+      "bytes": 385126,
+      "distribution_count": 197,
+      "filename": "vllm-0.30.0-cu129-py311-manylinux_2_35-flashinfer-direct.lock",
+      "hash_count": 4236,
+      "removed_distribution": "flashinfer-python",
+      "removed_stanza_sha256": "ffc2c93aaeb8ada8fea284387381ef7a1fd1c9cf517d8ec03876368fbdcb8f3e",
+      "sha256": "cf5f7dab9ee409f23436087d3ccd835a25b801c6d1538bc5eb20321dd1e4c1f4",
+      "version_hash_map_sha256": "ffa58a9ad69208fe403c63ac14e1e69ca39c3a84768f91e596b16e0fcdc60c78",
+      "version_map_sha256": "805c53f6ea8ad77101549ade41245e30d7c1efd6e649cb59d4ad735b761045b1"
+    },
+    "flashinfer": {
+      "distribution": "flashinfer-python",
+      "patched_manifest_closed_record_sha256": null,
+      "patched_manifest_file_bytes": 0,
+      "patched_manifest_file_sha256": null,
+      "patched_manifest_filename": null,
+      "patched_member": {
+        "relative_path": "flashinfer/comm/fd_exchange.py",
+        "sha256": "b6b5883440287d05cd353e3c8c02201847b84bda7dc9ba3fa6d1b5d189658246"
+      },
+      "patched_record_sha256": null,
+      "patched_wheel_bytes": 18348022,
+      "patched_wheel_filename": "flashinfer_python-0.6.18.post1-py3-none-any.whl",
+      "patched_wheel_sha256": "adb6d2952b47131138e108bd2999b1fe18b71f1a4c0b2684f168753db9563991",
+      "source_wheel_bytes": 18348022,
+      "source_wheel_filename": "flashinfer_python-0.6.18.post1-py3-none-any.whl",
+      "source_wheel_sha256": "adb6d2952b47131138e108bd2999b1fe18b71f1a4c0b2684f168753db9563991",
+      "version": "0.6.18.post1"
+    },
+    "vllm": {
+      "distribution": "vllm",
+      "member_closure": [
+        {
+          "id": "vllm-qwen-attention-disable-e5m2-query-quant",
+          "patched_sha256": "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce",
+          "reason": "vLLM 0.30.0 constructs an E4M3-only query quantizer for fp8_e5m2; E5M2 queries must stay in the model compute dtype.",
+          "relative_path": "vllm/model_executor/layers/attention/attention.py",
+          "source_sha256": "bc897e452f3aea603e353ca42a365d3be8836e9485d78cbf8cc4677baca2fb42"
+        },
+        {
+          "id": "vllm-triton-reshape-cache-e5m2-closure",
+          "patched_sha256": "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08",
+          "reason": "vLLM 0.30.0 otherwise views fp8_e5m2 pages through the platform E4M3 dtype and rejects the SM80-SM88 E5M2 software path.",
+          "relative_path": "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py",
+          "source_sha256": "6cac51475b8c656992a21b2d150acd3a16a95a7ab7d49aab151a3ef13c24b80d"
+        },
+        {
+          "id": "vllm-triton-attention-e5m2-closure",
+          "patched_sha256": "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a",
+          "reason": "vLLM 0.30.0 otherwise binds Triton KV views to E4M3 and rejects fp8_e5m2 on A10G despite the targeted SM80+ E5M2 path.",
+          "relative_path": "vllm/v1/attention/backends/triton_attn.py",
+          "source_sha256": "1057663d110e1d5229495a799027b27277c1eca325d5b6780fa2259afbf58a1a"
+        }
+      ],
+      "patched_manifest_file_bytes": 2609,
+      "patched_manifest_file_sha256": "8d2902856daff1ee0b1080deb6c36c0d7cc369c26df67a3498b07416ed1ffbc6",
+      "patched_manifest_filename": "vllm-0.30.0+cu129-1cachete5m207efe2f8245ff6c1-cp38-abi3-manylinux_2_28_x86_64.manifest.json",
+      "patched_wheel_bytes": 537513535,
+      "patched_wheel_filename": "vllm-0.30.0+cu129-1cachete5m207efe2f8245ff6c1-cp38-abi3-manylinux_2_28_x86_64.whl",
+      "patched_wheel_sha256": "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247",
+      "version": "0.30.0+cu129"
+    }
+  },
+  "closed_record_sha256": "fc15bbd35142de8c0c79ce51607e8c761db005859824e154658cc9e86153a271",
+  "install_contract": {
+    "distribution_counts": {
+      "base_lock": 197,
+      "separately_allowed_cachet": 1,
+      "with_flashinfer": 198,
+      "with_vllm": 199
+    },
+    "inherited_pip_environment_forbidden": true,
+    "order": [
+      {
+        "arguments": [
+          "--require-hashes",
+          "--only-binary",
+          ":all:",
+          "-r",
+          "{base_lock_path}"
+        ],
+        "artifact": "base_lock",
+        "step": 1
+      },
+      {
+        "arguments": [
+          "--no-deps",
+          "vllm @ {patched_vllm_wheel_uri}#sha256=07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247"
+        ],
+        "artifact": "vllm",
+        "step": 2
+      },
+      {
+        "arguments": [
+          "--no-deps",
+          "flashinfer-python @ {patched_flashinfer_wheel_uri}#sha256=adb6d2952b47131138e108bd2999b1fe18b71f1a4c0b2684f168753db9563991"
+        ],
+        "artifact": "flashinfer",
+        "step": 3
+      },
+      {
+        "arguments": [
+          "--no-deps",
+          "cachet-kv @ {package_wheel_uri}#sha256={package_wheel_sha256}"
+        ],
+        "artifact": "cachet-kv",
+        "binding": "qualification plan must supply the exact package pin",
+        "step": 4
+      }
+    ],
+    "pep610": {
+      "flashinfer-python": {
+        "archive_sha256": "adb6d2952b47131138e108bd2999b1fe18b71f1a4c0b2684f168753db9563991",
+        "distribution": "flashinfer-python",
+        "runtime_uri_binding": "patched_flashinfer_wheel_uri"
+      },
+      "require_archive_info_sha256": true,
+      "require_normalized_url_equality": true,
+      "vllm": {
+        "archive_sha256": "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247",
+        "distribution": "vllm",
+        "runtime_uri_binding": "patched_vllm_wheel_uri"
+      }
+    },
+    "pip_check_required": true
+  },
+  "live_runtime_verification": {
+    "passed": [],
+    "required": [
+      "pip_check",
+      "exact_198_dependency_version_equivalence",
+      "vllm_pep610_url_and_sha256",
+      "flashinfer_pep610_url_and_sha256",
+      "flashinfer_fd_exchange_installed_member_sha256",
+      "flashinfer.comm.fd_exchange CPython3.11 import"
+    ],
+    "state": "pending_not_executed",
+    "success_credit": false
+  },
+  "record_type": "document_kv.vllm_flashinfer_runtime_artifact_closure.v1",
+  "schema_version": 1,
+  "target_runtime": {
+    "cuda": "12.9",
+    "libc": "glibc-2.35",
+    "machine": "x86_64",
+    "operating_system": "linux",
+    "python_implementation": "CPython",
+    "python_version": "3.11"
+  }
+}

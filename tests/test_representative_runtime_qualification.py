@@ -54,7 +54,7 @@ def unit_record():
         "runtime": {
             "python": "3.11.16",
             "torch": "2.13.0+cu129",
-            "vllm": "0.27.1+cu129",
+            "vllm": "0.30.0+cu129",
             "triton": "3.7.1",
             "cuda": "12.9",
             "device_type": "cuda",
@@ -128,7 +128,7 @@ def test_each_task_source_and_staging_binding_is_compared(field):
         {"device_name": "NVIDIA L40S"},
         {"device_capability": [8, 0]},
         {"bf16_supported": False},
-        {"vllm": "0.27.1"},
+        {"vllm": "0.30.0"},
         {"python": "3.12.14"},
         {"torch": "2.12.1"},
         {"triton": "other"},

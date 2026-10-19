@@ -70,7 +70,7 @@ def test_publication_campaign_is_the_frozen_115_job_design():
     )
     record = publication_campaign_plan_to_record(plan)
 
-    assert PUBLICATION_CAMPAIGN_ENGINE_VERSION == "0.27.1"
+    assert PUBLICATION_CAMPAIGN_ENGINE_VERSION == "0.30.0"
     assert PUBLICATION_CAMPAIGN_ID == "vllm-0271-publication-v1"
     assert PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS == 5
     assert PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL == 256
@@ -985,7 +985,7 @@ def test_publication_campaign_preserves_predecessor_and_aligns_v2_authority(tmp_
     canonical = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
     assert len(canonical) == 80_373
     assert hashlib.sha256(canonical).hexdigest() == (
-        "97fea9bdf99aba1fb3bf810a2115bc0c84bf8a5a24de41537e6e13f0921020cd"
+        "3d071c6899a08616dc116b212f1363a9e630bd7b41bac4d1a3f9dca0d8b9756e"
     )
     assert (
         publication_campaign.PUBLICATION_CAMPAIGN_MIXED_SENTINEL_AND_RESULT_VALIDATION_FAILURE_TASK_INTERVAL_EPOCH_MILLISECONDS_BY_JOB

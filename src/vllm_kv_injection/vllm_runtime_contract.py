@@ -32,6 +32,7 @@ _VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES = (
     "prefer_cross_layer_blocks",
     "requires_kv_delivery",
     "role",
+    "supports_divergent_local_hybrid_hits",
 )
 _VLLM_KV_CONNECTOR_V1_CONTRACT_KEYS = frozenset(
     {
@@ -416,7 +417,7 @@ def vllm_kv_connector_v1_contract_record_issues(record: Mapping[str, Any]) -> tu
         )
     if record.get("base_source_sha256") != VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256:
         issues.append(
-            "vLLM V1 KV connector contract base_source_sha256 must match the approved 0.27.1 source"
+            "vLLM V1 KV connector contract base_source_sha256 must match the approved 0.30.0 source"
         )
     if record.get("doc_url") != VLLM_KV_CONNECTOR_V1_DOC_URL:
         issues.append("vLLM V1 KV connector contract doc_url must point at the vLLM V1 KV connector docs")

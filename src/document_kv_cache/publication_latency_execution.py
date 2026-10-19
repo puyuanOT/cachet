@@ -118,12 +118,10 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPUQualificationArtifactPinsV2,
     validate_gpu_qualification_evidence_v2_record,
     validate_gpu_qualification_plan_v2_record,
+    validate_gpu_qualification_v2_runtime_attestation,
     validate_locked_runtime_v2_package_installation_attestation,
 )
 from document_kv_cache._isolated_runtime import isolated_runtime_runner_fragment
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-)
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
     require_gpu_qualification_launch_authorization,
@@ -161,6 +159,7 @@ from document_kv_cache.publication_campaign import (
     validate_publication_campaign_plan_record,
 )
 from document_kv_cache.publication_handoff_artifacts import (
+    PUBLICATION_HANDOFF_STAGING_ATTESTATION_RECORD_TYPE,
     read_publication_latency_handoff_bundle,
     validate_publication_latency_handoff_bundle,
 )
@@ -177,6 +176,13 @@ from document_kv_cache.publication_inputs import (
 from document_kv_cache.publication_bf16_handoff_generation import (
     PUBLICATION_BF16_HANDOFF_EXECUTION_MODE,
     PUBLICATION_BF16_HANDOFF_WORKER_COUNT,
+)
+from document_kv_cache.publication_l4_handoff_regeneration import (
+    L4_REGENERATION_EXECUTION_FILENAME,
+    L4_REGENERATION_HARDWARE,
+    L4_REGENERATION_PRECISIONS,
+    read_l4_regeneration_execution,
+    read_l4_regeneration_plan,
 )
 from document_kv_cache.publication_handoff_closure_coordinator import (
     PublicationHandoffRemoteClosureAuthorization,
@@ -198,6 +204,7 @@ from document_kv_cache.serving_env import (
     VLLM_PATCHED_WHEEL_URI_ENV,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
@@ -268,6 +275,23 @@ PUBLICATION_LATENCY_RAM_PRIME_TARGETS: Final = 8
 PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX: Final = "cachet-payload-prime:"
 PUBLICATION_LATENCY_Q8_DTYPE: Final = "fp8_e5m2"
 PUBLICATION_LATENCY_BF16_DTYPE: Final = "bfloat16"
+PUBLICATION_LATENCY_RESTORED_Q8_SOURCE_KIND: Final = "restored_q8_bundle"
+PUBLICATION_LATENCY_L4_REGENERATED_SOURCE_KIND: Final = "l4_regenerated_bundle"
+# Spark Python task parameters are capped near 10000 bytes, which an inline
+# restored or regenerated handoff (six long volume URIs) overflows. The bound
+# form carries one sha-pinned binding file and resolves it on the worker.
+PUBLICATION_LATENCY_BOUND_HANDOFF_SOURCE_KIND: Final = "bound_handoff_bundle"
+PUBLICATION_LATENCY_HANDOFF_BINDING_RECORD_TYPE: Final = (
+    "cachet.publication_latency_handoff_binding.v1"
+)
+PUBLICATION_LATENCY_HANDOFF_BINDING_SCHEMA_VERSION: Final = 1
+PUBLICATION_LATENCY_BOUND_HANDOFF_INNER_SOURCE_KINDS: Final = frozenset(
+    {
+        "closed_bf16_bundle",
+        PUBLICATION_LATENCY_RESTORED_Q8_SOURCE_KIND,
+        PUBLICATION_LATENCY_L4_REGENERATED_SOURCE_KIND,
+    }
+)
 PUBLICATION_LATENCY_MODEL_QUANTIZATION: Final = "bitsandbytes"
 PUBLICATION_LATENCY_VANILLA_ARM_ID: Final = "vanilla"
 PUBLICATION_LATENCY_RESULT_FILENAME: Final = "publication-latency-job-result.json"
@@ -372,7 +396,7 @@ def _verified(uri: str, expected: str, label: str) -> str:
     return path
 
 
-def _pip_subprocess_environment() -> dict[str, str]:
+def _pip_subprocess_environment(include_runtime_warnings: bool = True) -> dict[str, str]:
     env = dict(os.environ)
     for variable_name in tuple(env):
         if variable_name.upper().startswith(("PIP_", "_PIP_")):
@@ -387,9 +411,16 @@ def _pip_subprocess_environment() -> dict[str, str]:
             "PIP_NO_INPUT": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONSAFEPATH": "1",
-            "PYTHONWARNINGS": _PYTHONWARNINGS,
         }
     )
+    if include_runtime_warnings:
+        env["PYTHONWARNINGS"] = _PYTHONWARNINGS
+    else:
+        # The Databricks driver environment contains legacy eggs. pip walks
+        # them while building its user agent and emits a pkg_resources
+        # DeprecationWarning. The runtime warning policy turns that into an
+        # install failure, so the wheel install keeps the driver's default.
+        env.pop("PYTHONWARNINGS", None)
     return env
 
 
@@ -450,7 +481,7 @@ def main() -> None:
             "cachet-kv @ " + Path(wheel).resolve().as_uri()
             + "#sha256=" + args.package_wheel_sha256,
         ],
-        env=_pip_subprocess_environment(),
+        env=_pip_subprocess_environment(False),
     )
     subprocess.check_call(
         [
@@ -1061,9 +1092,66 @@ def main() -> None:
         + os.pathsep
         + pip_environment.get("PATH", "")
     )
+    def _bnb_plugin_install_paths(runtime_lock_path, work_dir):
+        continuation = chr(92)
+        newline = chr(10)
+        stanza = newline.join((
+            "vllm-bnb-plugin==0.0.3 " + continuation,
+            "    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c " + continuation,
+            "    --hash=sha256:e884654a25a8b2a15f41644e0be28b811a176ffbe31a58a9ccc22aefc6525c7c",
+            "    # via -r src/document_kv_cache/runtime_locks/vllm-0.30.0-cu129-py311-manylinux_2_35.in",
+            "    # from https://pypi.org/simple",
+        )) + newline
+        plugin_requirements_text = newline.join((
+            "vllm-bnb-plugin==0.0.3 " + continuation,
+            "    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c",
+        )) + newline
+        with open(runtime_lock_path, "rb") as handle:
+            raw = handle.read()
+        encoded_stanza = stanza.encode("ascii")
+        count = raw.count(encoded_stanza)
+        if count == 0:
+            return runtime_lock_path, None
+        if count != 1:
+            raise RuntimeError("runtime lock bitsandbytes plugin stanza is not unique")
+        filtered = raw.replace(encoded_stanza, b"", 1)
+        if b"vllm-bnb-plugin==" in filtered:
+            raise RuntimeError(
+                "runtime lock still requires vllm-bnb-plugin after stanza removal"
+            )
+        lock_path = os.path.join(work_dir, "runtime-lock-without-vllm-bnb-plugin.txt")
+        plugin_path = os.path.join(work_dir, "vllm-bnb-plugin-requirements.txt")
+        for path, payload in (
+            (lock_path, filtered),
+            (plugin_path, plugin_requirements_text.encode("ascii")),
+        ):
+            if os.path.lexists(path):
+                raise FileExistsError(
+                    "refusing to reuse install requirements: " + os.path.basename(path)
+                )
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                view = payload
+                while view:
+                    written = os.write(descriptor, view)
+                    if written <= 0:
+                        raise OSError("install requirements write did not advance")
+                    view = view[written:]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        return lock_path, plugin_path
+
     pip = [venv_python, "-m", "pip"]
+    base_lock, plugin_requirements = _bnb_plugin_install_paths(
+        runtime_lock, os.path.dirname(venv_dir)
+    )
     subprocess.check_call(
-        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", runtime_lock],
+        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", base_lock],
         env=pip_environment,
     )
     subprocess.check_call(
@@ -1077,6 +1165,20 @@ def main() -> None:
         ],
         env=pip_environment,
     )
+    if plugin_requirements is not None:
+        subprocess.check_call(
+            [
+                *pip,
+                "install",
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                plugin_requirements,
+            ],
+            env=pip_environment,
+        )
     subprocess.check_call(
         [
             *pip,
@@ -1246,7 +1348,7 @@ class PublicationLatencySourceClosureCoordinatorConfig:
         fixed_runtime = {
             "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
             "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
             "runtime_closure_manifest_sha256": (RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
         }
         for field_name, expected in fixed_runtime.items():
@@ -5780,7 +5882,7 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
         raise ValueError("publication latency runner hash drift")
     expected_runtime_hashes = {
         "patched_vllm_wheel": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        "patched_flashinfer_wheel": FLASHINFER_PATCHED_WHEEL_SHA256,
+        "patched_flashinfer_wheel": FLASHINFER_RUNTIME_WHEEL_SHA256,
         "runtime_closure_manifest": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         "runtime_lock": VLLM_RUNTIME_BASE_LOCK_SHA256,
     }
@@ -5868,6 +5970,16 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
             "/local_disk0/"
         ):
             raise ValueError("local handoff stage must use /local_disk0")
+        if handoff_record.get("source_kind") == (
+            PUBLICATION_LATENCY_BOUND_HANDOFF_SOURCE_KIND
+        ):
+            _validate_bound_handoff_record(handoff_record)
+        else:
+            _validate_handoff_source_record(
+                handoff_record,
+                cell=cell,
+                runtime=runtime,
+            )
     output = _mapping(record, "output")
     directory_uri = _durable_uri(
         _required_string(output, "directory_uri"),
@@ -9538,12 +9650,11 @@ def _native_runtime_v2_from_job_record(
     )
 
 
-def _validate_native_runtime_v2_attestation_binding(
+def _require_native_runtime_v2_artifact_origins(
     value: Mapping[str, Any],
     *,
     bundle: VLLMNativeRuntimeBundleV2,
 ) -> None:
-    validate_locked_runtime_v2_package_installation_attestation(value)
     expected_urls = {
         "vllm_direct_url": bundle.local_path("patched_vllm_wheel").resolve().as_uri(),
         "flashinfer_direct_url": (
@@ -9552,6 +9663,26 @@ def _validate_native_runtime_v2_attestation_binding(
     }
     if any(value.get(name) != expected for name, expected in expected_urls.items()):
         raise ValueError("native-v2 runtime attestation artifact origin drift")
+
+
+def _validate_native_runtime_v2_attestation_binding(
+    value: Mapping[str, Any],
+    *,
+    bundle: VLLMNativeRuntimeBundleV2,
+) -> None:
+    validate_locked_runtime_v2_package_installation_attestation(value)
+    _require_native_runtime_v2_artifact_origins(value, bundle=bundle)
+
+
+def _validate_publication_latency_gpu_runtime_attestation(
+    value: Mapping[str, Any],
+    *,
+    bundle: VLLMNativeRuntimeBundleV2,
+) -> None:
+    """Bind the GPU verifier record that the latency worker actually stores."""
+
+    validate_gpu_qualification_v2_runtime_attestation(value)
+    _require_native_runtime_v2_artifact_origins(value, bundle=bundle)
 
 
 def publication_latency_vllm_config(
@@ -9564,11 +9695,25 @@ def publication_latency_vllm_config(
     runtime = _mapping(job_record, "runtime")
     request_order = _mapping(job_record, "request_order")
     runtime_kv_dtype = _required_string(runtime, "runtime_kv_dtype")
-    layout = layout_for_model(
-        GPU_QUALIFICATION_MODEL_ID,
-        dtype=runtime_kv_dtype,
-        key_position_encoding="stored_post_rope",
-    )
+    method_id = _required_string(cell, "method_id")
+    # The sealed Q8/BF16 handoffs store pre-RoPE keys. Vanilla serving must
+    # handshake as that artifact and apply RoPE at injection. Baseline has no
+    # handoff and keeps the post-RoPE cache identity.
+    if method_id == "vanilla_prefill":
+        layout = layout_for_model(
+            GPU_QUALIFICATION_MODEL_ID,
+            dtype=runtime_kv_dtype,
+            pre_rope=True,
+            rope_theta=QWEN3_4B_ROPE_THETA,
+            rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+            key_position_encoding="pre_rope",
+        )
+    else:
+        layout = layout_for_model(
+            GPU_QUALIFICATION_MODEL_ID,
+            dtype=runtime_kv_dtype,
+            key_position_encoding="stored_post_rope",
+        )
     payload_axis_order = getattr(layout.payload_axis_order, "value", None)
     key_position_encoding = getattr(layout.key_position_encoding, "value", None)
     if not isinstance(payload_axis_order, str) or not isinstance(
@@ -9592,7 +9737,6 @@ def publication_latency_vllm_config(
     )
     job_id = _required_string(job_record, "job_id")
     input_tokens = _required_int(cell, "input_tokens")
-    method_id = _required_string(cell, "method_id")
     artifact_files = {
         _required_string(item, "role"): item
         for item in _mapping_sequence(job_record, "artifact_files")
@@ -9650,7 +9794,10 @@ def publication_latency_vllm_config(
         "tokenizer_revision": MAIN_LATENCY_TOKENIZER_REVISION,
         "tensor_parallel_size": 1,
     }
-    handoff = job_record.get("handoff")
+    if layout.rope_theta is not None:
+        provenance["rope_theta"] = layout.rope_theta
+        provenance["rope_rotary_dim"] = layout.rope_rotary_dim
+    handoff = _resolved_publication_latency_handoff(job_record)
     handoff_kwargs: dict[str, Any] = {}
     if method_id == "vanilla_prefill":
         handoff_record = _mapping_value(handoff, "handoff")
@@ -9676,7 +9823,11 @@ def publication_latency_vllm_config(
                     ),
                 }
             )
-        elif handoff_record.get("source_kind") == "closed_bf16_bundle":
+        elif handoff_record.get("source_kind") in {
+            "closed_bf16_bundle",
+            PUBLICATION_LATENCY_RESTORED_Q8_SOURCE_KIND,
+            PUBLICATION_LATENCY_L4_REGENERATED_SOURCE_KIND,
+        }:
             manifest = _mapping(handoff_record, "manifest")
             handoff_kwargs.update(
                 {
@@ -9713,6 +9864,22 @@ def publication_latency_vllm_config(
         arm_kwargs: dict[str, Any] = {"benchmark_arms": (BASELINE_PREFILL_ARM,)}
     else:
         arm_kwargs = {"benchmark_arm_specs": (_vanilla_arm_spec(),)}
+    served_gpu_memory_utilization = _finite_positive_number(
+        runtime.get("gpu_memory_utilization"), "gpu_memory_utilization"
+    )
+    # Sealed 0.27.1 wrapper v112 served BF16 publication handoffs at 0.8
+    # while the job record stayed at the 0.9 runtime-policy value. Eager
+    # vLLM 0.30.0 at 0.9 over-allocates KV cache and OOMs on the first prefill.
+    if (
+        runtime_kv_dtype == "bfloat16"
+        and handoff_kwargs.get("publication_handoff_local_nvme_dir") is not None
+        and float(served_gpu_memory_utilization) != 0.8
+    ):
+        served_gpu_memory_utilization = 0.8
+        print(
+            "+ cachet bf16 publication handoff gpu-memory-utilization 0.8",
+            flush=True,
+        )
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=job_id,
         benchmark_suite_id=(
@@ -9737,9 +9904,7 @@ def publication_latency_vllm_config(
         server_start_timeout_seconds=1200.0,
         max_model_len=_required_int(runtime, "max_model_len"),
         max_num_seqs=_required_int(runtime, "max_num_seqs"),
-        gpu_memory_utilization=_finite_positive_number(
-            runtime.get("gpu_memory_utilization"), "gpu_memory_utilization"
-        ),
+        gpu_memory_utilization=served_gpu_memory_utilization,
         benchmark_repeats=_required_int(cell, "repeats_per_example"),
         request_parallelism=_required_int(runtime, "request_parallelism"),
         benchmark_interleave_examples=False,
@@ -9955,7 +10120,7 @@ def seal_publication_latency_job_result(
     if native_runtime_v2 is None:  # pragma: no cover - production config enforces it.
         raise RuntimeError("publication latency requires native-v2 runtime artifacts")
     native_runtime_attestation = _mapping(metadata, "native_runtime_v2_attestation")
-    _validate_native_runtime_v2_attestation_binding(
+    _validate_publication_latency_gpu_runtime_attestation(
         native_runtime_attestation,
         bundle=native_runtime_v2,
     )
@@ -10111,7 +10276,7 @@ def validate_publication_latency_job_result_record(
         or runtime.get("vllm_version") != PUBLICATION_CAMPAIGN_ENGINE_VERSION
     ):
         raise ValueError("publication latency result runtime attestation drift")
-    _validate_native_runtime_v2_attestation_binding(
+    _validate_publication_latency_gpu_runtime_attestation(
         _mapping(runtime, "native_runtime_v2_attestation"),
         bundle=native_runtime_v2,
     )
@@ -10325,9 +10490,23 @@ def _validate_publication_latency_runtime_metadata(
 ) -> None:
     runtime = _mapping(job_record, "runtime")
     native_runtime_v2 = _native_runtime_v2_from_job_record(job_record)
+    expected_gpu_memory_utilization = runtime.get("gpu_memory_utilization")
+    handoff = job_record.get("handoff")
+    # Sealed 0.27.1 wrapper v116 compared metadata against the served 0.8
+    # value when the job record still carried the 0.9 policy value.
+    if (
+        runtime.get("runtime_kv_dtype") == "bfloat16"
+        and isinstance(handoff, Mapping)
+        and float(expected_gpu_memory_utilization or 0) == 0.9
+    ):
+        expected_gpu_memory_utilization = 0.8
+        print(
+            "+ cachet bf16 metadata gpu-memory-utilization 0.8",
+            flush=True,
+        )
     expected = {
         "attention_backend": runtime.get("attention_backend"),
-        "gpu_memory_utilization": runtime.get("gpu_memory_utilization"),
+        "gpu_memory_utilization": expected_gpu_memory_utilization,
         "kv_cache_dtype": runtime.get("runtime_kv_dtype"),
         "max_model_len": runtime.get("max_model_len"),
         "max_num_seqs": runtime.get("max_num_seqs"),
@@ -10363,7 +10542,7 @@ def _validate_publication_latency_runtime_metadata(
     if dict(_mapping(metadata, "native_runtime_v2")) != (native_runtime_v2.to_record()):
         raise ValueError("vLLM metadata native-v2 runtime bundle drift")
     native_attestation = _mapping(metadata, "native_runtime_v2_attestation")
-    _validate_native_runtime_v2_attestation_binding(
+    _validate_publication_latency_gpu_runtime_attestation(
         native_attestation,
         bundle=native_runtime_v2,
     )
@@ -11101,10 +11280,9 @@ def _validate_job_bound_source_files(job_record: Mapping[str, Any]) -> None:
     )
     schedule = _read_json_file(schedule_path, "publication schedule")
     _validate_job_schedule_record(schedule, job_record=job_record)
-    handoff_value = job_record.get("handoff")
-    if handoff_value is None:
+    handoff = _resolved_publication_latency_handoff(job_record)
+    if handoff is None:
         return
-    handoff = _mapping_value(handoff_value, "handoff")
     if handoff.get("source_kind") == "distributed_q8_generation":
         execution = _mapping(handoff, "execution")
         root = _cluster_path(_required_string(handoff, "output_root_uri"))
@@ -11134,8 +11312,488 @@ def _validate_job_bound_source_files(job_record: Mapping[str, Any]) -> None:
             "closed_record_sha256"
         ):
             raise ValueError("worker BF16 handoff binding drift")
+    elif handoff.get("source_kind") == PUBLICATION_LATENCY_RESTORED_Q8_SOURCE_KIND:
+        _verify_restored_q8_handoff_sources(handoff, job_record=job_record)
+    elif handoff.get("source_kind") == PUBLICATION_LATENCY_L4_REGENERATED_SOURCE_KIND:
+        _verify_l4_regenerated_handoff_sources(handoff, job_record=job_record)
     else:
         raise ValueError("worker handoff source kind is invalid")
+
+
+def _validate_handoff_source_record(
+    handoff: Mapping[str, Any],
+    *,
+    cell: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+) -> None:
+    source_kind = handoff.get("source_kind")
+    if source_kind == PUBLICATION_LATENCY_RESTORED_Q8_SOURCE_KIND:
+        _validate_restored_q8_handoff_record(handoff, cell=cell, runtime=runtime)
+    elif source_kind == PUBLICATION_LATENCY_L4_REGENERATED_SOURCE_KIND:
+        _validate_l4_regenerated_handoff_record(handoff, cell=cell, runtime=runtime)
+
+
+def _validate_bound_handoff_record(handoff: Mapping[str, Any]) -> None:
+    _require_exact_keys(
+        handoff,
+        {"binding", "source_kind", "stage_kind", "stage_uri"},
+        "bound handoff",
+    )
+    binding = _mapping(handoff, "binding")
+    _require_exact_keys(
+        binding,
+        {"closed_record_sha256", "sha256", "uri"},
+        "bound handoff binding",
+    )
+    _required_sha256(binding, "closed_record_sha256")
+    _required_sha256(binding, "sha256")
+    _durable_uri(_required_string(binding, "uri"), "bound handoff binding URI")
+
+
+def publication_latency_handoff_binding_record(
+    handoff: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Close the stage-free handoff that a bound job record resolves."""
+
+    inner = json.loads(_canonical_json(_mapping_value(handoff, "handoff")))
+    if "stage_kind" in inner or "stage_uri" in inner:
+        raise ValueError("handoff binding cannot carry the job's stage")
+    if inner.get("source_kind") not in (
+        PUBLICATION_LATENCY_BOUND_HANDOFF_INNER_SOURCE_KINDS
+    ):
+        raise ValueError("handoff binding source kind is invalid")
+    record: dict[str, Any] = {
+        "closed_record_sha256": "",
+        "handoff": inner,
+        "record_type": PUBLICATION_LATENCY_HANDOFF_BINDING_RECORD_TYPE,
+        "schema_version": PUBLICATION_LATENCY_HANDOFF_BINDING_SCHEMA_VERSION,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
+def publication_latency_handoff_binding_bytes(record: Mapping[str, Any]) -> bytes:
+    if dict(record) != publication_latency_handoff_binding_record(
+        _mapping(record, "handoff")
+    ):
+        raise ValueError("publication handoff binding is not closed")
+    return _canonical_json_bytes(record)
+
+
+def _resolved_publication_latency_handoff(
+    job_record: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    handoff_value = job_record.get("handoff")
+    if handoff_value is None:
+        return None
+    handoff = _mapping_value(handoff_value, "handoff")
+    if handoff.get("source_kind") != PUBLICATION_LATENCY_BOUND_HANDOFF_SOURCE_KIND:
+        return handoff
+    _validate_bound_handoff_record(handoff)
+    binding = _mapping(handoff, "binding")
+    path = _cluster_path(_required_string(binding, "uri"))
+    _verify_regular_file_sha256(
+        path,
+        _required_sha256(binding, "sha256"),
+        "publication handoff binding",
+    )
+    record = _read_latency_controller_record(path, "publication handoff binding")
+    _require_exact_keys(
+        record,
+        {"closed_record_sha256", "handoff", "record_type", "schema_version"},
+        "publication handoff binding",
+    )
+    if (
+        record.get("record_type") != PUBLICATION_LATENCY_HANDOFF_BINDING_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_HANDOFF_BINDING_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != binding.get("closed_record_sha256")
+    ):
+        raise ValueError("publication handoff binding drift")
+    inner = _mapping(record, "handoff")
+    if record != publication_latency_handoff_binding_record(inner):
+        raise ValueError("publication handoff binding is not closed")
+    resolved = {
+        **inner,
+        "stage_kind": _required_string(handoff, "stage_kind"),
+        "stage_uri": _required_string(handoff, "stage_uri"),
+    }
+    cell = _mapping(job_record, "cell")
+    runtime = _mapping(job_record, "runtime")
+    if resolved.get("source_kind") == "closed_bf16_bundle" and (
+        cell.get("setting_id") != "precision-bf16"
+        or runtime.get("runtime_kv_dtype") != PUBLICATION_LATENCY_BF16_DTYPE
+    ):
+        raise ValueError("bound BF16 handoff requires the BF16 cell")
+    _validate_handoff_source_record(resolved, cell=cell, runtime=runtime)
+    return resolved
+
+
+def _validate_restored_q8_handoff_record(
+    handoff: Mapping[str, Any],
+    *,
+    cell: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+) -> None:
+    _require_exact_keys(
+        handoff,
+        {
+            "manifest",
+            "provenance",
+            "source_kind",
+            "source_root_uri",
+            "stage_kind",
+            "stage_uri",
+        },
+        "restored Q8 handoff",
+    )
+    if (
+        cell.get("setting_id") == "precision-bf16"
+        or runtime.get("runtime_kv_dtype") != PUBLICATION_LATENCY_Q8_DTYPE
+    ):
+        raise ValueError("restored Q8 handoff requires the Q8 runtime")
+    _uc_volume_uri(
+        _cluster_path(_required_string(handoff, "source_root_uri")).as_posix(),
+        "restored Q8 handoff source root",
+    )
+    manifest = _mapping(handoff, "manifest")
+    _require_exact_keys(
+        manifest,
+        {"closed_record_sha256", "portable_bundle_sha256", "role", "sha256", "uri"},
+        "restored Q8 handoff manifest",
+    )
+    if manifest.get("role") != "q8_handoff_manifest":
+        raise ValueError("restored Q8 handoff manifest role is invalid")
+    for field_name in ("closed_record_sha256", "portable_bundle_sha256", "sha256"):
+        _required_sha256(manifest, field_name)
+    _durable_uri(_required_string(manifest, "uri"), "restored Q8 manifest URI")
+    provenance = _mapping(handoff, "provenance")
+    _require_exact_keys(
+        provenance,
+        {
+            "prior_job_record",
+            "prior_job_result",
+            "prior_staging_attestation",
+            "sealed_execution",
+        },
+        "restored Q8 handoff provenance",
+    )
+    for name in ("prior_job_record", "prior_job_result", "prior_staging_attestation"):
+        binding = _mapping(provenance, name)
+        _require_exact_keys(
+            binding,
+            {"closed_record_sha256", "sha256", "uri"},
+            f"restored Q8 {name}",
+        )
+        _required_sha256(binding, "closed_record_sha256")
+        _required_sha256(binding, "sha256")
+        _durable_uri(_required_string(binding, "uri"), f"restored Q8 {name} URI")
+    sealed_execution = _mapping(provenance, "sealed_execution")
+    _require_exact_keys(
+        sealed_execution,
+        {"closed_record_sha256", "sha256"},
+        "restored Q8 sealed execution",
+    )
+    _required_sha256(sealed_execution, "closed_record_sha256")
+    _required_sha256(sealed_execution, "sha256")
+
+
+def _read_restored_q8_provenance_record(
+    provenance: Mapping[str, Any],
+    name: str,
+    *,
+    record_type: str,
+) -> dict[str, Any]:
+    binding = _mapping(provenance, name)
+    path = _cluster_path(_required_string(binding, "uri"))
+    _verify_regular_file_sha256(
+        path,
+        _required_sha256(binding, "sha256"),
+        f"restored Q8 {name}",
+    )
+    record = _read_json_file(path, f"restored Q8 {name}")
+    if (
+        record.get("record_type") != record_type
+        or record.get("closed_record_sha256")
+        != _required_sha256(binding, "closed_record_sha256")
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+    ):
+        raise ValueError(f"restored Q8 {name} closure drift")
+    return record
+
+
+def _verify_restored_q8_handoff_sources(
+    handoff: Mapping[str, Any],
+    *,
+    job_record: Mapping[str, Any],
+) -> None:
+    """Join a restored Q8 bundle to a sealed job that staged the same bytes.
+
+    The original distributed execution tree is gone, so the bundle cannot be
+    resolved through it. Authority instead comes from a sealed SUCCESS result
+    whose job record served that execution and whose staging attestation
+    names this bundle's closed manifest.
+    """
+
+    manifest_binding = _mapping(handoff, "manifest")
+    manifest_path = _cluster_path(_required_string(manifest_binding, "uri"))
+    _verify_regular_file_sha256(
+        manifest_path,
+        _required_sha256(manifest_binding, "sha256"),
+        "restored Q8 handoff manifest",
+    )
+    manifest = read_publication_latency_handoff_bundle(manifest_path)
+    validate_publication_latency_handoff_bundle(
+        manifest,
+        bundle_root=_cluster_path(_required_string(handoff, "source_root_uri")),
+    )
+    if manifest.get("closed_record_sha256") != manifest_binding.get(
+        "closed_record_sha256"
+    ) or manifest.get("portable_bundle_sha256") != manifest_binding.get(
+        "portable_bundle_sha256"
+    ):
+        raise ValueError("restored Q8 handoff manifest binding drift")
+    if manifest.get("context_tokens") != _required_int(
+        _mapping(job_record, "cell"), "input_tokens"
+    ) or manifest.get("input_bundle_sha256") != _required_sha256(
+        _mapping(job_record, "request_order"), "input_bundle_sha256"
+    ):
+        raise ValueError("restored Q8 handoff manifest does not match the job")
+
+    provenance = _mapping(handoff, "provenance")
+    prior_job = _read_restored_q8_provenance_record(
+        provenance,
+        "prior_job_record",
+        record_type=PUBLICATION_LATENCY_JOB_RECORD_TYPE,
+    )
+    prior_result = _read_restored_q8_provenance_record(
+        provenance,
+        "prior_job_result",
+        record_type=PUBLICATION_LATENCY_JOB_RESULT_RECORD_TYPE,
+    )
+    prior_attestation = _read_restored_q8_provenance_record(
+        provenance,
+        "prior_staging_attestation",
+        record_type=PUBLICATION_HANDOFF_STAGING_ATTESTATION_RECORD_TYPE,
+    )
+    validate_publication_latency_job_record(prior_job)
+    sealed_execution = _mapping(provenance, "sealed_execution")
+    prior_handoff = _mapping(prior_job, "handoff")
+    prior_execution = _mapping(prior_handoff, "execution")
+    if (
+        prior_handoff.get("source_kind") != "distributed_q8_generation"
+        or prior_execution.get("sha256") != sealed_execution.get("sha256")
+        or prior_execution.get("closed_record_sha256")
+        != sealed_execution.get("closed_record_sha256")
+        or _mapping(prior_job, "runtime").get("runtime_kv_dtype")
+        != PUBLICATION_LATENCY_Q8_DTYPE
+        or _mapping(prior_job, "cell").get("input_tokens")
+        != manifest.get("context_tokens")
+    ):
+        raise ValueError("restored Q8 prior job did not serve the sealed generation")
+    sealed_attestations = [
+        item
+        for item in _mapping_sequence(prior_result, "files")
+        if item.get("role") == "handoff_staging_attestation"
+    ]
+    if (
+        prior_result.get("job_record_sha256") != prior_job.get("closed_record_sha256")
+        or prior_result.get("job_id") != prior_job.get("job_id")
+        or prior_result.get("execution_plan_sha256")
+        != prior_job.get("execution_plan_sha256")
+        or len(sealed_attestations) != 1
+        or sealed_attestations[0].get("sha256")
+        != _mapping(provenance, "prior_staging_attestation").get("sha256")
+    ):
+        raise ValueError("restored Q8 prior result does not seal the staging attestation")
+    if (
+        prior_attestation.get("bundle_closed_record_sha256")
+        != manifest.get("closed_record_sha256")
+        or prior_attestation.get("context_tokens") != manifest.get("context_tokens")
+        or prior_attestation.get("input_bundle_sha256")
+        != manifest.get("input_bundle_sha256")
+    ):
+        raise ValueError("restored Q8 bundle differs from the bundle the sealed job staged")
+
+
+def _l4_regenerated_manifest_role(runtime: Mapping[str, Any]) -> str:
+    if runtime.get("runtime_kv_dtype") == PUBLICATION_LATENCY_BF16_DTYPE:
+        return "bf16_handoff_manifest"
+    if runtime.get("runtime_kv_dtype") == PUBLICATION_LATENCY_Q8_DTYPE:
+        return "q8_handoff_manifest"
+    raise ValueError("L4-regenerated handoff runtime KV dtype is invalid")
+
+
+def _validate_l4_regenerated_handoff_record(
+    handoff: Mapping[str, Any],
+    *,
+    cell: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+) -> None:
+    _require_exact_keys(
+        handoff,
+        {
+            "manifest",
+            "regeneration",
+            "source_kind",
+            "source_root_uri",
+            "stage_kind",
+            "stage_uri",
+        },
+        "L4-regenerated handoff",
+    )
+    if (cell.get("setting_id") == "precision-bf16") != (
+        runtime.get("runtime_kv_dtype") == PUBLICATION_LATENCY_BF16_DTYPE
+    ):
+        raise ValueError("L4-regenerated handoff precision differs from the cell")
+    _uc_volume_uri(
+        _cluster_path(_required_string(handoff, "source_root_uri")).as_posix(),
+        "L4-regenerated handoff source root",
+    )
+    manifest = _mapping(handoff, "manifest")
+    _require_exact_keys(
+        manifest,
+        {"closed_record_sha256", "portable_bundle_sha256", "role", "sha256", "uri"},
+        "L4-regenerated handoff manifest",
+    )
+    if manifest.get("role") != _l4_regenerated_manifest_role(runtime):
+        raise ValueError("L4-regenerated handoff manifest role differs from the runtime")
+    for field_name in ("closed_record_sha256", "portable_bundle_sha256", "sha256"):
+        _required_sha256(manifest, field_name)
+    _durable_uri(_required_string(manifest, "uri"), "L4-regenerated manifest URI")
+    regeneration = _mapping(handoff, "regeneration")
+    _require_exact_keys(
+        regeneration,
+        {"execution", "plan"},
+        "L4-regenerated handoff regeneration",
+    )
+    for name in ("execution", "plan"):
+        binding = _mapping(regeneration, name)
+        _require_exact_keys(
+            binding,
+            {"closed_record_sha256", "sha256", "uri"},
+            f"L4 regeneration {name}",
+        )
+        _required_sha256(binding, "closed_record_sha256")
+        _required_sha256(binding, "sha256")
+        _durable_uri(_required_string(binding, "uri"), f"L4 regeneration {name} URI")
+
+
+def _verify_l4_regenerated_handoff_sources(
+    handoff: Mapping[str, Any],
+    *,
+    job_record: Mapping[str, Any],
+) -> None:
+    """Join an L4-regenerated bundle to the sealed plan and execution that built it.
+
+    The bundle's authority is its regeneration record, not an L40S producer
+    envelope, so the bytes may legitimately differ from the lost L40S bundle.
+    """
+
+    runtime = _mapping(job_record, "runtime")
+    cell = _mapping(job_record, "cell")
+    request_order = _mapping(job_record, "request_order")
+    kv_dtype = _required_string(runtime, "runtime_kv_dtype")
+    manifest_binding = _mapping(handoff, "manifest")
+    manifest_path = _cluster_path(_required_string(manifest_binding, "uri"))
+    _verify_regular_file_sha256(
+        manifest_path,
+        _required_sha256(manifest_binding, "sha256"),
+        "L4-regenerated handoff manifest",
+    )
+    manifest = read_publication_latency_handoff_bundle(manifest_path)
+    validate_publication_latency_handoff_bundle(
+        manifest,
+        bundle_root=_cluster_path(_required_string(handoff, "source_root_uri")),
+    )
+    layout = _mapping(_mapping(manifest, "identity"), "layout_identity")
+    if (
+        manifest.get("closed_record_sha256")
+        != manifest_binding.get("closed_record_sha256")
+        or manifest.get("portable_bundle_sha256")
+        != manifest_binding.get("portable_bundle_sha256")
+    ):
+        raise ValueError("L4-regenerated handoff manifest binding drift")
+    if (
+        manifest.get("context_tokens") != _required_int(cell, "input_tokens")
+        or manifest.get("input_bundle_sha256")
+        != _required_sha256(request_order, "input_bundle_sha256")
+        or layout.get("dtype") != kv_dtype
+    ):
+        raise ValueError("L4-regenerated handoff manifest does not match the job")
+
+    regeneration = _mapping(handoff, "regeneration")
+    plan_binding = _mapping(regeneration, "plan")
+    execution_binding = _mapping(regeneration, "execution")
+    plan = read_l4_regeneration_plan(
+        _cluster_path(_required_string(plan_binding, "uri")),
+        expected_file_sha256=_required_sha256(plan_binding, "sha256"),
+    )
+    execution = read_l4_regeneration_execution(
+        _cluster_path(_required_string(execution_binding, "uri")),
+        expected_file_sha256=_required_sha256(execution_binding, "sha256"),
+    )
+    if plan.get("closed_record_sha256") != plan_binding.get(
+        "closed_record_sha256"
+    ) or execution.get("closed_record_sha256") != execution_binding.get(
+        "closed_record_sha256"
+    ):
+        raise ValueError("L4 regeneration record binding drift")
+    durable_root = _durable_uri(
+        _required_string(plan, "durable_output_root"),
+        "L4 regeneration durable root",
+    )
+    if _required_string(execution_binding, "uri") != _join_durable_uri(
+        durable_root, L4_REGENERATION_EXECUTION_FILENAME
+    ):
+        raise ValueError("L4 regeneration execution is outside its plan root")
+    if (
+        L4_REGENERATION_PRECISIONS.get(_required_string(plan, "precision")) != kv_dtype
+        or plan.get("context_tokens") != manifest.get("context_tokens")
+        or plan.get("input_bundle_sha256") != manifest.get("input_bundle_sha256")
+    ):
+        raise ValueError("L4 regeneration plan does not describe this job")
+    execution_plan = _mapping(execution, "plan")
+    if (
+        execution_plan.get("closed_record_sha256") != plan.get("closed_record_sha256")
+        or execution_plan.get("sha256") != plan_binding.get("sha256")
+        or execution.get("precision") != plan.get("precision")
+    ):
+        raise ValueError("L4 regeneration execution belongs to another plan")
+    bundle = _mapping(execution, "bundle")
+    if (
+        bundle.get("closed_record_sha256") != manifest.get("closed_record_sha256")
+        or bundle.get("portable_bundle_sha256")
+        != manifest.get("portable_bundle_sha256")
+        or bundle.get("manifest_sha256") != manifest_binding.get("sha256")
+        or bundle.get("kv_dtype") != kv_dtype
+        or bundle.get("context_tokens") != manifest.get("context_tokens")
+        or bundle.get("input_bundle_sha256") != manifest.get("input_bundle_sha256")
+    ):
+        raise ValueError("L4 regeneration execution sealed a different bundle")
+    generation_root = _durable_uri(
+        _required_string(plan, "generation_root"),
+        "L4 regeneration generation root",
+    )
+    manifest_uri = _required_string(bundle, "manifest_uri")
+    source_root_uri = _required_string(bundle, "source_root_uri")
+    if (
+        _required_string(manifest_binding, "uri") != manifest_uri
+        or _required_string(handoff, "source_root_uri") != source_root_uri
+        or not manifest_uri.startswith(generation_root + "/manifests/")
+        or not source_root_uri.startswith(generation_root + "/bundles/")
+    ):
+        raise ValueError("L4-regenerated handoff paths differ from the execution")
+    shards = _mapping_sequence(execution, "shards")
+    if len(shards) != len(_mapping_sequence(plan, "shards")) or any(
+        {
+            key: _mapping(shard, "observed_hardware").get(key)
+            for key in L4_REGENERATION_HARDWARE
+        }
+        != L4_REGENERATION_HARDWARE
+        for shard in shards
+    ):
+        raise ValueError("L4 regeneration shards did not all run on the L4 target")
 
 
 def _validate_job_schedule_record(
