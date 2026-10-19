@@ -139,10 +139,12 @@ from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS,
     PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
+    PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
     PUBLICATION_CAMPAIGN_CONTEXT_TOKENS,
     PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS,
     PUBLICATION_CAMPAIGN_ENGINE_VERSION,
     PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET,
+    PUBLICATION_CAMPAIGN_ID,
     PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS,
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
@@ -239,6 +241,28 @@ PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE: Final = (
     "cachet.publication_latency_estimation_summary.v2"
 )
 PUBLICATION_LATENCY_SCHEMA_VERSION: Final = 2
+PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE: Final = (
+    "cachet.publication_latency_multi_plan_collection.v1"
+)
+PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE: Final = (
+    "cachet.publication_latency_multi_plan_summary.v1"
+)
+PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION: Final = 1
+PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING: Final = "ledger_receipt"
+PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING: Final = "recovered_receipt"
+PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING: Final = "recovered_balance"
+PUBLICATION_LATENCY_LEDGER_BINDINGS: Final = (
+    PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING,
+    PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING,
+    PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING,
+)
+# Task key of the timeout-only stand-in payload used to re-record finished runs
+# by run ID after the ledger was recreated.
+PUBLICATION_LATENCY_RECOVERED_RECEIPT_TASK_KEY: Final = "latency_recovered"
+# Terminal-only seeds that restored the spent balance of a recreated ledger.
+PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX: Final = (
+    "publication-latency/recovered-balance/"
+)
 PUBLICATION_LATENCY_SOURCE_CLOSURE_REQUEST_RECORD_TYPE: Final = (
     "cachet.publication_latency_source_closure_request.v2"
 )
@@ -8385,6 +8409,986 @@ def validate_publication_latency_summary_record(
     _validate_publication_latency_summary_tables(record)
 
 
+def _campaign_latency_job_descriptors(
+    campaign_plan_record: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    validate_publication_campaign_plan_record(campaign_plan_record)
+    if (
+        campaign_plan_record.get("closed_record_sha256")
+        != PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
+        or campaign_plan_record.get("campaign_id") != PUBLICATION_CAMPAIGN_ID
+    ):
+        raise ValueError("multi-plan latency requires the frozen publication campaign")
+    descriptors = [
+        *(
+            _core_job_descriptor(cell)
+            for cell in _mapping_sequence(campaign_plan_record, "latency_cells")
+        ),
+        *(
+            _auxiliary_job_descriptor(cell)
+            for cell in _mapping_sequence(
+                campaign_plan_record,
+                "auxiliary_latency_cells",
+            )
+        ),
+    ]
+    by_job = {item["job_id"]: item for item in descriptors}
+    if (
+        len(by_job) != len(descriptors)
+        or len(by_job) != PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS
+    ):
+        raise ValueError("publication campaign latency design is not 115 unique jobs")
+    return by_job
+
+
+def _publication_latency_job_record_from_control_plane_run(
+    run: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Recover the exact closed worker contract one submitted run executed."""
+
+    tasks = run.get("tasks")
+    if (
+        not isinstance(tasks, list)
+        or len(tasks) != 1
+        or not isinstance(tasks[0], Mapping)
+    ):
+        raise ValueError("latency runs/get must contain exactly one task")
+    parameters = _mapping(tasks[0], "spark_python_task").get("parameters")
+    if (
+        not isinstance(parameters, list)
+        or len(parameters) != 16
+        or not all(isinstance(item, str) for item in parameters)
+        or parameters[0] != "--job-record-json"
+        or parameters[2] != "--expected-job-sha256"
+    ):
+        raise ValueError("latency runs/get parameters do not carry one job record")
+    job = _canonical_remote_json_record(
+        (parameters[1] + "\n").encode("utf-8"),
+        field_name="latency runs/get job record",
+    )
+    validate_publication_latency_job_record(job)
+    if job.get("closed_record_sha256") != parameters[3]:
+        raise ValueError("latency runs/get job record digest drift")
+    return job
+
+
+def _validate_plan_bound_latency_job(
+    job: Mapping[str, Any],
+    *,
+    descriptor: Mapping[str, Any],
+    campaign_id: str,
+) -> None:
+    validate_publication_latency_job_record(job)
+    cell = dict(_mapping(job, "cell"))
+    zone_id = cell.pop("zone_id", None)
+    if (
+        job.get("campaign_id") != campaign_id
+        or job.get("job_id") != descriptor.get("job_id")
+        or not _json_type_exact_equal(cell, dict(descriptor))
+        or zone_id not in PUBLICATION_LATENCY_DATABRICKS_ZONES
+        or _mapping(job, "runtime").get("zone_id") != zone_id
+    ):
+        raise ValueError("latency job record differs from its frozen campaign cell")
+
+
+def _json_type_exact_equal(left: Any, right: Any) -> bool:
+    return _canonical_json(left) == _canonical_json(right)
+
+
+def _latency_plan_set(jobs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    by_plan: dict[str, list[Mapping[str, Any]]] = {}
+    for item in jobs:
+        by_plan.setdefault(
+            _required_sha256(item, "execution_plan_sha256"),
+            [],
+        ).append(_mapping(item, "job_record"))
+    return [
+        {
+            "execution_plan_sha256": plan_sha256,
+            "job_ids": sorted(_required_string(job, "job_id") for job in plan_jobs),
+            "package_wheel_sha256s": sorted(
+                {
+                    _required_sha256(artifact, "sha256")
+                    for job in plan_jobs
+                    for artifact in _mapping_sequence(job, "artifact_files")
+                    if artifact.get("role") == "package_wheel"
+                }
+            ),
+            "source_tree_sha256s": sorted(
+                {_required_sha256(job, "source_tree_sha256") for job in plan_jobs}
+            ),
+        }
+        for plan_sha256, plan_jobs in sorted(by_plan.items())
+    ]
+
+
+def _latency_collection_causal_closure_sha256(
+    *,
+    collection_sha256: str,
+    ledger_path_sha256: str,
+    ledger_prefix: DatabricksLedgerPrefix,
+    user_name_sha256: str,
+    workspace_host_sha256: str,
+) -> str:
+    return _canonical_sha256(
+        {
+            "collection_sha256": collection_sha256,
+            "ledger_path_sha256": ledger_path_sha256,
+            "ledger_prefix": ledger_prefix.to_record(),
+            "user_name_sha256": user_name_sha256,
+            "workspace_host_sha256": workspace_host_sha256,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PublicationLatencyMultiPlanCollectionAuthorization:
+    """Non-record authority over one 115-job closure joined across launch plans."""
+
+    collection: Mapping[str, Any]
+    collection_sha256: str
+    ledger_path_sha256: str
+    ledger_prefix: DatabricksLedgerPrefix
+    workspace_host_sha256: str
+    user_name_sha256: str
+    causal_closure_sha256: str
+
+    def __init__(
+        self,
+        *,
+        collection: Mapping[str, Any],
+        ledger_path_sha256: str,
+        ledger_prefix: DatabricksLedgerPrefix,
+        workspace_host_sha256: str,
+        user_name_sha256: str,
+        _issuer: object,
+    ) -> None:
+        if _issuer is not _MULTI_PLAN_COLLECTION_AUTHORIZATION_ISSUER:
+            raise TypeError(
+                "multi-plan latency collection authority must come from the collector"
+            )
+        normalized = json.loads(_canonical_json(collection))
+        if not isinstance(normalized, dict):  # pragma: no cover - mapping above.
+            raise TypeError("collection must be an object")
+        if not isinstance(ledger_prefix, DatabricksLedgerPrefix):
+            raise TypeError("ledger_prefix has the wrong type")
+        if ledger_prefix.to_record() != _mapping(normalized, "ledger").get(
+            "ledger_prefix"
+        ):
+            raise ValueError("multi-plan latency collection ledger prefix drift")
+        collection_sha256 = _required_sha256(normalized, "closed_record_sha256")
+        path_sha256 = _require_sha256_value(ledger_path_sha256, "ledger_path_sha256")
+        workspace_sha = _require_sha256_value(
+            workspace_host_sha256, "workspace_host_sha256"
+        )
+        user_sha = _require_sha256_value(user_name_sha256, "user_name_sha256")
+        object.__setattr__(self, "collection", MappingProxyType(normalized))
+        object.__setattr__(self, "collection_sha256", collection_sha256)
+        object.__setattr__(self, "ledger_path_sha256", path_sha256)
+        object.__setattr__(self, "ledger_prefix", ledger_prefix)
+        object.__setattr__(self, "workspace_host_sha256", workspace_sha)
+        object.__setattr__(self, "user_name_sha256", user_sha)
+        object.__setattr__(
+            self,
+            "causal_closure_sha256",
+            _latency_collection_causal_closure_sha256(
+                collection_sha256=collection_sha256,
+                ledger_path_sha256=path_sha256,
+                ledger_prefix=ledger_prefix,
+                user_name_sha256=user_sha,
+                workspace_host_sha256=workspace_sha,
+            ),
+        )
+
+
+_MULTI_PLAN_COLLECTION_AUTHORIZATION_ISSUER = object()
+
+
+def collect_publication_latency_multi_plan_campaign(
+    config: DatabricksWorkspaceConfig,
+    *,
+    campaign_plan_record: Mapping[str, Any],
+    selected_run_ids: Mapping[str, str],
+    ledger_path: str | Path,
+    controller_cas_root: str | Path,
+) -> tuple[dict[str, Any], PublicationLatencyMultiPlanCollectionAuthorization]:
+    """Join one selected successful run per frozen job across its launch plans.
+
+    Each job is bound to the closed job record its run executed, so capacity
+    retries and reopened cells may come from different plans.  Runs finished
+    before the ledger was recreated are bound in one of two weaker ways: a
+    receipt re-recorded by run ID under the exact timeout-only stand-in
+    payload, or no ledger record at all, which is accepted only when the
+    recreated ledger carries recovered-balance seeds for the spent hours.
+    """
+
+    descriptors = _campaign_latency_job_descriptors(campaign_plan_record)
+    campaign_id = _required_string(campaign_plan_record, "campaign_id")
+    if not isinstance(selected_run_ids, Mapping) or set(selected_run_ids) != set(
+        descriptors
+    ):
+        raise ValueError("multi-plan latency selection must name every frozen job")
+    run_by_job = {
+        job_id: _databricks_id(selected_run_ids[job_id], f"{job_id} run ID")
+        for job_id in descriptors
+    }
+    if len(set(run_by_job.values())) != len(run_by_job):
+        raise ValueError("multi-plan latency selected run IDs must be unique")
+    ledger_file = Path(ledger_path)
+    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_file)
+    initial_ledger = read_databricks_cluster_hour_ledger_json(ledger_file)
+    if (
+        initial_ledger.ledger_id
+        != _required_string(campaign_plan_record, "campaign_ledger_id")
+        or initial_ledger.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+    ):
+        raise ValueError("multi-plan latency ledger differs from the campaign ledger")
+    initial_prefix = databricks_ledger_prefix(initial_ledger)
+
+    observed: list[
+        tuple[str, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]
+    ] = []
+    for job_id, descriptor in descriptors.items():
+        run_id = run_by_job[job_id]
+        run = get_databricks_run(config, run_id)
+        job = _publication_latency_job_record_from_control_plane_run(run)
+        _validate_plan_bound_latency_job(
+            job,
+            descriptor=descriptor,
+            campaign_id=campaign_id,
+        )
+        payload = _render_publication_latency_submit_payload_from_job_record(job)
+        identity = _validate_latency_control_plane_run(
+            run,
+            job_record=job,
+            submit_payload=payload,
+            receipt_run_id=run_id,
+        )
+        if identity["terminal_state"] != "succeeded":
+            raise RuntimeError(f"selected latency run for {job_id!r} did not succeed")
+        observed.append((run_id, run, job, payload, identity))
+    principals = {
+        _required_string(_mapping(job, "runtime"), "single_user_name")
+        for _run_id, _run, job, _payload, _identity in observed
+    }
+    input_bundles = {
+        _required_sha256(_mapping(job, "request_order"), "input_bundle_sha256")
+        for _run_id, _run, job, _payload, _identity in observed
+    }
+    if len(principals) != 1 or len(input_bundles) != 1:
+        raise ValueError("multi-plan latency jobs differ in principal or input bundle")
+    workspace_identity = require_databricks_current_user_name(
+        config,
+        expected_user_name=next(iter(principals)),
+    )
+
+    receipts_by_attempt = {
+        item.attempt_id: item for item in initial_ledger.submission_receipts
+    }
+    reserved_attempts = {item.attempt_id for item in initial_ledger.reservations}
+    ledger_run_ids = {item.run_id for item in initial_ledger.submission_receipts} | {
+        item.run_id
+        for item in initial_ledger.terminal_actuals
+        if item.run_id is not None
+    }
+    has_recovered_balance = any(
+        _is_recovered_balance_attempt(item.attempt_id)
+        for item in initial_ledger.terminal_actuals
+    )
+    jobs: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    terminal_receipts: list[dict[str, Any]] = []
+    seen_task_run_ids: set[str] = set()
+    seen_clusters: set[str] = set()
+    for run_id, run, job, payload, identity in observed:
+        job_id = _required_string(job, "job_id")
+        attempt_id = _required_string(job, "reservation_attempt_id")
+        payload_sha256 = _submit_payload_sha256(payload)
+        status_sha256 = _control_plane_status_sha256(run)
+        receipt = receipts_by_attempt.get(attempt_id)
+        actual_record: dict[str, Any] | None = None
+        ledger_payload_sha256: str | None = None
+        if receipt is not None:
+            if receipt.run_id != run_id:
+                raise ValueError("selected latency run differs from its ledger receipt")
+            ledger_payload_sha256 = receipt.submit_payload_sha256
+            if ledger_payload_sha256 == payload_sha256:
+                ledger_binding = PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING
+            elif ledger_payload_sha256 == _recovered_receipt_payload_sha256(job):
+                ledger_binding = PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING
+            else:
+                raise ValueError("latency ledger receipt payload binding drift")
+            reconciled = record_databricks_verified_run_terminal_actual_json(
+                ledger_file,
+                attempt_id=attempt_id,
+                run_record=run,
+            )
+            actual = next(
+                item
+                for item in reconciled.terminal_actuals
+                if item.attempt_id == attempt_id
+            )
+            if (
+                actual.terminal_state != "succeeded"
+                or actual.verification_source != "direct_databricks_runs_get"
+                or actual.run_id != run_id
+                or actual.submit_payload_sha256 != ledger_payload_sha256
+                or actual.control_plane_status_sha256 != status_sha256
+            ):
+                raise RuntimeError("latency ledger terminal causal binding drift")
+            actual_record = _terminal_actual_record(actual)
+        else:
+            if attempt_id in reserved_attempts or run_id in ledger_run_ids:
+                raise ValueError("unreceipted latency run has partial ledger state")
+            if not has_recovered_balance:
+                raise ValueError("unreceipted latency run lacks a recovered balance")
+            ledger_binding = PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING
+        remote_result = _collect_remote_publication_latency_result(
+            config,
+            job_record=job,
+            controller_cas_root=controller_cas_root,
+        )
+        result = remote_result.record
+        result_identity = _mapping(result, "task_identity")
+        if (
+            result_identity.get("cloud_run_id") != run_id
+            or result_identity.get("task_run_id") != identity["task_run_id"]
+            or result_identity.get("task_key") != job.get("task_key")
+        ):
+            raise ValueError("latency result does not match the control-plane task")
+        for seen, value, label in (
+            (seen_task_run_ids, str(identity["task_run_id"]), "task run ID"),
+            (seen_clusters, str(identity["cluster_id"]), "cluster ID"),
+        ):
+            if value in seen:
+                raise ValueError(f"latency {label} values must be unique")
+            seen.add(value)
+        _store_publication_latency_controller_cas_bytes(
+            controller_cas_root,
+            _control_plane_status_bytes(run),
+        )
+        terminal_receipts.append(
+            {
+                "attempt_id": attempt_id,
+                "cluster_id": identity["cluster_id"],
+                "control_plane_status_sha256": status_sha256,
+                "job_id": job_id,
+                "ledger_binding": ledger_binding,
+                "ledger_submit_payload_sha256": ledger_payload_sha256,
+                "ledger_terminal_actual": actual_record,
+                "ledger_terminal_actual_sha256": (
+                    None if actual_record is None else _canonical_sha256(actual_record)
+                ),
+                "result_closed_record_sha256": _required_sha256(
+                    result, "closed_record_sha256"
+                ),
+                "result_file_byte_count": remote_result.result_file_byte_count,
+                "result_file_sha256": remote_result.result_file_sha256,
+                "result_tree": dict(remote_result.result_tree),
+                "result_tree_file_count": remote_result.result_tree_file_count,
+                "result_tree_sha256": remote_result.result_tree_sha256,
+                "result_tree_total_bytes": remote_result.result_tree_total_bytes,
+                "run_id": run_id,
+                "submit_payload_sha256": payload_sha256,
+                "task_run_id": identity["task_run_id"],
+            }
+        )
+        jobs.append(
+            {
+                "execution_plan_sha256": _required_sha256(
+                    job, "execution_plan_sha256"
+                ),
+                "job_id": job_id,
+                "job_record": job,
+                "ledger_binding": ledger_binding,
+                "submit_payload_sha256": payload_sha256,
+            }
+        )
+        results.append(dict(result))
+    if set(run_by_job.values()).intersection(seen_task_run_ids):
+        raise ValueError("latency parent and task run ID domains must be disjoint")
+
+    final_ledger = read_databricks_cluster_hour_ledger_json(ledger_file)
+    if (
+        databricks_ledger_path_sha256(ledger_file) != ledger_path_sha256
+        or final_ledger.ledger_id != initial_ledger.ledger_id
+    ):
+        raise RuntimeError("latency ledger identity changed during collection")
+    require_databricks_ledger_prefix(final_ledger, initial_prefix)
+    if len(final_ledger.reservations) != len(initial_ledger.reservations) or len(
+        final_ledger.submission_receipts
+    ) != len(initial_ledger.submission_receipts):
+        raise RuntimeError("latency ledger gained launches during collection")
+    superseded_attempts = _superseded_latency_attempts(
+        final_ledger,
+        job_ids=set(descriptors),
+        selected_attempt_ids={
+            _required_string(item["job_record"], "reservation_attempt_id")
+            for item in jobs
+        },
+    )
+    recovered_seeds = [
+        item
+        for item in final_ledger.terminal_actuals
+        if _is_recovered_balance_attempt(item.attempt_id)
+    ]
+    final_prefix = databricks_ledger_prefix(final_ledger)
+    record: dict[str, Any] = {
+        "campaign_id": campaign_id,
+        "campaign_plan_sha256": _required_sha256(
+            campaign_plan_record, "closed_record_sha256"
+        ),
+        "closed_record_sha256": "",
+        "engine_version": PUBLICATION_CAMPAIGN_ENGINE_VERSION,
+        "job_count": len(jobs),
+        "jobs": jobs,
+        "ledger": {
+            "ledger_id": final_ledger.ledger_id,
+            "ledger_path_sha256": ledger_path_sha256,
+            "ledger_prefix": final_prefix.to_record(),
+            "recovered_balance": {
+                "attempt_count": len(recovered_seeds),
+                "cluster_hours": math.fsum(
+                    item.actual_cluster_hours for item in recovered_seeds
+                ),
+            },
+            "superseded_attempts": superseded_attempts,
+            "terminal_actuals_sha256": _receipt_bound_terminal_actuals_sha256(
+                terminal_receipts
+            ),
+        },
+        "plan_set": _latency_plan_set(jobs),
+        "record_type": PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE,
+        "results": results,
+        "schema_version": PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+        "terminal_receipts": terminal_receipts,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    validate_publication_latency_multi_plan_collection_record(
+        record,
+        campaign_plan_record=campaign_plan_record,
+    )
+    authorization = PublicationLatencyMultiPlanCollectionAuthorization(
+        collection=record,
+        ledger_path_sha256=ledger_path_sha256,
+        ledger_prefix=final_prefix,
+        workspace_host_sha256=workspace_identity["workspace_host_sha256"],
+        user_name_sha256=workspace_identity["user_name_sha256"],
+        _issuer=_MULTI_PLAN_COLLECTION_AUTHORIZATION_ISSUER,
+    )
+    return record, authorization
+
+
+def _superseded_latency_attempts(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    job_ids: set[str],
+    selected_attempt_ids: set[str],
+) -> list[dict[str, Any]]:
+    terminal_by_attempt = {item.attempt_id: item for item in ledger.terminal_actuals}
+    superseded: list[dict[str, Any]] = []
+    for reservation in ledger.reservations:
+        attempt_id = reservation.attempt_id
+        if (
+            not attempt_id.startswith("publication-latency/")
+            or _is_recovered_balance_attempt(attempt_id)
+            or attempt_id in selected_attempt_ids
+        ):
+            continue
+        job_id = _superseded_attempt_job_id(attempt_id, job_ids=job_ids)
+        actual = terminal_by_attempt.get(attempt_id)
+        if actual is None:
+            raise RuntimeError("a superseded latency attempt is still active")
+        superseded.append(
+            {
+                "attempt_id": attempt_id,
+                "job_id": job_id,
+                "terminal_state": actual.terminal_state,
+            }
+        )
+    return sorted(superseded, key=lambda item: item["attempt_id"])
+
+
+def _is_recovered_balance_attempt(attempt_id: str) -> bool:
+    return attempt_id.startswith(PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX)
+
+
+def _superseded_attempt_job_id(attempt_id: str, *, job_ids: set[str]) -> str:
+    parts = attempt_id.split("/")
+    if (
+        len(parts) != 3
+        or parts[0] != "publication-latency"
+        or re.fullmatch(r"[0-9a-f]{20}", parts[1]) is None
+        or parts[2] not in job_ids
+    ):
+        raise ValueError("latency ledger attempt lies outside the frozen design")
+    return parts[2]
+
+
+def _recovered_receipt_payload_sha256(job: Mapping[str, Any]) -> str:
+    runtime = _mapping(job, "runtime")
+    timeout_seconds = _required_int(runtime, "run_timeout_seconds")
+    return _submit_payload_sha256(
+        {
+            "tasks": [
+                {
+                    "max_retries": 0,
+                    "new_cluster": {
+                        "node_type_id": _required_string(runtime, "node_type_id")
+                    },
+                    "task_key": PUBLICATION_LATENCY_RECOVERED_RECEIPT_TASK_KEY,
+                    "timeout_seconds": timeout_seconds,
+                }
+            ],
+            "timeout_seconds": timeout_seconds,
+        }
+    )
+
+
+def _receipt_bound_terminal_actuals_sha256(
+    receipts: Sequence[Mapping[str, Any]],
+) -> str:
+    return _canonical_sha256(
+        sorted(
+            (
+                dict(_mapping(item, "ledger_terminal_actual"))
+                for item in receipts
+                if item.get("ledger_binding")
+                != PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING
+            ),
+            key=lambda actual: str(actual.get("attempt_id")),
+        )
+    )
+
+
+def validate_publication_latency_multi_plan_collection_record(
+    record: Mapping[str, Any],
+    *,
+    campaign_plan_record: Mapping[str, Any],
+) -> None:
+    """Revalidate one multi-plan collection offline against the frozen design."""
+
+    descriptors = _campaign_latency_job_descriptors(campaign_plan_record)
+    campaign_id = _required_string(campaign_plan_record, "campaign_id")
+    _require_exact_keys(
+        record,
+        {
+            "campaign_id",
+            "campaign_plan_sha256",
+            "closed_record_sha256",
+            "engine_version",
+            "job_count",
+            "jobs",
+            "ledger",
+            "plan_set",
+            "record_type",
+            "results",
+            "schema_version",
+            "terminal_receipts",
+        },
+        "publication latency multi-plan collection",
+    )
+    if (
+        record.get("record_type")
+        != PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+    ):
+        raise ValueError("publication latency multi-plan envelope is invalid")
+    if (
+        record.get("campaign_id") != campaign_id
+        or record.get("campaign_plan_sha256")
+        != campaign_plan_record.get("closed_record_sha256")
+        or record.get("engine_version") != PUBLICATION_CAMPAIGN_ENGINE_VERSION
+        or record.get("job_count") != PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS
+    ):
+        raise ValueError("publication latency multi-plan campaign binding drift")
+    jobs = _mapping_sequence(record, "jobs")
+    results = _mapping_sequence(record, "results")
+    receipts = _mapping_sequence(record, "terminal_receipts")
+    if not len(jobs) == len(results) == len(receipts) == len(descriptors):
+        raise ValueError("publication latency multi-plan collection is incomplete")
+    principals: set[str] = set()
+    input_bundles: set[str] = set()
+    for descriptor, entry, result, receipt in zip(
+        descriptors.values(), jobs, results, receipts, strict=True
+    ):
+        _require_exact_keys(
+            entry,
+            {
+                "execution_plan_sha256",
+                "job_id",
+                "job_record",
+                "ledger_binding",
+                "submit_payload_sha256",
+            },
+            "publication latency multi-plan job",
+        )
+        job = _mapping(entry, "job_record")
+        _validate_plan_bound_latency_job(
+            job,
+            descriptor=descriptor,
+            campaign_id=campaign_id,
+        )
+        job_id = _required_string(descriptor, "job_id")
+        ledger_binding = entry.get("ledger_binding")
+        payload_sha256 = _submit_payload_sha256(
+            _render_publication_latency_submit_payload_from_job_record(job)
+        )
+        if (
+            entry.get("job_id") != job_id
+            or entry.get("execution_plan_sha256") != job.get("execution_plan_sha256")
+            or entry.get("submit_payload_sha256") != payload_sha256
+            or ledger_binding not in PUBLICATION_LATENCY_LEDGER_BINDINGS
+        ):
+            raise ValueError("publication latency multi-plan job binding drift")
+        principals.add(_required_string(_mapping(job, "runtime"), "single_user_name"))
+        input_bundles.add(
+            _required_sha256(_mapping(job, "request_order"), "input_bundle_sha256")
+        )
+        validate_publication_latency_job_result_record(
+            result,
+            expected_job_record=job,
+            verify_files=False,
+        )
+        _require_exact_keys(
+            receipt,
+            {
+                "attempt_id",
+                "cluster_id",
+                "control_plane_status_sha256",
+                "job_id",
+                "ledger_binding",
+                "ledger_submit_payload_sha256",
+                "ledger_terminal_actual",
+                "ledger_terminal_actual_sha256",
+                "result_closed_record_sha256",
+                "result_file_byte_count",
+                "result_file_sha256",
+                "result_tree",
+                "result_tree_file_count",
+                "result_tree_sha256",
+                "result_tree_total_bytes",
+                "run_id",
+                "submit_payload_sha256",
+                "task_run_id",
+            },
+            "publication latency multi-plan terminal receipt",
+        )
+        run_id = _databricks_id(receipt.get("run_id"), "latency receipt run ID")
+        task_run_id = _databricks_id(
+            receipt.get("task_run_id"), "latency receipt task run ID"
+        )
+        _required_string(receipt, "cluster_id")
+        for field_name in (
+            "control_plane_status_sha256",
+            "result_closed_record_sha256",
+            "result_file_sha256",
+            "result_tree_sha256",
+        ):
+            _required_sha256(receipt, field_name)
+        result_identity = _mapping(result, "task_identity")
+        if (
+            receipt.get("job_id") != job_id
+            or receipt.get("attempt_id") != job.get("reservation_attempt_id")
+            or receipt.get("ledger_binding") != ledger_binding
+            or receipt.get("submit_payload_sha256") != payload_sha256
+            or receipt.get("result_closed_record_sha256")
+            != result.get("closed_record_sha256")
+            or str(result_identity.get("cloud_run_id")) != run_id
+            or str(result_identity.get("task_run_id")) != task_run_id
+            or result_identity.get("task_key") != job.get("task_key")
+        ):
+            raise ValueError("publication latency multi-plan receipt binding drift")
+        actual = receipt.get("ledger_terminal_actual")
+        ledger_payload_sha256 = receipt.get("ledger_submit_payload_sha256")
+        if ledger_binding == PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING:
+            if (
+                actual is not None
+                or ledger_payload_sha256 is not None
+                or receipt.get("ledger_terminal_actual_sha256") is not None
+            ):
+                raise ValueError(
+                    "recovered-balance latency jobs carry no ledger receipt"
+                )
+        else:
+            expected_ledger_payload_sha256 = (
+                payload_sha256
+                if ledger_binding == PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING
+                else _recovered_receipt_payload_sha256(job)
+            )
+            actual_record = _mapping_value(actual, "ledger terminal actual")
+            if (
+                ledger_payload_sha256 != expected_ledger_payload_sha256
+                or receipt.get("ledger_terminal_actual_sha256")
+                != _canonical_sha256(actual_record)
+                or actual_record.get("attempt_id") != receipt.get("attempt_id")
+                or actual_record.get("run_id") != run_id
+                or actual_record.get("submit_payload_sha256")
+                != ledger_payload_sha256
+                or actual_record.get("control_plane_status_sha256")
+                != receipt.get("control_plane_status_sha256")
+                or actual_record.get("terminal_state") != "succeeded"
+                or actual_record.get("verification_source")
+                != "direct_databricks_runs_get"
+            ):
+                raise ValueError("publication latency terminal actual binding drift")
+        _validate_latency_result_tree_receipt(receipt, result=result, job=job)
+    if len(principals) != 1 or len(input_bundles) != 1:
+        raise ValueError("multi-plan latency jobs differ in principal or input bundle")
+    run_ids = [str(item.get("run_id")) for item in receipts]
+    task_run_ids = [str(item.get("task_run_id")) for item in receipts]
+    if (
+        len(set(run_ids)) != len(receipts)
+        or len(set(task_run_ids)) != len(receipts)
+        or len({item.get("cluster_id") for item in receipts}) != len(receipts)
+        or set(run_ids).intersection(task_run_ids)
+    ):
+        raise ValueError(
+            "publication latency collected physical identities are not unique"
+        )
+    if not _json_type_exact_equal(
+        _mapping_sequence(record, "plan_set"),
+        _latency_plan_set(jobs),
+    ):
+        raise ValueError("publication latency multi-plan plan set drift")
+    _validate_multi_plan_ledger_binding(
+        _mapping(record, "ledger"),
+        campaign_plan_record=campaign_plan_record,
+        descriptors=descriptors,
+        jobs=jobs,
+        receipts=receipts,
+    )
+
+
+def _validate_multi_plan_ledger_binding(
+    ledger_binding: Mapping[str, Any],
+    *,
+    campaign_plan_record: Mapping[str, Any],
+    descriptors: Mapping[str, Any],
+    jobs: Sequence[Mapping[str, Any]],
+    receipts: Sequence[Mapping[str, Any]],
+) -> None:
+    _require_exact_keys(
+        ledger_binding,
+        {
+            "ledger_id",
+            "ledger_path_sha256",
+            "ledger_prefix",
+            "recovered_balance",
+            "superseded_attempts",
+            "terminal_actuals_sha256",
+        },
+        "publication latency multi-plan ledger",
+    )
+    if ledger_binding.get("ledger_id") != _required_string(
+        campaign_plan_record, "campaign_ledger_id"
+    ):
+        raise ValueError("publication latency collection uses a different ledger")
+    _required_sha256(ledger_binding, "ledger_path_sha256")
+    prefix = databricks_ledger_prefix_from_record(
+        _mapping(ledger_binding, "ledger_prefix")
+    )
+    if (
+        prefix.ledger_id != ledger_binding.get("ledger_id")
+        or prefix.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+    ):
+        raise ValueError("publication latency collection prefix identity drift")
+    if ledger_binding.get("terminal_actuals_sha256") != (
+        _receipt_bound_terminal_actuals_sha256(receipts)
+    ):
+        raise ValueError("publication latency terminal actual closure drift")
+    recovered = _mapping(ledger_binding, "recovered_balance")
+    _require_exact_keys(
+        recovered,
+        {"attempt_count", "cluster_hours"},
+        "publication latency recovered balance",
+    )
+    recovered_count = _nonnegative_int(
+        recovered.get("attempt_count"), "recovered balance attempt count"
+    )
+    recovered_hours = _finite_nonnegative_number(
+        recovered.get("cluster_hours"), "recovered balance cluster hours"
+    )
+    if type(recovered.get("cluster_hours")) is not float or (
+        any(
+            item.get("ledger_binding") == PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING
+            for item in jobs
+        )
+        and (recovered_count == 0 or recovered_hours <= 0.0)
+    ):
+        raise ValueError("recovered-balance latency jobs lack a recovered balance")
+    selected_attempts = {str(item.get("attempt_id")) for item in receipts}
+    superseded = _mapping_sequence(ledger_binding, "superseded_attempts")
+    for item in superseded:
+        _require_exact_keys(
+            item,
+            {"attempt_id", "job_id", "terminal_state"},
+            "publication latency superseded attempt",
+        )
+        attempt_id = _required_string(item, "attempt_id")
+        if (
+            attempt_id in selected_attempts
+            or _superseded_attempt_job_id(attempt_id, job_ids=set(descriptors))
+            != item.get("job_id")
+        ):
+            raise ValueError("publication latency superseded attempt drift")
+        _required_string(item, "terminal_state")
+    attempt_ids = [item.get("attempt_id") for item in superseded]
+    if attempt_ids != sorted(set(attempt_ids)):
+        raise ValueError("publication latency superseded attempts are not canonical")
+
+
+def require_publication_latency_multi_plan_collection_authorization(
+    authorization: object,
+    *,
+    campaign_plan_record: Mapping[str, Any],
+    ledger_path: str | Path,
+    require_complete_current_prefix: bool = True,
+) -> DatabricksLedgerPrefix:
+    """Replay the multi-plan capability against the canonical live ledger."""
+
+    if type(authorization) is not PublicationLatencyMultiPlanCollectionAuthorization:
+        raise TypeError(
+            "publication finalization requires "
+            "PublicationLatencyMultiPlanCollectionAuthorization"
+        )
+    validate_publication_latency_multi_plan_collection_record(
+        authorization.collection,
+        campaign_plan_record=campaign_plan_record,
+    )
+    if authorization.collection.get("closed_record_sha256") != (
+        authorization.collection_sha256
+    ):
+        raise ValueError("latency collection capability was mutated")
+    if authorization.causal_closure_sha256 != (
+        _latency_collection_causal_closure_sha256(
+            collection_sha256=authorization.collection_sha256,
+            ledger_path_sha256=authorization.ledger_path_sha256,
+            ledger_prefix=authorization.ledger_prefix,
+            user_name_sha256=authorization.user_name_sha256,
+            workspace_host_sha256=authorization.workspace_host_sha256,
+        )
+    ):
+        raise ValueError("latency collection causal workspace binding drift")
+    if authorization.ledger_path_sha256 != _mapping(
+        authorization.collection, "ledger"
+    ).get("ledger_path_sha256"):
+        raise ValueError("latency collection ledger path binding drift")
+    if databricks_ledger_path_sha256(ledger_path) != authorization.ledger_path_sha256:
+        raise ValueError("latency collection ledger path binding drift")
+    live = read_databricks_cluster_hour_ledger_json(ledger_path)
+    require_databricks_ledger_prefix(live, authorization.ledger_prefix)
+    if (
+        require_complete_current_prefix
+        and databricks_ledger_prefix(live) != authorization.ledger_prefix
+    ):
+        raise ValueError("latency collection is not the latest live ledger prefix")
+    return authorization.ledger_prefix
+
+
+def aggregate_publication_latency_multi_plan_campaign(
+    authorization: PublicationLatencyMultiPlanCollectionAuthorization,
+    *,
+    campaign_plan_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Produce the frozen estimation-only summaries over a multi-plan closure."""
+
+    if type(authorization) is not PublicationLatencyMultiPlanCollectionAuthorization:
+        raise TypeError(
+            "latency aggregation requires "
+            "PublicationLatencyMultiPlanCollectionAuthorization"
+        )
+    collection = json.loads(_canonical_json(authorization.collection))
+    if not isinstance(collection, dict):  # pragma: no cover - normalized capability.
+        raise TypeError("authorized latency collection is invalid")
+    if collection.get("closed_record_sha256") != authorization.collection_sha256:
+        raise ValueError("latency collection capability was mutated")
+    validate_publication_latency_multi_plan_collection_record(
+        collection,
+        campaign_plan_record=campaign_plan_record,
+    )
+    descriptors = {
+        _required_string(item, "job_id"): dict(
+            _mapping(_mapping(item, "job_record"), "cell")
+        )
+        for item in _mapping_sequence(collection, "jobs")
+    }
+    result_by_job = {
+        _required_string(item, "job_id"): item
+        for item in _mapping_sequence(collection, "results")
+    }
+    descriptive_cells, estimates = _publication_latency_estimation(
+        descriptors=descriptors,
+        result_by_job=result_by_job,
+        collection_sha256=authorization.collection_sha256,
+    )
+    campaign_plan_sha256 = _required_sha256(
+        campaign_plan_record, "closed_record_sha256"
+    )
+    summary: dict[str, Any] = {
+        "analysis": _publication_latency_summary_analysis(),
+        "campaign_id": _required_string(collection, "campaign_id"),
+        "campaign_plan_sha256": campaign_plan_sha256,
+        "closed_record_sha256": "",
+        "collection_sha256": authorization.collection_sha256,
+        "descriptive_cell_count": len(descriptive_cells),
+        "descriptive_cells": descriptive_cells,
+        "estimand_count": len(estimates),
+        "estimates": estimates,
+        "record_type": PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE,
+        "schema_version": PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+    }
+    summary["closed_record_sha256"] = _closed_record_sha256(summary)
+    validate_publication_latency_multi_plan_summary_record(
+        summary,
+        expected_collection_sha256=authorization.collection_sha256,
+        expected_campaign_plan_sha256=campaign_plan_sha256,
+    )
+    return summary
+
+
+def validate_publication_latency_multi_plan_summary_record(
+    record: Mapping[str, Any],
+    *,
+    expected_collection_sha256: str,
+    expected_campaign_plan_sha256: str,
+) -> None:
+    _require_exact_keys(
+        record,
+        {
+            "analysis",
+            "campaign_id",
+            "campaign_plan_sha256",
+            "closed_record_sha256",
+            "collection_sha256",
+            "descriptive_cell_count",
+            "descriptive_cells",
+            "estimand_count",
+            "estimates",
+            "record_type",
+            "schema_version",
+        },
+        "publication latency multi-plan summary",
+    )
+    if (
+        record.get("record_type") != PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE
+        or record.get("schema_version")
+        != PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+        or record.get("campaign_id") != PUBLICATION_CAMPAIGN_ID
+    ):
+        raise ValueError("publication latency multi-plan summary envelope is invalid")
+    if record.get("collection_sha256") != _require_sha256_value(
+        expected_collection_sha256, "expected_collection_sha256"
+    ) or record.get("campaign_plan_sha256") != _require_sha256_value(
+        expected_campaign_plan_sha256, "expected_campaign_plan_sha256"
+    ):
+        raise ValueError("publication latency multi-plan summary source binding drift")
+    _validate_publication_latency_summary_tables(record)
+
+
 def _publication_latency_summary_analysis() -> dict[str, Any]:
     return {
         "bootstrap": "paired_crossed_deployment_block_and_example",
@@ -12569,10 +13573,18 @@ __all__ = [
     "PUBLICATION_LATENCY_EXECUTION_PLAN_RECORD_TYPE",
     "PUBLICATION_LATENCY_JOB_RECORD_TYPE",
     "PUBLICATION_LATENCY_JOB_RESULT_RECORD_TYPE",
+    "PUBLICATION_LATENCY_LEDGER_BINDINGS",
+    "PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING",
     "PUBLICATION_LATENCY_MAX_OUTPUT_TOKENS",
+    "PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE",
+    "PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION",
+    "PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE",
     "PUBLICATION_LATENCY_Q8_DTYPE",
     "PUBLICATION_LATENCY_RAM_PAYLOAD_CACHE_BYTES",
     "PUBLICATION_LATENCY_RAM_PRIME_TARGETS",
+    "PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX",
+    "PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING",
+    "PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING",
     "PUBLICATION_LATENCY_RESULT_FILENAME",
     "PUBLICATION_LATENCY_RUNNER_SCRIPT",
     "PUBLICATION_LATENCY_RUNNER_SHA256",
@@ -12592,6 +13604,7 @@ __all__ = [
     "PublicationLatencyArtifactFile",
     "PublicationLatencyCollectionAuthorization",
     "PublicationLatencyFinalArtifactPins",
+    "PublicationLatencyMultiPlanCollectionAuthorization",
     "PublicationLatencySourceClosureAuthorization",
     "PublicationLatencySourceClosureCoordinatorConfig",
     "PublicationLatencySourceClosureRequestAuthorization",
@@ -12599,11 +13612,13 @@ __all__ = [
     "PublicationLatencyWaveAuthorization",
     "PublicationLatencyWaveSubmissionAuthorization",
     "aggregate_publication_latency_campaign",
+    "aggregate_publication_latency_multi_plan_campaign",
     "build_databricks_publication_latency_run_submit_payload",
     "build_publication_latency_execution_plan",
     "build_publication_latency_source_closure_request",
     "collect_publication_latency_campaign",
     "collect_publication_latency_launch_wave",
+    "collect_publication_latency_multi_plan_campaign",
     "collect_publication_latency_source_closure",
     "execute_publication_latency_job_record",
     "main",
@@ -12617,6 +13632,7 @@ __all__ = [
     "resume_publication_latency_source_closure",
     "run_publication_latency_source_closure_coordinator",
     "require_publication_latency_collection_authorization",
+    "require_publication_latency_multi_plan_collection_authorization",
     "seal_publication_latency_job_result",
     "submit_publication_latency_launch_wave",
     "submit_publication_latency_source_closure",
@@ -12628,6 +13644,8 @@ __all__ = [
     "validate_publication_latency_source_closure_result",
     "validate_publication_latency_job_record",
     "validate_publication_latency_job_result_record",
+    "validate_publication_latency_multi_plan_collection_record",
+    "validate_publication_latency_multi_plan_summary_record",
     "validate_publication_latency_summary_record",
     "write_publication_latency_runner_script",
     "write_publication_latency_source_closure_runner_script",

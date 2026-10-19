@@ -28,7 +28,9 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourLedger,
     create_databricks_cluster_hour_ledger_json,
     databricks_ledger_prefix,
+    read_databricks_cluster_hour_ledger_json,
     record_databricks_run_submission_receipt_json,
+    record_databricks_run_terminal_actual_json,
     record_databricks_verified_run_terminal_actual_json,
     reserve_databricks_run_attempt_json,
 )
@@ -4983,3 +4985,563 @@ def test_remote_result_tree_allows_the_runner_import_probe_script():
         probe_path.with_name(f"{probe_path.stem}.py").name
         in execution.PUBLICATION_LATENCY_REMOTE_AUXILIARY_FILENAMES
     )
+
+
+_MULTI_PLAN_CAMPAIGN = {
+    "campaign_id": PUBLICATION_CAMPAIGN_ID,
+    "campaign_ledger_id": "campaign",
+    "closed_record_sha256": "e" * 64,
+}
+_MULTI_PLAN_PLANS = {"job-a": "a" * 64, "job-b": "b" * 64, "job-c": "a" * 64}
+_MULTI_PLAN_RUN_IDS = {"job-a": "101", "job-b": "102", "job-c": "103"}
+_RECOVERED_SEED = (
+    f"{execution.PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX}seed-00"
+)
+_SUPERSEDED_ATTEMPT = f"publication-latency/{'f' * 20}/job-a"
+
+
+def _multi_plan_job(job_id, index):
+    plan_sha256 = _MULTI_PLAN_PLANS[job_id]
+    job = {
+        "artifact_files": [{"role": "package_wheel", "sha256": f"{index}" * 64}],
+        "campaign_id": PUBLICATION_CAMPAIGN_ID,
+        "cell": {"job_id": job_id, "position": index, "zone_id": "us-west-2b"},
+        "closed_record_sha256": "",
+        "execution_plan_sha256": plan_sha256,
+        "job_id": job_id,
+        "output": {"directory_uri": f"dbfs:/Volumes/c/s/v/{job_id}"},
+        "request_order": {"input_bundle_sha256": "2" * 64},
+        "reservation_attempt_id": f"publication-latency/{plan_sha256[:20]}/{job_id}",
+        "runtime": {
+            "node_type_id": "g6.8xlarge",
+            "run_timeout_seconds": 3600,
+            "single_user_name": "publication@example.com",
+            "zone_id": "us-west-2b",
+        },
+        "source_tree_sha256": "3" * 64,
+        "task_key": f"latency_{index}",
+    }
+    job["closed_record_sha256"] = execution._closed_record_sha256(job)
+    return job
+
+
+def _multi_plan_payload(job):
+    timeout = job["runtime"]["run_timeout_seconds"]
+    parameters = [
+        "--job-record-json",
+        execution._canonical_json(job),
+        "--expected-job-sha256",
+        job["closed_record_sha256"],
+        *(f"--option-{index}" for index in range(12)),
+    ]
+    return {
+        "run_name": job["job_id"],
+        "tasks": [
+            {
+                "max_retries": 0,
+                "new_cluster": {"node_type_id": job["runtime"]["node_type_id"]},
+                "spark_python_task": {
+                    "parameters": parameters,
+                    "python_file": "dbfs:/Volumes/c/s/v/runner.py",
+                },
+                "task_key": job["task_key"],
+                "timeout_seconds": timeout,
+            }
+        ],
+        "timeout_seconds": timeout,
+    }
+
+
+def _stand_in_payload(job, *, timeout=None):
+    timeout = job["runtime"]["run_timeout_seconds"] if timeout is None else timeout
+    return {
+        "tasks": [
+            {
+                "max_retries": 0,
+                "new_cluster": {"node_type_id": job["runtime"]["node_type_id"]},
+                "task_key": execution.PUBLICATION_LATENCY_RECOVERED_RECEIPT_TASK_KEY,
+                "timeout_seconds": timeout,
+            }
+        ],
+        "timeout_seconds": timeout,
+    }
+
+
+def _multi_plan_run(job, run_id):
+    payload = _multi_plan_payload(job)
+    task = payload["tasks"][0]
+    return {
+        "end_time": 3_000_000,
+        "run_id": int(run_id),
+        "run_name": payload["run_name"],
+        "run_type": "SUBMIT_RUN",
+        "start_time": 1_000_000,
+        "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+        "tasks": [
+            {
+                "attempt_number": 0,
+                "cluster_instance": {"cluster_id": f"cluster-{run_id}"},
+                "end_time": 2_000_000,
+                "new_cluster": dict(task["new_cluster"]),
+                "run_id": int(run_id) * 10,
+                "spark_python_task": deepcopy(task["spark_python_task"]),
+                "start_time": 1_100_000,
+                "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                "task_key": task["task_key"],
+            }
+        ],
+    }
+
+
+def _multi_plan_case(
+    tmp_path,
+    monkeypatch,
+    *,
+    recovered_timeout=None,
+    seed_recovered_balance=True,
+    reserve_unreceipted=False,
+    finish_superseded=True,
+):
+    jobs = {
+        job_id: _multi_plan_job(job_id, index)
+        for index, job_id in enumerate(_MULTI_PLAN_PLANS, start=1)
+    }
+    descriptors = {
+        job_id: {"job_id": job_id, "position": index}
+        for index, job_id in enumerate(_MULTI_PLAN_PLANS, start=1)
+    }
+    runs = {
+        run_id: _multi_plan_run(jobs[job_id], run_id)
+        for job_id, run_id in _MULTI_PLAN_RUN_IDS.items()
+    }
+    results = {
+        job_id: {
+            "closed_record_sha256": f"{index + 4}" * 64,
+            "files": [],
+            "task_identity": {
+                "cloud_run_id": _MULTI_PLAN_RUN_IDS[job_id],
+                "task_key": job["task_key"],
+                "task_run_id": str(int(_MULTI_PLAN_RUN_IDS[job_id]) * 10),
+            },
+        }
+        for index, (job_id, job) in enumerate(jobs.items())
+    }
+    monkeypatch.setattr(
+        execution,
+        "_campaign_latency_job_descriptors",
+        lambda _record: deepcopy(descriptors),
+    )
+    monkeypatch.setattr(execution, "PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS", 3)
+    monkeypatch.setattr(
+        execution, "validate_publication_latency_job_record", lambda _job: None
+    )
+    monkeypatch.setattr(
+        execution,
+        "validate_publication_latency_job_result_record",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        execution,
+        "_validate_latency_result_tree_receipt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        execution,
+        "_render_publication_latency_submit_payload_from_job_record",
+        _multi_plan_payload,
+    )
+    monkeypatch.setattr(
+        execution, "get_databricks_run", lambda _config, run_id: deepcopy(runs[run_id])
+    )
+
+    def remote_result(_config, *, job_record, controller_cas_root):
+        tree = {"directory_uri": job_record["output"]["directory_uri"], "files": []}
+        return execution._PublicationLatencyRemoteResult(
+            record=deepcopy(results[job_record["job_id"]]),
+            result_tree=tree,
+            result_file_sha256="c" * 64,
+            result_file_byte_count=1,
+            result_tree_sha256=execution._canonical_sha256(tree),
+            result_tree_file_count=1,
+            result_tree_total_bytes=1,
+        )
+
+    monkeypatch.setattr(
+        execution, "_collect_remote_publication_latency_result", remote_result
+    )
+
+    ledger_path = tmp_path / "ledger.json"
+    create_databricks_cluster_hour_ledger_json(ledger_path, ledger_id="campaign")
+
+    def launch(attempt_id, payload, run_id=None, legacy_state=None):
+        reserve_databricks_run_attempt_json(
+            ledger_path,
+            payload,
+            attempt_id=attempt_id,
+            workload_id=attempt_id.rsplit("/", 1)[-1],
+        )
+        if run_id is not None:
+            record_databricks_run_submission_receipt_json(
+                ledger_path,
+                attempt_id=attempt_id,
+                submit_response={"run_id": int(run_id)},
+            )
+        if legacy_state is not None:
+            record_databricks_run_terminal_actual_json(
+                ledger_path,
+                attempt_id=attempt_id,
+                terminal_state=legacy_state,
+                actual_cluster_duration_seconds=1800.0,
+            )
+
+    if seed_recovered_balance:
+        launch(
+            _RECOVERED_SEED,
+            _stand_in_payload(jobs["job-c"]),
+            legacy_state="succeeded",
+        )
+    launch(
+        _SUPERSEDED_ATTEMPT,
+        _stand_in_payload(jobs["job-a"], timeout=7200),
+        legacy_state="failed" if finish_superseded else None,
+    )
+    launch(
+        jobs["job-a"]["reservation_attempt_id"],
+        _multi_plan_payload(jobs["job-a"]),
+        run_id=_MULTI_PLAN_RUN_IDS["job-a"],
+    )
+    launch(
+        jobs["job-b"]["reservation_attempt_id"],
+        _stand_in_payload(jobs["job-b"], timeout=recovered_timeout),
+        run_id=_MULTI_PLAN_RUN_IDS["job-b"],
+    )
+    if reserve_unreceipted:
+        launch(
+            jobs["job-c"]["reservation_attempt_id"],
+            _multi_plan_payload(jobs["job-c"]),
+        )
+    return SimpleNamespace(
+        config=execution.DatabricksWorkspaceConfig("https://dbc.example", "token"),
+        jobs=jobs,
+        ledger_path=ledger_path,
+        runs=runs,
+    )
+
+
+def _collect_multi_plan(case, tmp_path, *, selected_run_ids=None):
+    return execution.collect_publication_latency_multi_plan_campaign(
+        case.config,
+        campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
+        selected_run_ids=(
+            dict(_MULTI_PLAN_RUN_IDS) if selected_run_ids is None else selected_run_ids
+        ),
+        ledger_path=case.ledger_path,
+        controller_cas_root=tmp_path / "cas",
+    )
+
+
+def _reseal(record):
+    record["closed_record_sha256"] = execution._closed_record_sha256(record)
+    return record
+
+
+def test_campaign_latency_descriptors_are_the_frozen_115_job_design():
+    campaign = publication_campaign_plan_to_record(
+        build_publication_campaign_plan(
+            PUBLICATION_CAMPAIGN_ID,
+            campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+            campaign_opening_terminal_gpu_hours=(
+                PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            ),
+        )
+    )
+    descriptors = execution._campaign_latency_job_descriptors(campaign)
+
+    assert len(descriptors) == PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS
+    assert set(descriptors) == {item["job_id"] for item in _descriptors()}
+    assert all("zone_id" not in item for item in descriptors.values())
+    forged = deepcopy(campaign)
+    forged["latency_cells"] = forged["latency_cells"][1:]
+    with pytest.raises(ValueError):
+        execution._campaign_latency_job_descriptors(forged)
+
+
+def test_latency_job_record_is_recovered_exactly_from_runs_get_parameters(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        execution, "validate_publication_latency_job_record", lambda _job: None
+    )
+    job = _multi_plan_job("job-a", 1)
+    run = _multi_plan_run(job, "101")
+    recover = execution._publication_latency_job_record_from_control_plane_run
+
+    assert recover(run) == job
+    drifted = deepcopy(run)
+    drifted["tasks"][0]["spark_python_task"]["parameters"][3] = "0" * 64
+    with pytest.raises(ValueError, match="digest drift"):
+        recover(drifted)
+    noncanonical = deepcopy(run)
+    noncanonical["tasks"][0]["spark_python_task"]["parameters"][1] = json.dumps(job)
+    with pytest.raises(ValueError, match="not canonical"):
+        recover(noncanonical)
+    short = deepcopy(run)
+    short["tasks"][0]["spark_python_task"]["parameters"].pop()
+    with pytest.raises(ValueError, match="do not carry one job record"):
+        recover(short)
+
+
+def test_multi_plan_collection_binds_each_job_to_the_plan_it_ran_under(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(tmp_path, monkeypatch)
+    before = read_databricks_cluster_hour_ledger_json(case.ledger_path)
+
+    record, authorization = _collect_multi_plan(case, tmp_path)
+
+    assert {item["job_id"]: item["ledger_binding"] for item in record["jobs"]} == {
+        "job-a": execution.PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING,
+        "job-b": execution.PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING,
+        "job-c": execution.PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING,
+    }
+    assert [
+        (item["execution_plan_sha256"], item["job_ids"]) for item in record["plan_set"]
+    ] == [("a" * 64, ["job-a", "job-c"]), ("b" * 64, ["job-b"])]
+    assert record["plan_set"][0]["package_wheel_sha256s"] == ["1" * 64, "3" * 64]
+    assert record["ledger"]["recovered_balance"] == {
+        "attempt_count": 1,
+        "cluster_hours": 0.5,
+    }
+    assert record["ledger"]["superseded_attempts"] == [
+        {
+            "attempt_id": _SUPERSEDED_ATTEMPT,
+            "job_id": "job-a",
+            "terminal_state": "failed",
+        }
+    ]
+    receipts = {item["job_id"]: item for item in record["terminal_receipts"]}
+    assert receipts["job-a"]["ledger_submit_payload_sha256"] == (
+        receipts["job-a"]["submit_payload_sha256"]
+    )
+    assert receipts["job-b"]["ledger_submit_payload_sha256"] == (
+        execution._submit_payload_sha256(_stand_in_payload(case.jobs["job-b"]))
+    )
+    assert receipts["job-c"]["ledger_terminal_actual"] is None
+    after = read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(after.reservations) == len(before.reservations)
+    assert {item.attempt_id for item in after.terminal_actuals} - {
+        item.attempt_id for item in before.terminal_actuals
+    } == {
+        case.jobs["job-a"]["reservation_attempt_id"],
+        case.jobs["job-b"]["reservation_attempt_id"],
+    }
+    assert authorization.collection_sha256 == record["closed_record_sha256"]
+    assert authorization.ledger_prefix == databricks_ledger_prefix(after)
+    assert execution.require_publication_latency_multi_plan_collection_authorization(
+        authorization,
+        campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
+        ledger_path=case.ledger_path,
+    ) == databricks_ledger_prefix(after)
+
+    record_again, _authorization = _collect_multi_plan(case, tmp_path)
+    assert record_again == record
+
+    reserve_databricks_run_attempt_json(
+        case.ledger_path,
+        _stand_in_payload(case.jobs["job-a"]),
+        attempt_id="publication-full-score/later",
+        workload_id="later",
+    )
+    with pytest.raises(ValueError, match="not the latest live ledger prefix"):
+        execution.require_publication_latency_multi_plan_collection_authorization(
+            authorization,
+            campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
+            ledger_path=case.ledger_path,
+        )
+    assert execution.require_publication_latency_multi_plan_collection_authorization(
+        authorization,
+        campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
+        ledger_path=case.ledger_path,
+        require_complete_current_prefix=False,
+    ) == authorization.ledger_prefix
+    with pytest.raises(TypeError, match="must come from the collector"):
+        execution.PublicationLatencyMultiPlanCollectionAuthorization(
+            collection=record,
+            ledger_path_sha256=authorization.ledger_path_sha256,
+            ledger_prefix=authorization.ledger_prefix,
+            workspace_host_sha256=authorization.workspace_host_sha256,
+            user_name_sha256=authorization.user_name_sha256,
+            _issuer=object(),
+        )
+    with pytest.raises(TypeError, match="MultiPlanCollectionAuthorization"):
+        execution.require_publication_latency_multi_plan_collection_authorization(
+            SimpleNamespace(collection=record),
+            campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
+            ledger_path=case.ledger_path,
+        )
+
+
+@pytest.mark.parametrize(
+    ("case_options", "selection", "message"),
+    (
+        ({"recovered_timeout": 7200}, None, "receipt payload binding drift"),
+        ({"seed_recovered_balance": False}, None, "lacks a recovered balance"),
+        ({"reserve_unreceipted": True}, None, "partial ledger state"),
+        ({"finish_superseded": False}, None, "still active"),
+        ({}, {"job-a": "101", "job-b": "102"}, "must name every frozen job"),
+        ({}, {"job-a": "101", "job-b": "102", "job-c": "102"}, "must be unique"),
+    ),
+)
+def test_multi_plan_collection_rejects_unbound_ledger_state(
+    tmp_path, monkeypatch, case_options, selection, message
+):
+    case = _multi_plan_case(tmp_path, monkeypatch, **case_options)
+
+    with pytest.raises((ValueError, RuntimeError), match=message):
+        _collect_multi_plan(case, tmp_path, selected_run_ids=selection)
+
+
+def test_multi_plan_collection_rejects_runs_outside_the_frozen_cell(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(tmp_path, monkeypatch)
+    drifted = deepcopy(case.jobs["job-b"])
+    drifted["cell"]["position"] = 9
+    case.runs["102"] = _multi_plan_run(_reseal(drifted), "102")
+    before = case.ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match="differs from its frozen campaign cell"):
+        _collect_multi_plan(case, tmp_path)
+    assert case.ledger_path.read_bytes() == before
+
+    case.runs["102"] = _multi_plan_run(case.jobs["job-b"], "102")
+    case.runs["101"]["state"]["result_state"] = "FAILED"
+    with pytest.raises(RuntimeError, match="did not succeed"):
+        _collect_multi_plan(case, tmp_path)
+    assert case.ledger_path.read_bytes() == before
+
+
+def _tamper_binding_to_ledger_receipt(record):
+    for collection in (record["jobs"], record["terminal_receipts"]):
+        for item in collection:
+            if item["job_id"] == "job-b":
+                item["ledger_binding"] = (
+                    execution.PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING
+                )
+
+
+def _tamper_recovered_balance(record):
+    record["ledger"]["recovered_balance"] = {"attempt_count": 0, "cluster_hours": 0.0}
+
+
+def _tamper_superseded_selected(record):
+    record["ledger"]["superseded_attempts"].append(
+        {
+            "attempt_id": record["terminal_receipts"][0]["attempt_id"],
+            "job_id": "job-a",
+            "terminal_state": "failed",
+        }
+    )
+
+
+def _tamper_plan_set(record):
+    record["plan_set"][0]["job_ids"] = ["job-a"]
+
+
+def _tamper_cluster(record):
+    record["terminal_receipts"][1]["cluster_id"] = record["terminal_receipts"][0][
+        "cluster_id"
+    ]
+
+
+def _tamper_terminal_closure(record):
+    record["ledger"]["terminal_actuals_sha256"] = "0" * 64
+
+
+def _tamper_receipt_for_balance_job(record):
+    record["terminal_receipts"][2]["ledger_submit_payload_sha256"] = "0" * 64
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        (_tamper_binding_to_ledger_receipt, "terminal actual binding drift"),
+        (_tamper_recovered_balance, "lack a recovered balance"),
+        (_tamper_superseded_selected, "superseded attempt drift"),
+        (_tamper_plan_set, "plan set drift"),
+        (_tamper_cluster, "not unique"),
+        (_tamper_terminal_closure, "terminal actual closure drift"),
+        (_tamper_receipt_for_balance_job, "carry no ledger receipt"),
+    ),
+)
+def test_multi_plan_collection_record_rejects_tampering_offline(
+    tmp_path, monkeypatch, tamper, message
+):
+    case = _multi_plan_case(tmp_path, monkeypatch)
+    record, _authorization = _collect_multi_plan(case, tmp_path)
+    execution.validate_publication_latency_multi_plan_collection_record(
+        record, campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+    )
+
+    forged = deepcopy(record)
+    tamper(forged)
+    with pytest.raises(ValueError, match="envelope is invalid"):
+        execution.validate_publication_latency_multi_plan_collection_record(
+            forged, campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+        )
+    with pytest.raises(ValueError, match=message):
+        execution.validate_publication_latency_multi_plan_collection_record(
+            _reseal(forged), campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+        )
+
+
+def test_multi_plan_summary_validator_binds_collection_and_campaign(monkeypatch):
+    monkeypatch.setattr(
+        execution, "_validate_publication_latency_summary_tables", lambda _record: None
+    )
+    summary = _reseal(
+        {
+            "analysis": {},
+            "campaign_id": PUBLICATION_CAMPAIGN_ID,
+            "campaign_plan_sha256": "e" * 64,
+            "closed_record_sha256": "",
+            "collection_sha256": "c" * 64,
+            "descriptive_cell_count": 0,
+            "descriptive_cells": [],
+            "estimand_count": 0,
+            "estimates": [],
+            "record_type": execution.PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE,
+            "schema_version": execution.PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+        }
+    )
+    execution.validate_publication_latency_multi_plan_summary_record(
+        summary,
+        expected_collection_sha256="c" * 64,
+        expected_campaign_plan_sha256="e" * 64,
+    )
+    with pytest.raises(ValueError, match="source binding drift"):
+        execution.validate_publication_latency_multi_plan_summary_record(
+            summary,
+            expected_collection_sha256="d" * 64,
+            expected_campaign_plan_sha256="e" * 64,
+        )
+    single_plan = _reseal(
+        {
+            **summary,
+            "record_type": execution.PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
+        }
+    )
+    with pytest.raises(ValueError, match="envelope is invalid"):
+        execution.validate_publication_latency_multi_plan_summary_record(
+            single_plan,
+            expected_collection_sha256="c" * 64,
+            expected_campaign_plan_sha256="e" * 64,
+        )
+    with pytest.raises(ValueError, match="schema is not closed"):
+        execution.validate_publication_latency_multi_plan_summary_record(
+            {**summary, "execution_plan_sha256": "a" * 64},
+            expected_collection_sha256="c" * 64,
+            expected_campaign_plan_sha256="e" * 64,
+        )
