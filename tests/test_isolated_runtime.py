@@ -303,7 +303,7 @@ PyMODINIT_FUNC PyInit__C_stable_libtorch(void) {
     )
     for distribution_name, version in (
         ("torch", "2.13.0+cu129"),
-        ("vllm", "0.27.1+cu129"),
+        ("vllm", "0.30.0+cu129"),
     ):
         metadata = site_packages / f"{distribution_name}-{version}.dist-info"
         metadata.mkdir()
@@ -1197,7 +1197,7 @@ def test_isolated_native_loader_hashes_loader_stdout_and_emits_one_record(tmp_pa
         "torch_lib_is_first": True,
         "torch_origin": "lib/python3.11/site-packages/torch/__init__.py",
         "torch_source_version": "2.13.0+cu129",
-        "vllm_distribution_version": "0.27.1+cu129",
+        "vllm_distribution_version": "0.30.0+cu129",
         "vllm_native_module": "vllm._C_stable_libtorch",
         "vllm_native_origin": (
             "lib/python3.11/site-packages/vllm/_C_stable_libtorch.abi3.so"
