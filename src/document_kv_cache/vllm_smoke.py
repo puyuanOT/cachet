@@ -6111,7 +6111,9 @@ def _storage_schedule_identities(
     requests = schedule.get("requests")
     if not isinstance(requests, list) or not requests:
         raise ValueError("storage handoff projection requires schedule requests")
-    identities = {dataset: set() for dataset in SUPPORTED_V1_DATASETS}
+    identities: dict[str, set[str]] = {
+        dataset: set() for dataset in SUPPORTED_V1_DATASETS
+    }
     for index, request in enumerate(requests):
         if not isinstance(request, Mapping):
             raise ValueError("storage schedule request must be an object")

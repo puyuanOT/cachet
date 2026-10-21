@@ -9220,7 +9220,7 @@ def _validate_multi_plan_ledger_binding(
         ):
             raise ValueError("publication latency superseded attempt drift")
         _required_string(item, "terminal_state")
-    attempt_ids = [item.get("attempt_id") for item in superseded]
+    attempt_ids = [_required_string(item, "attempt_id") for item in superseded]
     if attempt_ids != sorted(set(attempt_ids)):
         raise ValueError("publication latency superseded attempts are not canonical")
 
