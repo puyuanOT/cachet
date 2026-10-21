@@ -66,8 +66,8 @@ from document_kv_cache.databricks_job import (
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.databricks_resource_ledger import (
+    DATABRICKS_PUBLICATION_LEDGER_CAPS,
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
-    MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     DatabricksBatchReservationAuthorization,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
@@ -77,6 +77,7 @@ from document_kv_cache.databricks_resource_ledger import (
     databricks_ledger_prefix,
     databricks_ledger_prefix_from_record,
     databricks_ledger_path_sha256,
+    databricks_ledger_state_at_prefix,
     read_databricks_cluster_hour_ledger_json,
     replay_databricks_run_attempt_batch_authorization_json,
     record_databricks_verified_run_terminal_actual_json,
@@ -5289,31 +5290,12 @@ def _require_reviewed_qualification_plan_campaign_successor(
         qualification_plan_record, "campaign_ledger_path_sha256"
     ):
         raise ValueError("reviewed campaign successor uses a different ledger path")
-    require_databricks_ledger_prefix(ledger, qualification_prefix)
-    qualification_ledger = DatabricksClusterHourLedger(
-        ledger_id=ledger.ledger_id,
-        cap_cluster_hours=ledger.cap_cluster_hours,
-        reservations=ledger.reservations[: qualification_prefix.reservation_count],
-        submission_receipts=ledger.submission_receipts[
-            : qualification_prefix.submission_receipt_count
-        ],
-        terminal_actuals=ledger.terminal_actuals[
-            : qualification_prefix.terminal_actual_count
-        ],
+    qualification_ledger = databricks_ledger_state_at_prefix(
+        ledger, qualification_prefix
     )
     require_databricks_ledger_prefix(qualification_ledger, qualification_prefix)
     require_databricks_ledger_prefix(qualification_ledger, campaign_prefix)
-    campaign_ledger = DatabricksClusterHourLedger(
-        ledger_id=ledger.ledger_id,
-        cap_cluster_hours=ledger.cap_cluster_hours,
-        reservations=ledger.reservations[: campaign_prefix.reservation_count],
-        submission_receipts=ledger.submission_receipts[
-            : campaign_prefix.submission_receipt_count
-        ],
-        terminal_actuals=ledger.terminal_actuals[
-            : campaign_prefix.terminal_actual_count
-        ],
-    )
+    campaign_ledger = databricks_ledger_state_at_prefix(ledger, campaign_prefix)
     require_databricks_ledger_prefix(campaign_ledger, campaign_prefix)
     if campaign_ledger.terminal_actual_cluster_hours != (
         PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -6703,8 +6685,11 @@ def submit_publication_latency_launch_wave(
                 raise ValueError("latency batch reservation member drift")
         proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
         proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
-        if batch_live.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-            raise ValueError("latency publication requires the 1024-hour ledger")
+        if batch_live.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+            raise ValueError(
+                "latency publication requires the 1024-hour ledger or its approved "
+                "extension"
+            )
         if (
             batch_live.active_reserved_task_count + proposed_tasks
             > PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS
@@ -6717,7 +6702,7 @@ def submit_publication_latency_launch_wave(
             raise ValueError("latency wave exceeds the 900-hour active cap")
         if (
             batch_live.accounted_cluster_hours + proposed_hours
-            > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            > batch_live.cap_cluster_hours
             - PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
         ):
             raise ValueError("latency wave consumes the 124-hour headroom")
@@ -8640,7 +8625,7 @@ def collect_publication_latency_multi_plan_campaign(
     if (
         initial_ledger.ledger_id
         != _required_string(campaign_plan_record, "campaign_ledger_id")
-        or initial_ledger.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        or initial_ledger.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS
     ):
         raise ValueError("multi-plan latency ledger differs from the campaign ledger")
     initial_prefix = databricks_ledger_prefix(initial_ledger)
@@ -9192,7 +9177,7 @@ def _validate_multi_plan_ledger_binding(
     )
     if (
         prefix.ledger_id != ledger_binding.get("ledger_id")
-        or prefix.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        or prefix.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS
     ):
         raise ValueError("publication latency collection prefix identity drift")
     if ledger_binding.get("terminal_actuals_sha256") != (

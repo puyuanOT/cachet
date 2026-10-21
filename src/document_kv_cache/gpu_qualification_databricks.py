@@ -43,8 +43,8 @@ from document_kv_cache.databricks_job import (
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.databricks_resource_ledger import (
+    DATABRICKS_PUBLICATION_LEDGER_CAPS,
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
-    MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     DatabricksBatchReservationAuthorization,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
@@ -53,9 +53,11 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
     databricks_cluster_hour_ledger_to_record,
+    databricks_ledger_cap_after_prefix,
     databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
     databricks_ledger_path_sha256,
+    databricks_ledger_state_at_prefix,
     read_databricks_cluster_hour_ledger_json,
     replay_databricks_run_attempt_batch_authorization_json,
     record_databricks_run_submission_receipt_json,
@@ -1430,27 +1432,14 @@ def _replay_qualification_batch_marker(
     if lease != expected_lease:
         raise ValueError("qualification phase lease differs from the frozen batch")
     live = read_databricks_cluster_hour_ledger_json(ledger_path)
-    predecessor_ledger = DatabricksClusterHourLedger(
-        ledger_id=live.ledger_id,
-        cap_cluster_hours=live.cap_cluster_hours,
-        reservations=live.reservations[: expected_predecessor.reservation_count],
-        submission_receipts=live.submission_receipts[
-            : expected_predecessor.submission_receipt_count
-        ],
-        terminal_actuals=live.terminal_actuals[
-            : expected_predecessor.terminal_actual_count
-        ],
-    )
-    if (
-        databricks_ledger_prefix_at_counts(
-            predecessor_ledger,
-            reservation_count=len(predecessor_ledger.reservations),
-            submission_receipt_count=len(predecessor_ledger.submission_receipts),
-            terminal_actual_count=len(predecessor_ledger.terminal_actuals),
+    try:
+        predecessor_ledger = databricks_ledger_state_at_prefix(
+            live, expected_predecessor
         )
-        != expected_predecessor
-    ):
-        raise ValueError("qualification phase lease predecessor history drift")
+    except ValueError as exc:
+        raise ValueError(
+            "qualification phase lease predecessor history drift"
+        ) from exc
     _require_qualification_ledger_admission(
         predecessor_ledger,
         proposed_task_count=len(contracts),
@@ -1458,6 +1447,9 @@ def _replay_qualification_batch_marker(
             len(contracts) * GPU_QUALIFICATION_DATABRICKS_RUN_TIMEOUT_SECONDS / 3600.0
         ),
         label="qualification durable batch replay",
+        admission_cap_cluster_hours=databricks_ledger_cap_after_prefix(
+            live, expected_predecessor
+        ),
     )
     authorization = replay_databricks_run_attempt_batch_authorization_json(
         ledger_path,
@@ -1946,9 +1938,18 @@ def _require_qualification_ledger_admission(
     proposed_task_count: int,
     proposed_reserved_cluster_hours: float,
     label: str,
+    admission_cap_cluster_hours: float | None = None,
 ) -> None:
-    if ledger.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-        raise ValueError(f"{label} requires the migrated 1024-hour campaign ledger")
+    admission_cap = (
+        ledger.cap_cluster_hours
+        if admission_cap_cluster_hours is None
+        else admission_cap_cluster_hours
+    )
+    if admission_cap not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+        raise ValueError(
+            f"{label} requires the migrated 1024-hour campaign ledger "
+            "or its approved extension"
+        )
     if (
         ledger.active_reserved_task_count + proposed_task_count
         > PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS
@@ -1963,7 +1964,7 @@ def _require_qualification_ledger_admission(
         ledger.accounted_cluster_hours
         + proposed_reserved_cluster_hours
         + PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
-        > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        > admission_cap
     ):
         raise ValueError(f"{label} would consume the 124-hour campaign headroom")
 

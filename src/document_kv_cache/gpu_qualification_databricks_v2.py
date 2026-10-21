@@ -31,9 +31,11 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
+    databricks_ledger_cap_after_prefix,
     databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
     databricks_ledger_path_sha256,
+    databricks_ledger_state_at_prefix,
     read_databricks_cluster_hour_ledger_json,
     record_databricks_verified_run_terminal_actual_json,
     replay_databricks_run_attempt_batch_authorization_json,
@@ -2054,26 +2056,9 @@ def _require_v2_phase_predecessor(
         )
     )
     require_databricks_ledger_prefix(ledger, opening)
-    require_databricks_ledger_prefix(ledger, predecessor)
-    predecessor_ledger = DatabricksClusterHourLedger(
-        ledger_id=ledger.ledger_id,
-        cap_cluster_hours=ledger.cap_cluster_hours,
-        reservations=ledger.reservations[: predecessor.reservation_count],
-        submission_receipts=ledger.submission_receipts[
-            : predecessor.submission_receipt_count
-        ],
-        terminal_actuals=ledger.terminal_actuals[: predecessor.terminal_actual_count],
-    )
+    predecessor_ledger = databricks_ledger_state_at_prefix(ledger, predecessor)
     require_databricks_ledger_prefix(predecessor_ledger, opening)
-    opening_ledger = DatabricksClusterHourLedger(
-        ledger_id=ledger.ledger_id,
-        cap_cluster_hours=ledger.cap_cluster_hours,
-        reservations=ledger.reservations[: opening.reservation_count],
-        submission_receipts=ledger.submission_receipts[
-            : opening.submission_receipt_count
-        ],
-        terminal_actuals=ledger.terminal_actuals[: opening.terminal_actual_count],
-    )
+    opening_ledger = databricks_ledger_state_at_prefix(ledger, opening)
     if opening_ledger.terminal_actual_cluster_hours != plan.get(
         "campaign_opening_terminal_gpu_hours"
     ):
@@ -2092,6 +2077,9 @@ def _require_v2_phase_predecessor(
             / 3600.0
         ),
         label=label,
+        admission_cap_cluster_hours=databricks_ledger_cap_after_prefix(
+            ledger, predecessor
+        ),
     )
     return predecessor_ledger
 

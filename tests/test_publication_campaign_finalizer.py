@@ -562,6 +562,7 @@ def _synthetic_campaign_ledger_projection_case(
         active_reserved_cluster_hours=0.0,
         active_reserved_task_count=0,
         cap_cluster_hours=1024.0,
+        cap_raises=(),
         ledger_id=ledger_id,
         remaining_cluster_hours=(
             campaign_finalizer.DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS
@@ -2198,6 +2199,7 @@ def _synthetic_vllm_0300_report_inputs() -> dict[str, Any]:
         }
     )
     ledger = deepcopy(inputs["ledger_record"])
+    ledger["cap_raises"] = []
     ledger["latency_recovered_balance"] = {
         "attempt_count": 47,
         "cluster_hours": 552.0,
@@ -2334,6 +2336,160 @@ def test_vllm_0300_report_rejects_resealed_provenance_tamper(
         campaign_finalizer._validate_report_envelope(report)
 
 
+def _extension_raise_record(count: int) -> dict[str, Any]:
+    return {
+        "from_cap_cluster_hours": 1024.0,
+        "reservation_count": count,
+        "submission_receipt_count": count,
+        "terminal_actual_count": count,
+        "to_cap_cluster_hours": 2024.0,
+    }
+
+
+def _vllm_0300_report_with_extension(
+    *,
+    raise_count: int,
+    latency_cap: float,
+) -> dict[str, Any]:
+    report = _synthetic_vllm_0300_report()
+    ledger = report["ledger"]
+    ledger["latency_terminal_prefix"]["cap_cluster_hours"] = latency_cap
+    ledger["full_score_terminal_prefix"]["cap_cluster_hours"] = 2024.0
+    ledger["final_remaining_cluster_hours"] = (
+        2024.0 - ledger["final_accounted_cluster_hours"]
+    )
+    ledger["cap_raises"] = [_extension_raise_record(raise_count)]
+    _reclose(report)
+    return report
+
+
+@pytest.mark.parametrize(
+    ("raise_count", "latency_cap"),
+    [(100, 2024.0), (115, 1024.0), (120, 1024.0)],
+)
+def test_vllm_0300_report_discloses_the_approved_budget_extension(
+    raise_count: int,
+    latency_cap: float,
+) -> None:
+    report = _vllm_0300_report_with_extension(
+        raise_count=raise_count,
+        latency_cap=latency_cap,
+    )
+
+    campaign_finalizer._validate_report_envelope(report)
+    campaign_finalizer.validate_vllm_0271_publication_report_pair(
+        report,
+        campaign_finalizer._publication_gate_for_report(report),
+    )
+
+
+def _tamper_extension_undisclosed(report: dict[str, Any]) -> None:
+    report["ledger"]["cap_raises"] = []
+
+
+def _tamper_extension_latency_cap(report: dict[str, Any]) -> None:
+    report["ledger"]["latency_terminal_prefix"]["cap_cluster_hours"] = 1024.0
+
+
+def _tamper_extension_straddle(report: dict[str, Any]) -> None:
+    report["ledger"]["cap_raises"][0]["terminal_actual_count"] = 116
+
+
+def _tamper_extension_unapproved_cap(report: dict[str, Any]) -> None:
+    report["ledger"]["cap_raises"][0]["to_cap_cluster_hours"] = 1524.0
+
+
+def _tamper_extension_integer_count(report: dict[str, Any]) -> None:
+    report["ledger"]["cap_raises"][0]["reservation_count"] = 100.0
+
+
+def _tamper_extension_extra_field(report: dict[str, Any]) -> None:
+    report["ledger"]["cap_raises"][0]["approved_by"] = "someone"
+
+
+def _tamper_extension_unbalanced_accounting(report: dict[str, Any]) -> None:
+    report["ledger"]["final_remaining_cluster_hours"] = 200.0
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (_tamper_extension_undisclosed, "differs from its raise history"),
+        (_tamper_extension_latency_cap, "differs from its raise history"),
+        (_tamper_extension_straddle, "straddles a cap raise"),
+        (_tamper_extension_unapproved_cap, "raise history is invalid"),
+        (_tamper_extension_integer_count, "non-negative integer"),
+        (_tamper_extension_extra_field, "closed schema"),
+        (_tamper_extension_unbalanced_accounting, "accounting is invalid"),
+    ],
+)
+def test_vllm_0300_report_rejects_an_inconsistent_budget_extension(
+    tamper: Any,
+    message: str,
+) -> None:
+    report = _vllm_0300_report_with_extension(raise_count=100, latency_cap=2024.0)
+    tamper(report)
+    _reclose(report)
+
+    with pytest.raises(ValueError, match=message):
+        campaign_finalizer._validate_report_envelope(report)
+
+
+def test_vllm_0271_report_rejects_the_budget_extension() -> None:
+    report = _synthetic_report()
+    ledger = report["ledger"]
+    for name in ("latency_terminal_prefix", "full_score_terminal_prefix"):
+        ledger[name]["cap_cluster_hours"] = 2024.0
+    ledger["final_remaining_cluster_hours"] = (
+        2024.0 - ledger["final_accounted_cluster_hours"]
+    )
+    _reclose(report)
+
+    with pytest.raises(ValueError, match="report ledger closure is invalid"):
+        campaign_finalizer._validate_report_envelope(report)
+
+
+def test_campaign_ledger_projection_discloses_cap_raises_only_for_vllm_0300(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    raised = SimpleNamespace(to_record=lambda: _extension_raise_record(100))
+    case["live"].cap_cluster_hours = 2024.0
+    case["live"].cap_raises = (raised,)
+    kwargs = case["projection_kwargs"]
+
+    with pytest.raises(ValueError, match="cannot disclose a raised ledger cap"):
+        campaign_finalizer._validated_campaign_ledger_projection(**kwargs)
+
+    projection = campaign_finalizer._campaign_ledger_projection_after_latency(
+        latency_collection_authorization=kwargs["latency_collection_authorization"],
+        latency_prefix=case["latency_prefix"],
+        full_score_execution_plan_record=kwargs["full_score_execution_plan_record"],
+        full_score_aggregate_record=kwargs["full_score_aggregate_record"],
+        final_consumer_authorization=kwargs["final_consumer_authorization"],
+        ledger_path=kwargs["ledger_path"],
+        disclose_cap_raises=True,
+    )
+    assert projection["cap_raises"] == [_extension_raise_record(100)]
+
+    case["final_prefix"].cap_cluster_hours = 1024.0
+    case["latency_prefix"].cap_cluster_hours = 2024.0
+    with pytest.raises(ValueError, match="not the current live ledger"):
+        campaign_finalizer._campaign_ledger_projection_after_latency(
+            latency_collection_authorization=kwargs[
+                "latency_collection_authorization"
+            ],
+            latency_prefix=case["latency_prefix"],
+            full_score_execution_plan_record=kwargs[
+                "full_score_execution_plan_record"
+            ],
+            full_score_aggregate_record=kwargs["full_score_aggregate_record"],
+            final_consumer_authorization=kwargs["final_consumer_authorization"],
+            ledger_path=kwargs["ledger_path"],
+            disclose_cap_raises=True,
+        )
+
+
 def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2371,7 +2527,8 @@ def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
     )
 
     assert projection == single_plan | {
-        "latency_recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0}
+        "cap_raises": [],
+        "latency_recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0},
     }
     assert calls == [
         {

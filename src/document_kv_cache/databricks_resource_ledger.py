@@ -32,7 +32,19 @@ DATABRICKS_CLUSTER_HOUR_LEDGER_RECORD_TYPE = (
 )
 DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION = 2
 _LEGACY_DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION = 1
+# Ledgers that record a cap raise serialize as v3; all other ledgers, and every
+# prefix that ends before a raise, keep their exact v2 bytes.
+_CAP_RAISE_DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION = 3
 MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS = 1024.0
+DATABRICKS_PUBLICATION_BUDGET_EXTENSION_HOURS = 1000.0
+MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS = (
+    MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+    + DATABRICKS_PUBLICATION_BUDGET_EXTENSION_HOURS
+)
+DATABRICKS_PUBLICATION_LEDGER_CAPS = (
+    MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+    MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS,
+)
 MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS = 900.0
 MAX_DATABRICKS_ACTIVE_RESERVED_TASKS = 16
 DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS = 124.0
@@ -49,10 +61,14 @@ __all__ = [
     "DATABRICKS_CLUSTER_HOUR_LEDGER_RECORD_TYPE",
     "DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION",
     "MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS",
+    "DATABRICKS_PUBLICATION_BUDGET_EXTENSION_HOURS",
+    "MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS",
+    "DATABRICKS_PUBLICATION_LEDGER_CAPS",
     "MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS",
     "MAX_DATABRICKS_ACTIVE_RESERVED_TASKS",
     "DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS",
     "DATABRICKS_LEDGER_TERMINAL_STATES",
+    "DatabricksClusterHourCapRaise",
     "DatabricksClusterHourReservation",
     "DatabricksRunSubmissionReceipt",
     "DatabricksClusterHourTerminalActual",
@@ -70,6 +86,8 @@ __all__ = [
     "databricks_ledger_prefix_at_counts",
     "databricks_ledger_prefix_from_record",
     "databricks_ledger_path_sha256",
+    "databricks_ledger_cap_after_prefix",
+    "databricks_ledger_state_at_prefix",
     "require_databricks_ledger_prefix",
     "read_databricks_cluster_hour_ledger_json",
     "create_databricks_cluster_hour_ledger_json",
@@ -104,6 +122,16 @@ _LEDGER_RECORD_KEYS_V1 = frozenset(
     }
 )
 _LEDGER_RECORD_KEYS = frozenset({*_LEDGER_RECORD_KEYS_V1, "submission_receipts"})
+_LEDGER_RECORD_KEYS_V3 = frozenset({*_LEDGER_RECORD_KEYS, "cap_raises"})
+_CAP_RAISE_RECORD_KEYS = frozenset(
+    {
+        "from_cap_cluster_hours",
+        "to_cap_cluster_hours",
+        "reservation_count",
+        "submission_receipt_count",
+        "terminal_actual_count",
+    }
+)
 _RESERVATION_RECORD_KEYS = frozenset(
     {
         "attempt_id",
@@ -315,6 +343,60 @@ class DatabricksClusterHourTerminalActual:
 
 
 @dataclass(frozen=True, slots=True)
+class DatabricksClusterHourCapRaise:
+    """One quiescent cap raise and the event counts at which it took effect.
+
+    A prefix that ends at or before these counts predates the raise and keeps
+    the predecessor cap; a prefix holding any later event carries the raise.
+    """
+
+    from_cap_cluster_hours: float
+    to_cap_cluster_hours: float
+    reservation_count: int
+    submission_receipt_count: int
+    terminal_actual_count: int
+
+    def __post_init__(self) -> None:
+        from_cap = _validated_cap_cluster_hours(
+            self.from_cap_cluster_hours,
+            "from_cap_cluster_hours",
+        )
+        to_cap = _validated_cap_cluster_hours(
+            self.to_cap_cluster_hours,
+            "to_cap_cluster_hours",
+        )
+        if to_cap <= from_cap:
+            raise ValueError("a cap raise must increase the cap")
+        for field_name in (
+            "reservation_count",
+            "submission_receipt_count",
+            "terminal_actual_count",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"cap raise {field_name} must be a non-negative integer")
+        object.__setattr__(self, "from_cap_cluster_hours", from_cap)
+        object.__setattr__(self, "to_cap_cluster_hours", to_cap)
+
+    @property
+    def counts(self) -> tuple[int, int, int]:
+        return (
+            self.reservation_count,
+            self.submission_receipt_count,
+            self.terminal_actual_count,
+        )
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "from_cap_cluster_hours": self.from_cap_cluster_hours,
+            "to_cap_cluster_hours": self.to_cap_cluster_hours,
+            "reservation_count": self.reservation_count,
+            "submission_receipt_count": self.submission_receipt_count,
+            "terminal_actual_count": self.terminal_actual_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DatabricksClusterHourLedger:
     """Immutable aggregate budget state reconstructed from append-only records."""
 
@@ -323,6 +405,7 @@ class DatabricksClusterHourLedger:
     reservations: tuple[DatabricksClusterHourReservation, ...] = ()
     submission_receipts: tuple[DatabricksRunSubmissionReceipt, ...] = ()
     terminal_actuals: tuple[DatabricksClusterHourTerminalActual, ...] = ()
+    cap_raises: tuple[DatabricksClusterHourCapRaise, ...] = ()
 
     def __post_init__(self) -> None:
         _validated_identifier(self.ledger_id, "ledger_id")
@@ -332,11 +415,11 @@ class DatabricksClusterHourLedger:
             or not math.isfinite(float(self.cap_cluster_hours))
             or not 0
             < float(self.cap_cluster_hours)
-            <= MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            <= MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS
         ):
             raise ValueError(
                 "cap_cluster_hours must be a positive finite number no greater than "
-                f"{MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS}"
+                f"{MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS}"
             )
         reservations = tuple(self.reservations)
         submission_receipts = tuple(self.submission_receipts)
@@ -427,13 +510,24 @@ class DatabricksClusterHourLedger:
         object.__setattr__(self, "reservations", reservations)
         object.__setattr__(self, "submission_receipts", submission_receipts)
         object.__setattr__(self, "terminal_actuals", terminal_actuals)
+        object.__setattr__(
+            self,
+            "cap_raises",
+            _validated_cap_raises(
+                self.cap_raises,
+                cap_cluster_hours=self.cap_cluster_hours,
+                reservations=reservations,
+                submission_receipts=submission_receipts,
+                terminal_actuals=terminal_actuals,
+            ),
+        )
         if self.accounted_cluster_hours > self.cap_cluster_hours:
             raise ValueError(
                 "ledger accounted cluster-hours exceed cap: "
                 f"{self.accounted_cluster_hours} > {self.cap_cluster_hours}"
             )
         if (
-            self.cap_cluster_hours == MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            self.cap_cluster_hours in DATABRICKS_PUBLICATION_LEDGER_CAPS
             and self.accounted_cluster_hours
             + DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS
             > self.cap_cluster_hours
@@ -510,7 +604,7 @@ class DatabricksClusterHourLedger:
                 f"cluster-hour cap: {projected} > {self.cap_cluster_hours}"
             )
         if (
-            self.cap_cluster_hours == MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            self.cap_cluster_hours in DATABRICKS_PUBLICATION_LEDGER_CAPS
             and projected + DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS
             > self.cap_cluster_hours
         ):
@@ -544,6 +638,7 @@ class DatabricksClusterHourLedger:
             reservations=(*self.reservations, reservation),
             submission_receipts=self.submission_receipts,
             terminal_actuals=self.terminal_actuals,
+            cap_raises=self.cap_raises,
         )
 
     def record_submission_receipt(
@@ -576,6 +671,7 @@ class DatabricksClusterHourLedger:
             reservations=self.reservations,
             submission_receipts=(*self.submission_receipts, receipt),
             terminal_actuals=self.terminal_actuals,
+            cap_raises=self.cap_raises,
         )
 
     def record_terminal_actual(
@@ -598,6 +694,7 @@ class DatabricksClusterHourLedger:
             reservations=self.reservations,
             submission_receipts=self.submission_receipts,
             terminal_actuals=(*self.terminal_actuals, actual),
+            cap_raises=self.cap_raises,
         )
 
 
@@ -691,7 +788,7 @@ class DatabricksBatchReservationAuthorization:
             raise ValueError("batch authority ledger path digest must be SHA-256")
         if (
             predecessor_prefix.ledger_id != batch_prefix.ledger_id
-            or predecessor_prefix.cap_cluster_hours != batch_prefix.cap_cluster_hours
+            or batch_prefix.cap_cluster_hours < predecessor_prefix.cap_cluster_hours
             or batch_prefix.reservation_count
             != predecessor_prefix.reservation_count + len(normalized_attempts)
             or batch_prefix.submission_receipt_count
@@ -813,11 +910,8 @@ def require_databricks_ledger_prefix(
         raise TypeError("ledger must be a DatabricksClusterHourLedger")
     if not isinstance(expected, DatabricksLedgerPrefix):
         raise TypeError("expected must be a DatabricksLedgerPrefix")
-    if (
-        ledger.ledger_id != expected.ledger_id
-        or ledger.cap_cluster_hours != expected.cap_cluster_hours
-    ):
-        raise ValueError("live ledger identity/cap differs from its authorized prefix")
+    if ledger.ledger_id != expected.ledger_id:
+        raise ValueError("live ledger identity differs from its authorized prefix")
     if (
         len(ledger.reservations) < expected.reservation_count
         or len(ledger.submission_receipts) < expected.submission_receipt_count
@@ -830,9 +924,85 @@ def require_databricks_ledger_prefix(
         submission_receipt_count=expected.submission_receipt_count,
         terminal_actual_count=expected.terminal_actual_count,
     )
+    if observed.cap_cluster_hours != expected.cap_cluster_hours:
+        raise ValueError("live ledger cap differs from its authorized prefix")
     if observed != expected:
         raise ValueError("live ledger does not extend the authorized ordered prefix")
     return databricks_ledger_prefix(ledger)
+
+
+def databricks_ledger_state_at_prefix(
+    ledger: DatabricksClusterHourLedger,
+    prefix: DatabricksLedgerPrefix,
+) -> DatabricksClusterHourLedger:
+    """Return the exact historical ledger state named by a verified prefix.
+
+    The state carries the cap in effect at that position.  A raise recorded at
+    exactly these counts is not yet part of the state; see
+    :func:`databricks_ledger_cap_after_prefix` for the cap that admitted the
+    events appended next.
+    """
+
+    require_databricks_ledger_prefix(ledger, prefix)
+    return _databricks_ledger_state_at_counts(
+        ledger,
+        reservation_count=prefix.reservation_count,
+        submission_receipt_count=prefix.submission_receipt_count,
+        terminal_actual_count=prefix.terminal_actual_count,
+    )
+
+
+def databricks_ledger_cap_after_prefix(
+    ledger: DatabricksClusterHourLedger,
+    prefix: DatabricksLedgerPrefix,
+) -> float:
+    """Return the cap governing events appended immediately after *prefix*."""
+
+    require_databricks_ledger_prefix(ledger, prefix)
+    counts = (
+        prefix.reservation_count,
+        prefix.submission_receipt_count,
+        prefix.terminal_actual_count,
+    )
+    for cap_raise in ledger.cap_raises:
+        if cap_raise.counts == counts:
+            return cap_raise.to_cap_cluster_hours
+    return prefix.cap_cluster_hours
+
+
+def _databricks_ledger_state_at_counts(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    reservation_count: int,
+    submission_receipt_count: int,
+    terminal_actual_count: int,
+) -> DatabricksClusterHourLedger:
+    counts = (reservation_count, submission_receipt_count, terminal_actual_count)
+    effective_raises: list[DatabricksClusterHourCapRaise] = []
+    for cap_raise in ledger.cap_raises:
+        if all(
+            count <= raised for count, raised in zip(counts, cap_raise.counts, strict=True)
+        ):
+            break
+        if any(
+            count < raised for count, raised in zip(counts, cap_raise.counts, strict=True)
+        ):
+            raise ValueError("ledger prefix counts straddle a cap raise")
+        effective_raises.append(cap_raise)
+    if effective_raises:
+        cap = effective_raises[-1].to_cap_cluster_hours
+    elif ledger.cap_raises:
+        cap = ledger.cap_raises[0].from_cap_cluster_hours
+    else:
+        cap = ledger.cap_cluster_hours
+    return DatabricksClusterHourLedger(
+        ledger_id=ledger.ledger_id,
+        cap_cluster_hours=cap,
+        reservations=ledger.reservations[:reservation_count],
+        submission_receipts=ledger.submission_receipts[:submission_receipt_count],
+        terminal_actuals=ledger.terminal_actuals[:terminal_actual_count],
+        cap_raises=tuple(effective_raises),
+    )
 
 
 def _databricks_ledger_prefix_at_counts(
@@ -842,12 +1012,11 @@ def _databricks_ledger_prefix_at_counts(
     submission_receipt_count: int,
     terminal_actual_count: int,
 ) -> DatabricksLedgerPrefix:
-    prefix_ledger = DatabricksClusterHourLedger(
-        ledger_id=ledger.ledger_id,
-        cap_cluster_hours=ledger.cap_cluster_hours,
-        reservations=ledger.reservations[:reservation_count],
-        submission_receipts=ledger.submission_receipts[:submission_receipt_count],
-        terminal_actuals=ledger.terminal_actuals[:terminal_actual_count],
+    prefix_ledger = _databricks_ledger_state_at_counts(
+        ledger,
+        reservation_count=reservation_count,
+        submission_receipt_count=submission_receipt_count,
+        terminal_actual_count=terminal_actual_count,
     )
     record = databricks_cluster_hour_ledger_to_record(prefix_ledger)
     prefix_sha256 = sha256(
@@ -860,7 +1029,7 @@ def _databricks_ledger_prefix_at_counts(
     ).hexdigest()
     return DatabricksLedgerPrefix(
         ledger_id=ledger.ledger_id,
-        cap_cluster_hours=ledger.cap_cluster_hours,
+        cap_cluster_hours=prefix_ledger.cap_cluster_hours,
         reservation_count=reservation_count,
         submission_receipt_count=submission_receipt_count,
         terminal_actual_count=terminal_actual_count,
@@ -925,7 +1094,7 @@ def databricks_cluster_hour_ledger_to_record(
 ) -> dict[str, Any]:
     if not isinstance(ledger, DatabricksClusterHourLedger):
         raise TypeError("ledger must be DatabricksClusterHourLedger")
-    return {
+    record: dict[str, Any] = {
         "record_type": DATABRICKS_CLUSTER_HOUR_LEDGER_RECORD_TYPE,
         "schema_version": DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION,
         "ledger_id": ledger.ledger_id,
@@ -972,6 +1141,12 @@ def databricks_cluster_hour_ledger_to_record(
             "remaining_cluster_hours": ledger.remaining_cluster_hours,
         },
     }
+    if ledger.cap_raises:
+        record["schema_version"] = (
+            _CAP_RAISE_DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION
+        )
+        record["cap_raises"] = [item.to_record() for item in ledger.cap_raises]
+    return record
 
 
 def databricks_cluster_hour_ledger_from_record(
@@ -984,6 +1159,8 @@ def databricks_cluster_hour_ledger_from_record(
         _require_exact_keys(record, _LEDGER_RECORD_KEYS_V1, "ledger")
     elif schema_version == DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION:
         _require_exact_keys(record, _LEDGER_RECORD_KEYS, "ledger")
+    elif schema_version == _CAP_RAISE_DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION:
+        _require_exact_keys(record, _LEDGER_RECORD_KEYS_V3, "ledger")
     else:
         raise ValueError("ledger schema_version is invalid")
     if record.get("record_type") != DATABRICKS_CLUSTER_HOUR_LEDGER_RECORD_TYPE:
@@ -1011,12 +1188,26 @@ def databricks_cluster_hour_ledger_from_record(
             )
         )
     )
+    cap_raises = (
+        tuple(
+            _cap_raise_from_record(item, index=index)
+            for index, item in enumerate(_record_sequence(record, "cap_raises"))
+        )
+        if schema_version == _CAP_RAISE_DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION
+        else ()
+    )
+    if (
+        schema_version == _CAP_RAISE_DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION
+        and not cap_raises
+    ):
+        raise ValueError("ledger schema_version 3 requires a recorded cap raise")
     ledger = DatabricksClusterHourLedger(
         ledger_id=_record_string(record, "ledger_id"),
         cap_cluster_hours=_record_number(record, "cap_cluster_hours"),
         reservations=reservations,
         submission_receipts=submission_receipts,
         terminal_actuals=terminal_actuals,
+        cap_raises=cap_raises,
     )
     accounting = record.get("accounting")
     if not isinstance(accounting, Mapping):
@@ -1068,7 +1259,9 @@ def raise_databricks_cluster_hour_ledger_cap_json(
     Publication budget increases must extend the existing append-only ledger;
     creating a new zero-balance ledger would silently forget prior GPU-hours.
     The explicit expected cap makes concurrent or repeated migrations fail
-    closed, and active reservations must be reconciled before migration.
+    closed, and active reservations must be reconciled before migration.  The
+    raise is recorded at the current event counts so every prefix issued before
+    it still re-derives byte-identically under the predecessor cap.
     """
 
     ledger_path = Path(path)
@@ -1102,12 +1295,23 @@ def raise_databricks_cluster_hour_ledger_cap_json(
             reservations=ledger.reservations,
             submission_receipts=ledger.submission_receipts,
             terminal_actuals=ledger.terminal_actuals,
+            cap_raises=(
+                *ledger.cap_raises,
+                DatabricksClusterHourCapRaise(
+                    from_cap_cluster_hours=ledger.cap_cluster_hours,
+                    to_cap_cluster_hours=new_cap,
+                    reservation_count=len(ledger.reservations),
+                    submission_receipt_count=len(ledger.submission_receipts),
+                    terminal_actual_count=len(ledger.terminal_actuals),
+                ),
+            ),
         )
         if (
             updated.reservations != ledger.reservations
             or updated.submission_receipts != ledger.submission_receipts
             or updated.terminal_actuals != ledger.terminal_actuals
             or updated.accounted_cluster_hours != ledger.accounted_cluster_hours
+            or databricks_ledger_prefix(updated) != databricks_ledger_prefix(ledger)
         ):
             raise RuntimeError("cluster-hour cap migration changed accounting events")
         _atomic_write_ledger(ledger_path, updated)
@@ -1466,17 +1670,11 @@ def require_databricks_publication_batch_admission(
         raise TypeError("authorization has the wrong type")
     require_databricks_ledger_prefix(ledger, authorization.batch_prefix)
     predecessor = authorization.predecessor_prefix
-    predecessor_ledger = DatabricksClusterHourLedger(
-        ledger_id=ledger.ledger_id,
-        cap_cluster_hours=ledger.cap_cluster_hours,
-        reservations=ledger.reservations[: predecessor.reservation_count],
-        submission_receipts=ledger.submission_receipts[
-            : predecessor.submission_receipt_count
-        ],
-        terminal_actuals=ledger.terminal_actuals[: predecessor.terminal_actual_count],
-    )
-    if databricks_ledger_prefix(predecessor_ledger) != predecessor:
-        raise ValueError("publication batch predecessor history drift")
+    try:
+        predecessor_ledger = databricks_ledger_state_at_prefix(ledger, predecessor)
+    except ValueError as exc:
+        raise ValueError("publication batch predecessor history drift") from exc
+    admission_cap = authorization.batch_prefix.cap_cluster_hours
     reservations = ledger.reservations[
         predecessor.reservation_count : authorization.batch_prefix.reservation_count
     ]
@@ -1488,8 +1686,8 @@ def require_databricks_publication_batch_admission(
         raise ValueError("publication batch reservation suffix payload drift")
     proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
     proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
-    if predecessor_ledger.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-        raise ValueError("publication batch requires the 1024-hour campaign ledger")
+    if admission_cap not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+        raise ValueError("publication batch requires an approved campaign ledger cap")
     if (
         predecessor_ledger.active_reserved_task_count + proposed_tasks
         > MAX_DATABRICKS_ACTIVE_RESERVED_TASKS
@@ -1504,7 +1702,7 @@ def require_databricks_publication_batch_admission(
         predecessor_ledger.accounted_cluster_hours
         + proposed_hours
         + DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS
-        > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        > admission_cap
     ):
         raise ValueError("publication batch consumes the 124-hour headroom")
     return authorization.batch_prefix
@@ -1830,13 +2028,80 @@ def _validated_cap_cluster_hours(value: Any, field_name: str) -> float:
         not isinstance(value, (int, float))
         or isinstance(value, bool)
         or not math.isfinite(float(value))
-        or not 0 < float(value) <= MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        or not 0 < float(value) <= MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS
     ):
         raise ValueError(
             f"{field_name} must be a positive finite number no greater than "
-            f"{MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS}"
+            f"{MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS}"
         )
     return float(value)
+
+
+def _validated_cap_raises(
+    value: Any,
+    *,
+    cap_cluster_hours: float,
+    reservations: tuple[DatabricksClusterHourReservation, ...],
+    submission_receipts: tuple[DatabricksRunSubmissionReceipt, ...],
+    terminal_actuals: tuple[DatabricksClusterHourTerminalActual, ...],
+) -> tuple[DatabricksClusterHourCapRaise, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError("cap_raises must be a sequence")
+    cap_raises = tuple(value)
+    if any(not isinstance(item, DatabricksClusterHourCapRaise) for item in cap_raises):
+        raise TypeError("cap_raises entries must be DatabricksClusterHourCapRaise")
+    lengths = (len(reservations), len(submission_receipts), len(terminal_actuals))
+    previous: DatabricksClusterHourCapRaise | None = None
+    for cap_raise in cap_raises:
+        counts = cap_raise.counts
+        if any(count > length for count, length in zip(counts, lengths, strict=True)):
+            raise ValueError("cap raise position is beyond the ledger events")
+        if previous is not None:
+            if cap_raise.from_cap_cluster_hours != previous.to_cap_cluster_hours:
+                raise ValueError("cap raises must chain from the preceding cap")
+            if counts == previous.counts or any(
+                count < earlier
+                for count, earlier in zip(counts, previous.counts, strict=True)
+            ):
+                raise ValueError("cap raises must follow later ledger events")
+        reserved_ids = {
+            item.attempt_id for item in reservations[: cap_raise.reservation_count]
+        }
+        closed_ids = {
+            item.attempt_id for item in terminal_actuals[: cap_raise.terminal_actual_count]
+        }
+        if (
+            reserved_ids != closed_ids
+            or cap_raise.reservation_count != cap_raise.terminal_actual_count
+            or any(
+                item.attempt_id not in reserved_ids
+                for item in submission_receipts[: cap_raise.submission_receipt_count]
+            )
+        ):
+            raise ValueError("a cap raise requires a quiescent ledger position")
+        previous = cap_raise
+    if previous is not None and previous.to_cap_cluster_hours != cap_cluster_hours:
+        raise ValueError("the latest cap raise must name the ledger cap")
+    if previous is None and cap_cluster_hours > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
+        raise ValueError(
+            "cap_cluster_hours must be no greater than "
+            f"{MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS} unless it was reached "
+            "through a recorded cap raise"
+        )
+    return cap_raises
+
+
+def _cap_raise_from_record(value: Any, *, index: int) -> DatabricksClusterHourCapRaise:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"cap_raises[{index}] must be an object")
+    _require_exact_keys(value, _CAP_RAISE_RECORD_KEYS, f"cap_raises[{index}]")
+    return DatabricksClusterHourCapRaise(
+        from_cap_cluster_hours=_record_number(value, "from_cap_cluster_hours"),
+        to_cap_cluster_hours=_record_number(value, "to_cap_cluster_hours"),
+        reservation_count=_record_integer(value, "reservation_count"),
+        submission_receipt_count=_record_integer(value, "submission_receipt_count"),
+        terminal_actual_count=_record_integer(value, "terminal_actual_count"),
+    )
 
 
 def canonical_databricks_submit_payload_snapshot(

@@ -52,8 +52,8 @@ from document_kv_cache.databricks_job import (
     DEFAULT_DATABRICKS_SPARK_VERSION,
 )
 from document_kv_cache.databricks_resource_ledger import (
+    DATABRICKS_PUBLICATION_LEDGER_CAPS,
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
-    MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
     DatabricksBatchReservationAuthorization,
@@ -1754,8 +1754,10 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
                 raise ValueError("BF16 batch reservation member drift")
         proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
         proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
-        if batch_live.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-            raise ValueError("BF16 generation requires the 1024-hour ledger")
+        if batch_live.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+            raise ValueError(
+                "BF16 generation requires the 1024-hour ledger or its approved extension"
+            )
         if (
             batch_live.active_reserved_task_count + proposed_tasks
             > PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS
@@ -1768,7 +1770,7 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
             raise ValueError("BF16 wave exceeds the active 900-hour cap")
         if (
             batch_live.accounted_cluster_hours + proposed_hours
-            > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            > batch_live.cap_cluster_hours
             - PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
         ):
             raise ValueError("BF16 wave consumes the 124-hour headroom")
@@ -3166,8 +3168,10 @@ def _reservation_validator(
                 "evidence_closed_record_sha256",
             ),
         )
-        if ledger.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-            raise ValueError("BF16 generation requires the 1024-hour ledger")
+        if ledger.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+            raise ValueError(
+                "BF16 generation requires the 1024-hour ledger or its approved extension"
+            )
         if (
             ledger.active_reserved_task_count + len(reservation.task_timeout_seconds)
             > PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS
@@ -3182,7 +3186,7 @@ def _reservation_validator(
             raise ValueError("BF16 reservation exceeds the active 900-hour cap")
         if (
             ledger.accounted_cluster_hours + reservation.reserved_cluster_hours
-            > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            > ledger.cap_cluster_hours
             - PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
         ):
             raise ValueError("BF16 reservation consumes the 124-hour headroom")

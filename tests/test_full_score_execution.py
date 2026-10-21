@@ -4285,6 +4285,53 @@ def test_live_p90_gate_replays_matched_blocks_and_authorizes_next_phase(
         )
 
 
+def test_live_p90_gate_admits_against_its_recorded_extension_cap(
+    campaign, synthetic_publication_rng_runtime
+):
+    reservation = full_score.full_score_wave_worst_case_gpu_hours(
+        _phase_payloads(campaign, 1, "producer")
+    )
+    blocks = _matched_blocks(campaign, 0)
+
+    def build(terminal_hours, **kwargs):
+        return full_score.build_full_score_live_p90_budget_admission(
+            campaign["execution_plan"],
+            blocks,
+            next_wave_index=1,
+            ledger_terminal_actual_gpu_hours=terminal_hours,
+            ledger_active_reserved_gpu_hours=0.0,
+            next_wave_reserved_gpu_hours=reservation,
+            **kwargs,
+        )
+
+    frozen = build(1.0)
+    assert frozen["formula"]["admission"] == (
+        "terminal_actual + p90_remaining + 124 <= 1024"
+    )
+    assert frozen["ledger_after_projection"]["aggregate_cap_gpu_hours"] == 1024.0
+    assert build(1000.0)["admitted"] is False
+
+    extended = build(1000.0, aggregate_cap_gpu_hours=2024.0)
+    assert extended["admitted"] is True
+    assert extended["formula"]["admission"] == (
+        "terminal_actual + p90_remaining + 124 <= 2024"
+    )
+    assert extended["ledger_after_projection"]["aggregate_cap_gpu_hours"] == 2024.0
+    full_score.validate_full_score_live_p90_budget_admission(
+        campaign["execution_plan"], extended
+    )
+
+    tampered = copy.deepcopy(extended)
+    tampered["ledger_after_projection"]["aggregate_cap_gpu_hours"] = 1024.0
+    _close(tampered)
+    with pytest.raises(ValueError, match="does not replay"):
+        full_score.validate_full_score_live_p90_budget_admission(
+            campaign["execution_plan"], tampered
+        )
+    with pytest.raises(ValueError, match="approved campaign cap"):
+        build(1.0, aggregate_cap_gpu_hours=1524.0)
+
+
 def test_remote_prior_wave_replay_uses_only_issuer_cas_on_mac(
     campaign,
     monkeypatch,

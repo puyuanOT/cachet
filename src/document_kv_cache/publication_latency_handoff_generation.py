@@ -71,8 +71,8 @@ from document_kv_cache.databricks_job import (
     _validated_databricks_task_max_retries,
 )
 from document_kv_cache.databricks_resource_ledger import (
+    DATABRICKS_PUBLICATION_LEDGER_CAPS,
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
-    MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
     DatabricksBatchReservationAuthorization,
@@ -2575,8 +2575,10 @@ def _q8_worker_wave_batch_validator(
                 raise ValueError("Q8 batch reservation member drift")
         proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
         proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
-        if batch_live.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-            raise ValueError("Q8 generation requires the 1024-hour ledger")
+        if batch_live.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+            raise ValueError(
+                "Q8 generation requires the 1024-hour ledger or its approved extension"
+            )
         if (
             batch_live.active_reserved_task_count + proposed_tasks
             > PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS
@@ -2589,7 +2591,7 @@ def _q8_worker_wave_batch_validator(
             raise ValueError("Q8 wave exceeds the active 900-hour cap")
         if (
             batch_live.accounted_cluster_hours + proposed_hours
-            > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            > batch_live.cap_cluster_hours
             - PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
         ):
             raise ValueError("Q8 wave consumes the 124-hour headroom")
@@ -3680,8 +3682,10 @@ def _publication_latency_handoff_reservation_validator(
             ledger_path,
             qualification_launch_authorization,
         )
-        if ledger.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-            raise ValueError("publication ledger must use the 1024-hour cap")
+        if ledger.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+            raise ValueError(
+                "publication ledger must use the 1024-hour cap or its approved extension"
+            )
         if (
             ledger.active_reserved_task_count + len(reservation.task_timeout_seconds)
             > PUBLICATION_CAMPAIGN_MAX_PARALLEL_JOBS
@@ -3698,8 +3702,7 @@ def _publication_latency_handoff_reservation_validator(
             ledger.accounted_cluster_hours + reservation.reserved_cluster_hours
         )
         if projected_accounted > (
-            MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-            - PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
+            ledger.cap_cluster_hours - PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
         ):
             raise ValueError("producer reservation would consume 124-hour headroom")
 
@@ -4484,6 +4487,7 @@ def _publication_latency_handoff_ledger_reconciliation(
     task_run_ids: set[str] = set()
     cluster_ids: set[str] = set()
     producer_batch_prefixes: set[str] = set()
+    producer_batch_caps: set[float] = set()
     root = Path(local_path(str(durable_output_root))).expanduser().resolve()
     for worker_index in range(PUBLICATION_CAMPAIGN_LATENCY_HANDOFF_PRODUCER_TASKS):
         attempt_id = attempt_ids_by_worker[worker_index]
@@ -4535,6 +4539,7 @@ def _publication_latency_handoff_ledger_reconciliation(
         )
         require_databricks_ledger_prefix(ledger, attested_batch_prefix)
         producer_batch_prefixes.add(attested_batch_prefix.prefix_sha256)
+        producer_batch_caps.add(attested_batch_prefix.cap_cluster_hours)
         cloud = _required_mapping(attestation, "cloud_execution")
         if (
             type(evidence_authority) is PublicationLatencyHandoffWorkerAuthorization
@@ -4616,7 +4621,9 @@ def _publication_latency_handoff_ledger_reconciliation(
     record = {
         "attempts": attempts,
         "attempts_sha256": _canonical_sha256(attempts),
-        "cap_gpu_hours": ledger.cap_cluster_hours,
+        # The cap that admitted the producer batch, which a later cap raise
+        # cannot change.
+        "cap_gpu_hours": next(iter(producer_batch_caps)),
         "cloud_identity_closure_sha256": _canonical_sha256(
             {
                 "cluster_ids": sorted(cluster_ids),
@@ -7756,8 +7763,8 @@ def validate_publication_latency_handoff_generation_execution_record(
             },
             label="distributed ledger reconciliation",
         )
-        if ledger_reconciliation.get("cap_gpu_hours") != (
-            MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        if ledger_reconciliation.get("cap_gpu_hours") not in (
+            DATABRICKS_PUBLICATION_LEDGER_CAPS
         ):
             raise ValueError("distributed execution ledger cap is invalid")
         ledger_id = _required_string(ledger_reconciliation, "ledger_id")
