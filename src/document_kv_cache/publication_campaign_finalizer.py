@@ -1,8 +1,10 @@
-"""Fail-closed finalization for the vLLM 0.27.1 publication campaign.
+"""Fail-closed finalization for the vLLM publication campaign.
 
 This leaf module recomputes the independent latency and full-score branches,
 joins them to one uninterrupted ledger lineage, projects sanitized tables, and
-binds the result to the standard benchmark publication-gate record.
+binds the result to the standard benchmark publication-gate record.  The 0.27.1
+report replays one latency execution plan; the 0.30.0 report replays a
+multi-plan latency collection and discloses its plan set and ledger bindings.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import math
 import os
 import secrets
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -93,20 +95,33 @@ from document_kv_cache.publication_inputs import (
 from document_kv_cache.publication_latency_execution import (
     PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE,
     PUBLICATION_LATENCY_EXECUTION_PLAN_RECORD_TYPE,
+    PUBLICATION_LATENCY_LEDGER_BINDINGS,
+    PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE,
+    PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+    PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE,
+    PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING,
     PUBLICATION_LATENCY_SCHEMA_VERSION,
     PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
     PublicationLatencyCollectionAuthorization,
+    PublicationLatencyMultiPlanCollectionAuthorization,
     PublicationLatencySourceClosureAuthorization,
     aggregate_publication_latency_campaign,
+    aggregate_publication_latency_multi_plan_campaign,
     require_publication_latency_collection_authorization,
+    require_publication_latency_multi_plan_collection_authorization,
     validate_publication_latency_collection_record,
     validate_publication_latency_execution_plan_record,
+    validate_publication_latency_multi_plan_collection_record,
+    validate_publication_latency_multi_plan_summary_record,
     validate_publication_latency_summary_record,
 )
 
 
 PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE = (
     "cachet.vllm_0271_publication_report.v1"
+)
+PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE = (
+    "cachet.vllm_0300_publication_report.v1"
 )
 PUBLICATION_CAMPAIGN_REPORT_SCHEMA_VERSION = 1
 PUBLICATION_CAMPAIGN_REPORT_FILE_NAME = "campaign-report.json"
@@ -214,6 +229,21 @@ _LEDGER_KEYS = frozenset(
         "required_unreserved_headroom_cluster_hours",
     }
 )
+# A 0.30.0 report joins latency jobs across the launch plans they ran under, so
+# it binds no single latency execution plan and discloses how each job is tied
+# to the recreated ledger.
+_VLLM_0300_REPORT_KEYS = _REPORT_KEYS | {"latency_provenance"}
+_VLLM_0300_SOURCE_BINDING_NAMES = _SOURCE_BINDING_NAMES - {"latency_execution_plan"}
+_VLLM_0300_LEDGER_KEYS = _LEDGER_KEYS | {"latency_recovered_balance"}
+_LATENCY_PROVENANCE_KEYS = frozenset(
+    {
+        "execution_plan_count",
+        "ledger_binding_counts",
+        "plan_set_sha256",
+        "superseded_attempt_count",
+    }
+)
+_RECOVERED_BALANCE_KEYS = frozenset({"attempt_count", "cluster_hours"})
 _FORBIDDEN_REPORT_KEYS = frozenset(
     {
         "answer",
@@ -343,43 +373,16 @@ def finalize_vllm_0271_publication_campaign(
             "latency summary differs from authoritative campaign reaggregation"
         )
 
-    if not isinstance(full_score_inventory, FullScoreInventory):
-        raise TypeError("full_score_inventory must be FullScoreInventory")
-    inventory_record = full_score_inventory_to_record(full_score_inventory)
-    validate_full_score_inventory_record(
-        inventory_record,
-        inventory=full_score_inventory,
-    )
-    validate_full_score_shard_plan(
-        full_score_shard_plan_record,
-        inventory=full_score_inventory,
-    )
-    validate_full_score_aggregate_record(
-        full_score_aggregate_record,
-        inventory=full_score_inventory,
-        shard_plan=full_score_shard_plan_record,
-        execution_plan=full_score_execution_plan_record,
-        require_publication=True,
-    )
-    recomputed_full_score_aggregate = aggregate_full_score_shard_evidence(
-        full_score_inventory,
-        full_score_shard_plan_record,
-        (),
-        authorization_scope=FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE,
-        execution_plan=full_score_execution_plan_record,
+    inventory_record, recomputed_full_score_aggregate = _replayed_full_score_branch(
+        full_score_inventory=full_score_inventory,
+        full_score_shard_plan_record=full_score_shard_plan_record,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=full_score_aggregate_record,
         final_consumer_authorization=final_consumer_authorization,
-        ledger_path=ledger_path,
         remote_consumer_authorizations=remote_consumer_authorizations,
         compact_artifact_resolver=compact_artifact_resolver,
+        ledger_path=ledger_path,
     )
-    if not _json_type_exact_equal(
-        dict(full_score_aggregate_record),
-        recomputed_full_score_aggregate,
-    ):
-        raise ValueError(
-            "full-score aggregate differs from authoritative evidence reaggregation"
-        )
-
     ledger_record = _validated_campaign_ledger_projection(
         latency_collection_authorization=latency_collection_authorization,
         latency_execution_plan_record=latency_execution_plan_record,
@@ -562,6 +565,251 @@ def load_vllm_0271_publication_finalization(
 ) -> PublicationCampaignFinalization:
     """Load canonical report/gate bytes and replay all source authorities."""
 
+    return _load_publication_finalization(
+        directory,
+        lambda finalization: validate_vllm_0271_publication_finalization(
+            finalization,
+            latency_execution_plan_record=latency_execution_plan_record,
+            latency_collection_authorization=latency_collection_authorization,
+            latency_summary_record=latency_summary_record,
+            qualification_launch_authorization=qualification_launch_authorization,
+            handoff_serving_authorization=handoff_serving_authorization,
+            bf16_handoff_serving_authorization=(
+                bf16_handoff_serving_authorization
+            ),
+            source_closure_authorization=source_closure_authorization,
+            full_score_inventory=full_score_inventory,
+            full_score_shard_plan_record=full_score_shard_plan_record,
+            full_score_execution_plan_record=full_score_execution_plan_record,
+            full_score_aggregate_record=full_score_aggregate_record,
+            final_consumer_authorization=final_consumer_authorization,
+            remote_consumer_authorizations=remote_consumer_authorizations,
+            compact_artifact_resolver=compact_artifact_resolver,
+            ledger_path=ledger_path,
+        ),
+    )
+
+
+def finalize_vllm_0300_publication_campaign(
+    *,
+    campaign_plan_record: Mapping[str, Any],
+    latency_collection_authorization: (
+        PublicationLatencyMultiPlanCollectionAuthorization
+    ),
+    latency_summary_record: Mapping[str, Any],
+    full_score_inventory: FullScoreInventory,
+    full_score_shard_plan_record: Mapping[str, Any],
+    full_score_execution_plan_record: Mapping[str, Any],
+    full_score_aggregate_record: Mapping[str, Any],
+    final_consumer_authorization: FullScorePhaseAuthorization,
+    remote_consumer_authorizations: Sequence[object],
+    compact_artifact_resolver: FullScoreCompactArtifactResolver,
+    ledger_path: str | Path,
+) -> PublicationCampaignFinalization:
+    """Finalize the vLLM 0.30.0 campaign over a multi-plan latency closure.
+
+    Latency evidence is the collection that binds each frozen job to the closed
+    job record it ran under, so no single latency execution plan is replayed.
+    The report discloses the plan set and how each job is tied to the ledger.
+    """
+
+    if type(latency_collection_authorization) is not (
+        PublicationLatencyMultiPlanCollectionAuthorization
+    ):
+        raise TypeError(
+            "latency_collection_authorization has the wrong authority type"
+        )
+    latency_collection = latency_collection_authorization.collection
+    validate_publication_latency_multi_plan_collection_record(
+        latency_collection,
+        campaign_plan_record=campaign_plan_record,
+    )
+    if (
+        latency_collection.get("closed_record_sha256")
+        != latency_collection_authorization.collection_sha256
+    ):
+        raise ValueError("latency collection authority payload drift")
+    collection_ledger = _mapping(latency_collection, "ledger")
+    if (
+        collection_ledger.get("ledger_path_sha256")
+        != latency_collection_authorization.ledger_path_sha256
+        or not _json_type_exact_equal(
+            dict(_mapping(collection_ledger, "ledger_prefix")),
+            latency_collection_authorization.ledger_prefix.to_record(),
+        )
+    ):
+        raise ValueError("latency collection authority ledger binding drift")
+
+    validate_publication_latency_multi_plan_summary_record(
+        latency_summary_record,
+        expected_collection_sha256=(
+            latency_collection_authorization.collection_sha256
+        ),
+        expected_campaign_plan_sha256=_required_sha256(
+            campaign_plan_record,
+            "closed_record_sha256",
+        ),
+    )
+    recomputed_latency_summary = aggregate_publication_latency_multi_plan_campaign(
+        latency_collection_authorization,
+        campaign_plan_record=campaign_plan_record,
+    )
+    if not _json_type_exact_equal(
+        dict(latency_summary_record),
+        recomputed_latency_summary,
+    ):
+        raise ValueError(
+            "latency summary differs from authoritative campaign reaggregation"
+        )
+
+    inventory_record, recomputed_full_score_aggregate = _replayed_full_score_branch(
+        full_score_inventory=full_score_inventory,
+        full_score_shard_plan_record=full_score_shard_plan_record,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=full_score_aggregate_record,
+        final_consumer_authorization=final_consumer_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
+        ledger_path=ledger_path,
+    )
+    ledger_record = _validated_multi_plan_campaign_ledger_projection(
+        latency_collection_authorization=latency_collection_authorization,
+        campaign_plan_record=campaign_plan_record,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=recomputed_full_score_aggregate,
+        final_consumer_authorization=final_consumer_authorization,
+        ledger_path=ledger_path,
+    )
+    report = _build_vllm_0300_report(
+        campaign_plan_record=campaign_plan_record,
+        latency_collection_record=latency_collection,
+        latency_summary_record=recomputed_latency_summary,
+        inventory_record=inventory_record,
+        full_score_shard_plan_record=full_score_shard_plan_record,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=recomputed_full_score_aggregate,
+        ledger_record=ledger_record,
+    )
+    gate = _publication_gate_for_report(report)
+    return PublicationCampaignFinalization(
+        report_record=report,
+        gate_record=gate,
+        _issuer=_FINALIZATION_ISSUER,
+    )
+
+
+def validate_vllm_0300_publication_finalization(
+    finalization: PublicationCampaignFinalization,
+    *,
+    campaign_plan_record: Mapping[str, Any],
+    latency_collection_authorization: (
+        PublicationLatencyMultiPlanCollectionAuthorization
+    ),
+    latency_summary_record: Mapping[str, Any],
+    full_score_inventory: FullScoreInventory,
+    full_score_shard_plan_record: Mapping[str, Any],
+    full_score_execution_plan_record: Mapping[str, Any],
+    full_score_aggregate_record: Mapping[str, Any],
+    final_consumer_authorization: FullScorePhaseAuthorization,
+    remote_consumer_authorizations: Sequence[object],
+    compact_artifact_resolver: FullScoreCompactArtifactResolver,
+    ledger_path: str | Path,
+) -> None:
+    """Rebuild a 0.30.0 *finalization* from its authorities and require equality."""
+
+    if not isinstance(finalization, PublicationCampaignFinalization):
+        raise TypeError("finalization must be PublicationCampaignFinalization")
+    validate_vllm_0271_publication_report_pair(
+        finalization.report_record,
+        finalization.gate_record,
+    )
+    if finalization.report_record.get("record_type") != (
+        PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE
+    ):
+        raise ValueError("publication report is not a vLLM 0.30.0 report")
+    expected = finalize_vllm_0300_publication_campaign(
+        campaign_plan_record=campaign_plan_record,
+        latency_collection_authorization=latency_collection_authorization,
+        latency_summary_record=latency_summary_record,
+        full_score_inventory=full_score_inventory,
+        full_score_shard_plan_record=full_score_shard_plan_record,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=full_score_aggregate_record,
+        final_consumer_authorization=final_consumer_authorization,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
+        ledger_path=ledger_path,
+    )
+    if (
+        not _json_type_exact_equal(
+            dict(finalization.report_record),
+            dict(expected.report_record),
+        )
+        or not _json_type_exact_equal(
+            dict(finalization.gate_record),
+            dict(expected.gate_record),
+        )
+    ):
+        raise ValueError("publication campaign report/gate pair is not canonical")
+
+
+def write_vllm_0300_publication_finalization(
+    finalization: PublicationCampaignFinalization,
+    directory: str | Path,
+) -> tuple[Path, Path]:
+    """Write an exact 0.30.0 gate/report pair with the report as the commit file."""
+
+    if not isinstance(finalization, PublicationCampaignFinalization):
+        raise TypeError("finalization must be PublicationCampaignFinalization")
+    if finalization.report_record.get("record_type") != (
+        PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE
+    ):
+        raise ValueError("publication report is not a vLLM 0.30.0 report")
+    return write_vllm_0271_publication_finalization(finalization, directory)
+
+
+def load_vllm_0300_publication_finalization(
+    directory: str | Path,
+    *,
+    campaign_plan_record: Mapping[str, Any],
+    latency_collection_authorization: (
+        PublicationLatencyMultiPlanCollectionAuthorization
+    ),
+    latency_summary_record: Mapping[str, Any],
+    full_score_inventory: FullScoreInventory,
+    full_score_shard_plan_record: Mapping[str, Any],
+    full_score_execution_plan_record: Mapping[str, Any],
+    full_score_aggregate_record: Mapping[str, Any],
+    final_consumer_authorization: FullScorePhaseAuthorization,
+    remote_consumer_authorizations: Sequence[object],
+    compact_artifact_resolver: FullScoreCompactArtifactResolver,
+    ledger_path: str | Path,
+) -> PublicationCampaignFinalization:
+    """Load a 0.30.0 report/gate pair and replay all source authorities."""
+
+    return _load_publication_finalization(
+        directory,
+        lambda finalization: validate_vllm_0300_publication_finalization(
+            finalization,
+            campaign_plan_record=campaign_plan_record,
+            latency_collection_authorization=latency_collection_authorization,
+            latency_summary_record=latency_summary_record,
+            full_score_inventory=full_score_inventory,
+            full_score_shard_plan_record=full_score_shard_plan_record,
+            full_score_execution_plan_record=full_score_execution_plan_record,
+            full_score_aggregate_record=full_score_aggregate_record,
+            final_consumer_authorization=final_consumer_authorization,
+            remote_consumer_authorizations=remote_consumer_authorizations,
+            compact_artifact_resolver=compact_artifact_resolver,
+            ledger_path=ledger_path,
+        ),
+    )
+
+
+def _load_publication_finalization(
+    directory: str | Path,
+    replay: Callable[[PublicationCampaignFinalization], None],
+) -> PublicationCampaignFinalization:
     root = Path(directory).expanduser().absolute()
     directory_descriptor = _open_directory_no_symlinks(
         root,
@@ -592,26 +840,7 @@ def load_vllm_0271_publication_finalization(
             gate_record=gate,
             _issuer=_FINALIZATION_ISSUER,
         )
-        validate_vllm_0271_publication_finalization(
-            finalization,
-            latency_execution_plan_record=latency_execution_plan_record,
-            latency_collection_authorization=latency_collection_authorization,
-            latency_summary_record=latency_summary_record,
-            qualification_launch_authorization=qualification_launch_authorization,
-            handoff_serving_authorization=handoff_serving_authorization,
-            bf16_handoff_serving_authorization=(
-                bf16_handoff_serving_authorization
-            ),
-            source_closure_authorization=source_closure_authorization,
-            full_score_inventory=full_score_inventory,
-            full_score_shard_plan_record=full_score_shard_plan_record,
-            full_score_execution_plan_record=full_score_execution_plan_record,
-            full_score_aggregate_record=full_score_aggregate_record,
-            final_consumer_authorization=final_consumer_authorization,
-            remote_consumer_authorizations=remote_consumer_authorizations,
-            compact_artifact_resolver=compact_artifact_resolver,
-            ledger_path=ledger_path,
-        )
+        replay(finalization)
         if (
             not _json_type_exact_equal(
                 report,
@@ -643,6 +872,63 @@ def load_vllm_0271_publication_finalization(
             os.close(directory_descriptor)
 
 
+def _replayed_full_score_branch(
+    *,
+    full_score_inventory: FullScoreInventory,
+    full_score_shard_plan_record: Mapping[str, Any],
+    full_score_execution_plan_record: Mapping[str, Any],
+    full_score_aggregate_record: Mapping[str, Any],
+    final_consumer_authorization: FullScorePhaseAuthorization,
+    remote_consumer_authorizations: Sequence[object],
+    compact_artifact_resolver: FullScoreCompactArtifactResolver,
+    ledger_path: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(full_score_inventory, FullScoreInventory):
+        raise TypeError("full_score_inventory must be FullScoreInventory")
+    inventory_record = full_score_inventory_to_record(full_score_inventory)
+    validate_full_score_inventory_record(
+        inventory_record,
+        inventory=full_score_inventory,
+    )
+    validate_full_score_shard_plan(
+        full_score_shard_plan_record,
+        inventory=full_score_inventory,
+    )
+    validate_full_score_aggregate_record(
+        full_score_aggregate_record,
+        inventory=full_score_inventory,
+        shard_plan=full_score_shard_plan_record,
+        execution_plan=full_score_execution_plan_record,
+        require_publication=True,
+    )
+    recomputed_full_score_aggregate = aggregate_full_score_shard_evidence(
+        full_score_inventory,
+        full_score_shard_plan_record,
+        (),
+        authorization_scope=FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE,
+        execution_plan=full_score_execution_plan_record,
+        final_consumer_authorization=final_consumer_authorization,
+        ledger_path=ledger_path,
+        remote_consumer_authorizations=remote_consumer_authorizations,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    if not _json_type_exact_equal(
+        dict(full_score_aggregate_record),
+        recomputed_full_score_aggregate,
+    ):
+        raise ValueError(
+            "full-score aggregate differs from authoritative evidence reaggregation"
+        )
+    return inventory_record, recomputed_full_score_aggregate
+
+
+def _recovered_cluster_hours(record: Mapping[str, Any]) -> float:
+    value = record.get("cluster_hours")
+    if type(value) is not float or not math.isfinite(value) or value < 0.0:
+        raise ValueError("recovered latency balance hours must be a finite float")
+    return value
+
+
 def _build_report(
     *,
     latency_execution_plan_record: Mapping[str, Any],
@@ -654,8 +940,126 @@ def _build_report(
     full_score_aggregate_record: Mapping[str, Any],
     ledger_record: Mapping[str, Any],
 ) -> dict[str, Any]:
-    jobs = _mapping_sequence(latency_execution_plan_record, "jobs")
-    results = _mapping_sequence(latency_collection_record, "results")
+    campaign_binding = _mapping(
+        _mapping(latency_execution_plan_record, "sources"),
+        "campaign",
+    )
+    return _assemble_report(
+        record_type=PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE,
+        campaign_sha256=_required_sha256(campaign_binding, "closed_record_sha256"),
+        latency_jobs=_mapping_sequence(latency_execution_plan_record, "jobs"),
+        latency_results=_mapping_sequence(latency_collection_record, "results"),
+        latency_summary_record=latency_summary_record,
+        latency_source_bindings={
+            "latency_collection": _record_binding(
+                latency_collection_record,
+                expected_record_type=PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE,
+                expected_schema_version=PUBLICATION_LATENCY_SCHEMA_VERSION,
+            ),
+            "latency_execution_plan": _record_binding(
+                latency_execution_plan_record,
+                expected_record_type=(
+                    PUBLICATION_LATENCY_EXECUTION_PLAN_RECORD_TYPE
+                ),
+                expected_schema_version=PUBLICATION_LATENCY_SCHEMA_VERSION,
+            ),
+            "latency_summary": _record_binding(
+                latency_summary_record,
+                expected_record_type=PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
+                expected_schema_version=PUBLICATION_LATENCY_SCHEMA_VERSION,
+            ),
+        },
+        extra_fields={},
+        inventory_record=inventory_record,
+        full_score_shard_plan_record=full_score_shard_plan_record,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=full_score_aggregate_record,
+        ledger_record=ledger_record,
+    )
+
+
+def _build_vllm_0300_report(
+    *,
+    campaign_plan_record: Mapping[str, Any],
+    latency_collection_record: Mapping[str, Any],
+    latency_summary_record: Mapping[str, Any],
+    inventory_record: Mapping[str, Any],
+    full_score_shard_plan_record: Mapping[str, Any],
+    full_score_execution_plan_record: Mapping[str, Any],
+    full_score_aggregate_record: Mapping[str, Any],
+    ledger_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _assemble_report(
+        record_type=PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE,
+        campaign_sha256=_required_sha256(campaign_plan_record, "closed_record_sha256"),
+        latency_jobs=[
+            _mapping(_mapping(item, "job_record"), "cell")
+            for item in _mapping_sequence(latency_collection_record, "jobs")
+        ],
+        latency_results=_mapping_sequence(latency_collection_record, "results"),
+        latency_summary_record=latency_summary_record,
+        latency_source_bindings={
+            "latency_collection": _record_binding(
+                latency_collection_record,
+                expected_record_type=(
+                    PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE
+                ),
+                expected_schema_version=PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+            ),
+            "latency_summary": _record_binding(
+                latency_summary_record,
+                expected_record_type=(
+                    PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE
+                ),
+                expected_schema_version=PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+            ),
+        },
+        extra_fields={
+            "latency_provenance": _latency_provenance(latency_collection_record)
+        },
+        inventory_record=inventory_record,
+        full_score_shard_plan_record=full_score_shard_plan_record,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=full_score_aggregate_record,
+        ledger_record=ledger_record,
+    )
+
+
+def _latency_provenance(collection: Mapping[str, Any]) -> dict[str, Any]:
+    counts = dict.fromkeys(PUBLICATION_LATENCY_LEDGER_BINDINGS, 0)
+    for item in _mapping_sequence(collection, "jobs"):
+        binding = item.get("ledger_binding")
+        if binding not in counts:
+            raise ValueError("latency collection job has an unknown ledger binding")
+        counts[binding] += 1
+    plan_set = _mapping_sequence(collection, "plan_set")
+    return {
+        "execution_plan_count": len(plan_set),
+        "ledger_binding_counts": counts,
+        "plan_set_sha256": _canonical_sha256(_json_value_copy(plan_set)),
+        "superseded_attempt_count": len(
+            _mapping_sequence(_mapping(collection, "ledger"), "superseded_attempts")
+        ),
+    }
+
+
+def _assemble_report(
+    *,
+    record_type: str,
+    campaign_sha256: str,
+    latency_jobs: Sequence[Mapping[str, Any]],
+    latency_results: Sequence[Mapping[str, Any]],
+    latency_summary_record: Mapping[str, Any],
+    latency_source_bindings: Mapping[str, Any],
+    extra_fields: Mapping[str, Any],
+    inventory_record: Mapping[str, Any],
+    full_score_shard_plan_record: Mapping[str, Any],
+    full_score_execution_plan_record: Mapping[str, Any],
+    full_score_aggregate_record: Mapping[str, Any],
+    ledger_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    jobs = latency_jobs
+    results = latency_results
     latency_request_count = sum(_required_int(job, "request_count") for job in jobs)
     latency_cache_request_count = sum(
         _required_int(job, "request_count")
@@ -706,10 +1110,6 @@ def _build_report(
     ):
         raise ValueError("publication full-score coverage projection drift")
 
-    campaign_binding = _mapping(
-        _mapping(latency_execution_plan_record, "sources"),
-        "campaign",
-    )
     report: dict[str, Any] = {
         "campaign_id": PUBLICATION_CAMPAIGN_ID,
         "closed_record_sha256": "",
@@ -754,15 +1154,12 @@ def _build_report(
                 full_score_aggregate_record.get("protocol")
             ),
         },
-        "record_type": PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE,
+        "record_type": record_type,
         "schema_version": PUBLICATION_CAMPAIGN_REPORT_SCHEMA_VERSION,
         "scorer_contracts": _json_value_copy(scorers),
         "source_bindings": {
             "campaign": {
-                "closed_record_sha256": _required_sha256(
-                    campaign_binding,
-                    "closed_record_sha256",
-                ),
+                "closed_record_sha256": campaign_sha256,
                 "record_type": PUBLICATION_CAMPAIGN_RECORD_TYPE,
                 "schema_version": PUBLICATION_CAMPAIGN_SCHEMA_VERSION,
             },
@@ -786,24 +1183,9 @@ def _build_report(
                 expected_record_type=FULL_SCORE_SHARD_PLAN_RECORD_TYPE,
                 expected_schema_version=FULL_SCORE_SHARD_PLAN_SCHEMA_VERSION,
             ),
-            "latency_collection": _record_binding(
-                latency_collection_record,
-                expected_record_type=PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE,
-                expected_schema_version=PUBLICATION_LATENCY_SCHEMA_VERSION,
-            ),
-            "latency_execution_plan": _record_binding(
-                latency_execution_plan_record,
-                expected_record_type=(
-                    PUBLICATION_LATENCY_EXECUTION_PLAN_RECORD_TYPE
-                ),
-                expected_schema_version=PUBLICATION_LATENCY_SCHEMA_VERSION,
-            ),
-            "latency_summary": _record_binding(
-                latency_summary_record,
-                expected_record_type=PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
-                expected_schema_version=PUBLICATION_LATENCY_SCHEMA_VERSION,
-            ),
+            **_json_value_copy(dict(latency_source_bindings)),
         },
+        **_json_value_copy(dict(extra_fields)),
     }
     if (
         report["coverage"]["latency_descriptive_cell_count"]
@@ -828,17 +1210,74 @@ def _validated_campaign_ledger_projection(
 ) -> dict[str, Any]:
     if type(final_consumer_authorization) is not FullScorePhaseAuthorization:
         raise TypeError("final_consumer_authorization has the wrong authority type")
-    execution_sha256 = _required_sha256(
-        full_score_execution_plan_record,
-        "closed_record_sha256",
-    )
-    path_sha256 = databricks_ledger_path_sha256(ledger_path)
     latency_prefix = require_publication_latency_collection_authorization(
         latency_collection_authorization,
         execution_plan_record=latency_execution_plan_record,
         ledger_path=ledger_path,
         require_complete_current_prefix=False,
     )
+    return _campaign_ledger_projection_after_latency(
+        latency_collection_authorization=latency_collection_authorization,
+        latency_prefix=latency_prefix,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=full_score_aggregate_record,
+        final_consumer_authorization=final_consumer_authorization,
+        ledger_path=ledger_path,
+    )
+
+
+def _validated_multi_plan_campaign_ledger_projection(
+    *,
+    latency_collection_authorization: (
+        PublicationLatencyMultiPlanCollectionAuthorization
+    ),
+    campaign_plan_record: Mapping[str, Any],
+    full_score_execution_plan_record: Mapping[str, Any],
+    full_score_aggregate_record: Mapping[str, Any],
+    final_consumer_authorization: FullScorePhaseAuthorization,
+    ledger_path: str | Path,
+) -> dict[str, Any]:
+    if type(final_consumer_authorization) is not FullScorePhaseAuthorization:
+        raise TypeError("final_consumer_authorization has the wrong authority type")
+    latency_prefix = require_publication_latency_multi_plan_collection_authorization(
+        latency_collection_authorization,
+        campaign_plan_record=campaign_plan_record,
+        ledger_path=ledger_path,
+        require_complete_current_prefix=False,
+    )
+    projection = _campaign_ledger_projection_after_latency(
+        latency_collection_authorization=latency_collection_authorization,
+        latency_prefix=latency_prefix,
+        full_score_execution_plan_record=full_score_execution_plan_record,
+        full_score_aggregate_record=full_score_aggregate_record,
+        final_consumer_authorization=final_consumer_authorization,
+        ledger_path=ledger_path,
+    )
+    recovered = _mapping(
+        _mapping(latency_collection_authorization.collection, "ledger"),
+        "recovered_balance",
+    )
+    projection["latency_recovered_balance"] = {
+        "attempt_count": _required_nonnegative_int(recovered, "attempt_count"),
+        "cluster_hours": _recovered_cluster_hours(recovered),
+    }
+    return projection
+
+
+def _campaign_ledger_projection_after_latency(
+    *,
+    latency_collection_authorization: Any,
+    latency_prefix: Any,
+    full_score_execution_plan_record: Mapping[str, Any],
+    full_score_aggregate_record: Mapping[str, Any],
+    final_consumer_authorization: FullScorePhaseAuthorization,
+    ledger_path: str | Path,
+) -> dict[str, Any]:
+    execution_sha256 = _required_sha256(
+        full_score_execution_plan_record,
+        "closed_record_sha256",
+    )
+    path_sha256 = databricks_ledger_path_sha256(ledger_path)
     if (
         latency_collection_authorization.workspace_host_sha256,
         latency_collection_authorization.user_name_sha256,
@@ -979,9 +1418,20 @@ def _publication_gate_for_report(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_report_envelope(record: Mapping[str, Any]) -> None:
-    _require_exact_keys(record, _REPORT_KEYS, "publication campaign report")
+    multi_plan = (
+        record.get("record_type") == PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE
+    )
+    _require_exact_keys(
+        record,
+        _VLLM_0300_REPORT_KEYS if multi_plan else _REPORT_KEYS,
+        "publication campaign report",
+    )
     if (
-        record.get("record_type") != PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE
+        record.get("record_type")
+        not in (
+            PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE,
+            PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE,
+        )
         or not _json_type_exact_equal(
             record.get("schema_version"),
             PUBLICATION_CAMPAIGN_REPORT_SCHEMA_VERSION,
@@ -994,7 +1444,38 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
         raise ValueError("publication campaign report envelope is invalid")
     _assert_sanitized(record)
     bindings = _mapping(record, "source_bindings")
-    _require_exact_keys(bindings, _SOURCE_BINDING_NAMES, "report source bindings")
+    _require_exact_keys(
+        bindings,
+        _VLLM_0300_SOURCE_BINDING_NAMES if multi_plan else _SOURCE_BINDING_NAMES,
+        "report source bindings",
+    )
+    latency_binding_envelopes = (
+        {
+            "latency_collection": (
+                PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE,
+                PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+            ),
+            "latency_summary": (
+                PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE,
+                PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+            ),
+        }
+        if multi_plan
+        else {
+            "latency_collection": (
+                PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE,
+                PUBLICATION_LATENCY_SCHEMA_VERSION,
+            ),
+            "latency_execution_plan": (
+                PUBLICATION_LATENCY_EXECUTION_PLAN_RECORD_TYPE,
+                PUBLICATION_LATENCY_SCHEMA_VERSION,
+            ),
+            "latency_summary": (
+                PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
+                PUBLICATION_LATENCY_SCHEMA_VERSION,
+            ),
+        }
+    )
     expected_binding_envelopes = {
         "campaign": (
             PUBLICATION_CAMPAIGN_RECORD_TYPE,
@@ -1016,18 +1497,7 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
             FULL_SCORE_SHARD_PLAN_RECORD_TYPE,
             FULL_SCORE_SHARD_PLAN_SCHEMA_VERSION,
         ),
-        "latency_collection": (
-            PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE,
-            PUBLICATION_LATENCY_SCHEMA_VERSION,
-        ),
-        "latency_execution_plan": (
-            PUBLICATION_LATENCY_EXECUTION_PLAN_RECORD_TYPE,
-            PUBLICATION_LATENCY_SCHEMA_VERSION,
-        ),
-        "latency_summary": (
-            PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
-            PUBLICATION_LATENCY_SCHEMA_VERSION,
-        ),
+        **latency_binding_envelopes,
     }
     for name, binding in bindings.items():
         source_binding = _mapping_value(binding, f"source binding {name}")
@@ -1111,10 +1581,6 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
         _mapping(bindings, "latency_collection"),
         "closed_record_sha256",
     )
-    latency_execution_plan_sha256 = _required_sha256(
-        _mapping(bindings, "latency_execution_plan"),
-        "closed_record_sha256",
-    )
     reconstructed_latency_summary = {
         "analysis": _json_value_copy(latency.get("analysis")),
         "campaign_id": PUBLICATION_CAMPAIGN_ID,
@@ -1129,15 +1595,41 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
         ),
         "estimand_count": _LATENCY_ESTIMAND_COUNT,
         "estimates": _json_value_copy(latency.get("estimates")),
-        "execution_plan_sha256": latency_execution_plan_sha256,
-        "record_type": PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
-        "schema_version": PUBLICATION_LATENCY_SCHEMA_VERSION,
     }
-    validate_publication_latency_summary_record(
-        reconstructed_latency_summary,
-        expected_collection_sha256=latency_collection_sha256,
-        expected_execution_plan_sha256=latency_execution_plan_sha256,
-    )
+    if multi_plan:
+        campaign_sha256 = _required_sha256(
+            _mapping(bindings, "campaign"),
+            "closed_record_sha256",
+        )
+        reconstructed_latency_summary.update(
+            {
+                "campaign_plan_sha256": campaign_sha256,
+                "record_type": PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE,
+                "schema_version": PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+            }
+        )
+        validate_publication_latency_multi_plan_summary_record(
+            reconstructed_latency_summary,
+            expected_collection_sha256=latency_collection_sha256,
+            expected_campaign_plan_sha256=campaign_sha256,
+        )
+    else:
+        latency_execution_plan_sha256 = _required_sha256(
+            _mapping(bindings, "latency_execution_plan"),
+            "closed_record_sha256",
+        )
+        reconstructed_latency_summary.update(
+            {
+                "execution_plan_sha256": latency_execution_plan_sha256,
+                "record_type": PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE,
+                "schema_version": PUBLICATION_LATENCY_SCHEMA_VERSION,
+            }
+        )
+        validate_publication_latency_summary_record(
+            reconstructed_latency_summary,
+            expected_collection_sha256=latency_collection_sha256,
+            expected_execution_plan_sha256=latency_execution_plan_sha256,
+        )
     quality = _mapping(record, "quality")
     _require_exact_keys(
         quality,
@@ -1160,7 +1652,11 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
         ),
     )
     ledger = _mapping(record, "ledger")
-    _require_exact_keys(ledger, _LEDGER_KEYS, "report ledger")
+    _require_exact_keys(
+        ledger,
+        _VLLM_0300_LEDGER_KEYS if multi_plan else _LEDGER_KEYS,
+        "report ledger",
+    )
     latency_prefix_record = _mapping(ledger, "latency_terminal_prefix")
     full_score_prefix_record = _mapping(ledger, "full_score_terminal_prefix")
     latency_prefix = databricks_ledger_prefix_from_record(
@@ -1230,6 +1726,55 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
         )
     ):
         raise ValueError("report ledger accounting is invalid")
+    if multi_plan:
+        _validate_latency_provenance_projection(
+            _mapping(record, "latency_provenance"),
+            recovered_balance=_mapping(ledger, "latency_recovered_balance"),
+        )
+
+
+def _validate_latency_provenance_projection(
+    provenance: Mapping[str, Any],
+    *,
+    recovered_balance: Mapping[str, Any],
+) -> None:
+    _require_exact_keys(
+        provenance,
+        _LATENCY_PROVENANCE_KEYS,
+        "report latency provenance",
+    )
+    _require_exact_keys(
+        recovered_balance,
+        _RECOVERED_BALANCE_KEYS,
+        "report latency recovered balance",
+    )
+    counts = _mapping(provenance, "ledger_binding_counts")
+    _require_exact_keys(
+        counts,
+        frozenset(PUBLICATION_LATENCY_LEDGER_BINDINGS),
+        "report latency ledger binding counts",
+    )
+    count_values = [
+        _required_nonnegative_int(counts, name)
+        for name in PUBLICATION_LATENCY_LEDGER_BINDINGS
+    ]
+    plan_count = _required_int(provenance, "execution_plan_count")
+    _required_sha256(provenance, "plan_set_sha256")
+    _required_nonnegative_int(provenance, "superseded_attempt_count")
+    recovered_attempts = _required_nonnegative_int(
+        recovered_balance,
+        "attempt_count",
+    )
+    recovered_hours = _recovered_cluster_hours(recovered_balance)
+    if (
+        sum(count_values) != PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS
+        or not 1 <= plan_count <= PUBLICATION_CAMPAIGN_TOTAL_LATENCY_JOBS
+    ):
+        raise ValueError("report latency provenance does not close the design")
+    if counts.get(PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING) and (
+        recovered_attempts == 0 or recovered_hours <= 0.0
+    ):
+        raise ValueError("recovered-balance latency jobs lack a recovered balance")
 
 
 def _expected_full_score_protocol() -> dict[str, Any]:
@@ -2204,10 +2749,15 @@ __all__ = [
     "PUBLICATION_CAMPAIGN_REPORT_FILE_NAME",
     "PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE",
     "PUBLICATION_CAMPAIGN_REPORT_SCHEMA_VERSION",
+    "PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE",
     "PublicationCampaignFinalization",
     "finalize_vllm_0271_publication_campaign",
+    "finalize_vllm_0300_publication_campaign",
     "load_vllm_0271_publication_finalization",
+    "load_vllm_0300_publication_finalization",
     "validate_vllm_0271_publication_finalization",
     "validate_vllm_0271_publication_report_pair",
+    "validate_vllm_0300_publication_finalization",
     "write_vllm_0271_publication_finalization",
+    "write_vllm_0300_publication_finalization",
 ]

@@ -2122,3 +2122,495 @@ def test_canonical_reader_rejects_mutable_json_file(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="must be a regular read-only file"):
         campaign_finalizer._read_canonical_json(path, "synthetic report")
+
+
+def _synthetic_ledger_binding(index: int) -> str:
+    if index < 34:
+        return campaign_finalizer.PUBLICATION_LATENCY_LEDGER_BINDINGS[0]
+    if index < 38:
+        return campaign_finalizer.PUBLICATION_LATENCY_LEDGER_BINDINGS[1]
+    return campaign_finalizer.PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING
+
+
+def _synthetic_vllm_0300_report_inputs() -> dict[str, Any]:
+    inputs = _synthetic_report_inputs()
+    plan_jobs = inputs.pop("latency_execution_plan_record")["jobs"]
+    plans = [_digest(f"latency-plan-{index}") for index in range(3)]
+    jobs = [
+        {
+            "execution_plan_sha256": plans[index % 3],
+            "job_id": job["job_id"],
+            "job_record": {"cell": deepcopy(job), "job_id": job["job_id"]},
+            "ledger_binding": _synthetic_ledger_binding(index),
+            "submit_payload_sha256": _digest(f"payload-{index}"),
+        }
+        for index, job in enumerate(plan_jobs)
+    ]
+    plan_set = [
+        {
+            "execution_plan_sha256": plan_sha256,
+            "job_ids": sorted(
+                item["job_id"]
+                for item in jobs
+                if item["execution_plan_sha256"] == plan_sha256
+            ),
+        }
+        for plan_sha256 in sorted(plans)
+    ]
+    collection = _source_record(
+        campaign_finalizer.PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE,
+        campaign_finalizer.PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION,
+        label="latency-multi-plan-collection",
+        jobs=jobs,
+        ledger={
+            "recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0},
+            "superseded_attempts": [
+                {
+                    "attempt_id": f"publication-latency/{'f' * 20}/latency-job-000",
+                    "job_id": "latency-job-000",
+                    "terminal_state": "failed",
+                }
+            ],
+        },
+        plan_set=plan_set,
+        results=inputs["latency_collection_record"]["results"],
+    )
+    campaign_plan = {
+        "closed_record_sha256": (
+            campaign_finalizer.PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256
+        )
+    }
+    summary = _latency_closed_record(
+        {
+            key: value
+            for key, value in inputs["latency_summary_record"].items()
+            if key != "execution_plan_sha256"
+        }
+        | {
+            "campaign_plan_sha256": campaign_plan["closed_record_sha256"],
+            "collection_sha256": collection["closed_record_sha256"],
+            "record_type": (
+                campaign_finalizer.PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE
+            ),
+            "schema_version": (
+                campaign_finalizer.PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION
+            ),
+        }
+    )
+    ledger = deepcopy(inputs["ledger_record"])
+    ledger["latency_recovered_balance"] = {
+        "attempt_count": 47,
+        "cluster_hours": 552.0,
+    }
+    return {
+        **inputs,
+        "campaign_plan_record": campaign_plan,
+        "latency_collection_record": collection,
+        "latency_summary_record": summary,
+        "ledger_record": ledger,
+    }
+
+
+def _synthetic_vllm_0300_report() -> dict[str, Any]:
+    return campaign_finalizer._build_vllm_0300_report(
+        **_synthetic_vllm_0300_report_inputs()
+    )
+
+
+def test_vllm_0300_report_binds_multi_plan_collection_and_provenance() -> None:
+    inputs = _synthetic_vllm_0300_report_inputs()
+    report = campaign_finalizer._build_vllm_0300_report(**deepcopy(inputs))
+    gate = campaign_finalizer._publication_gate_for_report(report)
+
+    campaign_finalizer.validate_vllm_0271_publication_report_pair(report, gate)
+    assert report["record_type"] == (
+        campaign_finalizer.PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE
+    )
+    assert set(report["source_bindings"]) == (
+        campaign_finalizer._SOURCE_BINDING_NAMES - {"latency_execution_plan"}
+    )
+    assert report["source_bindings"]["latency_collection"] == {
+        "closed_record_sha256": inputs["latency_collection_record"][
+            "closed_record_sha256"
+        ],
+        "record_type": (
+            campaign_finalizer.PUBLICATION_LATENCY_MULTI_PLAN_COLLECTION_RECORD_TYPE
+        ),
+        "schema_version": (
+            campaign_finalizer.PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION
+        ),
+    }
+    assert report["latency_provenance"] == {
+        "execution_plan_count": 3,
+        "ledger_binding_counts": {
+            "ledger_receipt": 34,
+            "recovered_balance": 77,
+            "recovered_receipt": 4,
+        },
+        "plan_set_sha256": _canonical_sha256(
+            inputs["latency_collection_record"]["plan_set"]
+        ),
+        "superseded_attempt_count": 1,
+    }
+    assert report["ledger"]["latency_recovered_balance"] == {
+        "attempt_count": 47,
+        "cluster_hours": 552.0,
+    }
+    single_plan = _synthetic_report()
+    for key in ("coverage", "latency", "quality", "scorer_contracts"):
+        assert report[key] == single_plan[key]
+    rendered = campaign_tables.render_vllm_0271_publication_table_regions(
+        report,
+        gate,
+    )
+    assert tuple(rendered) == campaign_tables.PUBLICATION_TABLE_SECTION_ORDER
+
+
+def _tamper_0300_add_execution_plan_binding(report: dict[str, Any]) -> None:
+    report["source_bindings"]["latency_execution_plan"] = deepcopy(
+        report["source_bindings"]["latency_collection"]
+    )
+
+
+def _tamper_0300_single_plan_summary(report: dict[str, Any]) -> None:
+    report["source_bindings"]["latency_summary"]["record_type"] = (
+        campaign_finalizer.PUBLICATION_LATENCY_SUMMARY_RECORD_TYPE
+    )
+
+
+def _tamper_0300_binding_counts(report: dict[str, Any]) -> None:
+    report["latency_provenance"]["ledger_binding_counts"]["ledger_receipt"] -= 1
+
+
+def _tamper_0300_unknown_binding(report: dict[str, Any]) -> None:
+    report["latency_provenance"]["ledger_binding_counts"]["unbound"] = 0
+
+
+def _tamper_0300_empty_recovered_balance(report: dict[str, Any]) -> None:
+    report["ledger"]["latency_recovered_balance"]["cluster_hours"] = 0.0
+
+
+def _tamper_0300_integer_recovered_hours(report: dict[str, Any]) -> None:
+    report["ledger"]["latency_recovered_balance"]["cluster_hours"] = 552
+
+
+def _tamper_0300_drop_provenance(report: dict[str, Any]) -> None:
+    del report["latency_provenance"]
+
+
+def _tamper_0300_as_0271_report(report: dict[str, Any]) -> None:
+    report["record_type"] = campaign_finalizer.PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE
+
+
+def _tamper_0300_summary_rebound_to_plan(report: dict[str, Any]) -> None:
+    report["source_bindings"]["latency_summary"]["closed_record_sha256"] = _digest(
+        "other-summary"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (_tamper_0300_add_execution_plan_binding, "closed schema"),
+        (_tamper_0300_single_plan_summary, "latency_summary envelope drift"),
+        (_tamper_0300_binding_counts, "does not close the design"),
+        (_tamper_0300_unknown_binding, "closed schema"),
+        (_tamper_0300_empty_recovered_balance, "lack a recovered balance"),
+        (_tamper_0300_integer_recovered_hours, "finite float"),
+        (_tamper_0300_drop_provenance, "closed schema"),
+        (_tamper_0300_as_0271_report, "closed schema"),
+        (_tamper_0300_summary_rebound_to_plan, "summary envelope is invalid"),
+    ],
+)
+def test_vllm_0300_report_rejects_resealed_provenance_tamper(
+    tamper: Any,
+    message: str,
+) -> None:
+    report = _synthetic_vllm_0300_report()
+    tamper(report)
+    _reclose(report)
+
+    with pytest.raises(ValueError, match=message):
+        campaign_finalizer._validate_report_envelope(report)
+
+
+def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    kwargs = case["projection_kwargs"]
+    single_plan = campaign_finalizer._validated_campaign_ledger_projection(**kwargs)
+    authorization = kwargs["latency_collection_authorization"]
+    authorization.collection = {
+        "ledger": {
+            "recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0}
+        }
+    }
+    calls: list[dict[str, Any]] = []
+
+    def require_multi_plan(observed: Any, **observed_kwargs: Any) -> Any:
+        assert observed is authorization
+        calls.append(observed_kwargs)
+        return case["latency_prefix"]
+
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "require_publication_latency_multi_plan_collection_authorization",
+        require_multi_plan,
+    )
+    campaign_plan = {"closed_record_sha256": _digest("campaign-plan")}
+    multi_plan_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key != "latency_execution_plan_record"
+    }
+
+    projection = campaign_finalizer._validated_multi_plan_campaign_ledger_projection(
+        campaign_plan_record=campaign_plan,
+        **multi_plan_kwargs,
+    )
+
+    assert projection == single_plan | {
+        "latency_recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0}
+    }
+    assert calls == [
+        {
+            "campaign_plan_record": campaign_plan,
+            "ledger_path": kwargs["ledger_path"],
+            "require_complete_current_prefix": False,
+        }
+    ]
+    with pytest.raises(TypeError, match="wrong authority type"):
+        campaign_finalizer._validated_multi_plan_campaign_ledger_projection(
+            campaign_plan_record=campaign_plan,
+            **{**multi_plan_kwargs, "final_consumer_authorization": object()},
+        )
+
+
+def test_vllm_0300_finalizer_replays_the_multi_plan_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _synthetic_vllm_0300_report_inputs()
+    authoritative_latency = deepcopy(inputs["latency_summary_record"])
+    authoritative_full_score = deepcopy(inputs["full_score_aggregate_record"])
+    latency_prefix_record = deepcopy(
+        inputs["ledger_record"]["latency_terminal_prefix"]
+    )
+    latency_collection = deepcopy(inputs["latency_collection_record"])
+    latency_collection["ledger"].update(
+        {
+            "ledger_path_sha256": inputs["ledger_record"]["ledger_path_sha256"],
+            "ledger_prefix": latency_prefix_record,
+        }
+    )
+    _reclose(latency_collection)
+
+    class FakeLedgerPrefix:
+        def to_record(self) -> dict[str, Any]:
+            return deepcopy(latency_prefix_record)
+
+    class FakeMultiPlanAuthorization:
+        def __init__(self) -> None:
+            self.collection = latency_collection
+            self.collection_sha256 = latency_collection["closed_record_sha256"]
+            self.ledger_path_sha256 = inputs["ledger_record"]["ledger_path_sha256"]
+            self.ledger_prefix = FakeLedgerPrefix()
+
+    class FakeFullScoreInventory:
+        pass
+
+    authorization = FakeMultiPlanAuthorization()
+    inventory = FakeFullScoreInventory()
+    replayed: dict[str, Any] = {}
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "PublicationLatencyMultiPlanCollectionAuthorization",
+        FakeMultiPlanAuthorization,
+    )
+    monkeypatch.setattr(
+        campaign_finalizer, "FullScoreInventory", FakeFullScoreInventory
+    )
+    for validator_name in (
+        "validate_publication_latency_multi_plan_collection_record",
+        "validate_publication_latency_multi_plan_summary_record",
+        "validate_full_score_inventory_record",
+        "validate_full_score_shard_plan",
+        "validate_full_score_aggregate_record",
+    ):
+        monkeypatch.setattr(
+            campaign_finalizer,
+            validator_name,
+            lambda *_args, **_kwargs: None,
+        )
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "full_score_inventory_to_record",
+        lambda observed: (
+            deepcopy(inputs["inventory_record"])
+            if observed is inventory
+            else pytest.fail("unexpected full-score inventory")
+        ),
+    )
+
+    def replay_latency(observed: Any, *, campaign_plan_record: Any) -> Any:
+        assert observed is authorization
+        assert campaign_plan_record is inputs["campaign_plan_record"]
+        replayed["latency"] = deepcopy(authoritative_latency)
+        return replayed["latency"]
+
+    def replay_full_score(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        replayed["full_score"] = deepcopy(authoritative_full_score)
+        return replayed["full_score"]
+
+    def project_ledger(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs["latency_collection_authorization"] is authorization
+        assert kwargs["full_score_aggregate_record"] is replayed["full_score"]
+        return deepcopy(inputs["ledger_record"])
+
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "aggregate_publication_latency_multi_plan_campaign",
+        replay_latency,
+    )
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "aggregate_publication_latency_campaign",
+        lambda *_args, **_kwargs: pytest.fail("0.30.0 must not replay one plan"),
+    )
+    monkeypatch.setattr(
+        campaign_finalizer, "aggregate_full_score_shard_evidence", replay_full_score
+    )
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "_validated_multi_plan_campaign_ledger_projection",
+        project_ledger,
+    )
+    call_kwargs = {
+        "campaign_plan_record": inputs["campaign_plan_record"],
+        "latency_collection_authorization": authorization,
+        "latency_summary_record": deepcopy(authoritative_latency),
+        "full_score_inventory": inventory,
+        "full_score_shard_plan_record": inputs["full_score_shard_plan_record"],
+        "full_score_execution_plan_record": inputs[
+            "full_score_execution_plan_record"
+        ],
+        "full_score_aggregate_record": deepcopy(authoritative_full_score),
+        "final_consumer_authorization": object(),
+        "remote_consumer_authorizations": (),
+        "compact_artifact_resolver": lambda _uri: Path("never-read"),
+        "ledger_path": Path("never-read-ledger.json"),
+    }
+
+    with pytest.raises(TypeError, match="wrong authority type"):
+        campaign_finalizer.finalize_vllm_0300_publication_campaign(
+            **{**call_kwargs, "latency_collection_authorization": object()}
+        )
+    latency_type_drift = deepcopy(authoritative_latency)
+    latency_type_drift["analysis"]["bootstrap_draws"] = 20_000.0
+    with pytest.raises(ValueError, match="differs from authoritative campaign"):
+        campaign_finalizer.finalize_vllm_0300_publication_campaign(
+            **{**call_kwargs, "latency_summary_record": latency_type_drift}
+        )
+    drifted_authorization = FakeMultiPlanAuthorization()
+    drifted_authorization.ledger_path_sha256 = _digest("other-ledger")
+    with pytest.raises(ValueError, match="authority ledger binding drift"):
+        campaign_finalizer.finalize_vllm_0300_publication_campaign(
+            **{
+                **call_kwargs,
+                "latency_collection_authorization": drifted_authorization,
+            }
+        )
+
+    finalization = campaign_finalizer.finalize_vllm_0300_publication_campaign(
+        **call_kwargs
+    )
+
+    report = finalization.report_record
+    assert report == campaign_finalizer._build_vllm_0300_report(
+        **{
+            **inputs,
+            "latency_collection_record": latency_collection,
+        }
+    )
+    assert report["source_bindings"]["latency_summary"][
+        "closed_record_sha256"
+    ] == authoritative_latency["closed_record_sha256"]
+    assert finalization.gate_record["benchmark_payload_digest"] == (
+        report["closed_record_sha256"]
+    )
+
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "finalize_vllm_0300_publication_campaign",
+        lambda **_kwargs: finalization,
+    )
+    campaign_finalizer.validate_vllm_0300_publication_finalization(
+        finalization, **call_kwargs
+    )
+    single_plan_report = _synthetic_report()
+    single_plan = _issued_finalization(
+        single_plan_report,
+        campaign_finalizer._publication_gate_for_report(single_plan_report),
+    )
+    with pytest.raises(ValueError, match="not a vLLM 0.30.0 report"):
+        campaign_finalizer.validate_vllm_0300_publication_finalization(
+            single_plan, **call_kwargs
+        )
+
+
+def test_vllm_0300_writer_and_loader_round_trip_with_authority_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _synthetic_vllm_0300_report()
+    gate = campaign_finalizer._publication_gate_for_report(report)
+    finalization = _issued_finalization(report, gate)
+    single_plan_report = _synthetic_report()
+    single_plan = _issued_finalization(
+        single_plan_report,
+        campaign_finalizer._publication_gate_for_report(single_plan_report),
+    )
+
+    with pytest.raises(ValueError, match="not a vLLM 0.30.0 report"):
+        campaign_finalizer.write_vllm_0300_publication_finalization(
+            single_plan, tmp_path
+        )
+    assert list(tmp_path.iterdir()) == []
+    report_path, gate_path = (
+        campaign_finalizer.write_vllm_0300_publication_finalization(
+            finalization, tmp_path
+        )
+    )
+    assert stat.S_IMODE(report_path.stat().st_mode) == 0o444
+    assert stat.S_IMODE(gate_path.stat().st_mode) == 0o444
+
+    replays: list[dict[str, Any]] = []
+
+    def replay(observed: Any, **kwargs: Any) -> None:
+        assert dict(observed.report_record) == report
+        replays.append(kwargs)
+
+    monkeypatch.setattr(
+        campaign_finalizer, "validate_vllm_0300_publication_finalization", replay
+    )
+    loaded = campaign_finalizer.load_vllm_0300_publication_finalization(
+        tmp_path,
+        campaign_plan_record={"closed_record_sha256": _digest("campaign")},
+        latency_collection_authorization=None,
+        latency_summary_record=None,
+        full_score_inventory=None,
+        full_score_shard_plan_record=None,
+        full_score_execution_plan_record=None,
+        full_score_aggregate_record=None,
+        final_consumer_authorization=None,
+        remote_consumer_authorizations=(),
+        compact_artifact_resolver=lambda _uri: tmp_path,
+        ledger_path=tmp_path / "ledger.json",
+    )
+
+    assert dict(loaded.report_record) == report
+    assert dict(loaded.gate_record) == gate
+    assert len(replays) == 1
+    assert replays[0]["campaign_plan_record"] == {
+        "closed_record_sha256": _digest("campaign")
+    }
