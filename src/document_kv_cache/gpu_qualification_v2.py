@@ -137,18 +137,25 @@ GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX: Final = DatabricksLedgerPr
     prefix_sha256=("321f82095abac3387266392792fb7a2a1b2f70e24908eca84efe62ef1bcbf5c8"),
 )
 GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS: Final = 677.1507730555555
-_GPU_QUALIFICATION_V2_REVIEWED_OPENINGS: Final = (
-    (
-        PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
-        GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
-        GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
-    ),
-    (
-        GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256,
-        GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX,
-        GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS,
-    ),
-)
+
+
+def _gpu_qualification_v2_reviewed_openings() -> tuple[
+    tuple[str, DatabricksLedgerPrefix, float], ...
+]:
+    # Built per call so a rebound opening constant is never shadowed by a copy.
+    return (
+        (
+            PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
+        ),
+        (
+            GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256,
+            GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX,
+            GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS,
+        ),
+    )
+
 
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_KEYS: Final = frozenset(
@@ -555,7 +562,7 @@ def build_gpu_qualification_plan_v2(
     opening = next(
         (
             reviewed
-            for reviewed in _GPU_QUALIFICATION_V2_REVIEWED_OPENINGS
+            for reviewed in _gpu_qualification_v2_reviewed_openings()
             if reviewed[1] == campaign_ledger_prefix
         ),
         None,
