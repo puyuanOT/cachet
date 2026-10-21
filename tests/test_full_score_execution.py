@@ -20,6 +20,7 @@ from document_kv_cache.serving_env import (
 )
 import document_kv_cache.full_score_remote_control as full_score_remote
 import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
+import document_kv_cache.publication_latency_execution as publication_latency
 import document_kv_cache.runtime_artifact_closure as runtime_artifact_closure
 import document_kv_cache.flashinfer_wheel_repack as flashinfer_wheel_repack
 from document_kv_cache.benchmark_handoffs import (
@@ -3084,6 +3085,103 @@ def test_direct_collection_issues_ordered_path_bound_phase_authority(campaign):
             wave_index=0,
             phase="consumer",
         )
+
+
+def test_wave_zero_producer_chains_to_a_multi_plan_latency_collection(
+    campaign,
+    monkeypatch,
+):
+    ledger_path = campaign["tmp_path"] / "multi-plan-latency-ledger.json"
+    ledger_path.write_bytes(
+        full_score._canonical_pretty_json_bytes(
+            databricks_cluster_hour_ledger_to_record(
+                DatabricksClusterHourLedger(ledger_id="publication-full-score")
+            )
+        )
+    )
+    prefix = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
+    )
+    path_sha256 = databricks_ledger_path_sha256(ledger_path)
+    collection = _close(
+        {
+            "ledger": {
+                "ledger_path_sha256": path_sha256,
+                "ledger_prefix": prefix.to_record(),
+            },
+            "record_type": "test.multi-plan-latency-collection",
+        }
+    )
+    authorization = publication_latency.PublicationLatencyMultiPlanCollectionAuthorization(
+        collection=collection,
+        ledger_path_sha256=path_sha256,
+        ledger_prefix=prefix,
+        workspace_host_sha256=_digest("https://dbc.example"),
+        user_name_sha256=_digest("researcher@example.com"),
+        _issuer=publication_latency._MULTI_PLAN_COLLECTION_AUTHORIZATION_ISSUER,
+    )
+    campaign_plan_record = {"test": "campaign-plan"}
+    validated = []
+    monkeypatch.setattr(
+        publication_latency,
+        "validate_publication_latency_multi_plan_collection_record",
+        lambda record, *, campaign_plan_record: validated.append(
+            (dict(record), campaign_plan_record)
+        ),
+    )
+
+    def require_wave_zero(value, *, path=ledger_path, require_latest=True):
+        return full_score._require_full_score_phase_predecessor_authorization(
+            value,
+            execution_plan=campaign["execution_plan"],
+            ledger_path=path,
+            wave_index=0,
+            phase="producer",
+            latency_execution_plan_record=campaign_plan_record,
+            require_latest=require_latest,
+        )
+
+    observed_prefix, lineage = require_wave_zero(authorization)
+    assert observed_prefix == prefix
+    assert validated == [(collection, campaign_plan_record)]
+    assert lineage == {
+        "authorization_sha256": collection["closed_record_sha256"],
+        "kind": "publication_latency_multi_plan_collection",
+        "ledger_path_sha256": path_sha256,
+        "ledger_prefix": prefix.to_record(),
+    }
+
+    copied_path = campaign["tmp_path"] / "copied-multi-plan-ledger.json"
+    copied_path.write_bytes(ledger_path.read_bytes())
+    with pytest.raises(ValueError, match="ledger path binding drift"):
+        require_wave_zero(authorization, path=copied_path)
+
+    reserve_databricks_run_attempt_json(
+        ledger_path,
+        {
+            "run_name": "post-collection-event",
+            "tasks": [
+                {
+                    "max_retries": 0,
+                    "new_cluster": {},
+                    "task_key": "post_collection_event",
+                    "timeout_seconds": 3_600,
+                }
+            ],
+            "timeout_seconds": 3_600,
+        },
+        attempt_id="post-collection-event",
+        workload_id="post-collection-event",
+    )
+    with pytest.raises(ValueError, match="not the latest live ledger prefix"):
+        require_wave_zero(authorization)
+    assert require_wave_zero(authorization, require_latest=False)[0] == prefix
+
+    monkeypatch.undo()
+    assert full_score._full_score_predecessor_workspace_identity(authorization) == (
+        _digest("https://dbc.example"),
+        _digest("researcher@example.com"),
+    )
 
 
 def test_genuine_producer_authority_chains_only_to_same_workspace_consumer(

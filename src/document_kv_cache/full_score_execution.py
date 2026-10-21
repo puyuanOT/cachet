@@ -193,7 +193,9 @@ from document_kv_cache.publication_inputs import (
 )
 from document_kv_cache.publication_latency_execution import (
     PublicationLatencyCollectionAuthorization,
+    PublicationLatencyMultiPlanCollectionAuthorization,
     require_publication_latency_collection_authorization,
+    require_publication_latency_multi_plan_collection_authorization,
     validate_publication_latency_collection_record,
 )
 from document_kv_cache.runtime_telemetry import RuntimeTelemetrySampler
@@ -4954,7 +4956,12 @@ def _require_full_score_phase_predecessor_authorization(
     latency_execution_plan_record: Mapping[str, Any] | None = None,
     require_latest: bool = True,
 ) -> tuple[DatabricksLedgerPrefix, dict[str, Any]]:
-    """Require the immediately preceding causal phase on one local ledger."""
+    """Require the immediately preceding causal phase on one local ledger.
+
+    For the wave-zero producer, ``latency_execution_plan_record`` is the record
+    the latency authority closes over: the frozen latency execution plan for a
+    single-plan collection, or the campaign plan for a multi-plan collection.
+    """
 
     _validate_full_score_phase_position(wave_index, phase)
     waves = execution_plan.get("waves")
@@ -4979,7 +4986,14 @@ def _require_full_score_phase_predecessor_authorization(
             raise TypeError(
                 "wave-zero producer requires the latency execution-plan record"
             )
-        if require_latest:
+        if type(authorization) is PublicationLatencyMultiPlanCollectionAuthorization:
+            prefix = require_publication_latency_multi_plan_collection_authorization(
+                authorization,
+                campaign_plan_record=latency_execution_plan_record,
+                ledger_path=ledger_path,
+                require_complete_current_prefix=require_latest,
+            )
+        elif require_latest:
             prefix = require_publication_latency_collection_authorization(
                 authorization,
                 execution_plan_record=latency_execution_plan_record,
@@ -5003,7 +5017,12 @@ def _require_full_score_phase_predecessor_authorization(
         )
         lineage = {
             "authorization_sha256": collection_sha256,
-            "kind": "publication_latency_collection",
+            "kind": (
+                "publication_latency_multi_plan_collection"
+                if type(authorization)
+                is PublicationLatencyMultiPlanCollectionAuthorization
+                else "publication_latency_collection"
+            ),
             "ledger_path_sha256": path_sha256,
             "ledger_prefix": prefix.to_record(),
         }
@@ -5078,6 +5097,11 @@ def _full_score_predecessor_workspace_identity(
         return (
             latency_authorization.workspace_host_sha256,
             latency_authorization.user_name_sha256,
+        )
+    if type(authorization) is PublicationLatencyMultiPlanCollectionAuthorization:
+        return (
+            authorization.workspace_host_sha256,
+            authorization.user_name_sha256,
         )
     if type(authorization) is FullScorePhaseAuthorization:
         return (
