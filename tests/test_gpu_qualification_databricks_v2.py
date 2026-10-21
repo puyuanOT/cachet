@@ -12,8 +12,14 @@ from typing import Any
 import pytest
 
 import document_kv_cache._gpu_qualification_sentinels_v2 as sentinels_v2
+import document_kv_cache.databricks_resource_ledger as resource_ledger
 import document_kv_cache.gpu_qualification_databricks as databricks_v1
 import document_kv_cache.gpu_qualification_databricks_v2 as databricks_v2
+from document_kv_cache.databricks_resource_ledger import (
+    DatabricksClusterHourLedger,
+    databricks_ledger_path_sha256,
+    databricks_ledger_prefix,
+)
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
     GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
@@ -55,6 +61,10 @@ from document_kv_cache.serving_env import (
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
 )
+from test_databricks_resource_ledger import (
+    _closed_publication_history,
+    _extension_raise,
+)
 
 
 def test_v2_staggered_progress_rejects_batch_authority_subclasses():
@@ -95,6 +105,56 @@ def _plan() -> dict[str, Any]:
         ),
         artifact_pins=_pins(),
     )
+
+
+def test_v2_phase_predecessor_admits_against_a_cap_raised_at_the_opening(
+    tmp_path: Path,
+) -> None:
+    reservations, terminals = _closed_publication_history(75)
+    frozen = DatabricksClusterHourLedger(
+        ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        reservations=reservations,
+        terminal_actuals=terminals,
+    )
+    raised = DatabricksClusterHourLedger(
+        ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        cap_cluster_hours=2024.0,
+        reservations=reservations,
+        terminal_actuals=terminals,
+        cap_raises=(_extension_raise(75),),
+    )
+    ledger_path = tmp_path / "cluster-hours.json"
+    resource_ledger._atomic_write_ledger(ledger_path, raised)
+    opening = databricks_ledger_prefix(frozen)
+    plan = {
+        **_plan(),
+        "campaign_ledger_path_sha256": databricks_ledger_path_sha256(ledger_path),
+        "campaign_ledger_prefix": opening.to_record(),
+        "campaign_opening_terminal_gpu_hours": 900.0,
+    }
+    contracts = plan["cloud_qualification"]["jobs"]
+    assert len(contracts) == 14
+
+    predecessor_ledger = databricks_v2._require_v2_phase_predecessor(
+        raised,
+        plan=plan,
+        ledger_path=ledger_path,
+        predecessor=opening,
+        contracts=contracts,
+        label="recovered qualification phase",
+    )
+    assert databricks_ledger_prefix(predecessor_ledger) == opening
+    assert predecessor_ledger.cap_cluster_hours == 1024.0
+
+    with pytest.raises(ValueError, match="124-hour campaign headroom"):
+        databricks_v2._require_v2_phase_predecessor(
+            frozen,
+            plan=plan,
+            ledger_path=ledger_path,
+            predecessor=opening,
+            contracts=contracts,
+            label="recovered qualification phase",
+        )
 
 
 def _artifact_uris() -> dict[str, str]:

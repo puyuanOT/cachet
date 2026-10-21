@@ -18,6 +18,9 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
     GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
     GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256,
+    GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX,
+    GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS,
     GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE,
     GPU_QUALIFICATION_V2_SCHEMA_VERSION,
     GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE,
@@ -91,6 +94,9 @@ EXPECTED_JOB_IDS = (
 )
 EXPECTED_PLAN_SHA256 = (
     "f6d6b66b27390fe9c9d3a0ca242788578686c300e2201e1eb0e23cc62929758f"
+)
+EXPECTED_RECOVERED_PLAN_SHA256 = (
+    "f8d82f36a8bab3c2f4f9566140cb37f954c8cd26284351cc49d4146c33b19d90"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
     "a8248f938815a16801722193d0abc0c0fb38db48360ed5aca2be05de04d430a5"
@@ -173,6 +179,20 @@ def _valid_plan() -> dict[str, Any]:
         campaign_ledger_prefix=GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
         campaign_opening_terminal_gpu_hours=(
             GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
+        ),
+        artifact_pins=_pins(),
+    )
+
+
+def _valid_recovered_plan() -> dict[str, Any]:
+    return build_gpu_qualification_plan_v2(
+        campaign_id=PUBLICATION_CAMPAIGN_ID,
+        campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+        campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+        campaign_ledger_path_sha256=GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256,
+        campaign_ledger_prefix=GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX,
+        campaign_opening_terminal_gpu_hours=(
+            GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS
         ),
         artifact_pins=_pins(),
     )
@@ -452,8 +472,11 @@ def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[st
     return record
 
 
-def _valid_aggregate_evidence_v2() -> tuple[dict[str, Any], dict[str, Any]]:
-    plan = _valid_plan()
+def _valid_aggregate_evidence_v2(
+    plan: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if plan is None:
+        plan = _valid_plan()
     plan_sha256 = plan["closed_record_sha256"]
     local = build_local_preflight_evidence_v2(
         plan_sha256=plan_sha256,
@@ -669,6 +692,122 @@ def test_v2_plan_rejects_rebased_opening_authority() -> None:
             expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
             expected_artifact_pins=_pins(),
         )
+
+
+def test_v2_recovered_opening_is_the_raise_position_of_the_recreated_ledger() -> None:
+    prefix = GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX
+    assert prefix.ledger_id == PUBLICATION_CAMPAIGN_LEDGER_ID
+    assert prefix.cap_cluster_hours == 1024.0
+    assert prefix.reservation_count == 166
+    assert prefix.submission_receipt_count == 119
+    assert prefix.terminal_actual_count == 166
+    assert prefix.prefix_sha256 == (
+        "321f82095abac3387266392792fb7a2a1b2f70e24908eca84efe62ef1bcbf5c8"
+    )
+    assert GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS == (
+        677.1507730555555
+    )
+    assert GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256 == (
+        "8ee57f4f1bf2f7f35d90f167807d573aaeafb78569481aeb2a10a9da9d710ecb"
+    )
+    assert GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256 != (
+        PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256
+    )
+
+
+def test_v2_recovered_plan_differs_only_in_its_ledger_opening() -> None:
+    reviewed = _valid_plan()
+    recovered = _valid_recovered_plan()
+
+    assert recovered == _valid_recovered_plan()
+    assert recovered["closed_record_sha256"] == EXPECTED_RECOVERED_PLAN_SHA256
+    assert {key for key in reviewed if reviewed[key] != recovered[key]} == {
+        "campaign_ledger_path_sha256",
+        "campaign_ledger_prefix",
+        "campaign_opening_terminal_gpu_hours",
+        "closed_record_sha256",
+    }
+    assert recovered["campaign_ledger_path_sha256"] == (
+        GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256
+    )
+    assert recovered["campaign_ledger_prefix"] == (
+        GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX.to_record()
+    )
+    assert recovered["campaign_opening_terminal_gpu_hours"] == (
+        GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS
+    )
+    validate_gpu_qualification_plan_v2_record(
+        recovered,
+        expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+        expected_artifact_pins=_pins(),
+    )
+
+
+def test_v2_plan_rejects_mixed_reviewed_openings() -> None:
+    def build(path_sha256: str, prefix: Any, hours: float) -> dict[str, Any]:
+        return build_gpu_qualification_plan_v2(
+            campaign_id=PUBLICATION_CAMPAIGN_ID,
+            campaign_record_sha256=PUBLICATION_CAMPAIGN_CLOSED_RECORD_SHA256,
+            campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=path_sha256,
+            campaign_ledger_prefix=prefix,
+            campaign_opening_terminal_gpu_hours=hours,
+            artifact_pins=_pins(),
+        )
+
+    recovered_path = GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256
+    recovered_prefix = GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX
+    recovered_hours = GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS
+    with pytest.raises(ValueError, match="opening balance differs"):
+        build(
+            recovered_path,
+            recovered_prefix,
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
+        )
+    with pytest.raises(ValueError, match="opening balance differs"):
+        build(
+            PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+            recovered_hours,
+        )
+    for path_sha256 in (PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256, "e" * 64):
+        with pytest.raises(ValueError, match="recovered ledger path differs"):
+            build(path_sha256, recovered_prefix, recovered_hours)
+    with pytest.raises(ValueError, match="ledger path/prefix differs"):
+        build(
+            recovered_path,
+            GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
+        )
+
+    forged = _valid_recovered_plan()
+    forged["campaign_ledger_path_sha256"] = PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256
+    _seal_v2(forged)
+    with pytest.raises(ValueError, match="recovered ledger path differs"):
+        validate_gpu_qualification_plan_v2_record(
+            forged,
+            expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+            expected_artifact_pins=_pins(),
+        )
+
+
+def test_v2_evidence_is_bound_to_the_opening_its_plan_names() -> None:
+    reviewed_plan, reviewed_evidence = _valid_aggregate_evidence_v2()
+    recovered_plan, recovered_evidence = _valid_aggregate_evidence_v2(
+        _valid_recovered_plan()
+    )
+
+    for plan, evidence in (
+        (reviewed_plan, recovered_evidence),
+        (recovered_plan, reviewed_evidence),
+    ):
+        with pytest.raises(ValueError, match="plan_sha256 mismatch"):
+            validate_gpu_qualification_evidence_v2_record(
+                evidence,
+                plan_record=plan,
+                expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+                expected_artifact_pins=_pins(),
+            )
 
 
 def test_v1_and_v2_plans_are_cross_rejected() -> None:
@@ -1147,10 +1286,7 @@ def test_v2_aggregate_validates_native_records_before_behavior_projection(
     assert selection == expected_selection
 
 
-def test_v2_aggregate_projects_repeat_generation_and_selects_full_l40s_proof(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plan, evidence = _valid_aggregate_evidence_v2()
+def _accept_non_throughput_measurements(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         qualification_v1,
         "_validate_runtime_handoff_measurements_with_attestation",
@@ -1191,6 +1327,19 @@ def test_v2_aggregate_projects_repeat_generation_and_selects_full_l40s_proof(
         "_validate_terminal_receipt",
         lambda *_args, **_kwargs: None,
     )
+
+
+@pytest.mark.parametrize(
+    "plan_builder",
+    [_valid_plan, _valid_recovered_plan],
+    ids=["reviewed-opening", "recovered-opening"],
+)
+def test_v2_aggregate_projects_repeat_generation_and_selects_full_l40s_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    plan_builder: Any,
+) -> None:
+    plan, evidence = _valid_aggregate_evidence_v2(plan_builder())
+    _accept_non_throughput_measurements(monkeypatch)
 
     selection = validate_gpu_qualification_evidence_v2_record(
         evidence,

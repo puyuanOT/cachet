@@ -52,6 +52,7 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_SIZE,
 )
 from document_kv_cache.publication_campaign import (
+    PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
     PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
 )
@@ -119,6 +120,42 @@ GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX: Final = DatabricksLedgerPrefix(
     prefix_sha256=("e09e88a98b8e0510a2e6e6c8df162cd298356e903e236db1431331212471804c"),
 )
 GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 133.38722722222224
+# The campaign ledger was recreated in a new checkout after the history behind
+# the opening above was lost.  Its first 166 reservations are terminal-only
+# balance seeds and re-recorded latency runs, and this prefix is the quiescent
+# position where its approved budget extension was recorded.  A regenerated
+# qualification opens here instead.
+GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256: Final = (
+    "8ee57f4f1bf2f7f35d90f167807d573aaeafb78569481aeb2a10a9da9d710ecb"
+)
+GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX: Final = DatabricksLedgerPrefix(
+    ledger_id=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.ledger_id,
+    cap_cluster_hours=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.cap_cluster_hours,
+    reservation_count=166,
+    submission_receipt_count=119,
+    terminal_actual_count=166,
+    prefix_sha256=("321f82095abac3387266392792fb7a2a1b2f70e24908eca84efe62ef1bcbf5c8"),
+)
+GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS: Final = 677.1507730555555
+
+
+def _gpu_qualification_v2_reviewed_openings() -> tuple[
+    tuple[str, DatabricksLedgerPrefix, float], ...
+]:
+    # Built per call so a rebound opening constant is never shadowed by a copy.
+    return (
+        (
+            PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX,
+            GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS,
+        ),
+        (
+            GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256,
+            GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX,
+            GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS,
+        ),
+    )
+
 
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_KEYS: Final = frozenset(
@@ -522,17 +559,31 @@ def build_gpu_qualification_plan_v2(
         raise ValueError(
             "campaign_opening_terminal_gpu_hours must be finite/nonnegative"
         )
-    if campaign_ledger_prefix != GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX:
+    opening = next(
+        (
+            reviewed
+            for reviewed in _gpu_qualification_v2_reviewed_openings()
+            if reviewed[1] == campaign_ledger_prefix
+        ),
+        None,
+    )
+    if opening is None:
         raise ValueError("v2 campaign ledger prefix differs from reviewed authority")
-    if float(campaign_opening_terminal_gpu_hours) != (
-        GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS
-    ):
+    reviewed_path_sha256, _reviewed_prefix, reviewed_opening_hours = opening
+    if float(campaign_opening_terminal_gpu_hours) != reviewed_opening_hours:
         raise ValueError("v2 campaign opening balance differs from reviewed authority")
+    recovered = reviewed_path_sha256 != PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256
+    if recovered and campaign_ledger_path_sha256 != reviewed_path_sha256:
+        raise ValueError("v2 recovered ledger path differs from reviewed authority")
     record: dict[str, Any] = build_gpu_qualification_plan(
         campaign_id=campaign_id,
         campaign_record_sha256=campaign_record_sha256,
         campaign_ledger_id=campaign_ledger_id,
-        campaign_ledger_path_sha256=campaign_ledger_path_sha256,
+        campaign_ledger_path_sha256=(
+            PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256
+            if recovered
+            else campaign_ledger_path_sha256
+        ),
         campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
         campaign_opening_terminal_gpu_hours=(
             PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
@@ -542,6 +593,7 @@ def build_gpu_qualification_plan_v2(
     record["cloud_qualification"] = _gpu_qualification_v2_jobs_with_repeat_generation(
         _mapping_copy(record["cloud_qualification"], "cloud_qualification")
     )
+    record["campaign_ledger_path_sha256"] = campaign_ledger_path_sha256
     record["campaign_ledger_prefix"] = campaign_ledger_prefix.to_record()
     record["campaign_opening_terminal_gpu_hours"] = float(
         campaign_opening_terminal_gpu_hours
@@ -1547,6 +1599,9 @@ __all__ = [
     "GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX",
     "GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS",
     "GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE",
+    "GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256",
+    "GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX",
+    "GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS",
     "GPU_QUALIFICATION_V2_RUNTIME_VERIFICATION_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_SCHEMA_VERSION",
     "GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE",

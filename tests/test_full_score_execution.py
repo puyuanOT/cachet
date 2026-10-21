@@ -58,6 +58,7 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
     GPUQualificationArtifactPinsV2,
 )
+from document_kv_cache.publication_campaign import PUBLICATION_CAMPAIGN_ID
 from document_kv_cache.publication_inputs import (
     build_full_score_shard_plan,
     load_full_score_inventory,
@@ -69,6 +70,12 @@ from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_PATCHED_WHEEL_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
+from test_gpu_qualification_v2 import (
+    _accept_non_throughput_measurements,
+    _pins as _qualification_pins,
+    _valid_aggregate_evidence_v2,
+    _valid_recovered_plan,
 )
 
 
@@ -6170,6 +6177,33 @@ def test_qualification_and_full_score_runners_are_independently_pinned(campaign)
             shard_plan=campaign["shard_plan"],
             execution_plan=campaign["execution_plan"],
         )
+
+
+def test_qualification_config_accepts_a_recovered_ledger_qualification(monkeypatch):
+    plan, evidence = _valid_aggregate_evidence_v2(_valid_recovered_plan())
+    _accept_non_throughput_measurements(monkeypatch)
+    evidence_file_sha256 = sha256(
+        (canonical_gpu_qualification_json(evidence) + "\n").encode()
+    ).hexdigest()
+
+    qualification = full_score.FullScoreGPUQualificationConfig(
+        campaign_id=PUBLICATION_CAMPAIGN_ID,
+        plan_uri="dbfs:/qualification/plan.json",
+        evidence_uri="dbfs:/qualification/evidence.json",
+        evidence_file_sha256=evidence_file_sha256,
+        plan_record=plan,
+        evidence_record=evidence,
+        artifact_pins=_qualification_pins(),
+    )
+
+    selection = qualification.selection
+    assert selection.plan_sha256 == plan["closed_record_sha256"]
+    assert selection.generation_hardware_id == (
+        full_score.FULL_SCORE_PRODUCER_HARDWARE_TARGET
+    )
+    assert selection.generation_databricks_node_type_id == (
+        full_score.FULL_SCORE_PRODUCER_NODE_TYPE_ID
+    )
 
 
 def test_runtime_install_specs_bind_the_staged_wheel_uris(campaign):
