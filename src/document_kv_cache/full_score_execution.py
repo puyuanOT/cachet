@@ -88,6 +88,7 @@ from document_kv_cache.databricks_job import (
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.databricks_resource_ledger import (
+    DATABRICKS_PUBLICATION_LEDGER_CAPS,
     DatabricksBatchReservationAuthorization,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
@@ -98,10 +99,12 @@ from document_kv_cache.databricks_resource_ledger import (
     canonical_databricks_submit_payload_snapshot,
     databricks_cluster_hour_ledger_from_record,
     databricks_cluster_hour_ledger_to_record,
+    databricks_ledger_cap_after_prefix,
     databricks_ledger_path_sha256,
     databricks_ledger_prefix,
     databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
+    databricks_ledger_state_at_prefix,
     databricks_submit_payload_reservation,
     read_databricks_cluster_hour_ledger_json,
     record_databricks_verified_run_terminal_actual_json,
@@ -1341,7 +1344,7 @@ class FullScorePhaseAuthorization:
             raise TypeError("full-score phase ledger prefixes have the wrong type")
         if (
             predecessor_prefix.ledger_id != ledger_prefix.ledger_id
-            or predecessor_prefix.cap_cluster_hours != ledger_prefix.cap_cluster_hours
+            or ledger_prefix.cap_cluster_hours < predecessor_prefix.cap_cluster_hours
             or ledger_prefix.reservation_count
             != predecessor_prefix.reservation_count + 1
             or ledger_prefix.submission_receipt_count
@@ -3069,16 +3072,7 @@ def _full_score_ledger_prefix_state(
 ) -> DatabricksClusterHourLedger:
     """Reconstruct and verify the exact immutable state named by *prefix*."""
 
-    require_databricks_ledger_prefix(ledger, prefix)
-    state = DatabricksClusterHourLedger(
-        ledger_id=ledger.ledger_id,
-        cap_cluster_hours=ledger.cap_cluster_hours,
-        reservations=ledger.reservations[: prefix.reservation_count],
-        submission_receipts=ledger.submission_receipts[
-            : prefix.submission_receipt_count
-        ],
-        terminal_actuals=ledger.terminal_actuals[: prefix.terminal_actual_count],
-    )
+    state = databricks_ledger_state_at_prefix(ledger, prefix)
     if databricks_ledger_prefix(state) != prefix:
         raise ValueError("ledger prefix does not close its exact ordered slices")
     return state
@@ -4414,11 +4408,19 @@ def build_full_score_live_p90_budget_admission(
     ledger_active_reserved_gpu_hours: float,
     next_wave_reserved_gpu_hours: float,
     next_phase: str = "producer",
+    aggregate_cap_gpu_hours: float = MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
 ) -> dict[str, Any]:
     """Bootstrap a matched-block P90 and close one wave-boundary budget gate."""
 
     _require_publication_rng_runtime()
     _validate_budget_execution_plan(execution_plan)
+    if (
+        isinstance(aggregate_cap_gpu_hours, bool)
+        or not isinstance(aggregate_cap_gpu_hours, (int, float))
+        or aggregate_cap_gpu_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS
+    ):
+        raise ValueError("live P90 aggregate cap is not an approved campaign cap")
+    aggregate_cap_gpu_hours = float(aggregate_cap_gpu_hours)
     waves = cast(list[Mapping[str, Any]], execution_plan["waves"])
     if type(next_wave_index) is not int or not 1 <= next_wave_index < len(waves):
         raise ValueError("next_wave_index must identify an unsubmitted nonzero wave")
@@ -4538,9 +4540,7 @@ def build_full_score_live_p90_budget_admission(
         terminal_actual + p90_remaining + PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
     )
     projected_live_reserved = active_reserved + next_reserved
-    aggregate_gate_passed = (
-        projected_with_headroom <= MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-    )
+    aggregate_gate_passed = projected_with_headroom <= aggregate_cap_gpu_hours
     live_reservation_gate_passed = (
         projected_live_reserved <= MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS
     )
@@ -4568,7 +4568,9 @@ def build_full_score_live_p90_budget_admission(
         "completed_blocks": normalized_blocks,
         "execution_plan_sha256": execution_plan.get("closed_record_sha256"),
         "formula": {
-            "admission": "terminal_actual + p90_remaining + 124 <= 1024",
+            "admission": (
+                f"terminal_actual + p90_remaining + 124 <= {aggregate_cap_gpu_hours:g}"
+            ),
             "consumer_task_scale": (
                 "sum(sampled_consumer_task_billed_gpu_seconds) / "
                 "sum(sampled_natural_prompt_tokens) * remaining_natural_prompt_tokens; "
@@ -4581,7 +4583,7 @@ def build_full_score_live_p90_budget_admission(
             ),
         },
         "ledger_after_projection": {
-            "aggregate_cap_gpu_hours": MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+            "aggregate_cap_gpu_hours": aggregate_cap_gpu_hours,
             "aggregate_gate_passed": aggregate_gate_passed,
             "live_reservation_cap_gpu_hours": (
                 MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS
@@ -4671,11 +4673,14 @@ def build_governed_full_score_live_p90_budget_admission(
         remote_consumer_authorizations=remote_consumer_authorizations,
     )
     ledger_path_sha256 = databricks_ledger_path_sha256(live_path)
-    ledger = read_databricks_cluster_hour_ledger_json(live_path)
+    live_ledger = read_databricks_cluster_hour_ledger_json(live_path)
     if not _require_latest_predecessor:
-        ledger = _full_score_ledger_prefix_state(ledger, predecessor_prefix)
-    elif databricks_ledger_prefix(ledger) != predecessor_prefix:
+        ledger = _full_score_ledger_prefix_state(live_ledger, predecessor_prefix)
+    elif databricks_ledger_prefix(live_ledger) != predecessor_prefix:
         raise ValueError("live ledger changed while building the P90 admission")
+    else:
+        ledger = live_ledger
+    aggregate_cap = databricks_ledger_cap_after_prefix(live_ledger, predecessor_prefix)
     if ledger.active_reserved_cluster_hours != 0:
         raise ValueError("live P90 admission requires a zero-active live ledger")
     if any(item.attempt_id == attempt_id for item in ledger.reservations):
@@ -4762,6 +4767,7 @@ def build_governed_full_score_live_p90_budget_admission(
         ledger_active_reserved_gpu_hours=ledger.active_reserved_cluster_hours,
         next_wave_reserved_gpu_hours=reservation.reserved_cluster_hours,
         next_phase=next_phase,
+        aggregate_cap_gpu_hours=aggregate_cap,
     )
     _snapshot, canonical_submit = canonical_databricks_submit_payload_snapshot(
         next_submit_payload
@@ -5288,8 +5294,11 @@ def _governed_full_score_phase_reservation_validator(
             snapshot,
             attempt_id=attempt_id,
         )
-        if current_ledger.cap_cluster_hours != (MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS):
-            raise ValueError("full-score publication requires the 1024-hour ledger")
+        if current_ledger.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+            raise ValueError(
+                "full-score publication requires the 1024-hour ledger or its "
+                "approved extension"
+            )
         if current_ledger.ledger_id != predecessor_prefix.ledger_id:
             raise ValueError("full-score campaign ledger identity drift")
         if (
@@ -5308,7 +5317,7 @@ def _governed_full_score_phase_reservation_validator(
             current_ledger.accounted_cluster_hours
             + reservation.reserved_cluster_hours
             + PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
-            > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            > current_ledger.cap_cluster_hours
         ):
             raise ValueError(
                 "full-score reservation would consume the 124 GPU-hour "
@@ -5675,8 +5684,12 @@ def _require_full_score_historical_reservation_policy(
         ledger,
         predecessor_prefix,
     )
-    if predecessor_state.cap_cluster_hours != (MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS):
-        raise ValueError("full-score publication requires the 1024-hour ledger")
+    admission_cap = databricks_ledger_cap_after_prefix(ledger, predecessor_prefix)
+    if admission_cap not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+        raise ValueError(
+            "full-score publication requires the 1024-hour ledger or its "
+            "approved extension"
+        )
     if predecessor_state.ledger_id != predecessor_prefix.ledger_id:
         raise ValueError("full-score campaign ledger identity drift")
     if (
@@ -5694,7 +5707,7 @@ def _require_full_score_historical_reservation_policy(
         predecessor_state.accounted_cluster_hours
         + reservation.reserved_cluster_hours
         + PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS
-        > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        > admission_cap
     ):
         raise ValueError(
             "full-score reservation would consume the 124 GPU-hour campaign headroom"
@@ -6445,6 +6458,7 @@ def validate_full_score_live_p90_budget_admission(
         )
         replay_record["closed_record_sha256"] = _closed_record_sha256(replay_record)
     before = _required_mapping(replay_record, "ledger_before")
+    after = _required_mapping(replay_record, "ledger_after_projection")
     rebuilt = build_full_score_live_p90_budget_admission(
         execution_plan,
         cast(Sequence[Mapping[str, Any]], replay_record.get("completed_blocks")),
@@ -6462,6 +6476,7 @@ def validate_full_score_live_p90_budget_admission(
             "next_wave_reserved_gpu_hours",
         ),
         next_phase=_required_string(replay_record, "next_phase"),
+        aggregate_cap_gpu_hours=_required_number(after, "aggregate_cap_gpu_hours"),
     )
     if replay_record != rebuilt:
         raise ValueError("live P90 budget admission does not replay exactly")
@@ -6992,7 +7007,7 @@ def _require_full_score_final_consumer_aggregation_authorization(
     )
     if (
         batch_prefix.ledger_id != predecessor_prefix.ledger_id
-        or batch_prefix.cap_cluster_hours != predecessor_prefix.cap_cluster_hours
+        or batch_prefix.cap_cluster_hours < predecessor_prefix.cap_cluster_hours
     ):
         raise ValueError("publication aggregate final batch prefix drift")
     expected_causal_closure = _canonical_sha256(
@@ -8048,17 +8063,8 @@ def _validate_full_score_aggregate_publication_lineage(
             )
         }
         != {ledger_id}
-        or len(
-            {
-                prefix.cap_cluster_hours
-                for prefix in (
-                    predecessor_prefix,
-                    batch_prefix,
-                    terminal_prefix,
-                )
-            }
-        )
-        != 1
+        or batch_prefix.cap_cluster_hours < predecessor_prefix.cap_cluster_hours
+        or terminal_prefix.cap_cluster_hours != batch_prefix.cap_cluster_hours
         or batch_prefix.reservation_count != predecessor_prefix.reservation_count + 1
         or batch_prefix.submission_receipt_count
         != predecessor_prefix.submission_receipt_count
@@ -13713,8 +13719,11 @@ def _ledger_mapping_sha256(value: Mapping[str, Any]) -> str:
 
 
 def _require_full_score_ledger_caps(ledger: DatabricksClusterHourLedger) -> None:
-    if ledger.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS:
-        raise ValueError("full-score ledger cap must be exactly 1024 GPU-hours")
+    if ledger.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
+        raise ValueError(
+            "full-score ledger cap must be exactly 1024 GPU-hours or its approved "
+            "2024 GPU-hour extension"
+        )
     if MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS != 900.0:
         raise RuntimeError("full-score active reservation guard must be 900 GPU-hours")
     if PUBLICATION_CAMPAIGN_UNRESERVED_HEADROOM_HOURS != 124.0:
@@ -13728,7 +13737,7 @@ def _require_full_score_ledger_caps(ledger: DatabricksClusterHourLedger) -> None
     if (
         ledger.active_reserved_cluster_hours
         > MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS
-        or ledger.accounted_cluster_hours > MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        or ledger.accounted_cluster_hours > ledger.cap_cluster_hours
     ):
         raise ValueError("full-score ledger exceeds its publication budget guards")
 
