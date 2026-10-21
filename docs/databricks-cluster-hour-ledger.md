@@ -10,6 +10,15 @@ operation on the existing quiescent ledger. It preserves every reservation and
 terminal actual; starting a new zero-balance ledger would incorrectly discard
 already consumed GPU-hours.
 
+`raise-cap` records the raise in the ledger itself, at the exact reservation,
+receipt, and terminal counts where it took effect; a ledger holding a raise
+serializes as schema version 3. A prefix that ends at or before those counts
+predates the raise: it keeps the predecessor cap and re-derives byte-identically,
+so authorities issued before the raise stay valid. A prefix holding any later
+event carries the raised cap. Counts that are partly before and partly after a
+raise are rejected. A cap above 1,024 hours is valid only when reached through a
+recorded raise, and never above the 2,024-hour approved publication extension.
+
 Publication reservations must use the same ledger ID carried by the live GPU
 qualification capability. While holding that ledger's lock, each workload also
 keeps the total task count across all nonterminal reservations at or below the
@@ -557,6 +566,42 @@ The failed controller, phase lease, attempts, and evidence remain preserved and
 are not resumable. A successor must use the pinned `virtualenv` fallback, a new
 source closure, and a fresh exact14 qualification before acquiring a new Q8
 wave authority.
+
+### Approved 1,000-hour budget extension
+
+The campaign owner approved 1,000 more GPU-hours for the vLLM 0.30.0
+publication run. The frozen campaign record still names the 1,024-hour cap,
+because that value is part of its closed hash. The extension is instead one
+recorded raise on the live campaign ledger, from 1,024 to 2,024 hours:
+
+```bash
+cachet-databricks-resource-ledger raise-cap \
+  --ledger-json databricks-runs/vllm-0271-publication-prep/cluster-hours.json \
+  --expected-current-cap-cluster-hours 1024 \
+  --new-cap-cluster-hours 2024
+```
+
+The raise requires zero active reservations. Its effects are as follows:
+
+- Publication admission accepts a ledger at either 1,024 or 2,024 hours. The
+  900-hour active guard, the 16-task limit, and the 124-hour headroom are
+  unchanged; headroom is measured against the ledger's own cap.
+- Replayed admission for a batch reserved right after the raise uses the cap
+  that admitted it, which is the raised cap, even though its predecessor prefix
+  still shows 1,024 hours.
+- A full-score live P90 record states its aggregate cap in
+  `ledger_after_projection.aggregate_cap_gpu_hours` and in its admission
+  formula. Records under the 1,024-hour cap keep their exact bytes.
+- A Q8 handoff ledger reconciliation records the cap that admitted its producer
+  batch, so a later raise cannot change a sealed reconciliation.
+- The 0.30.0 publication report discloses `ledger.cap_raises`. Validation
+  requires that disclosed history to explain the caps of both the latency and
+  the full-score terminal prefixes. A 0.27.1 report rejects a raised ledger.
+
+Record the raise before the remaining latency cells. The finalizer requires the
+full-score ledger suffix to be exactly the twenty phase reservations after the
+final latency collection prefix, so every non-full-score event, including
+qualification regeneration, must land before that collection.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and

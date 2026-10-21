@@ -14,9 +14,13 @@ from document_kv_cache.canary_orchestration import (
 from document_kv_cache.databricks_resource_ledger import (
     DATABRICKS_CLUSTER_HOUR_LEDGER_RECORD_TYPE,
     DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION,
+    DATABRICKS_PUBLICATION_BUDGET_EXTENSION_HOURS,
+    DATABRICKS_PUBLICATION_LEDGER_CAPS,
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
     MAX_DATABRICKS_ACTIVE_RESERVED_TASKS,
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+    MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS,
+    DatabricksClusterHourCapRaise,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
     DatabricksClusterHourTerminalActual,
@@ -26,8 +30,11 @@ from document_kv_cache.databricks_resource_ledger import (
     create_databricks_cluster_hour_ledger_json,
     databricks_cluster_hour_ledger_from_record,
     databricks_cluster_hour_ledger_to_record,
+    databricks_ledger_cap_after_prefix,
     databricks_ledger_prefix,
+    databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
+    databricks_ledger_state_at_prefix,
     databricks_submit_payload_reservation,
     main,
     raise_databricks_cluster_hour_ledger_cap_json,
@@ -35,8 +42,10 @@ from document_kv_cache.databricks_resource_ledger import (
     record_databricks_run_submission_receipt_json,
     record_databricks_run_terminal_actual_json,
     record_databricks_verified_run_terminal_actual_json,
+    replay_databricks_run_attempt_batch_authorization_json,
     require_databricks_ledger_prefix,
     require_databricks_batch_terminal_closure,
+    require_databricks_publication_batch_admission,
     reserve_databricks_run_attempt_batch_authorized_json,
     reserve_databricks_run_attempt_batch_json,
     reserve_databricks_run_attempt_json,
@@ -259,6 +268,311 @@ def test_cap_raise_rejects_an_active_reservation(tmp_path):
             expected_current_cap_cluster_hours=120.0,
             new_cap_cluster_hours=1024.0,
         )
+
+
+def _closed_publication_history(count, *, hours=12.0):
+    reservations = []
+    terminals = []
+    for index in range(count):
+        attempt_id = f"publication-history-{index:02d}"
+        reservations.append(
+            DatabricksClusterHourReservation(
+                attempt_id=attempt_id,
+                workload_id="vllm-publication-campaign",
+                submit_payload_sha256=f"{index:064x}",
+                run_timeout_seconds=int(hours * 3600),
+                task_timeout_seconds=(int(hours * 3600),),
+            )
+        )
+        terminals.append(
+            DatabricksClusterHourTerminalActual(
+                attempt_id=attempt_id,
+                terminal_state="succeeded",
+                actual_cluster_duration_seconds=hours * 3600,
+            )
+        )
+    return tuple(reservations), tuple(terminals)
+
+
+def _extension_raise(reservation_count, terminal_actual_count=None):
+    return DatabricksClusterHourCapRaise(
+        from_cap_cluster_hours=MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+        to_cap_cluster_hours=MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS,
+        reservation_count=reservation_count,
+        submission_receipt_count=0,
+        terminal_actual_count=(
+            reservation_count
+            if terminal_actual_count is None
+            else terminal_actual_count
+        ),
+    )
+
+
+def test_publication_budget_extension_adds_exactly_one_thousand_hours():
+    assert DATABRICKS_PUBLICATION_BUDGET_EXTENSION_HOURS == 1000.0
+    assert MAX_DATABRICKS_EXTENDED_AGGREGATE_CLUSTER_HOURS == 2024.0
+    assert DATABRICKS_PUBLICATION_LEDGER_CAPS == (1024.0, 2024.0)
+
+
+def test_cap_raise_keeps_every_earlier_prefix_byte_identical(tmp_path):
+    ledger_path = tmp_path / "cluster-hours.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="vllm-publication-history",
+    )
+    for index in range(2):
+        reserve_databricks_run_attempt_json(
+            ledger_path,
+            _submit_payload(timeout_seconds=3600),
+            attempt_id=f"historical-{index}",
+            workload_id="historical-vllm",
+        )
+        record_databricks_run_terminal_actual_json(
+            ledger_path,
+            attempt_id=f"historical-{index}",
+            terminal_state="succeeded",
+            actual_cluster_duration_seconds=1800.0,
+        )
+    before = read_databricks_cluster_hour_ledger_json(ledger_path)
+    before_record = databricks_cluster_hour_ledger_to_record(before)
+    complete_prefix = databricks_ledger_prefix(before)
+    middle_prefix = databricks_ledger_prefix_at_counts(
+        before,
+        reservation_count=1,
+        submission_receipt_count=0,
+        terminal_actual_count=1,
+    )
+
+    raised = raise_databricks_cluster_hour_ledger_cap_json(
+        ledger_path,
+        expected_current_cap_cluster_hours=1024.0,
+        new_cap_cluster_hours=2024.0,
+    )
+
+    assert raised.cap_cluster_hours == 2024.0
+    assert raised.remaining_cluster_hours == 2023.0
+    assert raised.cap_raises == (_extension_raise(2),)
+    raised_record = databricks_cluster_hour_ledger_to_record(raised)
+    assert raised_record["schema_version"] == 3
+    assert raised_record["cap_raises"] == [_extension_raise(2).to_record()]
+    assert databricks_cluster_hour_ledger_from_record(raised_record) == raised
+    assert read_databricks_cluster_hour_ledger_json(ledger_path) == raised
+
+    assert databricks_ledger_prefix(raised) == complete_prefix
+    assert require_databricks_ledger_prefix(raised, middle_prefix) == complete_prefix
+    historical = databricks_ledger_state_at_prefix(raised, complete_prefix)
+    assert historical.cap_cluster_hours == 1024.0
+    assert historical.cap_raises == ()
+    assert databricks_cluster_hour_ledger_to_record(historical) == before_record
+    assert databricks_ledger_cap_after_prefix(raised, complete_prefix) == 2024.0
+    assert databricks_ledger_cap_after_prefix(raised, middle_prefix) == 1024.0
+
+    extended = reserve_databricks_run_attempt_json(
+        ledger_path,
+        _submit_payload(timeout_seconds=3600),
+        attempt_id="after-raise",
+        workload_id="extension-vllm",
+    )
+    extended_prefix = databricks_ledger_prefix(extended)
+    assert extended_prefix.cap_cluster_hours == 2024.0
+    assert require_databricks_ledger_prefix(extended, complete_prefix) == (
+        extended_prefix
+    )
+    assert databricks_ledger_prefix_from_record(extended_prefix.to_record()) == (
+        extended_prefix
+    )
+    with pytest.raises(ValueError, match="straddle a cap raise"):
+        databricks_ledger_prefix_at_counts(
+            extended,
+            reservation_count=3,
+            submission_receipt_count=0,
+            terminal_actual_count=1,
+        )
+
+    forged = DatabricksLedgerPrefix(
+        ledger_id=extended_prefix.ledger_id,
+        cap_cluster_hours=1024.0,
+        reservation_count=extended_prefix.reservation_count,
+        submission_receipt_count=extended_prefix.submission_receipt_count,
+        terminal_actual_count=extended_prefix.terminal_actual_count,
+        prefix_sha256=extended_prefix.prefix_sha256,
+    )
+    with pytest.raises(ValueError, match="cap differs from its authorized prefix"):
+        require_databricks_ledger_prefix(extended, forged)
+
+
+def test_extended_cap_requires_a_recorded_quiescent_raise():
+    reservations, terminals = _closed_publication_history(75)
+    frozen = DatabricksClusterHourLedger(
+        ledger_id="vllm-publication-campaign",
+        reservations=reservations,
+        terminal_actuals=terminals,
+    )
+    next_wave = DatabricksClusterHourReservation(
+        attempt_id="extension-wave",
+        workload_id="vllm-publication-campaign",
+        submit_payload_sha256="e" * 64,
+        run_timeout_seconds=43_200,
+        task_timeout_seconds=(43_200,),
+    )
+    with pytest.raises(ValueError, match="protected 124-hour"):
+        frozen.reserve(next_wave)
+
+    extended = DatabricksClusterHourLedger(
+        ledger_id="vllm-publication-campaign",
+        cap_cluster_hours=2024.0,
+        reservations=reservations,
+        terminal_actuals=terminals,
+        cap_raises=(_extension_raise(75),),
+    ).reserve(next_wave)
+    assert extended.accounted_cluster_hours == 912.0
+    assert extended.cap_raises == (_extension_raise(75),)
+
+    with pytest.raises(ValueError, match="recorded cap raise"):
+        DatabricksClusterHourLedger(
+            ledger_id="vllm-publication-campaign",
+            cap_cluster_hours=2024.0,
+            reservations=reservations,
+            terminal_actuals=terminals,
+        )
+    with pytest.raises(ValueError, match="no greater than 2024.0"):
+        DatabricksClusterHourLedger(
+            ledger_id="vllm-publication-campaign",
+            cap_cluster_hours=2024.000001,
+        )
+    with pytest.raises(ValueError, match="quiescent"):
+        DatabricksClusterHourLedger(
+            ledger_id="vllm-publication-campaign",
+            cap_cluster_hours=2024.0,
+            reservations=reservations,
+            terminal_actuals=terminals[:74],
+            cap_raises=(_extension_raise(75, terminal_actual_count=74),),
+        )
+    with pytest.raises(ValueError, match="beyond the ledger events"):
+        DatabricksClusterHourLedger(
+            ledger_id="vllm-publication-campaign",
+            cap_cluster_hours=2024.0,
+            reservations=reservations,
+            terminal_actuals=terminals,
+            cap_raises=(_extension_raise(76),),
+        )
+    with pytest.raises(ValueError, match="latest cap raise must name the ledger cap"):
+        DatabricksClusterHourLedger(
+            ledger_id="vllm-publication-campaign",
+            cap_cluster_hours=1024.0,
+            reservations=reservations,
+            terminal_actuals=terminals,
+            cap_raises=(_extension_raise(75),),
+        )
+    with pytest.raises(ValueError, match="must increase the cap"):
+        DatabricksClusterHourCapRaise(
+            from_cap_cluster_hours=2024.0,
+            to_cap_cluster_hours=1024.0,
+            reservation_count=0,
+            submission_receipt_count=0,
+            terminal_actual_count=0,
+        )
+
+
+def test_cap_raise_records_use_a_closed_schema_v3():
+    reservations, terminals = _closed_publication_history(2, hours=1.0)
+    plain = DatabricksClusterHourLedger(
+        ledger_id="vllm-publication-campaign",
+        reservations=reservations,
+        terminal_actuals=terminals,
+    )
+    raised = DatabricksClusterHourLedger(
+        ledger_id="vllm-publication-campaign",
+        cap_cluster_hours=2024.0,
+        reservations=reservations,
+        terminal_actuals=terminals,
+        cap_raises=(_extension_raise(2),),
+    )
+    plain_record = databricks_cluster_hour_ledger_to_record(plain)
+    raised_record = databricks_cluster_hour_ledger_to_record(raised)
+    assert plain_record["schema_version"] == DATABRICKS_CLUSTER_HOUR_LEDGER_SCHEMA_VERSION
+    assert "cap_raises" not in plain_record
+
+    with_key = deepcopy(plain_record)
+    with_key["cap_raises"] = []
+    with pytest.raises(ValueError, match="closed schema|unexpected|keys"):
+        databricks_cluster_hour_ledger_from_record(with_key)
+    empty_v3 = deepcopy(raised_record)
+    empty_v3["cap_raises"] = []
+    empty_v3["cap_cluster_hours"] = 1024.0
+    with pytest.raises(ValueError, match="requires a recorded cap raise"):
+        databricks_cluster_hour_ledger_from_record(empty_v3)
+    extra_field = deepcopy(raised_record)
+    extra_field["cap_raises"][0]["approved_by"] = "someone"
+    with pytest.raises(ValueError, match="cap_raises\\[0\\]"):
+        databricks_cluster_hour_ledger_from_record(extra_field)
+
+
+def test_publication_batch_admitted_right_after_a_raise_replays(tmp_path):
+    ledger_path = tmp_path / "cluster-hours.json"
+    reservations, terminals = _closed_publication_history(75)
+    resource_ledger._atomic_write_ledger(
+        ledger_path,
+        DatabricksClusterHourLedger(
+            ledger_id="vllm-publication-campaign",
+            reservations=reservations,
+            terminal_actuals=terminals,
+        ),
+    )
+    raise_databricks_cluster_hour_ledger_cap_json(
+        ledger_path,
+        expected_current_cap_cluster_hours=1024.0,
+        new_cap_cluster_hours=2024.0,
+    )
+    predecessor = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
+    )
+    assert predecessor.cap_cluster_hours == 1024.0
+    requests = tuple(
+        DatabricksRunAttemptReservationRequest(
+            attempt_id=f"extension/{index}",
+            workload_id="publication-extension",
+            submit_payload=_submit_payload(timeout_seconds=43_200),
+        )
+        for index in range(2)
+    )
+
+    batch_ledger, authorization = reserve_databricks_run_attempt_batch_authorized_json(
+        ledger_path,
+        requests,
+        expected_predecessor_prefix=predecessor,
+    )
+
+    assert authorization.predecessor_prefix == predecessor
+    assert authorization.batch_prefix.cap_cluster_hours == 2024.0
+    assert require_databricks_publication_batch_admission(
+        batch_ledger, authorization
+    ) == (authorization.batch_prefix)
+    replayed = replay_databricks_run_attempt_batch_authorization_json(
+        ledger_path,
+        requests,
+        expected_predecessor_prefix=predecessor,
+    )
+    assert replayed.batch_prefix == authorization.batch_prefix
+    for index in range(2):
+        record_databricks_run_submission_receipt_json(
+            ledger_path,
+            attempt_id=f"extension/{index}",
+            submit_response={"run_id": 201 + index},
+        )
+        record_databricks_verified_run_terminal_actual_json(
+            ledger_path,
+            attempt_id=f"extension/{index}",
+            run_record=_terminal_run(run_id=201 + index),
+        )
+    terminal = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert require_databricks_publication_batch_admission(
+        terminal, authorization
+    ) == (authorization.batch_prefix)
+    assert require_databricks_batch_terminal_closure(terminal, authorization) == (
+        databricks_ledger_prefix(terminal)
+    )
+    assert databricks_ledger_state_at_prefix(terminal, predecessor).cap_raises == ()
 
 
 def test_ledger_prefix_round_trips_and_accepts_only_ordered_extensions():
