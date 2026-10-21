@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import io
 import json
+import platform
 import sys
 import tarfile
 import zipfile
@@ -122,6 +123,59 @@ def test_subprocess_directory_bindings_retain_path_validation(
     monkeypatch.setattr(freeze, attribute, invalid)
     with pytest.raises(ValueError, match="regular directory|symlink"):
         freeze._base_subprocess_environment()
+
+
+def test_freeze_host_toolchain_selects_only_reviewed_controllers() -> None:
+    macos = freeze._freeze_host_toolchain("Darwin", "arm64")
+    linux = freeze._freeze_host_toolchain("Linux", "x86_64")
+
+    assert macos.python_executable == Path(
+        "/opt/homebrew/opt/python@3.11/bin/python3.11"
+    )
+    assert macos.uv_version.endswith(" aarch64-apple-darwin)")
+    assert linux.python_executable == Path(
+        "/opt/python-build-standalone/cpython-3.11.16+20260929/bin/python3.11"
+    )
+    assert linux.uv_version == "uv 0.11.6 (x86_64-unknown-linux-gnu)"
+    assert (linux.home, linux.tmpdir) == (Path("/var/empty"), Path("/var/tmp"))
+    assert "/opt/homebrew" not in linux.path
+    assert linux.semantic_site_packages_sha256 != macos.semantic_site_packages_sha256
+    for system, machine in (
+        ("Linux", "aarch64"),
+        ("Darwin", "x86_64"),
+        ("Windows", "AMD64"),
+    ):
+        assert freeze._freeze_host_toolchain(system, machine) is macos
+
+
+def test_freeze_pins_follow_the_selected_host_toolchain() -> None:
+    selected = freeze._freeze_host_toolchain(platform.system(), platform.machine())
+
+    assert freeze._FREEZE_HOST_TOOLCHAIN is selected
+    assert freeze._DEFAULT_PYTHON_EXECUTABLE == selected.python_executable.resolve()
+    assert freeze._LATENCY_SEMANTIC_PYTHON_SHA256 == selected.python_sha256
+    assert freeze._LATENCY_SEMANTIC_UV_SHA256 == selected.uv_sha256
+    assert freeze._LATENCY_SEMANTIC_UV_VERSION == selected.uv_version
+    assert freeze._LATENCY_SEMANTIC_SITE_PACKAGES_SHA256 == (
+        selected.semantic_site_packages_sha256
+    )
+    assert freeze._LATENCY_SEMANTIC_SITE_PACKAGES_FILE_COUNT == (
+        selected.semantic_site_packages_file_count
+    )
+    assert freeze._FREEZE_PATH == selected.path
+
+
+def test_semantic_lock_readme_documents_every_reviewed_host() -> None:
+    readme = " ".join(
+        (_SEMANTIC_RUNTIME_LOCK.parent / "README.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+
+    for toolchain in freeze._FREEZE_HOST_TOOLCHAINS.values():
+        assert str(toolchain.python_executable) in readme
+        assert toolchain.uv_sha256 in readme
+        assert toolchain.uv_version in readme
 
 
 def _package_build_outputs(

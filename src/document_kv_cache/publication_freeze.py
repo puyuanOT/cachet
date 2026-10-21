@@ -118,9 +118,79 @@ PUBLICATION_FREEZE_COMMAND_TAIL_BYTES: Final = 8 * 1024
 PUBLICATION_FREEZE_COMMAND_TIMEOUT_SECONDS: Final = 30 * 60
 # Keep synchronized with the full tests/ collection when adding regressions.
 PUBLICATION_FREEZE_EXPECTED_TEST_COUNT: Final = 4_530
-_DEFAULT_PYTHON_EXECUTABLE: Final = Path(
-    "/opt/homebrew/opt/python@3.11/bin/python3.11"
-).resolve()
+
+
+@dataclass(frozen=True, slots=True)
+class _FreezeHostToolchain:
+    """Reviewed controller-host interpreter, uv, and subprocess directories."""
+
+    python_executable: Path
+    python_sha256: str
+    uv_sha256: str
+    uv_version: str
+    semantic_site_packages_sha256: str
+    semantic_site_packages_file_count: int
+    home: Path
+    tmpdir: Path
+    path: str
+
+
+_FREEZE_HOST_TOOLCHAINS: Final = {
+    ("Darwin", "arm64"): _FreezeHostToolchain(
+        python_executable=Path("/opt/homebrew/opt/python@3.11/bin/python3.11"),
+        python_sha256=(
+            "3494e1ea84d8b49a17c193a9825d34abd476b7f3c2075e58c14316696fe3bf6f"
+        ),
+        uv_sha256=(
+            "94151d6624054c3973829c82eb718db1afc55ef9fcee499cdd94bfb852fb99f9"
+        ),
+        uv_version="uv 0.11.6 (65950801c 2026-04-09 aarch64-apple-darwin)",
+        semantic_site_packages_sha256=(
+            "26e45807542ce3fc12aac2f0d162db6268b8e964e389097b867af909ea78e780"
+        ),
+        semantic_site_packages_file_count=4_753,
+        home=Path("/private/var/empty"),
+        tmpdir=Path("/private/var/tmp"),
+        path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    ),
+    # python-build-standalone 20260929 cpython-3.11.16 x86_64-unknown-linux-gnu
+    # install_only, and the uv 0.11.6 x86_64-unknown-linux-gnu release binary.
+    ("Linux", "x86_64"): _FreezeHostToolchain(
+        python_executable=Path(
+            "/opt/python-build-standalone/cpython-3.11.16+20260929/bin/python3.11"
+        ),
+        python_sha256=(
+            "473a001c58b509434303302c27165d137bcb16d9f37ca5a8e2f63e457682cbfd"
+        ),
+        uv_sha256=(
+            "c9f7ca00a5e1c4f2a6dd96db91097bec5b76a53a483818e8ee746e9c7440547a"
+        ),
+        uv_version="uv 0.11.6 (x86_64-unknown-linux-gnu)",
+        semantic_site_packages_sha256=(
+            "e184b14818283ec0a46bb3b574da004636694104cd4530e7c2679594f081685b"
+        ),
+        semantic_site_packages_file_count=4_756,
+        home=Path("/var/empty"),
+        tmpdir=Path("/var/tmp"),
+        path="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    ),
+}
+
+
+def _freeze_host_toolchain(system: str, machine: str) -> _FreezeHostToolchain:
+    # Unreviewed hosts keep the macOS identity, so every pinned check fails closed.
+    return _FREEZE_HOST_TOOLCHAINS.get(
+        (system, machine),
+        _FREEZE_HOST_TOOLCHAINS[("Darwin", "arm64")],
+    )
+
+
+_FREEZE_HOST_TOOLCHAIN: Final = _freeze_host_toolchain(
+    platform.system(), platform.machine()
+)
+_DEFAULT_PYTHON_EXECUTABLE: Final = (
+    _FREEZE_HOST_TOOLCHAIN.python_executable.resolve()
+)
 _DEFAULT_RUFF_EXECUTABLE: Final = Path(".venv/bin/ruff")
 _DEFAULT_MYPY_EXECUTABLE: Final = Path(".venv/bin/mypy")
 _GIT_EXECUTABLE: Final = Path("/usr/bin/git")
@@ -129,21 +199,15 @@ _LATENCY_SEMANTIC_USER_HOME: Final = Path.home()
 _LATENCY_SEMANTIC_UV_EXECUTABLE: Final = (
     _LATENCY_SEMANTIC_USER_HOME / ".local/bin/uv"
 )
-_LATENCY_SEMANTIC_UV_SHA256: Final = (
-    "94151d6624054c3973829c82eb718db1afc55ef9fcee499cdd94bfb852fb99f9"
-)
-_LATENCY_SEMANTIC_UV_VERSION: Final = (
-    "uv 0.11.6 (65950801c 2026-04-09 aarch64-apple-darwin)"
-)
+_LATENCY_SEMANTIC_UV_SHA256: Final = _FREEZE_HOST_TOOLCHAIN.uv_sha256
+_LATENCY_SEMANTIC_UV_VERSION: Final = _FREEZE_HOST_TOOLCHAIN.uv_version
 _LATENCY_SEMANTIC_UV_CACHE: Final = (
     _LATENCY_SEMANTIC_USER_HOME / ".cache/uv"
 )
 _LATENCY_SEMANTIC_HF_HUB_CACHE: Final = (
     _LATENCY_SEMANTIC_USER_HOME / ".cache/huggingface/hub"
 )
-_LATENCY_SEMANTIC_PYTHON_SHA256: Final = (
-    "3494e1ea84d8b49a17c193a9825d34abd476b7f3c2075e58c14316696fe3bf6f"
-)
+_LATENCY_SEMANTIC_PYTHON_SHA256: Final = _FREEZE_HOST_TOOLCHAIN.python_sha256
 _LATENCY_SEMANTIC_TOKENIZER_SNAPSHOT_SHA256: Final = (
     "21fbe7df7aab4932076e2eedc9ba9b1be4cfe7be2b742f05a01b2125d9186557"
 )
@@ -159,9 +223,11 @@ _LATENCY_SEMANTIC_RUNTIME_LOCK_SHA256: Final = (
 )
 _LATENCY_SEMANTIC_RUNTIME_LOCK_BYTE_COUNT: Final = 30_963
 _LATENCY_SEMANTIC_SITE_PACKAGES_SHA256: Final = (
-    "26e45807542ce3fc12aac2f0d162db6268b8e964e389097b867af909ea78e780"
+    _FREEZE_HOST_TOOLCHAIN.semantic_site_packages_sha256
 )
-_LATENCY_SEMANTIC_SITE_PACKAGES_FILE_COUNT: Final = 4_753
+_LATENCY_SEMANTIC_SITE_PACKAGES_FILE_COUNT: Final = (
+    _FREEZE_HOST_TOOLCHAIN.semantic_site_packages_file_count
+)
 _LATENCY_SEMANTIC_TOKENIZER_ID: Final = "Qwen/Qwen3-4B-Instruct-2507"
 _LATENCY_SEMANTIC_TOKENIZER_REVISION: Final = (
     "cdbee75f17c01a7cc42f958dc650907174af0554"
@@ -179,11 +245,9 @@ _LATENCY_SEMANTIC_PREPARED_INPUT_RELATIVE_PATH: Final = Path(
     "prepared-v3-sha256-"
     f"{PUBLICATION_FREEZE_INPUT_BUNDLE_SHA256}"
 )
-_FREEZE_HOME: Final = Path("/private/var/empty")
-_FREEZE_TMPDIR: Final = Path("/private/var/tmp")
-_FREEZE_PATH: Final = (
-    "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-)
+_FREEZE_HOME: Final = _FREEZE_HOST_TOOLCHAIN.home
+_FREEZE_TMPDIR: Final = _FREEZE_HOST_TOOLCHAIN.tmpdir
+_FREEZE_PATH: Final = _FREEZE_HOST_TOOLCHAIN.path
 
 _SOURCE_FILE_ROLES: Final = (
     "cachet_package_wheel",
