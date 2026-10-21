@@ -69,8 +69,8 @@ from document_kv_cache.publication_latency_handoff_generation import (
     PublicationLatencyHandoffServingAuthorization,
     PublicationLatencyGeneratorHardwareQualificationV2,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
+from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
@@ -285,7 +285,7 @@ def _qualification(monkeypatch, prepared):
     pins = GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256="3" * 64,
         cachet_source_tree_sha256="4" * 64,
@@ -452,7 +452,7 @@ def _launch_material(prepared, monkeypatch, *, ledger_path):
         patched_vllm_wheel_uri="dbfs:/vllm.whl",
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
         patched_flashinfer_wheel_uri="dbfs:/flashinfer.whl",
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_uri="dbfs:/runtime-closure.json",
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         source_revision="deadbeef" * 5,

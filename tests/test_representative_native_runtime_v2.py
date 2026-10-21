@@ -35,7 +35,7 @@ from document_kv_cache.databricks_vllm_smoke_job import (
     build_databricks_vllm_smoke_run_submit_payload,
     main,
 )
-from document_kv_cache.flashinfer_wheel_repack import FLASHINFER_PATCHED_WHEEL_SHA256
+from document_kv_cache.runtime_artifact_closure import FLASHINFER_RUNTIME_WHEEL_SHA256
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_PATCHED_WHEEL_SHA256,
@@ -55,7 +55,7 @@ def runtime_bundle():
         ("package_wheel", "f" * 64, "cachet_kv-0.2.0-py3-none-any.whl"),
         ("runtime_lock", VLLM_RUNTIME_BASE_LOCK_SHA256, "runtime.lock"),
         ("patched_vllm_wheel", VLLM_PATCHED_WHEEL_SHA256, "vllm.whl"),
-        ("patched_flashinfer_wheel", FLASHINFER_PATCHED_WHEEL_SHA256, "flashinfer.whl"),
+        ("patched_flashinfer_wheel", FLASHINFER_RUNTIME_WHEEL_SHA256, "flashinfer.whl"),
         ("runtime_closure_manifest", RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256, "closure.json"),
     ):
         records[name + "_uri"] = f"/Volumes/catalog/schema/volume/{digest}/{filename}"

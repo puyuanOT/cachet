@@ -38,10 +38,11 @@ from document_kv_cache.gpu_qualification import (
 from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_EVIDENCE_RECORD_TYPE,
     GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+    GPU_QUALIFICATION_V2_SCHEMA_VERSION,
     GPUQualificationArtifactPinsV2,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
+from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
 )
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
@@ -1079,7 +1080,7 @@ def fake_hardware_qualification(monkeypatch, prepared):
     pins = GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256="3" * 64,
         cachet_source_tree_sha256="4" * 64,
@@ -1109,6 +1110,8 @@ def fake_hardware_qualification(monkeypatch, prepared):
         plan_record={
             "closed_record_sha256": "8" * 64,
             "record_type": GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
+            "runtime_contract": {"artifact_sha256": pins.to_record()},
+            "schema_version": GPU_QUALIFICATION_V2_SCHEMA_VERSION,
         },
         expected_campaign_id="vllm-0271-publication-v1",
         expected_artifact_pins=pins,
@@ -1203,7 +1206,7 @@ def production_launch_material(prepared, monkeypatch):
         patched_vllm_wheel_uri="dbfs:/vllm.whl",
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
         patched_flashinfer_wheel_uri="dbfs:/flashinfer.whl",
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_uri="dbfs:/runtime-closure.json",
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         cachet_source_tree_sha256="4" * 64,
@@ -1486,7 +1489,7 @@ def test_production_submit_render_rejects_missing_wrong_or_forged_authority(
     )
     parameters = rendered[0]["tasks"][0]["spark_python_task"]["parameters"]
     assert parameters[parameters.index("--patched-flashinfer-wheel-sha256") + 1] == (
-        FLASHINFER_PATCHED_WHEEL_SHA256
+        FLASHINFER_RUNTIME_WHEEL_SHA256
     )
     assert parameters[parameters.index("--runtime-closure-manifest-sha256") + 1] == (
         RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
@@ -2162,7 +2165,7 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
         patched_vllm_wheel_uri="dbfs:/vllm.whl",
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
         patched_flashinfer_wheel_uri="dbfs:/flashinfer.whl",
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_uri="dbfs:/runtime-closure.json",
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         cachet_source_tree_sha256="4" * 64,
@@ -2261,7 +2264,7 @@ def test_distributed_workers_close_without_copy_and_render_independent_jobs(
     monkeypatch.setattr(
         generation,
         "_verify_bound_hardware_qualification_file",
-        lambda binding: None,
+        lambda binding, **_kwargs: None,
     )
     monkeypatch.setattr(
         generation,

@@ -73,6 +73,39 @@ except Exception as exc:  # pragma: no cover - local lightweight or broken-runti
         def has_connector_metadata(self) -> bool:
             return self._connector_metadata is not None
 
+        @property
+        def supports_divergent_local_hybrid_hits(self) -> bool:
+            return False
+
+        def finish_forward(self) -> None:
+            return None
+
+        def reset_capture_state(self) -> None:
+            return None
+
+        def get_transfer_results(self, finished_req_ids: set[str]) -> object:
+            finished_sending, finished_recving = self.get_finished(finished_req_ids)
+            return _StubTransferResults(
+                finished_sending=set(finished_sending or ()),
+                finished_recving=set(finished_recving or ()),
+            )
+
+        def bind_kv_cache_manager(self, kv_cache_manager: object) -> None:
+            self._kv_cache_manager = kv_cache_manager
+            self.bind_gpu_block_pool(kv_cache_manager.block_pool)
+
+        def register_finished_partial_tail(
+            self,
+            request: object,
+            block_ids: tuple[list[int], ...],
+            partial_tail_offloads: list[tuple[int, int, int]],
+        ) -> bool:
+            del request, block_ids, partial_tail_offloads
+            return False
+
+        def has_pending_block_frees(self) -> bool:
+            return False
+
 
 try:  # pragma: no cover - exercised in live vLLM environments.
     from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (  # type: ignore[import-not-found]
@@ -81,6 +114,12 @@ try:  # pragma: no cover - exercised in live vLLM environments.
 except Exception as exc:  # pragma: no cover - local lightweight or broken-runtime path.
     if _VLLM_RUNTIME_IMPORT_ERROR is None:
         _VLLM_RUNTIME_IMPORT_ERROR = exc
+
+    @dataclass
+    class _StubTransferResults:
+        finished_sending: set[str] = field(default_factory=set)
+        finished_recving: set[str] = field(default_factory=set)
+        failed_recving: set[str] = field(default_factory=set)
 
     @dataclass
     class _KVConnectorStats:

@@ -25,7 +25,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -126,6 +125,7 @@ from document_kv_cache.databricks_runs import (
     validate_databricks_run_status_sidecar,
 )
 from document_kv_cache.gpu_qualification import (
+    GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
     GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE,
     GPU_QUALIFICATION_GENERATION_GPU,
     GPU_QUALIFICATION_GENERATION_HARDWARE_ID,
@@ -194,10 +194,8 @@ from document_kv_cache.publication_latency_execution import (
     validate_publication_latency_collection_record,
 )
 from document_kv_cache.runtime_telemetry import RuntimeTelemetrySampler
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-)
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_PATCHED_WHEEL_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
@@ -283,12 +281,8 @@ FULL_SCORE_GENERATOR_FACTORY = (
     "build_pre_rope_transformers_kv_chunk_generator"
 )
 FULL_SCORE_GENERATOR_VERSION = "vllm-0.27.1-publication-q8-e5m2"
-FULL_SCORE_VLLM_BNB_LOADER_MEMBER = (
-    "vllm/model_executor/model_loader/bitsandbytes_loader.py"
-)
-FULL_SCORE_VLLM_BNB_LOADER_SHA256 = (
-    "cf2c10fcaf5b6e997a8d5f80712af1f251a7292b5d76813e28b39bc03fa7c629"
-)
+FULL_SCORE_VLLM_BNB_LOADER_MEMBER = "vllm_bnb_plugin/bitsandbytes_loader.py"
+FULL_SCORE_VLLM_BNB_LOADER_SHA256 = GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256
 FULL_SCORE_PRODUCER_HARDWARE_TARGET = GPU_QUALIFICATION_GENERATION_HARDWARE_ID
 FULL_SCORE_PRODUCER_GPU_NAME = GPU_QUALIFICATION_GENERATION_GPU
 FULL_SCORE_PRODUCER_NODE_TYPE_ID = GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE
@@ -556,9 +550,66 @@ def _bootstrap(argv: list[str]) -> None:
         + os.pathsep
         + pip_environment.get("PATH", "")
     )
+    def _bnb_plugin_install_paths(runtime_lock_path, work_dir):
+        continuation = chr(92)
+        newline = chr(10)
+        stanza = newline.join((
+            "vllm-bnb-plugin==0.0.3 " + continuation,
+            "    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c " + continuation,
+            "    --hash=sha256:e884654a25a8b2a15f41644e0be28b811a176ffbe31a58a9ccc22aefc6525c7c",
+            "    # via -r src/document_kv_cache/runtime_locks/vllm-0.30.0-cu129-py311-manylinux_2_35.in",
+            "    # from https://pypi.org/simple",
+        )) + newline
+        plugin_requirements_text = newline.join((
+            "vllm-bnb-plugin==0.0.3 " + continuation,
+            "    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c",
+        )) + newline
+        with open(runtime_lock_path, "rb") as handle:
+            raw = handle.read()
+        encoded_stanza = stanza.encode("ascii")
+        count = raw.count(encoded_stanza)
+        if count == 0:
+            return runtime_lock_path, None
+        if count != 1:
+            raise RuntimeError("runtime lock bitsandbytes plugin stanza is not unique")
+        filtered = raw.replace(encoded_stanza, b"", 1)
+        if b"vllm-bnb-plugin==" in filtered:
+            raise RuntimeError(
+                "runtime lock still requires vllm-bnb-plugin after stanza removal"
+            )
+        lock_path = os.path.join(work_dir, "runtime-lock-without-vllm-bnb-plugin.txt")
+        plugin_path = os.path.join(work_dir, "vllm-bnb-plugin-requirements.txt")
+        for path, payload in (
+            (lock_path, filtered),
+            (plugin_path, plugin_requirements_text.encode("ascii")),
+        ):
+            if os.path.lexists(path):
+                raise FileExistsError(
+                    "refusing to reuse install requirements: " + os.path.basename(path)
+                )
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                view = payload
+                while view:
+                    written = os.write(descriptor, view)
+                    if written <= 0:
+                        raise OSError("install requirements write did not advance")
+                    view = view[written:]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        return lock_path, plugin_path
+
     pip = [venv_python, "-m", "pip"]
+    base_lock, plugin_requirements = _bnb_plugin_install_paths(
+        runtime_lock, os.path.dirname(venv_dir)
+    )
     subprocess.check_call(
-        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", runtime_lock],
+        [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", base_lock],
         env=pip_environment,
     )
     vllm_spec = (
@@ -578,6 +629,20 @@ def _bootstrap(argv: list[str]) -> None:
         [*pip, "install", "--no-deps", vllm_spec],
         env=pip_environment,
     )
+    if plugin_requirements is not None:
+        subprocess.check_call(
+            [
+                *pip,
+                "install",
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                plugin_requirements,
+            ],
+            env=pip_environment,
+        )
     subprocess.check_call(
         [*pip, "install", "--no-deps", flashinfer_spec],
         env=pip_environment,
@@ -709,7 +774,7 @@ class FullScoreRuntimeConfig:
         fixed_hashes = {
             "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
             "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
-            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
             "runtime_closure_manifest_sha256": (RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
         }
         for field_name, expected in fixed_hashes.items():
@@ -731,7 +796,10 @@ class FullScoreRuntimeConfig:
         ):
             raise ValueError("full-score tokenizer identity is frozen")
         if self.engine_version != PUBLICATION_CAMPAIGN_ENGINE_VERSION:
-            raise ValueError("full-score engine_version must be 0.27.1")
+            raise ValueError(
+                "full-score engine_version must be "
+                + PUBLICATION_CAMPAIGN_ENGINE_VERSION
+            )
         if self.hardware_target != "aws-g6-l4":
             raise ValueError("full-score consumer benchmark hardware is frozen to L4")
         if self.gpu_memory_utilization not in (
@@ -1062,7 +1130,7 @@ class DatabricksFullScoreJobConfig:
             raise ValueError("Databricks job runtime lock hash drift")
         if self.patched_vllm_wheel_sha256 != VLLM_PATCHED_WHEEL_SHA256:
             raise ValueError("Databricks job vLLM wheel hash drift")
-        if self.patched_flashinfer_wheel_sha256 != FLASHINFER_PATCHED_WHEEL_SHA256:
+        if self.patched_flashinfer_wheel_sha256 != FLASHINFER_RUNTIME_WHEEL_SHA256:
             raise ValueError("Databricks job FlashInfer wheel hash drift")
         if self.runtime_closure_manifest_sha256 != RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256:
             raise ValueError("Databricks job runtime closure hash drift")
@@ -10192,7 +10260,7 @@ def _validate_runtime_verification_binding(value: Any) -> dict[str, Any]:
         or artifacts["runtime_lock_sha256"] != VLLM_RUNTIME_BASE_LOCK_SHA256
         or artifacts["patched_vllm_wheel_sha256"] != VLLM_PATCHED_WHEEL_SHA256
         or artifacts["patched_flashinfer_wheel_sha256"]
-        != FLASHINFER_PATCHED_WHEEL_SHA256
+        != FLASHINFER_RUNTIME_WHEEL_SHA256
         or artifacts["runtime_closure_manifest_sha256"]
         != RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
         or artifacts["locked_runtime_identity_sha256"]
@@ -10430,14 +10498,13 @@ def _verify_runtime_contract(runtime: FullScoreRuntimeConfig) -> None:
         runtime.runtime_closure_manifest_sha256
     ):
         raise ValueError("runtime closure manifest SHA-256 drift")
-    with zipfile.ZipFile(wheel_path) as archive:
-        try:
-            loader_source = archive.read(FULL_SCORE_VLLM_BNB_LOADER_MEMBER)
-        except KeyError as exc:
-            raise ValueError(
-                "patched wheel lacks the bound BitsAndBytes loader"
-            ) from exc
-    if sha256(loader_source).hexdigest() != FULL_SCORE_VLLM_BNB_LOADER_SHA256:
+    import importlib.metadata
+
+    plugin = importlib.metadata.distribution("vllm-bnb-plugin")
+    loader_path = Path(str(plugin.locate_file(FULL_SCORE_VLLM_BNB_LOADER_MEMBER)))
+    if not loader_path.is_file() or loader_path.is_symlink():
+        raise ValueError("installed BitsAndBytes plugin loader is not one regular file")
+    if sha256(loader_path.read_bytes()).hexdigest() != FULL_SCORE_VLLM_BNB_LOADER_SHA256:
         raise ValueError("vLLM BitsAndBytes loader source hash drift")
 
 

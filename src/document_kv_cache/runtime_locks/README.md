@@ -2,10 +2,10 @@
 
 This directory contains the reviewed, hash-pinned Python dependency closure for
 the publication runtime. The vLLM wheel itself is deliberately excluded from
-the lock: it is built separately from the official vLLM 0.27.1 CUDA 12.9 wheel,
+the lock: it is built separately from the official vLLM 0.30.0 CUDA 12.9 wheel,
 patched for the Cachet E5M2 contract, and installed by exact URI and SHA-256.
 
-`vllm-0.27.1-cu129-py311-manylinux_2_35.lock` targets the Databricks Runtime
+`vllm-0.30.0-cu129-py311-manylinux_2_35.lock` targets the Databricks Runtime
 CPython 3.11.11 interpreter on x86_64 Linux with glibc 2.35.
 
 `publication-latency-semantic-py311-macos-arm64.lock` is the complete
@@ -63,7 +63,7 @@ rebuild before source authority may issue.
 Byte-for-byte artifact replay means consuming the checked-in lock unchanged at
 runtime, not recompiling or rewriting it during a job. Before installation,
 verify that its SHA-256 is
-`71c2c3e344ebdf1d8996adf2127a519328b6bad78a4eb7134c73e2a3f6115c44`, the
+`8b6f8618fff84070d44b35a2d6a54d5fc5831ecd8c375b5cbe9d847aeb3fae5d`, the
 digest pinned by `document_kv_cache.serving_env`. Its exact four-line index
 header is the sole runtime index authority: PyPI, the CUDA 12.9 PyTorch index,
 and the two reviewed FlashInfer indexes. Package installation removes inherited
@@ -77,7 +77,7 @@ subprocess.
 `uv --torch-backend cu129` selects and hash-locks the CUDA 12.9 PyTorch wheels,
 but `--emit-index-url` does not emit that backend as a runtime index directive.
 The unmodified compiler output therefore has SHA-256
-`5788ee492a9a9ff48c8e1eae68cd0576fcec625263858129cc9dd918bcb856a6` and
+`8cc92b1829969e9e1ff811b42fb5d8972fa80d4f6b2ca3e148af0baaae7a29e9` and
 cannot install its existing `torch==2.13.0+cu129` pin with pip. The reviewed
 post-compile transformer inserts exactly
 `--extra-index-url https://download.pytorch.org/whl/cu129` after the PyPI line,
@@ -98,8 +98,8 @@ the reviewed compiler with `python -m pip install uv==0.11.6`, then run:
 
 ```sh
 uv pip compile \
-  src/document_kv_cache/runtime_locks/vllm-0.27.1-cu129-py311-manylinux_2_35.in \
-  --output-file /tmp/vllm-0.27.1-cu129-py311-manylinux_2_35.compiled.lock \
+  src/document_kv_cache/runtime_locks/vllm-0.30.0-cu129-py311-manylinux_2_35.in \
+  --output-file /tmp/vllm-0.30.0-cu129-py311-manylinux_2_35.compiled.lock \
   --python-version 3.11.11 \
   --python-platform x86_64-manylinux_2_35 \
   --only-binary :all: \
@@ -119,7 +119,7 @@ Then replay the exact package-owned augmentation from the repository root:
 
 ```sh
 PYTHONPATH=src python -c \
-  'from pathlib import Path; from document_kv_cache.serving_env import augment_vllm_runtime_lock_indexes; source = Path("/tmp/vllm-0.27.1-cu129-py311-manylinux_2_35.compiled.lock"); target = Path("src/document_kv_cache/runtime_locks/vllm-0.27.1-cu129-py311-manylinux_2_35.lock"); target.write_bytes(augment_vllm_runtime_lock_indexes(source.read_bytes()))'
+  'from pathlib import Path; from document_kv_cache.serving_env import augment_vllm_runtime_lock_indexes; source = Path("/tmp/vllm-0.30.0-cu129-py311-manylinux_2_35.compiled.lock"); target = Path("src/document_kv_cache/runtime_locks/vllm-0.30.0-cu129-py311-manylinux_2_35.lock"); target.write_bytes(augment_vllm_runtime_lock_indexes(source.read_bytes()))'
 ```
 
 Any regenerated output requires review of the complete version-and-hash diff,

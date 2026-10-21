@@ -252,10 +252,10 @@ _CLUSTER_ID_SPARK_CONF_KEY = "spark.databricks.clusterUsageTags.clusterId"
 _CLUSTER_ID_SOURCE_ORDER = (*_CLUSTER_ID_ENV_NAMES, _CLUSTER_ID_SPARK_CONF_KEY)
 _FIXED_PINS = {
     "input_bundle_sha256": "7ff6cf6a1553c0e844853d21de9780c75211f1be8304754da72e9cbebbd164ec",
-    "patched_flashinfer_wheel_sha256": "04e032c70234e8769f5ab7e787231c339a5b5230fca5f5b0b80f1a2a0ccad6ec",
-    "patched_vllm_wheel_sha256": "65120c48a9352b9eb65bab7a67090558d27af985ad366e469d3b87751073cff4",
-    "runtime_closure_manifest_sha256": "c13c25a4e116f15db31e2efdbaebdd2d76418c5e4eb2f72fb2af3d8b8090e7df",
-    "runtime_lock_sha256": "c4fc0e055f0838ff397012f52bd4c4f0d22426db8a5fc8faf01689510e258903",
+    "patched_flashinfer_wheel_sha256": "adb6d2952b47131138e108bd2999b1fe18b71f1a4c0b2684f168753db9563991",
+    "patched_vllm_wheel_sha256": "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247",
+    "runtime_closure_manifest_sha256": "193c095deeb1636a4cf5f873ed6b07bedf0f466c91e3df34417b357e9f125c03",
+    "runtime_lock_sha256": "cf5f7dab9ee409f23436087d3ccd835a25b801c6d1538bc5eb20321dd1e4c1f4",
 }
 
 

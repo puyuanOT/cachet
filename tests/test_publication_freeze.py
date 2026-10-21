@@ -201,8 +201,8 @@ def _source_inputs(
     references.mkdir()
     runtime_paths = {}
     for role, filename in (
-        ("runtime_lock", "vllm-0.27.1-cu129-py311-manylinux_2_35.lock"),
-        ("runtime_lock_input", "vllm-0.27.1-cu129-py311-manylinux_2_35.in"),
+        ("runtime_lock", "vllm-0.30.0-cu129-py311-manylinux_2_35.lock"),
+        ("runtime_lock_input", "vllm-0.30.0-cu129-py311-manylinux_2_35.in"),
     ):
         destination = references / filename
         destination.write_bytes(

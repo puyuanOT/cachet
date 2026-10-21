@@ -78,9 +78,9 @@ _RUNTIME_LOCK_ATTESTATION_ENV: Final = (
 )
 _CORE_VERSIONS: Final = {
     "bitsandbytes": "0.49.2",
-    "flashinfer-cubin": "0.6.16.post3",
-    "flashinfer-jit-cache": "0.6.16.post3+cu129",
-    "flashinfer-python": "0.6.16.post3",
+    "flashinfer-cubin": "0.6.18.post1",
+    "flashinfer-jit-cache": "0.6.18.post1+cu129",
+    "flashinfer-python": "0.6.18.post1",
     "torch": "2.13.0+cu129",
     "torchaudio": "2.11.0+cu129",
     "torchcodec": "0.16.0+cu129",
@@ -89,10 +89,10 @@ _CORE_VERSIONS: Final = {
 }
 _PATCH_MEMBER_SHA256: Final = {
     "vllm/model_executor/layers/attention/attention.py": (
-        "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839"
+        "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce"
     ),
     "vllm/v1/attention/backends/triton_attn.py": (
-        "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390"
+        "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a"
     ),
     "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py": (
         "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08"
@@ -1596,13 +1596,13 @@ def _weight_quantizer_attestation() -> dict[str, Any]:
             "bitsandbytes CUDA quantizer uses a different native library"
         )
 
-    loader_hash = _installed_vllm_member_hashes(
-        {
-            "vllm/model_executor/model_loader/bitsandbytes_loader.py": (
-                GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256
-            )
-        }
-    )["vllm/model_executor/model_loader/bitsandbytes_loader.py"]
+    plugin = importlib.metadata.distribution("vllm-bnb-plugin")
+    loader_path = Path(str(plugin.locate_file("vllm_bnb_plugin/bitsandbytes_loader.py")))
+    if not loader_path.is_file() or loader_path.is_symlink():
+        raise RuntimeError("installed vLLM bitsandbytes plugin loader is missing")
+    loader_hash = _file_sha256(loader_path)
+    if loader_hash != GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256:
+        raise RuntimeError("installed vLLM bitsandbytes plugin loader hash differs")
     config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,

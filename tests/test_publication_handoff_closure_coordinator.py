@@ -20,8 +20,8 @@ from document_kv_cache.databricks_resource_ledger import (
     databricks_ledger_prefix,
 )
 from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
+from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
 )
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
@@ -90,7 +90,7 @@ def _config(
         patched_vllm_wheel_uri=f"{VOLUME_ROOT}/inputs/vllm.whl",
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
         patched_flashinfer_wheel_uri=f"{VOLUME_ROOT}/inputs/flashinfer.whl",
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_uri=(f"{VOLUME_ROOT}/inputs/runtime-closure.json"),
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         source_closure_uri=f"{VOLUME_ROOT}/inputs/cachet-source-closure.json",

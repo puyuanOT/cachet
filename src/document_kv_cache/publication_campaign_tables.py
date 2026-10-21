@@ -13,6 +13,9 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, Final
 
+from document_kv_cache.publication_campaign import (
+    PUBLICATION_CAMPAIGN_ENGINE_VERSION,
+)
 from document_kv_cache.publication_campaign_finalizer import (
     validate_vllm_0271_publication_report_pair,
 )
@@ -270,8 +273,11 @@ def render_vllm_0271_publication_table_regions(
     """Validate one exact report/gate pair and render all governed table bodies."""
 
     report, _gate = _validated_pair_snapshots(report_record, gate_record)
-    if report.get("engine_version") != "0.27.1":
-        raise ValueError("publication table renderer requires vLLM 0.27.1")
+    if report.get("engine_version") != PUBLICATION_CAMPAIGN_ENGINE_VERSION:
+        raise ValueError(
+            "publication table renderer requires vLLM "
+            + PUBLICATION_CAMPAIGN_ENGINE_VERSION
+        )
     if report.get("policy") != "publication":
         raise ValueError("publication table renderer requires publication policy")
     if report.get("campaign_id") != "vllm-0271-publication-v1":
@@ -328,8 +334,11 @@ def render_vllm_0271_publication_appendix_readme(
     """Render the exact README committed beside one passing report/gate pair."""
 
     report, _gate = _validated_pair_snapshots(report_record, gate_record)
-    if report.get("engine_version") != "0.27.1":
-        raise ValueError("publication appendix requires vLLM 0.27.1")
+    if report.get("engine_version") != PUBLICATION_CAMPAIGN_ENGINE_VERSION:
+        raise ValueError(
+            "publication appendix requires vLLM "
+            + PUBLICATION_CAMPAIGN_ENGINE_VERSION
+        )
     if report.get("policy") != "publication":
         raise ValueError("publication appendix requires publication policy")
     if report.get("campaign_id") != "vllm-0271-publication-v1":
@@ -340,7 +349,7 @@ def render_vllm_0271_publication_appendix_readme(
         "publication report",
     )
     return (
-        "# vLLM 0.27.1 Publication Campaign\n\n"
+        f"# vLLM {PUBLICATION_CAMPAIGN_ENGINE_VERSION} Publication Campaign\n\n"
         "This directory contains the sanitized, content-addressed publication "
         "pair for `vllm-0271-publication-v1`.\n\n"
         "- [`campaign-report.json`](campaign-report.json) is the sealed campaign "
@@ -1138,7 +1147,9 @@ def _render_status(coverage: Mapping[str, Any]) -> str:
     scored = _int_field(coverage, "full_score_identity_count", "coverage")
     checked = _int_field(coverage, "checked_cache_request_count", "coverage")
     return (
-        "> **Status: vLLM 0.27.1 campaign published.** The exact sanitized "
+        "> **Status: vLLM "
+        + PUBLICATION_CAMPAIGN_ENGINE_VERSION
+        + " campaign published.** The exact sanitized "
         "campaign report and report-bound publication gate passed.\n>\n"
         f"> Coverage: {latency_jobs} latency jobs; {scored} distinct full-score "
         f"examples; {checked} checked cache requests."
@@ -1518,7 +1529,7 @@ def _render_platform() -> str:
         ("---", "---", "---"),
         (
             (
-                "vLLM 0.27.1",
+                "vLLM " + PUBLICATION_CAMPAIGN_ENGINE_VERSION,
                 "Governed campaign published",
                 "Exact report-bound publication gate passed",
             ),

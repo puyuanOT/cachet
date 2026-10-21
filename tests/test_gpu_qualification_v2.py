@@ -60,17 +60,17 @@ EXPECTED_ARTIFACT_SHA256 = {
     ),
     "package_wheel_sha256": "b" * 64,
     "patched_flashinfer_wheel_sha256": (
-        "04e032c70234e8769f5ab7e787231c339a5b5230fca5f5b0b80f1a2a0ccad6ec"
+        "adb6d2952b47131138e108bd2999b1fe18b71f1a4c0b2684f168753db9563991"
     ),
     "patched_vllm_wheel_sha256": (
-        "65120c48a9352b9eb65bab7a67090558d27af985ad366e469d3b87751073cff4"
+        "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247"
     ),
     "runner_sha256": "c" * 64,
     "runtime_closure_manifest_sha256": (
-        "c13c25a4e116f15db31e2efdbaebdd2d76418c5e4eb2f72fb2af3d8b8090e7df"
+        "193c095deeb1636a4cf5f873ed6b07bedf0f466c91e3df34417b357e9f125c03"
     ),
     "runtime_lock_sha256": (
-        "c4fc0e055f0838ff397012f52bd4c4f0d22426db8a5fc8faf01689510e258903"
+        "cf5f7dab9ee409f23436087d3ccd835a25b801c6d1538bc5eb20321dd1e4c1f4"
     ),
 }
 EXPECTED_JOB_IDS = (
@@ -90,17 +90,17 @@ EXPECTED_JOB_IDS = (
     "aws-g5-a10g-auto-backend-diagnostic",
 )
 EXPECTED_PLAN_SHA256 = (
-    "c2c5ae3a055beb7ca8153eaaa8df74e4501da6b2c5e7db345542cfed646e8b18"
+    "f6d6b66b27390fe9c9d3a0ca242788578686c300e2201e1eb0e23cc62929758f"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
-    "f6d4cc01312f0729aa39ab276814553f89db13fdcc9bc6f183c54ffbb285b242"
+    "a8248f938815a16801722193d0abc0c0fb38db48360ed5aca2be05de04d430a5"
 )
 EXPECTED_VLLM_MEMBER_SHA256 = {
     "vllm/model_executor/layers/attention/attention.py": (
-        "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839"
+        "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce"
     ),
     "vllm/v1/attention/backends/triton_attn.py": (
-        "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390"
+        "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a"
     ),
     "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py": (
         "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08"
@@ -108,30 +108,26 @@ EXPECTED_VLLM_MEMBER_SHA256 = {
 }
 EXPECTED_RUNTIME_CLOSURE = {
     "base_lock": {
-        "bytes": 376_326,
-        "distribution_count": 195,
-        "hash_count": 4_137,
+        "bytes": 385_126,
+        "distribution_count": 197,
+        "hash_count": 4_236,
         "sha256": EXPECTED_ARTIFACT_SHA256["runtime_lock_sha256"],
     },
     "distribution_counts": {
-        "base_lock": 195,
+        "base_lock": 197,
         "separately_allowed_cachet": 1,
-        "with_flashinfer": 196,
-        "with_vllm": 197,
+        "with_flashinfer": 198,
+        "with_vllm": 199,
     },
     "flashinfer": {
-        "manifest_closed_record_sha256": (
-            "60c5a3aa75914c8fb6d790802adb2a5291a5eaffc281ee17080a3609193e229d"
-        ),
-        "manifest_file_bytes": 2_970,
-        "manifest_file_sha256": (
-            "4b5c3f726552697a2afa0c3f64655621d2201f9576de9306a986a696681d7303"
-        ),
+        "manifest_closed_record_sha256": None,
+        "manifest_file_bytes": 0,
+        "manifest_file_sha256": None,
         "patched_member_sha256": (
-            "05a4e1fa20c92b71de07f83695e8209c9f6d226072a6ea79a766af89c9fc3f25"
+            "b6b5883440287d05cd353e3c8c02201847b84bda7dc9ba3fa6d1b5d189658246"
         ),
-        "version": "0.6.16.post3",
-        "wheel_bytes": 83_113_106,
+        "version": "0.6.18.post1",
+        "wheel_bytes": 18_348_022,
         "wheel_sha256": EXPECTED_ARTIFACT_SHA256["patched_flashinfer_wheel_sha256"],
     },
     "install_order": [
@@ -142,9 +138,9 @@ EXPECTED_RUNTIME_CLOSURE = {
     ],
     "manifest": {
         "closed_record_sha256": (
-            "b2cc4f90bf3e5e47ca23bc7b2117725faa9b114f0d1d803af6c89ae18ca05aaf"
+            "fc15bbd35142de8c0c79ce51607e8c761db005859824e154658cc9e86153a271"
         ),
-        "file_bytes": 6_634,
+        "file_bytes": 6_332,
         "file_sha256": EXPECTED_ARTIFACT_SHA256["runtime_closure_manifest_sha256"],
         "record_type": "document_kv.vllm_flashinfer_runtime_artifact_closure.v1",
         "schema_version": 1,
@@ -152,13 +148,13 @@ EXPECTED_RUNTIME_CLOSURE = {
     "pep610_direct_url_required": ["flashinfer-python", "vllm"],
     "pip_check_required": True,
     "vllm": {
-        "manifest_file_bytes": 2_615,
+        "manifest_file_bytes": 2_609,
         "manifest_file_sha256": (
-            "14611e163e720f0fdeae6ef2704cecd9202eef6adc6336f892afd94a96726ef6"
+            "8d2902856daff1ee0b1080deb6c36c0d7cc369c26df67a3498b07416ed1ffbc6"
         ),
         "member_sha256": EXPECTED_VLLM_MEMBER_SHA256,
-        "version": "0.27.1+cu129",
-        "wheel_bytes": 537_751_595,
+        "version": "0.30.0+cu129",
+        "wheel_bytes": 537_513_535,
         "wheel_sha256": EXPECTED_ARTIFACT_SHA256["patched_vllm_wheel_sha256"],
     },
 }
@@ -205,37 +201,33 @@ def _seal_v2(record: dict[str, Any]) -> None:
 
 def _valid_attestation() -> dict[str, Any]:
     return {
-        "base_lock_distribution_count": 195,
-        "base_lock_hash_count": 4_137,
+        "base_lock_distribution_count": 197,
+        "base_lock_hash_count": 4_236,
         "base_lock_sha256": EXPECTED_ARTIFACT_SHA256["runtime_lock_sha256"],
         "cachet_package_version": "0.2.0",
         "flashinfer_annotation": "tuple[tuple[int, int, array.array[int]]]",
         "flashinfer_direct_url": (
-            "file:///runtime/flashinfer_python-0.6.16.post3-py3-none-any.whl"
+            "file:///runtime/flashinfer_python-0.6.18.post1-py3-none-any.whl"
         ),
         "flashinfer_import_ok": True,
-        "closure_bound_flashinfer_manifest_closed_record_sha256": (
-            "60c5a3aa75914c8fb6d790802adb2a5291a5eaffc281ee17080a3609193e229d"
-        ),
-        "closure_bound_flashinfer_manifest_file_sha256": (
-            "4b5c3f726552697a2afa0c3f64655621d2201f9576de9306a986a696681d7303"
-        ),
+        "closure_bound_flashinfer_manifest_closed_record_sha256": None,
+        "closure_bound_flashinfer_manifest_file_sha256": None,
         "closure_bound_vllm_manifest_file_sha256": (
-            "14611e163e720f0fdeae6ef2704cecd9202eef6adc6336f892afd94a96726ef6"
+            "8d2902856daff1ee0b1080deb6c36c0d7cc369c26df67a3498b07416ed1ffbc6"
         ),
         "flashinfer_member_sha256": (
-            "05a4e1fa20c92b71de07f83695e8209c9f6d226072a6ea79a766af89c9fc3f25"
+            "b6b5883440287d05cd353e3c8c02201847b84bda7dc9ba3fa6d1b5d189658246"
         ),
-        "flashinfer_package_version": "0.6.16.post3",
+        "flashinfer_package_version": "0.6.18.post1",
         "flashinfer_wheel_sha256": EXPECTED_ARTIFACT_SHA256[
             "patched_flashinfer_wheel_sha256"
         ],
-        "installed_distribution_count": 198,
+        "installed_distribution_count": 200,
         "ok": True,
         "packaged_base_lock_sha256": EXPECTED_ARTIFACT_SHA256["runtime_lock_sha256"],
         "pip_check_ok": True,
         "runtime_closure_closed_record_sha256": (
-            "b2cc4f90bf3e5e47ca23bc7b2117725faa9b114f0d1d803af6c89ae18ca05aaf"
+            "fc15bbd35142de8c0c79ce51607e8c761db005859824e154658cc9e86153a271"
         ),
         "runtime_closure_file_sha256": EXPECTED_ARTIFACT_SHA256[
             "runtime_closure_manifest_sha256"
@@ -250,12 +242,12 @@ def _valid_attestation() -> dict[str, Any]:
             )
         ),
         "unexpected_distributions": [],
-        "vllm_direct_url": "file:///runtime/vllm-0.27.1%2Bcu129.whl",
+        "vllm_direct_url": "file:///runtime/vllm-0.30.0%2Bcu129.whl",
         "vllm_member_sha256": deepcopy(EXPECTED_VLLM_MEMBER_SHA256),
-        "vllm_package_version": "0.27.1+cu129",
+        "vllm_package_version": "0.30.0+cu129",
         "vllm_wheel_sha256": EXPECTED_ARTIFACT_SHA256["patched_vllm_wheel_sha256"],
-        "with_flashinfer_distribution_count": 196,
-        "with_vllm_distribution_count": 197,
+        "with_flashinfer_distribution_count": 198,
+        "with_vllm_distribution_count": 199,
     }
 
 
@@ -504,7 +496,7 @@ def _valid_aggregate_evidence_v2() -> tuple[dict[str, Any], dict[str, Any]]:
             nvidia_driver_version="580.65.06",
             observed_gpu=job["gpu"],
             observed_gpu_compute_capability=job["compute_capability"],
-            observed_vllm_version="0.27.1+cu129",
+            observed_vllm_version="0.30.0+cu129",
             observed_torch_cuda_version="12.9",
             observed_artifact_sha256=_pins().to_record(),
             runtime_verification=verification,
@@ -744,9 +736,9 @@ def test_v2_plan_validator_rejects_resealed_reordered_pin_mapping() -> None:
 
 def test_v2_runtime_closure_freezes_install_order_counts_and_identities() -> None:
     assert gpu_qualification_v2_runtime_closure() == EXPECTED_RUNTIME_CLOSURE
-    assert GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT == 196
-    assert GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT == 197
-    assert GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT == 198
+    assert GPU_QUALIFICATION_V2_WITH_FLASHINFER_DISTRIBUTION_COUNT == 198
+    assert GPU_QUALIFICATION_V2_WITH_VLLM_DISTRIBUTION_COUNT == 199
+    assert GPU_QUALIFICATION_V2_INSTALLED_DISTRIBUTION_COUNT == 200
     assert GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE == (
         "cachet.vllm_0271_gpu_job_result.v2"
     )
@@ -831,7 +823,7 @@ def test_v2_runtime_attestation_rejects_missing_or_extra_keys(
     ("field_name", "replacement"),
     [
         ("ok", False),
-        ("base_lock_distribution_count", 195.0),
+        ("base_lock_distribution_count", 197.0),
         ("installed_distribution_count", True),
         ("flashinfer_wheel_sha256", "0" * 64),
         ("unexpected_distributions", ["foreign-package"]),
@@ -1041,7 +1033,7 @@ def test_v2_forced_handoff_result_requires_one_identical_runtime_attestation(
             nvidia_driver_version="580.65.06",
             observed_gpu="NVIDIA L4",
             observed_gpu_compute_capability="8.9",
-            observed_vllm_version="0.27.1+cu129",
+            observed_vllm_version="0.30.0+cu129",
             observed_torch_cuda_version="12.9",
             observed_artifact_sha256=pins.to_record(),
             runtime_verification=verification,

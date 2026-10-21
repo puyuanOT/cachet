@@ -128,9 +128,6 @@ from document_kv_cache.model_profiles import (
     QWEN3_4B_ROPE_THETA,
     layout_for_model,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-)
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_EXAMPLES_PER_DATASET,
@@ -164,6 +161,7 @@ from document_kv_cache.publication_latency_handoff_generation import (
     _post_close_regular_file_inventory,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
@@ -442,7 +440,7 @@ class DatabricksPublicationBF16HandoffJobConfig:
         expected_runtime_artifacts = {
             "runtime_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
             "patched_vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-            "patched_flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
+            "patched_flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
             "runtime_closure_manifest_sha256": (RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256),
         }
         for field_name, expected in expected_runtime_artifacts.items():
@@ -2444,14 +2442,22 @@ def _read_bf16_stable_regular_file_at(
     )
     try:
         before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_nlink not in allowed_nlinks
-            or before.st_uid != os.getuid()
-            or (require_mode_0600 and stat.S_IMODE(before.st_mode) != 0o600)
+        # Durable UC volume files are authenticated by their closed SHA-256.
+        # The mount does not preserve the writer UID or a meaningful link count.
+        # Private evidence mirrors still require the current user, mode 0600,
+        # and the allowed link count.
+        if not stat.S_ISREG(before.st_mode) or (
+            require_mode_0600
+            and (
+                before.st_nlink not in allowed_nlinks
+                or before.st_uid != os.getuid()
+                or stat.S_IMODE(before.st_mode) != 0o600
+            )
         ):
             raise ValueError(
-                "BF16 mirrored evidence must be a single-link regular file"
+                "BF16 mirrored evidence must be a single-link regular file "
+                f"(mode={oct(stat.S_IMODE(before.st_mode))}, "
+                f"nlink={before.st_nlink}, uid={before.st_uid})"
             )
         with os.fdopen(os.dup(descriptor), "rb") as handle:
             content = handle.read(16 * 1024 * 1024 + 1)
@@ -3440,7 +3446,7 @@ def _verify_installed_vllm_bitsandbytes_loader_source(
     config: PublicationBF16HandoffExecutionConfig,
 ) -> None:
     module = importlib.import_module(
-        "vllm.model_executor.model_loader.bitsandbytes_loader"
+        "vllm_bnb_plugin.bitsandbytes_loader"
     )
     source = getattr(module, "__file__", None)
     if not isinstance(source, str) or not source:

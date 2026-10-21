@@ -16,14 +16,7 @@ import pytest
 import document_kv_cache._gpu_qualification_sentinel_worker as sentinel_worker
 import document_kv_cache._gpu_qualification_sentinels_v2 as runtime_v2
 import document_kv_cache.gpu_qualification as qualification_v1
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PACKAGE_VERSION,
-    FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256,
-    FLASHINFER_PATCHED_MANIFEST_FILE_SHA256,
-    FLASHINFER_PATCHED_WHEEL_SHA256,
-    FLASHINFER_TARGET_MEMBER,
-    FLASHINFER_TARGET_PATCHED_SHA256,
-)
+from document_kv_cache.flashinfer_wheel_repack import FLASHINFER_TARGET_MEMBER
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
     GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
@@ -48,6 +41,9 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
 )
 from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_MEMBER_SHA256,
+    FLASHINFER_RUNTIME_VERSION,
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
@@ -78,7 +74,7 @@ _CLOSURE_PATH = (
     _ROOT
     / "tests"
     / "fixtures"
-    / "vllm_0271_runtime_closure.json"
+    / "vllm_0300_runtime_closure.json"
 )
 _PACKAGE_SHA256 = "a" * 64
 _SOURCE_SHA256 = "b" * 64
@@ -121,7 +117,7 @@ def _pins() -> GPUQualificationArtifactPinsV2:
     return GPUQualificationArtifactPinsV2(
         runtime_lock_sha256=VLLM_RUNTIME_BASE_LOCK_SHA256,
         patched_vllm_wheel_sha256=GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_sha256=_PACKAGE_SHA256,
         cachet_source_tree_sha256=_SOURCE_SHA256,
@@ -161,17 +157,13 @@ def _attestation(*, vllm_uri: str, flashinfer_uri: str) -> dict[str, Any]:
         "flashinfer_annotation": GPU_QUALIFICATION_V2_FLASHINFER_RETURN_ANNOTATION,
         "flashinfer_direct_url": flashinfer_uri,
         "flashinfer_import_ok": True,
-        "closure_bound_flashinfer_manifest_closed_record_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_CLOSED_RECORD_SHA256
-        ),
-        "closure_bound_flashinfer_manifest_file_sha256": (
-            FLASHINFER_PATCHED_MANIFEST_FILE_SHA256
-        ),
+        "closure_bound_flashinfer_manifest_closed_record_sha256": None,
+        "closure_bound_flashinfer_manifest_file_sha256": None,
         "closure_bound_vllm_manifest_file_sha256": VLLM_PATCHED_MANIFEST_SHA256,
-        "flashinfer_member_sha256": FLASHINFER_TARGET_PATCHED_SHA256,
-        "flashinfer_package_version": FLASHINFER_PACKAGE_VERSION,
-        "flashinfer_wheel_sha256": FLASHINFER_PATCHED_WHEEL_SHA256,
-        "installed_distribution_count": 198,
+        "flashinfer_member_sha256": FLASHINFER_RUNTIME_MEMBER_SHA256,
+        "flashinfer_package_version": FLASHINFER_RUNTIME_VERSION,
+        "flashinfer_wheel_sha256": FLASHINFER_RUNTIME_WHEEL_SHA256,
+        "installed_distribution_count": 200,
         "ok": True,
         "packaged_base_lock_sha256": VLLM_RUNTIME_BASE_LOCK_SHA256,
         "pip_check_ok": True,
@@ -193,8 +185,8 @@ def _attestation(*, vllm_uri: str, flashinfer_uri: str) -> dict[str, Any]:
         "vllm_member_sha256": closure["vllm"]["member_sha256"],
         "vllm_package_version": GPU_QUALIFICATION_VLLM_VERSION,
         "vllm_wheel_sha256": GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
-        "with_flashinfer_distribution_count": 196,
-        "with_vllm_distribution_count": 197,
+        "with_flashinfer_distribution_count": 198,
+        "with_vllm_distribution_count": 199,
     }
 
 
@@ -491,7 +483,7 @@ def test_runtime_installer_uses_exact_commands_environment_and_sequence(
             "install",
             "--no-deps",
             "flashinfer-python @ "
-            f"{flashinfer_uri}#sha256={FLASHINFER_PATCHED_WHEEL_SHA256}",
+            f"{flashinfer_uri}#sha256={FLASHINFER_RUNTIME_WHEEL_SHA256}",
         ],
         [
             str(runtime_python),
@@ -930,6 +922,16 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
         "`torch.jit.script_method` is deprecated. Please switch to "
         "`torch.compile` or `torch.export`."
     )
+    api_server_message = (
+        "`vllm.entrypoints.openai.api_server` is deprecated and will likely "
+        "beunsupported in a future version. Use the corresponding function "
+        "from `vllm.entrypoints.launchers` instead."
+    )
+    api_server_command_message = (
+        "The `python -m vllm.entrypoints.openai.api_server` command is "
+        "deprecated and may be removed in a future release. Please use "
+        "`vllm server` instead."
+    )
     transcript = b"".join(
         (
             f"<frozen importlib._bootstrap_external>:1241: FutureWarning: {message}\n"
@@ -959,6 +961,14 @@ def test_gpu_runtime_pinned_warning_prefix_policy_is_fail_closed() -> None:
         ),
         (f"ignore:{vllm_registry_message.partition(',')[0]}:RuntimeWarning:runpy:128"),
         ("ignore::DeprecationWarning:vllm.v1.attention.backends.flashinfer:1234"),
+        (
+            f"ignore:{api_server_message}"
+            ":DeprecationWarning:vllm.entrypoints.openai.api_server:24"
+        ),
+        f"ignore:{api_server_message}:DeprecationWarning:__main__:24",
+        f"ignore:{api_server_command_message}:DeprecationWarning:__main__:51",
+        f"ignore:{api_server_message}:DeprecationWarning:__mp_main__:24",
+        f"ignore:{api_server_command_message}:DeprecationWarning:__mp_main__:51",
         (f"ignore:{torch_jit_message}:DeprecationWarning:torch.jit._script:365"),
     ]
 
@@ -1669,7 +1679,7 @@ def test_standalone_verifier_rejects_member_hash_or_import_annotation(
         _Distribution("cachet-kv", GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION),
         _Distribution(
             "flashinfer-python",
-            FLASHINFER_PACKAGE_VERSION,
+            FLASHINFER_RUNTIME_VERSION,
             root=flashinfer_root,
         ),
         _Distribution("vllm", GPU_QUALIFICATION_VLLM_VERSION),
@@ -1700,7 +1710,7 @@ def test_standalone_verifier_rejects_member_hash_or_import_annotation(
             runtime_v2,
             "_file_sha256",
             lambda path: (
-                FLASHINFER_TARGET_PATCHED_SHA256
+                FLASHINFER_RUNTIME_MEMBER_SHA256
                 if Path(path).name == Path(FLASHINFER_TARGET_MEMBER).name
                 else VLLM_RUNTIME_BASE_LOCK_SHA256
             ),
@@ -1789,7 +1799,7 @@ def test_real_runtime_closure_has_exact_identity_and_rejects_tamper(
     tmp_path: Path,
 ) -> None:
     raw = _CLOSURE_PATH.read_bytes()
-    assert len(raw) == RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE == 6634
+    assert len(raw) == RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE == 6332
     assert sha256(raw).hexdigest() == RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256
     closure = runtime_v2._read_exact_runtime_closure(_CLOSURE_PATH)
     assert closure["closed_record_sha256"] == (
@@ -1798,7 +1808,7 @@ def test_real_runtime_closure_has_exact_identity_and_rejects_tamper(
 
     tampered = tmp_path / _CLOSURE_PATH.name
     tampered.write_bytes(raw[:-2] + b" \n")
-    assert tampered.stat().st_size == 6634
+    assert tampered.stat().st_size == 6332
     with pytest.raises(ValueError, match="file identity differs"):
         runtime_v2._read_exact_runtime_closure(tampered)
 
@@ -1808,16 +1818,16 @@ def test_real_base_lock_has_exact_projection_and_verifier_rejects_tamper(
     tmp_path: Path,
 ) -> None:
     raw = _LOCK_PATH.read_bytes()
-    assert len(raw) == VLLM_RUNTIME_BASE_LOCK_SIZE == 376326
+    assert len(raw) == VLLM_RUNTIME_BASE_LOCK_SIZE == 385126
     assert sha256(raw).hexdigest() == VLLM_RUNTIME_BASE_LOCK_SHA256
     versions, hash_count = runtime_v2._base_lock_projection(_LOCK_PATH)
-    assert len(versions) == VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT == 195
-    assert hash_count == VLLM_RUNTIME_BASE_LOCK_HASH_COUNT == 4137
+    assert len(versions) == VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT == 197
+    assert hash_count == VLLM_RUNTIME_BASE_LOCK_HASH_COUNT == 4236
     assert not {"cachet-kv", "flashinfer-python", "vllm"} & versions.keys()
 
     tampered = tmp_path / VLLM_RUNTIME_BASE_LOCK_FILENAME
     tampered.write_bytes(raw[:-1] + (b" " if raw[-1:] != b" " else b"\n"))
-    assert tampered.stat().st_size == 376326
+    assert tampered.stat().st_size == 385126
     monkeypatch.setattr(runtime_v2, "_require_runtime_platform", lambda: None)
     monkeypatch.setattr(runtime_v2, "_pip_subprocess_environment", lambda: {})
     monkeypatch.setattr(

@@ -93,8 +93,18 @@ class RuntimeTelemetrySampler:
         return record
 
     def _run(self) -> None:
-        while not self._stop.wait(self.interval_seconds):
+        next_deadline = time.monotonic() + self.interval_seconds
+        while True:
+            remaining = next_deadline - time.monotonic()
+            if remaining > 0 and self._stop.wait(remaining):
+                return
+            if self._stop.is_set():
+                return
             self._sample_once()
+            next_deadline += self.interval_seconds
+            now = time.monotonic()
+            if next_deadline <= now:
+                next_deadline = now + self.interval_seconds
 
     def _sample_once(self) -> None:
         try:

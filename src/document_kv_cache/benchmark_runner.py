@@ -1070,21 +1070,34 @@ def _build_publication_latency_requests(
         )
         for key, example in examples_by_key.items()
     }
+    if len(schedule.request_ids) != len(schedule.projection):
+        raise ValueError(
+            "publication latency schedule request ids do not cover the projection"
+        )
     requests: list[BenchmarkEngineRequest] = []
-    for dataset, example_id, repeat_index in schedule.projection:
+    for request_index, (dataset, example_id, repeat_index) in enumerate(
+        schedule.projection
+    ):
         example = examples_by_key[(dataset, example_id)]
         prompt_parts = prompt_parts_by_key[(dataset, example_id)]
         for arm in arms:
-            requests.append(
-                _build_benchmark_engine_request(
-                    suite,
-                    example=example,
-                    arm=arm,
-                    prompt_parts=prompt_parts,
-                    repeat_index=repeat_index,
-                    allow_legacy_cache_params=allow_legacy_cache_params,
-                )
+            request = _build_benchmark_engine_request(
+                suite,
+                example=example,
+                arm=arm,
+                prompt_parts=prompt_parts,
+                repeat_index=repeat_index,
+                allow_legacy_cache_params=allow_legacy_cache_params,
             )
+            # The sealed schedule id is the connector correlation key. Cache
+            # arms must send that id; the generated suite id is a different
+            # namespace and fails exact telemetry coverage.
+            if arm.uses_cache:
+                request = replace(
+                    request,
+                    request_id=schedule.request_ids[request_index],
+                )
+            requests.append(request)
     return requests
 
 
@@ -1953,6 +1966,45 @@ def _openai_compatible_engine(
     )
 
 
+_VLLM_CACHE_SALT_LIMIT = 128
+_VLLM_CACHE_SALT_FORBIDDEN = ("@", "/", "\\", "\x00")
+
+
+def _per_request_cache_salt_identity(
+    *,
+    base_cache_salt: str,
+    suite_id: str,
+    dataset: str,
+    example_id: str,
+    arm_id: str,
+    repeat_index: int,
+) -> str:
+    return (
+        f"{base_cache_salt}:{suite_id}:{dataset}:{example_id}:"
+        f"{arm_id}:repeat-{repeat_index}"
+    )
+
+
+def _vllm_cache_salt(identity: str) -> str:
+    """Return a prefix-cache salt vLLM 0.30.0 will accept.
+
+    Salts that already fit the server rule stay unchanged. Longer identities,
+    including publication example ids, keep the same isolation when sent as a
+    fixed digest.
+    """
+
+    if 0 < len(identity) <= _VLLM_CACHE_SALT_LIMIT and not any(
+        character in identity for character in _VLLM_CACHE_SALT_FORBIDDEN
+    ):
+        return identity
+    salt = "cachet-h-" + sha256(identity.encode("utf-8")).hexdigest()
+    if len(salt) > _VLLM_CACHE_SALT_LIMIT or any(
+        character in salt for character in _VLLM_CACHE_SALT_FORBIDDEN
+    ):
+        raise RuntimeError("vLLM cache_salt encoding is not acceptable")
+    return salt
+
+
 def _prefix_cache_salt_extra_body_factory(
     base_extra_body: Mapping[str, Any],
 ) -> Callable[[BenchmarkEngineRequest], Mapping[str, Any]]:
@@ -1961,16 +2013,15 @@ def _prefix_cache_salt_extra_body_factory(
         return lambda request: {}
 
     def extra_body(request: BenchmarkEngineRequest) -> Mapping[str, Any]:
-        return {
-            "cache_salt": (
-                f"{base_cache_salt}:"
-                f"{request.suite_id}:"
-                f"{request.example.dataset}:"
-                f"{request.example.example_id}:"
-                f"{request.arm.arm_id}:"
-                f"repeat-{request.repeat_index}"
-            )
-        }
+        identity = _per_request_cache_salt_identity(
+            base_cache_salt=base_cache_salt,
+            suite_id=request.suite_id,
+            dataset=request.example.dataset,
+            example_id=request.example.example_id,
+            arm_id=request.arm.arm_id,
+            repeat_index=request.repeat_index,
+        )
+        return {"cache_salt": _vllm_cache_salt(identity)}
 
     return extra_body
 

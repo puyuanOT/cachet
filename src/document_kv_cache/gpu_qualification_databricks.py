@@ -5884,7 +5884,7 @@ def _validated_plan_and_pins(
         )
     if pins.patched_vllm_wheel_sha256 != GPU_QUALIFICATION_PATCHED_WHEEL_SHA256:
         raise ValueError(
-            "qualification jobs require the reviewed 65120c48 patched vLLM wheel"
+            "qualification jobs require the reviewed 07efe2f8 patched vLLM wheel"
         )
     if pins.runtime_lock_sha256 != VLLM_RUNTIME_LOCK_SHA256:
         raise ValueError(

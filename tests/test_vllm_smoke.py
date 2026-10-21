@@ -14,8 +14,10 @@ import weakref
 
 import pytest
 
+import document_kv_cache._gpu_qualification_sentinels_v2 as sentinels_v2
 import document_kv_cache.vllm_smoke as public_vllm_smoke
 import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
+from document_kv_cache.gpu_qualification import canonical_gpu_qualification_json
 from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.canary_orchestration import (
     representative_canary_matrix,
@@ -35,8 +37,8 @@ from document_kv_cache.serving_env import (
     VLLM_WHEEL_URL,
     vllm_runtime_lock_path,
 )
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_PATCHED_WHEEL_SHA256,
+from document_kv_cache.runtime_artifact_closure import (
+    FLASHINFER_RUNTIME_WHEEL_SHA256,
 )
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
@@ -153,7 +155,7 @@ def native_runtime_v2(root: Path) -> VLLMNativeRuntimeBundleV2:
         patched_vllm_wheel_uri=str(root / "vllm.whl"),
         patched_vllm_wheel_sha256=VLLM_PATCHED_WHEEL_SHA256,
         patched_flashinfer_wheel_uri=str(root / "flashinfer.whl"),
-        patched_flashinfer_wheel_sha256=FLASHINFER_PATCHED_WHEEL_SHA256,
+        patched_flashinfer_wheel_sha256=FLASHINFER_RUNTIME_WHEEL_SHA256,
         runtime_closure_manifest_uri=str(root / "runtime-closure.json"),
         runtime_closure_manifest_sha256=RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         package_wheel_uri=str(root / "cachet.whl"),
@@ -446,7 +448,7 @@ class TrackedOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
 def test_dependency_constraints_match_pinned_g5_vllm_stack(monkeypatch, tmp_path):
     patched_digest = "a" * 64
     patched_wheel = tmp_path / (
-        "vllm-0.27.1+cu129-1cachete5m2aaaaaaaaaaaaaaaa-"
+        "vllm-0.30.0+cu129-1cachete5m2aaaaaaaaaaaaaaaa-"
         "cp38-abi3-manylinux_2_28_x86_64.whl"
     )
     monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, str(patched_wheel))
@@ -471,9 +473,9 @@ def test_dependency_constraints_match_pinned_g5_vllm_stack(monkeypatch, tmp_path
     assert dependency_override_constraints() == []
     assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT in dependency_constraints()
     assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT == "opencv-python-headless==4.13.0.92"
-    assert VLLM_VERSION == "0.27.1"
+    assert VLLM_VERSION == "0.30.0"
     assert TRANSFORMERS_CONSTRAINT == "transformers==5.12.1"
-    assert HUGGINGFACE_HUB_CONSTRAINT == "huggingface-hub==1.20.1"
+    assert HUGGINGFACE_HUB_CONSTRAINT == "huggingface-hub==1.32.0"
     assert TOKENIZERS_CONSTRAINT == "tokenizers==0.22.2"
     assert NUMPY_CONSTRAINT == "numpy==2.3.5"
     numpy_version = tuple(
@@ -707,7 +709,7 @@ def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path)
     python = tmp_path / "venv" / "bin" / "python"
     patched_digest = "b" * 64
     patched_wheel = tmp_path / (
-        "vllm-0.27.1+cu129-1cachete5m2bbbbbbbbbbbbbbbb-"
+        "vllm-0.30.0+cu129-1cachete5m2bbbbbbbbbbbbbbbb-"
         "cp38-abi3-manylinux_2_28_x86_64.whl"
     )
     monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, str(patched_wheel))
@@ -728,6 +730,11 @@ def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path)
 
     install_vllm(python)
 
+    work_dir = tmp_path / "venv"
+    base_lock = work_dir / "runtime-lock-without-vllm-bnb-plugin.txt"
+    plugin_lock = work_dir / "vllm-bnb-plugin-requirements.txt"
+    assert b"vllm-bnb-plugin==" not in base_lock.read_bytes()
+    assert plugin_lock.read_bytes().startswith(b"vllm-bnb-plugin==0.0.3 ")
     assert [argv for argv, _env in calls] == [
         [
             str(python),
@@ -738,7 +745,7 @@ def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path)
             "--only-binary",
             ":all:",
             "--requirement",
-            str(vllm_runtime_lock_path()),
+            str(base_lock),
         ],
         [
             str(python),
@@ -748,9 +755,21 @@ def test_install_vllm_uses_hash_lock_and_prepatched_wheel(monkeypatch, tmp_path)
             "--no-deps",
             patched_vllm_wheel_install_spec(),
         ],
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            "--requirement",
+            str(plugin_lock),
+        ],
     ]
     assert all(environment is not None for _argv, environment in calls)
-    assert calls[0][1] == calls[1][1]
+    assert calls[0][1] == calls[1][1] == calls[2][1]
     assert {
         key for key in calls[0][1] if key.upper().startswith("PIP_")
     } == {
@@ -870,7 +889,7 @@ def test_install_native_v2_runtime_uses_exact_local_sequence_and_attestation(
             "install",
             "--no-deps",
             "flashinfer-python @ "
-            f"{flashinfer.as_uri()}#sha256={FLASHINFER_PATCHED_WHEEL_SHA256}",
+            f"{flashinfer.as_uri()}#sha256={FLASHINFER_RUNTIME_WHEEL_SHA256}",
         ],
         [
             python,
@@ -948,6 +967,12 @@ def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
         "validate_gpu_qualification_v2_runtime_attestation",
         lambda value: validated.append(value),
     )
+    parent_attestation = {"parent": "system-cuda"}
+    monkeypatch.setattr(
+        sentinels_v2,
+        "_capture_system_cuda_parent_attestation",
+        lambda: dict(parent_attestation),
+    )
 
     observed = public_vllm_smoke._run_native_v2_final_runtime_verifier(
         tmp_path / "venv" / "bin" / "python",
@@ -1000,6 +1025,9 @@ def test_native_v2_final_verifier_is_canonical_and_binds_direct_origins(
         "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
         "PYTHONSAFEPATH": "1",
         "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
+        sentinels_v2._SYSTEM_CUDA_PARENT_ATTESTATION_ENV: (
+            canonical_gpu_qualification_json(parent_attestation)
+        ),
     }
     assert kwargs["cwd"] == tmp_path
 
@@ -1559,13 +1587,13 @@ middle
         }
 
     reasons = (
-        "vLLM 0.27.1 must not construct its E4M3-only query quantizer for fp8_e5m2.",
-        "vLLM 0.27.1 must use the requested E5M2 cache view in reshape-and-cache.",
-        "vLLM 0.27.1 must bind Triton attention to E5M2 on the targeted SM80+ path.",
+        "vLLM 0.30.0 must not construct its E4M3-only query quantizer for fp8_e5m2.",
+        "vLLM 0.30.0 must use the requested E5M2 cache view in reshape-and-cache.",
+        "vLLM 0.30.0 must bind Triton attention to E5M2 on the targeted SM80+ path.",
     )
     monkeypatch.setattr(
         public_vllm_smoke,
-        "_VLLM_0271_E5M2_PATCH_CLOSURE",
+        "_VLLM_E5M2_PATCH_CLOSURE",
         (
             patch_spec(
                 "vllm-qwen-attention-disable-e5m2-query-quant",
@@ -1599,7 +1627,7 @@ middle
     installed_paths = (attention_path, reshape_path, triton_attn_path)
     for installed_path, patch in zip(
         installed_paths,
-        public_vllm_smoke._VLLM_0271_E5M2_PATCH_CLOSURE,
+        public_vllm_smoke._VLLM_E5M2_PATCH_CLOSURE,
         strict=True,
     ):
         patched_text = installed_path.read_text(encoding="utf-8")
@@ -1678,7 +1706,7 @@ def test_runtime_patch_verifier_rejects_unapproved_installed_source(
     bytes_before = target.read_bytes()
     monkeypatch.setattr(
         public_vllm_smoke,
-        "_VLLM_0271_E5M2_PATCH_CLOSURE",
+        "_VLLM_E5M2_PATCH_CLOSURE",
         (
             {
                 "id": "test",
@@ -1703,7 +1731,7 @@ def test_runtime_patch_verifier_rejects_unapproved_installed_source(
 
 
 def test_e5m2_runtime_patch_closure_is_bound_to_complete_tagged_files():
-    closure = public_vllm_smoke._VLLM_0271_E5M2_PATCH_CLOSURE
+    closure = public_vllm_smoke._VLLM_E5M2_PATCH_CLOSURE
 
     assert len(closure) == 3
     assert {
@@ -1714,16 +1742,16 @@ def test_e5m2_runtime_patch_closure_is_bound_to_complete_tagged_files():
         for record in closure
     } == {
         "vllm-qwen-attention-disable-e5m2-query-quant": (
-            "dae6d1f09448adc1d67c776089e77e8b75378332166844a234cd8fa45c18195e",
-            "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839",
+            "bc897e452f3aea603e353ca42a365d3be8836e9485d78cbf8cc4677baca2fb42",
+            "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce",
         ),
         "vllm-triton-reshape-cache-e5m2-closure": (
             "6cac51475b8c656992a21b2d150acd3a16a95a7ab7d49aab151a3ef13c24b80d",
             "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08",
         ),
         "vllm-triton-attention-e5m2-closure": (
-            "20b4dd5f8c15cd2d6f9598268368f5fc572f2c980eb75327c5992100c49ff3ed",
-            "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390",
+            "1057663d110e1d5229495a799027b27277c1eca325d5b6780fa2259afbf58a1a",
+            "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a",
         ),
     }
     for record in closure:
@@ -5092,7 +5120,7 @@ def test_installed_package_freeze_records_complete_normalized_environment(
         return subprocess.CompletedProcess(
             argv,
             0,
-            stdout="torch==2.13.0+cu129\nvllm==0.27.1+cu129\nPip==26.0\n",
+            stdout="torch==2.13.0+cu129\nvllm==0.30.0+cu129\nPip==26.0\n",
             stderr="",
         )
 
@@ -5108,7 +5136,7 @@ def test_installed_package_freeze_records_complete_normalized_environment(
     assert frozen == [
         "Pip==26.0",
         "torch==2.13.0+cu129",
-        "vllm==0.27.1+cu129",
+        "vllm==0.30.0+cu129",
     ]
     assert len(calls) == 1
     assert calls[0][0] == [str(python), "-m", "pip", "freeze", "--all"]
@@ -5133,7 +5161,7 @@ def test_verify_vllm_runtime_lock_installation_runs_pip_check_and_provenance(
     calls = []
     digest = "e" * 64
     wheel = tmp_path / (
-        "vllm-0.27.1+cu129-1cachete5m2eeeeeeeeeeeeeeee-"
+        "vllm-0.30.0+cu129-1cachete5m2eeeeeeeeeeeeeeee-"
         "cp38-abi3-manylinux_2_28_x86_64.whl"
     )
     monkeypatch.setenv(VLLM_PATCHED_WHEEL_URI_ENV, str(wheel))
@@ -5739,7 +5767,7 @@ def test_run_vllm_smoke_uses_native_runtime_without_legacy_install(
     monkeypatch.setattr(
         public_vllm_smoke,
         "create_venv",
-        lambda path: events.append(("create", path)),
+        lambda path, *, copies: events.append(("create", path, copies)),
     )
     monkeypatch.setattr(
         public_vllm_smoke,
@@ -5786,7 +5814,7 @@ def test_run_vllm_smoke_uses_native_runtime_without_legacy_install(
     with pytest.raises(StopAfterRuntime):
         run_vllm_smoke_benchmark(config)
 
-    assert events == [("create", config.venv_dir), ("native", config)]
+    assert events == [("create", config.venv_dir, True), ("native", config)]
     metadata = json.loads(config.metadata_path.read_text(encoding="utf-8"))
     assert metadata["native_runtime_v2_attestation"] == attestation
     assert metadata["vllm_runtime_lock_verification"] == attestation
@@ -5831,7 +5859,7 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     monkeypatch.setattr(
         public_vllm_smoke,
         "create_venv",
-        lambda path: calls.append(("create_venv", path)),
+        lambda path, *, copies: calls.append(("create_venv", path, copies)),
     )
     monkeypatch.setattr(
         public_vllm_smoke,
@@ -5953,7 +5981,7 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     run_vllm_smoke_benchmark(config)
 
     assert calls == [
-        ("create_venv", config.venv_dir),
+        ("create_venv", config.venv_dir, False),
         ("install_vllm", config.venv_python),
         ("install_document_kv_package", config.venv_python, str(REPO_ROOT)),
         ("verify_vllm_runtime_lock_installation", config.venv_python),
@@ -5985,14 +6013,14 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         ("run", build_benchmark_runner_args(config, dataset_paths)),
         ("terminate", fake_server),
         ("runtime_telemetry_stop", config.runtime_telemetry_path),
+        ("copy", config.server_log_path, config.server_log_copy_path),
+        ("copy", config.connector_telemetry_path, config.connector_telemetry_copy_path),
+        ("copy", config.runtime_telemetry_path, config.runtime_telemetry_copy_path),
         (
             "bind_runtime_resource_evidence",
             config.benchmark_output_path,
             config.runtime_telemetry_path,
         ),
-        ("copy", config.server_log_path, config.server_log_copy_path),
-        ("copy", config.connector_telemetry_path, config.connector_telemetry_copy_path),
-        ("copy", config.runtime_telemetry_path, config.runtime_telemetry_copy_path),
     ]
     metadata = build_metadata(config)
     assert metadata["server_base_url"] == "http://127.0.0.1:8123"
@@ -6015,7 +6043,9 @@ def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(
     lmcache_cfg = tmp_path / "lmcache-config.json"
     lmcache_cfg.write_text("{}", encoding="utf-8")
 
-    monkeypatch.setattr(public_vllm_smoke, "create_venv", lambda path: None)
+    monkeypatch.setattr(
+        public_vllm_smoke, "create_venv", lambda path, **kwargs: None
+    )
     monkeypatch.setattr(
         public_vllm_smoke,
         "run",

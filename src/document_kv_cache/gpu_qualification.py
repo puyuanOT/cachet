@@ -56,15 +56,15 @@ GPU_QUALIFICATION_TERMINAL_RECEIPT_RECORD_TYPE: Final = (
 )
 GPU_QUALIFICATION_SCHEMA_VERSION: Final = 1
 
-GPU_QUALIFICATION_VLLM_VERSION: Final = "0.27.1+cu129"
+GPU_QUALIFICATION_VLLM_VERSION: Final = "0.30.0+cu129"
 GPU_QUALIFICATION_OFFICIAL_WHEEL_SHA256: Final = (
-    "bf0d52faa2a51e7a01c6856a7a8a2d1307fd0ff711415d34168a67ffac0fa47b"
+    "e98cb69659bfcfc849cf11ce0781a7161d40b02b51a6c3636924a5909f2aabcc"
 )
 GPU_QUALIFICATION_PATCHED_WHEEL_SHA256: Final = (
-    "65120c48a9352b9eb65bab7a67090558d27af985ad366e469d3b87751073cff4"
+    "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247"
 )
 GPU_QUALIFICATION_CONNECTOR_SOURCE_SHA256: Final = (
-    "ec3e461a802fdbc0d324d8cb200a161042da0614cfc0cb342accdd9d58dca31d"
+    "97af64220475c6c9e8273438d7b5138b105ebe6944beb783facb36a3bb76f31b"
 )
 GPU_QUALIFICATION_MODEL_ID: Final = "Qwen/Qwen3-4B-Instruct-2507"
 GPU_QUALIFICATION_MODEL_REVISION: Final = "cdbee75f17c01a7cc42f958dc650907174af0554"
@@ -526,7 +526,7 @@ GPU_QUALIFICATION_GENERATION_GPU: Final = "NVIDIA L40S"
 GPU_QUALIFICATION_GENERATION_COMPUTE_CAPABILITY: Final = "8.9"
 GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE: Final = "g6e.4xlarge"
 GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256: Final = (
-    "cf2c10fcaf5b6e997a8d5f80712af1f251a7292b5d76813e28b39bc03fa7c629"
+    "48d2bf40f2310c499356a1b6ffe30a79529241054a476cf10a75700d0f58bc63"
 )
 GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256: Final = (
     "7ff6cf6a1553c0e844853d21de9780c75211f1be8304754da72e9cbebbd164ec"
@@ -541,9 +541,9 @@ GPU_QUALIFICATION_INPUT_ROWS_PER_DATASET_BUCKET: Final = 32
 
 _RUNTIME_CORE_VERSIONS: Final = {
     "bitsandbytes": "0.49.2",
-    "flashinfer-cubin": "0.6.16.post3",
-    "flashinfer-jit-cache": "0.6.16.post3+cu129",
-    "flashinfer-python": "0.6.16.post3",
+    "flashinfer-cubin": "0.6.18.post1",
+    "flashinfer-jit-cache": "0.6.18.post1+cu129",
+    "flashinfer-python": "0.6.18.post1",
     "torch": "2.13.0+cu129",
     "torchaudio": "2.11.0+cu129",
     "torchcodec": "0.16.0+cu129",
@@ -552,10 +552,10 @@ _RUNTIME_CORE_VERSIONS: Final = {
 }
 _PATCH_MEMBER_SHA256: Final = {
     "vllm/model_executor/layers/attention/attention.py": (
-        "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839"
+        "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce"
     ),
     "vllm/v1/attention/backends/triton_attn.py": (
-        "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390"
+        "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a"
     ),
     "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py": (
         "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08"
