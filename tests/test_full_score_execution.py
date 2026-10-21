@@ -7017,6 +7017,8 @@ def test_local_workspace_authority_reader_rejects_unsafe_files(tmp_path, monkeyp
     path = root / "authority.json"
     path.write_bytes(b"x" * 70_000)
     path.chmod(0o600)
+    # Coarse filesystem clocks can stamp the overwrite with the creation time.
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
     original_read = full_score.os.read
     mutated = False
 
