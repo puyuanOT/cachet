@@ -34,8 +34,11 @@ from document_kv_cache.benchmarks import (
     default_dataset_scorer_registry,
 )
 from document_kv_cache.databricks_resource_ledger import (
+    DATABRICKS_PUBLICATION_LEDGER_CAPS,
     DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS,
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+    DatabricksClusterHourCapRaise,
+    DatabricksLedgerPrefix,
     databricks_ledger_path_sha256,
     databricks_ledger_prefix,
     databricks_ledger_prefix_at_counts,
@@ -234,7 +237,16 @@ _LEDGER_KEYS = frozenset(
 # to the recreated ledger.
 _VLLM_0300_REPORT_KEYS = _REPORT_KEYS | {"latency_provenance"}
 _VLLM_0300_SOURCE_BINDING_NAMES = _SOURCE_BINDING_NAMES - {"latency_execution_plan"}
-_VLLM_0300_LEDGER_KEYS = _LEDGER_KEYS | {"latency_recovered_balance"}
+_VLLM_0300_LEDGER_KEYS = _LEDGER_KEYS | {"cap_raises", "latency_recovered_balance"}
+_CAP_RAISE_KEYS = frozenset(
+    {
+        "from_cap_cluster_hours",
+        "reservation_count",
+        "submission_receipt_count",
+        "terminal_actual_count",
+        "to_cap_cluster_hours",
+    }
+)
 _LATENCY_PROVENANCE_KEYS = frozenset(
     {
         "execution_plan_count",
@@ -1252,6 +1264,7 @@ def _validated_multi_plan_campaign_ledger_projection(
         full_score_aggregate_record=full_score_aggregate_record,
         final_consumer_authorization=final_consumer_authorization,
         ledger_path=ledger_path,
+        disclose_cap_raises=True,
     )
     recovered = _mapping(
         _mapping(latency_collection_authorization.collection, "ledger"),
@@ -1272,6 +1285,7 @@ def _campaign_ledger_projection_after_latency(
     full_score_aggregate_record: Mapping[str, Any],
     final_consumer_authorization: FullScorePhaseAuthorization,
     ledger_path: str | Path,
+    disclose_cap_raises: bool = False,
 ) -> dict[str, Any]:
     execution_sha256 = _required_sha256(
         full_score_execution_plan_record,
@@ -1310,11 +1324,10 @@ def _campaign_ledger_projection_after_latency(
         _mapping(lineage, "terminal_prefix")
     )
     if (
-        live.cap_cluster_hours != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-        or latency_prefix.cap_cluster_hours
-        != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-        or final_prefix.cap_cluster_hours
-        != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        live.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS
+        or latency_prefix.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS
+        or final_prefix.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS
+        or final_prefix.cap_cluster_hours < latency_prefix.cap_cluster_hours
         or live.ledger_id != latency_prefix.ledger_id
         or lineage.get("ledger_id") != live.ledger_id
         or lineage.get("ledger_path_sha256") != path_sha256
@@ -1359,7 +1372,7 @@ def _campaign_ledger_projection_after_latency(
         < DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS
     ):
         raise ValueError("publication final ledger is active or below hard headroom")
-    return {
+    projection: dict[str, Any] = {
         "final_accounted_cluster_hours": live.accounted_cluster_hours,
         "final_active_reserved_cluster_hours": live.active_reserved_cluster_hours,
         "final_active_reserved_task_count": live.active_reserved_task_count,
@@ -1372,6 +1385,11 @@ def _campaign_ledger_projection_after_latency(
             DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS
         ),
     }
+    if disclose_cap_raises:
+        projection["cap_raises"] = [item.to_record() for item in live.cap_raises]
+    elif live.cap_raises:
+        raise ValueError("this report cannot disclose a raised ledger cap")
+    return projection
 
 
 def validate_vllm_0271_publication_report_pair(
@@ -1676,12 +1694,15 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
         )
         or ledger.get("ledger_id") != latency_prefix.ledger_id
         or full_score_prefix.ledger_id != latency_prefix.ledger_id
-        or latency_prefix.cap_cluster_hours
-        != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        or latency_prefix.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS
         or full_score_prefix.cap_cluster_hours
-        != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
-        or full_score_prefix.cap_cluster_hours
-        != latency_prefix.cap_cluster_hours
+        not in DATABRICKS_PUBLICATION_LEDGER_CAPS
+        or full_score_prefix.cap_cluster_hours < latency_prefix.cap_cluster_hours
+        or (
+            not multi_plan
+            and full_score_prefix.cap_cluster_hours
+            != MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        )
         or any(
             getattr(full_score_prefix, field_name)
             != getattr(latency_prefix, field_name)
@@ -1727,10 +1748,80 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
     ):
         raise ValueError("report ledger accounting is invalid")
     if multi_plan:
+        _validate_report_cap_raises(
+            ledger.get("cap_raises"),
+            latency_prefix=latency_prefix,
+            full_score_prefix=full_score_prefix,
+        )
         _validate_latency_provenance_projection(
             _mapping(record, "latency_provenance"),
             recovered_balance=_mapping(ledger, "latency_recovered_balance"),
         )
+
+
+def _validate_report_cap_raises(
+    value: Any,
+    *,
+    latency_prefix: DatabricksLedgerPrefix,
+    full_score_prefix: DatabricksLedgerPrefix,
+) -> None:
+    """Require a disclosed raise history that explains both prefix caps."""
+
+    if not isinstance(value, list):
+        raise ValueError("report ledger cap raises must be a list")
+    raises: list[DatabricksClusterHourCapRaise] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"report ledger cap raise {index} must be an object")
+        _require_exact_keys(item, _CAP_RAISE_KEYS, f"report ledger cap raise {index}")
+        cap_raise = DatabricksClusterHourCapRaise(**dict(item))
+        if not _json_type_exact_equal(dict(item), cap_raise.to_record()):
+            raise ValueError(f"report ledger cap raise {index} is not canonical")
+        previous = raises[-1] if raises else None
+        expected_from = (
+            MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+            if previous is None
+            else previous.to_cap_cluster_hours
+        )
+        if (
+            cap_raise.from_cap_cluster_hours != expected_from
+            or cap_raise.to_cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS
+            or (
+                previous is not None
+                and (
+                    cap_raise.counts == previous.counts
+                    or any(
+                        count < earlier
+                        for count, earlier in zip(
+                            cap_raise.counts, previous.counts, strict=True
+                        )
+                    )
+                )
+            )
+        ):
+            raise ValueError("report ledger cap raise history is invalid")
+        raises.append(cap_raise)
+    for prefix in (latency_prefix, full_score_prefix):
+        counts = (
+            prefix.reservation_count,
+            prefix.submission_receipt_count,
+            prefix.terminal_actual_count,
+        )
+        cap = MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS
+        for cap_raise in raises:
+            if all(
+                count <= raised
+                for count, raised in zip(counts, cap_raise.counts, strict=True)
+            ):
+                break
+            if any(
+                count < raised
+                for count, raised in zip(counts, cap_raise.counts, strict=True)
+            ):
+                raise ValueError("report ledger prefix straddles a cap raise")
+            cap = cap_raise.to_cap_cluster_hours
+        if prefix.cap_cluster_hours != cap:
+            raise ValueError("report ledger prefix cap differs from its raise history")
 
 
 def _validate_latency_provenance_projection(
