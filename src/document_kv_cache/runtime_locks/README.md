@@ -58,6 +58,39 @@ requires review of the complete version-and-hash closure, updated lock-byte and
 installed-site closure pins in `publication_freeze.py`, and a fresh semantic
 rebuild before source authority may issue.
 
+## Linux x86_64 controller host
+
+The same checked-in semantic lock bytes are also the reviewed closure for an
+x86_64 Linux controller: every pinned distribution has a pure-Python or
+manylinux x86_64 wheel among its locked hashes, and the offline
+`--require-hashes` install consumes the lock unchanged. `publication_freeze.py`
+selects the controller identity from `platform.system()` and
+`platform.machine()`; an unreviewed host keeps the macOS identity and fails
+closed. The Linux host pins:
+
+- interpreter `/opt/python-build-standalone/cpython-3.11.16+20260929/bin/python3.11`,
+  extracted from python-build-standalone
+  `cpython-3.11.16+20260929-x86_64-unknown-linux-gnu-install_only.tar.gz`
+  (archive SHA-256
+  `fbbfd0f2253996486455f44a28c09ac7e2df534b8a4835408d17c99d185b80ec`),
+  executable SHA-256
+  `473a001c58b509434303302c27165d137bcb16d9f37ca5a8e2f63e457682cbfd`;
+- `~/.local/bin/uv` from the uv 0.11.6 `uv-x86_64-unknown-linux-gnu.tar.gz`
+  release asset (archive SHA-256
+  `0c6bab77a67a445dc849ed5e8ee8d3cb333b6e2eba863643ce1e228075f27943`),
+  executable SHA-256
+  `c9f7ca00a5e1c4f2a6dd96db91097bec5b76a53a483818e8ee746e9c7440547a`, whose
+  `--version` output is exactly `uv 0.11.6 (x86_64-unknown-linux-gnu)`;
+- an installed private site of 4,756 files with closure digest
+  `e184b14818283ec0a46bb3b574da004636694104cd4530e7c2679594f081685b`;
+- subprocess `HOME=/var/empty` (an empty root-owned `0755` directory),
+  `TMPDIR=/var/tmp`, and `PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`.
+
+The repository `.venv` holds `ruff==0.15.21` and `mypy==2.2.0` with the CPU
+PyTorch wheel, and the interpreter itself holds the `test` extra, `build`, the
+CPU PyTorch wheel, and `pyarrow`, so the frozen unit-test check runs the full
+suite without skips.
+
 ## vLLM qualification lock
 
 Byte-for-byte artifact replay means consuming the checked-in lock unchanged at
@@ -90,8 +123,8 @@ provenance, not the normative regeneration recipe.
 
 The Cachet wheel pins `packaging==26.3` to match this serving closure. The
 separate `publication-latency-semantic-py311-macos-arm64.in` and `.lock` remain
-at `packaging==26.2`: that macOS-only tokenizer/semantic validation tool is an
-isolated build input and is never co-installed into the Linux serving runtime.
+at `packaging==26.2`: that controller-only tokenizer/semantic validation tool is
+an isolated build input and is never co-installed into the Linux serving runtime.
 
 Regeneration creates a new candidate vLLM lock. From the repository root, install
 the reviewed compiler with `python -m pip install uv==0.11.6`, then run:

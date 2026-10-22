@@ -7,10 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from document_kv_cache.flashinfer_wheel_repack import (
-    FLASHINFER_SOURCE_WHEEL_SHA256,
-    repack_flashinfer_0616_post3_wheel,
-)
 import document_kv_cache.runtime_artifact_closure as closure
 from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_RECORD_TYPE,
@@ -19,6 +15,7 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_FILENAME,
     VLLM_RUNTIME_BASE_LOCK_HASH_COUNT,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
+    VLLM_RUNTIME_BASE_LOCK_SIZE,
     VLLM_RUNTIME_BASE_LOCK_VERSION_HASH_MAP_SHA256,
     VLLM_RUNTIME_BASE_LOCK_VERSION_MAP_SHA256,
     build_vllm_flashinfer_runtime_artifact_closure,
@@ -40,16 +37,16 @@ _PRISTINE_FLASHINFER = (
     _ROOT
     / "databricks-runs"
     / "_campaign-inputs"
-    / "flashinfer-python-0.6.16.post3"
+    / f"flashinfer-python-{closure.FLASHINFER_RUNTIME_VERSION}"
     / "sha256"
-    / FLASHINFER_SOURCE_WHEEL_SHA256
-    / "flashinfer_python-0.6.16.post3-py3-none-any.whl"
+    / closure.FLASHINFER_RUNTIME_WHEEL_SHA256
+    / closure.FLASHINFER_RUNTIME_WHEEL_FILENAME
 )
 _VLLM_ROOT = (
     _ROOT
     / "databricks-runs"
     / "_campaign-inputs"
-    / "vllm-0.27.1"
+    / "vllm-0.30.0"
     / "sha256"
     / closure.VLLM_PATCHED_WHEEL_SHA256
     / "artifacts"
@@ -57,12 +54,12 @@ _VLLM_ROOT = (
 )
 _VLLM_WHEEL = _VLLM_ROOT / closure.VLLM_PATCHED_WHEEL_FILENAME
 _VLLM_MANIFEST = _VLLM_ROOT / closure.VLLM_PATCHED_MANIFEST_FILENAME
+_SEALED_CLOSURE = _ROOT / "tests" / "fixtures" / "vllm_0300_runtime_closure.json"
 
 
 @dataclass(frozen=True)
 class _Artifacts:
     base_lock: Path
-    patched_flashinfer_wheel: Path
     flashinfer_manifest: Path
     first_closure: Path
     second_closure: Path
@@ -86,18 +83,16 @@ def reviewed_artifacts(tmp_path_factory: pytest.TempPathFactory) -> _Artifacts:
         _SOURCE_LOCK,
         root / VLLM_RUNTIME_BASE_LOCK_FILENAME,
     )
-    flashinfer = repack_flashinfer_0616_post3_wheel(
-        _PRISTINE_FLASHINFER,
-        root / "patched-flashinfer",
-    )
+    # FlashInfer 0.6.18.post1 installs unpatched, so no patch manifest exists.
+    flashinfer_manifest = root / "absent-flashinfer-patch-manifest.json"
     arguments = {
         "source_lock": _SOURCE_LOCK,
         "base_lock": base_lock,
         "vllm_wheel": _VLLM_WHEEL,
         "vllm_manifest": _VLLM_MANIFEST,
         "pristine_flashinfer_wheel": _PRISTINE_FLASHINFER,
-        "patched_flashinfer_wheel": flashinfer.wheel_path,
-        "flashinfer_manifest": flashinfer.manifest_path,
+        "patched_flashinfer_wheel": _PRISTINE_FLASHINFER,
+        "flashinfer_manifest": flashinfer_manifest,
     }
     first = build_vllm_flashinfer_runtime_artifact_closure(
         **arguments,
@@ -109,8 +104,7 @@ def reviewed_artifacts(tmp_path_factory: pytest.TempPathFactory) -> _Artifacts:
     )
     return _Artifacts(
         base_lock=base_lock,
-        patched_flashinfer_wheel=flashinfer.wheel_path,
-        flashinfer_manifest=flashinfer.manifest_path,
+        flashinfer_manifest=flashinfer_manifest,
         first_closure=first.manifest_path,
         second_closure=second.manifest_path,
     )
@@ -123,7 +117,7 @@ def _closure_arguments(artifacts: _Artifacts) -> dict[str, Path]:
         "vllm_wheel": _VLLM_WHEEL,
         "vllm_manifest": _VLLM_MANIFEST,
         "pristine_flashinfer_wheel": _PRISTINE_FLASHINFER,
-        "patched_flashinfer_wheel": artifacts.patched_flashinfer_wheel,
+        "patched_flashinfer_wheel": _PRISTINE_FLASHINFER,
         "flashinfer_manifest": artifacts.flashinfer_manifest,
     }
 
@@ -137,7 +131,7 @@ def test_base_lock_is_exact_one_stanza_projection(tmp_path):
     observed = validate_flashinfer_direct_base_lock(_SOURCE_LOCK, target)
 
     assert observed == {
-        "bytes": 376_326,
+        "bytes": VLLM_RUNTIME_BASE_LOCK_SIZE,
         "distribution_count": VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT,
         "filename": VLLM_RUNTIME_BASE_LOCK_FILENAME,
         "hash_count": VLLM_RUNTIME_BASE_LOCK_HASH_COUNT,
@@ -183,6 +177,9 @@ def test_composite_closure_is_deterministic_sealed_and_pending(reviewed_artifact
     assert reviewed_artifacts.first_closure.read_bytes() == (
         reviewed_artifacts.second_closure.read_bytes()
     )
+    assert reviewed_artifacts.first_closure.read_bytes() == (
+        _SEALED_CLOSURE.read_bytes()
+    )
     record = json.loads(reviewed_artifacts.first_closure.read_text())
     observed = validate_vllm_flashinfer_runtime_artifact_closure(
         **_closure_arguments(reviewed_artifacts),
@@ -193,10 +190,10 @@ def test_composite_closure_is_deterministic_sealed_and_pending(reviewed_artifact
     assert record["schema_version"] == RUNTIME_ARTIFACT_CLOSURE_SCHEMA_VERSION
     assert record["closed_record_sha256"] == observed["closed_record_sha256"]
     assert record["install_contract"]["distribution_counts"] == {
-        "base_lock": 195,
+        "base_lock": 197,
         "separately_allowed_cachet": 1,
-        "with_flashinfer": 196,
-        "with_vllm": 197,
+        "with_flashinfer": 198,
+        "with_vllm": 199,
     }
     assert [item["artifact"] for item in record["install_contract"]["order"]] == [
         "base_lock",
@@ -211,7 +208,7 @@ def test_composite_closure_is_deterministic_sealed_and_pending(reviewed_artifact
 
 def test_composite_closure_tamper_is_rejected(reviewed_artifacts, tmp_path):
     record = json.loads(reviewed_artifacts.first_closure.read_text())
-    record["install_contract"]["distribution_counts"]["with_vllm"] = 198
+    record["install_contract"]["distribution_counts"]["with_vllm"] = 200
     tampered = tmp_path / closure.RUNTIME_ARTIFACT_CLOSURE_FILENAME
     tampered.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
     with pytest.raises(ValueError, match="size, SHA-256, or stable stat differs"):
