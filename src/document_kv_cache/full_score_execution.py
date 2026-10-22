@@ -2149,6 +2149,8 @@ def _build_databricks_full_score_run_submit_payload(
             producer_phase_completion,
             execution_plan=execution_plan,
             expected_wave_index=wave_index,
+            compact_artifact_resolver=compact_artifact_resolver,
+            ready_files_attested_remotely=remote_ready_authorization is not None,
         )
         if remote_ready_authorization is None:
             completion_file = _governed_compact_file(
@@ -2927,7 +2929,7 @@ def build_governed_full_score_producer_phase_completion_record(
             files.append(
                 {
                     "file_sha256": sha256(ready_path.read_bytes()).hexdigest(),
-                    "path": str(ready_path),
+                    "path": _ready_record_uri(payload, shard_id),
                     "ready_record_sha256": ready["closed_record_sha256"],
                     "shard_id": shard_id,
                 }
@@ -3027,14 +3029,13 @@ def build_governed_full_score_wave_completion_record(
     deletions: list[dict[str, Any]] = []
     bindings: list[dict[str, Any]] = []
     for raw_directory in evidence_dirs:
-        directory = _cluster_path(
-            _require_shared_dbfs_path(
-                raw_directory,
-                "governed wave evidence directory",
-            )
-        )
+        directory_uri = _require_shared_dbfs_path(
+            raw_directory,
+            "governed wave evidence directory",
+        ).rstrip("/")
+        directory = _cluster_path(directory_uri)
         evidence, deletion = load_governed_full_score_shard_evidence(
-            directory,
+            directory_uri,
             inventory=inventory,
             shard_plan=shard_plan,
             execution_plan=execution_plan,
@@ -3048,9 +3049,9 @@ def build_governed_full_score_wave_completion_record(
         bindings.append(
             {
                 "deletion_file_sha256": sha256(deletion_path.read_bytes()).hexdigest(),
-                "deletion_path": str(deletion_path),
+                "deletion_path": f"{directory_uri}/deletion-attestation.json",
                 "evidence_file_sha256": sha256(evidence_path.read_bytes()).hexdigest(),
-                "evidence_path": str(evidence_path),
+                "evidence_path": f"{directory_uri}/evidence.json",
                 "shard_id": evidence["shard_id"],
             }
         )
@@ -4558,7 +4559,6 @@ def build_full_score_live_p90_budget_admission(
             "projected_remaining_gpu_hours_samples_sha256": _canonical_sha256(
                 projected_hours
             ),
-            "resample_indices": sample_indices,
             "resample_indices_sha256": _canonical_sha256(sample_indices),
             "resampling_unit": "matched_shard_block_producer_plus_consumer_task",
             "rng_algorithm": "cpython-3.11-random.Random-mt19937-choices-v1",
@@ -10742,16 +10742,19 @@ def _verify_bound_gpu_qualification(
     record: Mapping[str, Any],
     *,
     runtime: FullScoreRuntimeConfig,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> GPUQualificationSelection:
     _validate_gpu_qualification_binding_shape(record, runtime=runtime)
     plan = _read_bound_json(
         _required_string(record, "plan_uri"),
         _required_string(record, "plan_sha256"),
         closure_digest=True,
+        compact_artifact_resolver=compact_artifact_resolver,
     )
-    evidence_path = _governed_existing_file(
+    evidence_path = _governed_compact_file(
         _required_string(record, "evidence_uri"),
         "GPU qualification evidence",
+        compact_artifact_resolver,
     )
     evidence_raw = evidence_path.read_bytes()
     if sha256(evidence_raw).hexdigest() != record.get("evidence_file_sha256"):
@@ -11607,9 +11610,12 @@ def _validate_prior_wave_completion(
             raise ValueError("prior-wave governed evidence binding drift")
         if replay_raw_evidence:
             if remote_records is None:
+                evidence_uri = _required_string(binding, "evidence_path")
+                if not evidence_uri.endswith("/evidence.json"):
+                    raise ValueError("prior-wave evidence path is not evidence.json")
                 replayed_evidence, replayed_deletion = (
                     load_governed_full_score_shard_evidence(
-                        evidence_file.parent,
+                        evidence_uri.removesuffix("/evidence.json"),
                         inventory=inventory,
                         shard_plan=shard_plan,
                         execution_plan=execution_plan,
@@ -11636,6 +11642,8 @@ def _validate_producer_phase_completion(
     *,
     execution_plan: Mapping[str, Any],
     expected_wave_index: int,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    ready_files_attested_remotely: bool = False,
 ) -> None:
     if not isinstance(record, Mapping):
         raise ValueError("consumer phase requires producer-phase completion")
@@ -11716,9 +11724,12 @@ def _validate_producer_phase_completion(
             "ready_record_sha256"
         ):
             raise ValueError("producer ready-record compact/file binding drift")
-        ready_file = _governed_existing_file(
+        if ready_files_attested_remotely:
+            continue
+        ready_file = _governed_compact_file(
             _required_string(file_record, "path"),
             "producer ready-record path",
+            compact_artifact_resolver,
         )
         if sha256(ready_file.read_bytes()).hexdigest() != file_record.get(
             "file_sha256"
@@ -12014,6 +12025,12 @@ def _ready_shard_dir(payload: Mapping[str, Any], shard_id: str) -> Path:
         / f"wave-{_required_int(payload, 'wave_index'):03d}"
         / shard_id
     )
+
+
+def _ready_record_uri(payload: Mapping[str, Any], shard_id: str) -> str:
+    root = _required_string(payload, "durable_output_root").rstrip("/")
+    wave_index = _required_int(payload, "wave_index")
+    return f"{root}/ready/wave-{wave_index:03d}/{shard_id}/ready-record.json"
 
 
 def _wave_shard_upper_bound(payload: Mapping[str, Any], shard_id: str) -> int:
@@ -12832,8 +12849,9 @@ def _read_bound_json(
     expected_sha256: str,
     *,
     closure_digest: bool,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
 ) -> dict[str, Any]:
-    path = _governed_existing_file(uri, "bound JSON")
+    path = _governed_compact_file(uri, "bound JSON", compact_artifact_resolver)
     raw = path.read_bytes()
     record = _json_object(raw, uri)
     observed = (
@@ -13978,6 +13996,7 @@ def _validated_full_score_phase_submit_payload(
         _verify_bound_gpu_qualification(
             _required_mapping(worker_payload, "gpu_qualification"),
             runtime=_runtime_from_record(runtime),
+            compact_artifact_resolver=compact_artifact_resolver,
         )
         expected_parameter_bindings = {
             "package_wheel_sha256": _required_string(
@@ -14107,6 +14126,8 @@ def _validated_full_score_phase_submit_payload(
                 completion,
                 execution_plan=execution_plan,
                 expected_wave_index=wave_index,
+                compact_artifact_resolver=compact_artifact_resolver,
+                ready_files_attested_remotely=remote_ready_authorization is not None,
             )
             if remote_ready_authorization is None:
                 _validate_governed_producer_ready_phase(
