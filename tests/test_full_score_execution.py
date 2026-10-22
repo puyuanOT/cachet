@@ -4297,7 +4297,9 @@ def test_live_p90_gate_replays_matched_blocks_and_authorizes_next_phase(
         for block in gate["completed_blocks"]
     )
     assert gate["bootstrap"]["draws"] == 10_000
-    assert len(gate["bootstrap"]["resample_indices"]) == 10_000
+    assert "resample_indices" not in gate["bootstrap"]
+    assert len(gate["bootstrap"]["projected_remaining_gpu_hours_samples"]) == 10_000
+    assert len(gate["bootstrap"]["resample_indices_sha256"]) == 64
     assert gate == full_score.build_full_score_live_p90_budget_admission(
         campaign["execution_plan"],
         blocks,
@@ -4771,6 +4773,16 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
     remote_files = {
         uri: path.read_bytes() for uri, path in campaign["worker_files"].items()
     }
+    qualification = campaign["bundle"].gpu_qualification
+    qualification_files = {
+        qualification.plan_uri: (
+            canonical_gpu_qualification_json(qualification.plan_record) + "\n"
+        ).encode(),
+        qualification.evidence_uri: (
+            canonical_gpu_qualification_json(qualification.evidence_record) + "\n"
+        ).encode(),
+    }
+    remote_files.update(qualification_files)
     download_calls = []
 
     def download(_workspace, uri, *, max_bytes):
@@ -4995,6 +5007,9 @@ def test_stock_mac_files_cas_collects_terminals_and_writes_wave_one_gate(
             opener=producer_opener,
         )
     )
+    for uri, content in qualification_files.items():
+        assert uri in download_calls
+        assert cas.resolve(uri).read_bytes() == content
 
     producer_completion = _producer_completion(campaign, 0)
     producer_completion_uri = (

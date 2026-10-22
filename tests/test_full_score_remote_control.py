@@ -360,15 +360,42 @@ def _result_and_attestation(case):
             "wave_index": 0,
         }
         tree_entries = case.shard_ids
-        closures = [
-            {
-                "file_sha256": _digest(f"file-{shard_id}"),
-                "files_sha256": _digest(f"files-{shard_id}"),
-                "record_sha256": _digest(f"record-{shard_id}"),
-                "shard_id": shard_id,
-            }
-            for shard_id in case.shard_ids
-        ]
+        closures = []
+        ready_record_files = []
+        producer_artifacts = {}
+        for shard_id in case.shard_ids:
+            ready_bytes = remote._pretty_json_bytes(
+                _close(
+                    {
+                        "closed_record_sha256": "",
+                        "files_sha256": _digest(f"files-{shard_id}"),
+                        "shard_id": shard_id,
+                    }
+                )
+            )
+            ready_uri = (
+                f"{case.request['durable_output_root']}/ready/"
+                f"wave-{case.request['wave_index']:03d}/{shard_id}/ready-record.json"
+            )
+            producer_artifacts[ready_uri] = ready_bytes
+            closures.append(
+                {
+                    "file_sha256": remote.sha256(ready_bytes).hexdigest(),
+                    "files_sha256": _digest(f"files-{shard_id}"),
+                    "record_sha256": _digest(f"record-{shard_id}"),
+                    "shard_id": shard_id,
+                }
+            )
+            ready_record_files.append(
+                {
+                    "file_sha256": remote.sha256(ready_bytes).hexdigest(),
+                    "path": ready_uri,
+                    "ready_record_sha256": _digest(f"record-{shard_id}"),
+                    "shard_id": shard_id,
+                }
+            )
+        case.producer_artifacts = producer_artifacts
+        result["ready_record_files"] = ready_record_files
     else:
         consumer_artifacts = {}
         closures = []
@@ -1264,10 +1291,15 @@ def test_compact_cas_resolve_rechecks_symlink_ancestors(tmp_path):
 def test_publication_cas_admission_bound_covers_all_paired_scores_and_metadata():
     assert remote.FULL_SCORE_REMOTE_EVIDENCE_PAIR_OUTPUT_MAX_BYTES == 1_024
     assert remote.FULL_SCORE_REMOTE_EVIDENCE_PAIR_MAX_BYTES == 13_312
-    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BYTES == 1_543_504_896
-    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == 1_545_143_296
-    assert 2 * 160 + 4 * 10 == 360
-    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BINDINGS == 400
+    assert remote.FULL_SCORE_REMOTE_CAS_WAVE_COUNT == 10
+    assert 6 * 160 + 6 * 10 + 4 * 10 + 2 * 9 + 2 == 1_080
+    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BINDINGS == 1_080
+    evidence_and_coordinator_bytes = 1_543_504_896
+    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BYTES == (
+        evidence_and_coordinator_bytes + (1_080 - 2 * 160 - 4 * 10) * 16 * 1024 * 1024
+    )
+    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BYTES == 13_623_100_416
+    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == 13_627_524_096
 
 
 def test_controller_recovers_lost_submit_response_with_same_token(
@@ -1693,6 +1725,7 @@ def test_mac_collection_uses_runs_get_files_api_cas_and_no_dbfs_mount(
     downloads = {
         case.request["result_uri"]: remote._pretty_json_bytes(result),
         case.request["attestation_uri"]: remote._pretty_json_bytes(attestation),
+        **case.producer_artifacts,
     }
     observed_uris = []
     terminal = _successful_run(submit, 701)
@@ -1742,6 +1775,9 @@ def test_mac_collection_uses_runs_get_files_api_cas_and_no_dbfs_mount(
     assert receipt["run_record_sha256"] == remote._canonical_sha256(raw_terminal)
     assert (controller_root / "authorization.json").is_file()
     assert cas.resolve(case.request["result_uri"]).is_file()
+    assert case.producer_artifacts
+    for ready_uri, ready_bytes in case.producer_artifacts.items():
+        assert cas.resolve(ready_uri).read_bytes() == ready_bytes
     assert all(item[1].startswith("dbfs:/Volumes/") for item in observed_uris)
     assert all("/dbfs" not in item[1] for item in observed_uris)
     replayed = remote.replay_full_score_remote_coordinator_authorization(

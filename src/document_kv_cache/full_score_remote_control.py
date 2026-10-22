@@ -109,7 +109,29 @@ FULL_SCORE_REMOTE_EVIDENCE_PAIR_MAX_BYTES: Final = (
     + FULL_SCORE_REMOTE_EVIDENCE_PAIR_METADATA_MAX_BYTES
 )
 FULL_SCORE_REMOTE_EVIDENCE_SHARD_ENVELOPE_MAX_BYTES: Final = 2 * 1024 * 1024
-FULL_SCORE_REMOTE_CAS_MAX_BINDINGS: Final = 400
+FULL_SCORE_REMOTE_CAS_WAVE_COUNT: Final = (
+    full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
+    // full_score.FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE
+)
+# One campaign-wide CAS: per shard, producer and consumer worker payloads, the
+# ready record, evidence, deletion attestation, and matched billing block; per
+# wave, each GPU phase's submit payload, runs/get record, and terminal record,
+# plus both coordinators' result and attestation; one producer and one consumer
+# live-P90 admission for every nonzero wave; and the GPU qualification plan and
+# evidence.
+FULL_SCORE_REMOTE_CAS_EVIDENCE_BINDINGS: Final = (
+    2 * full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
+)
+FULL_SCORE_REMOTE_CAS_COORDINATOR_OUTPUT_BINDINGS: Final = (
+    2 * 2 * FULL_SCORE_REMOTE_CAS_WAVE_COUNT
+)
+FULL_SCORE_REMOTE_CAS_MAX_BINDINGS: Final = (
+    6 * full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
+    + 2 * 3 * FULL_SCORE_REMOTE_CAS_WAVE_COUNT
+    + FULL_SCORE_REMOTE_CAS_COORDINATOR_OUTPUT_BINDINGS
+    + 2 * (FULL_SCORE_REMOTE_CAS_WAVE_COUNT - 1)
+    + 2
+)
 FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES: Final = 4 * 1024
 FULL_SCORE_REMOTE_CAS_MAX_BYTES: Final = (
     full_score.FULL_SCORE_PUBLICATION_ITEM_COUNT
@@ -118,13 +140,14 @@ FULL_SCORE_REMOTE_CAS_MAX_BYTES: Final = (
     * FULL_SCORE_REMOTE_EVIDENCE_SHARD_ENVELOPE_MAX_BYTES
     + full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
     * FULL_SCORE_REMOTE_EVIDENCE_DELETION_MAX_BYTES
-    + 2
-    * 2
-    * (
-        full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
-        // full_score.FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE
-    )
+    + FULL_SCORE_REMOTE_CAS_COORDINATOR_OUTPUT_BINDINGS
     * FULL_SCORE_REMOTE_COORDINATOR_OUTPUT_MAX_BYTES
+    + (
+        FULL_SCORE_REMOTE_CAS_MAX_BINDINGS
+        - FULL_SCORE_REMOTE_CAS_EVIDENCE_BINDINGS
+        - FULL_SCORE_REMOTE_CAS_COORDINATOR_OUTPUT_BINDINGS
+    )
+    * FULL_SCORE_REMOTE_COMPACT_RECORD_MAX_BYTES
 )
 FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES: Final = (
     FULL_SCORE_REMOTE_CAS_MAX_BYTES
@@ -990,8 +1013,7 @@ def collect_governed_full_score_remote_phase_attempt(
         )
     if len(set(worker_payload_uris)) != len(worker_payload_uris):
         raise ValueError("remote phase submit payload duplicates a worker artifact")
-    for worker_payload_uri in worker_payload_uris:
-        compact_io.download(worker_payload_uri)
+    _download_worker_payload_closure(compact_io, worker_payload_uris)
     return full_score.collect_governed_full_score_phase_attempt(
         workspace,
         execution_plan=execution_plan,
@@ -1006,6 +1028,28 @@ def collect_governed_full_score_remote_phase_attempt(
         compact_artifact_publisher=compact_io.publish,
         opener=opener,
     )
+
+
+def _download_worker_payload_closure(
+    compact_io: FullScoreRemoteCompactArtifactIO,
+    worker_payload_uris: Sequence[str],
+) -> None:
+    qualification_uris: set[str] = set()
+    for worker_payload_uri in worker_payload_uris:
+        payload = _json_object(
+            compact_io.download(worker_payload_uri).read_bytes(),
+            "remote worker payload",
+        )
+        qualification = _required_mapping(payload, "gpu_qualification")
+        for field_name in ("plan_uri", "evidence_uri"):
+            qualification_uris.add(
+                _volume_file_uri(
+                    qualification.get(field_name),
+                    f"worker GPU qualification {field_name}",
+                )
+            )
+    for qualification_uri in sorted(qualification_uris):
+        compact_io.download(qualification_uri)
 
 
 def _download_remote_consumer_evidence_bindings(
@@ -1280,8 +1324,7 @@ def prepare_governed_full_score_remote_live_p90_phase_submission(
         raise ValueError("live P90 remote worker-payload URI coverage drift")
     if output_uri in set(worker_uris) or set(block_uris) & set(worker_uris):
         raise ValueError("live P90 compact input/output URI collision")
-    for worker_uri in worker_uris:
-        compact_io.download(worker_uri)
+    _download_worker_payload_closure(compact_io, worker_uris)
     for authorization in remote_authorizations:
         _download_remote_consumer_evidence_bindings(
             compact_io,
@@ -2480,7 +2523,12 @@ def run_full_score_remote_coordinator(
             tree_closures = _producer_tree_closures(ready_wave, expected_shards)
         else:
             evidence_dirs = [
-                root / "evidence" / f"wave-{wave_index:03d}" / shard_id
+                _consumer_evidence_artifact_uri(
+                    cast(str, request["durable_output_root"]),
+                    wave_index=wave_index,
+                    shard_id=shard_id,
+                    filename="evidence.json",
+                ).removesuffix("/evidence.json")
                 for shard_id in sorted(expected_shards)
             ]
             result = full_score.build_governed_full_score_wave_completion_record(
@@ -2747,6 +2795,65 @@ def _consumer_evidence_binding_from_bytes(
     }
 
 
+def _collect_producer_ready_record_files(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    request: Mapping[str, Any],
+    result: Mapping[str, Any],
+    attestation: Mapping[str, Any],
+    cas: FullScoreCompactArtifactCAS,
+) -> None:
+    if request.get("action") != "producer_ready":
+        return
+    raw_closures = attestation.get("tree_closures")
+    raw_files = result.get("ready_record_files")
+    if not isinstance(raw_closures, list) or not isinstance(raw_files, list):
+        raise ValueError("producer ready-record closures are missing")
+    closure_sha_by_id = {
+        cast(str, _json_mapping(item, "producer ready closure").get("shard_id")): (
+            _json_mapping(item, "producer ready closure").get("file_sha256")
+        )
+        for item in raw_closures
+    }
+    root = _volume_directory_uri(
+        cast(str, request["durable_output_root"]), "durable_output_root"
+    )
+    wave_index = cast(int, request["wave_index"])
+    observed: list[str] = []
+    for raw_file in raw_files:
+        file_record = _json_mapping(raw_file, "producer ready-record file")
+        shard_id = file_record.get("shard_id")
+        if (
+            not isinstance(shard_id, str)
+            or not shard_id
+            or PurePosixPath(shard_id).name != shard_id
+        ):
+            raise ValueError("producer ready-record shard ID drift")
+        expected_uri = _volume_file_uri(
+            f"{root.rstrip('/')}/ready/wave-{wave_index:03d}/{shard_id}/"
+            "ready-record.json",
+            "producer ready-record URI",
+        )
+        if file_record.get("path") != expected_uri:
+            raise ValueError("producer ready-record URI drift")
+        content = download_databricks_volume_file_bytes(
+            workspace,
+            expected_uri,
+            max_bytes=FULL_SCORE_REMOTE_COMPACT_RECORD_MAX_BYTES,
+        )
+        digest = sha256(content).hexdigest()
+        if digest != file_record.get("file_sha256") or digest != (
+            closure_sha_by_id.get(shard_id)
+        ):
+            raise ValueError("producer ready-record file closure drift")
+        cas.bind_bytes(expected_uri, content)
+        observed.append(shard_id)
+    if sorted(observed) != sorted(closure_sha_by_id) or len(set(observed)) != len(
+        observed
+    ):
+        raise ValueError("producer ready-record file coverage drift")
+
+
 def _collect_consumer_evidence_bindings(
     workspace: DatabricksWorkspaceConfig,
     *,
@@ -2915,6 +3022,13 @@ def collect_full_score_remote_coordinator(
             entry.get("is_directory") is not True for entry in metadata
         ):
             raise ValueError("remote ready-tree metadata corroboration drift")
+        _collect_producer_ready_record_files(
+            workspace,
+            request=request,
+            result=result,
+            attestation=attestation,
+            cas=cas,
+        )
         evidence_bindings = _collect_consumer_evidence_bindings(
             workspace,
             request=request,
