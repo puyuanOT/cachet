@@ -13,7 +13,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import get_type_hints
+from typing import Any, get_type_hints
 
 import pytest
 
@@ -5118,6 +5118,7 @@ def _multi_plan_case(
         job_id: {
             "closed_record_sha256": f"{index + 4}" * 64,
             "files": [],
+            "job_id": job_id,
             "task_identity": {
                 "cloud_run_id": _MULTI_PLAN_RUN_IDS[job_id],
                 "task_key": job["task_key"],
@@ -5381,6 +5382,45 @@ def test_multi_plan_collection_binds_each_job_to_the_plan_it_ran_under(
             campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
             ledger_path=case.ledger_path,
         )
+
+
+def test_multi_plan_aggregation_reads_the_collector_issued_capability(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(tmp_path, monkeypatch)
+    record, authorization = _collect_multi_plan(case, tmp_path)
+    observed: dict[str, Any] = {}
+
+    def estimation(*, descriptors, result_by_job, collection_sha256):
+        observed["descriptors"] = deepcopy(dict(descriptors))
+        observed["results"] = sorted(result_by_job)
+        observed["collection_sha256"] = collection_sha256
+        return [], []
+
+    monkeypatch.setattr(execution, "_publication_latency_estimation", estimation)
+    monkeypatch.setattr(
+        execution,
+        "validate_publication_latency_multi_plan_summary_record",
+        lambda *_args, **_kwargs: None,
+    )
+
+    summary = execution.aggregate_publication_latency_multi_plan_campaign(
+        authorization,
+        campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
+    )
+
+    assert observed == {
+        "descriptors": {
+            item["job_id"]: item["job_record"]["cell"] for item in record["jobs"]
+        },
+        "results": sorted(_MULTI_PLAN_RUN_IDS),
+        "collection_sha256": record["closed_record_sha256"],
+    }
+    assert summary["collection_sha256"] == record["closed_record_sha256"]
+    assert summary["campaign_plan_sha256"] == (
+        _MULTI_PLAN_CAMPAIGN["closed_record_sha256"]
+    )
+    assert summary["closed_record_sha256"] == execution._closed_record_sha256(summary)
 
 
 @pytest.mark.parametrize(

@@ -8308,7 +8308,7 @@ def aggregate_publication_latency_campaign(
         bf16_handoff_serving_authorization=bf16_handoff_serving_authorization,
         source_closure_authorization=source_closure_authorization,
     )
-    collection = json.loads(_canonical_json(authorization.collection))
+    collection = json.loads(_canonical_json(dict(authorization.collection)))
     if not isinstance(collection, dict):  # pragma: no cover - normalized capability.
         raise TypeError("authorized latency collection is invalid")
     if collection.get("closed_record_sha256") != authorization.collection_sha256:
@@ -9285,7 +9285,7 @@ def aggregate_publication_latency_multi_plan_campaign(
             "latency aggregation requires "
             "PublicationLatencyMultiPlanCollectionAuthorization"
         )
-    collection = json.loads(_canonical_json(authorization.collection))
+    collection = json.loads(_canonical_json(dict(authorization.collection)))
     if not isinstance(collection, dict):  # pragma: no cover - normalized capability.
         raise TypeError("authorized latency collection is invalid")
     if collection.get("closed_record_sha256") != authorization.collection_sha256:
