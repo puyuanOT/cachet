@@ -124,7 +124,9 @@ GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS: Final = 133.38722722222224
 # the opening above was lost.  Its first 166 reservations are terminal-only
 # balance seeds and re-recorded latency runs, and this prefix is the quiescent
 # position where its approved budget extension was recorded.  A regenerated
-# qualification opens here instead.
+# qualification opens here instead.  The digest and balance are the values the
+# reviewed CPython 3.11.16 controller derives; CPython 3.12 sums floats with
+# compensation, so the same events serialize different accounting there.
 GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256: Final = (
     "8ee57f4f1bf2f7f35d90f167807d573aaeafb78569481aeb2a10a9da9d710ecb"
 )
@@ -134,9 +136,9 @@ GPU_QUALIFICATION_V2_RECOVERED_OPENING_LEDGER_PREFIX: Final = DatabricksLedgerPr
     reservation_count=166,
     submission_receipt_count=119,
     terminal_actual_count=166,
-    prefix_sha256=("321f82095abac3387266392792fb7a2a1b2f70e24908eca84efe62ef1bcbf5c8"),
+    prefix_sha256=("dfeaaf81b13ebbaa763cc27e2b7817f63c553202d69c4712220a74deaecc8718"),
 )
-GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS: Final = 677.1507730555555
+GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS: Final = 677.1507730555558
 
 
 def _gpu_qualification_v2_reviewed_openings() -> tuple[

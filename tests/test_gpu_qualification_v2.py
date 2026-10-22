@@ -96,7 +96,7 @@ EXPECTED_PLAN_SHA256 = (
     "f6d6b66b27390fe9c9d3a0ca242788578686c300e2201e1eb0e23cc62929758f"
 )
 EXPECTED_RECOVERED_PLAN_SHA256 = (
-    "f8d82f36a8bab3c2f4f9566140cb37f954c8cd26284351cc49d4146c33b19d90"
+    "bf1b2f2612abca7139e85b0c743928c99d674198a6f15b035494b2d6e48e4f84"
 )
 EXPECTED_RUNTIME_VERIFICATION_SHA256 = (
     "a8248f938815a16801722193d0abc0c0fb38db48360ed5aca2be05de04d430a5"
@@ -702,10 +702,10 @@ def test_v2_recovered_opening_is_the_raise_position_of_the_recreated_ledger() ->
     assert prefix.submission_receipt_count == 119
     assert prefix.terminal_actual_count == 166
     assert prefix.prefix_sha256 == (
-        "321f82095abac3387266392792fb7a2a1b2f70e24908eca84efe62ef1bcbf5c8"
+        "dfeaaf81b13ebbaa763cc27e2b7817f63c553202d69c4712220a74deaecc8718"
     )
     assert GPU_QUALIFICATION_V2_RECOVERED_OPENING_TERMINAL_GPU_HOURS == (
-        677.1507730555555
+        677.1507730555558
     )
     assert GPU_QUALIFICATION_V2_RECOVERED_LEDGER_PATH_SHA256 == (
         "8ee57f4f1bf2f7f35d90f167807d573aaeafb78569481aeb2a10a9da9d710ecb"
