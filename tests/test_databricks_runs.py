@@ -2274,6 +2274,8 @@ def test_upload_databricks_volume_file_path_exclusive_rejects_midstream_mutation
     content = b"a" * (chunk_size + 1)
     source = tmp_path / "package.whl"
     source.write_bytes(content)
+    # A same-size rewrite within one coarse timestamp tick keeps mtime unchanged.
+    os.utime(source, ns=(1_000_000_000, 1_000_000_000))
 
     def mutate_source(_chunk_count):
         with source.open("r+b") as stream:
