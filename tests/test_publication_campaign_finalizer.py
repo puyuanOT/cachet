@@ -542,7 +542,11 @@ def _synthetic_campaign_ledger_projection_case(
         )
         for index, attempt_id in enumerate(latency_attempts)
     ] + [
-        SimpleNamespace(attempt_id=attempt_id, workload_id=workload_id)
+        SimpleNamespace(
+            attempt_id=attempt_id,
+            task_timeout_seconds=(21_600,) * 16,
+            workload_id=workload_id,
+        )
         for attempt_id, workload_id in zip(
             phase_attempts,
             expected_workloads,
@@ -554,7 +558,11 @@ def _synthetic_campaign_ledger_projection_case(
         for attempt_id in latency_attempts + phase_attempts
     ]
     terminal_actuals = [
-        SimpleNamespace(attempt_id=attempt_id)
+        SimpleNamespace(
+            actual_cluster_hours=1.0,
+            attempt_id=attempt_id,
+            terminal_state="succeeded",
+        )
         for attempt_id in latency_attempts + phase_attempts
     ]
     live = SimpleNamespace(
@@ -1195,6 +1203,153 @@ def test_campaign_ledger_projection_rejects_invalid_phase_suffix(
         campaign_finalizer._validated_campaign_ledger_projection(
             **case["projection_kwargs"]
         )
+
+
+def _insert_capacity_failed_attempt(
+    case: dict[str, Any],
+    *,
+    phase_index: int,
+    terminal_state: str = "internal_error",
+    failed_task_count: int = 16,
+    retry_task_count: int = 2,
+    cluster_hours: float = 0.25,
+) -> None:
+    live = case["live"]
+    position = case["latency_prefix"].reservation_count
+    workloads = [item.workload_id for item in live.reservations[position:]]
+    position += workloads.index(case["expected_workloads"][phase_index])
+    successor = live.reservations[position]
+    attempt_id = f"capacity-failed-{phase_index:03d}-{len(live.reservations)}"
+    live.reservations.insert(
+        position,
+        SimpleNamespace(
+            attempt_id=attempt_id,
+            task_timeout_seconds=(21_600,) * failed_task_count,
+            workload_id=successor.workload_id,
+        ),
+    )
+    successor.task_timeout_seconds = (21_600,) * retry_task_count
+    live.submission_receipts.insert(position, SimpleNamespace(attempt_id=attempt_id))
+    live.terminal_actuals.insert(
+        position,
+        SimpleNamespace(
+            actual_cluster_hours=cluster_hours,
+            attempt_id=attempt_id,
+            terminal_state=terminal_state,
+        ),
+    )
+    final_prefix = case["final_prefix"]
+    final_prefix.reservation_count += 1
+    final_prefix.submission_receipt_count += 1
+    final_prefix.terminal_actual_count += 1
+    case["projection_kwargs"]["full_score_aggregate_record"]["publication_lineage"][
+        "terminal_prefix"
+    ] = final_prefix.to_record()
+
+
+def _projection_disclosing_capacity_retries(case: dict[str, Any]) -> dict[str, Any]:
+    kwargs = case["projection_kwargs"]
+    return campaign_finalizer._campaign_ledger_projection_after_latency(
+        latency_collection_authorization=kwargs["latency_collection_authorization"],
+        latency_prefix=case["latency_prefix"],
+        full_score_execution_plan_record=kwargs["full_score_execution_plan_record"],
+        full_score_aggregate_record=kwargs["full_score_aggregate_record"],
+        final_consumer_authorization=kwargs["final_consumer_authorization"],
+        ledger_path=kwargs["ledger_path"],
+        disclose_capacity_retries=True,
+    )
+
+
+def test_campaign_ledger_projection_collapses_capacity_retries_for_vllm_0300(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    assert _projection_disclosing_capacity_retries(case)[
+        "full_score_capacity_retries"
+    ] == {"attempt_count": 0, "cluster_hours": 0.0}
+    _insert_capacity_failed_attempt(case, phase_index=0, cluster_hours=0.5)
+    _insert_capacity_failed_attempt(
+        case,
+        phase_index=7,
+        terminal_state="failed",
+        failed_task_count=16,
+        retry_task_count=16,
+        cluster_hours=1.25,
+    )
+
+    with pytest.raises(ValueError, match="cannot disclose full-score capacity"):
+        campaign_finalizer._validated_campaign_ledger_projection(
+            **case["projection_kwargs"]
+        )
+    projection = _projection_disclosing_capacity_retries(case)
+    assert projection["full_score_capacity_retries"] == {
+        "attempt_count": 2,
+        "cluster_hours": 1.75,
+    }
+    assert projection["full_score_terminal_prefix"]["reservation_count"] == (
+        case["latency_prefix"].reservation_count + 22
+    )
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        pytest.param(
+            {"terminal_state": "succeeded"},
+            "not capacity retries",
+            id="succeeded-then-retried",
+        ),
+        pytest.param(
+            {"terminal_state": "timed_out"},
+            "not capacity retries",
+            id="timed-out-then-retried",
+        ),
+        pytest.param(
+            {"failed_task_count": 2, "retry_task_count": 3},
+            "widened its task set",
+            id="widened-retry",
+        ),
+    ],
+)
+def test_campaign_ledger_projection_rejects_non_capacity_retry_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: dict[str, Any],
+    message: str,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    _insert_capacity_failed_attempt(case, phase_index=4, **tamper)
+
+    with pytest.raises(ValueError, match=message):
+        _projection_disclosing_capacity_retries(case)
+
+
+def test_campaign_ledger_projection_rejects_failed_final_or_unbounded_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed_final = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    failed_final["live"].terminal_actuals[-1].terminal_state = "failed"
+    with pytest.raises(ValueError, match="not capacity retries"):
+        _projection_disclosing_capacity_retries(failed_final)
+
+    unbounded = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    for _ in range(campaign_finalizer.FULL_SCORE_PHASE_MAX_ATTEMPTS):
+        _insert_capacity_failed_attempt(
+            unbounded,
+            phase_index=1,
+            retry_task_count=16,
+        )
+    with pytest.raises(ValueError, match="exceeds its capacity-retry bound"):
+        _projection_disclosing_capacity_retries(unbounded)
+
+    interleaved = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    _insert_capacity_failed_attempt(interleaved, phase_index=3)
+    suffix = interleaved["latency_prefix"].reservation_count
+    reservations = interleaved["live"].reservations
+    retried_consumer = reservations[suffix + 3].workload_id
+    reservations[suffix + 3].workload_id = reservations[suffix + 5].workload_id
+    with pytest.raises(ValueError, match="unrelated append"):
+        _projection_disclosing_capacity_retries(interleaved)
+    assert retried_consumer == interleaved["expected_workloads"][3]
 
 
 @pytest.mark.parametrize(
@@ -2200,6 +2355,10 @@ def _synthetic_vllm_0300_report_inputs() -> dict[str, Any]:
     )
     ledger = deepcopy(inputs["ledger_record"])
     ledger["cap_raises"] = []
+    ledger["full_score_capacity_retries"] = {
+        "attempt_count": 0,
+        "cluster_hours": 0.0,
+    }
     ledger["latency_recovered_balance"] = {
         "attempt_count": 47,
         "cluster_hours": 552.0,
@@ -2435,6 +2594,109 @@ def test_vllm_0300_report_rejects_an_inconsistent_budget_extension(
         campaign_finalizer._validate_report_envelope(report)
 
 
+def _vllm_0300_report_with_capacity_retries(
+    *,
+    attempt_count: int,
+    cluster_hours: float,
+) -> dict[str, Any]:
+    report = _synthetic_vllm_0300_report()
+    ledger = report["ledger"]
+    ledger["full_score_capacity_retries"] = {
+        "attempt_count": attempt_count,
+        "cluster_hours": cluster_hours,
+    }
+    for field_name in (
+        "reservation_count",
+        "submission_receipt_count",
+        "terminal_actual_count",
+    ):
+        ledger["full_score_terminal_prefix"][field_name] += attempt_count
+    _reclose(report)
+    return report
+
+
+def test_vllm_0300_report_discloses_full_score_capacity_retries() -> None:
+    report = _vllm_0300_report_with_capacity_retries(
+        attempt_count=2,
+        cluster_hours=1.5,
+    )
+
+    campaign_finalizer._validate_report_envelope(report)
+    campaign_finalizer.validate_vllm_0271_publication_report_pair(
+        report,
+        campaign_finalizer._publication_gate_for_report(report),
+    )
+
+
+def _tamper_retry_undercounted_prefix(report: dict[str, Any]) -> None:
+    report["ledger"]["full_score_terminal_prefix"]["terminal_actual_count"] -= 1
+
+
+def _tamper_retry_integer_hours(report: dict[str, Any]) -> None:
+    report["ledger"]["full_score_capacity_retries"]["cluster_hours"] = 1
+
+
+def _tamper_retry_hours_without_attempts(report: dict[str, Any]) -> None:
+    capacity_retries = report["ledger"]["full_score_capacity_retries"]
+    for field_name in (
+        "reservation_count",
+        "submission_receipt_count",
+        "terminal_actual_count",
+    ):
+        report["ledger"]["full_score_terminal_prefix"][field_name] -= 2
+    capacity_retries["attempt_count"] = 0
+
+
+def _tamper_retry_negative_count(report: dict[str, Any]) -> None:
+    report["ledger"]["full_score_capacity_retries"]["attempt_count"] = -1
+
+
+def _tamper_retry_extra_field(report: dict[str, Any]) -> None:
+    report["ledger"]["full_score_capacity_retries"]["phases"] = []
+
+
+def _tamper_retry_dropped(report: dict[str, Any]) -> None:
+    del report["ledger"]["full_score_capacity_retries"]
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (_tamper_retry_undercounted_prefix, "report ledger closure is invalid"),
+        (_tamper_retry_integer_hours, "capacity retries are invalid"),
+        (_tamper_retry_hours_without_attempts, "capacity retries are invalid"),
+        (_tamper_retry_negative_count, "non-negative integer"),
+        (_tamper_retry_extra_field, "closed schema"),
+        (_tamper_retry_dropped, "closed schema"),
+    ],
+)
+def test_vllm_0300_report_rejects_inconsistent_capacity_retries(
+    tamper: Any,
+    message: str,
+) -> None:
+    report = _vllm_0300_report_with_capacity_retries(
+        attempt_count=2,
+        cluster_hours=1.5,
+    )
+    tamper(report)
+    _reclose(report)
+
+    with pytest.raises(ValueError, match=message):
+        campaign_finalizer._validate_report_envelope(report)
+
+
+def test_vllm_0271_report_rejects_full_score_capacity_retries() -> None:
+    report = _synthetic_report()
+    report["ledger"]["full_score_capacity_retries"] = {
+        "attempt_count": 0,
+        "cluster_hours": 0.0,
+    }
+    _reclose(report)
+
+    with pytest.raises(ValueError, match="closed schema"):
+        campaign_finalizer._validate_report_envelope(report)
+
+
 def test_vllm_0271_report_rejects_the_budget_extension() -> None:
     report = _synthetic_report()
     ledger = report["ledger"]
@@ -2528,6 +2790,7 @@ def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
 
     assert projection == single_plan | {
         "cap_raises": [],
+        "full_score_capacity_retries": {"attempt_count": 0, "cluster_hours": 0.0},
         "latency_recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0},
     }
     assert calls == [

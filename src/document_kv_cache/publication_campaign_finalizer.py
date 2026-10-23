@@ -53,6 +53,7 @@ from document_kv_cache.full_score_execution import (
     FULL_SCORE_MAX_TOKENS,
     FULL_SCORE_METHODS,
     FULL_SCORE_PASSES_PER_METHOD,
+    FULL_SCORE_PHASE_MAX_ATTEMPTS,
     FULL_SCORE_PROTOCOL_ID,
     FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE,
     FULL_SCORE_PUBLICATION_EXECUTION_PLAN_SHA256,
@@ -237,7 +238,11 @@ _LEDGER_KEYS = frozenset(
 # to the recreated ledger.
 _VLLM_0300_REPORT_KEYS = _REPORT_KEYS | {"latency_provenance"}
 _VLLM_0300_SOURCE_BINDING_NAMES = _SOURCE_BINDING_NAMES - {"latency_execution_plan"}
-_VLLM_0300_LEDGER_KEYS = _LEDGER_KEYS | {"cap_raises", "latency_recovered_balance"}
+_VLLM_0300_LEDGER_KEYS = _LEDGER_KEYS | {
+    "cap_raises",
+    "full_score_capacity_retries",
+    "latency_recovered_balance",
+}
 _CAP_RAISE_KEYS = frozenset(
     {
         "from_cap_cluster_hours",
@@ -256,6 +261,7 @@ _LATENCY_PROVENANCE_KEYS = frozenset(
     }
 )
 _RECOVERED_BALANCE_KEYS = frozenset({"attempt_count", "cluster_hours"})
+_CAPACITY_RETRY_KEYS = frozenset({"attempt_count", "cluster_hours"})
 _FORBIDDEN_REPORT_KEYS = frozenset(
     {
         "answer",
@@ -1265,6 +1271,7 @@ def _validated_multi_plan_campaign_ledger_projection(
         final_consumer_authorization=final_consumer_authorization,
         ledger_path=ledger_path,
         disclose_cap_raises=True,
+        disclose_capacity_retries=True,
     )
     recovered = _mapping(
         _mapping(latency_collection_authorization.collection, "ledger"),
@@ -1286,6 +1293,7 @@ def _campaign_ledger_projection_after_latency(
     final_consumer_authorization: FullScorePhaseAuthorization,
     ledger_path: str | Path,
     disclose_cap_raises: bool = False,
+    disclose_capacity_retries: bool = False,
 ) -> dict[str, Any]:
     execution_sha256 = _required_sha256(
         full_score_execution_plan_record,
@@ -1339,15 +1347,22 @@ def _campaign_ledger_projection_after_latency(
         or final_consumer_authorization.ledger_prefix != final_prefix
     ):
         raise ValueError("full-score terminal prefix is not the current live ledger")
+    attempt_count = final_prefix.reservation_count - latency_prefix.reservation_count
     for field_name in (
-        "reservation_count",
         "submission_receipt_count",
         "terminal_actual_count",
     ):
-        if getattr(final_prefix, field_name) != getattr(latency_prefix, field_name) + (
-            PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES
+        if (
+            getattr(final_prefix, field_name) - getattr(latency_prefix, field_name)
+            != attempt_count
         ):
             raise ValueError("full-score phase count does not close ledger lineage")
+    if not (
+        PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES
+        <= attempt_count
+        <= PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES * FULL_SCORE_PHASE_MAX_ATTEMPTS
+    ):
+        raise ValueError("full-score phase count does not close ledger lineage")
     expected_workloads = [
         f"full-score:{execution_sha256}:wave-{wave_index:03d}:{phase}"
         for wave_index in range(PUBLICATION_CAMPAIGN_FULL_SCORE_WAVES)
@@ -1360,11 +1375,17 @@ def _campaign_ledger_projection_after_latency(
     terminal_suffix = live.terminal_actuals[latency_prefix.terminal_actual_count :]
     reservation_attempt_ids = [item.attempt_id for item in reservation_suffix]
     if (
-        [item.workload_id for item in reservation_suffix] != expected_workloads
-        or [item.attempt_id for item in receipt_suffix] != reservation_attempt_ids
+        [item.attempt_id for item in receipt_suffix] != reservation_attempt_ids
         or [item.attempt_id for item in terminal_suffix] != reservation_attempt_ids
     ):
         raise ValueError("full-score ledger suffix contains an unrelated append")
+    retry_attempt_count, retry_cluster_hours = _full_score_capacity_retry_suffix(
+        reservation_suffix,
+        terminal_suffix,
+        expected_workloads=expected_workloads,
+    )
+    if retry_attempt_count and not disclose_capacity_retries:
+        raise ValueError("this report cannot disclose full-score capacity retries")
     if (
         live.active_reserved_cluster_hours != 0.0
         or live.active_reserved_task_count != 0
@@ -1389,7 +1410,61 @@ def _campaign_ledger_projection_after_latency(
         projection["cap_raises"] = [item.to_record() for item in live.cap_raises]
     elif live.cap_raises:
         raise ValueError("this report cannot disclose a raised ledger cap")
+    if disclose_capacity_retries:
+        projection["full_score_capacity_retries"] = {
+            "attempt_count": retry_attempt_count,
+            "cluster_hours": retry_cluster_hours,
+        }
     return projection
+
+
+def _full_score_capacity_retry_suffix(
+    reservations: Sequence[Any],
+    terminals: Sequence[Any],
+    *,
+    expected_workloads: Sequence[str],
+) -> tuple[int, float]:
+    """Collapse each phase's capacity retries and return their billed total.
+
+    A phase may append consecutive attempts of its own workload: every earlier
+    attempt must have failed, the last must have succeeded, and each retry
+    carries no more tasks than the attempt it retries.  Whether each failure
+    was a never-started capacity failure is proved by the governed records the
+    controller replayed before reserving the retry.
+    """
+
+    groups: list[list[int]] = []
+    for index, reservation in enumerate(reservations):
+        if groups and reservations[groups[-1][0]].workload_id == (
+            reservation.workload_id
+        ):
+            groups[-1].append(index)
+        else:
+            groups.append([index])
+    if [reservations[group[0]].workload_id for group in groups] != list(
+        expected_workloads
+    ):
+        raise ValueError("full-score ledger suffix contains an unrelated append")
+    retry_attempt_count = 0
+    retry_cluster_hours = 0.0
+    for group in groups:
+        if len(group) > FULL_SCORE_PHASE_MAX_ATTEMPTS:
+            raise ValueError("full-score phase exceeds its capacity-retry bound")
+        if terminals[group[-1]].terminal_state != "succeeded" or any(
+            terminals[index].terminal_state not in {"failed", "internal_error"}
+            for index in group[:-1]
+        ):
+            raise ValueError("full-score phase attempts are not capacity retries")
+        if any(
+            len(reservations[later].task_timeout_seconds)
+            > len(reservations[earlier].task_timeout_seconds)
+            for earlier, later in zip(group, group[1:])
+        ):
+            raise ValueError("full-score capacity retry widened its task set")
+        retry_attempt_count += len(group) - 1
+        for index in group[:-1]:
+            retry_cluster_hours += terminals[index].actual_cluster_hours
+    return retry_attempt_count, retry_cluster_hours
 
 
 def validate_vllm_0271_publication_report_pair(
@@ -1683,6 +1758,11 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
     full_score_prefix = databricks_ledger_prefix_from_record(
         full_score_prefix_record
     )
+    retry_attempt_count = (
+        _validated_report_capacity_retries(ledger.get("full_score_capacity_retries"))
+        if multi_plan
+        else 0
+    )
     if (
         not _json_type_exact_equal(
             dict(latency_prefix_record),
@@ -1707,6 +1787,7 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
             getattr(full_score_prefix, field_name)
             != getattr(latency_prefix, field_name)
             + PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES
+            + retry_attempt_count
             for field_name in (
                 "reservation_count",
                 "submission_receipt_count",
@@ -1757,6 +1838,28 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
             _mapping(record, "latency_provenance"),
             recovered_balance=_mapping(ledger, "latency_recovered_balance"),
         )
+
+
+def _validated_report_capacity_retries(value: Any) -> int:
+    if not isinstance(value, Mapping):
+        raise ValueError("report full-score capacity retries must be an object")
+    _require_exact_keys(
+        value,
+        _CAPACITY_RETRY_KEYS,
+        "report full-score capacity retries",
+    )
+    attempt_count = _required_nonnegative_int(value, "attempt_count")
+    cluster_hours = value.get("cluster_hours")
+    if (
+        type(cluster_hours) is not float
+        or not math.isfinite(cluster_hours)
+        or cluster_hours < 0.0
+        or (attempt_count == 0 and cluster_hours != 0.0)
+        or attempt_count
+        > PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES * (FULL_SCORE_PHASE_MAX_ATTEMPTS - 1)
+    ):
+        raise ValueError("report full-score capacity retries are invalid")
+    return attempt_count
 
 
 def _validate_report_cap_raises(

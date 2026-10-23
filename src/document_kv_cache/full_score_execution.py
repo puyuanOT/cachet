@@ -13,10 +13,12 @@ execution accept only the frozen 83,653-example publication inventory.
 from __future__ import annotations
 
 import argparse
+import copy
 import gc
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import stat
@@ -92,8 +94,10 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksBatchReservationAuthorization,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
+    DatabricksClusterHourTerminalActual,
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
+    DatabricksRunSubmissionReceipt,
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     canonical_databricks_submit_payload_snapshot,
@@ -251,6 +255,18 @@ FULL_SCORE_LIVE_P90_RECORD_TYPE = "cachet.full_score_live_p90_budget_gate.v1"
 FULL_SCORE_LIVE_P90_SCHEMA_VERSION = 1
 FULL_SCORE_PHASE_TERMINAL_RECORD_TYPE = "cachet.full_score_phase_terminal.v1"
 FULL_SCORE_PHASE_TERMINAL_SCHEMA_VERSION = 1
+FULL_SCORE_PHASE_CAPACITY_FAILURE_RECORD_TYPE = (
+    "cachet.full_score_phase_capacity_failure.v1"
+)
+FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION = 1
+# Every capacity-failed attempt is a separately ledgered single-attempt run.
+FULL_SCORE_PHASE_MAX_ATTEMPTS = 16
+# Databricks cluster-termination reasons that prove the task never reached the
+# driver: the cloud had no instance, or the launch exceeded its 50-minute bound.
+FULL_SCORE_CAPACITY_TERMINATION_REASONS = (
+    "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE",
+    "CLUSTER_OPERATION_TIMEOUT",
+)
 FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE = "cachet.full_score_connector_proof.v1"
 FULL_SCORE_CONNECTOR_PROOF_SCHEMA_VERSION = 1
 FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE = "publication"
@@ -1190,6 +1206,168 @@ class DatabricksFullScoreJobConfig:
 
 _FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER = object()
 _FULL_SCORE_PHASE_AUTHORIZATION_ISSUER = object()
+_FULL_SCORE_PHASE_CAPACITY_RETRY_AUTHORIZATION_ISSUER = object()
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class FullScorePhaseCapacityRetryAuthorization:
+    """Non-record authority to resubmit only a phase's never-started tasks.
+
+    It is issued only after every prior attempt of the phase replays as a
+    capacity failure: each non-succeeded task's cluster was terminated for
+    cloud capacity or launch timeout before a Spark context existed.
+    """
+
+    execution_plan_sha256: str
+    wave_index: int
+    phase: str
+    ledger_path_sha256: str
+    phase_predecessor_prefix: DatabricksLedgerPrefix
+    ledger_prefix: DatabricksLedgerPrefix
+    attempt_ordinal: int
+    failure_records: tuple[tuple[str, str], ...]
+    prior_submit_payload_sha256: str
+    retry_task_keys: tuple[str, ...]
+    retry_tasks_sha256: str
+    workspace_host_sha256: str
+    user_name_sha256: str
+    closure_sha256: str
+
+    def __init__(
+        self,
+        *,
+        execution_plan_sha256: str,
+        wave_index: int,
+        phase: str,
+        ledger_path_sha256: str,
+        phase_predecessor_prefix: DatabricksLedgerPrefix,
+        ledger_prefix: DatabricksLedgerPrefix,
+        failure_records: Sequence[tuple[str, str]],
+        prior_submit_payload_sha256: str,
+        retry_task_keys: Sequence[str],
+        retry_tasks_sha256: str,
+        workspace_host_sha256: str,
+        user_name_sha256: str,
+        _issuer: object,
+    ) -> None:
+        if _issuer is not _FULL_SCORE_PHASE_CAPACITY_RETRY_AUTHORIZATION_ISSUER:
+            raise TypeError(
+                "full-score capacity retry authority requires replayed "
+                "capacity-failure records"
+            )
+        object.__setattr__(
+            self,
+            "execution_plan_sha256",
+            _require_sha256(
+                execution_plan_sha256,
+                field_name="execution_plan_sha256",
+            ),
+        )
+        _validate_full_score_phase_position(wave_index, phase)
+        object.__setattr__(self, "wave_index", wave_index)
+        object.__setattr__(self, "phase", phase)
+        object.__setattr__(
+            self,
+            "ledger_path_sha256",
+            _require_sha256(ledger_path_sha256, field_name="ledger_path_sha256"),
+        )
+        if not isinstance(
+            phase_predecessor_prefix, DatabricksLedgerPrefix
+        ) or not isinstance(ledger_prefix, DatabricksLedgerPrefix):
+            raise TypeError("capacity retry ledger prefixes have the wrong type")
+        normalized_records = tuple(
+            (
+                _require_nonempty(path, "capacity-failure record path"),
+                _require_sha256(
+                    record_sha256,
+                    field_name="capacity-failure record SHA-256",
+                ),
+            )
+            for path, record_sha256 in failure_records
+        )
+        attempt_ordinal = len(normalized_records)
+        if not 1 <= attempt_ordinal < FULL_SCORE_PHASE_MAX_ATTEMPTS:
+            raise ValueError("capacity retry exceeds the per-phase attempt bound")
+        if (
+            len({path for path, _sha in normalized_records}) != attempt_ordinal
+            or len({record_sha256 for _path, record_sha256 in normalized_records})
+            != attempt_ordinal
+        ):
+            raise ValueError("capacity retry reuses a capacity-failure record")
+        if (
+            phase_predecessor_prefix.ledger_id != ledger_prefix.ledger_id
+            or ledger_prefix.cap_cluster_hours
+            < phase_predecessor_prefix.cap_cluster_hours
+            or ledger_prefix.reservation_count
+            != phase_predecessor_prefix.reservation_count + attempt_ordinal
+            or ledger_prefix.submission_receipt_count
+            != phase_predecessor_prefix.submission_receipt_count + attempt_ordinal
+            or ledger_prefix.terminal_actual_count
+            != phase_predecessor_prefix.terminal_actual_count + attempt_ordinal
+        ):
+            raise ValueError("capacity retry ledger prefix transition is invalid")
+        normalized_keys = tuple(
+            _require_nonempty(key, "capacity retry task_key") for key in retry_task_keys
+        )
+        if (
+            not normalized_keys
+            or len(set(normalized_keys)) != len(normalized_keys)
+            or len(normalized_keys) > FULL_SCORE_MAX_WORKERS
+        ):
+            raise ValueError("capacity retry task coverage is invalid")
+        object.__setattr__(self, "phase_predecessor_prefix", phase_predecessor_prefix)
+        object.__setattr__(self, "ledger_prefix", ledger_prefix)
+        object.__setattr__(self, "attempt_ordinal", attempt_ordinal)
+        object.__setattr__(self, "failure_records", normalized_records)
+        object.__setattr__(
+            self,
+            "prior_submit_payload_sha256",
+            _require_sha256(
+                prior_submit_payload_sha256,
+                field_name="prior_submit_payload_sha256",
+            ),
+        )
+        object.__setattr__(self, "retry_task_keys", normalized_keys)
+        object.__setattr__(
+            self,
+            "retry_tasks_sha256",
+            _require_sha256(retry_tasks_sha256, field_name="retry_tasks_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "workspace_host_sha256",
+            _require_sha256(workspace_host_sha256, field_name="workspace_host_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "user_name_sha256",
+            _require_sha256(user_name_sha256, field_name="user_name_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "closure_sha256",
+            _canonical_sha256(
+                {
+                    "attempt_ordinal": attempt_ordinal,
+                    "domain": "cachet.full_score_phase_capacity_retry_authority.v1",
+                    "execution_plan_sha256": self.execution_plan_sha256,
+                    "failure_records": [
+                        {"path": path, "record_sha256": record_sha256}
+                        for path, record_sha256 in normalized_records
+                    ],
+                    "ledger_path_sha256": self.ledger_path_sha256,
+                    "ledger_prefix": ledger_prefix.to_record(),
+                    "phase": phase,
+                    "phase_predecessor_prefix": phase_predecessor_prefix.to_record(),
+                    "prior_submit_payload_sha256": self.prior_submit_payload_sha256,
+                    "retry_task_keys": list(normalized_keys),
+                    "retry_tasks_sha256": self.retry_tasks_sha256,
+                    "user_name_sha256": self.user_name_sha256,
+                    "wave_index": wave_index,
+                    "workspace_host_sha256": self.workspace_host_sha256,
+                }
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -1207,6 +1385,7 @@ class FullScorePhaseSubmissionAuthorization:
     intent_record_sha256: str
     workspace_host_sha256: str
     user_name_sha256: str
+    capacity_retry: FullScorePhaseCapacityRetryAuthorization | None
 
     def __init__(
         self,
@@ -1223,6 +1402,7 @@ class FullScorePhaseSubmissionAuthorization:
         workspace_host_sha256: str,
         user_name_sha256: str,
         _issuer: object,
+        capacity_retry: FullScorePhaseCapacityRetryAuthorization | None = None,
     ) -> None:
         if _issuer is not _FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER:
             raise TypeError(
@@ -1282,6 +1462,24 @@ class FullScorePhaseSubmissionAuthorization:
             "user_name_sha256",
             _require_sha256(user_name_sha256, field_name="user_name_sha256"),
         )
+        if capacity_retry is not None:
+            if type(capacity_retry) is not FullScorePhaseCapacityRetryAuthorization:
+                raise TypeError("capacity retry authority has the wrong type")
+            if (
+                capacity_retry.execution_plan_sha256 != self.execution_plan_sha256
+                or capacity_retry.wave_index != wave_index
+                or capacity_retry.phase != phase
+                or capacity_retry.ledger_path_sha256 != ledger_path_sha256
+                or capacity_retry.ledger_prefix != predecessor_prefix
+                or capacity_retry.workspace_host_sha256 != self.workspace_host_sha256
+                or capacity_retry.user_name_sha256 != self.user_name_sha256
+            ):
+                raise ValueError("full-score capacity retry authority binding drift")
+        object.__setattr__(self, "capacity_retry", capacity_retry)
+
+    @property
+    def attempt_ordinal(self) -> int:
+        return 0 if self.capacity_retry is None else self.capacity_retry.attempt_ordinal
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -3125,87 +3323,81 @@ def _validate_full_score_raw_task_configuration(
         raise ValueError("Databricks raw terminal task coverage drift")
 
 
-def build_governed_full_score_phase_terminal_record(
+def _full_score_phase_attempt_workspace_identity(
+    ledger_path: str | Path,
+    *,
+    execution_plan_sha256: str,
+    wave_index: int,
+    phase: str,
+    attempt_ordinal: int,
+    intent_record_sha256: str,
+    phase_lease_record_sha256: str,
+) -> tuple[str, str]:
+    """Reread one attempt's workspace sidecar against its intent and lease."""
+
+    replay_lease_path = _full_score_phase_lease_candidate_path(
+        ledger_path,
+        execution_plan_sha256=execution_plan_sha256,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_ordinal=attempt_ordinal,
+    )
+    replay_sidecar = _read_full_score_workspace_authority(
+        _full_score_workspace_authority_path(replay_lease_path),
+        label="full-score replay workspace authority",
+    )
+    if (
+        replay_sidecar.get("record_type")
+        != "cachet.full_score_phase_workspace_authority.v1"
+        or replay_sidecar.get("schema_version") != 1
+        or replay_sidecar.get("closed_record_sha256")
+        != _closed_record_sha256(replay_sidecar)
+        or replay_sidecar.get("intent_record_sha256") != intent_record_sha256
+        or replay_sidecar.get("phase_lease_record_sha256") != phase_lease_record_sha256
+    ):
+        raise ValueError("phase terminal workspace authority replay drift")
+    return (
+        _require_sha256(
+            replay_sidecar.get("workspace_host_sha256"),
+            field_name="workspace_host_sha256",
+        ),
+        _require_sha256(
+            replay_sidecar.get("user_name_sha256"), field_name="user_name_sha256"
+        ),
+    )
+
+
+def _resolve_full_score_phase_attempt_authority(
     execution_plan: Mapping[str, Any],
     *,
-    inventory: FullScoreInventory,
-    shard_plan: Mapping[str, Any],
     wave_index: int,
     phase: str,
     attempt_id: str,
-    submit_payload_path: str | Path,
-    control_plane_run_path: str | Path,
+    submit_payload: Mapping[str, Any],
+    submit_sha256: str,
     ledger_path: str | Path,
-    submission_authorization: FullScorePhaseSubmissionAuthorization | None = None,
-    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
-    _replay_ledger_lineage: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Derive phase billing from immutable submit, runs/get, and ledger snapshots.
+    ledger_path_sha256: str,
+    submission_authorization: FullScorePhaseSubmissionAuthorization | None,
+    replay_ledger_lineage: Mapping[str, Any] | None,
+    replay_capacity_retry: FullScorePhaseCapacityRetryAuthorization | None,
+) -> tuple[
+    DatabricksLedgerPrefix,
+    DatabricksLedgerPrefix,
+    str,
+    str,
+    DatabricksLedgerPrefix | None,
+]:
+    """Return one attempt's ledger slices from live or replayed atomic authority.
 
-    ``ledger_path`` is the canonical mutable local campaign ledger.  The record
-    stores only its privacy-safe path digest and append-only prefixes; immutable
-    submit/control-plane evidence may live on DBFS/UC.
+    The fifth element is ``None`` for live collection and the historical
+    terminal prefix for replay.
     """
 
-    _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
-    submit_file = _governed_compact_file(
-        submit_payload_path,
-        "full-score submit payload",
-        compact_artifact_resolver,
-    )
-    run_file = _governed_compact_file(
-        control_plane_run_path,
-        "Databricks control-plane run",
-        compact_artifact_resolver,
-    )
-    ledger_file = Path(ledger_path).expanduser().absolute()
-    _require_regular_file_no_follow(ledger_file, "cluster-hour ledger")
-    submit_payload = _json_object(
-        submit_file.read_bytes(),
-        "full-score submit payload",
-    )
-    run_record = _json_object(
-        run_file.read_bytes(),
-        "Databricks control-plane run",
-    )
-    task_bindings = _validated_full_score_phase_submit_payload(
-        execution_plan,
-        submit_payload,
-        inventory=inventory,
-        shard_plan=shard_plan,
-        wave_index=wave_index,
-        phase=phase,
-        compact_artifact_resolver=compact_artifact_resolver,
-    )
-    _validate_full_score_raw_task_configuration(run_record, submit_payload)
-    expected_node_type_id = (
-        FULL_SCORE_PRODUCER_NODE_TYPE_ID
-        if phase == "producer"
-        else FULL_SCORE_CONSUMER_NODE_TYPE_ID
-    )
-    status = summarize_databricks_run(
-        dict(run_record),
-        submit_payload=submit_payload,
-        submit_payload_path=str(submit_payload_path),
-    )
-    status_record = databricks_run_status_record(status)
-    if status_record is None:
-        raise ValueError("Databricks run did not produce a status record")
-    if phase == "consumer":
-        validate_databricks_run_status_sidecar(
-            status,
-            expected_node_type_id=expected_node_type_id,
-        )
-    else:
-        _validate_full_score_l40s_terminal_status(status_record)
-    submit_snapshot, submit_bytes = canonical_databricks_submit_payload_snapshot(
-        submit_payload
-    )
-    submit_sha256 = sha256(submit_bytes).hexdigest()
-    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
     if submission_authorization is not None:
         if type(submission_authorization) is not FullScorePhaseSubmissionAuthorization:
             raise TypeError("phase terminal submission authority has the wrong type")
+        if replay_capacity_retry is not None:
+            raise TypeError("live phase collection carries its own retry authority")
         if (
             submission_authorization.execution_plan_sha256
             != execution_plan.get("closed_record_sha256")
@@ -3227,195 +3419,140 @@ def build_governed_full_score_phase_terminal_record(
             ledger_path,
             submission_authorization,
         )
-        intent_record_sha256 = submission_authorization.intent_record_sha256
-        phase_lease_record_sha256 = _required_string(
-            _full_score_phase_lease_record(submission_authorization),
+        return (
+            predecessor_prefix,
+            batch_prefix,
+            submission_authorization.intent_record_sha256,
+            _required_string(
+                _full_score_phase_lease_record(submission_authorization),
+                "closed_record_sha256",
+            ),
+            None,
+        )
+    if not isinstance(replay_ledger_lineage, Mapping):
+        raise TypeError("phase terminal build requires atomic submission authority")
+    if replay_ledger_lineage.get("ledger_path_sha256") != ledger_path_sha256:
+        raise ValueError("phase terminal replay ledger path binding drift")
+    predecessor_prefix = databricks_ledger_prefix_from_record(
+        _required_mapping(replay_ledger_lineage, "predecessor_prefix")
+    )
+    batch_prefix = databricks_ledger_prefix_from_record(
+        _required_mapping(replay_ledger_lineage, "batch_prefix")
+    )
+    intent_record_sha256 = _require_sha256(
+        replay_ledger_lineage.get("intent_record_sha256"),
+        field_name="phase terminal intent_record_sha256",
+    )
+    phase_lease_record_sha256 = _require_sha256(
+        replay_ledger_lineage.get("phase_lease_record_sha256"),
+        field_name="phase terminal phase_lease_record_sha256",
+    )
+    execution_plan_sha256 = _required_string(execution_plan, "closed_record_sha256")
+    workspace_host_sha256, user_name_sha256 = (
+        _full_score_phase_attempt_workspace_identity(
+            ledger_path,
+            execution_plan_sha256=execution_plan_sha256,
+            wave_index=wave_index,
+            phase=phase,
+            attempt_ordinal=(
+                0
+                if replay_capacity_retry is None
+                else replay_capacity_retry.attempt_ordinal
+            ),
+            intent_record_sha256=intent_record_sha256,
+            phase_lease_record_sha256=phase_lease_record_sha256,
+        )
+    )
+    if (
+        batch_prefix.reservation_count != predecessor_prefix.reservation_count + 1
+        or batch_prefix.submission_receipt_count
+        != predecessor_prefix.submission_receipt_count
+        or batch_prefix.terminal_actual_count
+        != predecessor_prefix.terminal_actual_count
+    ):
+        raise ValueError("phase terminal replay batch-prefix transition drift")
+    expected_terminal_prefix = databricks_ledger_prefix_from_record(
+        _required_mapping(replay_ledger_lineage, "terminal_prefix")
+    )
+    if (
+        expected_terminal_prefix.reservation_count != batch_prefix.reservation_count
+        or expected_terminal_prefix.submission_receipt_count
+        != batch_prefix.submission_receipt_count + 1
+        or expected_terminal_prefix.terminal_actual_count
+        != batch_prefix.terminal_actual_count + 1
+    ):
+        raise ValueError("phase terminal replay terminal-prefix transition drift")
+    request = DatabricksRunAttemptReservationRequest(
+        attempt_id=attempt_id,
+        workload_id=_full_score_phase_workload_id(
+            execution_plan,
+            wave_index=wave_index,
+            phase=phase,
+        ),
+        submit_payload=submit_payload,
+    )
+    replayed_batch_authorization = (
+        replay_databricks_run_attempt_batch_authorization_json(
+            ledger_path,
+            (request,),
+            expected_predecessor_prefix=predecessor_prefix,
+        )
+    )
+    if replayed_batch_authorization.batch_prefix != batch_prefix:
+        raise ValueError("phase terminal replay batch authority drift")
+    replayed_submission_authorization = FullScorePhaseSubmissionAuthorization(
+        execution_plan_sha256=execution_plan_sha256,
+        wave_index=wave_index,
+        phase=phase,
+        ledger_path_sha256=ledger_path_sha256,
+        predecessor_prefix=predecessor_prefix,
+        batch_authorization=replayed_batch_authorization,
+        attempt_id=attempt_id,
+        submit_payload_sha256=submit_sha256,
+        intent_record_sha256=intent_record_sha256,
+        workspace_host_sha256=workspace_host_sha256,
+        user_name_sha256=user_name_sha256,
+        _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
+        capacity_retry=replay_capacity_retry,
+    )
+    _require_full_score_phase_lease(
+        ledger_path,
+        replayed_submission_authorization,
+    )
+    if (
+        _required_string(
+            _full_score_phase_lease_record(replayed_submission_authorization),
             "closed_record_sha256",
         )
-        workspace_host_sha256 = submission_authorization.workspace_host_sha256
-        user_name_sha256 = submission_authorization.user_name_sha256
-        expected_terminal_prefix: DatabricksLedgerPrefix | None = None
-    else:
-        if not isinstance(_replay_ledger_lineage, Mapping):
-            raise TypeError("phase terminal build requires atomic submission authority")
-        if _replay_ledger_lineage.get("ledger_path_sha256") != ledger_path_sha256:
-            raise ValueError("phase terminal replay ledger path binding drift")
-        predecessor_prefix = databricks_ledger_prefix_from_record(
-            _required_mapping(_replay_ledger_lineage, "predecessor_prefix")
-        )
-        batch_prefix = databricks_ledger_prefix_from_record(
-            _required_mapping(_replay_ledger_lineage, "batch_prefix")
-        )
-        intent_record_sha256 = _require_sha256(
-            _replay_ledger_lineage.get("intent_record_sha256"),
-            field_name="phase terminal intent_record_sha256",
-        )
-        phase_lease_record_sha256 = _require_sha256(
-            _replay_ledger_lineage.get("phase_lease_record_sha256"),
-            field_name="phase terminal phase_lease_record_sha256",
-        )
-        replay_lease_path = _full_score_phase_lease_candidate_path(
-            ledger_path,
-            execution_plan_sha256=_required_string(
-                execution_plan, "closed_record_sha256"
-            ),
-            wave_index=wave_index,
-            phase=phase,
-        )
-        replay_sidecar = _read_full_score_workspace_authority(
-            _full_score_workspace_authority_path(replay_lease_path),
-            label="full-score replay workspace authority",
-        )
-        if (
-            replay_sidecar.get("record_type")
-            != "cachet.full_score_phase_workspace_authority.v1"
-            or replay_sidecar.get("schema_version") != 1
-            or replay_sidecar.get("closed_record_sha256")
-            != _closed_record_sha256(replay_sidecar)
-            or replay_sidecar.get("intent_record_sha256") != intent_record_sha256
-            or replay_sidecar.get("phase_lease_record_sha256")
-            != phase_lease_record_sha256
-        ):
-            raise ValueError("phase terminal workspace authority replay drift")
-        workspace_host_sha256 = _require_sha256(
-            replay_sidecar.get("workspace_host_sha256"),
-            field_name="workspace_host_sha256",
-        )
-        user_name_sha256 = _require_sha256(
-            replay_sidecar.get("user_name_sha256"), field_name="user_name_sha256"
-        )
-        if (
-            batch_prefix.reservation_count != predecessor_prefix.reservation_count + 1
-            or batch_prefix.submission_receipt_count
-            != predecessor_prefix.submission_receipt_count
-            or batch_prefix.terminal_actual_count
-            != predecessor_prefix.terminal_actual_count
-        ):
-            raise ValueError("phase terminal replay batch-prefix transition drift")
-        expected_terminal_prefix = databricks_ledger_prefix_from_record(
-            _required_mapping(_replay_ledger_lineage, "terminal_prefix")
-        )
-        if (
-            expected_terminal_prefix.reservation_count != batch_prefix.reservation_count
-            or expected_terminal_prefix.submission_receipt_count
-            != batch_prefix.submission_receipt_count + 1
-            or expected_terminal_prefix.terminal_actual_count
-            != batch_prefix.terminal_actual_count + 1
-        ):
-            raise ValueError("phase terminal replay terminal-prefix transition drift")
-        request = DatabricksRunAttemptReservationRequest(
-            attempt_id=attempt_id,
-            workload_id=_full_score_phase_workload_id(
-                execution_plan,
-                wave_index=wave_index,
-                phase=phase,
-            ),
-            submit_payload=submit_payload,
-        )
-        replayed_batch_authorization = (
-            replay_databricks_run_attempt_batch_authorization_json(
-                ledger_path,
-                (request,),
-                expected_predecessor_prefix=predecessor_prefix,
-            )
-        )
-        if replayed_batch_authorization.batch_prefix != batch_prefix:
-            raise ValueError("phase terminal replay batch authority drift")
-        replayed_submission_authorization = FullScorePhaseSubmissionAuthorization(
-            execution_plan_sha256=_required_string(
-                execution_plan,
-                "closed_record_sha256",
-            ),
-            wave_index=wave_index,
-            phase=phase,
-            ledger_path_sha256=ledger_path_sha256,
-            predecessor_prefix=predecessor_prefix,
-            batch_authorization=replayed_batch_authorization,
-            attempt_id=attempt_id,
-            submit_payload_sha256=submit_sha256,
-            intent_record_sha256=intent_record_sha256,
-            workspace_host_sha256=workspace_host_sha256,
-            user_name_sha256=user_name_sha256,
-            _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
-        )
-        _require_full_score_phase_lease(
-            ledger_path,
-            replayed_submission_authorization,
-        )
-        if (
-            _required_string(
-                _full_score_phase_lease_record(replayed_submission_authorization),
-                "closed_record_sha256",
-            )
-            != phase_lease_record_sha256
-        ):
-            raise ValueError("phase terminal replay lease record drift")
-    submit_summary = _required_mapping(status_record, "submit_payload")
-    if submit_summary.get("sha256") != submit_sha256:
-        raise ValueError("Databricks status submit-payload binding drift")
-    status_tasks = status_record.get("tasks")
-    if not isinstance(status_tasks, list):
-        raise ValueError("Databricks status tasks must be an array")
-    run_id = _required_run_id(status_record.get("run_id"), "run status run_id")
-    task_billing: list[dict[str, Any]] = []
-    observed_task_keys: set[str] = set()
-    observed_task_run_ids: set[str] = set()
-    observed_cluster_ids: set[str] = set()
-    expected_by_key = {binding["task_key"]: binding for binding in task_bindings}
-    for raw_task in status_tasks:
-        task = _json_mapping(raw_task, "Databricks terminal task")
-        task_key = _required_string(task, "task_key")
-        binding = expected_by_key.get(task_key)
-        if binding is None or task_key in observed_task_keys:
-            raise ValueError("Databricks terminal task coverage drift")
-        observed_task_keys.add(task_key)
-        task_run_id = _required_run_id(
-            task.get("run_id"),
-            "Databricks terminal task run_id",
-        )
-        cluster_id = _require_nonempty(
-            task.get("cluster_id"),
-            "Databricks terminal task cluster_id",
-        )
-        if task_run_id == run_id or task_run_id in observed_task_run_ids:
-            raise ValueError("Databricks terminal task run_id coverage drift")
-        if cluster_id in observed_cluster_ids:
-            raise ValueError(
-                "Databricks terminal tasks must have distinct billed clusters"
-            )
-        observed_task_run_ids.add(task_run_id)
-        observed_cluster_ids.add(cluster_id)
-        start_time = task.get("start_time")
-        end_time = task.get("end_time")
-        if (
-            type(start_time) is not int
-            or type(end_time) is not int
-            or start_time < 0
-            or end_time <= start_time
-        ):
-            raise ValueError("Databricks terminal task times are invalid")
-        task_billing.append(
-            {
-                "billed_gpu_seconds": (end_time - start_time) / 1000.0,
-                "cluster_id": cluster_id,
-                "durable_output_root": binding["durable_output_root"],
-                "end_time_ms": end_time,
-                "shard_id": binding["shard_id"],
-                "start_time_ms": start_time,
-                "task_key": task_key,
-                "task_run_id": task_run_id,
-                "worker_index": binding["worker_index"],
-                "worker_payload_file_sha256": binding["worker_payload_file_sha256"],
-                "worker_payload_record_sha256": binding["worker_payload_record_sha256"],
-                "worker_payload_uri": binding["worker_payload_uri"],
-            }
-        )
-    if observed_task_keys != set(expected_by_key):
-        raise ValueError("Databricks terminal status omits a full-score task")
-    task_billing.sort(key=lambda item: cast(int, item["worker_index"]))
-    billed_gpu_seconds = sum(
-        cast(float, item["billed_gpu_seconds"]) for item in task_billing
+        != phase_lease_record_sha256
+    ):
+        raise ValueError("phase terminal replay lease record drift")
+    return (
+        predecessor_prefix,
+        batch_prefix,
+        intent_record_sha256,
+        phase_lease_record_sha256,
+        expected_terminal_prefix,
     )
+
+
+def _full_score_phase_attempt_ledger_events(
+    ledger_file: Path,
+    submit_snapshot: Mapping[str, Any],
+    *,
+    execution_plan: Mapping[str, Any],
+    wave_index: int,
+    phase: str,
+    attempt_id: str,
+    predecessor_prefix: DatabricksLedgerPrefix,
+    batch_prefix: DatabricksLedgerPrefix,
+) -> tuple[
+    DatabricksClusterHourLedger,
+    DatabricksClusterHourLedger,
+    DatabricksRunSubmissionReceipt,
+    DatabricksClusterHourTerminalActual,
+]:
+    """Locate one attempt's exact reservation, receipt, and verified actual."""
 
     ledger_record = _json_object(
         ledger_file.read_bytes(),
@@ -3461,20 +3598,22 @@ def build_governed_full_score_phase_terminal_record(
         raise ValueError("phase terminal reservation differs from the submit payload")
     if batch_state.reservations[-1] != expected_reservation:
         raise ValueError("phase terminal batch tail is not the expected reservation")
-    control_plane_sha256 = _ledger_mapping_sha256(run_record)
-    if (
-        receipt.run_id != run_id
-        or receipt.submit_payload_sha256 != submit_sha256
-        or terminal.run_id != run_id
-        or terminal.submit_payload_sha256 != submit_sha256
-        or terminal.control_plane_status_sha256 != control_plane_sha256
-        or terminal.verification_source != "direct_databricks_runs_get"
-        or terminal.terminal_state != "succeeded"
-        or abs(terminal.actual_cluster_duration_seconds - billed_gpu_seconds) > 1e-12
-    ):
-        raise ValueError("phase terminal ledger/control-plane reconciliation drift")
-    terminal_prefix = databricks_ledger_prefix(ledger)
-    if submission_authorization is not None:
+    return ledger, batch_state, receipt, terminal
+
+
+def _full_score_phase_attempt_terminal_prefix(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    batch_prefix: DatabricksLedgerPrefix,
+    batch_state: DatabricksClusterHourLedger,
+    receipt: DatabricksRunSubmissionReceipt,
+    terminal: DatabricksClusterHourTerminalActual,
+    expected_terminal_prefix: DatabricksLedgerPrefix | None,
+) -> DatabricksLedgerPrefix:
+    """Require the attempt's receipt and actual to be its exact post-batch tail."""
+
+    if expected_terminal_prefix is None:
+        terminal_prefix = databricks_ledger_prefix(ledger)
         if (
             terminal_prefix.reservation_count != batch_prefix.reservation_count
             or terminal_prefix.submission_receipt_count
@@ -3498,31 +3637,770 @@ def build_governed_full_score_phase_terminal_record(
             raise ValueError(
                 "phase terminal receipt/terminal are not the exact new tail events"
             )
-    else:
-        assert expected_terminal_prefix is not None
-        require_databricks_ledger_prefix(ledger, expected_terminal_prefix)
-        terminal_state = _full_score_ledger_prefix_state(
-            ledger,
-            expected_terminal_prefix,
+        return terminal_prefix
+    require_databricks_ledger_prefix(ledger, expected_terminal_prefix)
+    terminal_state = _full_score_ledger_prefix_state(
+        ledger,
+        expected_terminal_prefix,
+    )
+    if (
+        terminal_state.reservations != batch_state.reservations
+        or terminal_state.submission_receipts[:-1] != batch_state.submission_receipts
+        or terminal_state.terminal_actuals[:-1] != batch_state.terminal_actuals
+        or terminal_state.submission_receipts[-1] != receipt
+        or terminal_state.terminal_actuals[-1] != terminal
+        or terminal_state.active_reserved_cluster_hours != 0
+        or terminal_state.active_reserved_task_count != 0
+    ):
+        raise ValueError(
+            "phase terminal replay contains intervening or active ledger events"
         )
-        if (
-            terminal_state.reservations != batch_state.reservations
-            or terminal_state.submission_receipts[:-1]
-            != batch_state.submission_receipts
-            or terminal_state.terminal_actuals[:-1] != batch_state.terminal_actuals
-            or terminal_state.submission_receipts[-1] != receipt
-            or terminal_state.terminal_actuals[-1] != terminal
-            or terminal_state.active_reserved_cluster_hours != 0
-            or terminal_state.active_reserved_task_count != 0
-        ):
-            raise ValueError(
-                "phase terminal replay contains intervening or active ledger events"
+    return expected_terminal_prefix
+
+
+def _full_score_phase_terminal_capacity_retry(
+    execution_plan: Mapping[str, Any],
+    *,
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    wave_index: int,
+    phase: str,
+    ledger_path: str | Path,
+    submission_authorization: FullScorePhaseSubmissionAuthorization | None,
+    replay_capacity_retry: Mapping[str, Any] | None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+) -> tuple[
+    FullScorePhaseCapacityRetryAuthorization | None,
+    tuple[tuple[str, dict[str, Any], bytes], ...],
+]:
+    """Return a final attempt's retry authority and its capacity-failed attempts."""
+
+    if submission_authorization is not None:
+        if replay_capacity_retry is not None:
+            raise TypeError("live phase collection carries its own retry authority")
+        capacity_retry = submission_authorization.capacity_retry
+        if capacity_retry is None:
+            return None, ()
+        failures: list[tuple[str, dict[str, Any], bytes]] = []
+        for path, record_sha256 in capacity_retry.failure_records:
+            failure_file = _governed_compact_file(
+                path,
+                "phase capacity-failure record",
+                compact_artifact_resolver,
             )
-        terminal_prefix = expected_terminal_prefix
+            failure_bytes = failure_file.read_bytes()
+            failure = _json_object(failure_bytes, "phase capacity-failure record")
+            if (
+                failure.get("closed_record_sha256") != record_sha256
+                or _closed_record_sha256(failure) != record_sha256
+            ):
+                raise ValueError("phase capacity-failure record binding drift")
+            failures.append((path, failure, failure_bytes))
+        return capacity_retry, tuple(failures)
+    if replay_capacity_retry is None:
+        return None, ()
+    section = _json_mapping(replay_capacity_retry, "phase terminal capacity_retry")
+    raw_attempts = section.get("attempts")
+    if not isinstance(raw_attempts, list) or not raw_attempts:
+        raise ValueError("phase terminal capacity_retry lacks attempts")
+    paths = [
+        _required_string(
+            _json_mapping(item, "phase terminal capacity-retry attempt"),
+            "path",
+        )
+        for item in raw_attempts
+    ]
+    replayed, capacity_retry = _replay_full_score_phase_capacity_failure_chain(
+        paths,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        ledger_path=ledger_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    return capacity_retry, replayed
+
+
+def _merge_full_score_capacity_retry_task_billing(
+    final_task_billing: Sequence[Mapping[str, Any]],
+    failures: Sequence[tuple[str, Mapping[str, Any], bytes]],
+    *,
+    capacity_retry: FullScorePhaseCapacityRetryAuthorization,
+    final_attempt_billed_gpu_seconds: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any], float]:
+    """Join each task's one successful run across a phase's ordered attempts."""
+
+    if [
+        (path, failure["closed_record_sha256"]) for path, failure, _raw in failures
+    ] != (list(capacity_retry.failure_records)):
+        raise ValueError("phase capacity-retry attempt chain drift")
+    merged: list[dict[str, Any]] = [dict(item) for item in final_task_billing]
+    final_keys = [item["task_key"] for item in merged]
+    if len(final_keys) != len(capacity_retry.retry_task_keys) or set(final_keys) != set(
+        capacity_retry.retry_task_keys
+    ):
+        raise ValueError("final retry attempt does not cover the retried tasks")
+    attempts: list[dict[str, Any]] = []
+    phase_billed_gpu_seconds = final_attempt_billed_gpu_seconds
+    for path, failure, raw in failures:
+        succeeded = failure.get("succeeded_task_billing")
+        capacity_failed = failure.get("capacity_failed_tasks")
+        if not isinstance(succeeded, list) or not isinstance(capacity_failed, list):
+            raise ValueError("phase capacity-failure record billing schema drift")
+        merged.extend(
+            dict(_json_mapping(item, "capacity-failure succeeded task"))
+            for item in succeeded
+        )
+        attempt_billed = _nonnegative_finite_float(
+            failure.get("billed_gpu_seconds"),
+            "capacity-failure billed_gpu_seconds",
+        )
+        phase_billed_gpu_seconds += attempt_billed
+        attempts.append(
+            {
+                "attempt_id": _required_string(failure, "attempt_id"),
+                "billed_gpu_seconds": attempt_billed,
+                "capacity_failed_task_keys": [
+                    _required_string(
+                        _json_mapping(item, "capacity-failed task"),
+                        "task_key",
+                    )
+                    for item in capacity_failed
+                ],
+                "file_sha256": sha256(raw).hexdigest(),
+                "path": path,
+                "record_sha256": _required_string(failure, "closed_record_sha256"),
+                "run_id": _required_run_id(
+                    _required_mapping(failure, "control_plane").get("run_id"),
+                    "capacity-failure run_id",
+                ),
+            }
+        )
+    for field_name in ("task_key", "shard_id", "task_run_id", "cluster_id"):
+        values = [_required_string(item, field_name) for item in merged]
+        if len(set(values)) != len(values):
+            raise ValueError(f"phase capacity-retry task billing reuses a {field_name}")
+    worker_indices = [_required_int(item, "worker_index") for item in merged]
+    if len(set(worker_indices)) != len(worker_indices):
+        raise ValueError("phase capacity-retry task billing reuses a worker")
+    merged.sort(key=lambda item: cast(int, item["worker_index"]))
+    return (
+        merged,
+        {
+            "attempt_ordinal": capacity_retry.attempt_ordinal,
+            "attempts": attempts,
+            "authorization_sha256": capacity_retry.closure_sha256,
+            "capacity_failed_billed_gpu_seconds": sum(
+                cast(float, task["billed_gpu_seconds"])
+                for _path, failure, _raw in failures
+                for task in cast(
+                    list[Mapping[str, Any]], failure["capacity_failed_tasks"]
+                )
+            ),
+        },
+        phase_billed_gpu_seconds,
+    )
+
+
+def build_governed_full_score_phase_terminal_record(
+    execution_plan: Mapping[str, Any],
+    *,
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    wave_index: int,
+    phase: str,
+    attempt_id: str,
+    submit_payload_path: str | Path,
+    control_plane_run_path: str | Path,
+    ledger_path: str | Path,
+    submission_authorization: FullScorePhaseSubmissionAuthorization | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    _replay_ledger_lineage: Mapping[str, Any] | None = None,
+    _replay_capacity_retry: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Derive phase billing from immutable submit, runs/get, and ledger snapshots.
+
+    ``ledger_path`` is the canonical mutable local campaign ledger.  The record
+    stores only its privacy-safe path digest and append-only prefixes; immutable
+    submit/control-plane evidence may live on DBFS/UC.  When earlier attempts of
+    the phase replay as capacity failures, the final attempt submits only their
+    never-started tasks and this record joins every task's one successful run.
+    """
+
+    _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
+    submit_file = _governed_compact_file(
+        submit_payload_path,
+        "full-score submit payload",
+        compact_artifact_resolver,
+    )
+    run_file = _governed_compact_file(
+        control_plane_run_path,
+        "Databricks control-plane run",
+        compact_artifact_resolver,
+    )
+    ledger_file = Path(ledger_path).expanduser().absolute()
+    _require_regular_file_no_follow(ledger_file, "cluster-hour ledger")
+    submit_payload = _json_object(
+        submit_file.read_bytes(),
+        "full-score submit payload",
+    )
+    run_record = _json_object(
+        run_file.read_bytes(),
+        "Databricks control-plane run",
+    )
+    capacity_retry, failures = _full_score_phase_terminal_capacity_retry(
+        execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        ledger_path=ledger_path,
+        submission_authorization=submission_authorization,
+        replay_capacity_retry=_replay_capacity_retry,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    task_bindings = _validated_full_score_phase_submit_payload(
+        execution_plan,
+        submit_payload,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        compact_artifact_resolver=compact_artifact_resolver,
+        capacity_retry=capacity_retry,
+    )
+    _validate_full_score_raw_task_configuration(run_record, submit_payload)
+    expected_node_type_id = (
+        FULL_SCORE_PRODUCER_NODE_TYPE_ID
+        if phase == "producer"
+        else FULL_SCORE_CONSUMER_NODE_TYPE_ID
+    )
+    status = summarize_databricks_run(
+        dict(run_record),
+        submit_payload=submit_payload,
+        submit_payload_path=str(submit_payload_path),
+    )
+    status_record = databricks_run_status_record(status)
+    if status_record is None:
+        raise ValueError("Databricks run did not produce a status record")
+    if phase == "consumer":
+        validate_databricks_run_status_sidecar(
+            status,
+            expected_node_type_id=expected_node_type_id,
+        )
+    else:
+        _validate_full_score_l40s_terminal_status(status_record)
+    submit_snapshot, submit_bytes = canonical_databricks_submit_payload_snapshot(
+        submit_payload
+    )
+    submit_sha256 = sha256(submit_bytes).hexdigest()
+    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
+    (
+        predecessor_prefix,
+        batch_prefix,
+        intent_record_sha256,
+        phase_lease_record_sha256,
+        expected_terminal_prefix,
+    ) = _resolve_full_score_phase_attempt_authority(
+        execution_plan,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_id=attempt_id,
+        submit_payload=submit_payload,
+        submit_sha256=submit_sha256,
+        ledger_path=ledger_path,
+        ledger_path_sha256=ledger_path_sha256,
+        submission_authorization=submission_authorization,
+        replay_ledger_lineage=_replay_ledger_lineage,
+        replay_capacity_retry=(
+            None if submission_authorization is not None else capacity_retry
+        ),
+    )
+    submit_summary = _required_mapping(status_record, "submit_payload")
+    if submit_summary.get("sha256") != submit_sha256:
+        raise ValueError("Databricks status submit-payload binding drift")
+    status_tasks = status_record.get("tasks")
+    if not isinstance(status_tasks, list):
+        raise ValueError("Databricks status tasks must be an array")
+    run_id = _required_run_id(status_record.get("run_id"), "run status run_id")
+    task_billing: list[dict[str, Any]] = []
+    observed_task_keys: set[str] = set()
+    observed_task_run_ids: set[str] = set()
+    observed_cluster_ids: set[str] = set()
+    expected_by_key = {binding["task_key"]: binding for binding in task_bindings}
+    for raw_task in status_tasks:
+        task = _json_mapping(raw_task, "Databricks terminal task")
+        task_key = _required_string(task, "task_key")
+        binding = expected_by_key.get(task_key)
+        if binding is None or task_key in observed_task_keys:
+            raise ValueError("Databricks terminal task coverage drift")
+        observed_task_keys.add(task_key)
+        task_run_id = _required_run_id(
+            task.get("run_id"),
+            "Databricks terminal task run_id",
+        )
+        cluster_id = _require_nonempty(
+            task.get("cluster_id"),
+            "Databricks terminal task cluster_id",
+        )
+        if task_run_id == run_id or task_run_id in observed_task_run_ids:
+            raise ValueError("Databricks terminal task run_id coverage drift")
+        if cluster_id in observed_cluster_ids:
+            raise ValueError(
+                "Databricks terminal tasks must have distinct billed clusters"
+            )
+        observed_task_run_ids.add(task_run_id)
+        observed_cluster_ids.add(cluster_id)
+        start_time = task.get("start_time")
+        end_time = task.get("end_time")
+        if (
+            type(start_time) is not int
+            or type(end_time) is not int
+            or start_time < 0
+            or end_time <= start_time
+        ):
+            raise ValueError("Databricks terminal task times are invalid")
+        task_billing.append(
+            _full_score_task_billing_entry(
+                binding,
+                task_key=task_key,
+                task_run_id=task_run_id,
+                cluster_id=cluster_id,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        )
+    if observed_task_keys != set(expected_by_key):
+        raise ValueError("Databricks terminal status omits a full-score task")
+    # Sum in runs/get order, exactly as the ledger reconciled the same response.
+    billed_gpu_seconds = sum(
+        cast(float, item["billed_gpu_seconds"]) for item in task_billing
+    )
+    task_billing.sort(key=lambda item: cast(int, item["worker_index"]))
+
+    ledger, batch_state, receipt, terminal = _full_score_phase_attempt_ledger_events(
+        ledger_file,
+        submit_snapshot,
+        execution_plan=execution_plan,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_id=attempt_id,
+        predecessor_prefix=predecessor_prefix,
+        batch_prefix=batch_prefix,
+    )
+    control_plane_sha256 = _ledger_mapping_sha256(run_record)
+    if (
+        receipt.run_id != run_id
+        or receipt.submit_payload_sha256 != submit_sha256
+        or terminal.run_id != run_id
+        or terminal.submit_payload_sha256 != submit_sha256
+        or terminal.control_plane_status_sha256 != control_plane_sha256
+        or terminal.verification_source != "direct_databricks_runs_get"
+        or terminal.terminal_state != "succeeded"
+        or abs(terminal.actual_cluster_duration_seconds - billed_gpu_seconds) > 1e-12
+    ):
+        raise ValueError("phase terminal ledger/control-plane reconciliation drift")
+    terminal_prefix = _full_score_phase_attempt_terminal_prefix(
+        ledger,
+        batch_prefix=batch_prefix,
+        batch_state=batch_state,
+        receipt=receipt,
+        terminal=terminal,
+        expected_terminal_prefix=expected_terminal_prefix,
+    )
+    ledger_binding: dict[str, Any] = {
+        "batch_prefix": batch_prefix.to_record(),
+        "intent_record_sha256": intent_record_sha256,
+        "ledger_id": ledger.ledger_id,
+        "ledger_path_sha256": ledger_path_sha256,
+        "phase_lease_record_sha256": phase_lease_record_sha256,
+        "predecessor_prefix": predecessor_prefix.to_record(),
+        "terminal_prefix": terminal_prefix.to_record(),
+    }
+    capacity_retry_section: dict[str, Any] | None = None
+    if capacity_retry is not None:
+        task_billing, capacity_retry_section, billed_gpu_seconds = (
+            _merge_full_score_capacity_retry_task_billing(
+                task_billing,
+                failures,
+                capacity_retry=capacity_retry,
+                final_attempt_billed_gpu_seconds=billed_gpu_seconds,
+            )
+        )
+        ledger_binding["phase_predecessor_prefix"] = (
+            capacity_retry.phase_predecessor_prefix.to_record()
+        )
     record: dict[str, Any] = {
         "attempt_id": attempt_id,
         "authorization_scope": FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE,
         "billed_gpu_seconds": billed_gpu_seconds,
+        "closed_record_sha256": "",
+        "control_plane": {
+            "canonical_record_sha256": control_plane_sha256,
+            "file_sha256": sha256(run_file.read_bytes()).hexdigest(),
+            "path": str(control_plane_run_path),
+            "run_id": run_id,
+        },
+        "execution_plan_sha256": execution_plan.get("closed_record_sha256"),
+        "ledger": ledger_binding,
+        "phase": phase,
+        "record_type": FULL_SCORE_PHASE_TERMINAL_RECORD_TYPE,
+        "schema_version": FULL_SCORE_PHASE_TERMINAL_SCHEMA_VERSION,
+        "submit_payload": {
+            "file_sha256": sha256(submit_file.read_bytes()).hexdigest(),
+            "path": str(submit_payload_path),
+            "sha256": submit_sha256,
+        },
+        "task_billing": task_billing,
+        "wave_index": wave_index,
+    }
+    if capacity_retry_section is not None:
+        record["capacity_retry"] = capacity_retry_section
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
+def _full_score_task_billing_entry(
+    binding: Mapping[str, Any],
+    *,
+    task_key: str,
+    task_run_id: str,
+    cluster_id: str,
+    start_time: int,
+    end_time: int,
+) -> dict[str, Any]:
+    return {
+        "billed_gpu_seconds": (end_time - start_time) / 1000.0,
+        "cluster_id": cluster_id,
+        "durable_output_root": binding["durable_output_root"],
+        "end_time_ms": end_time,
+        "shard_id": binding["shard_id"],
+        "start_time_ms": start_time,
+        "task_key": task_key,
+        "task_run_id": task_run_id,
+        "worker_index": binding["worker_index"],
+        "worker_payload_file_sha256": binding["worker_payload_file_sha256"],
+        "worker_payload_record_sha256": binding["worker_payload_record_sha256"],
+        "worker_payload_uri": binding["worker_payload_uri"],
+    }
+
+
+_FULL_SCORE_CAPACITY_STATE_MESSAGE = re.compile(
+    r"Cluster '(?P<cluster_id>[^']+)' was terminated\. "
+    r"Reason: (?P<reason>[A-Z][A-Z0-9_]*) \([A-Z][A-Z0-9_]*\)\."
+)
+
+
+def _full_score_capacity_failure_reason(task: Mapping[str, Any]) -> str | None:
+    """Return the capacity reason when a task's cluster never reached its driver.
+
+    The proof is the absent Spark context, zero execution time, and a cluster
+    termination reason restricted to cloud capacity or launch timeout.  Any
+    task that ran user code has a Spark context and is never retryable.
+    """
+
+    state = task.get("state")
+    cluster = task.get("cluster_instance")
+    if (
+        not isinstance(state, Mapping)
+        or state.get("life_cycle_state") != "INTERNAL_ERROR"
+        or state.get("result_state") != "FAILED"
+        or not isinstance(cluster, Mapping)
+        or cluster.get("spark_context_id") not in (None, "")
+        or type(task.get("execution_duration")) is not int
+        or task.get("execution_duration") != 0
+    ):
+        return None
+    cluster_id = cluster.get("cluster_id")
+    message = state.get("state_message")
+    if (
+        not isinstance(cluster_id, str)
+        or not cluster_id
+        or not isinstance(message, str)
+    ):
+        return None
+    match = _FULL_SCORE_CAPACITY_STATE_MESSAGE.match(message)
+    if (
+        match is None
+        or match["cluster_id"] != cluster_id
+        or match["reason"] not in FULL_SCORE_CAPACITY_TERMINATION_REASONS
+    ):
+        return None
+    return match["reason"]
+
+
+def build_governed_full_score_phase_capacity_failure_record(
+    execution_plan: Mapping[str, Any],
+    *,
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    wave_index: int,
+    phase: str,
+    attempt_id: str,
+    submit_payload_path: str | Path,
+    control_plane_run_path: str | Path,
+    ledger_path: str | Path,
+    submission_authorization: FullScorePhaseSubmissionAuthorization | None = None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    _replay_ledger_lineage: Mapping[str, Any] | None = None,
+    _replay_capacity_retry: FullScorePhaseCapacityRetryAuthorization | None = None,
+) -> dict[str, Any]:
+    """Close one failed attempt whose every failure is a never-started cluster.
+
+    Succeeded tasks keep their exact billing for the phase terminal; every other
+    task must carry the capacity signature, or the phase fails closed.
+    """
+
+    _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
+    submit_file = _governed_compact_file(
+        submit_payload_path,
+        "full-score submit payload",
+        compact_artifact_resolver,
+    )
+    run_file = _governed_compact_file(
+        control_plane_run_path,
+        "Databricks control-plane run",
+        compact_artifact_resolver,
+    )
+    ledger_file = Path(ledger_path).expanduser().absolute()
+    _require_regular_file_no_follow(ledger_file, "cluster-hour ledger")
+    submit_payload = _json_object(
+        submit_file.read_bytes(),
+        "full-score submit payload",
+    )
+    run_record = _json_object(
+        run_file.read_bytes(),
+        "Databricks control-plane run",
+    )
+    if submission_authorization is not None:
+        if _replay_capacity_retry is not None:
+            raise TypeError("live capacity collection carries its own retry authority")
+        if type(submission_authorization) is not FullScorePhaseSubmissionAuthorization:
+            raise TypeError(
+                "capacity collection submission authority has the wrong type"
+            )
+        capacity_retry = submission_authorization.capacity_retry
+    else:
+        capacity_retry = _replay_capacity_retry
+    task_bindings = _validated_full_score_phase_submit_payload(
+        execution_plan,
+        submit_payload,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        compact_artifact_resolver=compact_artifact_resolver,
+        capacity_retry=capacity_retry,
+    )
+    _validate_full_score_raw_task_configuration(run_record, submit_payload)
+    submit_snapshot, submit_bytes = canonical_databricks_submit_payload_snapshot(
+        submit_payload
+    )
+    submit_sha256 = sha256(submit_bytes).hexdigest()
+    ledger_path_sha256 = databricks_ledger_path_sha256(ledger_path)
+    (
+        predecessor_prefix,
+        batch_prefix,
+        intent_record_sha256,
+        phase_lease_record_sha256,
+        expected_terminal_prefix,
+    ) = _resolve_full_score_phase_attempt_authority(
+        execution_plan,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_id=attempt_id,
+        submit_payload=submit_payload,
+        submit_sha256=submit_sha256,
+        ledger_path=ledger_path,
+        ledger_path_sha256=ledger_path_sha256,
+        submission_authorization=submission_authorization,
+        replay_ledger_lineage=_replay_ledger_lineage,
+        replay_capacity_retry=_replay_capacity_retry,
+    )
+    run_id = _required_run_id(run_record.get("run_id"), "capacity-failure run_id")
+    if run_record.get("repair_history") not in (None, []):
+        raise ValueError("capacity-failed attempt must not be repaired")
+    status = summarize_databricks_run(
+        dict(run_record),
+        submit_payload=submit_payload,
+        submit_payload_path=str(submit_payload_path),
+    )
+    summaries = {
+        _required_string(_json_mapping(item, "capacity status task"), "task_key"): item
+        for item in cast(list[Mapping[str, Any]], status["tasks"])
+    }
+    expected_node_type_id = (
+        FULL_SCORE_PRODUCER_NODE_TYPE_ID
+        if phase == "producer"
+        else FULL_SCORE_CONSUMER_NODE_TYPE_ID
+    )
+    expected_by_key = {binding["task_key"]: binding for binding in task_bindings}
+    raw_tasks = run_record.get("tasks")
+    if not isinstance(raw_tasks, list):
+        raise ValueError("Databricks control-plane tasks must be an array")
+    succeeded_task_billing: list[dict[str, Any]] = []
+    capacity_failed_tasks: list[dict[str, Any]] = []
+    observed_task_keys: set[str] = set()
+    observed_task_run_ids: set[str] = set()
+    observed_cluster_ids: set[str] = set()
+    billed_gpu_seconds = 0.0
+    for raw_task in raw_tasks:
+        task = _json_mapping(raw_task, "capacity-failure terminal task")
+        task_key = _required_string(task, "task_key")
+        binding = expected_by_key.get(task_key)
+        if binding is None or task_key in observed_task_keys:
+            raise ValueError("capacity-failure task coverage drift")
+        observed_task_keys.add(task_key)
+        if type(task.get("attempt_number")) is not int or task["attempt_number"] != 0:
+            raise ValueError("capacity-failed attempt tasks must be attempt zero")
+        task_run_id = _required_run_id(task.get("run_id"), "capacity task run_id")
+        if task_run_id == run_id or task_run_id in observed_task_run_ids:
+            raise ValueError("capacity-failure task run_id coverage drift")
+        observed_task_run_ids.add(task_run_id)
+        cluster = _json_mapping(task.get("cluster_instance"), "task cluster_instance")
+        cluster_id = _require_nonempty(cluster.get("cluster_id"), "task cluster_id")
+        if cluster_id in observed_cluster_ids:
+            raise ValueError("capacity-failure tasks must have distinct clusters")
+        observed_cluster_ids.add(cluster_id)
+        summary = _json_mapping(summaries.get(task_key), "capacity status task")
+        state = _json_mapping(task.get("state"), "capacity task state")
+        start_time = task.get("start_time")
+        end_time = task.get("end_time")
+        if (
+            state.get("life_cycle_state") == "TERMINATED"
+            and state.get("result_state") == "SUCCESS"
+        ):
+            if (
+                summary.get("node_type_id") != expected_node_type_id
+                or summary.get("driver_node_type_id") != expected_node_type_id
+            ):
+                raise ValueError("capacity-failure succeeded task topology drift")
+            if (
+                type(start_time) is not int
+                or type(end_time) is not int
+                or start_time < 0
+                or end_time <= start_time
+            ):
+                raise ValueError("Databricks terminal task times are invalid")
+            entry = _full_score_task_billing_entry(
+                binding,
+                task_key=task_key,
+                task_run_id=task_run_id,
+                cluster_id=cluster_id,
+                start_time=start_time,
+                end_time=end_time,
+            )
+            succeeded_task_billing.append(entry)
+            billed_gpu_seconds += cast(float, entry["billed_gpu_seconds"])
+            continue
+        reason = _full_score_capacity_failure_reason(task)
+        if reason is None:
+            raise ValueError(
+                "full-score attempt has a failure that is not a never-started "
+                "capacity failure"
+            )
+        for field_name in ("node_type_id", "driver_node_type_id"):
+            if field_name in summary and summary[field_name] != expected_node_type_id:
+                raise ValueError("capacity-failed task topology drift")
+        if (start_time is None and end_time is None) or (
+            type(start_time) is int
+            and type(end_time) is int
+            and start_time == 0
+            and end_time == 0
+        ):
+            task_seconds = 0.0
+            start_ms: int | None = None
+            end_ms: int | None = None
+        elif (
+            type(start_time) is int
+            and type(end_time) is int
+            and 0 <= start_time < end_time
+        ):
+            task_seconds = (end_time - start_time) / 1000.0
+            start_ms = start_time
+            end_ms = end_time
+        else:
+            raise ValueError("capacity-failed task times are invalid")
+        billed_gpu_seconds += task_seconds
+        capacity_failed_tasks.append(
+            {
+                "billed_gpu_seconds": task_seconds,
+                "cluster_id": cluster_id,
+                "end_time_ms": end_ms,
+                "shard_id": binding["shard_id"],
+                "start_time_ms": start_ms,
+                "task_key": task_key,
+                "task_run_id": task_run_id,
+                "termination_reason": reason,
+                "worker_index": binding["worker_index"],
+            }
+        )
+    if observed_task_keys != set(expected_by_key):
+        raise ValueError("capacity-failure control plane omits a full-score task")
+    if not capacity_failed_tasks:
+        raise ValueError("capacity-failure record requires a capacity-failed task")
+    succeeded_task_billing.sort(key=lambda item: cast(int, item["worker_index"]))
+    capacity_failed_tasks.sort(key=lambda item: cast(int, item["worker_index"]))
+    failed_keys = {item["task_key"] for item in capacity_failed_tasks}
+    retry_tasks = [
+        task
+        for task in cast(list[Mapping[str, Any]], submit_payload["tasks"])
+        if task["task_key"] in failed_keys
+    ]
+    ledger, batch_state, receipt, terminal = _full_score_phase_attempt_ledger_events(
+        ledger_file,
+        submit_snapshot,
+        execution_plan=execution_plan,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_id=attempt_id,
+        predecessor_prefix=predecessor_prefix,
+        batch_prefix=batch_prefix,
+    )
+    control_plane_sha256 = _ledger_mapping_sha256(run_record)
+    if (
+        receipt.run_id != run_id
+        or receipt.submit_payload_sha256 != submit_sha256
+        or terminal.run_id != run_id
+        or terminal.submit_payload_sha256 != submit_sha256
+        or terminal.control_plane_status_sha256 != control_plane_sha256
+        or terminal.verification_source != "direct_databricks_runs_get"
+        or terminal.terminal_state not in {"failed", "internal_error"}
+        or abs(terminal.actual_cluster_duration_seconds - billed_gpu_seconds) > 1e-12
+    ):
+        raise ValueError("capacity-failure ledger/control-plane reconciliation drift")
+    terminal_prefix = _full_score_phase_attempt_terminal_prefix(
+        ledger,
+        batch_prefix=batch_prefix,
+        batch_state=batch_state,
+        receipt=receipt,
+        terminal=terminal,
+        expected_terminal_prefix=expected_terminal_prefix,
+    )
+    record: dict[str, Any] = {
+        "attempt_id": attempt_id,
+        "attempt_ordinal": (
+            0 if capacity_retry is None else capacity_retry.attempt_ordinal
+        ),
+        "authorization_scope": FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE,
+        "billed_gpu_seconds": billed_gpu_seconds,
+        "capacity_failed_tasks": capacity_failed_tasks,
+        "capacity_retry": (
+            None
+            if capacity_retry is None
+            else {
+                "authorization_sha256": capacity_retry.closure_sha256,
+                "failure_records": [
+                    {"path": path, "record_sha256": record_sha256}
+                    for path, record_sha256 in capacity_retry.failure_records
+                ],
+                "phase_predecessor_prefix": (
+                    capacity_retry.phase_predecessor_prefix.to_record()
+                ),
+            }
+        ),
         "closed_record_sha256": "",
         "control_plane": {
             "canonical_record_sha256": control_plane_sha256,
@@ -3539,20 +4417,324 @@ def build_governed_full_score_phase_terminal_record(
             "phase_lease_record_sha256": phase_lease_record_sha256,
             "predecessor_prefix": predecessor_prefix.to_record(),
             "terminal_prefix": terminal_prefix.to_record(),
+            "terminal_state": terminal.terminal_state,
         },
         "phase": phase,
-        "record_type": FULL_SCORE_PHASE_TERMINAL_RECORD_TYPE,
-        "schema_version": FULL_SCORE_PHASE_TERMINAL_SCHEMA_VERSION,
+        "record_type": FULL_SCORE_PHASE_CAPACITY_FAILURE_RECORD_TYPE,
+        "retry_tasks": {
+            "submit_payload_sha256": submit_sha256,
+            "task_keys": [task["task_key"] for task in retry_tasks],
+            "tasks_sha256": _canonical_sha256(retry_tasks),
+        },
+        "schema_version": FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION,
         "submit_payload": {
             "file_sha256": sha256(submit_file.read_bytes()).hexdigest(),
             "path": str(submit_payload_path),
             "sha256": submit_sha256,
         },
-        "task_billing": task_billing,
+        "succeeded_task_billing": succeeded_task_billing,
         "wave_index": wave_index,
     }
     record["closed_record_sha256"] = _closed_record_sha256(record)
     return record
+
+
+def _load_governed_full_score_phase_capacity_failure_record(
+    path: str,
+    *,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    wave_index: int,
+    phase: str,
+    ledger_path: str | Path,
+    capacity_retry: FullScorePhaseCapacityRetryAuthorization | None,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+) -> tuple[dict[str, Any], bytes]:
+    failure_file = _governed_compact_file(
+        path,
+        "phase capacity-failure record",
+        compact_artifact_resolver,
+    )
+    raw = failure_file.read_bytes()
+    record = _json_object(raw, "phase capacity-failure record")
+    if (
+        record.get("record_type") != FULL_SCORE_PHASE_CAPACITY_FAILURE_RECORD_TYPE
+        or record.get("schema_version")
+        != FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION
+        or record.get("authorization_scope")
+        != FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+    ):
+        raise ValueError("phase capacity-failure record schema/closure drift")
+    if record.get("wave_index") != wave_index or record.get("phase") != phase:
+        raise ValueError("phase capacity-failure record belongs to another phase")
+    rebuilt = build_governed_full_score_phase_capacity_failure_record(
+        execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        attempt_id=_required_string(record, "attempt_id"),
+        submit_payload_path=_required_string(
+            _required_mapping(record, "submit_payload"),
+            "path",
+        ),
+        control_plane_run_path=_required_string(
+            _required_mapping(record, "control_plane"),
+            "path",
+        ),
+        ledger_path=ledger_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+        _replay_ledger_lineage=_required_mapping(record, "ledger"),
+        _replay_capacity_retry=capacity_retry,
+    )
+    if rebuilt != record:
+        raise ValueError("phase capacity-failure record does not replay")
+    return record, raw
+
+
+def _full_score_capacity_retry_authorization_from_failures(
+    failures: Sequence[tuple[str, Mapping[str, Any], bytes]],
+    *,
+    execution_plan: Mapping[str, Any],
+    wave_index: int,
+    phase: str,
+    ledger_path: str | Path,
+) -> FullScorePhaseCapacityRetryAuthorization:
+    first = failures[0][1]
+    last = failures[-1][1]
+    last_ledger = _required_mapping(last, "ledger")
+    workspace_host_sha256, user_name_sha256 = (
+        _full_score_phase_attempt_workspace_identity(
+            ledger_path,
+            execution_plan_sha256=_required_string(
+                execution_plan, "closed_record_sha256"
+            ),
+            wave_index=wave_index,
+            phase=phase,
+            attempt_ordinal=_required_int(last, "attempt_ordinal"),
+            intent_record_sha256=_required_string(last_ledger, "intent_record_sha256"),
+            phase_lease_record_sha256=_required_string(
+                last_ledger, "phase_lease_record_sha256"
+            ),
+        )
+    )
+    retry_tasks = _required_mapping(last, "retry_tasks")
+    raw_keys = retry_tasks.get("task_keys")
+    if not isinstance(raw_keys, list):
+        raise ValueError("capacity-failure retry task keys must be an array")
+    return FullScorePhaseCapacityRetryAuthorization(
+        execution_plan_sha256=_required_string(execution_plan, "closed_record_sha256"),
+        wave_index=wave_index,
+        phase=phase,
+        ledger_path_sha256=_required_string(last_ledger, "ledger_path_sha256"),
+        phase_predecessor_prefix=databricks_ledger_prefix_from_record(
+            _required_mapping(_required_mapping(first, "ledger"), "predecessor_prefix")
+        ),
+        ledger_prefix=databricks_ledger_prefix_from_record(
+            _required_mapping(last_ledger, "terminal_prefix")
+        ),
+        failure_records=[
+            (path, _required_string(failure, "closed_record_sha256"))
+            for path, failure, _raw in failures
+        ],
+        prior_submit_payload_sha256=_required_string(
+            retry_tasks, "submit_payload_sha256"
+        ),
+        retry_task_keys=[str(key) for key in raw_keys],
+        retry_tasks_sha256=_required_string(retry_tasks, "tasks_sha256"),
+        workspace_host_sha256=workspace_host_sha256,
+        user_name_sha256=user_name_sha256,
+        _issuer=_FULL_SCORE_PHASE_CAPACITY_RETRY_AUTHORIZATION_ISSUER,
+    )
+
+
+def _replay_full_score_phase_capacity_failure_chain(
+    paths: Sequence[str],
+    *,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    wave_index: int,
+    phase: str,
+    ledger_path: str | Path,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+) -> tuple[
+    tuple[tuple[str, dict[str, Any], bytes], ...],
+    FullScorePhaseCapacityRetryAuthorization,
+]:
+    """Replay a phase's capacity failures in order and reissue retry authority."""
+
+    if (
+        isinstance(paths, (str, bytes))
+        or not 1 <= len(paths) < FULL_SCORE_PHASE_MAX_ATTEMPTS
+    ):
+        raise ValueError("capacity-failure chain length is outside the attempt bound")
+    failures: list[tuple[str, dict[str, Any], bytes]] = []
+    capacity_retry: FullScorePhaseCapacityRetryAuthorization | None = None
+    for ordinal, raw_path in enumerate(paths):
+        path = _require_nonempty(raw_path, "capacity-failure record path")
+        record, raw = _load_governed_full_score_phase_capacity_failure_record(
+            path,
+            execution_plan=execution_plan,
+            inventory=inventory,
+            shard_plan=shard_plan,
+            wave_index=wave_index,
+            phase=phase,
+            ledger_path=ledger_path,
+            capacity_retry=capacity_retry,
+            compact_artifact_resolver=compact_artifact_resolver,
+        )
+        if record.get("attempt_ordinal") != ordinal:
+            raise ValueError("capacity-failure chain ordinal drift")
+        failures.append((path, record, raw))
+        capacity_retry = _full_score_capacity_retry_authorization_from_failures(
+            failures,
+            execution_plan=execution_plan,
+            wave_index=wave_index,
+            phase=phase,
+            ledger_path=ledger_path,
+        )
+    assert capacity_retry is not None
+    return tuple(failures), capacity_retry
+
+
+def load_governed_full_score_phase_capacity_failure_record(
+    path: str | Path,
+    *,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    ledger_path: str | Path,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+) -> dict[str, Any]:
+    """Reread one capacity-failure record and replay its whole attempt chain."""
+
+    failure_file = _governed_compact_file(
+        path,
+        "phase capacity-failure record",
+        compact_artifact_resolver,
+    )
+    record = _json_object(failure_file.read_bytes(), "phase capacity-failure record")
+    wave_index = _required_int(record, "wave_index")
+    phase = _required_string(record, "phase")
+    stored_retry = record.get("capacity_retry")
+    prior_paths: list[str] = []
+    if stored_retry is not None:
+        raw_prior = _required_mapping(
+            {"capacity_retry": stored_retry}, "capacity_retry"
+        ).get("failure_records")
+        if not isinstance(raw_prior, list):
+            raise ValueError("capacity-failure prior chain must be an array")
+        prior_paths = [
+            _required_string(_json_mapping(item, "prior capacity failure"), "path")
+            for item in raw_prior
+        ]
+    failures, _capacity_retry = _replay_full_score_phase_capacity_failure_chain(
+        [*prior_paths, str(path)],
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        ledger_path=ledger_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    return failures[-1][1]
+
+
+def replay_governed_full_score_phase_capacity_retry_authorization(
+    failure_record_paths: Sequence[str | Path],
+    *,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    wave_index: int,
+    phase: str,
+    ledger_path: str | Path,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+) -> FullScorePhaseCapacityRetryAuthorization:
+    """Reissue retry authority from a phase's ordered capacity-failure records.
+
+    This is also the controller-restart path: the authority is derived only
+    from replayed records and the exact live ledger prefix they close.
+    """
+
+    live_path = Path(ledger_path).expanduser().absolute()
+    _failures, capacity_retry = _replay_full_score_phase_capacity_failure_chain(
+        [str(path) for path in failure_record_paths],
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        ledger_path=live_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    if capacity_retry.ledger_path_sha256 != databricks_ledger_path_sha256(live_path):
+        raise ValueError("capacity retry ledger path binding drift")
+    ledger = read_databricks_cluster_hour_ledger_json(live_path)
+    _require_full_score_ledger_caps(ledger)
+    for label, expected in (
+        ("phase predecessor", capacity_retry.phase_predecessor_prefix),
+        ("retry", capacity_retry.ledger_prefix),
+    ):
+        observed = databricks_ledger_prefix_at_counts(
+            ledger,
+            reservation_count=expected.reservation_count,
+            submission_receipt_count=expected.submission_receipt_count,
+            terminal_actual_count=expected.terminal_actual_count,
+        )
+        if observed != expected:
+            raise ValueError(f"capacity retry {label} prefix binding drift")
+    retry_state = _full_score_ledger_prefix_state(ledger, capacity_retry.ledger_prefix)
+    if (
+        retry_state.active_reserved_cluster_hours != 0
+        or retry_state.active_reserved_task_count != 0
+    ):
+        raise ValueError("capacity retry prefix is active")
+    return capacity_retry
+
+
+def build_full_score_phase_capacity_retry_submit_payload(
+    prior_submit_payload: Mapping[str, Any],
+    *,
+    capacity_retry_authorization: FullScorePhaseCapacityRetryAuthorization,
+    attempt_id: str,
+) -> dict[str, Any]:
+    """Render the next attempt: the prior attempt's never-started tasks only."""
+
+    if (
+        type(capacity_retry_authorization)
+        is not FullScorePhaseCapacityRetryAuthorization
+    ):
+        raise TypeError("capacity retry rendering requires its retry authority")
+    _snapshot, canonical_prior = canonical_databricks_submit_payload_snapshot(
+        prior_submit_payload
+    )
+    if (
+        sha256(canonical_prior).hexdigest()
+        != capacity_retry_authorization.prior_submit_payload_sha256
+    ):
+        raise ValueError("capacity retry prior submit payload drift")
+    retry_keys = set(capacity_retry_authorization.retry_task_keys)
+    tasks = [
+        copy.deepcopy(dict(task))
+        for task in cast(list[Mapping[str, Any]], prior_submit_payload["tasks"])
+        if task.get("task_key") in retry_keys
+    ]
+    if [task["task_key"] for task in tasks] != list(
+        capacity_retry_authorization.retry_task_keys
+    ) or _canonical_sha256(tasks) != capacity_retry_authorization.retry_tasks_sha256:
+        raise ValueError("capacity retry task selection drift")
+    payload = {
+        key: copy.deepcopy(value)
+        for key, value in prior_submit_payload.items()
+        if key not in {"idempotency_token", "tasks"}
+    }
+    payload["tasks"] = tasks
+    return bind_databricks_run_idempotency_token(payload, attempt_id=attempt_id)
 
 
 def write_governed_full_score_phase_terminal_record(
@@ -3632,6 +4814,11 @@ def load_governed_full_score_phase_terminal_record(
         ledger_path=ledger_path,
         compact_artifact_resolver=compact_artifact_resolver,
         _replay_ledger_lineage=_required_mapping(record, "ledger"),
+        _replay_capacity_retry=(
+            _required_mapping(record, "capacity_retry")
+            if "capacity_retry" in record
+            else None
+        ),
     )
     if rebuilt != record:
         raise ValueError("phase terminal does not replay from its bound files")
@@ -3698,6 +4885,7 @@ def replay_governed_full_score_phase_authorization(
     ):
         raise ValueError("phase authorization replay terminal prefix is active")
     terminal_record_sha256 = _required_string(record, "closed_record_sha256")
+    attempt_ordinal = _full_score_phase_record_attempt_ordinal(record)
     phase_lease_root = _full_score_phase_lease_path(
         live_path,
         execution_plan_sha256=_required_string(
@@ -3712,6 +4900,7 @@ def replay_governed_full_score_phase_authorization(
         execution_plan_sha256=_required_string(record, "execution_plan_sha256"),
         wave_index=_required_int(record, "wave_index"),
         phase=_required_string(record, "phase"),
+        attempt_ordinal=attempt_ordinal,
     )
     workspace_sidecar = _read_full_score_workspace_authority(
         _full_score_workspace_authority_path(replay_lease_path),
@@ -3788,6 +4977,180 @@ def collect_governed_full_score_phase_attempt(
         raise ValueError("phase collection requires a durable terminal record path")
     if (compact_artifact_publisher is None) != (compact_artifact_resolver is None):
         raise TypeError("phase collection compact I/O requires publisher and CAS")
+    live_path, path_sha256, receipt = _record_full_score_phase_attempt_terminal_actual(
+        workspace,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        ledger_path=ledger_path,
+        submission_authorization=submission_authorization,
+        submit_payload_path=submit_payload_path,
+        control_plane_run_path=control_plane_run_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+        compact_artifact_publisher=compact_artifact_publisher,
+        opener=opener,
+    )
+    return _close_full_score_phase_terminal_collection(
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        live_path=live_path,
+        path_sha256=path_sha256,
+        receipt=receipt,
+        submission_authorization=submission_authorization,
+        submit_payload_path=submit_payload_path,
+        control_plane_run_path=control_plane_run_path,
+        terminal_record_path=terminal_record_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+        compact_artifact_publisher=compact_artifact_publisher,
+    )
+
+
+def collect_governed_full_score_phase_attempt_outcome(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    ledger_path: str | Path,
+    submission_authorization: FullScorePhaseSubmissionAuthorization,
+    submit_payload_path: str | Path,
+    control_plane_run_path: str | Path,
+    terminal_record_path: str | Path,
+    capacity_failure_record_path: str | Path,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    compact_artifact_publisher: FullScoreCompactArtifactPublisher | None = None,
+    opener: DatabricksURLOpener | None = None,
+) -> tuple[
+    dict[str, Any],
+    FullScorePhaseAuthorization | FullScorePhaseCapacityRetryAuthorization,
+]:
+    """Collect one attempt and issue either its successor or its retry authority.
+
+    A succeeded attempt closes the phase terminal exactly like
+    :func:`collect_governed_full_score_phase_attempt`.  A failed attempt closes a
+    capacity-failure record only when every failure is a never-started
+    capacity failure; any other failure raises and fails the phase.
+    """
+
+    if type(submission_authorization) is not FullScorePhaseSubmissionAuthorization:
+        raise TypeError(
+            "phase collection requires FullScorePhaseSubmissionAuthorization"
+        )
+    if (compact_artifact_publisher is None) != (compact_artifact_resolver is None):
+        raise TypeError("phase collection compact I/O requires publisher and CAS")
+    live_path, path_sha256, receipt = _record_full_score_phase_attempt_terminal_actual(
+        workspace,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        ledger_path=ledger_path,
+        submission_authorization=submission_authorization,
+        submit_payload_path=submit_payload_path,
+        control_plane_run_path=control_plane_run_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+        compact_artifact_publisher=compact_artifact_publisher,
+        opener=opener,
+    )
+    recorded = read_databricks_cluster_hour_ledger_json(live_path)
+    actual = next(
+        item
+        for item in recorded.terminal_actuals
+        if item.attempt_id == submission_authorization.attempt_id
+    )
+    if actual.terminal_state == "succeeded":
+        return _close_full_score_phase_terminal_collection(
+            execution_plan=execution_plan,
+            inventory=inventory,
+            shard_plan=shard_plan,
+            live_path=live_path,
+            path_sha256=path_sha256,
+            receipt=receipt,
+            submission_authorization=submission_authorization,
+            submit_payload_path=submit_payload_path,
+            control_plane_run_path=control_plane_run_path,
+            terminal_record_path=terminal_record_path,
+            compact_artifact_resolver=compact_artifact_resolver,
+            compact_artifact_publisher=compact_artifact_publisher,
+        )
+    record = build_governed_full_score_phase_capacity_failure_record(
+        execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=submission_authorization.wave_index,
+        phase=submission_authorization.phase,
+        attempt_id=submission_authorization.attempt_id,
+        submit_payload_path=submit_payload_path,
+        control_plane_run_path=control_plane_run_path,
+        ledger_path=live_path,
+        submission_authorization=submission_authorization,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    final_ledger = read_databricks_cluster_hour_ledger_json(live_path)
+    if databricks_ledger_path_sha256(live_path) != path_sha256:
+        raise RuntimeError("phase ledger path changed during capacity collection")
+    terminal_prefix = databricks_ledger_prefix_from_record(
+        _required_mapping(_required_mapping(record, "ledger"), "terminal_prefix")
+    )
+    if databricks_ledger_prefix(final_ledger) != terminal_prefix:
+        raise RuntimeError("capacity collection is not the latest ledger prefix")
+    _publish_governed_compact_file(
+        capacity_failure_record_path,
+        "phase capacity-failure evidence path",
+        _canonical_pretty_json_bytes(record),
+        compact_artifact_publisher,
+    )
+    prior_paths = (
+        []
+        if submission_authorization.capacity_retry is None
+        else [
+            path
+            for path, _sha in submission_authorization.capacity_retry.failure_records
+        ]
+    )
+    reread = load_governed_full_score_phase_capacity_failure_record(
+        capacity_failure_record_path,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        ledger_path=live_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    if reread != record:
+        raise RuntimeError("phase capacity-failure evidence changed during reread")
+    authorization = replay_governed_full_score_phase_capacity_retry_authorization(
+        [*prior_paths, str(capacity_failure_record_path)],
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=submission_authorization.wave_index,
+        phase=submission_authorization.phase,
+        ledger_path=live_path,
+        compact_artifact_resolver=compact_artifact_resolver,
+    )
+    if databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(live_path)
+    ) != (authorization.ledger_prefix):
+        raise RuntimeError("capacity retry authority is not the latest ledger prefix")
+    return record, authorization
+
+
+def _record_full_score_phase_attempt_terminal_actual(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    ledger_path: str | Path,
+    submission_authorization: FullScorePhaseSubmissionAuthorization,
+    submit_payload_path: str | Path,
+    control_plane_run_path: str | Path,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+    compact_artifact_publisher: FullScoreCompactArtifactPublisher | None,
+    opener: DatabricksURLOpener | None,
+) -> tuple[Path, str, DatabricksRunSubmissionReceipt]:
+    """Fetch runs/get once and append its verified terminal actual."""
+
     submit_file = _governed_compact_file(
         submit_payload_path,
         "full-score submit payload",
@@ -3888,6 +5251,24 @@ def collect_governed_full_score_phase_attempt(
                 != batch_prefix.terminal_actual_count + 1
             ):
                 raise
+    return live_path, path_sha256, receipt
+
+
+def _close_full_score_phase_terminal_collection(
+    *,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    live_path: Path,
+    path_sha256: str,
+    receipt: DatabricksRunSubmissionReceipt,
+    submission_authorization: FullScorePhaseSubmissionAuthorization,
+    submit_payload_path: str | Path,
+    control_plane_run_path: str | Path,
+    terminal_record_path: str | Path,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+    compact_artifact_publisher: FullScoreCompactArtifactPublisher | None,
+) -> tuple[dict[str, Any], FullScorePhaseAuthorization]:
     record = build_governed_full_score_phase_terminal_record(
         execution_plan,
         inventory=inventory,
@@ -4288,9 +5669,9 @@ def build_governed_full_score_matched_billing_block(
     consumer_lineage = _required_mapping(consumer, "ledger")
     if producer_lineage.get("ledger_path_sha256") != consumer_lineage.get(
         "ledger_path_sha256"
-    ) or consumer_lineage.get("predecessor_prefix") != producer_lineage.get(
-        "terminal_prefix"
-    ):
+    ) or _full_score_phase_opening_prefix_record(
+        consumer_lineage
+    ) != producer_lineage.get("terminal_prefix"):
         raise ValueError("matched billing phase ledger lineage is not contiguous")
     record["ledger_lineage"] = {
         "consumer": dict(consumer_lineage),
@@ -4317,6 +5698,18 @@ def build_governed_full_score_matched_billing_block(
     }
     record["closed_record_sha256"] = _closed_record_sha256(record)
     return record
+
+
+def _full_score_phase_opening_prefix_record(lineage: Mapping[str, Any]) -> Any:
+    """Return the prefix before a phase's first attempt.
+
+    A capacity-retried phase records it separately because its own
+    ``predecessor_prefix`` belongs to the final, successful attempt.
+    """
+
+    if "phase_predecessor_prefix" in lineage:
+        return lineage.get("phase_predecessor_prefix")
+    return lineage.get("predecessor_prefix")
 
 
 def write_governed_full_score_matched_billing_block(
@@ -4645,6 +6038,8 @@ def build_governed_full_score_live_p90_budget_admission(
 
     _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
     _require_nonempty(attempt_id, "attempt_id")
+    if _full_score_capacity_retry_predecessor(predecessor_authorization) is not None:
+        raise TypeError("capacity retries do not consume a live P90 admission")
     task_bindings = _validated_full_score_phase_submit_payload(
         execution_plan,
         next_submit_payload,
@@ -4961,6 +6356,7 @@ def _require_full_score_phase_predecessor_authorization(
     For the wave-zero producer, ``latency_execution_plan_record`` is the record
     the latency authority closes over: the frozen latency execution plan for a
     single-plan collection, or the campaign plan for a multi-plan collection.
+    A capacity retry's predecessor is its own phase's replayed retry authority.
     """
 
     _validate_full_score_phase_position(wave_index, phase)
@@ -4974,6 +6370,7 @@ def _require_full_score_phase_predecessor_authorization(
     if (
         not (wave_index == 0 and phase == "producer")
         and type(authorization) is not FullScorePhaseAuthorization
+        and type(authorization) is not FullScorePhaseCapacityRetryAuthorization
     ):
         raise TypeError("full-score phase launch requires FullScorePhaseAuthorization")
     _full_score_predecessor_workspace_identity(authorization)
@@ -4981,7 +6378,26 @@ def _require_full_score_phase_predecessor_authorization(
     live = read_databricks_cluster_hour_ledger_json(ledger_path)
     _require_full_score_ledger_caps(live)
     lineage: dict[str, Any]
-    if wave_index == 0 and phase == "producer":
+    if type(authorization) is FullScorePhaseCapacityRetryAuthorization:
+        if (
+            authorization.execution_plan_sha256 != plan_sha256
+            or authorization.wave_index != wave_index
+            or authorization.phase != phase
+            or authorization.ledger_path_sha256 != path_sha256
+        ):
+            raise ValueError("full-score capacity retry phase/path binding drift")
+        require_databricks_ledger_prefix(live, authorization.phase_predecessor_prefix)
+        prefix = authorization.ledger_prefix
+        require_databricks_ledger_prefix(live, prefix)
+        lineage = {
+            "authorization_sha256": authorization.closure_sha256,
+            "kind": "full_score_phase_capacity_retry",
+            "ledger_path_sha256": path_sha256,
+            "ledger_prefix": prefix.to_record(),
+            "phase": phase,
+            "wave_index": wave_index,
+        }
+    elif wave_index == 0 and phase == "producer":
         if not isinstance(latency_execution_plan_record, Mapping):
             raise TypeError(
                 "wave-zero producer requires the latency execution-plan record"
@@ -5108,7 +6524,20 @@ def _full_score_predecessor_workspace_identity(
             authorization.workspace_host_sha256,
             authorization.user_name_sha256,
         )
+    if type(authorization) is FullScorePhaseCapacityRetryAuthorization:
+        return (
+            authorization.workspace_host_sha256,
+            authorization.user_name_sha256,
+        )
     raise TypeError("full-score predecessor lacks workspace authority")
+
+
+def _full_score_capacity_retry_predecessor(
+    predecessor_authorization: object,
+) -> FullScorePhaseCapacityRetryAuthorization | None:
+    if type(predecessor_authorization) is FullScorePhaseCapacityRetryAuthorization:
+        return predecessor_authorization
+    return None
 
 
 def _require_full_score_remote_workspace_lineage(
@@ -5202,6 +6631,7 @@ def _governed_full_score_phase_reservation_validator(
         submit_payload,
         attempt_id=attempt_id,
     )
+    capacity_retry = _full_score_capacity_retry_predecessor(predecessor_authorization)
     task_bindings = _validated_full_score_phase_submit_payload(
         execution_plan,
         submit_payload,
@@ -5212,6 +6642,7 @@ def _governed_full_score_phase_reservation_validator(
         require_governed_consumer_ready_phase=True,
         remote_ready_authorization=remote_ready_authorization,
         compact_artifact_resolver=compact_artifact_resolver,
+        capacity_retry=capacity_retry,
     )
     _require_full_score_phase_launch_authorization(
         task_bindings,
@@ -5252,9 +6683,11 @@ def _governed_full_score_phase_reservation_validator(
         phase=phase,
     )
     admission: dict[str, Any] | None
-    if wave_index == 0:
+    if wave_index == 0 or capacity_retry is not None:
         if budget_admission_path is not None:
-            raise ValueError("wave zero must not consume a live P90 admission")
+            raise ValueError(
+                "wave zero and capacity retries must not consume a live P90 admission"
+            )
         admission = None
     else:
         if budget_admission_path is None:
@@ -5309,6 +6742,7 @@ def _governed_full_score_phase_reservation_validator(
             require_governed_consumer_ready_phase=True,
             remote_ready_authorization=remote_ready_authorization,
             compact_artifact_resolver=compact_artifact_resolver,
+            capacity_retry=capacity_retry,
         )
         _require_full_score_phase_launch_authorization(
             snapshot_bindings,
@@ -5365,12 +6799,14 @@ def _full_score_phase_lease_path(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    attempt_ordinal: int = 0,
 ) -> Path:
     path = _full_score_phase_lease_candidate_path(
         ledger_path,
         execution_plan_sha256=execution_plan_sha256,
         wave_index=wave_index,
         phase=phase,
+        attempt_ordinal=attempt_ordinal,
     )
     root = path.parent
     try:
@@ -5389,6 +6825,7 @@ def _full_score_phase_lease_candidate_path(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    attempt_ordinal: int = 0,
 ) -> Path:
     """Return the deterministic lease path without creating its directory."""
 
@@ -5397,14 +6834,59 @@ def _full_score_phase_lease_candidate_path(
     if root.is_symlink():
         raise ValueError("full-score phase lease root must not be a symlink")
     identity = _canonical_sha256(
-        {
-            "domain": "cachet.full_score_phase_lease_path.v1",
-            "execution_plan_sha256": execution_plan_sha256,
-            "phase": phase,
-            "wave_index": wave_index,
-        }
+        _full_score_phase_attempt_path_identity(
+            "cachet.full_score_phase_lease_path.v1",
+            execution_plan_sha256=execution_plan_sha256,
+            wave_index=wave_index,
+            phase=phase,
+            attempt_ordinal=attempt_ordinal,
+        )
     )
     return root / f"{identity}.json"
+
+
+def _full_score_phase_attempt_path_identity(
+    domain: str,
+    *,
+    execution_plan_sha256: str,
+    wave_index: int,
+    phase: str,
+    attempt_ordinal: int,
+) -> dict[str, Any]:
+    if (
+        type(attempt_ordinal) is not int
+        or not 0 <= attempt_ordinal < FULL_SCORE_PHASE_MAX_ATTEMPTS
+    ):
+        raise ValueError("full-score phase attempt ordinal is outside its bound")
+    identity: dict[str, Any] = {
+        "domain": domain,
+        "execution_plan_sha256": execution_plan_sha256,
+        "phase": phase,
+        "wave_index": wave_index,
+    }
+    if attempt_ordinal:
+        identity["capacity_retry_ordinal"] = attempt_ordinal
+    return identity
+
+
+def _full_score_phase_capacity_retry_binding(
+    capacity_retry: FullScorePhaseCapacityRetryAuthorization | None,
+) -> dict[str, Any] | None:
+    if capacity_retry is None:
+        return None
+    return {
+        "attempt_ordinal": capacity_retry.attempt_ordinal,
+        "authorization_sha256": capacity_retry.closure_sha256,
+    }
+
+
+def _full_score_phase_record_attempt_ordinal(record: Mapping[str, Any]) -> int:
+    if "capacity_retry" not in record:
+        return 0
+    return _required_int(
+        _required_mapping(record, "capacity_retry"),
+        "attempt_ordinal",
+    )
 
 
 def _full_score_phase_lease_record(
@@ -5423,6 +6905,11 @@ def _full_score_phase_lease_record(
         "submit_payload_sha256": authorization.submit_payload_sha256,
         "wave_index": authorization.wave_index,
     }
+    capacity_retry = _full_score_phase_capacity_retry_binding(
+        authorization.capacity_retry
+    )
+    if capacity_retry is not None:
+        record["capacity_retry"] = capacity_retry
     record["closed_record_sha256"] = _closed_record_sha256(record)
     return record
 
@@ -5454,12 +6941,14 @@ def _full_score_phase_intent_path(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    attempt_ordinal: int = 0,
 ) -> Path:
     path = _full_score_phase_intent_candidate_path(
         ledger_path,
         execution_plan_sha256=execution_plan_sha256,
         wave_index=wave_index,
         phase=phase,
+        attempt_ordinal=attempt_ordinal,
     )
     root = path.parent
     try:
@@ -5478,6 +6967,7 @@ def _full_score_phase_intent_candidate_path(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    attempt_ordinal: int = 0,
 ) -> Path:
     """Return the deterministic intent path without creating its directory."""
 
@@ -5486,12 +6976,13 @@ def _full_score_phase_intent_candidate_path(
     if root.is_symlink():
         raise ValueError("full-score phase intent root must not be a symlink")
     identity = _canonical_sha256(
-        {
-            "domain": "cachet.full_score_phase_intent_path.v1",
-            "execution_plan_sha256": execution_plan_sha256,
-            "phase": phase,
-            "wave_index": wave_index,
-        }
+        _full_score_phase_attempt_path_identity(
+            "cachet.full_score_phase_intent_path.v1",
+            execution_plan_sha256=execution_plan_sha256,
+            wave_index=wave_index,
+            phase=phase,
+            attempt_ordinal=attempt_ordinal,
+        )
     )
     return root / f"{identity}.json"
 
@@ -5509,9 +7000,12 @@ def _full_score_phase_intent_record(
     budget_admission_path: str | Path | None,
     budget_admission: Mapping[str, Any] | None,
     compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    capacity_retry: FullScorePhaseCapacityRetryAuthorization | None = None,
 ) -> dict[str, Any]:
     if (budget_admission_path is None) != (budget_admission is None):
         raise ValueError("full-score phase intent P90 binding is incomplete")
+    if capacity_retry is not None and budget_admission_path is not None:
+        raise ValueError("full-score capacity retries do not consume a P90 admission")
     admission_binding: dict[str, Any] | None = None
     if budget_admission_path is not None:
         admission_file = _governed_compact_file(
@@ -5549,6 +7043,9 @@ def _full_score_phase_intent_record(
         "wave_index": wave_index,
         "workload_id": workload_id,
     }
+    capacity_retry_binding = _full_score_phase_capacity_retry_binding(capacity_retry)
+    if capacity_retry_binding is not None:
+        record["capacity_retry"] = capacity_retry_binding
     record["closed_record_sha256"] = _closed_record_sha256(record)
     return record
 
@@ -5565,6 +7062,7 @@ def _write_or_require_full_score_phase_intent(
         ),
         wave_index=_required_int(record, "wave_index"),
         phase=_required_string(record, "phase"),
+        attempt_ordinal=_full_score_phase_record_attempt_ordinal(record),
     )
     content = _canonical_pretty_json_bytes(record)
     try:
@@ -5587,6 +7085,7 @@ def _require_full_score_phase_intent(
         ),
         wave_index=_required_int(expected, "wave_index"),
         phase=_required_string(expected, "phase"),
+        attempt_ordinal=_full_score_phase_record_attempt_ordinal(expected),
     )
     content = _canonical_pretty_json_bytes(expected)
     if path.is_symlink() or not path.is_file():
@@ -5606,6 +7105,7 @@ def _write_or_require_full_score_phase_lease(
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
         phase=authorization.phase,
+        attempt_ordinal=authorization.attempt_ordinal,
     )
     content = _canonical_pretty_json_bytes(record)
     try:
@@ -5633,6 +7133,7 @@ def _require_full_score_phase_lease(
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
         phase=authorization.phase,
+        attempt_ordinal=authorization.attempt_ordinal,
     )
     if intent_path.is_symlink() or not intent_path.is_file():
         raise ValueError("full-score phase authority requires its durable intent")
@@ -5650,6 +7151,8 @@ def _require_full_score_phase_lease(
         != authorization.predecessor_prefix.to_record()
         or intent.get("attempt_id") != authorization.attempt_id
         or intent.get("submit_payload_sha256") != authorization.submit_payload_sha256
+        or intent.get("capacity_retry")
+        != _full_score_phase_capacity_retry_binding(authorization.capacity_retry)
         or intent_bytes != _canonical_pretty_json_bytes(intent)
     ):
         raise ValueError("full-score phase intent authority binding drift")
@@ -5659,6 +7162,7 @@ def _require_full_score_phase_lease(
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
         phase=authorization.phase,
+        attempt_ordinal=authorization.attempt_ordinal,
     )
     if path.is_symlink() or not path.is_file():
         raise ValueError("full-score phase replay requires the post-batch lease")
@@ -5819,6 +7323,9 @@ def reserve_governed_full_score_phase_attempt(
         budget_admission_path=budget_admission_path,
         budget_admission=admission,
         compact_artifact_resolver=compact_artifact_resolver,
+        capacity_retry=_full_score_capacity_retry_predecessor(
+            predecessor_authorization
+        ),
     )
     _write_or_require_full_score_phase_intent(live_path, intent)
     updated, batch_authorization = reserve_databricks_run_attempt_batch_authorized_json(
@@ -5850,6 +7357,9 @@ def reserve_governed_full_score_phase_attempt(
             predecessor_authorization
         )[1],
         _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
+        capacity_retry=_full_score_capacity_retry_predecessor(
+            predecessor_authorization
+        ),
     )
     _write_or_require_full_score_phase_lease(live_path, authorization)
     return updated, authorization
@@ -5940,6 +7450,7 @@ def _replay_governed_full_score_phase_submission_authorization(
         submit_payload,
         attempt_id=attempt_id,
     )
+    capacity_retry = _full_score_capacity_retry_predecessor(predecessor_authorization)
     bindings = _validated_full_score_phase_submit_payload(
         execution_plan,
         submit_payload,
@@ -5950,6 +7461,7 @@ def _replay_governed_full_score_phase_submission_authorization(
         require_governed_consumer_ready_phase=True,
         remote_ready_authorization=remote_ready_authorization,
         compact_artifact_resolver=compact_artifact_resolver,
+        capacity_retry=capacity_retry,
     )
     _require_full_score_phase_launch_authorization(
         bindings,
@@ -5972,9 +7484,12 @@ def _replay_governed_full_score_phase_submission_authorization(
         remote_consumer_authorizations=remote_consumer_authorizations,
     )
     admission: dict[str, Any] | None
-    if wave_index == 0:
+    if wave_index == 0 or capacity_retry is not None:
         if budget_admission_path is not None:
-            raise ValueError("wave zero replay must not consume a live P90 admission")
+            raise ValueError(
+                "wave zero and capacity-retry replay must not consume a live P90 "
+                "admission"
+            )
         admission = None
     else:
         if budget_admission_path is None:
@@ -6033,6 +7548,7 @@ def _replay_governed_full_score_phase_submission_authorization(
         budget_admission_path=budget_admission_path,
         budget_admission=admission,
         compact_artifact_resolver=compact_artifact_resolver,
+        capacity_retry=capacity_retry,
     )
     _require_full_score_phase_intent(live_path, intent)
     batch_authorization = replay_databricks_run_attempt_batch_authorization_json(
@@ -6094,6 +7610,9 @@ def _replay_governed_full_score_phase_submission_authorization(
             predecessor_authorization
         )[1],
         _issuer=_FULL_SCORE_PHASE_SUBMISSION_AUTHORIZATION_ISSUER,
+        capacity_retry=_full_score_capacity_retry_predecessor(
+            predecessor_authorization
+        ),
     )
     if _finalize_missing_lease is True:
         _write_or_require_full_score_phase_lease(live_path, authorization)
@@ -6105,6 +7624,7 @@ def _replay_governed_full_score_phase_submission_authorization(
             execution_plan_sha256=authorization.execution_plan_sha256,
             wave_index=authorization.wave_index,
             phase=authorization.phase,
+            attempt_ordinal=authorization.attempt_ordinal,
         )
         lease_root = lease_path.parent
         if lease_root.exists() and (not lease_root.is_dir() or lease_root.is_symlink()):
@@ -11761,8 +13281,13 @@ def _validate_governed_producer_ready_phase(
     inventory: FullScoreInventory,
     shard_plan: Mapping[str, Any],
     execution_plan: Mapping[str, Any],
+    allow_subset: bool = False,
 ) -> None:
-    """Recheck every ready tree before a publication consumer task is admitted."""
+    """Recheck every ready tree before a publication consumer task is admitted.
+
+    A capacity retry admits only its never-started consumers, so ``allow_subset``
+    requires each payload's ready tree without requiring the whole phase.
+    """
 
     compact_by_id = {
         _required_string(item, "shard_id"): item
@@ -11801,7 +13326,11 @@ def _validate_governed_producer_ready_phase(
                 != file_binding.get("file_sha256")
             ):
                 raise ValueError("consumer phase governed ready tree binding drift")
-    if observed != set(compact_by_id) or observed != set(files_by_id):
+    if set(compact_by_id) != set(files_by_id) or (
+        not observed <= set(compact_by_id)
+        if allow_subset
+        else observed != set(compact_by_id)
+    ):
         raise ValueError("consumer phase governed ready-tree coverage drift")
 
 
@@ -11922,7 +13451,7 @@ def _validate_live_p90_budget_admission(
             != ledger_binding.get("ledger_path_sha256")
             or consumer_lineage.get("ledger_path_sha256")
             != ledger_binding.get("ledger_path_sha256")
-            or consumer_lineage.get("predecessor_prefix")
+            or _full_score_phase_opening_prefix_record(consumer_lineage)
             != producer_lineage.get("terminal_prefix")
         ):
             raise ValueError("live P90 matched-block ledger lineage drift")
@@ -13795,10 +15324,21 @@ def _validated_full_score_phase_submit_payload(
     require_governed_consumer_ready_phase: bool = False,
     remote_ready_authorization: object | None = None,
     compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
+    capacity_retry: FullScorePhaseCapacityRetryAuthorization | None = None,
 ) -> list[dict[str, Any]]:
+    """Validate one phase payload; a capacity retry carries only its retry tasks."""
+
     _validate_publication_full_score_inputs(inventory, shard_plan, execution_plan)
     if phase not in {"producer", "consumer"}:
         raise ValueError("full-score phase must be producer or consumer")
+    if capacity_retry is not None and (
+        type(capacity_retry) is not FullScorePhaseCapacityRetryAuthorization
+        or capacity_retry.execution_plan_sha256
+        != execution_plan.get("closed_record_sha256")
+        or capacity_retry.wave_index != wave_index
+        or capacity_retry.phase != phase
+    ):
+        raise ValueError("full-score capacity retry payload authority drift")
     waves = cast(list[Mapping[str, Any]], execution_plan["waves"])
     if type(wave_index) is not int or not 0 <= wave_index < len(waves):
         raise ValueError("full-score phase wave index is invalid")
@@ -13832,6 +15372,34 @@ def _validated_full_score_phase_submit_payload(
             "assignment shard_id",
         )
     tasks = submit_payload.get("tasks")
+    if capacity_retry is not None:
+        retry_workers = [
+            [
+                worker_index
+                for worker_index in expected_by_worker
+                if task_key.endswith(
+                    f"_wave_{wave_index:03d}_{phase}_{worker_index:02d}"
+                )
+            ]
+            for task_key in capacity_retry.retry_task_keys
+        ]
+        if any(len(workers) != 1 for workers in retry_workers):
+            raise ValueError("full-score capacity retry task does not bind a worker")
+        expected_by_worker = {
+            workers[0]: expected_by_worker[workers[0]] for workers in retry_workers
+        }
+        if (
+            not isinstance(tasks, list)
+            or [
+                _json_mapping(task, "full-score submit task").get("task_key")
+                for task in tasks
+            ]
+            != list(capacity_retry.retry_task_keys)
+            or _canonical_sha256(tasks) != capacity_retry.retry_tasks_sha256
+        ):
+            raise ValueError(
+                "full-score capacity retry differs from the never-started tasks"
+            )
     if not isinstance(tasks, list) or len(tasks) != len(expected_by_worker):
         raise ValueError("full-score submit task coverage differs from its wave")
     if len(tasks) > FULL_SCORE_MAX_WORKERS:
@@ -14136,6 +15704,7 @@ def _validated_full_score_phase_submit_payload(
                     inventory=inventory,
                     shard_plan=shard_plan,
                     execution_plan=execution_plan,
+                    allow_subset=capacity_retry is not None,
                 )
             else:
                 from document_kv_cache.full_score_remote_control import (
@@ -14345,6 +15914,7 @@ __all__ = [
     "FULL_SCORE_AGGREGATE_RECORD_TYPE",
     "FULL_SCORE_AGGREGATE_SCHEMA_VERSION",
     "FULL_SCORE_ATTENTION_BACKEND",
+    "FULL_SCORE_CAPACITY_TERMINATION_REASONS",
     "FULL_SCORE_CONSUMER_NODE_TYPE_ID",
     "FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE",
     "FULL_SCORE_CONNECTOR_PROOF_SCHEMA_VERSION",
@@ -14374,6 +15944,9 @@ __all__ = [
     "FULL_SCORE_MODEL_QUANTIZATION",
     "FULL_SCORE_MODEL_NUM_LAYERS",
     "FULL_SCORE_PASSES_PER_METHOD",
+    "FULL_SCORE_PHASE_CAPACITY_FAILURE_RECORD_TYPE",
+    "FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION",
+    "FULL_SCORE_PHASE_MAX_ATTEMPTS",
     "FULL_SCORE_PHASE_TERMINAL_RECORD_TYPE",
     "FULL_SCORE_PHASE_TERMINAL_SCHEMA_VERSION",
     "FULL_SCORE_PRODUCER_HARDWARE_TARGET",
@@ -14410,6 +15983,7 @@ __all__ = [
     "DatabricksFullScoreJobConfig",
     "FullScoreCommandRunner",
     "FullScorePhaseAuthorization",
+    "FullScorePhaseCapacityRetryAuthorization",
     "FullScorePhaseSubmissionAuthorization",
     "FullScoreGPUQualificationConfig",
     "FullScoreRuntimeConfig",
@@ -14421,20 +15995,24 @@ __all__ = [
     "build_full_score_connector_proof",
     "build_full_score_live_p90_budget_admission",
     "build_full_score_matched_billing_block",
+    "build_full_score_phase_capacity_retry_submit_payload",
     "build_full_score_producer_phase_completion_record",
     "build_full_score_wave_completion_record",
     "build_full_score_worker_payloads",
     "build_governed_full_score_live_p90_budget_admission",
     "build_governed_full_score_matched_billing_block",
+    "build_governed_full_score_phase_capacity_failure_record",
     "build_governed_full_score_phase_terminal_record",
     "build_governed_full_score_producer_phase_completion_record",
     "build_governed_full_score_wave_completion_record",
     "full_score_inventory_from_record",
     "full_score_wave_worst_case_gpu_hours",
     "collect_governed_full_score_phase_attempt",
+    "collect_governed_full_score_phase_attempt_outcome",
     "main",
     "load_governed_full_score_live_p90_budget_admission",
     "load_governed_full_score_matched_billing_block",
+    "load_governed_full_score_phase_capacity_failure_record",
     "load_governed_full_score_phase_terminal_record",
     "load_governed_full_score_shard_evidence",
     "preview_local_fixture_databricks_full_score_run_submit_payload",
@@ -14443,6 +16021,7 @@ __all__ = [
     "recover_governed_full_score_phase_attempt",
     "recover_governed_full_score_phase_reservation",
     "replay_governed_full_score_phase_authorization",
+    "replay_governed_full_score_phase_capacity_retry_authorization",
     "replay_governed_full_score_phase_submission_authorization",
     "resume_governed_full_score_phase_attempt",
     "reserve_and_submit_governed_full_score_phase_attempt",
