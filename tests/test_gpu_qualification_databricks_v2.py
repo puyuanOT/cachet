@@ -232,16 +232,16 @@ def test_v2_bootstrap_and_renderer_have_stable_golden_bytes() -> None:
     assert len(databricks_v2.GPU_QUALIFICATION_V2_BOOTSTRAP_RUNNER_SCRIPT) == 27403
     plan = _plan()
     assert plan["closed_record_sha256"] == (
-        "c52a6cde14bf8cea84452c0863ff329e39bba7c7cdff66d4a41f6039de896792"
+        "094184591384c0f6d99808bfd98903b1455401a92e7111c54a0619dd986fccec"
     )
-    assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 17180
+    assert len(canonical_gpu_qualification_json(plan).encode("utf-8")) == 17274
     payloads = _payloads()
     payload_bytes = canonical_gpu_qualification_json(
         {"payloads": list(payloads)}
     ).encode("utf-8")
-    assert len(payload_bytes) == 114529
+    assert len(payload_bytes) == 115033
     assert hashlib.sha256(payload_bytes).hexdigest() == (
-        "a9c3b0b2fd01dfd2f3994d87b9fd42a73e1e6e9924ed0e8f7eb0a7fec9c74e73"
+        "904f364541a120953b312b7e39d5fef3a2a5b7a7b6bdec67d24fe7bed69a1787"
     )
 
 
@@ -275,8 +275,8 @@ def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom()
             == (_artifact_uris()["runner_sha256"])
         )
         assert "spark_env_vars" not in task["new_cluster"]
-    assert min(sizes) == 7096
-    assert max(sizes) == 7168
+    assert min(sizes) == 7132
+    assert max(sizes) == 7204
     assert (
         max(sizes) < databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES
     )
@@ -372,8 +372,8 @@ def test_v2_renderer_uses_plan_pins_and_eight_uris_with_safe_argument_headroom()
         )
         for payload in production_payloads
     ]
-    assert min(production_sizes) == 8628
-    assert max(production_sizes) == 8700
+    assert min(production_sizes) == 8668
+    assert max(production_sizes) == 8740
     assert max(production_sizes) <= (
         databricks_v2.GPU_QUALIFICATION_V2_DATABRICKS_PARAMETERS_MAX_BYTES - 600
     )
@@ -1376,7 +1376,9 @@ def test_v2_executor_publishes_valid_result_and_logs_rejected_measurements(
 
     diagnostic_measurements = {
         "backend_selection_mode": "auto",
+        "engine_failure": None,
         "observed_backend": "FLASHINFER",
+        "observed_backend_source": "model_inspection",
         "publication_backend_changed": False,
         "trust_remote_code": False,
     }

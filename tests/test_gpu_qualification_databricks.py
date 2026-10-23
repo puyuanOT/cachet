@@ -197,9 +197,24 @@ def test_worker_uses_canonical_wheel_environment_and_secure_model_inspection(
     generate_calls: list[tuple[list[str], object, bool]] = []
     shutdown_calls: list[None] = []
 
+    class CudaPlatform:
+        @classmethod
+        def get_attn_backend_cls(cls, selected_backend, **_kwargs: Any) -> str:
+            assert selected_backend is None
+            return "vllm.v1.attention.backends.flashinfer.FlashInferBackend"
+
+    original_selector = vars(CudaPlatform)["get_attn_backend_cls"]
+    platforms = types.SimpleNamespace(current_platform=CudaPlatform())
+
+    def select_backend() -> None:
+        assert platforms.current_platform.get_attn_backend_cls(
+            None, attn_selector_config=object()
+        ) == "vllm.v1.attention.backends.flashinfer.FlashInferBackend"
+
     class LiveLLM:
         def __init__(self, **kwargs: Any):
             llm_init_kwargs.append(kwargs)
+            select_backend()
             self.llm_engine = types.SimpleNamespace(
                 engine_core=types.SimpleNamespace(
                     shutdown=lambda: shutdown_calls.append(None)
@@ -243,11 +258,13 @@ def test_worker_uses_canonical_wheel_environment_and_secure_model_inspection(
     assert rpc_methods == ["get_model_inspection"]
 
     monkeypatch.delenv("VLLM_ATTENTION_BACKEND", raising=False)
+    monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "1")
     monkeypatch.setitem(
         sys.modules,
         "vllm",
         types.SimpleNamespace(LLM=LiveLLM, SamplingParams=SamplingParams),
     )
+    monkeypatch.setitem(sys.modules, "vllm.platforms", platforms)
     assert sentinel_worker._auto_backend_sentinel(
         plan_record={},
         planned_job={},
@@ -255,10 +272,14 @@ def test_worker_uses_canonical_wheel_environment_and_secure_model_inspection(
         work_dir=tmp_path,
     ) == {
         "backend_selection_mode": "auto",
+        "engine_failure": None,
         "observed_backend": "FLASHINFER+FLASH_ATTN+TRITON_ATTN",
+        "observed_backend_source": "model_inspection",
         "publication_backend_changed": False,
         "trust_remote_code": False,
     }
+    assert os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] == "0"
+    assert vars(CudaPlatform)["get_attn_backend_cls"] is original_selector
     assert llm_init_kwargs[-1] == {
         "model": "Qwen/Qwen3-4B-Instruct-2507",
         "revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
@@ -285,6 +306,68 @@ def test_worker_uses_canonical_wheel_environment_and_secure_model_inspection(
     assert use_tqdm is False
     assert rpc_methods == ["get_model_inspection", "get_model_inspection"]
     assert shutdown_calls == [None]
+
+    jit_failure = RuntimeError(
+        "Ninja build failed. Ninja output:\n"
+        "[1/3] /usr/local/cuda/bin/nvcc -c batch_prefill_jit_binding.cu\n"
+        "nvcc fatal   : Unknown option '--compress-mode=size'\n"
+        "ninja: build stopped: subcommand failed."
+    )
+
+    class JitFailingLLM:
+        def __init__(self, **_kwargs: Any):
+            select_backend()
+            raise jit_failure
+
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        types.SimpleNamespace(LLM=JitFailingLLM, SamplingParams=SamplingParams),
+    )
+    assert sentinel_worker._auto_backend_sentinel(
+        plan_record={},
+        planned_job={},
+        input_bundle=tmp_path,
+        work_dir=tmp_path,
+    ) == {
+        "backend_selection_mode": "auto",
+        "engine_failure": "nvcc fatal   : Unknown option '--compress-mode=size'",
+        "observed_backend": "FLASHINFER",
+        "observed_backend_source": "attention_selector",
+        "publication_backend_changed": False,
+        "trust_remote_code": False,
+    }
+    assert shutdown_calls == [None]
+    assert vars(CudaPlatform)["get_attn_backend_cls"] is original_selector
+
+    class PreSelectionFailingLLM:
+        def __init__(self, **_kwargs: Any):
+            raise OSError("model snapshot unavailable")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        types.SimpleNamespace(
+            LLM=PreSelectionFailingLLM, SamplingParams=SamplingParams
+        ),
+    )
+    with pytest.raises(OSError, match="model snapshot unavailable"):
+        sentinel_worker._auto_backend_sentinel(
+            plan_record={},
+            planned_job={},
+            input_bundle=tmp_path,
+            work_dir=tmp_path,
+        )
+    assert vars(CudaPlatform)["get_attn_backend_cls"] is original_selector
+
+    wrapped = RuntimeError("Engine core initialization failed.")
+    wrapped.__cause__ = ValueError("x" * 600)
+    assert sentinel_worker._engine_failure_excerpt(wrapped) == (
+        "RuntimeError: Engine core initialization failed."
+    )
+    assert sentinel_worker._engine_failure_excerpt(
+        RuntimeError("nvcc fatal " + "y" * 600)
+    ) == ("nvcc fatal " + "y" * 600)[:512]
 
     class InvalidInspectionLLM:
         def __init__(self, records: object):
@@ -8546,7 +8629,9 @@ def test_executor_independently_validates_and_exclusively_seals_result(
 ):
     measurements = {
         "backend_selection_mode": "auto",
+        "engine_failure": None,
         "observed_backend": "FLASHINFER",
+        "observed_backend_source": "model_inspection",
         "publication_backend_changed": False,
         "trust_remote_code": False,
     }
@@ -8565,7 +8650,9 @@ def test_executor_rejects_arbitrary_extra_measurement_json_before_publish(
 ):
     measurements = {
         "backend_selection_mode": "auto",
+        "engine_failure": None,
         "observed_backend": "FLASHINFER",
+        "observed_backend_source": "model_inspection",
         "publication_backend_changed": False,
         "trust_remote_code": False,
         "caller_supplied_success": True,
@@ -8589,7 +8676,9 @@ def test_executor_cleanup_failure_cannot_publish_a_success_result(
             monkeypatch,
             measurements={
                 "backend_selection_mode": "auto",
+                "engine_failure": None,
                 "observed_backend": "FLASHINFER",
+                "observed_backend_source": "model_inspection",
                 "publication_backend_changed": False,
                 "trust_remote_code": False,
             },

@@ -21,6 +21,8 @@ from document_kv_cache.publication_campaign_finalizer import (
 )
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
+    GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES,
+    GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES,
 )
 
 
@@ -1517,7 +1519,11 @@ def _render_hardware(cells: Mapping[str, Mapping[str, Any]]) -> str:
                 cells["auxiliary-hardware-a10g"],
                 "Implemented five-block compatibility refresh cell; "
                 "qualified vLLM `gpu_memory_utilization="
-                f"{GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION:.2f}`",
+                f"{GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION:.2f}` "
+                "against an A10G-only "
+                f"{GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES / 1024**3:.2f} GiB "
+                "peak-headroom gate (other GPUs: "
+                f"{GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES / 1024**3:.0f} GiB)",
             ),
         ),
     )

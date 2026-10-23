@@ -91,6 +91,11 @@ GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS: Final = (
 )
 GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS: Final = 256
 GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES: Final = 2 * 1024**3
+# A10G only: its GMU is pinned at 0.85 by the A10G latency cells, where vLLM
+# 0.30.0 leaves less than 2 GiB of peak headroom. The publication hardware table
+# must disclose this threshold.
+GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES: Final = 1_792 * 1024**2
+GPU_QUALIFICATION_AUTO_BACKEND_ENGINE_FAILURE_MAX_CHARS: Final = 512
 GPU_QUALIFICATION_GMU_SWEEP: Final = (0.70, 0.75, 0.80)
 GPU_QUALIFICATION_THROUGHPUT_BUCKETS: Final = (8_192, 16_384, 32_768)
 GPU_QUALIFICATION_THROUGHPUT_SAMPLES_PER_BUCKET: Final = 4
@@ -1768,7 +1773,7 @@ def _qualification_jobs() -> list[dict[str, Any]]:
                     GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS
                 ),
                 "minimum_observed_peak_headroom_bytes": (
-                    GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES
+                    GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES
                 ),
                 "request_parallelism": 4,
                 "cold_disk_q8_pre_rope_vanilla_handoffs": True,
@@ -1840,6 +1845,7 @@ def _qualification_jobs() -> list[dict[str, Any]]:
                 backend_mode="auto",
                 requirements={
                     "can_select_publication_backend": False,
+                    "engine_failure_after_selection_recorded": True,
                     "observed_backend_required": True,
                     "publication_backend_remains": (
                         GPU_QUALIFICATION_PUBLICATION_BACKEND
@@ -3321,7 +3327,7 @@ def _validate_a10g_capacity_measurements(value: Mapping[str, Any]) -> None:
             "A10G observed peak headroom does not match total minus peak used"
         )
     qualified = capacity >= GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS and (
-        headroom >= GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES
+        headroom >= GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES
     )
     if value.get("capacity_qualified") is not qualified or not qualified:
         raise ValueError("A10G 16k c4 capacity/headroom gates did not pass")
@@ -4050,7 +4056,9 @@ def _validate_auto_backend_measurements(value: Mapping[str, Any]) -> None:
     expected_keys = frozenset(
         {
             "backend_selection_mode",
+            "engine_failure",
             "observed_backend",
+            "observed_backend_source",
             "publication_backend_changed",
             "trust_remote_code",
         }
@@ -4061,6 +4069,26 @@ def _validate_auto_backend_measurements(value: Mapping[str, Any]) -> None:
     observed = value.get("observed_backend")
     if not isinstance(observed, str) or not observed:
         raise ValueError("auto backend diagnostic must record the observed backend")
+    source = value.get("observed_backend_source")
+    engine_failure = value.get("engine_failure")
+    if source == "model_inspection":
+        if engine_failure is not None:
+            raise ValueError(
+                "auto backend diagnostic inspected a model whose engine failed"
+            )
+    elif source == "attention_selector":
+        if (
+            not isinstance(engine_failure, str)
+            or not engine_failure.strip()
+            or len(engine_failure)
+            > GPU_QUALIFICATION_AUTO_BACKEND_ENGINE_FAILURE_MAX_CHARS
+        ):
+            raise ValueError(
+                "auto backend diagnostic must record a bounded engine failure "
+                "when only the selector observed the backend"
+            )
+    else:
+        raise ValueError("auto backend diagnostic observed_backend_source is invalid")
     if value.get("publication_backend_changed") is not False:
         raise ValueError("auto backend diagnostic cannot change publication backend")
     if value.get("trust_remote_code") is not False:
@@ -4406,7 +4434,9 @@ __all__ = [
     "GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION",
     "GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS",
     "GPU_QUALIFICATION_A10G_MAX_MODEL_LEN",
+    "GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES",
     "GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS",
+    "GPU_QUALIFICATION_AUTO_BACKEND_ENGINE_FAILURE_MAX_CHARS",
     "GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256",
     "GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS",
     "GPU_QUALIFICATION_CLOUD_EVIDENCE_RECORD_TYPE",
