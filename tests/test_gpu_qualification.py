@@ -23,6 +23,7 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
     GPU_QUALIFICATION_A10G_MAX_MODEL_LEN,
+    GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES,
     GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS,
     GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
     GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS,
@@ -715,7 +716,9 @@ def _measurements(job: dict[str, Any]) -> dict[str, Any]:
     if sentinel == "auto_backend_diagnostic":
         return {
             "backend_selection_mode": "auto",
+            "engine_failure": None,
             "observed_backend": "FLASHINFER",
+            "observed_backend_source": "model_inspection",
             "publication_backend_changed": False,
             "trust_remote_code": False,
         }
@@ -2571,7 +2574,7 @@ def test_plan_freezes_the_complete_bounded_gpu_qualification_matrix():
     )
     assert a10g_capacity_job["requirements"][
         "minimum_observed_peak_headroom_bytes"
-    ] == 2 * 1024**3
+    ] == 1_792 * 1024**2
     assert {
         job["hardware_id"]
         for job in cloud["jobs"]
@@ -3334,6 +3337,47 @@ def test_a10g_campaign_shaped_16k_c4_capacity_gate_is_required(monkeypatch):
             expected_artifact_pins=PINS,
         )
 
+    for headroom, qualified in (
+        (GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES - 1, False),
+        (GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES, True),
+        (1_918 * 1024**2, True),
+    ):
+        _, evidence = _valid_evidence()
+        result = next(
+            item
+            for item in evidence["cloud_gpu_evidence"]["jobs"]
+            if item["job_id"] == "aws-g5-a10g-16k-c4-capacity"
+        )
+        measurements = result["measurements"]
+        total = measurements["observed_total_memory_bytes"]
+        measurements["observed_peak_headroom_bytes"] = headroom
+        measurements["observed_peak_used_memory_bytes"] = total - headroom
+        measurements["capacity_qualified"] = qualified
+        _reseal_evidence(evidence)
+        if qualified:
+            validate_gpu_qualification_evidence_record(
+                evidence,
+                plan_record=plan,
+                expected_campaign_id=CAMPAIGN_ID,
+                expected_artifact_pins=PINS,
+            )
+        else:
+            with pytest.raises(ValueError, match="capacity/headroom"):
+                validate_gpu_qualification_evidence_record(
+                    evidence,
+                    plan_record=plan,
+                    expected_campaign_id=CAMPAIGN_ID,
+                    expected_artifact_pins=PINS,
+                )
+    a10g_job = next(
+        job
+        for job in plan["cloud_qualification"]["jobs"]
+        if job["job_id"] == "aws-g5-a10g-16k-c4-capacity"
+    )
+    assert a10g_job["requirements"]["minimum_observed_peak_headroom_bytes"] == (
+        GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES
+    )
+
     _, evidence = _valid_evidence()
     result = next(
         item
@@ -3359,7 +3403,7 @@ def test_a10g_campaign_shaped_16k_c4_capacity_gate_is_required(monkeypatch):
                 GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS
             ),
             "observed_peak_headroom_bytes": (
-                GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES
+                GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES
             ),
         }
 
@@ -3384,6 +3428,61 @@ def test_a10g_campaign_shaped_16k_c4_capacity_gate_is_required(monkeypatch):
     assert sentinel_worker._matched_token_gpu_memory_utilization("aws-g6-l4") == 0.75
     with pytest.raises(RuntimeError, match="unsupported hardware"):
         sentinel_worker._matched_token_gpu_memory_utilization("unknown")
+
+
+def test_auto_backend_diagnostic_uses_selector_backend_only_with_engine_failure():
+    def auto_measurements(evidence: dict[str, Any]) -> dict[str, Any]:
+        return next(
+            item
+            for item in evidence["cloud_gpu_evidence"]["jobs"]
+            if item["job_id"] == "aws-g5-a10g-auto-backend-diagnostic"
+        )["measurements"]
+
+    plan, evidence = _valid_evidence()
+    measurements = auto_measurements(evidence)
+    measurements["observed_backend_source"] = "attention_selector"
+    measurements["engine_failure"] = (
+        "nvcc fatal   : Unknown option '--compress-mode=size'"
+    )
+    _reseal_evidence(evidence)
+    validate_gpu_qualification_evidence_record(
+        evidence,
+        plan_record=plan,
+        expected_campaign_id=CAMPAIGN_ID,
+        expected_artifact_pins=PINS,
+    )
+
+    for source, failure, match in (
+        ("attention_selector", None, "bounded engine failure"),
+        ("attention_selector", "   ", "bounded engine failure"),
+        ("attention_selector", "x" * 513, "bounded engine failure"),
+        ("model_inspection", "nvcc fatal", "engine failed"),
+        ("log_scrape", None, "observed_backend_source is invalid"),
+    ):
+        _, evidence = _valid_evidence()
+        measurements = auto_measurements(evidence)
+        measurements["observed_backend_source"] = source
+        measurements["engine_failure"] = failure
+        _reseal_evidence(evidence)
+        with pytest.raises(ValueError, match=match):
+            validate_gpu_qualification_evidence_record(
+                evidence,
+                plan_record=plan,
+                expected_campaign_id=CAMPAIGN_ID,
+                expected_artifact_pins=PINS,
+            )
+
+    auto_jobs = [
+        job
+        for job in plan["cloud_qualification"]["jobs"]
+        if job["sentinel"] == "auto_backend_diagnostic"
+    ]
+    assert len(auto_jobs) == 2
+    assert all(
+        job["evidence_class"] == "diagnostic_only"
+        and job["requirements"]["engine_failure_after_selection_recorded"] is True
+        for job in auto_jobs
+    )
 
 
 def test_gmu_sweep_rejects_oom_and_requires_a_qualified_candidate():
@@ -3435,6 +3534,7 @@ def test_gmu_selected_value_must_be_highest_candidate_meeting_both_gates():
             expected_artifact_pins=PINS,
         )
     assert GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES == 2 * 1024**3
+    assert GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES == 1_792 * 1024**2
     assert GPU_QUALIFICATION_REQUIRED_KV_CAPACITY_TOKENS == 4 * (32768 + 512)
 
 

@@ -10,6 +10,7 @@ qualification evidence.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import gc
 import importlib.metadata
@@ -25,7 +26,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -35,7 +36,9 @@ from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
     GPU_QUALIFICATION_A10G_INPUT_CONTEXT_TOKENS,
     GPU_QUALIFICATION_A10G_MAX_MODEL_LEN,
+    GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES,
     GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS,
+    GPU_QUALIFICATION_AUTO_BACKEND_ENGINE_FAILURE_MAX_CHARS,
     GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
     GPU_QUALIFICATION_CAPACITY_DECODE_TOKENS,
     GPU_QUALIFICATION_CONNECTOR_SOURCE_SHA256,
@@ -1814,7 +1817,7 @@ def _a10g_capacity_sentinel(
         measured["kv_cache_capacity_tokens"]
         >= GPU_QUALIFICATION_A10G_REQUIRED_KV_CAPACITY_TOKENS
         and measured["observed_peak_headroom_bytes"]
-        >= GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES
+        >= GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES
     )
     return measured
 
@@ -2247,22 +2250,65 @@ def _observed_attention_backends(llm: Any) -> set[str]:
         raise RuntimeError(
             "vLLM model inspection exposed no attention backend implementation"
         )
-    normalized: set[str] = set()
-    for name in names:
-        upper = name.upper()
-        if "TRITON" in upper:
-            normalized.add("TRITON_ATTN")
-        elif "FLASHINFER" in upper:
-            normalized.add("FLASHINFER")
-        elif (
-            "FLASH_ATTN" in upper
-            or "FLASHATTN" in upper
-            or "FLASHATTENTION" in upper
-        ):
-            normalized.add("FLASH_ATTN")
+    return {_normalized_attention_backend(name) for name in names}
+
+
+def _normalized_attention_backend(name: str) -> str:
+    upper = name.upper()
+    if "TRITON" in upper:
+        return "TRITON_ATTN"
+    if "FLASHINFER" in upper:
+        return "FLASHINFER"
+    if "FLASH_ATTN" in upper or "FLASHATTN" in upper or "FLASHATTENTION" in upper:
+        return "FLASH_ATTN"
+    return name
+
+
+@contextlib.contextmanager
+def _recorded_attention_backend_selection() -> Iterator[set[str]]:
+    """Record every backend vLLM's platform selector returns in this process."""
+
+    from vllm.platforms import current_platform  # type: ignore[import-not-found]
+
+    platform_cls = type(current_platform)
+    own_attribute = vars(platform_cls).get("get_attn_backend_cls")
+    selector = platform_cls.get_attn_backend_cls
+    selected: set[str] = set()
+
+    def recording_selector(_cls: Any, *args: Any, **kwargs: Any) -> Any:
+        backend_path = selector(*args, **kwargs)
+        selected.add(
+            _normalized_attention_backend(str(backend_path).rsplit(".", 1)[-1])
+        )
+        return backend_path
+
+    platform_cls.get_attn_backend_cls = classmethod(recording_selector)
+    try:
+        yield selected
+    finally:
+        if own_attribute is None:
+            del platform_cls.get_attn_backend_cls
         else:
-            normalized.add(name)
-    return normalized
+            platform_cls.get_attn_backend_cls = own_attribute
+
+
+def _engine_failure_excerpt(exc: BaseException) -> str:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    lines = [
+        line.strip()
+        for error in chain
+        for line in str(error).splitlines()
+        if line.strip()
+    ]
+    excerpt = next(
+        (line for line in lines if "fatal" in line.lower()),
+        f"{type(exc).__name__}: {lines[0]}" if lines else type(exc).__name__,
+    )
+    return excerpt[:GPU_QUALIFICATION_AUTO_BACKEND_ENGINE_FAILURE_MAX_CHARS]
 
 
 def _shutdown_llm(llm: Any | None) -> None:
@@ -2288,39 +2334,58 @@ def _auto_backend_sentinel(
     del plan_record, planned_job, input_bundle, work_dir
     if os.environ.get("VLLM_ATTENTION_BACKEND"):
         raise RuntimeError("auto-backend diagnostic inherited a forced backend")
+    # The selector hook only sees an in-process engine core.
+    os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     from vllm import LLM, SamplingParams  # type: ignore[import-not-found]
 
-    llm: Any = LLM(
-        model=GPU_QUALIFICATION_MODEL_ID,
-        revision=GPU_QUALIFICATION_MODEL_REVISION,
-        tokenizer_revision=GPU_QUALIFICATION_MODEL_REVISION,
-        dtype="bfloat16",
-        quantization="bitsandbytes",
-        kv_cache_dtype="fp8_e5m2",
-        max_model_len=512,
-        max_num_seqs=1,
-        gpu_memory_utilization=0.70,
-        trust_remote_code=False,
-        seed=17,
-        enforce_eager=True,
-    )
-    try:
-        outputs = llm.generate(
-            ["Return the single word cachet."],
-            SamplingParams(temperature=0.0, seed=17, max_tokens=1),
-            use_tqdm=False,
-        )
-        if len(outputs) != 1:
-            raise RuntimeError("auto backend diagnostic request failed")
-        backends = sorted(_observed_attention_backends(llm))
-        if not backends:
-            raise RuntimeError("auto backend diagnostic observed no attention backend")
-        observed = "+".join(backends)
-    finally:
-        _shutdown_llm(llm)
+    llm: Any = None
+    outputs: Any = None
+    engine_failure: str | None = None
+    with _recorded_attention_backend_selection() as selected:
+        try:
+            try:
+                llm = LLM(
+                    model=GPU_QUALIFICATION_MODEL_ID,
+                    revision=GPU_QUALIFICATION_MODEL_REVISION,
+                    tokenizer_revision=GPU_QUALIFICATION_MODEL_REVISION,
+                    dtype="bfloat16",
+                    quantization="bitsandbytes",
+                    kv_cache_dtype="fp8_e5m2",
+                    max_model_len=512,
+                    max_num_seqs=1,
+                    gpu_memory_utilization=0.70,
+                    trust_remote_code=False,
+                    seed=17,
+                    enforce_eager=True,
+                )
+                outputs = llm.generate(
+                    ["Return the single word cachet."],
+                    SamplingParams(temperature=0.0, seed=17, max_tokens=1),
+                    use_tqdm=False,
+                )
+            except Exception as exc:
+                if not selected:
+                    raise
+                engine_failure = _engine_failure_excerpt(exc)
+            if engine_failure is None:
+                if len(outputs) != 1:
+                    raise RuntimeError("auto backend diagnostic request failed")
+                backends = sorted(_observed_attention_backends(llm))
+                source = "model_inspection"
+            else:
+                backends = sorted(selected)
+                source = "attention_selector"
+            if not backends:
+                raise RuntimeError(
+                    "auto backend diagnostic observed no attention backend"
+                )
+        finally:
+            _shutdown_llm(llm)
     return {
         "backend_selection_mode": "auto",
-        "observed_backend": observed,
+        "engine_failure": engine_failure,
+        "observed_backend": "+".join(backends),
+        "observed_backend_source": source,
         "publication_backend_changed": False,
         "trust_remote_code": False,
     }
