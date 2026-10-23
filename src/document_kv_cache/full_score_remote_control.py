@@ -956,7 +956,144 @@ def collect_governed_full_score_remote_phase_attempt(
 ) -> tuple[dict[str, Any], full_score.FullScorePhaseAuthorization]:
     """Collect a GPU phase on Mac through Files/CAS with a local ledger only."""
 
-    if type(submission_authorization) is not full_score.FullScorePhaseSubmissionAuthorization:
+    compact_io, (submit_uri, run_uri, terminal_uri) = _prepare_remote_phase_collection(
+        workspace,
+        cas=cas,
+        submission_authorization=submission_authorization,
+        submit_payload_uri=submit_payload_uri,
+        evidence_uris=(control_plane_run_uri, terminal_record_uri),
+        single_user_name=single_user_name,
+        opener=opener,
+    )
+    return full_score.collect_governed_full_score_phase_attempt(
+        workspace,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        ledger_path=ledger_path,
+        submission_authorization=submission_authorization,
+        submit_payload_path=submit_uri,
+        control_plane_run_path=run_uri,
+        terminal_record_path=terminal_uri,
+        compact_artifact_resolver=compact_io.resolve,
+        compact_artifact_publisher=compact_io.publish,
+        opener=opener,
+    )
+
+
+def collect_governed_full_score_remote_phase_attempt_outcome(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    cas: FullScoreCompactArtifactCAS,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    ledger_path: str | Path,
+    submission_authorization: full_score.FullScorePhaseSubmissionAuthorization,
+    submit_payload_uri: str,
+    control_plane_run_uri: str,
+    terminal_record_uri: str,
+    capacity_failure_record_uri: str,
+    single_user_name: str,
+    opener: Any | None = None,
+) -> tuple[
+    dict[str, Any],
+    full_score.FullScorePhaseAuthorization
+    | full_score.FullScorePhaseCapacityRetryAuthorization,
+]:
+    """Collect one remote attempt as a phase terminal or a capacity failure."""
+
+    (
+        compact_io,
+        (submit_uri, run_uri, terminal_uri, failure_uri),
+    ) = _prepare_remote_phase_collection(
+        workspace,
+        cas=cas,
+        submission_authorization=submission_authorization,
+        submit_payload_uri=submit_payload_uri,
+        evidence_uris=(
+            control_plane_run_uri,
+            terminal_record_uri,
+            capacity_failure_record_uri,
+        ),
+        single_user_name=single_user_name,
+        opener=opener,
+    )
+    if submission_authorization.capacity_retry is not None:
+        _download_remote_capacity_failure_chain(
+            compact_io,
+            [
+                path
+                for path, _sha in submission_authorization.capacity_retry.failure_records
+            ],
+            phase=submission_authorization.phase,
+            single_user_name=single_user_name,
+        )
+    return full_score.collect_governed_full_score_phase_attempt_outcome(
+        workspace,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        ledger_path=ledger_path,
+        submission_authorization=submission_authorization,
+        submit_payload_path=submit_uri,
+        control_plane_run_path=run_uri,
+        terminal_record_path=terminal_uri,
+        capacity_failure_record_path=failure_uri,
+        compact_artifact_resolver=compact_io.resolve,
+        compact_artifact_publisher=compact_io.publish,
+        opener=opener,
+    )
+
+
+def replay_governed_full_score_remote_phase_capacity_retry_authorization(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    cas: FullScoreCompactArtifactCAS,
+    execution_plan: Mapping[str, Any],
+    inventory: FullScoreInventory,
+    shard_plan: Mapping[str, Any],
+    ledger_path: str | Path,
+    wave_index: int,
+    phase: str,
+    capacity_failure_record_uris: Sequence[str],
+    single_user_name: str,
+) -> full_score.FullScorePhaseCapacityRetryAuthorization:
+    """Reissue a phase's retry authority after controller restart via Files/CAS."""
+
+    compact_io = FullScoreRemoteCompactArtifactIO(workspace, cas)
+    uris = _download_remote_capacity_failure_chain(
+        compact_io,
+        capacity_failure_record_uris,
+        phase=phase,
+        single_user_name=single_user_name,
+    )
+    return full_score.replay_governed_full_score_phase_capacity_retry_authorization(
+        uris,
+        execution_plan=execution_plan,
+        inventory=inventory,
+        shard_plan=shard_plan,
+        wave_index=wave_index,
+        phase=phase,
+        ledger_path=ledger_path,
+        compact_artifact_resolver=compact_io.resolve,
+    )
+
+
+def _prepare_remote_phase_collection(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    cas: FullScoreCompactArtifactCAS,
+    submission_authorization: full_score.FullScorePhaseSubmissionAuthorization,
+    submit_payload_uri: str,
+    evidence_uris: Sequence[str],
+    single_user_name: str,
+    opener: Any | None,
+) -> tuple[FullScoreRemoteCompactArtifactIO, tuple[str, ...]]:
+    if (
+        type(submission_authorization)
+        is not full_score.FullScorePhaseSubmissionAuthorization
+    ):
         raise TypeError("remote phase collection requires submission authority")
     expected_single_user_name = full_score._validated_full_score_single_user_name(
         single_user_name
@@ -969,16 +1106,35 @@ def collect_governed_full_score_remote_phase_attempt(
     if (
         identity.get("workspace_host_sha256")
         != submission_authorization.workspace_host_sha256
-        or identity.get("user_name_sha256")
-        != submission_authorization.user_name_sha256
+        or identity.get("user_name_sha256") != submission_authorization.user_name_sha256
     ):
         raise ValueError("remote phase collection workspace/principal authority drift")
     compact_io = FullScoreRemoteCompactArtifactIO(workspace, cas)
-    submit_uri = _volume_file_uri(submit_payload_uri, "submit_payload_uri")
-    run_uri = _volume_file_uri(control_plane_run_uri, "control_plane_run_uri")
-    terminal_uri = _volume_file_uri(terminal_record_uri, "terminal_record_uri")
-    if len({submit_uri, run_uri, terminal_uri}) != 3:
+    uris = (
+        _volume_file_uri(submit_payload_uri, "submit_payload_uri"),
+        *(
+            _volume_file_uri(uri, f"phase evidence URI[{index}]")
+            for index, uri in enumerate(evidence_uris)
+        ),
+    )
+    if len(set(uris)) != len(uris):
         raise ValueError("remote phase compact artifact URIs must be distinct")
+    _download_remote_phase_submit_closure(
+        compact_io,
+        uris[0],
+        phase=submission_authorization.phase,
+        expected_single_user_name=expected_single_user_name,
+    )
+    return compact_io, uris
+
+
+def _download_remote_phase_submit_closure(
+    compact_io: FullScoreRemoteCompactArtifactIO,
+    submit_uri: str,
+    *,
+    phase: str,
+    expected_single_user_name: str,
+) -> None:
     submit_file = compact_io.download(submit_uri)
     submit_record = _json_object(
         submit_file.read_bytes(),
@@ -1003,7 +1159,7 @@ def collect_governed_full_score_remote_phase_attempt(
             raise ValueError("remote phase task parameters are invalid")
         parameter_bindings = full_score._full_score_task_parameter_bindings(
             cast(list[str], parameters),
-            phase=submission_authorization.phase,
+            phase=phase,
         )
         worker_payload_uris.append(
             _volume_file_uri(
@@ -1014,20 +1170,48 @@ def collect_governed_full_score_remote_phase_attempt(
     if len(set(worker_payload_uris)) != len(worker_payload_uris):
         raise ValueError("remote phase submit payload duplicates a worker artifact")
     _download_worker_payload_closure(compact_io, worker_payload_uris)
-    return full_score.collect_governed_full_score_phase_attempt(
-        workspace,
-        execution_plan=execution_plan,
-        inventory=inventory,
-        shard_plan=shard_plan,
-        ledger_path=ledger_path,
-        submission_authorization=submission_authorization,
-        submit_payload_path=submit_uri,
-        control_plane_run_path=run_uri,
-        terminal_record_path=terminal_uri,
-        compact_artifact_resolver=compact_io.resolve,
-        compact_artifact_publisher=compact_io.publish,
-        opener=opener,
+
+
+def _download_remote_capacity_failure_chain(
+    compact_io: FullScoreRemoteCompactArtifactIO,
+    failure_record_uris: Sequence[str],
+    *,
+    phase: str,
+    single_user_name: str,
+) -> list[str]:
+    """Bind each prior attempt's failure record, submit closure, and runs/get."""
+
+    if isinstance(failure_record_uris, (str, bytes)) or not failure_record_uris:
+        raise ValueError("remote capacity-failure chain must be a nonempty URI list")
+    expected_single_user_name = full_score._validated_full_score_single_user_name(
+        single_user_name
     )
+    uris: list[str] = []
+    for index, raw_uri in enumerate(failure_record_uris):
+        uri = _volume_file_uri(raw_uri, f"capacity-failure record URI[{index}]")
+        record = _json_object(
+            compact_io.download(uri).read_bytes(),
+            "remote capacity-failure record",
+        )
+        _download_remote_phase_submit_closure(
+            compact_io,
+            _volume_file_uri(
+                _required_mapping(record, "submit_payload").get("path"),
+                "capacity-failure submit payload URI",
+            ),
+            phase=phase,
+            expected_single_user_name=expected_single_user_name,
+        )
+        compact_io.download(
+            _volume_file_uri(
+                _required_mapping(record, "control_plane").get("path"),
+                "capacity-failure control-plane URI",
+            )
+        )
+        uris.append(uri)
+    if len(set(uris)) != len(uris):
+        raise ValueError("remote capacity-failure chain repeats a record")
+    return uris
 
 
 def _download_worker_payload_closure(
@@ -5148,12 +5332,14 @@ __all__ = [
     "build_full_score_remote_coordinator_request",
     "build_full_score_remote_final_coverage_record",
     "collect_governed_full_score_remote_phase_attempt",
+    "collect_governed_full_score_remote_phase_attempt_outcome",
     "collect_full_score_remote_coordinator",
     "coordinator_main",
     "prepare_governed_full_score_remote_live_p90_phase_submission",
     "render_full_score_remote_coordinator_submit_payload",
     "recover_full_score_remote_coordinator_submission",
     "replay_full_score_remote_coordinator_authorization",
+    "replay_governed_full_score_remote_phase_capacity_retry_authorization",
     "require_full_score_remote_consumer_evidence_authorization",
     "require_full_score_remote_consumer_evidence_authorizations",
     "require_full_score_remote_ready_authorization",

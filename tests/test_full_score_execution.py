@@ -3484,6 +3484,631 @@ def test_terminal_phase_authority_reissues_after_controller_restart(campaign):
         )
 
 
+def _capacity_failed_run_record(
+    submit_payload,
+    *,
+    run_id,
+    failed_indices,
+    reason="AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE",
+):
+    record = _terminal_run_record(submit_payload, run_id=run_id)
+    record["state"] = {
+        "life_cycle_state": "INTERNAL_ERROR",
+        "result_state": "FAILED",
+        "state_message": "One or more tasks failed to start.",
+    }
+    for index, task in enumerate(record["tasks"]):
+        task["attempt_number"] = 0
+        if index not in failed_indices:
+            task["cluster_instance"]["spark_context_id"] = f"spark-{run_id}-{index}"
+            task["execution_duration"] = task["end_time"] - task["start_time"]
+            continue
+        cluster_id = task["cluster_instance"]["cluster_id"]
+        task["state"] = {
+            "life_cycle_state": "INTERNAL_ERROR",
+            "result_state": "FAILED",
+            "state_message": (
+                f"Cluster '{cluster_id}' was terminated. "
+                f"Reason: {reason} (CLOUD_FAILURE)."
+            ),
+        }
+        task["execution_duration"] = 0
+        del task["start_time"]
+        del task["end_time"]
+    return record
+
+
+def _collect_capacity_outcome(
+    campaign, reserved, *, submission, submit_path, run, label
+):
+    return full_score.collect_governed_full_score_phase_attempt_outcome(
+        DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        ledger_path=reserved["ledger_path"],
+        submission_authorization=submission,
+        submit_payload_path=submit_path,
+        control_plane_run_path=campaign["tmp_path"] / f"{label}-runs-get.json",
+        terminal_record_path=reserved["terminal_path"],
+        capacity_failure_record_path=(
+            campaign["tmp_path"] / f"{label}-capacity-failure.json"
+        ),
+        opener=_RoutingDatabricksOpener(
+            submit_payload={"run_id": run["run_id"]},
+            run_payload=run,
+        ),
+    )
+
+
+def _reserve_capacity_retry(campaign, reserved, retry, *, attempt_id, run_id, **kwargs):
+    payload = full_score.build_full_score_phase_capacity_retry_submit_payload(
+        reserved["submit_payload"],
+        capacity_retry_authorization=retry,
+        attempt_id=attempt_id,
+    )
+    submit_path = campaign["tmp_path"] / f"{attempt_id}-submit.json"
+    submit_path.write_bytes(full_score._canonical_pretty_json_bytes(payload))
+    _response, submission = (
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+            payload,
+            ledger_path=reserved["ledger_path"],
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=retry,
+            opener=_FakeDatabricksOpener({"run_id": run_id}),
+            **kwargs,
+        )
+    )
+    return payload, submit_path, submission
+
+
+def test_capacity_failed_tasks_retry_into_one_merged_phase_terminal(campaign):
+    reserved = _reserve_wave_zero_producer(campaign, label="capacity-retry")
+    ledger_path = reserved["ledger_path"]
+    phase_predecessor = reserved["submission_authorization"].predecessor_prefix
+    task_keys = [task["task_key"] for task in reserved["submit_payload"]["tasks"]]
+    first_run = _capacity_failed_run_record(
+        reserved["submit_payload"],
+        run_id=81_001,
+        failed_indices={3, 11},
+    )
+    failure, retry = _collect_capacity_outcome(
+        campaign,
+        reserved,
+        submission=reserved["submission_authorization"],
+        submit_path=reserved["submit_path"],
+        run=first_run,
+        label="capacity-retry-0",
+    )
+    assert type(retry) is full_score.FullScorePhaseCapacityRetryAuthorization
+    assert not reserved["terminal_path"].exists()
+    assert failure["attempt_ordinal"] == 0
+    assert failure["ledger"]["terminal_state"] == "internal_error"
+    assert [item["task_key"] for item in failure["capacity_failed_tasks"]] == [
+        task_keys[3],
+        task_keys[11],
+    ]
+    assert {
+        item["termination_reason"] for item in failure["capacity_failed_tasks"]
+    } == {"AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE"}
+    assert len(failure["succeeded_task_billing"]) == 14
+    assert failure["billed_gpu_seconds"] == pytest.approx(14 * 1.5)
+    assert retry.attempt_ordinal == 1
+    assert retry.retry_task_keys == (task_keys[3], task_keys[11])
+    assert retry.phase_predecessor_prefix == phase_predecessor
+    assert retry.ledger_prefix == databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
+    )
+    failure_path = campaign["tmp_path"] / "capacity-retry-0-capacity-failure.json"
+    assert (
+        full_score.replay_governed_full_score_phase_capacity_retry_authorization(
+            [failure_path],
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            ledger_path=ledger_path,
+        )
+        == retry
+    )
+
+    retry_payload, retry_submit_path, retry_submission = _reserve_capacity_retry(
+        campaign,
+        reserved,
+        retry,
+        attempt_id="wave-000-producer-capacity-retry-r1",
+        run_id=81_002,
+    )
+    assert retry_payload["run_name"] == reserved["submit_payload"]["run_name"]
+    assert retry_payload["tasks"] == [
+        reserved["submit_payload"]["tasks"][3],
+        reserved["submit_payload"]["tasks"][11],
+    ]
+    prior_token = reserved["submit_payload"]["idempotency_token"]
+    assert retry_payload["idempotency_token"] != prior_token
+    assert retry_submission.capacity_retry == retry
+    assert retry_submission.attempt_ordinal == 1
+    assert retry_submission.predecessor_prefix == retry.ledger_prefix
+    with pytest.raises(ValueError, match="not the complete current ledger prefix"):
+        _reserve_capacity_retry(
+            campaign,
+            reserved,
+            retry,
+            attempt_id="wave-000-producer-capacity-retry-reused",
+            run_id=81_099,
+        )
+
+    terminal, phase_authorization = _collect_capacity_outcome(
+        campaign,
+        reserved,
+        submission=retry_submission,
+        submit_path=retry_submit_path,
+        run=_terminal_run_record(retry_payload, run_id=81_002),
+        label="capacity-retry-1",
+    )
+    assert type(phase_authorization) is full_score.FullScorePhaseAuthorization
+    assert not (
+        campaign["tmp_path"] / "capacity-retry-1-capacity-failure.json"
+    ).exists()
+    assert [item["worker_index"] for item in terminal["task_billing"]] == list(
+        range(16)
+    )
+    assert sorted(item["task_key"] for item in terminal["task_billing"]) == sorted(
+        task_keys
+    )
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    phase_actuals = ledger.terminal_actuals[phase_predecessor.terminal_actual_count :]
+    assert [item.terminal_state for item in phase_actuals] == [
+        "internal_error",
+        "succeeded",
+    ]
+    assert terminal["billed_gpu_seconds"] == pytest.approx(
+        sum(item.actual_cluster_duration_seconds for item in phase_actuals)
+    )
+    assert terminal["billed_gpu_seconds"] == pytest.approx(16 * 1.5)
+    assert terminal["ledger"]["phase_predecessor_prefix"] == (
+        phase_predecessor.to_record()
+    )
+    assert terminal["ledger"]["predecessor_prefix"] == retry.ledger_prefix.to_record()
+    assert terminal["capacity_retry"]["attempt_ordinal"] == 1
+    assert terminal["capacity_retry"]["authorization_sha256"] == retry.closure_sha256
+    assert terminal["capacity_retry"]["capacity_failed_billed_gpu_seconds"] == 0.0
+    assert [
+        attempt["capacity_failed_task_keys"]
+        for attempt in terminal["capacity_retry"]["attempts"]
+    ] == [[task_keys[3], task_keys[11]]]
+    assert phase_authorization.ledger_prefix == databricks_ledger_prefix(ledger)
+
+    replay_kwargs = {
+        "execution_plan": campaign["execution_plan"],
+        "inventory": campaign["inventory"],
+        "shard_plan": campaign["shard_plan"],
+        "ledger_path": ledger_path,
+    }
+    assert (
+        full_score.load_governed_full_score_phase_terminal_record(
+            reserved["terminal_path"], **replay_kwargs
+        )
+        == terminal
+    )
+    assert (
+        full_score.replay_governed_full_score_phase_authorization(
+            reserved["terminal_path"], **replay_kwargs
+        )
+        == phase_authorization
+    )
+    prefix, _lineage = full_score._require_full_score_phase_predecessor_authorization(
+        phase_authorization,
+        execution_plan=campaign["execution_plan"],
+        ledger_path=ledger_path,
+        wave_index=0,
+        phase="consumer",
+    )
+    assert prefix == phase_authorization.ledger_prefix
+
+
+def test_capacity_retry_rejects_a_failure_that_reached_the_driver(campaign):
+    reserved = _reserve_wave_zero_producer(campaign, label="ran-and-failed")
+    run = _capacity_failed_run_record(
+        reserved["submit_payload"],
+        run_id=81_001,
+        failed_indices={5},
+    )
+    run["tasks"][5]["cluster_instance"]["spark_context_id"] = "spark-ran"
+    with pytest.raises(ValueError, match="not a never-started capacity failure"):
+        _collect_capacity_outcome(
+            campaign,
+            reserved,
+            submission=reserved["submission_authorization"],
+            submit_path=reserved["submit_path"],
+            run=run,
+            label="ran-and-failed",
+        )
+    assert not (campaign["tmp_path"] / "ran-and-failed-capacity-failure.json").exists()
+    assert not reserved["terminal_path"].exists()
+
+
+def test_capacity_retry_submits_only_never_started_tasks_without_p90(campaign):
+    reserved = _reserve_wave_zero_producer(campaign, label="retry-scope")
+    _failure, retry = _collect_capacity_outcome(
+        campaign,
+        reserved,
+        submission=reserved["submission_authorization"],
+        submit_path=reserved["submit_path"],
+        run=_capacity_failed_run_record(
+            reserved["submit_payload"],
+            run_id=81_001,
+            failed_indices={2},
+            reason="CLUSTER_OPERATION_TIMEOUT",
+        ),
+        label="retry-scope",
+    )
+    ledger_before = reserved["ledger_path"].read_bytes()
+    widened = full_score.build_full_score_phase_capacity_retry_submit_payload(
+        reserved["submit_payload"],
+        capacity_retry_authorization=retry,
+        attempt_id="wave-000-producer-widened",
+    )
+    widened["tasks"].append(copy.deepcopy(reserved["submit_payload"]["tasks"][0]))
+    del widened["idempotency_token"]
+    widened = full_score.bind_databricks_run_idempotency_token(
+        widened,
+        attempt_id="wave-000-producer-widened",
+    )
+    with pytest.raises(ValueError, match="differs from the never-started tasks"):
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
+            widened,
+            ledger_path=reserved["ledger_path"],
+            execution_plan=campaign["execution_plan"],
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            wave_index=0,
+            phase="producer",
+            attempt_id="wave-000-producer-widened",
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=retry,
+            opener=_FakeDatabricksOpener({"run_id": 81_003}),
+        )
+    with pytest.raises(ValueError, match="must not consume a live P90 admission"):
+        _reserve_capacity_retry(
+            campaign,
+            reserved,
+            retry,
+            attempt_id="wave-000-producer-with-p90",
+            run_id=81_004,
+            budget_admission_path=campaign["tmp_path"] / "unused-p90.json",
+        )
+    tampered_prior = copy.deepcopy(reserved["submit_payload"])
+    tampered_prior["tasks"][2]["timeout_seconds"] -= 1
+    with pytest.raises(ValueError, match="prior submit payload drift"):
+        full_score.build_full_score_phase_capacity_retry_submit_payload(
+            tampered_prior,
+            capacity_retry_authorization=retry,
+            attempt_id="wave-000-producer-tampered",
+        )
+    with pytest.raises(TypeError, match="requires its retry authority"):
+        full_score.build_full_score_phase_capacity_retry_submit_payload(
+            reserved["submit_payload"],
+            capacity_retry_authorization=reserved["submission_authorization"],
+            attempt_id="wave-000-producer-wrong-authority",
+        )
+    assert reserved["ledger_path"].read_bytes() == ledger_before
+
+
+def _capacity_task(**overrides):
+    task = {
+        "attempt_number": 0,
+        "cluster_instance": {"cluster_id": "0101-abc"},
+        "execution_duration": 0,
+        "state": {
+            "life_cycle_state": "INTERNAL_ERROR",
+            "result_state": "FAILED",
+            "state_message": (
+                "Cluster '0101-abc' was terminated. Reason: "
+                "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE (CLOUD_FAILURE)."
+            ),
+        },
+    }
+    for key, value in overrides.items():
+        if value is None:
+            task.pop(key)
+        else:
+            task[key] = value
+    return task
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE"),
+        (
+            {
+                "state": {
+                    "life_cycle_state": "INTERNAL_ERROR",
+                    "result_state": "FAILED",
+                    "state_message": (
+                        "Cluster '0101-abc' was terminated. Reason: "
+                        "CLUSTER_OPERATION_TIMEOUT (SERVICE_FAULT)."
+                    ),
+                }
+            },
+            "CLUSTER_OPERATION_TIMEOUT",
+        ),
+        (
+            {
+                "cluster_instance": {
+                    "cluster_id": "0101-abc",
+                    "spark_context_id": "1234",
+                }
+            },
+            None,
+        ),
+        ({"execution_duration": 1}, None),
+        ({"execution_duration": None}, None),
+        (
+            {
+                "state": {
+                    "life_cycle_state": "INTERNAL_ERROR",
+                    "result_state": "FAILED",
+                    "state_message": (
+                        "Cluster '0101-abc' was terminated. Reason: "
+                        "DRIVER_UNREACHABLE (CLOUD_FAILURE)."
+                    ),
+                }
+            },
+            None,
+        ),
+        (
+            {
+                "state": {
+                    "life_cycle_state": "INTERNAL_ERROR",
+                    "result_state": "FAILED",
+                    "state_message": (
+                        "Cluster '0202-other' was terminated. Reason: "
+                        "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE (CLOUD_FAILURE)."
+                    ),
+                }
+            },
+            None,
+        ),
+        (
+            {
+                "state": {
+                    "life_cycle_state": "TERMINATED",
+                    "result_state": "FAILED",
+                    "state_message": (
+                        "Cluster '0101-abc' was terminated. Reason: "
+                        "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE (CLOUD_FAILURE)."
+                    ),
+                }
+            },
+            None,
+        ),
+        ({"cluster_instance": None}, None),
+    ],
+)
+def test_capacity_failure_reason_requires_a_never_started_cluster(overrides, expected):
+    assert (
+        full_score._full_score_capacity_failure_reason(_capacity_task(**overrides))
+        == expected
+    )
+
+
+def test_stock_mac_capacity_retry_replays_through_files_cas(campaign, monkeypatch):
+    local_worker_files = campaign["worker_files"]
+    campaign = _volume_campaign(campaign)
+    local_worker_files.update(campaign["worker_files"])
+    workspace = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+    remote_files = {
+        uri: path.read_bytes() for uri, path in campaign["worker_files"].items()
+    }
+    qualification = campaign["bundle"].gpu_qualification
+    for uri, record in (
+        (qualification.plan_uri, qualification.plan_record),
+        (qualification.evidence_uri, qualification.evidence_record),
+    ):
+        remote_files[uri] = (canonical_gpu_qualification_json(record) + "\n").encode()
+
+    def download(_workspace, uri, *, max_bytes):
+        assert _workspace is workspace
+        return remote_files[uri]
+
+    def upload(_workspace, uri, content, *, max_bytes):
+        assert _workspace is workspace
+        existing = remote_files.get(uri)
+        if existing is not None and existing != content:
+            raise ValueError("exclusive publication conflict")
+        remote_files[uri] = content
+        return {
+            "created": existing is None,
+            "dbfs_uri": uri,
+            "file_sha256": sha256(content).hexdigest(),
+            "size_bytes": len(content),
+        }
+
+    monkeypatch.setattr(
+        full_score_remote,
+        "download_databricks_volume_file_bytes",
+        download,
+    )
+    monkeypatch.setattr(
+        full_score_remote,
+        "upload_databricks_volume_file_bytes_exclusive",
+        upload,
+    )
+    monkeypatch.setattr(
+        full_score,
+        "_cluster_path",
+        lambda *_args, **_kwargs: pytest.fail(
+            "stock-Mac publication control must not resolve /dbfs or /Volumes"
+        ),
+    )
+    cas = full_score_remote.FullScoreCompactArtifactCAS(
+        campaign["tmp_path"] / "capacity-mac-cas"
+    )
+    compact_io = full_score_remote.FullScoreRemoteCompactArtifactIO(workspace, cas)
+    for uri in sorted(campaign["worker_files"]):
+        compact_io.download(uri)
+    ledger_path = campaign["tmp_path"] / "capacity-mac-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    campaign[
+        "latency_collection_authorization"
+    ].ledger_prefix = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
+    )
+    control = f"{campaign['bundle'].durable_output_root}/control/phase"
+    phase_kwargs = {
+        "execution_plan": campaign["execution_plan"],
+        "inventory": campaign["inventory"],
+        "shard_plan": campaign["shard_plan"],
+        "ledger_path": ledger_path,
+    }
+    attempt_id = "capacity-mac-wave-000-producer"
+    submit = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+        compact_artifact_resolver=cas.resolve,
+    )
+    _response, submission = (
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            workspace,
+            submit,
+            wave_index=0,
+            phase="producer",
+            attempt_id=attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=campaign["latency_collection_authorization"],
+            latency_execution_plan_record=campaign["latency_execution_plan_record"],
+            compact_artifact_resolver=cas.resolve,
+            opener=_FakeDatabricksOpener({"run_id": 81_001}),
+            **phase_kwargs,
+        )
+    )
+    submit_uri = f"{control}/wave-000-producer-submit-00.json"
+    remote_files[submit_uri] = full_score._canonical_pretty_json_bytes(submit)
+    terminal_uri = f"{control}/wave-000-producer-terminal.json"
+    failure_uri = f"{control}/wave-000-producer-capacity-failure-00.json"
+    failure, retry = (
+        full_score_remote.collect_governed_full_score_remote_phase_attempt_outcome(
+            workspace,
+            cas=cas,
+            submission_authorization=submission,
+            submit_payload_uri=submit_uri,
+            control_plane_run_uri=f"{control}/wave-000-producer-runs-get-00.json",
+            terminal_record_uri=terminal_uri,
+            capacity_failure_record_uri=failure_uri,
+            single_user_name="researcher@example.com",
+            opener=_RoutingDatabricksOpener(
+                submit_payload={"run_id": 81_001},
+                run_payload=_capacity_failed_run_record(
+                    submit,
+                    run_id=81_001,
+                    failed_indices={0, 15},
+                ),
+            ),
+            **phase_kwargs,
+        )
+    )
+    assert type(retry) is full_score.FullScorePhaseCapacityRetryAuthorization
+    assert remote_files[failure_uri] == full_score._canonical_pretty_json_bytes(failure)
+    assert terminal_uri not in remote_files
+    assert retry.failure_records == ((failure_uri, failure["closed_record_sha256"]),)
+
+    restarted = full_score_remote.replay_governed_full_score_remote_phase_capacity_retry_authorization(
+        workspace,
+        cas=full_score_remote.FullScoreCompactArtifactCAS(
+            campaign["tmp_path"] / "capacity-mac-restart-cas"
+        ),
+        wave_index=0,
+        phase="producer",
+        capacity_failure_record_uris=[failure_uri],
+        single_user_name="researcher@example.com",
+        **phase_kwargs,
+    )
+    assert restarted == retry
+
+    retry_attempt_id = "capacity-mac-wave-000-producer-r1"
+    retry_submit = full_score.build_full_score_phase_capacity_retry_submit_payload(
+        submit,
+        capacity_retry_authorization=restarted,
+        attempt_id=retry_attempt_id,
+    )
+    _response, retry_submission = (
+        full_score.reserve_and_submit_governed_full_score_phase_attempt(
+            workspace,
+            retry_submit,
+            wave_index=0,
+            phase="producer",
+            attempt_id=retry_attempt_id,
+            qualification_launch_authorization=campaign[
+                "qualification_launch_authorization"
+            ],
+            predecessor_authorization=restarted,
+            compact_artifact_resolver=cas.resolve,
+            opener=_FakeDatabricksOpener({"run_id": 81_002}),
+            **phase_kwargs,
+        )
+    )
+    retry_submit_uri = f"{control}/wave-000-producer-submit-01.json"
+    remote_files[retry_submit_uri] = full_score._canonical_pretty_json_bytes(
+        retry_submit
+    )
+    terminal, phase_authorization = (
+        full_score_remote.collect_governed_full_score_remote_phase_attempt_outcome(
+            workspace,
+            cas=full_score_remote.FullScoreCompactArtifactCAS(
+                campaign["tmp_path"] / "capacity-mac-retry-cas"
+            ),
+            submission_authorization=retry_submission,
+            submit_payload_uri=retry_submit_uri,
+            control_plane_run_uri=f"{control}/wave-000-producer-runs-get-01.json",
+            terminal_record_uri=terminal_uri,
+            capacity_failure_record_uri=(
+                f"{control}/wave-000-producer-capacity-failure-01.json"
+            ),
+            single_user_name="researcher@example.com",
+            opener=_RoutingDatabricksOpener(
+                submit_payload={"run_id": 81_002},
+                run_payload=_terminal_run_record(retry_submit, run_id=81_002),
+            ),
+            **phase_kwargs,
+        )
+    )
+    assert type(phase_authorization) is full_score.FullScorePhaseAuthorization
+    assert remote_files[terminal_uri] == full_score._canonical_pretty_json_bytes(
+        terminal
+    )
+    assert [item["worker_index"] for item in terminal["task_billing"]] == list(
+        range(16)
+    )
+    assert terminal["capacity_retry"]["attempts"][0]["path"] == failure_uri
+
+
 def test_publication_aggregate_requires_current_final_consumer_authority(campaign):
     collected = _collect_wave_zero_producer(
         campaign,
