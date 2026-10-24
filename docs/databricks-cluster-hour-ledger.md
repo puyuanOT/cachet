@@ -603,6 +603,26 @@ full-score ledger suffix to be exactly the twenty phase reservations after the
 final latency collection prefix, so every non-full-score event, including
 qualification regeneration, must land before that collection.
 
+The vLLM 0.30.0 qualification of source revision `00153c1` is retained as
+non-authorizing evidence. Its plan is
+`1c188abed702bab1018ed60e46ccdafc64d0a515aa8fb319b1fdce39413d43cc`,
+its source tree is
+`c0bf9c6562beb3183ec105acb18e3953ea139ccc5f28ad2f0168e5d292d1b04e`,
+and its phase batch is
+`f6c2a779ece0b6f6519ba0815d1871e471cfe321552667cc4386f7fafc13929c`.
+Thirteen attempt-zero jobs succeeded, but L40S run `795564550394694` never
+executed: automatic zone placement chose `us-west-2b`, where AWS could not
+provision `g6e.4xlarge` capacity, and no GPU result artifact was written. The
+fourteen terminal attempts consumed 3.3877544444444445 GPU-hours and closed the
+exact 267/220/267 prefix
+`40c8e4e2307904224709079026ec5f30c4379e94231732feca367f92316670e6`
+at 719.1179608333333 terminal GPU-hours, with zero active reservations and
+1304.8820391666668 hours remaining under the raised 2,024-hour cap. The
+all-jobs, attempt-zero contract makes this batch `FAILED`. Qualification
+attempt IDs derive from the plan, and the plan from the source closure, so this
+plan cannot be launched again; the successor qualification binds a fresh source
+closure and this complete prefix as its predecessor.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local
