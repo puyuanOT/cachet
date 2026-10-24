@@ -1352,6 +1352,94 @@ def test_campaign_ledger_projection_rejects_failed_final_or_unbounded_retries(
     assert retried_consumer == interleaved["expected_workloads"][3]
 
 
+def _abandon_before_latency(
+    case: dict[str, Any],
+    attempts: list[tuple[int, str, float]],
+) -> None:
+    """Rewrite the last pre-latency appends as attempts of an abandoned chain."""
+
+    live = case["live"]
+    start = case["latency_prefix"].reservation_count - len(attempts)
+    for offset, (phase_index, terminal_state, cluster_hours) in enumerate(attempts):
+        live.reservations[start + offset].workload_id = case["expected_workloads"][
+            phase_index
+        ]
+        terminal = live.terminal_actuals[start + offset]
+        terminal.terminal_state = terminal_state
+        terminal.actual_cluster_hours = cluster_hours
+
+
+def _projection_disclosing_abandoned_attempts(
+    case: dict[str, Any],
+) -> dict[str, Any]:
+    kwargs = case["projection_kwargs"]
+    return campaign_finalizer._campaign_ledger_projection_after_latency(
+        latency_collection_authorization=kwargs["latency_collection_authorization"],
+        latency_prefix=case["latency_prefix"],
+        full_score_execution_plan_record=kwargs["full_score_execution_plan_record"],
+        full_score_aggregate_record=kwargs["full_score_aggregate_record"],
+        final_consumer_authorization=kwargs["final_consumer_authorization"],
+        ledger_path=kwargs["ledger_path"],
+        disclose_abandoned_attempts=True,
+    )
+
+
+def test_campaign_ledger_projection_discloses_an_abandoned_wave_zero_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    assert _projection_disclosing_abandoned_attempts(case)[
+        "full_score_abandoned_attempts"
+    ] == {"attempt_count": 0, "cluster_hours": 0.0}
+    _abandon_before_latency(
+        case,
+        [(0, "succeeded", 2.0), (1, "failed", 0.5), (0, "internal_error", 5.1)],
+    )
+
+    with pytest.raises(ValueError, match="cannot disclose abandoned full-score"):
+        campaign_finalizer._validated_campaign_ledger_projection(
+            **case["projection_kwargs"]
+        )
+    projection = _projection_disclosing_abandoned_attempts(case)
+    assert projection["full_score_abandoned_attempts"] == {
+        "attempt_count": 3,
+        "cluster_hours": 7.6,
+    }
+    assert projection["latency_terminal_prefix"] == case["latency_prefix"].to_record()
+
+
+@pytest.mark.parametrize(
+    ("attempts", "message"),
+    [
+        pytest.param(
+            [(0, "internal_error", 5.1), (0, "succeeded", 2.0)],
+            "requires a failed latest attempt",
+            id="continuable-producer",
+        ),
+        pytest.param(
+            [(0, "succeeded", 2.0), (1, "succeeded", 2.0), (2, "failed", 1.0)],
+            "limited to wave zero",
+            id="past-wave-zero",
+        ),
+        pytest.param(
+            [(0, "succeeded", 2.0), (1, "succeeded", 2.0), (0, "failed", 1.0)],
+            "cannot discard a closed consumer",
+            id="closed-consumer",
+        ),
+    ],
+)
+def test_campaign_ledger_projection_rejects_a_chain_that_could_continue(
+    monkeypatch: pytest.MonkeyPatch,
+    attempts: list[tuple[int, str, float]],
+    message: str,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    _abandon_before_latency(case, attempts)
+
+    with pytest.raises(ValueError, match=message):
+        _projection_disclosing_abandoned_attempts(case)
+
+
 @pytest.mark.parametrize(
     ("active_hours", "active_tasks", "remaining_hours"),
     [
@@ -2355,6 +2443,10 @@ def _synthetic_vllm_0300_report_inputs() -> dict[str, Any]:
     )
     ledger = deepcopy(inputs["ledger_record"])
     ledger["cap_raises"] = []
+    ledger["full_score_abandoned_attempts"] = {
+        "attempt_count": 0,
+        "cluster_hours": 0.0,
+    }
     ledger["full_score_capacity_retries"] = {
         "attempt_count": 0,
         "cluster_hours": 0.0,
@@ -2685,6 +2777,71 @@ def test_vllm_0300_report_rejects_inconsistent_capacity_retries(
         campaign_finalizer._validate_report_envelope(report)
 
 
+def _vllm_0300_report_with_abandoned_attempts(
+    abandoned: dict[str, Any],
+) -> dict[str, Any]:
+    report = _synthetic_vllm_0300_report()
+    report["ledger"]["full_score_abandoned_attempts"] = abandoned
+    _reclose(report)
+    return report
+
+
+def test_vllm_0300_report_discloses_an_abandoned_wave_zero_chain() -> None:
+    report = _vllm_0300_report_with_abandoned_attempts(
+        {"attempt_count": 1, "cluster_hours": 5.1}
+    )
+
+    campaign_finalizer.validate_vllm_0271_publication_report_pair(
+        report,
+        campaign_finalizer._publication_gate_for_report(report),
+    )
+
+
+@pytest.mark.parametrize(
+    ("abandoned", "message"),
+    [
+        ({"attempt_count": 1, "cluster_hours": 5}, "abandoned full-score attempts"),
+        ({"attempt_count": 0, "cluster_hours": 5.1}, "abandoned full-score attempts"),
+        ({"attempt_count": 1, "cluster_hours": -1.0}, "abandoned full-score attempts"),
+        ({"attempt_count": -1, "cluster_hours": 0.0}, "non-negative integer"),
+        (
+            {"attempt_count": 1, "cluster_hours": 5.1, "attempts": []},
+            "closed schema",
+        ),
+        (None, "must be an object"),
+    ],
+)
+def test_vllm_0300_report_rejects_inconsistent_abandoned_attempts(
+    abandoned: Any,
+    message: str,
+) -> None:
+    report = _vllm_0300_report_with_abandoned_attempts(abandoned)
+
+    with pytest.raises(ValueError, match=message):
+        campaign_finalizer._validate_report_envelope(report)
+
+
+def test_vllm_0300_report_requires_the_abandoned_attempt_disclosure() -> None:
+    report = _synthetic_vllm_0300_report()
+    del report["ledger"]["full_score_abandoned_attempts"]
+    _reclose(report)
+
+    with pytest.raises(ValueError, match="closed schema"):
+        campaign_finalizer._validate_report_envelope(report)
+
+
+def test_vllm_0271_report_rejects_abandoned_full_score_attempts() -> None:
+    report = _synthetic_report()
+    report["ledger"]["full_score_abandoned_attempts"] = {
+        "attempt_count": 0,
+        "cluster_hours": 0.0,
+    }
+    _reclose(report)
+
+    with pytest.raises(ValueError, match="closed schema"):
+        campaign_finalizer._validate_report_envelope(report)
+
+
 def test_vllm_0271_report_rejects_full_score_capacity_retries() -> None:
     report = _synthetic_report()
     report["ledger"]["full_score_capacity_retries"] = {
@@ -2790,6 +2947,7 @@ def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
 
     assert projection == single_plan | {
         "cap_raises": [],
+        "full_score_abandoned_attempts": {"attempt_count": 0, "cluster_hours": 0.0},
         "full_score_capacity_retries": {"attempt_count": 0, "cluster_hours": 0.0},
         "latency_recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0},
     }
