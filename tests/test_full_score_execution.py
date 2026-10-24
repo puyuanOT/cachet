@@ -1,4 +1,5 @@
 import copy
+import errno
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +43,7 @@ from document_kv_cache.databricks_resource_ledger import (
     databricks_cluster_hour_ledger_to_record,
     databricks_ledger_path_sha256,
     databricks_ledger_prefix,
+    databricks_ledger_prefix_at_counts,
     databricks_submit_payload_reservation,
     read_databricks_cluster_hour_ledger_json,
     record_databricks_run_submission_receipt_json,
@@ -2380,7 +2382,10 @@ def test_governed_terminal_billing_and_wave_zero_reservation_are_file_bound(
         latency_execution_plan_record=campaign["latency_execution_plan_record"],
     )
     assert reserved[0].active_reserved_cluster_hours == 96.0
-    with pytest.raises(ValueError, match="already reserved|intent binding drift"):
+    with pytest.raises(
+        ValueError,
+        match="already reserved|intent binding drift|terminal prior attempts",
+    ):
         full_score.reserve_governed_full_score_phase_attempt(
             ledger_path,
             submit_payload,
@@ -2789,7 +2794,10 @@ def test_governed_submit_couples_reservation_exact_wire_and_receipt(campaign):
         ledger.submission_receipts[0].submit_payload_sha256
         == ledger.reservations[0].submit_payload_sha256
     )
-    with pytest.raises(ValueError, match="already reserved|intent binding drift"):
+    with pytest.raises(
+        ValueError,
+        match="already reserved|intent binding drift|terminal prior attempts",
+    ):
         full_score.reserve_and_submit_governed_full_score_phase_attempt(
             DatabricksWorkspaceConfig("https://dbc.example/", "secret-token"),
             submit_payload,
@@ -2948,12 +2956,14 @@ def test_full_score_workspace_sidecar_replays_without_changing_canonical_records
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
         phase=authorization.phase,
+        predecessor_prefix=authorization.predecessor_prefix,
     )
     intent_path = full_score._full_score_phase_intent_candidate_path(
         ledger_path,
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
         phase=authorization.phase,
+        predecessor_prefix=authorization.predecessor_prefix,
     )
     sidecar_path = full_score._full_score_workspace_authority_path(lease_path)
     intent_bytes = intent_path.read_bytes()
@@ -3288,12 +3298,14 @@ def test_genuine_producer_authority_chains_only_to_same_workspace_consumer(
         execution_plan_sha256=producer_authorization.execution_plan_sha256,
         wave_index=0,
         phase="consumer",
+        predecessor_prefix=producer_authorization.ledger_prefix,
     )
     lease_path = full_score._full_score_phase_lease_candidate_path(
         collected["ledger_path"],
         execution_plan_sha256=producer_authorization.execution_plan_sha256,
         wave_index=0,
         phase="consumer",
+        predecessor_prefix=producer_authorization.ledger_prefix,
     )
 
     for live_host, live_user in (
@@ -3504,6 +3516,7 @@ def test_terminal_phase_authority_reissues_after_controller_restart(campaign):
         execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
         wave_index=0,
         phase="producer",
+        predecessor_prefix=replayed.predecessor_prefix,
     )
     intent_path.unlink()
     with pytest.raises(ValueError, match="durable intent"):
@@ -3768,6 +3781,223 @@ def test_capacity_retry_rejects_a_failure_that_reached_the_driver(campaign):
         )
     assert not (campaign["tmp_path"] / "ran-and-failed-capacity-failure.json").exists()
     assert not reserved["terminal_path"].exists()
+
+
+def _reserve_fresh_wave_zero_producer(campaign, ledger_path, *, attempt_id):
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=attempt_id,
+    )
+    return full_score.reserve_governed_full_score_phase_attempt(
+        ledger_path,
+        submit_payload,
+        execution_plan=campaign["execution_plan"],
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        wave_index=0,
+        phase="producer",
+        attempt_id=attempt_id,
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        predecessor_authorization=campaign["latency_collection_authorization"],
+        latency_execution_plan_record=campaign["latency_execution_plan_record"],
+    )
+
+
+def _wave_zero_producer_intent_path(campaign, ledger_path, predecessor_prefix):
+    return full_score._full_score_phase_intent_candidate_path(
+        ledger_path,
+        execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
+        wave_index=0,
+        phase="producer",
+        predecessor_prefix=predecessor_prefix,
+    )
+
+
+def test_failed_wave_zero_chain_restarts_under_a_fresh_latency_authority(campaign):
+    reserved = _reserve_wave_zero_producer(campaign, label="abandoned-chain")
+    ledger_path = reserved["ledger_path"]
+    abandoned = reserved["submission_authorization"]
+    run = _capacity_failed_run_record(
+        reserved["submit_payload"],
+        run_id=81_001,
+        failed_indices={5},
+    )
+    run["tasks"][5]["cluster_instance"]["spark_context_id"] = "spark-ran"
+    with pytest.raises(ValueError, match="not a never-started capacity failure"):
+        _collect_capacity_outcome(
+            campaign,
+            reserved,
+            submission=abandoned,
+            submit_path=reserved["submit_path"],
+            run=run,
+            label="abandoned-chain",
+        )
+    closed = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert [item.terminal_state for item in closed.terminal_actuals] == [
+        "internal_error"
+    ]
+    attempt_id = "wave-000-producer-restarted-chain"
+    with pytest.raises(ValueError, match="not the complete current ledger prefix"):
+        _reserve_fresh_wave_zero_producer(campaign, ledger_path, attempt_id=attempt_id)
+
+    campaign["latency_collection_authorization"].ledger_prefix = (
+        databricks_ledger_prefix(closed)
+    )
+    _ledger, restarted = _reserve_fresh_wave_zero_producer(
+        campaign, ledger_path, attempt_id=attempt_id
+    )
+    assert restarted.attempt_ordinal == 0
+    assert restarted.predecessor_prefix == databricks_ledger_prefix(closed)
+    abandoned_intent, restarted_intent = (
+        _wave_zero_producer_intent_path(campaign, ledger_path, item.predecessor_prefix)
+        for item in (abandoned, restarted)
+    )
+    assert abandoned_intent != restarted_intent
+    assert json.loads(abandoned_intent.read_bytes())["attempt_id"] == (
+        abandoned.attempt_id
+    )
+    assert json.loads(restarted_intent.read_bytes())["attempt_id"] == attempt_id
+
+
+def test_wave_zero_chain_restart_refuses_to_discard_a_succeeded_producer(campaign):
+    collected = _collect_wave_zero_producer(campaign, label="continuable-chain")
+    ledger_path = collected["ledger_path"]
+    current = databricks_ledger_prefix(
+        read_databricks_cluster_hour_ledger_json(ledger_path)
+    )
+    campaign["latency_collection_authorization"].ledger_prefix = current
+    ledger_before = ledger_path.read_bytes()
+    with pytest.raises(ValueError, match="requires a failed latest attempt"):
+        _reserve_fresh_wave_zero_producer(
+            campaign, ledger_path, attempt_id="wave-000-producer-discarding"
+        )
+    assert ledger_path.read_bytes() == ledger_before
+    assert not _wave_zero_producer_intent_path(campaign, ledger_path, current).exists()
+
+
+def _chain_ledger(campaign, label, attempts):
+    ledger_path = campaign["tmp_path"] / f"{label}-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-full-score",
+    )
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        campaign["job"],
+        _phase_payloads(campaign, 0, "producer"),
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        qualification_launch_authorization=campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id=f"{label}-payload",
+    )
+    for index, (workload, terminal_state) in enumerate(attempts):
+        if workload == "other-plan":
+            workload_id = f"full-score:{'0' * 64}:wave-000:consumer"
+        else:
+            wave_index, phase = workload
+            workload_id = full_score._full_score_phase_workload_id(
+                campaign["execution_plan"], wave_index=wave_index, phase=phase
+            )
+        attempt_id = f"{label}-{index}"
+        reserve_databricks_run_attempt_json(
+            ledger_path,
+            submit_payload,
+            attempt_id=attempt_id,
+            workload_id=workload_id,
+        )
+        if terminal_state is not None:
+            record_databricks_run_terminal_actual_json(
+                ledger_path,
+                attempt_id=attempt_id,
+                terminal_state=terminal_state,
+                actual_cluster_duration_seconds=60.0,
+            )
+    return read_databricks_cluster_hour_ledger_json(ledger_path)
+
+
+@pytest.mark.parametrize(
+    "attempts",
+    (
+        [],
+        [((0, "producer"), "internal_error")],
+        [
+            ((0, "producer"), "failed"),
+            ((0, "producer"), "succeeded"),
+            ((0, "consumer"), "timed_out"),
+        ],
+        [((0, "producer"), "internal_error"), ("other-plan", "succeeded")],
+    ),
+)
+def test_wave_zero_chain_restart_admits_an_abandoned_chain(campaign, attempts):
+    ledger = _chain_ledger(campaign, f"restart-admitted-{len(attempts)}", attempts)
+    abandoned = full_score.require_full_score_chain_restart_ledger(
+        ledger,
+        predecessor_prefix=databricks_ledger_prefix(ledger),
+        execution_plan=campaign["execution_plan"],
+    )
+    assert [(item.attempt_id, item.terminal_state) for item in abandoned] == [
+        (f"restart-admitted-{len(attempts)}-{index}", terminal_state)
+        for index, (workload, terminal_state) in enumerate(attempts)
+        if workload != "other-plan"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("attempts", "message"),
+    (
+        ([((0, "producer"), "succeeded")], "requires a failed latest attempt"),
+        (
+            [((0, "producer"), "succeeded"), ((0, "consumer"), "succeeded")],
+            "cannot discard a closed consumer",
+        ),
+        (
+            [
+                ((0, "producer"), "succeeded"),
+                ((0, "consumer"), "succeeded"),
+                ((1, "producer"), "failed"),
+            ],
+            "limited to wave zero",
+        ),
+        (
+            [((0, "producer"), "internal_error"), ((0, "producer"), None)],
+            "requires terminal prior attempts",
+        ),
+    ),
+)
+def test_wave_zero_chain_restart_refuses_a_chain_that_could_continue(
+    campaign,
+    attempts,
+    message,
+):
+    ledger = _chain_ledger(campaign, f"restart-refused-{len(attempts)}", attempts)
+    with pytest.raises(ValueError, match=message):
+        full_score.require_full_score_chain_restart_ledger(
+            ledger,
+            predecessor_prefix=databricks_ledger_prefix(ledger),
+            execution_plan=campaign["execution_plan"],
+        )
+    earlier = databricks_ledger_prefix_at_counts(
+        ledger,
+        reservation_count=0,
+        submission_receipt_count=0,
+        terminal_actual_count=0,
+    )
+    full_score.require_full_score_chain_restart_ledger(
+        ledger,
+        predecessor_prefix=earlier,
+        execution_plan=campaign["execution_plan"],
+    )
 
 
 def test_capacity_retry_submits_only_never_started_tasks_without_p90(campaign):
@@ -4541,6 +4771,7 @@ def test_ambiguous_phase_post_recovery_is_exact_and_one_shot(
         execution_plan_sha256=campaign["execution_plan"]["closed_record_sha256"],
         wave_index=0,
         phase="producer",
+        predecessor_prefix=submission_authorization.predecessor_prefix,
     )
     intent_path.unlink()
     with pytest.raises(ValueError, match="durable intent"):
@@ -4640,6 +4871,7 @@ def test_reserved_phase_resumes_after_controller_restart(
                 ],
                 wave_index=0,
                 phase="producer",
+                predecessor_prefix=original_authorization.predecessor_prefix,
             )
             lease_path.unlink()
             full_score._full_score_workspace_authority_path(lease_path).unlink()
@@ -4723,6 +4955,7 @@ def test_reserved_phase_resumes_after_controller_restart(
                 ],
                 wave_index=0,
                 phase="producer",
+                predecessor_prefix=original_authorization.predecessor_prefix,
             )
             intent_bytes = intent_path.read_bytes()
             race_opener = _FakeDatabricksOpener({"run_id": 92_998})
@@ -6528,6 +6761,77 @@ def test_state_machine_and_exclusive_writes_fail_closed(tmp_path):
             execution_plan=execution_plan,
             lifecycle=lifecycle_events,
         )
+
+
+def _refuse_hard_links(monkeypatch, link_errno=errno.EPERM):
+    def refuse(*_args, **_kwargs):
+        raise OSError(link_errno, os.strerror(link_errno))
+
+    monkeypatch.setattr(full_score.os, "link", refuse)
+
+
+@pytest.mark.parametrize("link_errno", [errno.EPERM, errno.ENOTSUP, errno.ENOSYS])
+def test_exclusive_writes_publish_on_volumes_without_hard_links(
+    tmp_path,
+    monkeypatch,
+    link_errno,
+):
+    _refuse_hard_links(monkeypatch, link_errno)
+    durable_dir = tmp_path / "volume" / "evidence" / "wave-000" / "shard-00000"
+
+    full_score._exclusive_write_bytes(durable_dir / "evidence.json", b"first\n")
+    with pytest.raises(FileExistsError):
+        full_score._exclusive_write_bytes(
+            durable_dir / "evidence.json",
+            b"replacement\n",
+        )
+    full_score._write_or_require_exact_bytes(
+        durable_dir / "evidence.json",
+        b"first\n",
+        field_name="volume evidence",
+    )
+    with pytest.raises(ValueError, match="volume evidence binding drift"):
+        full_score._write_or_require_exact_bytes(
+            durable_dir / "evidence.json",
+            b"replacement\n",
+            field_name="volume evidence",
+        )
+
+    assert (durable_dir / "evidence.json").read_bytes() == b"first\n"
+    assert [path.name for path in durable_dir.iterdir()] == ["evidence.json"]
+
+
+def test_volume_exclusive_write_releases_its_empty_claim_when_rename_fails(
+    tmp_path,
+    monkeypatch,
+):
+    _refuse_hard_links(monkeypatch)
+    rename = os.rename
+
+    def interrupted_rename(*_args, **_kwargs):
+        raise OSError(errno.EIO, "volume transport interrupted")
+
+    monkeypatch.setattr(full_score.os, "rename", interrupted_rename)
+    target = tmp_path / "runtime-lock-verification.json"
+    with pytest.raises(OSError, match="volume transport interrupted"):
+        full_score._exclusive_write_bytes(target, b"{}\n")
+    assert list(tmp_path.iterdir()) == []
+
+    monkeypatch.setattr(full_score.os, "rename", rename)
+    full_score._exclusive_write_bytes(target, b"{}\n")
+    assert target.read_bytes() == b"{}\n"
+
+
+def test_exclusive_write_keeps_failing_on_unexpected_hard_link_errors(
+    tmp_path,
+    monkeypatch,
+):
+    _refuse_hard_links(monkeypatch, errno.EIO)
+    target = tmp_path / "ready-record.json"
+    with pytest.raises(OSError) as raised:
+        full_score._exclusive_write_bytes(target, b"{}\n")
+    assert raised.value.errno == errno.EIO
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_consumer_recovery_finishes_a_partially_deleted_ready_tree(

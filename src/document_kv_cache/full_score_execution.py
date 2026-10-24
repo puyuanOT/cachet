@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import errno
 import gc
 import json
 import os
@@ -717,6 +718,9 @@ _SHA256_LENGTH = 64
 _TRANSFER_FIELDS = frozenset({"kv_transfer_params", "arm_kv_transfer_params"})
 _SECRET_KEY_PARTS = frozenset(
     {"credential", "key", "pass", "password", "pat", "secret", "token"}
+)
+_HARD_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    {errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS}
 )
 
 
@@ -3331,6 +3335,7 @@ def _full_score_phase_attempt_workspace_identity(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    predecessor_prefix: DatabricksLedgerPrefix,
     attempt_ordinal: int,
     intent_record_sha256: str,
     phase_lease_record_sha256: str,
@@ -3342,6 +3347,7 @@ def _full_score_phase_attempt_workspace_identity(
         execution_plan_sha256=execution_plan_sha256,
         wave_index=wave_index,
         phase=phase,
+        predecessor_prefix=predecessor_prefix,
         attempt_ordinal=attempt_ordinal,
     )
     replay_sidecar = _read_full_score_workspace_authority(
@@ -3456,6 +3462,7 @@ def _resolve_full_score_phase_attempt_authority(
             execution_plan_sha256=execution_plan_sha256,
             wave_index=wave_index,
             phase=phase,
+            predecessor_prefix=predecessor_prefix,
             attempt_ordinal=(
                 0
                 if replay_capacity_retry is None
@@ -4515,6 +4522,9 @@ def _full_score_capacity_retry_authorization_from_failures(
             ),
             wave_index=wave_index,
             phase=phase,
+            predecessor_prefix=databricks_ledger_prefix_from_record(
+                _required_mapping(last_ledger, "predecessor_prefix")
+            ),
             attempt_ordinal=_required_int(last, "attempt_ordinal"),
             intent_record_sha256=_required_string(last_ledger, "intent_record_sha256"),
             phase_lease_record_sha256=_required_string(
@@ -4896,12 +4906,14 @@ def replay_governed_full_score_phase_authorization(
         ),
         wave_index=_required_int(record, "wave_index"),
         phase=_required_string(record, "phase"),
+        predecessor_prefix=predecessor_prefix,
     ).parent
     replay_lease_path = _full_score_phase_lease_candidate_path(
         live_path,
         execution_plan_sha256=_required_string(record, "execution_plan_sha256"),
         wave_index=_required_int(record, "wave_index"),
         phase=_required_string(record, "phase"),
+        predecessor_prefix=predecessor_prefix,
         attempt_ordinal=attempt_ordinal,
     )
     workspace_sidecar = _read_full_score_workspace_authority(
@@ -6659,6 +6671,15 @@ def _governed_full_score_phase_reservation_validator(
         phase=phase,
         latency_execution_plan_record=latency_execution_plan_record,
     )
+    opens_chain = wave_index == 0 and phase == "producer" and capacity_retry is None
+    if opens_chain:
+        opening_ledger = read_databricks_cluster_hour_ledger_json(live_path)
+        require_databricks_ledger_prefix(opening_ledger, predecessor_prefix)
+        require_full_score_chain_restart_ledger(
+            opening_ledger,
+            predecessor_prefix=predecessor_prefix,
+            execution_plan=execution_plan,
+        )
     _require_full_score_remote_workspace_lineage(
         predecessor_authorization,
         execution_plan=execution_plan,
@@ -6725,6 +6746,12 @@ def _governed_full_score_phase_reservation_validator(
         require_databricks_ledger_prefix(current_ledger, predecessor_prefix)
         if databricks_ledger_prefix(current_ledger) != predecessor_prefix:
             raise ValueError("full-score batch predecessor prefix is stale or forked")
+        if opens_chain:
+            require_full_score_chain_restart_ledger(
+                current_ledger,
+                predecessor_prefix=predecessor_prefix,
+                execution_plan=execution_plan,
+            )
         if len(reservations) != 1 or len(snapshots) != 1:
             raise ValueError("full-score phase requires one atomic reservation member")
         reservation = reservations[0]
@@ -6801,6 +6828,7 @@ def _full_score_phase_lease_path(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    predecessor_prefix: DatabricksLedgerPrefix,
     attempt_ordinal: int = 0,
 ) -> Path:
     path = _full_score_phase_lease_candidate_path(
@@ -6808,6 +6836,7 @@ def _full_score_phase_lease_path(
         execution_plan_sha256=execution_plan_sha256,
         wave_index=wave_index,
         phase=phase,
+        predecessor_prefix=predecessor_prefix,
         attempt_ordinal=attempt_ordinal,
     )
     root = path.parent
@@ -6827,6 +6856,7 @@ def _full_score_phase_lease_candidate_path(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    predecessor_prefix: DatabricksLedgerPrefix,
     attempt_ordinal: int = 0,
 ) -> Path:
     """Return the deterministic lease path without creating its directory."""
@@ -6837,10 +6867,11 @@ def _full_score_phase_lease_candidate_path(
         raise ValueError("full-score phase lease root must not be a symlink")
     identity = _canonical_sha256(
         _full_score_phase_attempt_path_identity(
-            "cachet.full_score_phase_lease_path.v1",
+            "cachet.full_score_phase_lease_path.v2",
             execution_plan_sha256=execution_plan_sha256,
             wave_index=wave_index,
             phase=phase,
+            predecessor_prefix=predecessor_prefix,
             attempt_ordinal=attempt_ordinal,
         )
     )
@@ -6853,17 +6884,29 @@ def _full_score_phase_attempt_path_identity(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    predecessor_prefix: DatabricksLedgerPrefix,
     attempt_ordinal: int,
 ) -> dict[str, Any]:
+    """Name one phase attempt slot.
+
+    Every predecessor prefix except a wave-zero latency authority's is fixed
+    once the phase or failed attempt before it closes, so binding the slot to
+    that prefix opens a new slot only for a wave-zero producer after a fresh
+    latency collection; see :func:`require_full_score_chain_restart_ledger`.
+    """
+
     if (
         type(attempt_ordinal) is not int
         or not 0 <= attempt_ordinal < FULL_SCORE_PHASE_MAX_ATTEMPTS
     ):
         raise ValueError("full-score phase attempt ordinal is outside its bound")
+    if type(predecessor_prefix) is not DatabricksLedgerPrefix:
+        raise TypeError("full-score phase attempt slot requires a ledger prefix")
     identity: dict[str, Any] = {
         "domain": domain,
         "execution_plan_sha256": execution_plan_sha256,
         "phase": phase,
+        "predecessor_prefix": predecessor_prefix.to_record(),
         "wave_index": wave_index,
     }
     if attempt_ordinal:
@@ -6943,6 +6986,7 @@ def _full_score_phase_intent_path(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    predecessor_prefix: DatabricksLedgerPrefix,
     attempt_ordinal: int = 0,
 ) -> Path:
     path = _full_score_phase_intent_candidate_path(
@@ -6950,6 +6994,7 @@ def _full_score_phase_intent_path(
         execution_plan_sha256=execution_plan_sha256,
         wave_index=wave_index,
         phase=phase,
+        predecessor_prefix=predecessor_prefix,
         attempt_ordinal=attempt_ordinal,
     )
     root = path.parent
@@ -6969,6 +7014,7 @@ def _full_score_phase_intent_candidate_path(
     execution_plan_sha256: str,
     wave_index: int,
     phase: str,
+    predecessor_prefix: DatabricksLedgerPrefix,
     attempt_ordinal: int = 0,
 ) -> Path:
     """Return the deterministic intent path without creating its directory."""
@@ -6979,10 +7025,11 @@ def _full_score_phase_intent_candidate_path(
         raise ValueError("full-score phase intent root must not be a symlink")
     identity = _canonical_sha256(
         _full_score_phase_attempt_path_identity(
-            "cachet.full_score_phase_intent_path.v1",
+            "cachet.full_score_phase_intent_path.v2",
             execution_plan_sha256=execution_plan_sha256,
             wave_index=wave_index,
             phase=phase,
+            predecessor_prefix=predecessor_prefix,
             attempt_ordinal=attempt_ordinal,
         )
     )
@@ -7064,6 +7111,9 @@ def _write_or_require_full_score_phase_intent(
         ),
         wave_index=_required_int(record, "wave_index"),
         phase=_required_string(record, "phase"),
+        predecessor_prefix=databricks_ledger_prefix_from_record(
+            _required_mapping(record, "predecessor_prefix")
+        ),
         attempt_ordinal=_full_score_phase_record_attempt_ordinal(record),
     )
     content = _canonical_pretty_json_bytes(record)
@@ -7087,6 +7137,9 @@ def _require_full_score_phase_intent(
         ),
         wave_index=_required_int(expected, "wave_index"),
         phase=_required_string(expected, "phase"),
+        predecessor_prefix=databricks_ledger_prefix_from_record(
+            _required_mapping(expected, "predecessor_prefix")
+        ),
         attempt_ordinal=_full_score_phase_record_attempt_ordinal(expected),
     )
     content = _canonical_pretty_json_bytes(expected)
@@ -7107,6 +7160,7 @@ def _write_or_require_full_score_phase_lease(
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
         phase=authorization.phase,
+        predecessor_prefix=authorization.predecessor_prefix,
         attempt_ordinal=authorization.attempt_ordinal,
     )
     content = _canonical_pretty_json_bytes(record)
@@ -7135,6 +7189,7 @@ def _require_full_score_phase_lease(
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
         phase=authorization.phase,
+        predecessor_prefix=authorization.predecessor_prefix,
         attempt_ordinal=authorization.attempt_ordinal,
     )
     if intent_path.is_symlink() or not intent_path.is_file():
@@ -7164,6 +7219,7 @@ def _require_full_score_phase_lease(
         execution_plan_sha256=authorization.execution_plan_sha256,
         wave_index=authorization.wave_index,
         phase=authorization.phase,
+        predecessor_prefix=authorization.predecessor_prefix,
         attempt_ordinal=authorization.attempt_ordinal,
     )
     if path.is_symlink() or not path.is_file():
@@ -7181,6 +7237,56 @@ def _require_full_score_phase_lease(
     ):
         raise ValueError("full-score workspace authority sidecar drift")
     return path
+
+
+def require_full_score_chain_restart_ledger(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    predecessor_prefix: DatabricksLedgerPrefix,
+    execution_plan: Mapping[str, Any],
+) -> tuple[DatabricksClusterHourTerminalActual, ...]:
+    """Return the abandoned chain a fresh wave-zero producer may restart over.
+
+    Earlier attempts of this plan can precede a wave-zero producer's latency
+    authority only when that authority was collected again after them.  Such a
+    chain is abandoned, never resumed: it must have stayed in wave zero, closed
+    no consumer successfully, and ended in a non-succeeded attempt, so a
+    restart cannot discard a chain that could still have continued.  The
+    returned terminals, in reservation order, are what a report must disclose.
+    The caller must already have bound ``predecessor_prefix`` to ``ledger``.
+    """
+
+    producer = _full_score_phase_workload_id(
+        execution_plan, wave_index=0, phase="producer"
+    )
+    consumer = _full_score_phase_workload_id(
+        execution_plan, wave_index=0, phase="consumer"
+    )
+    plan_workloads = producer.removesuffix("wave-000:producer")
+    prior = [
+        item
+        for item in ledger.reservations[: predecessor_prefix.reservation_count]
+        if item.workload_id.startswith(plan_workloads)
+    ]
+    if not prior:
+        return ()
+    terminals = {
+        item.attempt_id: item
+        for item in ledger.terminal_actuals[: predecessor_prefix.terminal_actual_count]
+    }
+    if any(item.workload_id not in {producer, consumer} for item in prior):
+        raise ValueError("full-score chain restart is limited to wave zero")
+    if any(item.attempt_id not in terminals for item in prior):
+        raise ValueError("full-score chain restart requires terminal prior attempts")
+    if any(
+        item.workload_id == consumer
+        and terminals[item.attempt_id].terminal_state == "succeeded"
+        for item in prior
+    ):
+        raise ValueError("full-score chain restart cannot discard a closed consumer")
+    if terminals[prior[-1].attempt_id].terminal_state == "succeeded":
+        raise ValueError("full-score chain restart requires a failed latest attempt")
+    return tuple(terminals[item.attempt_id] for item in prior)
 
 
 def _require_full_score_historical_reservation_policy(
@@ -7567,6 +7673,12 @@ def _replay_governed_full_score_phase_submission_authorization(
         qualification_launch_authorization=qualification_launch_authorization,
         admission=admission,
     )
+    if wave_index == 0 and phase == "producer" and capacity_retry is None:
+        require_full_score_chain_restart_ledger(
+            live,
+            predecessor_prefix=predecessor_prefix,
+            execution_plan=execution_plan,
+        )
     batch_prefix = batch_authorization.batch_prefix
     if len(live.reservations) != batch_prefix.reservation_count:
         raise ValueError("full-score replay has reservations after its phase batch")
@@ -7626,6 +7738,7 @@ def _replay_governed_full_score_phase_submission_authorization(
             execution_plan_sha256=authorization.execution_plan_sha256,
             wave_index=authorization.wave_index,
             phase=authorization.phase,
+            predecessor_prefix=authorization.predecessor_prefix,
             attempt_ordinal=authorization.attempt_ordinal,
         )
         lease_root = lease_path.parent
@@ -14523,20 +14636,66 @@ def _exclusive_write_bytes(path: Path, payload: bytes) -> None:
         if not stat.S_ISREG(temporary_status.st_mode):
             raise ValueError("exclusive output staging path must be a regular file")
         try:
-            # Hard-link publication is atomic and fails with FileExistsError if a
-            # duplicate submission already owns the immutable target name.
-            os.link(
+            _publish_staged_file_exclusive(
                 temporary.name,
                 path.name,
-                src_dir_fd=parent_descriptor,
-                dst_dir_fd=parent_descriptor,
-                follow_symlinks=False,
+                dir_fd=parent_descriptor,
             )
         finally:
-            os.unlink(temporary.name, dir_fd=parent_descriptor)
+            try:
+                os.unlink(temporary.name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
         os.fsync(parent_descriptor)
     finally:
         os.close(parent_descriptor)
+
+
+def _publish_staged_file_exclusive(
+    staged_name: str,
+    target_name: str,
+    *,
+    dir_fd: int,
+) -> None:
+    """Expose a complete sibling file under a name no writer has published.
+
+    Hard-link publication is atomic and fails with FileExistsError if a
+    duplicate submission already owns the immutable target name.  Unity Catalog
+    volume FUSE mounts reject hard links with EPERM; there an empty O_EXCL claim
+    owns the name and the rename replaces only that claim, so readers observe
+    either the empty claim or the complete bytes.
+    """
+
+    try:
+        os.link(
+            staged_name,
+            target_name,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=False,
+        )
+        return
+    except OSError as exc:
+        if exc.errno not in _HARD_LINK_UNSUPPORTED_ERRNOS:
+            raise
+    claim = os.open(
+        target_name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+        dir_fd=dir_fd,
+    )
+    os.close(claim)
+    try:
+        os.rename(staged_name, target_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        claimed = os.stat(target_name, dir_fd=dir_fd, follow_symlinks=False)
+        if stat.S_ISREG(claimed.st_mode) and claimed.st_size == 0:
+            os.unlink(target_name, dir_fd=dir_fd)
+        raise
 
 
 def _write_or_require_exact_bytes(
@@ -16015,6 +16174,7 @@ __all__ = [
     "replay_governed_full_score_phase_capacity_retry_authorization",
     "replay_governed_full_score_phase_submission_authorization",
     "resume_governed_full_score_phase_attempt",
+    "require_full_score_chain_restart_ledger",
     "reserve_and_submit_governed_full_score_phase_attempt",
     "reserve_governed_full_score_phase_attempt",
     "submit_governed_full_score_phase_attempt",

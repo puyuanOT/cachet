@@ -64,6 +64,7 @@ from document_kv_cache.full_score_execution import (
     FullScoreCompactArtifactResolver,
     FullScorePhaseAuthorization,
     aggregate_full_score_shard_evidence,
+    require_full_score_chain_restart_ledger,
     validate_full_score_aggregate_record,
 )
 from document_kv_cache.gpu_qualification_databricks import (
@@ -240,6 +241,7 @@ _VLLM_0300_REPORT_KEYS = _REPORT_KEYS | {"latency_provenance"}
 _VLLM_0300_SOURCE_BINDING_NAMES = _SOURCE_BINDING_NAMES - {"latency_execution_plan"}
 _VLLM_0300_LEDGER_KEYS = _LEDGER_KEYS | {
     "cap_raises",
+    "full_score_abandoned_attempts",
     "full_score_capacity_retries",
     "latency_recovered_balance",
 }
@@ -262,6 +264,7 @@ _LATENCY_PROVENANCE_KEYS = frozenset(
 )
 _RECOVERED_BALANCE_KEYS = frozenset({"attempt_count", "cluster_hours"})
 _CAPACITY_RETRY_KEYS = frozenset({"attempt_count", "cluster_hours"})
+_ABANDONED_ATTEMPT_KEYS = frozenset({"attempt_count", "cluster_hours"})
 _FORBIDDEN_REPORT_KEYS = frozenset(
     {
         "answer",
@@ -1272,6 +1275,7 @@ def _validated_multi_plan_campaign_ledger_projection(
         ledger_path=ledger_path,
         disclose_cap_raises=True,
         disclose_capacity_retries=True,
+        disclose_abandoned_attempts=True,
     )
     recovered = _mapping(
         _mapping(latency_collection_authorization.collection, "ledger"),
@@ -1294,6 +1298,7 @@ def _campaign_ledger_projection_after_latency(
     ledger_path: str | Path,
     disclose_cap_raises: bool = False,
     disclose_capacity_retries: bool = False,
+    disclose_abandoned_attempts: bool = False,
 ) -> dict[str, Any]:
     execution_sha256 = _required_sha256(
         full_score_execution_plan_record,
@@ -1326,6 +1331,13 @@ def _campaign_ledger_projection_after_latency(
     )
     if observed_latency_prefix != latency_prefix:
         raise ValueError("latency terminal prefix is not a live ledger prefix")
+    abandoned = require_full_score_chain_restart_ledger(
+        live,
+        predecessor_prefix=latency_prefix,
+        execution_plan=full_score_execution_plan_record,
+    )
+    if abandoned and not disclose_abandoned_attempts:
+        raise ValueError("this report cannot disclose abandoned full-score attempts")
     final_prefix = databricks_ledger_prefix(live)
     lineage = _mapping(full_score_aggregate_record, "publication_lineage")
     lineage_prefix = databricks_ledger_prefix_from_record(
@@ -1414,6 +1426,11 @@ def _campaign_ledger_projection_after_latency(
         projection["full_score_capacity_retries"] = {
             "attempt_count": retry_attempt_count,
             "cluster_hours": retry_cluster_hours,
+        }
+    if disclose_abandoned_attempts:
+        projection["full_score_abandoned_attempts"] = {
+            "attempt_count": len(abandoned),
+            "cluster_hours": math.fsum(item.actual_cluster_hours for item in abandoned),
         }
     return projection
 
@@ -1834,6 +1851,9 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
             latency_prefix=latency_prefix,
             full_score_prefix=full_score_prefix,
         )
+        _validate_report_abandoned_attempts(
+            ledger.get("full_score_abandoned_attempts")
+        )
         _validate_latency_provenance_projection(
             _mapping(record, "latency_provenance"),
             recovered_balance=_mapping(ledger, "latency_recovered_balance"),
@@ -1860,6 +1880,32 @@ def _validated_report_capacity_retries(value: Any) -> int:
     ):
         raise ValueError("report full-score capacity retries are invalid")
     return attempt_count
+
+
+def _validate_report_abandoned_attempts(value: Any) -> None:
+    """Require the disclosed wave-zero chain the full score restarted over.
+
+    Those attempts precede the latency terminal prefix, so no prefix count in
+    the report can cross-check them; the finalizer derives them from the live
+    ledger before it writes the report.
+    """
+
+    if not isinstance(value, Mapping):
+        raise ValueError("report abandoned full-score attempts must be an object")
+    _require_exact_keys(
+        value,
+        _ABANDONED_ATTEMPT_KEYS,
+        "report abandoned full-score attempts",
+    )
+    attempt_count = _required_nonnegative_int(value, "attempt_count")
+    cluster_hours = value.get("cluster_hours")
+    if (
+        type(cluster_hours) is not float
+        or not math.isfinite(cluster_hours)
+        or cluster_hours < 0.0
+        or (attempt_count == 0 and cluster_hours != 0.0)
+    ):
+        raise ValueError("report abandoned full-score attempts are invalid")
 
 
 def _validate_report_cap_raises(
