@@ -1920,6 +1920,13 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "a new source closure, and a fresh exact14 qualification" in (
         compact_ledger_doc
     )
+    assert "vLLM 0.30.0 qualification of source revision `00153c1`" in (
+        compact_ledger_doc
+    )
+    assert "L40S run `795564550394694` never executed" in compact_ledger_doc
+    assert "exact 267/220/267 prefix" in compact_ledger_doc
+    assert "719.1179608333333 terminal GPU-hours" in compact_ledger_doc
+    assert "this plan cannot be launched again" in compact_ledger_doc
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -1939,6 +1946,10 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "ab6f347d876ae63280e794ba346a91016d43d3274865e198c94a7bbc9317eacc",
         "e09e88a98b8e0510a2e6e6c8df162cd298356e903e236db1431331212471804c",
         "9fd351c732aa9a2643fc2a23f462354c59594ab530a3cdc0b89adfd74241631d",
+        "1c188abed702bab1018ed60e46ccdafc64d0a515aa8fb319b1fdce39413d43cc",
+        "c0bf9c6562beb3183ec105acb18e3953ea139ccc5f28ad2f0168e5d292d1b04e",
+        "f6c2a779ece0b6f6519ba0815d1871e471cfe321552667cc4386f7fafc13929c",
+        "40c8e4e2307904224709079026ec5f30c4379e94231732feca367f92316670e6",
     ):
         assert digest in compact_ledger_doc
     assert (
