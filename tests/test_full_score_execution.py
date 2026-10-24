@@ -1,4 +1,5 @@
 import copy
+import errno
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -6528,6 +6529,77 @@ def test_state_machine_and_exclusive_writes_fail_closed(tmp_path):
             execution_plan=execution_plan,
             lifecycle=lifecycle_events,
         )
+
+
+def _refuse_hard_links(monkeypatch, link_errno=errno.EPERM):
+    def refuse(*_args, **_kwargs):
+        raise OSError(link_errno, os.strerror(link_errno))
+
+    monkeypatch.setattr(full_score.os, "link", refuse)
+
+
+@pytest.mark.parametrize("link_errno", [errno.EPERM, errno.ENOTSUP, errno.ENOSYS])
+def test_exclusive_writes_publish_on_volumes_without_hard_links(
+    tmp_path,
+    monkeypatch,
+    link_errno,
+):
+    _refuse_hard_links(monkeypatch, link_errno)
+    durable_dir = tmp_path / "volume" / "evidence" / "wave-000" / "shard-00000"
+
+    full_score._exclusive_write_bytes(durable_dir / "evidence.json", b"first\n")
+    with pytest.raises(FileExistsError):
+        full_score._exclusive_write_bytes(
+            durable_dir / "evidence.json",
+            b"replacement\n",
+        )
+    full_score._write_or_require_exact_bytes(
+        durable_dir / "evidence.json",
+        b"first\n",
+        field_name="volume evidence",
+    )
+    with pytest.raises(ValueError, match="volume evidence binding drift"):
+        full_score._write_or_require_exact_bytes(
+            durable_dir / "evidence.json",
+            b"replacement\n",
+            field_name="volume evidence",
+        )
+
+    assert (durable_dir / "evidence.json").read_bytes() == b"first\n"
+    assert [path.name for path in durable_dir.iterdir()] == ["evidence.json"]
+
+
+def test_volume_exclusive_write_releases_its_empty_claim_when_rename_fails(
+    tmp_path,
+    monkeypatch,
+):
+    _refuse_hard_links(monkeypatch)
+    rename = os.rename
+
+    def interrupted_rename(*_args, **_kwargs):
+        raise OSError(errno.EIO, "volume transport interrupted")
+
+    monkeypatch.setattr(full_score.os, "rename", interrupted_rename)
+    target = tmp_path / "runtime-lock-verification.json"
+    with pytest.raises(OSError, match="volume transport interrupted"):
+        full_score._exclusive_write_bytes(target, b"{}\n")
+    assert list(tmp_path.iterdir()) == []
+
+    monkeypatch.setattr(full_score.os, "rename", rename)
+    full_score._exclusive_write_bytes(target, b"{}\n")
+    assert target.read_bytes() == b"{}\n"
+
+
+def test_exclusive_write_keeps_failing_on_unexpected_hard_link_errors(
+    tmp_path,
+    monkeypatch,
+):
+    _refuse_hard_links(monkeypatch, errno.EIO)
+    target = tmp_path / "ready-record.json"
+    with pytest.raises(OSError) as raised:
+        full_score._exclusive_write_bytes(target, b"{}\n")
+    assert raised.value.errno == errno.EIO
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_consumer_recovery_finishes_a_partially_deleted_ready_tree(

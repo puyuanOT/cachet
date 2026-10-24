@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import errno
 import gc
 import json
 import os
@@ -717,6 +718,9 @@ _SHA256_LENGTH = 64
 _TRANSFER_FIELDS = frozenset({"kv_transfer_params", "arm_kv_transfer_params"})
 _SECRET_KEY_PARTS = frozenset(
     {"credential", "key", "pass", "password", "pat", "secret", "token"}
+)
+_HARD_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    {errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS}
 )
 
 
@@ -14523,20 +14527,66 @@ def _exclusive_write_bytes(path: Path, payload: bytes) -> None:
         if not stat.S_ISREG(temporary_status.st_mode):
             raise ValueError("exclusive output staging path must be a regular file")
         try:
-            # Hard-link publication is atomic and fails with FileExistsError if a
-            # duplicate submission already owns the immutable target name.
-            os.link(
+            _publish_staged_file_exclusive(
                 temporary.name,
                 path.name,
-                src_dir_fd=parent_descriptor,
-                dst_dir_fd=parent_descriptor,
-                follow_symlinks=False,
+                dir_fd=parent_descriptor,
             )
         finally:
-            os.unlink(temporary.name, dir_fd=parent_descriptor)
+            try:
+                os.unlink(temporary.name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
         os.fsync(parent_descriptor)
     finally:
         os.close(parent_descriptor)
+
+
+def _publish_staged_file_exclusive(
+    staged_name: str,
+    target_name: str,
+    *,
+    dir_fd: int,
+) -> None:
+    """Expose a complete sibling file under a name no writer has published.
+
+    Hard-link publication is atomic and fails with FileExistsError if a
+    duplicate submission already owns the immutable target name.  Unity Catalog
+    volume FUSE mounts reject hard links with EPERM; there an empty O_EXCL claim
+    owns the name and the rename replaces only that claim, so readers observe
+    either the empty claim or the complete bytes.
+    """
+
+    try:
+        os.link(
+            staged_name,
+            target_name,
+            src_dir_fd=dir_fd,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=False,
+        )
+        return
+    except OSError as exc:
+        if exc.errno not in _HARD_LINK_UNSUPPORTED_ERRNOS:
+            raise
+    claim = os.open(
+        target_name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+        dir_fd=dir_fd,
+    )
+    os.close(claim)
+    try:
+        os.rename(staged_name, target_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        claimed = os.stat(target_name, dir_fd=dir_fd, follow_symlinks=False)
+        if stat.S_ISREG(claimed.st_mode) and claimed.st_size == 0:
+            os.unlink(target_name, dir_fd=dir_fd)
+        raise
 
 
 def _write_or_require_exact_bytes(

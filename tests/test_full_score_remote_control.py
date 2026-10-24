@@ -1,4 +1,5 @@
 import copy
+import errno
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -1617,7 +1618,18 @@ def test_remote_attestation_rejects_tampered_tree_closure():
         )
 
 
-def test_remote_worker_invokes_existing_exact_producer_validator(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hard_links", [True, False])
+def test_remote_worker_invokes_existing_exact_producer_validator(
+    tmp_path,
+    monkeypatch,
+    hard_links,
+):
+    if not hard_links:
+
+        def refuse_link(*_args, **_kwargs):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+        monkeypatch.setattr(remote.os, "link", refuse_link)
     case = _request_case()
     records = {
         binding["uri"]: record
@@ -1703,6 +1715,14 @@ def test_remote_worker_invokes_existing_exact_producer_validator(tmp_path, monke
     assert called[0][1]["producer_payloads"] == tuple(
         record for _uri, record in case.payloads
     )
+    assert (tmp_path / "result.json").read_bytes() == remote._pretty_json_bytes(result)
+    assert not [path for path in tmp_path.iterdir() if ".pending-" in path.name]
+    with pytest.raises(ValueError, match="existing bytes drift"):
+        remote._write_or_require_bytes(
+            tmp_path / "result.json",
+            b"{}\n",
+            "remote coordinator result",
+        )
 
 
 @pytest.mark.parametrize("original_present", [False, True])

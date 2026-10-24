@@ -5215,13 +5215,21 @@ def _write_or_require_bytes(path: Path, content: bytes, label: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError:
-            if not path.is_file() or path.is_symlink() or path.read_bytes() != content:
-                raise ValueError(f"{label} existing bytes drift") from None
         directory_descriptor = os.open(path.parent, os.O_RDONLY)
         try:
+            try:
+                full_score._publish_staged_file_exclusive(
+                    temporary.name,
+                    path.name,
+                    dir_fd=directory_descriptor,
+                )
+            except FileExistsError:
+                if (
+                    not path.is_file()
+                    or path.is_symlink()
+                    or path.read_bytes() != content
+                ):
+                    raise ValueError(f"{label} existing bytes drift") from None
             os.fsync(directory_descriptor)
         finally:
             os.close(directory_descriptor)
