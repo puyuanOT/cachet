@@ -626,17 +626,18 @@ def _phase_payloads(campaign, wave_index, role):
     ]
 
 
-def _volume_campaign(campaign):
+def _volume_campaign(campaign, *, vllm_wheel_name="patched-vllm.whl"):
     volume = "dbfs:/Volumes/catalog/schema/volume"
     runtime = replace(
         campaign["bundle"].runtime,
         runtime_lock_uri=f"{volume}/runtime/runtime.lock",
-        patched_vllm_wheel_uri=f"{volume}/runtime/patched-vllm.whl",
+        patched_vllm_wheel_uri=f"{volume}/runtime/{vllm_wheel_name}",
         patched_flashinfer_wheel_uri=f"{volume}/runtime/patched-flashinfer.whl",
         runtime_closure_manifest_uri=f"{volume}/runtime/closure.json",
         vllm_wheel_install_spec=(
-            "vllm @ file:///Volumes/catalog/schema/volume/runtime/"
-            f"patched-vllm.whl#sha256={campaign['bundle'].runtime.patched_vllm_wheel_sha256}"
+            "vllm @ "
+            + Path("/Volumes/catalog/schema/volume/runtime", vllm_wheel_name).as_uri()
+            + f"#sha256={campaign['bundle'].runtime.patched_vllm_wheel_sha256}"
         ),
         flashinfer_wheel_install_spec=(
             "flashinfer-python @ file:///Volumes/catalog/schema/volume/runtime/"
@@ -2285,6 +2286,37 @@ def test_mac_consumer_render_and_submit_validation_use_remote_tree_authority(
 
     assert len(bindings) == 16
     assert len(authority_calls) == 2
+
+
+def test_volume_render_binds_percent_encoded_local_version_install_spec(campaign):
+    wheel = "vllm-0.30.0+cu129-1cachet-cp38-abi3-manylinux_2_28_x86_64.whl"
+    local_worker_files = campaign["worker_files"]
+    volume_campaign = _volume_campaign(campaign, vllm_wheel_name=wheel)
+    local_worker_files.update(volume_campaign["worker_files"])
+    runtime = volume_campaign["bundle"].runtime
+    assert "/vllm-0.30.0%2Bcu129-1cachet-" in runtime.vllm_wheel_install_spec
+    with pytest.raises(ValueError, match="vLLM install spec URI differs"):
+        replace(
+            runtime,
+            vllm_wheel_install_spec=runtime.vllm_wheel_install_spec.replace("%2B", "+"),
+        )
+
+    submit_payload = full_score.build_databricks_full_score_run_submit_payload(
+        volume_campaign["job"],
+        _phase_payloads(volume_campaign, 0, "producer"),
+        inventory=volume_campaign["inventory"],
+        shard_plan=volume_campaign["shard_plan"],
+        execution_plan=volume_campaign["execution_plan"],
+        qualification_launch_authorization=volume_campaign[
+            "qualification_launch_authorization"
+        ],
+        attempt_id="wave-000-producer-local-version",
+    )
+
+    parameters = submit_payload["tasks"][0]["spark_python_task"]["parameters"]
+    assert parameters[parameters.index("--patched-vllm-wheel-uri") + 1] == (
+        f"dbfs:/Volumes/catalog/schema/volume/runtime/{wheel}"
+    )
 
 
 def test_full_score_workers_use_volume_mounts_for_volume_uris():

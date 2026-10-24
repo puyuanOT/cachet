@@ -2425,14 +2425,16 @@ def _build_databricks_full_score_run_submit_payload(
             "runtime_closure_manifest_sha256": (config.runtime_closure_manifest_sha256),
             "runtime_closure_manifest_uri": config.runtime_closure_manifest_uri,
             "python_executable": f"{config.runtime_venv_dir}/bin/python",
+            # FullScoreRuntimeConfig requires, and pip records as direct_url,
+            # the percent-encoded file URI (a local version "+" becomes "%2B").
             "vllm_wheel_install_spec": (
-                "vllm @ file://"
-                f"{_databricks_worker_mount_path(config.patched_vllm_wheel_uri)}"
+                "vllm @ "
+                f"{_cluster_artifact_file_uri(config.patched_vllm_wheel_uri)}"
                 f"#sha256={config.patched_vllm_wheel_sha256}"
             ),
             "flashinfer_wheel_install_spec": (
-                "flashinfer-python @ file://"
-                f"{_databricks_worker_mount_path(config.patched_flashinfer_wheel_uri)}"
+                "flashinfer-python @ "
+                f"{_cluster_artifact_file_uri(config.patched_flashinfer_wheel_uri)}"
                 f"#sha256={config.patched_flashinfer_wheel_sha256}"
             ),
         }
@@ -14767,17 +14769,6 @@ def _require_shared_dbfs_path(value: Any, field_name: str) -> str:
         or any(part in {"", ".", ".."} for part in parts)
     ):
         raise ValueError(f"{field_name} must be a confined shared DBFS path")
-    return raw
-
-
-def _databricks_worker_mount_path(value: Any) -> str:
-    """Render a worker mount string without dereferencing it on the controller."""
-
-    raw = _require_shared_dbfs_path(value, "Databricks worker artifact URI")
-    if raw.startswith("dbfs:/Volumes/"):
-        return "/Volumes/" + raw.removeprefix("dbfs:/Volumes/")
-    if raw.startswith("dbfs:/"):
-        return "/dbfs/" + raw.removeprefix("dbfs:/").lstrip("/")
     return raw
 
 
