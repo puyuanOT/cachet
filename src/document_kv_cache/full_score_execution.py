@@ -10461,6 +10461,7 @@ def _produce_ready_shard(
             align_bytes=4096,
             require_artifact_contract=True,
         )
+        _delete_intermediate_kvpack(result.shard_uri, output_dir=dataset_output)
         enriched_path = local_dir / "enriched" / f"{dataset}.jsonl"
         enrich_benchmark_jsonl_with_handoffs(
             input_path,
@@ -10537,6 +10538,23 @@ def _produce_ready_shard(
         label="producer local shard cleanup",
     )
     return ready
+
+
+def _delete_intermediate_kvpack(shard_uri: str, *, output_dir: Path) -> None:
+    """Drop the generation kvpack, a second copy of the handoff payload bytes.
+
+    The ready-shard byte bound budgets the KV payload once, and consumers load
+    only the per-example handoff payload files.
+    """
+
+    shard_path = Path(shard_uri)
+    if (
+        shard_path.parent != output_dir.resolve(strict=False)
+        or shard_path.is_symlink()
+        or not shard_path.is_file()
+    ):
+        raise RuntimeError("producer intermediate kvpack is missing or unsafe")
+    shard_path.unlink()
 
 
 def _run_consumer_worker(

@@ -24,6 +24,7 @@ import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
 import document_kv_cache.publication_latency_execution as publication_latency
 import document_kv_cache.runtime_artifact_closure as runtime_artifact_closure
 import document_kv_cache.flashinfer_wheel_repack as flashinfer_wheel_repack
+from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmark_handoffs import (
     BenchmarkHandoffEntry,
     BenchmarkHandoffManifest,
@@ -61,6 +62,9 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_PUBLICATION_INPUT_BUNDLE_SHA256,
     GPUQualificationArtifactPinsV2,
 )
+from document_kv_cache.kvpack import PackChunk
+from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.models import KVCacheKey
 from document_kv_cache.publication_campaign import PUBLICATION_CAMPAIGN_ID
 from document_kv_cache.publication_inputs import (
     build_full_score_shard_plan,
@@ -1692,6 +1696,134 @@ def test_governed_niah_source_row_replays_from_inventory_hash(tmp_path):
             {"niah": path},
             shard=shard,
         )
+
+
+class _ReadyShardTokenizer:
+    def __call__(self, text, *, return_tensors, add_special_tokens):
+        assert add_special_tokens is False
+        return {"input_ids": [[ord(character) for character in text]]}
+
+    def decode(self, token_ids, **_kwargs):
+        return "".join(chr(token_id) for token_id in token_ids)
+
+
+class _ReadyShardGenerator:
+    pre_rope = True
+    add_special_tokens = False
+
+    def __init__(self, layout):
+        self.layout = layout
+        self.rope_theta = layout.rope_theta
+        self.rope_rotary_dim = layout.rope_rotary_dim
+        self.tokenizer = _ReadyShardTokenizer()
+
+    def bind_layout(self, layout):
+        self.layout = layout
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        assert training_artifacts is None
+        encoded = self.tokenizer(
+            chunk.text, return_tensors="pt", add_special_tokens=False
+        )
+        token_ids = tuple(encoded["input_ids"][0])
+        payload = b"\x01" * (len(token_ids) * self.layout.bytes_per_token)
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+                content_hash=sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(self.layout),
+                token_contract=TokenContract.from_token_ids(
+                    token_ids,
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
+            ),
+            payload=payload,
+            token_count=len(token_ids),
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+def test_producer_ready_shard_carries_the_kv_payload_once(campaign, tmp_path):
+    payload = copy.deepcopy(_phase_payloads(campaign, 0, "producer")[0])
+    payload["ephemeral_root"] = str(tmp_path / "ephemeral")
+    payload["durable_output_root"] = str(tmp_path / "durable")
+    shard = payload["shards"][0]
+    source_records = {
+        (item["dataset"], item["example_id"]): _score_record(
+            item["dataset"], int(item["example_id"].rsplit("-", 1)[1])
+        )
+        for item in shard["items"]
+    }
+    layout = layout_for_model(
+        full_score.FULL_SCORE_MODEL_ID,
+        dtype=full_score.FULL_SCORE_KV_DTYPE,
+        pre_rope=True,
+        rope_theta=full_score.QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=full_score.QWEN3_4B_ROPE_ROTARY_DIM,
+        shares_kv_storage=False,
+        storage_layout="separate_key_value",
+    )
+
+    ready = full_score._produce_ready_shard(
+        payload,
+        shard,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+        source_records=source_records,
+        runtime=campaign["bundle"].runtime,
+        runtime_verification=_runtime_verification(),
+        generator=_ReadyShardGenerator(layout),
+        layout=layout,
+        producer_hardware={"gpu_name": full_score.FULL_SCORE_PRODUCER_GPU_NAME},
+    )
+
+    kv_payload_bytes = (
+        shard["cache_prefix_tokens"]
+        * full_score.FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN
+    )
+    assert not [
+        record["relative_path"]
+        for record in ready["files"]
+        if record["relative_path"].endswith(".kvpack")
+    ]
+    assert not list((tmp_path / "durable").rglob("*.kvpack"))
+    assert kv_payload_bytes < ready["ready_bytes"] < 2 * kv_payload_bytes
+    assert ready["ready_bytes"] <= ready["ready_bytes_upper_bound"]
+    assert not (tmp_path / "ephemeral").joinpath(
+        f"producer-wave-000-{payload['worker_index']:02d}", shard["shard_id"]
+    ).exists()
+
+
+def test_intermediate_kvpack_deletion_is_confined(tmp_path):
+    output_dir = tmp_path / "q8-kv" / "niah"
+    output_dir.mkdir(parents=True)
+    kvpack = output_dir / "cachet-benchmark.kvpack"
+    with pytest.raises(RuntimeError, match="missing or unsafe"):
+        full_score._delete_intermediate_kvpack(str(kvpack), output_dir=output_dir)
+    outside = tmp_path / "cachet-benchmark.kvpack"
+    outside.write_bytes(b"kv")
+    with pytest.raises(RuntimeError, match="missing or unsafe"):
+        full_score._delete_intermediate_kvpack(str(outside), output_dir=output_dir)
+    assert outside.exists()
+    kvpack.symlink_to(outside)
+    with pytest.raises(RuntimeError, match="missing or unsafe"):
+        full_score._delete_intermediate_kvpack(str(kvpack), output_dir=output_dir)
+    assert outside.exists()
+    kvpack.unlink()
+    kvpack.write_bytes(b"kv")
+    full_score._delete_intermediate_kvpack(str(kvpack), output_dir=output_dir)
+    assert not kvpack.exists()
 
 
 def test_governed_ready_and_handoff_replay_bind_source_artifact_and_files(
