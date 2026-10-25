@@ -1753,11 +1753,14 @@ class _ReadyShardGenerator:
         )
 
 
-def test_producer_ready_shard_carries_the_kv_payload_once(campaign, tmp_path):
+def _ready_shard_producer_payload(campaign, tmp_path):
     payload = copy.deepcopy(_phase_payloads(campaign, 0, "producer")[0])
     payload["ephemeral_root"] = str(tmp_path / "ephemeral")
     payload["durable_output_root"] = str(tmp_path / "durable")
-    shard = payload["shards"][0]
+    return payload
+
+
+def _produce_test_ready_shard(campaign, payload, shard):
     source_records = {
         (item["dataset"], item["example_id"]): _score_record(
             item["dataset"], int(item["example_id"].rsplit("-", 1)[1])
@@ -1773,8 +1776,7 @@ def test_producer_ready_shard_carries_the_kv_payload_once(campaign, tmp_path):
         shares_kv_storage=False,
         storage_layout="separate_key_value",
     )
-
-    ready = full_score._produce_ready_shard(
+    return full_score._produce_ready_shard(
         payload,
         shard,
         inventory=campaign["inventory"],
@@ -1785,8 +1787,22 @@ def test_producer_ready_shard_carries_the_kv_payload_once(campaign, tmp_path):
         runtime_verification=_runtime_verification(),
         generator=_ReadyShardGenerator(layout),
         layout=layout,
-        producer_hardware={"gpu_name": full_score.FULL_SCORE_PRODUCER_GPU_NAME},
+        producer_hardware={
+            "compute_capability": "8.9",
+            "gpu_count": 1,
+            "gpu_name": full_score.FULL_SCORE_PRODUCER_GPU_NAME,
+            "hardware_target": full_score.FULL_SCORE_PRODUCER_HARDWARE_TARGET,
+            "node_type_id": full_score.FULL_SCORE_PRODUCER_NODE_TYPE_ID,
+            "total_memory_bytes": 48 * 1024**3,
+        },
     )
+
+
+def test_producer_ready_shard_carries_the_kv_payload_once(campaign, tmp_path):
+    payload = _ready_shard_producer_payload(campaign, tmp_path)
+    shard = payload["shards"][0]
+
+    ready = _produce_test_ready_shard(campaign, payload, shard)
 
     kv_payload_bytes = (
         shard["cache_prefix_tokens"]
@@ -1803,6 +1819,59 @@ def test_producer_ready_shard_carries_the_kv_payload_once(campaign, tmp_path):
     assert not (tmp_path / "ephemeral").joinpath(
         f"producer-wave-000-{payload['worker_index']:02d}", shard["shard_id"]
     ).exists()
+
+
+def test_producer_commits_ready_shard_in_place_without_directory_rename(
+    campaign, tmp_path, monkeypatch
+):
+    def refuse_directory_rename(_source, _destination):
+        raise OSError(errno.E2BIG, "Argument list too long")
+
+    monkeypatch.setattr(
+        full_score, "_rename_directory_no_follow", refuse_directory_rename
+    )
+    payload = _ready_shard_producer_payload(campaign, tmp_path)
+    shard = payload["shards"][0]
+    ready_dir = full_score._ready_shard_dir(payload, shard["shard_id"])
+    ready_dir.mkdir(parents=True)
+    (ready_dir / "partial-payload.bin").write_bytes(b"interrupted producer")
+
+    ready = _produce_test_ready_shard(campaign, payload, shard)
+
+    assert sorted(path.name for path in ready_dir.parent.iterdir()) == [
+        shard["shard_id"]
+    ]
+    assert not (ready_dir / "partial-payload.bin").exists()
+    assert ready["lifecycle"][-1] == "commit_ready_shard"
+    assert (
+        json.loads((ready_dir / "ready-record.json").read_bytes().decode("utf-8"))
+        == ready
+    )
+    assert _produce_test_ready_shard(campaign, payload, shard) == ready
+
+
+def test_ready_wave_wait_treats_an_empty_record_claim_as_pending(
+    campaign, tmp_path, monkeypatch
+):
+    payload = copy.deepcopy(_phase_payloads(campaign, 0, "consumer")[0])
+    payload["durable_output_root"] = str(tmp_path / "durable")
+    shard = payload["shards"][0]
+    record_path = (
+        full_score._ready_shard_dir(payload, shard["shard_id"]) / "ready-record.json"
+    )
+    record_path.parent.mkdir(parents=True)
+    record_path.touch()
+    sleeps = []
+
+    def publish_record_while_waiting(seconds):
+        sleeps.append(seconds)
+        record_path.write_bytes(b"{}")
+
+    monkeypatch.setattr(full_score.time, "sleep", publish_record_while_waiting)
+
+    full_score._wait_for_complete_ready_wave(payload, shards=[shard])
+
+    assert sleeps == [5]
 
 
 def test_intermediate_kvpack_deletion_is_confined(tmp_path):

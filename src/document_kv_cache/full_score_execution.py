@@ -10414,6 +10414,11 @@ def _produce_ready_shard(
         label="producer ready-shard path",
         include_leaf=True,
     )
+    if ready_dir.exists() and not os.path.lexists(ready_dir / "ready-record.json"):
+        _delete_directory_tree_no_follow(
+            ready_dir,
+            label="producer uncommitted ready-shard cleanup",
+        )
     if ready_dir.exists():
         existing_ready = _validate_ready_shard(
             ready_dir,
@@ -10481,23 +10486,13 @@ def _produce_ready_shard(
     if actual_local_bytes > upper_bound:
         raise RuntimeError("ready shard exceeds its conservative backlog byte bound")
     ready_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging_dir = ready_dir.with_name(
-        f".{ready_dir.name}.pending-{payload['closed_record_sha256']}"
-    )
-    _require_no_symlink_ancestors(
-        staging_dir,
-        label="producer ready-shard staging path",
-        include_leaf=True,
-    )
-    if staging_dir.exists():
-        _delete_directory_tree_no_follow(
-            staging_dir,
-            label="producer ready-shard staging cleanup",
-        )
-    shutil.copytree(local_dir, staging_dir, symlinks=False)
-    _rewrite_json_tree_paths(staging_dir, old_root=local_dir, new_root=ready_dir)
-    _fsync_file_tree(staging_dir)
-    files = _closed_file_tree(staging_dir)
+    # The UC Volume FUSE mount refuses to rename a directory holding a shard's
+    # payload files (E2BIG), so the shard is written in place and committed
+    # only by its ready record, which is written last.
+    shutil.copytree(local_dir, ready_dir, symlinks=False)
+    _rewrite_json_tree_paths(ready_dir, old_root=local_dir, new_root=ready_dir)
+    _fsync_file_tree(ready_dir)
+    files = _closed_file_tree(ready_dir)
     ready_bytes = sum(cast(int, item["byte_count"]) for item in files)
     if ready_bytes > upper_bound:
         raise RuntimeError("rewritten ready shard exceeds its backlog byte bound")
@@ -10525,10 +10520,9 @@ def _produce_ready_shard(
     }
     ready["closed_record_sha256"] = _closed_record_sha256(ready)
     _exclusive_write_bytes(
-        staging_dir / "ready-record.json",
+        ready_dir / "ready-record.json",
         _canonical_pretty_json_bytes(ready),
     )
-    _rename_directory_no_follow(staging_dir, ready_dir)
     reread = _json_object((ready_dir / "ready-record.json").read_bytes(), "ready shard")
     if reread != ready:
         raise RuntimeError("ready-shard durable reread mismatch")
@@ -13742,7 +13736,9 @@ def _wait_for_complete_ready_wave(
                 label="ready-shard wait path",
                 include_leaf=True,
             )
-            if not ready_record_path.is_file():
+            # An empty record is a producer's exclusive claim still awaiting
+            # its complete bytes.
+            if not ready_record_path.is_file() or ready_record_path.stat().st_size == 0:
                 next_pending.add(shard_id)
         pending = next_pending
         if pending:
