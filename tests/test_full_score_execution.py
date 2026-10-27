@@ -2,6 +2,7 @@ import copy
 import errno
 import json
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from hashlib import sha256
@@ -1872,6 +1873,64 @@ def test_ready_wave_wait_treats_an_empty_record_claim_as_pending(
     full_score._wait_for_complete_ready_wave(payload, shards=[shard])
 
     assert sleeps == [5]
+
+
+def test_closed_file_tree_streams_members_concurrently_in_sorted_order(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "ready"
+    contents = {
+        "q8-kv/niah/b.kv": bytes(range(256)) * 3,
+        "q8-kv/niah/a.kv": b"",
+        "manifests/niah.json": b'{"entries": []}',
+        "enriched/niah.jsonl": b"x" * 29,
+        "ready-record.json": b"{}",
+    }
+    for relative, raw in contents.items():
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_bytes(raw)
+    members = len(contents) - 1
+    rendezvous = threading.Barrier(members, timeout=10)
+    digest = full_score._closed_file_digest
+
+    def digest_after_all_members_are_open(path):
+        rendezvous.wait()
+        return digest(path)
+
+    monkeypatch.setattr(full_score, "FULL_SCORE_CLOSED_TREE_HASH_WORKERS", members)
+    monkeypatch.setattr(full_score, "FULL_SCORE_CLOSED_TREE_READ_CHUNK_BYTES", 7)
+    monkeypatch.setattr(
+        full_score, "_closed_file_digest", digest_after_all_members_are_open
+    )
+
+    files = full_score._closed_file_tree(root, exclude={"ready-record.json"})
+
+    assert files == [
+        {
+            "byte_count": len(contents[relative]),
+            "relative_path": relative,
+            "sha256": sha256(contents[relative]).hexdigest(),
+        }
+        for relative in sorted(set(contents) - {"ready-record.json"})
+    ]
+
+
+def test_closed_file_tree_rejects_symlinks_and_empty_closures(tmp_path):
+    root = tmp_path / "ready"
+    root.mkdir()
+    (root / "ready-record.json").write_bytes(b"{}")
+    with pytest.raises(ValueError, match="closure is empty"):
+        full_score._closed_file_tree(root, exclude={"ready-record.json"})
+    (root / "payload.kv").write_bytes(b"kv")
+    (root / "alias.kv").symlink_to(root / "payload.kv")
+    with pytest.raises(ValueError, match="rejects symlinks"):
+        full_score._closed_file_tree(root)
+    (root / "alias.kv").unlink()
+    with pytest.raises(OSError):
+        full_score._closed_file_digest(root / "missing.kv")
+    (root / "alias.kv").symlink_to(root / "payload.kv")
+    with pytest.raises(OSError, match="symbolic links"):
+        full_score._closed_file_digest(root / "alias.kv")
 
 
 def test_intermediate_kvpack_deletion_is_confined(tmp_path):

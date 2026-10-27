@@ -30,6 +30,7 @@ import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -318,6 +319,10 @@ FULL_SCORE_MODEL_NUM_LAYERS = 36
 FULL_SCORE_DEFAULT_MAX_BACKLOG_BYTES = 500_000_000_000
 FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE = 16
 FULL_SCORE_READY_SHARD_METADATA_ALLOWANCE_BYTES = 64 * 1024 * 1024
+# A single UC Volume FUSE read stream sustains well under 70 MB/s, too slow for
+# the two-hour CPU coordinator to rehash a ~470 GB ready wave serially.
+FULL_SCORE_CLOSED_TREE_HASH_WORKERS = 32
+FULL_SCORE_CLOSED_TREE_READ_CHUNK_BYTES = 8 * 1024 * 1024
 FULL_SCORE_PUBLICATION_INVENTORY_SHA256 = (
     "e19fefa656d8975946b13bb9987f801ec486c4bfde5e9d5ed82a877e80676b11"
 )
@@ -13825,7 +13830,7 @@ def _closed_file_tree(
 ) -> list[dict[str, Any]]:
     _require_directory_no_follow(root, "ready-shard closure root")
     excluded = exclude or set()
-    files = []
+    members: list[tuple[str, Path]] = []
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise ValueError("ready-shard closure rejects symlinks")
@@ -13834,17 +13839,38 @@ def _closed_file_tree(
         relative = path.relative_to(root).as_posix()
         if relative in excluded:
             continue
-        raw = path.read_bytes()
-        files.append(
-            {
-                "byte_count": len(raw),
-                "relative_path": relative,
-                "sha256": sha256(raw).hexdigest(),
-            }
-        )
-    if not files:
+        members.append((relative, path))
+    if not members:
         raise ValueError("ready-shard file closure is empty")
-    return files
+    with ThreadPoolExecutor(
+        max_workers=min(FULL_SCORE_CLOSED_TREE_HASH_WORKERS, len(members)),
+        thread_name_prefix="cachet-closed-tree",
+    ) as pool:
+        digests = list(pool.map(_closed_file_digest, [path for _, path in members]))
+    return [
+        {
+            "byte_count": byte_count,
+            "relative_path": relative,
+            "sha256": digest,
+        }
+        for (relative, _), (byte_count, digest) in zip(members, digests, strict=True)
+    ]
+
+
+def _closed_file_digest(path: Path) -> tuple[int, str]:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    with os.fdopen(descriptor, "rb", buffering=0) as reader:
+        if not stat.S_ISREG(os.fstat(reader.fileno()).st_mode):
+            raise ValueError("ready-shard closure member is not a regular file")
+        digest = sha256()
+        byte_count = 0
+        while chunk := reader.read(FULL_SCORE_CLOSED_TREE_READ_CHUNK_BYTES):
+            digest.update(chunk)
+            byte_count += len(chunk)
+    return byte_count, digest.hexdigest()
 
 
 def _rewrite_json_tree_paths(root: Path, *, old_root: Path, new_root: Path) -> None:
