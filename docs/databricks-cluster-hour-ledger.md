@@ -623,6 +623,25 @@ attempt IDs derive from the plan, and the plan from the source closure, so this
 plan cannot be launched again; the successor qualification binds a fresh source
 closure and this complete prefix as its predecessor.
 
+The vLLM 0.30.0 qualification of source revision `46499e7` is likewise
+retained as non-authorizing evidence. Its plan is
+`7ee0bf3a6affc5f91ca2ef6ea42ed76240ea67de97fb15996c6e193c4061b7ce`,
+its source tree is
+`911c413e7385634c9995aba6095c03d45e6f05fd10ddba1321ec51a01720906f`,
+and its phase batch is
+`b0accf1f9df24891fee6b25f9d73511205ce6f89fcc76473fc855d37248ea1e8`.
+Thirteen attempt-zero jobs succeeded, but L40S run `212968320589471` never
+executed: automatic zone placement chose `us-west-2a`, where AWS could not
+provision `g6e.4xlarge` capacity, and no GPU result artifact was written. The
+fourteen terminal attempts consumed 4.1550722222222225 GPU-hours and closed the
+exact 322/275/322 prefix
+`15c9f4a90e2afe44435f22ffcef7d1f4b3c6d99d04b246a3257c87b1b499aad0`
+at 809.8296277777773 terminal GPU-hours, with zero active reservations and
+1214.1703722222228 hours remaining under the raised 2,024-hour cap. This batch
+is `FAILED` under the same all-jobs, attempt-zero contract, its plan cannot be
+launched again, and its successor binds a fresh source closure and this
+complete prefix as its predecessor.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local

@@ -1927,6 +1927,12 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "exact 267/220/267 prefix" in compact_ledger_doc
     assert "719.1179608333333 terminal GPU-hours" in compact_ledger_doc
     assert "this plan cannot be launched again" in compact_ledger_doc
+    assert "vLLM 0.30.0 qualification of source revision `46499e7`" in (
+        compact_ledger_doc
+    )
+    assert "L40S run `212968320589471` never executed" in compact_ledger_doc
+    assert "exact 322/275/322 prefix" in compact_ledger_doc
+    assert "809.8296277777773 terminal GPU-hours" in compact_ledger_doc
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -1950,6 +1956,10 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "c0bf9c6562beb3183ec105acb18e3953ea139ccc5f28ad2f0168e5d292d1b04e",
         "f6c2a779ece0b6f6519ba0815d1871e471cfe321552667cc4386f7fafc13929c",
         "40c8e4e2307904224709079026ec5f30c4379e94231732feca367f92316670e6",
+        "7ee0bf3a6affc5f91ca2ef6ea42ed76240ea67de97fb15996c6e193c4061b7ce",
+        "911c413e7385634c9995aba6095c03d45e6f05fd10ddba1321ec51a01720906f",
+        "b0accf1f9df24891fee6b25f9d73511205ce6f89fcc76473fc855d37248ea1e8",
+        "15c9f4a90e2afe44435f22ffcef7d1f4b3c6d99d04b246a3257c87b1b499aad0",
     ):
         assert digest in compact_ledger_doc
     assert (
