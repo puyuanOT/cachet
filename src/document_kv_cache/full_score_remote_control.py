@@ -244,7 +244,11 @@ def _main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(_main(sys.argv[1:]))
+    # Databricks runs spark_python_task files under IPython, where even
+    # SystemExit(0) marks the task FAILED.
+    exit_code = _main(sys.argv[1:])
+    if exit_code:
+        raise SystemExit(exit_code)
 """
 FULL_SCORE_REMOTE_COORDINATOR_RUNNER_SHA256: Final = sha256(
     FULL_SCORE_REMOTE_COORDINATOR_RUNNER_SCRIPT.encode("utf-8")
@@ -1925,8 +1929,20 @@ def _full_score_remote_controller_lease_root(
     ):
         raise ValueError("remote coordinator phase lease identity drift")
     phase_root = _normalized_controller_lease_root(phase_authorization.phase_lease_root)
+    # The phase lease root is shared by every chain on the ledger. A restarted
+    # chain closes this phase at a different ledger prefix, so binding the root
+    # to that closure keeps an abandoned chain's controller state out of reach.
+    phase_closure_sha256 = _canonical_sha256(
+        {
+            "action": action,
+            "domain": "cachet.full_score_remote_controller_phase_closure.v1",
+            "phase_ledger_prefix": phase_authorization.ledger_prefix.to_record(),
+            "phase_terminal_record_sha256": phase_authorization.terminal_record_sha256,
+            "wave_index": wave_index,
+        }
+    )
     return _normalized_controller_lease_root(
-        phase_root / f"remote-{action}-wave-{wave_index:03d}"
+        phase_root / f"remote-{action}-wave-{wave_index:03d}-{phase_closure_sha256}"
     )
 
 

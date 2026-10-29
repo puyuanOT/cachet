@@ -973,6 +973,62 @@ def test_runner_checks_request_package_authority_before_import():
     assert package_check < wheel_check < import_package
 
 
+@pytest.mark.parametrize(("exit_code", "raised"), [(0, None), (3, 3)])
+def test_runner_raises_system_exit_only_for_a_failing_exit_code(exit_code, raised):
+    script = remote.FULL_SCORE_REMOTE_COORDINATOR_RUNNER_SCRIPT
+    assert "raise SystemExit(_main(" not in script
+    guard = compile(
+        script[script.index('if __name__ == "__main__":') :], "runner.py", "exec"
+    )
+    namespace = {
+        "__name__": "__main__",
+        "_main": lambda argv: exit_code,
+        "sys": SimpleNamespace(argv=["runner.py"]),
+    }
+
+    if raised is None:
+        exec(guard, namespace)
+    else:
+        with pytest.raises(SystemExit) as excinfo:
+            exec(guard, namespace)
+        assert excinfo.value.code == raised
+
+
+def test_remote_controller_root_is_bound_to_the_closed_phase(tmp_path):
+    lease_root = tmp_path / "phase-leases"
+    execution_sha = _digest("execution")
+
+    def controller_root(authorization, action="producer_ready", wave_index=0):
+        return remote._full_score_remote_controller_lease_root(
+            authorization,
+            action=action,
+            wave_index=wave_index,
+        )
+
+    first = _phase_authorization(execution_sha, phase_lease_root=lease_root)
+    replayed = _phase_authorization(execution_sha, phase_lease_root=lease_root)
+    restarted = _phase_authorization(
+        execution_sha,
+        phase_lease_root=lease_root,
+        terminal_record_sha256=_digest("restarted-chain-phase-terminal"),
+    )
+    consumer = _phase_authorization(
+        execution_sha,
+        phase="consumer",
+        phase_lease_root=lease_root,
+    )
+
+    assert controller_root(first) == controller_root(replayed)
+    assert controller_root(first).parent == lease_root
+    assert controller_root(first).name.startswith("remote-producer_ready-wave-000-")
+    assert controller_root(restarted) != controller_root(first)
+    assert controller_root(consumer, "consumer_evidence").name.startswith(
+        "remote-consumer_evidence-wave-000-"
+    )
+    case = _request_case(phase_lease_root=lease_root)
+    assert case.request.controller_lease_root == controller_root(case.phase)
+
+
 def test_remote_request_rejects_cross_worker_package_drift():
     case = _request_case()
     drifted = [(uri, copy.deepcopy(record)) for uri, record in case.payloads]

@@ -695,9 +695,20 @@ fail there after its producer phase succeeds. The full-score workload ID is
 keyed by the execution plan alone, so a chain under a new qualification still
 sees every earlier chain. The 0.30.0 report discloses these attempts as
 `ledger.full_score_abandoned_attempts`. Before the latency prefix, the ledger
-holds fifteen wave-zero producer attempts from four abandoned chains, using
-91.009855 GPU-hours. The last is the `ee77ee4` chain's attempt 11. Its producer
-phase succeeded, but the ready closure then exceeded its two-hour bound.
+holds seventeen wave-zero producer attempts from five abandoned chains, using
+102.0129975 GPU-hours. Two of those chains closed their producer phase and then
+failed in the ready closure: the `ee77ee4` chain, whose closure exceeded its
+two-hour bound, and the `0e45b07` chain recorded below.
+
+Each remote CPU coordinator keeps its local controller state in a directory
+under the shared phase lease root. The directory is named for the
+coordinator's action and wave and bound to the closed phase it verifies: that
+phase's terminal record and ledger prefix. A restarted chain closes the phase at
+a different prefix, so its coordinator never meets an abandoned chain's
+controller state. The coordinator runner returns normally on success and raises
+`SystemExit` only for a nonzero exit code, because Databricks runs
+`spark_python_task` files under IPython and marks even `SystemExit(0)` as
+`FAILED`.
 
 The vLLM 0.30.0 qualification of source revision `8323fc7` succeeded but
 authorizes nothing. Its plan is
@@ -718,6 +729,36 @@ at 818.6004038888888 terminal GPU-hours, with zero active reservations and
 score never reserved an attempt, because that revision still refused a restart
 over a succeeded producer. Its successor binds a fresh source closure and this
 complete prefix as its predecessor.
+
+The vLLM 0.30.0 qualification of source revision `0e45b07` also succeeded but
+authorizes nothing. Its plan is
+`131cab785827bc402c681d67c4b6593469ab8fa221ff74fff20fa0ec5b71f31d`,
+its source tree is
+`b7e388f11591499a444d2dbc0c1f0444f833a9016cba759cfe92a557694eeb2e`,
+and its phase batch is
+`13734d080e9b21770e09df4ab266fd24840f98a51dd5b2faec171ea8e26e5fbc`.
+All fourteen attempt-zero jobs succeeded, so no capacity retry round opened.
+They consumed 3.595548611111111 GPU-hours and closed the exact 365/318/365
+prefix `e063b3931d0914243ddc58b0dbd22ff637943c806f1ea1fa4b4adef627a5decb`
+at 822.1959524999999 terminal GPU-hours, with zero active reservations and
+1201.8040475000003 hours remaining. Its full score abandoned the earlier
+chains and closed the wave-zero producer phase, terminal
+`182dfdf99155894418e11104f3c78e1936f2ee4bb0a6798bfb4aacc9463f6935`, in two
+attempts using 11.0031425 GPU-hours. Attempt 0 ran sixteen tasks, three of
+which never started because of `AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`,
+and attempt 1 reran those three. Its first ready-closure submission refused with
+a binding drift, because the `ee77ee4` chain's controller state still occupied
+the then-unscoped controller directory. That state belonged to coordinator run
+`80180007184639`, which had ended `TIMEDOUT`, so it was moved unaltered into
+that chain's local archive. Ready-closure run `805880152638655` then wrote its
+result and attestation and reported success after 1,138 seconds of execution,
+but its runner ended with `SystemExit(0)` and Databricks recorded the run as
+`FAILED`. The package admits only a `TERMINATED`/`SUCCESS` coordinator run, so
+no consumer was reserved. The ledger stands at the exact 367/320/367 prefix
+`d221964df11a1951ad84590129fad4e36ce4d913566f18d6de2efd2476e1427f`
+at 833.199095 terminal GPU-hours, with zero active reservations and 1190.800905
+hours remaining. The successor binds a fresh source closure and this complete
+prefix as its predecessor.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
