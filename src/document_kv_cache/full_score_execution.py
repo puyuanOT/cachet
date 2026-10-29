@@ -19,7 +19,6 @@ import gc
 import json
 import os
 import random
-import re
 import shutil
 import signal
 import stat
@@ -120,10 +119,12 @@ from document_kv_cache.databricks_resource_ledger import (
     reserve_databricks_run_attempt_batch_authorized_json,
 )
 from document_kv_cache.databricks_runs import (
+    DATABRICKS_CAPACITY_TERMINATION_REASONS,
     DatabricksURLOpener,
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
     databricks_run_status_record,
+    databricks_task_capacity_failure_reason,
     get_databricks_run,
     recover_pre_reserved_databricks_run,
     require_databricks_current_user_name,
@@ -263,12 +264,7 @@ FULL_SCORE_PHASE_CAPACITY_FAILURE_RECORD_TYPE = (
 FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION = 1
 # Every capacity-failed attempt is a separately ledgered single-attempt run.
 FULL_SCORE_PHASE_MAX_ATTEMPTS = 16
-# Databricks cluster-termination reasons that prove the task never reached the
-# driver: the cloud had no instance, or the launch exceeded its 50-minute bound.
-FULL_SCORE_CAPACITY_TERMINATION_REASONS = (
-    "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE",
-    "CLUSTER_OPERATION_TIMEOUT",
-)
+FULL_SCORE_CAPACITY_TERMINATION_REASONS = DATABRICKS_CAPACITY_TERMINATION_REASONS
 FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE = "cachet.full_score_connector_proof.v1"
 FULL_SCORE_CONNECTOR_PROOF_SCHEMA_VERSION = 1
 FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE = "publication"
@@ -4101,50 +4097,6 @@ def _full_score_task_billing_entry(
     }
 
 
-_FULL_SCORE_CAPACITY_STATE_MESSAGE = re.compile(
-    r"Cluster '(?P<cluster_id>[^']+)' was terminated\. "
-    r"Reason: (?P<reason>[A-Z][A-Z0-9_]*) \([A-Z][A-Z0-9_]*\)\."
-)
-
-
-def _full_score_capacity_failure_reason(task: Mapping[str, Any]) -> str | None:
-    """Return the capacity reason when a task's cluster never reached its driver.
-
-    The proof is the absent Spark context, zero execution time, and a cluster
-    termination reason restricted to cloud capacity or launch timeout.  Any
-    task that ran user code has a Spark context and is never retryable.
-    """
-
-    state = task.get("state")
-    cluster = task.get("cluster_instance")
-    if (
-        not isinstance(state, Mapping)
-        or state.get("life_cycle_state") != "INTERNAL_ERROR"
-        or state.get("result_state") != "FAILED"
-        or not isinstance(cluster, Mapping)
-        or cluster.get("spark_context_id") not in (None, "")
-        or type(task.get("execution_duration")) is not int
-        or task.get("execution_duration") != 0
-    ):
-        return None
-    cluster_id = cluster.get("cluster_id")
-    message = state.get("state_message")
-    if (
-        not isinstance(cluster_id, str)
-        or not cluster_id
-        or not isinstance(message, str)
-    ):
-        return None
-    match = _FULL_SCORE_CAPACITY_STATE_MESSAGE.match(message)
-    if (
-        match is None
-        or match["cluster_id"] != cluster_id
-        or match["reason"] not in FULL_SCORE_CAPACITY_TERMINATION_REASONS
-    ):
-        return None
-    return match["reason"]
-
-
 def build_governed_full_score_phase_capacity_failure_record(
     execution_plan: Mapping[str, Any],
     *,
@@ -4309,7 +4261,7 @@ def build_governed_full_score_phase_capacity_failure_record(
             succeeded_task_billing.append(entry)
             billed_gpu_seconds += cast(float, entry["billed_gpu_seconds"])
             continue
-        reason = _full_score_capacity_failure_reason(task)
+        reason = databricks_task_capacity_failure_reason(task)
         if reason is None:
             raise ValueError(
                 "full-score attempt has a failure that is not a never-started "

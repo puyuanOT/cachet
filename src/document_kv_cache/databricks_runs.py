@@ -79,6 +79,8 @@ __all__ = [
     "resume_pre_reserved_databricks_run",
     "reserve_and_submit_databricks_run_json",
     "get_databricks_run",
+    "databricks_task_capacity_failure_reason",
+    "DATABRICKS_CAPACITY_TERMINATION_REASONS",
     "get_databricks_run_output",
     "download_databricks_volume_file_bytes",
     "stream_databricks_volume_file_sha256",
@@ -129,6 +131,16 @@ DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE = (
 _DATABRICKS_AUTH_CHECK_ENDPOINT = "/api/2.0/preview/scim/v2/Me"
 _DATABRICKS_IDEMPOTENCY_TOKEN_DOMAIN = "cachet.databricks_runs.submit_idempotency.v1"
 _DATABRICKS_IDEMPOTENCY_TOKEN_RE = re.compile(r"cachet-[0-9a-f]{57}\Z")
+# Cluster-termination reasons that prove a task never reached its driver: the
+# cloud had no instance, or the launch exceeded the Databricks launch bound.
+DATABRICKS_CAPACITY_TERMINATION_REASONS = (
+    "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE",
+    "CLUSTER_OPERATION_TIMEOUT",
+)
+_DATABRICKS_CAPACITY_STATE_MESSAGE = re.compile(
+    r"Cluster '(?P<cluster_id>[^']+)' was terminated\. "
+    r"Reason: (?P<reason>[A-Z][A-Z0-9_]*) \([A-Z][A-Z0-9_]*\)\."
+)
 _DATABRICKS_GPU_TYPE_FIELD = "aws_single_node_gpu_type"
 _LEGACY_DATABRICKS_GPU_TYPE_FIELD = "aws_g5_node_type"
 _DATABRICKS_GPU_TYPE_FIELDS = (
@@ -1795,6 +1807,44 @@ def get_databricks_run(
         f"/api/2.1/jobs/runs/get?{urllib.parse.urlencode({'run_id': run_id_text})}",
         opener=opener,
     )
+
+
+def databricks_task_capacity_failure_reason(task: Mapping[str, Any]) -> str | None:
+    """Return the capacity reason when a task's cluster never reached its driver.
+
+    The proof is the absent Spark context, zero execution time, and a cluster
+    termination reason restricted to cloud capacity or launch timeout.  Any
+    task that ran user code has a Spark context and is never retryable.
+    """
+
+    state = task.get("state")
+    cluster = task.get("cluster_instance")
+    if (
+        not isinstance(state, Mapping)
+        or state.get("life_cycle_state") != "INTERNAL_ERROR"
+        or state.get("result_state") != "FAILED"
+        or not isinstance(cluster, Mapping)
+        or cluster.get("spark_context_id") not in (None, "")
+        or type(task.get("execution_duration")) is not int
+        or task.get("execution_duration") != 0
+    ):
+        return None
+    cluster_id = cluster.get("cluster_id")
+    message = state.get("state_message")
+    if (
+        not isinstance(cluster_id, str)
+        or not cluster_id
+        or not isinstance(message, str)
+    ):
+        return None
+    match = _DATABRICKS_CAPACITY_STATE_MESSAGE.match(message)
+    if (
+        match is None
+        or match["cluster_id"] != cluster_id
+        or match["reason"] not in DATABRICKS_CAPACITY_TERMINATION_REASONS
+    ):
+        return None
+    return match["reason"]
 
 
 def _validated_original_attempt_run_id(

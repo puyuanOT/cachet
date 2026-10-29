@@ -20,6 +20,7 @@ from document_kv_cache.serving_env import (
     VIRTUALENV_BOOTSTRAP_URL,
     VIRTUALENV_BOOTSTRAP_VERSION,
 )
+import document_kv_cache.databricks_runs as runs_api
 import document_kv_cache.full_score_remote_control as full_score_remote
 import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
 import document_kv_cache.publication_latency_execution as publication_latency
@@ -4424,8 +4425,11 @@ def _capacity_task(**overrides):
 )
 def test_capacity_failure_reason_requires_a_never_started_cluster(overrides, expected):
     assert (
-        full_score._full_score_capacity_failure_reason(_capacity_task(**overrides))
+        runs_api.databricks_task_capacity_failure_reason(_capacity_task(**overrides))
         == expected
+    )
+    assert full_score.FULL_SCORE_CAPACITY_TERMINATION_REASONS == (
+        runs_api.DATABRICKS_CAPACITY_TERMINATION_REASONS
     )
 
 
