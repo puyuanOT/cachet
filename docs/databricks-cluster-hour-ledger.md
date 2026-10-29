@@ -685,6 +685,40 @@ publication report discloses the retried attempts and their GPU-hours as
 `ledger.qualification_capacity_retries`, recomputed from the ledger between
 that predecessor prefix and the latency collection prefix.
 
+A full-score chain restarts only from wave zero, after a fresh latency
+collection, and never resumes the chain it abandons. Every earlier attempt of
+the execution plan must be a terminal wave-zero producer or consumer, and none
+of its consumers may have succeeded, so no score from an abandoned chain
+exists. The latest abandoned attempt may be a succeeded producer: the CPU ready
+closure between producer and consumer is not a ledger attempt, so a chain can
+fail there after its producer phase succeeds. The full-score workload ID is
+keyed by the execution plan alone, so a chain under a new qualification still
+sees every earlier chain. The 0.30.0 report discloses these attempts as
+`ledger.full_score_abandoned_attempts`. Before the latency prefix, the ledger
+holds fifteen wave-zero producer attempts from four abandoned chains, using
+91.009855 GPU-hours. The last is the `ee77ee4` chain's attempt 11. Its producer
+phase succeeded, but the ready closure then exceeded its two-hour bound.
+
+The vLLM 0.30.0 qualification of source revision `8323fc7` succeeded but
+authorizes nothing. Its plan is
+`b3cab611b21088663d9eb312f43d9be4d5bd264fc03d4e783915137d0b8e2c14`,
+its source tree is
+`cc545c39839327b97105ef3a14b7f8191308babc456865019c9ef9e8dcc91cb6`,
+and its phase batch is
+`508782899e93c7f016fbb23d8ccc38c0d2859c88ea46244d4ddbcc5b35d6c1e8`.
+Thirteen attempt-zero jobs succeeded. L4 32k/c4 GMU 0.70 run `737914830085400`
+was an `AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE` and succeeded on its first
+capacity retry, in round batch
+`43090efae61bee7b7709275ca06d6ae5d58b67a21a2ed831f0279b3074caa415`.
+The fifteen terminal attempts consumed 3.9841066666666665 GPU-hours and closed
+the exact 351/304/351 prefix
+`738d42f6b1406e8688b72c991328b5e02783226febf87cc153e5a0f1a35b1af0`
+at 818.6004038888888 terminal GPU-hours, with zero active reservations and
+1205.3995961111114 hours remaining under the raised 2,024-hour cap. Its full
+score never reserved an attempt, because that revision still refused a restart
+over a succeeded producer. Its successor binds a fresh source closure and this
+complete prefix as its predecessor.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local

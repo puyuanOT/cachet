@@ -7206,9 +7206,10 @@ def require_full_score_chain_restart_ledger(
 
     Earlier attempts of this plan can precede a wave-zero producer's latency
     authority only when that authority was collected again after them.  Such a
-    chain is abandoned, never resumed: it must have stayed in wave zero, closed
-    no consumer successfully, and ended in a non-succeeded attempt, so a
-    restart cannot discard a chain that could still have continued.  The
+    chain is abandoned, never resumed: it must have stayed in wave zero and
+    closed no consumer successfully, so it never produced a score.  Its latest
+    attempt may be a succeeded producer, because the CPU ready closure between
+    producer and consumer is not a ledger attempt and can fail after it.  The
     returned terminals, in reservation order, are what a report must disclose.
     The caller must already have bound ``predecessor_prefix`` to ``ledger``.
     """
@@ -7241,8 +7242,6 @@ def require_full_score_chain_restart_ledger(
         for item in prior
     ):
         raise ValueError("full-score chain restart cannot discard a closed consumer")
-    if terminals[prior[-1].attempt_id].terminal_state == "succeeded":
-        raise ValueError("full-score chain restart requires a failed latest attempt")
     return tuple(terminals[item.attempt_id] for item in prior)
 
 
