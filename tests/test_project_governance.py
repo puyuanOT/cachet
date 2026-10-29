@@ -1933,6 +1933,17 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "L40S run `212968320589471` never executed" in compact_ledger_doc
     assert "exact 322/275/322 prefix" in compact_ledger_doc
     assert "809.8296277777773 terminal GPU-hours" in compact_ledger_doc
+    assert "vLLM 0.30.0 qualification of source revision `88c7a2e`" in (
+        compact_ledger_doc
+    )
+    assert "L40S generation-throughput run `371889181014954`" in (
+        compact_ledger_doc
+    )
+    assert "exact 336/289/336 prefix" in compact_ledger_doc
+    assert "814.6162972222218 terminal GPU-hours" in compact_ledger_doc
+    assert "`{attempt}-capacity-retry-NN` ledger attempts" in compact_ledger_doc
+    assert "as does a job reaching 16 attempts" in compact_ledger_doc
+    assert "`ledger.qualification_capacity_retries`" in compact_ledger_doc
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -1960,6 +1971,10 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "911c413e7385634c9995aba6095c03d45e6f05fd10ddba1321ec51a01720906f",
         "b0accf1f9df24891fee6b25f9d73511205ce6f89fcc76473fc855d37248ea1e8",
         "15c9f4a90e2afe44435f22ffcef7d1f4b3c6d99d04b246a3257c87b1b499aad0",
+        "26af46e31f92451d61c184a1a4e28aa7fe34904d68d75bd42d3222f6b7e5bc79",
+        "509fcedfff91b4776432a9b3e78b30131375da54505d7918ec8e743f97cdd045",
+        "b0a95e863de2b87af5a45cccfcf6bf1a05fc1a18273170330c370e817ec1349c",
+        "6d6a15abf651525bd163250967d77d88fb5f90f2821627ddd9e6dfbfb0b031e2",
     ):
         assert digest in compact_ledger_doc
     assert (
