@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
@@ -266,9 +267,18 @@ class _PackageOwnedCloud:
         self.get_run_ids: list[str] = []
         self.events: list[tuple[str, str]] = []
         self.runs: dict[str, dict[str, Any]] = {}
+        # Attempts that terminate as never-started capacity failures, by
+        # cluster termination reason, or after reaching their driver.
+        self.capacity_failures: dict[str, str] = {}
+        self.driver_failures: set[str] = set()
+
+    def _attempt_position(self, attempt_id: str) -> tuple[int, int]:
+        base, separator, retry = attempt_id.partition("-capacity-retry-")
+        return self.attempt_ids.index(base), int(retry) if separator else 0
 
     def _run_id(self, attempt_id: str) -> int:
-        return 900_000 + self.attempt_ids.index(attempt_id)
+        job_index, retry_index = self._attempt_position(attempt_id)
+        return 900_000 + 1_000 * retry_index + job_index
 
     def submit(
         self,
@@ -280,46 +290,63 @@ class _PackageOwnedCloud:
         batch_authorization: Any,
     ) -> dict[str, Any]:
         assert config is self.config
-        assert attempt_id in batch_authorization.attempt_ids
-        assert batch_authorization.attempt_ids == self.attempt_ids
-        member_index = self.attempt_ids.index(attempt_id)
+        batch = tuple(batch_authorization.attempt_ids)
+        assert attempt_id in batch
+        if batch[0] in self.attempt_ids:
+            assert batch == self.attempt_ids
+        else:
+            assert all(self._attempt_position(item)[1] > 0 for item in batch)
+        member_index = batch.index(attempt_id)
         if member_index > 0:
-            assert self.get_run_ids[-1] == str(
-                self._run_id(self.attempt_ids[member_index - 1])
-            )
+            assert self.get_run_ids[-1] == str(self._run_id(batch[member_index - 1]))
         self.post_attempt_ids.append(attempt_id)
         self.post_payloads.append(deepcopy(dict(payload)))
         response = {"run_id": self._run_id(attempt_id)}
         run_id = str(response["run_id"])
         task = payload["tasks"][0]
-        run_start = 1_787_533_140_000 + member_index * 10_000
+        run_start = (
+            1_787_533_140_000
+            + self._attempt_position(attempt_id)[1] * 1_000_000
+            + member_index * 10_000
+        )
         task_start = run_start + 1_000
         task_end = task_start + 5_000
+        succeeded = {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"}
+        task_record: dict[str, Any] = {
+            "attempt_number": 0,
+            "cluster_instance": {"cluster_id": f"cluster-{run_id}"},
+            "end_time": task_end,
+            "new_cluster": task["new_cluster"],
+            "run_id": response["run_id"] + 90_000,
+            "start_time": task_start,
+            "state": dict(succeeded),
+            "task_key": task["task_key"],
+        }
+        run_state = dict(succeeded)
+        if attempt_id in self.capacity_failures:
+            run_state = {
+                "life_cycle_state": "INTERNAL_ERROR",
+                "result_state": "FAILED",
+                "state_message": (
+                    f"Cluster 'cluster-{run_id}' was terminated. Reason: "
+                    f"{self.capacity_failures[attempt_id]} (CLOUD_FAILURE)."
+                ),
+            }
+            task_record["state"] = dict(run_state)
+            task_record["execution_duration"] = 0
+        elif attempt_id in self.driver_failures:
+            run_state = {"life_cycle_state": "TERMINATED", "result_state": "FAILED"}
+            task_record["state"] = dict(run_state)
+            task_record["cluster_instance"]["spark_context_id"] = "spark-context"
+            task_record["execution_duration"] = 4_000
         self.runs[run_id] = {
             "end_time": task_end + 1_000,
             "run_id": response["run_id"],
             "run_name": payload["run_name"],
             "run_type": "SUBMIT_RUN",
             "start_time": run_start,
-            "state": {
-                "life_cycle_state": "TERMINATED",
-                "result_state": "SUCCESS",
-            },
-            "tasks": [
-                {
-                    "attempt_number": 0,
-                    "cluster_instance": {"cluster_id": f"cluster-{run_id}"},
-                    "end_time": task_end,
-                    "new_cluster": task["new_cluster"],
-                    "run_id": 990_000 + member_index,
-                    "start_time": task_start,
-                    "state": {
-                        "life_cycle_state": "TERMINATED",
-                        "result_state": "SUCCESS",
-                    },
-                    "task_key": task["task_key"],
-                }
-            ],
+            "state": run_state,
+            "tasks": [task_record],
         }
         self.events.append(("post", attempt_id))
         ledger_api.record_databricks_run_submission_receipt_json(
@@ -530,31 +557,39 @@ def _completed_submission_with_terminal_fixtures(
         strict=True,
     ):
         run_id = str(case.cloud._run_id(str(contract["reservation_attempt_id"])))
-        cluster_id = f"cluster-{run_id}"
         assert runs[run_id]["run_name"] == payload["run_name"]
         assert runs[run_id]["tasks"][0]["cluster_instance"] == {
-            "cluster_id": cluster_id
+            "cluster_id": f"cluster-{run_id}"
         }
-        results[str(contract["output_json"])] = {
-            "closed_record_sha256": _digest(f"result:{contract['job_id']}"),
-            "cloud_cluster_id": cluster_id,
-            "cloud_run_id": run_id,
-            "job_id": contract["job_id"],
-            "measurements": (
-                {
-                    "candidate_qualified": True,
-                    "gpu_memory_utilization": 0.70,
-                }
-                if str(planned_job["job_id"]).startswith(
-                    "aws-g6-l4-32k-c4-gmu-"
-                )
-                else {}
-            ),
-            "output_json": contract["output_json"],
-            "reservation_attempt_id": contract["reservation_attempt_id"],
-            "task_key": contract["task_key"],
-        }
+        results[str(contract["output_json"])] = _result_fixture(
+            planned_job, contract, run_id=run_id
+        )
     return payloads, contracts, runs, results
+
+
+def _result_fixture(
+    planned_job: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    *,
+    run_id: str,
+) -> dict[str, Any]:
+    return {
+        "closed_record_sha256": _digest(f"result:{contract['job_id']}"),
+        "cloud_cluster_id": f"cluster-{run_id}",
+        "cloud_run_id": run_id,
+        "job_id": contract["job_id"],
+        "measurements": (
+            {
+                "candidate_qualified": True,
+                "gpu_memory_utilization": 0.70,
+            }
+            if str(planned_job["job_id"]).startswith("aws-g6-l4-32k-c4-gmu-")
+            else {}
+        ),
+        "output_json": contract["output_json"],
+        "reservation_attempt_id": contract["reservation_attempt_id"],
+        "task_key": contract["task_key"],
+    }
 
 
 def _collector_kwargs(case: _Case, evidence_root: Path) -> dict[str, Any]:
@@ -594,6 +629,7 @@ def _install_minimal_governed_evidence_stubs(
         databricks_v2,
         "_build_governed_cloud_gpu_evidence_v2",
         lambda **kwargs: {
+            "capacity_retries": list(kwargs["capacity_retries"]),
             "terminal_receipts": list(kwargs["terminal_receipts"]),
         },
     )
@@ -1894,3 +1930,413 @@ def test_v2_replay_rejects_partial_terminal_closure_without_writes(
 
     assert case.ledger_path.read_bytes() == ledger_before
     assert _root_snapshot(evidence_root) == surviving_root
+
+
+_CAPACITY = "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE"
+_TIMEOUT = "CLUSTER_OPERATION_TIMEOUT"
+
+
+def _retry_attempt(case: _Case, job_index: int, retry_index: int) -> str:
+    return qualification_v2.gpu_qualification_v2_capacity_retry_attempt_id(
+        case.cloud.attempt_ids[job_index], retry_index
+    )
+
+
+def _retry_root(case: _Case, retry_index: int) -> Path:
+    return case.receipt_root.with_name(
+        f"{case.receipt_root.name}.capacity-retry-{retry_index:02d}"
+    )
+
+
+def _final_attempt_results(
+    case: _Case,
+    final_retry_indices: Mapping[int, int],
+) -> dict[str, dict[str, Any]]:
+    _plan_record, _pins_record, _payloads, contracts = (
+        databricks_v2._validated_controller_contract_v2(
+            plan_record=case.plan,
+            single_user_name=_SINGLE_USER_NAME,
+            artifact_uris=case.artifact_uris,
+            output_root=_OUTPUT_ROOT,
+        )
+    )
+    results: dict[str, dict[str, Any]] = {}
+    for job_index, (planned_job, contract) in enumerate(
+        zip(case.plan["cloud_qualification"]["jobs"], contracts, strict=True)
+    ):
+        attempt_id = _retry_attempt(
+            case, job_index, final_retry_indices.get(job_index, 0)
+        )
+        results[str(contract["output_json"])] = _result_fixture(
+            planned_job,
+            contract,
+            run_id=str(case.cloud._run_id(attempt_id)),
+        )
+    return results
+
+
+def _retry_capacity_failures(case: _Case) -> tuple[dict[str, Any], ...]:
+    return databricks_v2.retry_gpu_qualification_capacity_failures_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+
+
+def test_v2_capacity_retries_resubmit_never_started_jobs_in_disclosed_rounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    predecessor = case.phase_predecessor
+    case.cloud.capacity_failures = {
+        case.cloud.attempt_ids[2]: _CAPACITY,
+        case.cloud.attempt_ids[9]: _TIMEOUT,
+        _retry_attempt(case, 9, 1): _CAPACITY,
+    }
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+    results = _final_attempt_results(case, {2: 1, 9: 2})
+    selection = _install_minimal_governed_evidence_stubs(case, results, monkeypatch)
+    evidence_root = tmp_path / "qualification-evidence-v2"
+    with pytest.raises(RuntimeError, match=re.escape(f"{job_ids[2]!r} did not succeed")):
+        databricks_v2.collect_gpu_qualification_evidence_v2(
+            case.config,
+            **_collector_kwargs(case, evidence_root),
+        )
+    assert not evidence_root.exists()
+
+    leases = _retry_capacity_failures(case)
+
+    retried = (
+        _retry_attempt(case, 2, 1),
+        _retry_attempt(case, 9, 1),
+        _retry_attempt(case, 9, 2),
+    )
+    assert [lease["retry_index"] for lease in leases] == [1, 2]
+    assert [lease["attempt_ids"] for lease in leases] == [
+        list(retried[:2]),
+        [retried[2]],
+    ]
+    assert case.cloud.post_attempt_ids == [*case.cloud.attempt_ids, *retried]
+    assert case.preflight_freshness[0] is True
+    assert not any(case.preflight_freshness[1:])
+    markers = [
+        _json(root / "batch-reserved-v2.json")
+        for root in (case.receipt_root, _retry_root(case, 1), _retry_root(case, 2))
+    ]
+    expected_failures = (
+        [(job_ids[2], 0, _CAPACITY), (job_ids[9], 0, _TIMEOUT)],
+        [(job_ids[9], 1, _CAPACITY)],
+    )
+    for lease, previous_marker, failures in zip(
+        leases, markers[:-1], expected_failures, strict=True
+    ):
+        assert lease["record_type"] == (
+            databricks_v2.GPU_QUALIFICATION_V2_CAPACITY_RETRY_LEASE_RECORD_TYPE
+        )
+        assert lease == _json(
+            _retry_root(case, lease["retry_index"]) / "phase-lease-v2.json"
+        )
+        assert lease["previous_batch_marker_sha256"] == (
+            previous_marker["closed_record_sha256"]
+        )
+        assert [
+            (entry["job_id"], entry["retry_index"], entry["termination_reason"])
+            for entry in lease["capacity_failures"]
+        ] == failures
+        assert {entry["terminal_state"] for entry in lease["capacity_failures"]} == {
+            "internal_error"
+        }
+        _assert_v2_seal(lease)
+    assert {path.name for path in _retry_root(case, 1).iterdir()} == {
+        "phase-lease-v2.json",
+        "batch-reserved-v2.json",
+        f"{job_ids[2]}.json",
+        f"{job_ids[9]}.json",
+    }
+    assert {path.name for path in _retry_root(case, 2).iterdir()} == {
+        "phase-lease-v2.json",
+        "batch-reserved-v2.json",
+        f"{job_ids[9]}.json",
+    }
+    assert not _retry_root(case, 3).exists()
+
+    original_payloads = dict(
+        zip(case.cloud.attempt_ids, case.cloud.post_payloads[:14], strict=True)
+    )
+    for attempt_id, payload in zip(retried, case.cloud.post_payloads[14:], strict=True):
+        original = original_payloads[attempt_id.partition("-capacity-retry-")[0]]
+        assert payload["idempotency_token"] != original["idempotency_token"]
+        assert {key: value for key, value in payload.items() if key != "idempotency_token"} == {
+            key: value for key, value in original.items() if key != "idempotency_token"
+        }
+
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    reservations = ledger.reservations[predecessor.reservation_count :]
+    plan16 = case.plan["closed_record_sha256"][:16]
+    assert [item.attempt_id for item in reservations] == case.cloud.post_attempt_ids
+    assert [item.workload_id for item in reservations] == [
+        f"gpuq-v2/{plan16}/{job_ids[case.cloud._attempt_position(attempt_id)[0]]}"
+        for attempt_id in case.cloud.post_attempt_ids
+    ]
+    assert {
+        item.attempt_id: item.terminal_state
+        for item in ledger.terminal_actuals[predecessor.terminal_actual_count :]
+    } == {
+        attempt_id: (
+            "internal_error"
+            if attempt_id in case.cloud.capacity_failures
+            else "succeeded"
+        )
+        for attempt_id in case.cloud.post_attempt_ids
+    }
+    assert ledger.active_reserved_cluster_hours == 0.0
+
+    ledger_bytes = case.ledger_path.read_bytes()
+    posts_before = list(case.cloud.post_attempt_ids)
+    assert _retry_capacity_failures(case) == leases
+    assert databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config, **case.call_kwargs()
+    ) == (_json(_retry_root(case, 2) / f"{job_ids[9]}.json"),)
+    assert case.cloud.post_attempt_ids == posts_before
+    assert case.cloud.resume_attempt_ids == []
+    assert case.ledger_path.read_bytes() == ledger_bytes
+
+    evidence, authorization = databricks_v2.collect_gpu_qualification_evidence_v2(
+        case.config,
+        **_collector_kwargs(case, evidence_root),
+        now=lambda: datetime(2026, 8, 26, 12, 0, tzinfo=UTC),
+    )
+
+    cloud = evidence["cloud_gpu_evidence"]
+    capacity_retries = cloud["capacity_retries"]
+    assert [
+        (entry["job_id"], entry["retry_index"], entry["termination_reason"])
+        for entry in capacity_retries
+    ] == [*expected_failures[0], *expected_failures[1]]
+    assert all("run_record" not in entry for entry in capacity_retries)
+    terminal_receipts = cloud["terminal_receipts"]
+    qualification_v2._validate_capacity_retries_v2(
+        capacity_retries,
+        plan_jobs=case.plan["cloud_qualification"]["jobs"],
+        plan_sha256=str(case.plan["closed_record_sha256"]),
+        terminal_receipts=terminal_receipts,
+    )
+    results_by_job_id = {str(result["job_id"]): result for result in results.values()}
+    final_retry_indices = {2: 1, 9: 2}
+    for job_index, (planned_job, receipt) in enumerate(
+        zip(case.plan["cloud_qualification"]["jobs"], terminal_receipts, strict=True)
+    ):
+        retry_index = final_retry_indices.get(job_index, 0)
+        ledger_attempt_id = _retry_attempt(case, job_index, retry_index)
+        assert receipt == _json(
+            evidence_root / f"{planned_job['job_id']}.terminal-receipt-v2.json"
+        )
+        assert receipt["ledger_attempt_id"] == ledger_attempt_id
+        assert receipt["cloud_run_id"] == str(case.cloud._run_id(ledger_attempt_id))
+        assert receipt["phase_batch_record_sha256"] == (
+            markers[retry_index]["closed_record_sha256"]
+        )
+        assert (
+            qualification_v2._validate_terminal_receipt_v2_original(
+                receipt,
+                result=results_by_job_id[str(planned_job["job_id"])],
+                planned_job=planned_job,
+                plan_record=case.plan,
+            )
+            == receipt
+        )
+    completed = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert authorization.selection == selection
+    assert authorization.predecessor_prefix == predecessor
+    assert authorization.ledger_prefix == ledger_api.databricks_ledger_prefix(completed)
+    assert case.ledger_path.read_bytes() == ledger_bytes
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("durable v2 retry replay performed a cloud or ledger write")
+
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", forbidden)
+    monkeypatch.setattr(
+        databricks_v2,
+        "record_databricks_verified_run_terminal_actual_json",
+        forbidden,
+    )
+    replay_kwargs = {
+        "config": case.config,
+        **_collector_kwargs(case, evidence_root),
+        "expected_campaign_id": PUBLICATION_CAMPAIGN_ID,
+        "expected_artifact_pins": _pins(),
+    }
+    assert databricks_v2.replay_gpu_qualification_launch_authorization_v2(
+        **replay_kwargs
+    ) == authorization
+
+    lease_path = _retry_root(case, 1) / "phase-lease-v2.json"
+    lease_bytes = lease_path.read_bytes()
+
+    def reseal_retry_lease(failure: Mapping[str, Any]) -> None:
+        record = deepcopy(leases[0])
+        record["capacity_failures"][0] = dict(failure)
+        record["closed_record_sha256"] = ""
+        databricks_v2._seal_controller_record_v2(record)
+        lease_path.unlink()
+        databricks_v1._write_canonical_exclusive(record, lease_path)
+
+    relabeled = {**leases[0]["capacity_failures"][0], "termination_reason": _TIMEOUT}
+    reseal_retry_lease(relabeled)
+    with pytest.raises(ValueError, match="differs from its closed round"):
+        databricks_v2.replay_gpu_qualification_launch_authorization_v2(**replay_kwargs)
+    forged_run = deepcopy(leases[0]["capacity_failures"][0]["run_record"])
+    forged_run["state"]["state_message"] = forged_run["state"]["state_message"].replace(
+        _CAPACITY, _TIMEOUT
+    )
+    reseal_retry_lease(
+        {**relabeled, "run_record": forged_run}
+    )
+    with pytest.raises(RuntimeError, match="differs from direct runs/get"):
+        databricks_v2.replay_gpu_qualification_launch_authorization_v2(**replay_kwargs)
+    lease_path.unlink()
+    lease_path.write_bytes(lease_bytes)
+    assert databricks_v2.replay_gpu_qualification_launch_authorization_v2(
+        **replay_kwargs
+    ) == authorization
+    assert case.ledger_path.read_bytes() == ledger_bytes
+
+
+def test_v2_capacity_retry_refuses_a_round_with_any_non_capacity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    case.cloud.capacity_failures = {case.cloud.attempt_ids[1]: _CAPACITY}
+    case.cloud.driver_failures = {case.cloud.attempt_ids[4]}
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+    ledger_bytes = case.ledger_path.read_bytes()
+
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape(f"job {job_ids[4]!r} failed for a non-capacity reason"),
+    ):
+        _retry_capacity_failures(case)
+
+    assert case.ledger_path.read_bytes() == ledger_bytes
+    assert not _retry_root(case, 1).exists()
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+
+
+def test_v2_capacity_retry_stops_at_the_per_job_attempt_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    monkeypatch.setattr(databricks_v2, "GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS", 2)
+    case.cloud.capacity_failures = {
+        case.cloud.attempt_ids[3]: _CAPACITY,
+        _retry_attempt(case, 3, 1): _CAPACITY,
+    }
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+
+    with pytest.raises(RuntimeError, match="exhausted the 2-attempt job bound"):
+        _retry_capacity_failures(case)
+
+    assert case.cloud.post_attempt_ids == [
+        *case.cloud.attempt_ids,
+        _retry_attempt(case, 3, 1),
+    ]
+    assert _retry_root(case, 1).is_dir()
+    assert not _retry_root(case, 2).exists()
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert ledger.active_reserved_cluster_hours == 0.0
+    _install_minimal_governed_evidence_stubs(
+        case, _final_attempt_results(case, {3: 1}), monkeypatch
+    )
+    evidence_root = tmp_path / "qualification-evidence-v2"
+    with pytest.raises(RuntimeError, match=re.escape(f"{job_ids[3]!r} did not succeed")):
+        databricks_v2.collect_gpu_qualification_evidence_v2(
+            case.config,
+            **_collector_kwargs(case, evidence_root),
+        )
+    assert not evidence_root.exists()
+
+
+@pytest.mark.parametrize("crash_point", ("lease", "post"))
+def test_v2_capacity_retry_round_resumes_from_its_exact_crash_point(
+    crash_point: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    case.cloud.capacity_failures = {
+        case.cloud.attempt_ids[5]: _CAPACITY,
+        case.cloud.attempt_ids[11]: _TIMEOUT,
+    }
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+    ledger_before = case.ledger_path.read_bytes()
+    retried = (_retry_attempt(case, 5, 1), _retry_attempt(case, 11, 1))
+    if crash_point == "lease":
+        original_writer = databricks_v1._write_canonical_exclusive
+
+        def crash_after_lease(record: Mapping[str, Any], path: str | Path) -> None:
+            original_writer(record, path)
+            if Path(path) == _retry_root(case, 1) / "phase-lease-v2.json":
+                raise RuntimeError("simulated hard stop in the retry round")
+
+        monkeypatch.setattr(databricks_v1, "_write_canonical_exclusive", crash_after_lease)
+        expected_names = {"phase-lease-v2.json"}
+        expected_resumes = list(retried)
+    else:
+        original_submit = case.cloud.submit
+
+        def crash_on_post(
+            config: DatabricksWorkspaceConfig,
+            payload: Mapping[str, Any],
+            *,
+            ledger_path: str | Path,
+            attempt_id: str,
+            batch_authorization: Any,
+        ) -> dict[str, Any]:
+            if attempt_id == retried[1]:
+                raise RuntimeError("simulated hard stop in the retry round")
+            return original_submit(
+                config,
+                payload,
+                ledger_path=ledger_path,
+                attempt_id=attempt_id,
+                batch_authorization=batch_authorization,
+            )
+
+        monkeypatch.setattr(
+            databricks_v2, "submit_pre_reserved_databricks_run", crash_on_post
+        )
+        expected_names = {
+            "phase-lease-v2.json",
+            "batch-reserved-v2.json",
+            f"{job_ids[5]}.json",
+            f"{job_ids[11]}.post-intent-v2",
+        }
+        expected_resumes = [retried[1]]
+
+    with pytest.raises(RuntimeError, match="hard stop in the retry round"):
+        _retry_capacity_failures(case)
+
+    assert {path.name for path in _retry_root(case, 1).iterdir()} == expected_names
+    if crash_point == "lease":
+        assert case.ledger_path.read_bytes() == ledger_before
+        monkeypatch.setattr(databricks_v1, "_write_canonical_exclusive", original_writer)
+    else:
+        monkeypatch.setattr(
+            databricks_v2, "submit_pre_reserved_databricks_run", original_submit
+        )
+
+    leases = _retry_capacity_failures(case)
+
+    assert [lease["retry_index"] for lease in leases] == [1]
+    assert leases[0]["attempt_ids"] == list(retried)
+    assert case.cloud.resume_attempt_ids == expected_resumes
+    assert case.cloud.post_attempt_ids == [*case.cloud.attempt_ids, *retried]
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(ledger.reservations) == case.phase_predecessor.reservation_count + 16
+    assert ledger.active_reserved_cluster_hours == 0.0

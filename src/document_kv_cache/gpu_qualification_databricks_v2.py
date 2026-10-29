@@ -14,6 +14,7 @@ import argparse
 import base64
 import binascii
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
@@ -28,6 +29,7 @@ import zlib
 from document_kv_cache.databricks_resource_ledger import (
     DatabricksBatchReservationAuthorization,
     DatabricksClusterHourLedger,
+    DatabricksClusterHourTerminalActual,
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
@@ -48,6 +50,7 @@ from document_kv_cache.databricks_resource_ledger import (
 from document_kv_cache.databricks_runs import (
     DatabricksWorkspaceConfig,
     bind_databricks_run_idempotency_token,
+    databricks_task_capacity_failure_reason,
     get_databricks_run,
     resume_pre_reserved_databricks_run,
     submit_pre_reserved_databricks_run,
@@ -59,12 +62,14 @@ from document_kv_cache.gpu_qualification import (
 )
 from document_kv_cache.gpu_qualification_v2 import (
     GPU_QUALIFICATION_V2_ARTIFACT_KEYS,
+    GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS,
     GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE,
     GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE,
     GPUQualificationArtifactPinsV2,
     _build_governed_cloud_gpu_evidence_v2,
     _build_governed_gpu_qualification_evidence_v2,
     build_gpu_job_result_v2,
+    gpu_qualification_v2_capacity_retry_attempt_id,
     pins_from_gpu_qualification_plan_v2,
     validate_gpu_job_result_v2_record,
     validate_gpu_qualification_evidence_v2_record,
@@ -158,10 +163,14 @@ GPU_QUALIFICATION_V2_BATCH_MARKER_RECORD_TYPE: Final = (
 GPU_QUALIFICATION_V2_POST_INTENT_RECORD_TYPE: Final = (
     "cachet.vllm_0271_gpu_qualification_post_intent.v2"
 )
+GPU_QUALIFICATION_V2_CAPACITY_RETRY_LEASE_RECORD_TYPE: Final = (
+    "cachet.vllm_0271_gpu_qualification_capacity_retry_lease.v2"
+)
 GPU_QUALIFICATION_V2_EVIDENCE_FILENAME: Final = "qualification-evidence-v2.json"
 _GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_SUFFIX: Final = ".terminal-receipt-v2.json"
 _V2_PHASE_LEASE_FILENAME: Final = "phase-lease-v2.json"
 _V2_BATCH_MARKER_FILENAME: Final = "batch-reserved-v2.json"
+_V2_CAPACITY_RETRY_ROOT_SUFFIX: Final = ".capacity-retry-"
 _V2_PREFLIGHT_PATH_DOMAIN: Final = (
     "cachet.gpu_qualification_v2.local_preflight.absolute_path.v1"
 )
@@ -1421,6 +1430,26 @@ def _builtin_sentinel_runner_v2(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _QualificationRoundV2:
+    """One atomic v2 batch: attempt zero, or one capacity-retry round."""
+
+    retry_index: int
+    root: Path
+    contracts: tuple[dict[str, Any], ...]
+    predecessor: DatabricksLedgerPrefix
+    lease: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplayedRoundV2:
+    spec: _QualificationRoundV2
+    authorization: DatabricksBatchReservationAuthorization
+    marker: dict[str, Any]
+    submit_receipts: tuple[dict[str, Any], ...]
+    terminal_prefix: DatabricksLedgerPrefix | None
+
+
 def _staggered_batch_progress_v2(
     ledger: DatabricksClusterHourLedger,
     authorization: DatabricksBatchReservationAuthorization,
@@ -1434,8 +1463,8 @@ def _staggered_batch_progress_v2(
     require_databricks_ledger_prefix(ledger, authorization.batch_prefix)
     predecessor = authorization.predecessor_prefix
     member_count = len(authorization.attempt_ids)
-    if member_count != 14:
-        raise ValueError("v2 staggered progress requires the exact fourteen-job batch")
+    if not 1 <= member_count <= GPU_QUALIFICATION_MAX_CLOUD_JOBS:
+        raise ValueError("v2 staggered progress requires one planned qualification batch")
     if len(ledger.reservations) != authorization.batch_prefix.reservation_count:
         raise ValueError("v2 staggered batch has an unrelated reservation suffix")
     receipt_count = len(ledger.submission_receipts) - (
@@ -1576,6 +1605,43 @@ def submit_gpu_qualification_jobs_v2(
         contracts=contracts,
         label="v2 qualification launch",
     )
+    spec = _attempt_zero_round_v2(
+        plan=plan,
+        pins=pins,
+        contracts=contracts,
+        predecessor=predecessor,
+        root=databricks_v1._validated_fresh_controller_evidence_root(
+            submit_receipt_root
+        ),
+        local_preflight_binding=preflight_binding,
+    )
+    authorization, marker = _reserve_round_v2(
+        plan=plan,
+        spec=spec,
+        ledger_path=ledger_path,
+        label="v2 qualification batch reservation",
+    )
+    return _submit_fresh_round_v2(
+        config,
+        plan=plan,
+        spec=spec,
+        authorization=authorization,
+        marker=marker,
+        ledger_path=ledger_path,
+    )
+
+
+def _reserve_round_v2(
+    *,
+    plan: Mapping[str, Any],
+    spec: _QualificationRoundV2,
+    ledger_path: str | Path,
+    label: str,
+) -> tuple[DatabricksBatchReservationAuthorization, dict[str, Any]]:
+    """Lease, atomically reserve, and mark one fresh round before any POST."""
+
+    contracts = spec.contracts
+    predecessor = spec.predecessor
     requests = _batch_requests_v2(plan, contracts)
 
     def validate_batch(
@@ -1587,14 +1653,14 @@ def submit_gpu_qualification_jobs_v2(
             live,
             plan=plan,
             ledger_path=ledger_path,
-            expected_predecessor=expected_phase_predecessor_prefix,
+            expected_predecessor=predecessor,
             contracts=contracts,
-            label="v2 qualification batch reservation",
+            label=label,
         )
         if observed_predecessor != predecessor:
             raise ValueError("v2 phase predecessor changed before reservation")
         if len(reservations) != len(contracts) or len(snapshots) != len(contracts):
-            raise ValueError("v2 batch is not the exact fourteen jobs")
+            raise ValueError("v2 batch is not the exact planned round")
         for contract, reservation, snapshot in zip(
             contracts, reservations, snapshots, strict=True
         ):
@@ -1611,22 +1677,9 @@ def submit_gpu_qualification_jobs_v2(
             ):
                 raise ValueError("v2 reservation changed a payload")
 
-    receipt_root = databricks_v1._create_fresh_controller_evidence_root(
-        submit_receipt_root
-    )
-    lease = _phase_lease_record_v2(
-        plan=plan,
-        pins=pins,
-        ledger_path_sha256=_required_sha256_v2(
-            plan.get("campaign_ledger_path_sha256"),
-            "campaign_ledger_path_sha256",
-        ),
-        predecessor_prefix=predecessor,
-        contracts=contracts,
-        local_preflight_binding=preflight_binding,
-    )
+    receipt_root = databricks_v1._create_fresh_controller_evidence_root(spec.root)
     lease_path = receipt_root / _V2_PHASE_LEASE_FILENAME
-    databricks_v1._write_canonical_exclusive(lease, lease_path)
+    databricks_v1._write_canonical_exclusive(spec.lease, lease_path)
     try:
         _ledger, authorization = reserve_databricks_run_attempt_batch_authorized_json(
             ledger_path,
@@ -1648,11 +1701,27 @@ def submit_gpu_qualification_jobs_v2(
         raise
     marker = _batch_marker_record_v2(
         plan=plan,
-        lease_record=lease,
+        lease_record=spec.lease,
         batch_authorization=authorization,
     )
     marker_path = receipt_root / _V2_BATCH_MARKER_FILENAME
     databricks_v1._write_canonical_exclusive(marker, marker_path)
+    return authorization, marker
+
+
+def _submit_fresh_round_v2(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan: Mapping[str, Any],
+    spec: _QualificationRoundV2,
+    authorization: DatabricksBatchReservationAuthorization,
+    marker: Mapping[str, Any],
+    ledger_path: str | Path,
+) -> tuple[dict[str, Any], ...]:
+    """POST one freshly reserved round, closing each terminal before the next."""
+
+    receipt_root = spec.root
+    contracts = spec.contracts
     if _staggered_batch_progress_v2(
         read_databricks_cluster_hour_ledger_json(ledger_path), authorization
     ) != (0, 0):
@@ -1730,9 +1799,13 @@ def resume_gpu_qualification_job_submissions_v2(
     submit_receipt_root: str | Path,
     local_preflight_evidence_path: str | Path,
 ) -> tuple[dict[str, Any], ...]:
-    """Resume only the durable package-rendered v2 submission batch."""
+    """Resume only the durable package-rendered v2 submission batch.
 
-    plan, _pins, payloads, contracts = _validated_controller_contract_v2(
+    When capacity-retry rounds exist, the open round is the chain's last one;
+    every earlier round is replayed closed and never re-entered.
+    """
+
+    plan, pins, payloads, contracts = _validated_controller_contract_v2(
         plan_record=plan_record,
         single_user_name=single_user_name,
         artifact_uris=artifact_uris,
@@ -1749,18 +1822,34 @@ def resume_gpu_qualification_job_submissions_v2(
         completed_at,
         submission_boundary=_utc_now(),
     )
-    authorization, marker = _replay_batch_marker_v2(
+    _closed, spec = _qualification_round_chain_v2(
         plan=plan,
+        pins=pins,
         contracts=contracts,
         ledger_path=ledger_path,
-        expected_phase_predecessor_prefix=expected_phase_predecessor_prefix,
+        phase_predecessor=expected_phase_predecessor_prefix,
         submit_receipt_root=submit_receipt_root,
         local_preflight_binding=preflight_binding,
     )
-    root = databricks_v1._validated_existing_controller_evidence_root(
-        submit_receipt_root,
-        "v2 submit_receipt_root",
+    return _resume_round_v2(config, plan=plan, spec=spec, ledger_path=ledger_path)
+
+
+def _resume_round_v2(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan: Mapping[str, Any],
+    spec: _QualificationRoundV2,
+    ledger_path: str | Path,
+) -> tuple[dict[str, Any], ...]:
+    """Finish one durable round from its exact crash point; closed is a no-op."""
+
+    authorization, marker = _replay_batch_marker_v2(
+        plan=plan,
+        spec=spec,
+        ledger_path=ledger_path,
     )
+    root = spec.root
+    contracts = spec.contracts
     marker_sha256 = str(marker["closed_record_sha256"])
     receipts: list[dict[str, Any]] = []
     for contract in contracts:
@@ -2241,37 +2330,21 @@ def _validate_submit_receipt_v2(
 def _replay_batch_marker_v2(
     *,
     plan: Mapping[str, Any],
-    contracts: Sequence[Mapping[str, Any]],
+    spec: _QualificationRoundV2,
     ledger_path: str | Path,
-    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
-    submit_receipt_root: str | Path,
-    local_preflight_binding: Mapping[str, str],
 ) -> tuple[Any, dict[str, Any]]:
     root = databricks_v1._validated_existing_controller_evidence_root(
-        submit_receipt_root,
+        spec.root,
         "v2 submit_receipt_root",
     )
     lease = databricks_v1._read_canonical_json_object_file(
         root / _V2_PHASE_LEASE_FILENAME,
         "v2 qualification phase lease",
     )
-    pins = pins_from_gpu_qualification_plan_v2(plan)
-    if not isinstance(expected_phase_predecessor_prefix, DatabricksLedgerPrefix):
-        raise TypeError("expected_phase_predecessor_prefix has the wrong type")
-    phase_predecessor = expected_phase_predecessor_prefix
-    expected_lease = _phase_lease_record_v2(
-        plan=plan,
-        pins=pins,
-        ledger_path_sha256=_required_sha256_v2(
-            plan.get("campaign_ledger_path_sha256"),
-            "campaign_ledger_path_sha256",
-        ),
-        predecessor_prefix=phase_predecessor,
-        contracts=contracts,
-        local_preflight_binding=local_preflight_binding,
-    )
+    contracts = spec.contracts
+    phase_predecessor = spec.predecessor
     if canonical_gpu_qualification_json(lease) != canonical_gpu_qualification_json(
-        expected_lease
+        spec.lease
     ):
         raise ValueError("v2 phase lease differs from the frozen batch")
     _require_controller_record_seal_v2(lease, "v2 phase lease")
@@ -2492,47 +2565,30 @@ def _load_submit_receipts_v2(
     return tuple(receipts)
 
 
-def _replay_completed_batch_v2(
+def _replay_round_v2(
     *,
     plan: Mapping[str, Any],
-    contracts: Sequence[Mapping[str, Any]],
+    spec: _QualificationRoundV2,
     ledger_path: str | Path,
-    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
-    submit_receipt_root: str | Path,
-    local_preflight_binding: Mapping[str, str],
-) -> tuple[
-    DatabricksBatchReservationAuthorization,
-    dict[str, Any],
-    tuple[dict[str, Any], ...],
-    DatabricksClusterHourLedger,
-]:
-    """Replay a submitted batch without reserving or weakening terminal suffixes."""
+    ledger: DatabricksClusterHourLedger,
+    closed: bool,
+) -> _ReplayedRoundV2:
+    """Replay a submitted round without reserving or weakening terminal suffixes.
+
+    A closed round stops at its own terminal prefix, beneath any later retry
+    round; an open round must be the current ledger suffix.
+    """
 
     root = databricks_v1._validated_existing_controller_evidence_root(
-        submit_receipt_root,
+        spec.root,
         "v2 submit_receipt_root",
     )
     lease = databricks_v1._read_canonical_json_object_file(
         root / _V2_PHASE_LEASE_FILENAME,
         "v2 qualification phase lease",
     )
-    pins = pins_from_gpu_qualification_plan_v2(plan)
-    if not isinstance(expected_phase_predecessor_prefix, DatabricksLedgerPrefix):
-        raise TypeError("expected_phase_predecessor_prefix has the wrong type")
-    phase_predecessor = expected_phase_predecessor_prefix
-    expected_lease = _phase_lease_record_v2(
-        plan=plan,
-        pins=pins,
-        ledger_path_sha256=_required_sha256_v2(
-            plan.get("campaign_ledger_path_sha256"),
-            "campaign_ledger_path_sha256",
-        ),
-        predecessor_prefix=phase_predecessor,
-        contracts=contracts,
-        local_preflight_binding=local_preflight_binding,
-    )
     if canonical_gpu_qualification_json(lease) != canonical_gpu_qualification_json(
-        expected_lease
+        spec.lease
     ):
         raise ValueError("v2 completed-batch phase lease differs")
     _require_controller_record_seal_v2(lease, "v2 phase lease")
@@ -2540,29 +2596,45 @@ def _replay_completed_batch_v2(
         "campaign_ledger_path_sha256"
     ):
         raise ValueError("v2 completed-batch ledger path differs from the plan")
-    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     if ledger.ledger_id != plan.get("campaign_ledger_id"):
         raise ValueError("v2 completed-batch ledger ID differs from the plan")
+    contracts = spec.contracts
     _require_v2_phase_predecessor(
         ledger,
         plan=plan,
         ledger_path=ledger_path,
-        predecessor=phase_predecessor,
+        predecessor=spec.predecessor,
         contracts=contracts,
         label="v2 completed batch replay",
     )
     authorization = replay_databricks_run_attempt_batch_authorization_json(
         ledger_path,
         _batch_requests_v2(plan, contracts),
-        expected_predecessor_prefix=phase_predecessor,
+        expected_predecessor_prefix=spec.predecessor,
     )
     require_databricks_publication_batch_admission(ledger, authorization)
-    receipt_count, terminal_count = _staggered_batch_progress_v2(ledger, authorization)
-    if receipt_count != len(contracts) or terminal_count not in {
-        len(contracts) - 1,
-        len(contracts),
-    }:
-        raise ValueError("v2 completed batch is not the current ledger suffix")
+    member_count = len(contracts)
+    terminal_prefix: DatabricksLedgerPrefix | None = None
+    if closed:
+        terminal_prefix = require_databricks_batch_terminal_closure(
+            ledger,
+            authorization,
+            require_complete_current_prefix=False,
+        )
+        if _staggered_batch_progress_v2(
+            databricks_ledger_state_at_prefix(ledger, terminal_prefix),
+            authorization,
+        ) != (member_count, member_count):
+            raise ValueError("v2 closed round is not one complete batch")
+    else:
+        receipt_count, terminal_count = _staggered_batch_progress_v2(
+            ledger, authorization
+        )
+        if receipt_count != member_count or terminal_count not in {
+            member_count - 1,
+            member_count,
+        }:
+            raise ValueError("v2 completed batch is not the current ledger suffix")
     marker = databricks_v1._read_canonical_json_object_file(
         root / _V2_BATCH_MARKER_FILENAME,
         "v2 qualification batch marker",
@@ -2584,7 +2656,508 @@ def _replay_completed_batch_v2(
         ledger=ledger,
         phase_batch_record_sha256=str(marker["closed_record_sha256"]),
     )
-    return authorization, marker, receipts, ledger
+    return _ReplayedRoundV2(
+        spec=spec,
+        authorization=authorization,
+        marker=marker,
+        submit_receipts=receipts,
+        terminal_prefix=terminal_prefix,
+    )
+
+
+def _attempt_zero_round_v2(
+    *,
+    plan: Mapping[str, Any],
+    pins: GPUQualificationArtifactPinsV2,
+    contracts: Sequence[Mapping[str, Any]],
+    predecessor: DatabricksLedgerPrefix,
+    root: Path,
+    local_preflight_binding: Mapping[str, str],
+) -> _QualificationRoundV2:
+    return _QualificationRoundV2(
+        retry_index=0,
+        root=root,
+        contracts=tuple(dict(item) for item in contracts),
+        predecessor=predecessor,
+        lease=_phase_lease_record_v2(
+            plan=plan,
+            pins=pins,
+            ledger_path_sha256=_required_sha256_v2(
+                plan.get("campaign_ledger_path_sha256"),
+                "campaign_ledger_path_sha256",
+            ),
+            predecessor_prefix=predecessor,
+            contracts=contracts,
+            local_preflight_binding=local_preflight_binding,
+        ),
+    )
+
+
+def _capacity_retry_root_v2(root: Path, retry_index: int) -> Path:
+    return root.with_name(
+        f"{root.name}{_V2_CAPACITY_RETRY_ROOT_SUFFIX}{retry_index:02d}"
+    )
+
+
+def _capacity_retry_contract_v2(
+    contract: Mapping[str, Any],
+    *,
+    retry_index: int,
+) -> dict[str, Any]:
+    """Rebind an attempt-zero contract to one capacity retry's ledger attempt.
+
+    Only the idempotency token changes: the runner parameters, and so the
+    attempt-zero ID and output path the job reports, stay byte-identical.
+    """
+
+    attempt_id = gpu_qualification_v2_capacity_retry_attempt_id(
+        str(contract["reservation_attempt_id"]), retry_index
+    )
+    payload = dict(databricks_v1._required_mapping(contract.get("payload"), "payload"))
+    payload.pop("idempotency_token", None)
+    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(
+        bind_databricks_run_idempotency_token(payload, attempt_id=attempt_id)
+    )
+    return {
+        **contract,
+        "payload": snapshot,
+        "reservation_attempt_id": attempt_id,
+        "submit_payload_sha256": sha256(canonical_payload).hexdigest(),
+    }
+
+
+def _terminal_actual_v2(
+    ledger: DatabricksClusterHourLedger,
+    attempt_id: str,
+) -> DatabricksClusterHourTerminalActual:
+    matches = [item for item in ledger.terminal_actuals if item.attempt_id == attempt_id]
+    if len(matches) != 1:
+        raise ValueError("v2 ledger lacks one exact terminal actual")
+    return matches[0]
+
+
+def _capacity_failure_entry_v2(
+    *,
+    run: Mapping[str, Any],
+    planned_job: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    submit_receipt: Mapping[str, Any],
+    actual: DatabricksClusterHourTerminalActual,
+    retry_index: int,
+) -> dict[str, Any]:
+    """Prove one failed attempt never reached its driver, from direct runs/get."""
+
+    job_id = str(contract["job_id"])
+    run_identity = databricks_v1._validate_control_plane_run(
+        run,
+        planned_job=planned_job,
+        contract=contract,
+        submit_receipt=submit_receipt,
+    )
+    if (
+        actual.verification_source != "direct_databricks_runs_get"
+        or actual.attempt_id != contract["reservation_attempt_id"]
+        or actual.run_id != run_identity["cloud_run_id"]
+        or actual.submit_payload_sha256 != contract["submit_payload_sha256"]
+        or actual.control_plane_status_sha256
+        != databricks_v1._canonical_json_sha256(run)
+    ):
+        raise RuntimeError("v2 failed attempt differs from direct runs/get")
+    if run_identity["succeeded"] is True or actual.terminal_state == "succeeded":
+        raise ValueError("a succeeded v2 attempt is not a capacity failure")
+    tasks = cast(list[Mapping[str, Any]], run["tasks"])
+    reason = databricks_task_capacity_failure_reason(tasks[0])
+    if reason is None or actual.terminal_state not in {"failed", "internal_error"}:
+        raise RuntimeError(
+            f"GPU qualification v2 job {job_id!r} failed for a non-capacity "
+            "reason and cannot be retried"
+        )
+    return {
+        "actual_cluster_duration_seconds": actual.actual_cluster_duration_seconds,
+        "attempt_id": actual.attempt_id,
+        "control_plane_status_sha256": actual.control_plane_status_sha256,
+        "job_id": job_id,
+        "ledger_terminal_actual_sha256": databricks_v1._canonical_json_sha256(
+            databricks_v1._ledger_terminal_actual_record(actual)
+        ),
+        "retry_index": retry_index,
+        "run_id": actual.run_id,
+        "run_record": dict(run),
+        "submit_payload_sha256": actual.submit_payload_sha256,
+        "terminal_state": actual.terminal_state,
+        "termination_reason": reason,
+    }
+
+
+def _round_capacity_failures_v2(
+    *,
+    plan: Mapping[str, Any],
+    replayed: _ReplayedRoundV2,
+    ledger: DatabricksClusterHourLedger,
+    run_for: Callable[[str, Mapping[str, Any]], Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Classify every failed member of one closed round, in round order."""
+
+    planned = {
+        str(job["job_id"]): job for job in databricks_v1._planned_jobs(plan)
+    }
+    failures: list[dict[str, Any]] = []
+    for contract, submit_receipt in zip(
+        replayed.spec.contracts, replayed.submit_receipts, strict=True
+    ):
+        actual = _terminal_actual_v2(ledger, str(contract["reservation_attempt_id"]))
+        if actual.terminal_state == "succeeded":
+            continue
+        job_id = str(contract["job_id"])
+        failures.append(
+            _capacity_failure_entry_v2(
+                run=run_for(job_id, submit_receipt),
+                planned_job=planned[job_id],
+                contract=contract,
+                submit_receipt=submit_receipt,
+                actual=actual,
+                retry_index=replayed.spec.retry_index,
+            )
+        )
+    return tuple(failures)
+
+
+def _capacity_retry_lease_record_v2(
+    *,
+    plan: Mapping[str, Any],
+    pins: GPUQualificationArtifactPinsV2,
+    predecessor_prefix: DatabricksLedgerPrefix,
+    contracts: Sequence[Mapping[str, Any]],
+    local_preflight_binding: Mapping[str, str],
+    retry_index: int,
+    previous_batch_marker_sha256: str,
+    capacity_failures: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if frozenset(local_preflight_binding) != _V2_PREFLIGHT_BINDING_KEYS:
+        raise ValueError("v2 local preflight binding has an open schema")
+    record: dict[str, Any] = {
+        "artifact_sha256": pins.to_record(),
+        "attempt_ids": [str(item["reservation_attempt_id"]) for item in contracts],
+        "capacity_failures": [dict(item) for item in capacity_failures],
+        "closed_record_sha256": "",
+        "ledger_path_sha256": _required_sha256_v2(
+            plan.get("campaign_ledger_path_sha256"),
+            "campaign_ledger_path_sha256",
+        ),
+        "local_preflight": dict(local_preflight_binding),
+        "plan_sha256": plan["closed_record_sha256"],
+        "predecessor_prefix": predecessor_prefix.to_record(),
+        "previous_batch_marker_sha256": _required_sha256_v2(
+            previous_batch_marker_sha256, "previous_batch_marker_sha256"
+        ),
+        "record_type": GPU_QUALIFICATION_V2_CAPACITY_RETRY_LEASE_RECORD_TYPE,
+        "retry_index": retry_index,
+        "schema_version": 2,
+        "submit_payload_sha256": [
+            str(item["submit_payload_sha256"]) for item in contracts
+        ],
+    }
+    _seal_controller_record_v2(record)
+    return record
+
+
+def _capacity_retry_round_v2(
+    *,
+    plan: Mapping[str, Any],
+    pins: GPUQualificationArtifactPinsV2,
+    base_contracts: Sequence[Mapping[str, Any]],
+    replayed: _ReplayedRoundV2,
+    failures: Sequence[Mapping[str, Any]],
+    root: Path,
+    local_preflight_binding: Mapping[str, str],
+) -> _QualificationRoundV2:
+    """Derive the next round: every capacity-failed job, admitted at closure."""
+
+    if not failures:
+        raise ValueError("v2 capacity retry follows a round without failures")
+    if replayed.terminal_prefix is None:
+        raise ValueError("v2 capacity retry requires a closed round")
+    retry_index = replayed.spec.retry_index + 1
+    if retry_index >= GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS:
+        raise RuntimeError(
+            "GPU qualification v2 capacity retries exhausted the "
+            f"{GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS}-attempt job bound"
+        )
+    failed_jobs = {str(item["job_id"]) for item in failures}
+    contracts = tuple(
+        _capacity_retry_contract_v2(contract, retry_index=retry_index)
+        for contract in base_contracts
+        if contract["job_id"] in failed_jobs
+    )
+    return _QualificationRoundV2(
+        retry_index=retry_index,
+        root=root,
+        contracts=contracts,
+        predecessor=replayed.terminal_prefix,
+        lease=_capacity_retry_lease_record_v2(
+            plan=plan,
+            pins=pins,
+            predecessor_prefix=replayed.terminal_prefix,
+            contracts=contracts,
+            local_preflight_binding=local_preflight_binding,
+            retry_index=retry_index,
+            previous_batch_marker_sha256=str(replayed.marker["closed_record_sha256"]),
+            capacity_failures=failures,
+        ),
+    )
+
+
+def _recorded_capacity_failure_runs_v2(
+    lease: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    entries = lease.get("capacity_failures")
+    if not isinstance(entries, list):
+        raise ValueError("v2 capacity retry lease lacks its capacity failures")
+    runs: dict[str, Mapping[str, Any]] = {}
+    for item in entries:
+        entry = databricks_v1._required_mapping(item, "v2 capacity failure")
+        job_id = databricks_v1._safe_id(entry.get("job_id"), "v2 capacity failure job")
+        if job_id in runs:
+            raise ValueError("v2 capacity retry lease repeats a job")
+        runs[job_id] = databricks_v1._required_mapping(
+            entry.get("run_record"), "v2 capacity failure run_record"
+        )
+    return runs
+
+
+def _qualification_round_chain_v2(
+    *,
+    plan: Mapping[str, Any],
+    pins: GPUQualificationArtifactPinsV2,
+    contracts: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    phase_predecessor: DatabricksLedgerPrefix,
+    submit_receipt_root: str | Path,
+    local_preflight_binding: Mapping[str, str],
+) -> tuple[tuple[_ReplayedRoundV2, ...], _QualificationRoundV2]:
+    """Replay every closed round and return them with the chain's last round.
+
+    Retry round ``r`` lives beside the attempt-zero receipt root and exists
+    only once round ``r - 1`` closed.  Its lease is re-derived from that
+    closed round's ledger suffix and the direct runs/get records it binds, so
+    a round is replayable only when every failure it retries was a
+    never-started capacity failure.
+    """
+
+    if not isinstance(phase_predecessor, DatabricksLedgerPrefix):
+        raise TypeError("expected_phase_predecessor_prefix has the wrong type")
+    root = databricks_v1._validated_existing_controller_evidence_root(
+        submit_receipt_root,
+        "v2 submit_receipt_root",
+    )
+    spec = _attempt_zero_round_v2(
+        plan=plan,
+        pins=pins,
+        contracts=contracts,
+        predecessor=phase_predecessor,
+        root=root,
+        local_preflight_binding=local_preflight_binding,
+    )
+    closed: list[_ReplayedRoundV2] = []
+    while True:
+        next_root = _capacity_retry_root_v2(root, spec.retry_index + 1)
+        if not (next_root.exists() or next_root.is_symlink()):
+            return tuple(closed), spec
+        ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+        replayed = _replay_round_v2(
+            plan=plan,
+            spec=spec,
+            ledger_path=ledger_path,
+            ledger=ledger,
+            closed=True,
+        )
+        next_root = databricks_v1._validated_existing_controller_evidence_root(
+            next_root,
+            "v2 capacity retry root",
+        )
+        next_lease = databricks_v1._read_canonical_json_object_file(
+            next_root / _V2_PHASE_LEASE_FILENAME,
+            "v2 capacity retry lease",
+        )
+        recorded_runs = _recorded_capacity_failure_runs_v2(next_lease)
+
+        def recorded_run(
+            job_id: str,
+            _submit_receipt: Mapping[str, Any],
+            recorded_runs: Mapping[str, Mapping[str, Any]] = recorded_runs,
+        ) -> Mapping[str, Any]:
+            if job_id not in recorded_runs:
+                raise ValueError("v2 capacity retry lease omits a failed job")
+            return recorded_runs[job_id]
+
+        next_spec = _capacity_retry_round_v2(
+            plan=plan,
+            pins=pins,
+            base_contracts=contracts,
+            replayed=replayed,
+            failures=_round_capacity_failures_v2(
+                plan=plan,
+                replayed=replayed,
+                ledger=ledger,
+                run_for=recorded_run,
+            ),
+            root=next_root,
+            local_preflight_binding=local_preflight_binding,
+        )
+        if canonical_gpu_qualification_json(
+            next_lease
+        ) != canonical_gpu_qualification_json(next_spec.lease):
+            raise ValueError("v2 capacity retry lease differs from its closed round")
+        closed.append(replayed)
+        spec = next_spec
+
+
+def _final_attempts_v2(
+    contracts: Sequence[Mapping[str, Any]],
+    rounds: Sequence[_ReplayedRoundV2],
+) -> tuple[tuple[_ReplayedRoundV2, dict[str, Any], dict[str, Any]], ...]:
+    """Return each planned job's last round, contract, and submit receipt."""
+
+    final: dict[str, tuple[_ReplayedRoundV2, dict[str, Any], dict[str, Any]]] = {}
+    for item in rounds:
+        for contract, receipt in zip(
+            item.spec.contracts, item.submit_receipts, strict=True
+        ):
+            final[str(contract["job_id"])] = (item, contract, receipt)
+    return tuple(final[str(contract["job_id"])] for contract in contracts)
+
+
+def _capacity_retry_evidence_v2(
+    contracts: Sequence[Mapping[str, Any]],
+    rounds: Sequence[_ReplayedRoundV2],
+) -> list[dict[str, Any]]:
+    """Disclose every retried failure in plan order, then attempt order."""
+
+    order = {str(contract["job_id"]): index for index, contract in enumerate(contracts)}
+    entries = [
+        {key: value for key, value in entry.items() if key != "run_record"}
+        for item in rounds
+        if item.spec.retry_index > 0
+        for entry in item.spec.lease["capacity_failures"]
+    ]
+    return sorted(
+        entries,
+        key=lambda entry: (order[entry["job_id"]], entry["retry_index"]),
+    )
+
+
+def retry_gpu_qualification_capacity_failures_v2(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan_record: Mapping[str, Any],
+    single_user_name: str,
+    artifact_uris: Mapping[str, str],
+    output_root: str,
+    ledger_path: str | Path,
+    expected_phase_predecessor_prefix: DatabricksLedgerPrefix,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+) -> tuple[dict[str, Any], ...]:
+    """Close the submitted v2 batch, resubmitting never-started jobs in rounds.
+
+    Each pass finishes the open round, classifies every failed member from
+    its direct runs/get record, and reserves the next round only when all of
+    them are capacity failures: the same payloads under fresh ledger attempts,
+    admitted at the closed round's terminal prefix.  A non-capacity failure or
+    the per-job attempt bound stops the chain.  Returns the sealed lease of
+    every capacity-retry round, oldest first.
+    """
+
+    plan, pins, payloads, contracts = _validated_controller_contract_v2(
+        plan_record=plan_record,
+        single_user_name=single_user_name,
+        artifact_uris=artifact_uris,
+        output_root=output_root,
+    )
+    preflight_binding, completed_at = _validated_local_preflight_binding_v2(
+        local_preflight_evidence_path,
+        plan=plan,
+        submit_payloads=payloads,
+        config=config,
+        require_fresh_workspace=False,
+    )
+    root = databricks_v1._validated_existing_controller_evidence_root(
+        submit_receipt_root,
+        "v2 submit_receipt_root",
+    )
+    while True:
+        closed, spec = _qualification_round_chain_v2(
+            plan=plan,
+            pins=pins,
+            contracts=contracts,
+            ledger_path=ledger_path,
+            phase_predecessor=expected_phase_predecessor_prefix,
+            submit_receipt_root=root,
+            local_preflight_binding=preflight_binding,
+        )
+        databricks_v1._require_local_preflight_before_submission(
+            completed_at,
+            submission_boundary=_utc_now(),
+        )
+        _resume_round_v2(config, plan=plan, spec=spec, ledger_path=ledger_path)
+        ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+        replayed = _replay_round_v2(
+            plan=plan,
+            spec=spec,
+            ledger_path=ledger_path,
+            ledger=ledger,
+            closed=True,
+        )
+        require_databricks_batch_terminal_closure(
+            ledger,
+            replayed.authorization,
+            require_complete_current_prefix=True,
+        )
+        failures = _round_capacity_failures_v2(
+            plan=plan,
+            replayed=replayed,
+            ledger=ledger,
+            run_for=lambda _job_id, receipt: get_databricks_run(
+                config, str(receipt["cloud_run_id"])
+            ),
+        )
+        if not failures:
+            return tuple(
+                item.lease
+                for item in (*(entry.spec for entry in closed), spec)
+                if item.retry_index > 0
+            )
+        next_spec = _capacity_retry_round_v2(
+            plan=plan,
+            pins=pins,
+            base_contracts=contracts,
+            replayed=replayed,
+            failures=failures,
+            root=_capacity_retry_root_v2(root, spec.retry_index + 1),
+            local_preflight_binding=preflight_binding,
+        )
+        _require_v2_ledger_predecessor(
+            ledger,
+            plan=plan,
+            ledger_path=ledger_path,
+            expected_predecessor=next_spec.predecessor,
+            contracts=next_spec.contracts,
+            label="v2 capacity retry launch",
+        )
+        authorization, marker = _reserve_round_v2(
+            plan=plan,
+            spec=next_spec,
+            ledger_path=ledger_path,
+            label="v2 capacity retry reservation",
+        )
+        _submit_fresh_round_v2(
+            config,
+            plan=plan,
+            spec=next_spec,
+            authorization=authorization,
+            marker=marker,
+            ledger_path=ledger_path,
+        )
 
 
 def _terminal_receipt_record_v2(
@@ -2612,6 +3185,7 @@ def _terminal_receipt_record_v2(
         collected_at_utc=collected_at_utc,
         phase_batch_record_sha256=phase_batch_record_sha256,
     )
+    receipt["ledger_attempt_id"] = ledger_terminal_actual.attempt_id
     receipt["record_type"] = GPU_QUALIFICATION_V2_TERMINAL_RECEIPT_RECORD_TYPE
     receipt["schema_version"] = 2
     receipt["closed_record_sha256"] = ""
@@ -2686,26 +3260,35 @@ def collect_gpu_qualification_evidence_v2(
         config=config,
         require_fresh_workspace=False,
     )
-    batch_authorization, marker, submit_receipts, _opening_ledger = (
-        _replay_completed_batch_v2(
-            plan=plan,
-            contracts=contracts,
-            ledger_path=ledger_path,
-            expected_phase_predecessor_prefix=(expected_phase_predecessor_prefix),
-            submit_receipt_root=submit_receipt_root,
-            local_preflight_binding=preflight_binding,
-        )
+    closed_rounds, final_spec = _qualification_round_chain_v2(
+        plan=plan,
+        pins=pins,
+        contracts=contracts,
+        ledger_path=ledger_path,
+        phase_predecessor=expected_phase_predecessor_prefix,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_binding=preflight_binding,
     )
+    final_round = _replay_round_v2(
+        plan=plan,
+        spec=final_spec,
+        ledger_path=ledger_path,
+        ledger=read_databricks_cluster_hour_ledger_json(ledger_path),
+        closed=False,
+    )
+    rounds = (*closed_rounds, final_round)
+    attempts = _final_attempts_v2(contracts, rounds)
     target_root = databricks_v1._validated_fresh_controller_evidence_root(evidence_root)
     runs = tuple(
         get_databricks_run(config, str(receipt["cloud_run_id"]))
-        for receipt in submit_receipts
+        for _round, _contract, receipt in attempts
     )
-    for contract, run in zip(contracts, runs, strict=True):
+    for (_round, contract, _receipt), run in zip(attempts, runs, strict=True):
         # Record every terminal outcome, including failed jobs, in canonical
         # plan order. A malformed or nonterminal response must stop here:
         # appending later attempts around that gap would make durable ordered
-        # batch replay impossible.
+        # batch replay impossible.  Earlier rounds are already closed, so
+        # their identical runs/get records are idempotent here.
         record_databricks_verified_run_terminal_actual_json(
             ledger_path,
             attempt_id=str(contract["reservation_attempt_id"]),
@@ -2714,23 +3297,22 @@ def collect_gpu_qualification_evidence_v2(
     final_ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     terminal_prefix = require_databricks_batch_terminal_closure(
         final_ledger,
-        batch_authorization,
+        final_round.authorization,
         require_complete_current_prefix=True,
     )
     clock = now or _utc_now
     job_results: list[dict[str, Any]] = []
     terminal_receipts: list[dict[str, Any]] = []
-    for planned_job, contract, submit_receipt, run in zip(
+    evidence_contracts: list[dict[str, Any]] = []
+    for planned_job, base_contract, (job_round, contract, submit_receipt), run in zip(
         databricks_v1._planned_jobs(plan),
         contracts,
-        submit_receipts,
+        attempts,
         runs,
         strict=True,
     ):
-        actual = next(
-            item
-            for item in final_ledger.terminal_actuals
-            if item.attempt_id == contract["reservation_attempt_id"]
+        actual = _terminal_actual_v2(
+            final_ledger, str(contract["reservation_attempt_id"])
         )
         run_identity = databricks_v1._validate_control_plane_run(
             run,
@@ -2753,6 +3335,11 @@ def collect_gpu_qualification_evidence_v2(
             raise RuntimeError(
                 f"GPU qualification v2 job {contract['job_id']!r} did not succeed"
             )
+        # The runner reports its attempt-zero ID on every capacity retry.
+        evidence_contract = {
+            **contract,
+            "reservation_attempt_id": base_contract["reservation_attempt_id"],
+        }
         result = databricks_v1._read_gpu_qualification_result(
             config,
             str(contract["output_json"]),
@@ -2766,13 +3353,13 @@ def collect_gpu_qualification_evidence_v2(
         )
         databricks_v1._validate_result_submission_binding(
             result,
-            contract=contract,
+            contract=evidence_contract,
             submit_receipt=submit_receipt,
             run_identity=run_identity,
         )
         receipt = _terminal_receipt_record_v2(
             plan=plan,
-            contract=contract,
+            contract=evidence_contract,
             submit_receipt=submit_receipt,
             ledger_id=final_ledger.ledger_id,
             ledger_terminal_actual=actual,
@@ -2780,17 +3367,18 @@ def collect_gpu_qualification_evidence_v2(
             run_identity=run_identity,
             result=result,
             collected_at_utc=databricks_v1._utc_timestamp(clock()),
-            phase_batch_record_sha256=str(marker["closed_record_sha256"]),
+            phase_batch_record_sha256=str(job_round.marker["closed_record_sha256"]),
         )
         job_results.append(result)
         terminal_receipts.append(receipt)
+        evidence_contracts.append(evidence_contract)
     for receipt in terminal_receipts:
         receipt["phase_terminal_prefix"] = terminal_prefix.to_record()
         receipt["closed_record_sha256"] = ""
         _seal_controller_record_v2(receipt)
     databricks_v1._validate_collected_identity_closure(
         terminal_receipts,
-        contracts=contracts,
+        contracts=evidence_contracts,
     )
     selected_gmus = [
         float(result["measurements"]["gpu_memory_utilization"])
@@ -2805,6 +3393,7 @@ def collect_gpu_qualification_evidence_v2(
         jobs=job_results,
         terminal_receipts=terminal_receipts,
         selected_gpu_memory_utilization=max(selected_gmus),
+        capacity_retries=_capacity_retry_evidence_v2(contracts, rounds),
     )
     local_preflight = databricks_v1._read_canonical_json_object_file(
         local_preflight_evidence_path,
@@ -2876,19 +3465,31 @@ def replay_gpu_qualification_launch_authorization_v2(
         config=config,
         require_fresh_workspace=False,
     )
-    batch_authorization, marker, submit_receipts, ledger = _replay_completed_batch_v2(
+    closed_rounds, final_spec = _qualification_round_chain_v2(
         plan=plan,
+        pins=pins,
         contracts=contracts,
         ledger_path=ledger_path,
-        expected_phase_predecessor_prefix=expected_phase_predecessor_prefix,
+        phase_predecessor=expected_phase_predecessor_prefix,
         submit_receipt_root=submit_receipt_root,
         local_preflight_binding=preflight_binding,
     )
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    final_round = _replay_round_v2(
+        plan=plan,
+        spec=final_spec,
+        ledger_path=ledger_path,
+        ledger=ledger,
+        closed=True,
+    )
     terminal_prefix = require_databricks_batch_terminal_closure(
         ledger,
-        batch_authorization,
+        final_round.authorization,
         require_complete_current_prefix=True,
     )
+    rounds = (*closed_rounds, final_round)
+    attempts = _final_attempts_v2(contracts, rounds)
+    opening_authorization = rounds[0].authorization
     root = databricks_v1._validated_existing_controller_evidence_root(
         evidence_root,
         "v2 evidence_root",
@@ -2933,10 +3534,11 @@ def replay_gpu_qualification_launch_authorization_v2(
     )
     if cloud.get("terminal_receipts") != list(terminal_receipts):
         raise ValueError("persisted v2 terminal receipts differ from evidence")
+    if cloud.get("capacity_retries") != _capacity_retry_evidence_v2(contracts, rounds):
+        raise ValueError("persisted v2 capacity retries differ from the round chain")
     terminal_actual_hashes: list[str] = []
-    for contract, submit_receipt, receipt in zip(
-        contracts,
-        submit_receipts,
+    for (job_round, contract, submit_receipt), receipt in zip(
+        attempts,
         terminal_receipts,
         strict=True,
     ):
@@ -2960,27 +3562,44 @@ def replay_gpu_qualification_launch_authorization_v2(
             or actual.control_plane_status_sha256
             != receipt["control_plane_status_sha256"]
             or actual_sha256 != receipt["ledger_terminal_actual_sha256"]
+            or receipt.get("ledger_attempt_id") != contract["reservation_attempt_id"]
             or receipt.get("phase_batch_record_sha256")
-            != marker["closed_record_sha256"]
+            != job_round.marker["closed_record_sha256"]
             or receipt.get("phase_terminal_prefix") != terminal_prefix.to_record()
         ):
             raise ValueError("v2 replay terminal receipt differs from ledger authority")
         terminal_actual_hashes.append(actual_sha256)
     evidence_file_sha256 = databricks_v1._file_sha256(evidence_file)
     causal_closure = {
+        "capacity_retry_rounds": [
+            {
+                "batch_prefix": item.authorization.batch_prefix.to_record(),
+                "lease_sha256": item.spec.lease["closed_record_sha256"],
+                "marker_sha256": item.marker["closed_record_sha256"],
+                "predecessor_prefix": item.spec.predecessor.to_record(),
+                "retry_index": item.spec.retry_index,
+                "submit_receipt_sha256": [
+                    receipt["closed_record_sha256"] for receipt in item.submit_receipts
+                ],
+                "terminal_prefix": cast(
+                    DatabricksLedgerPrefix, item.terminal_prefix
+                ).to_record(),
+            }
+            for item in rounds[1:]
+        ],
         "evidence_closed_record_sha256": evidence["closed_record_sha256"],
         "evidence_file_sha256": evidence_file_sha256,
         "ledger_id": ledger.ledger_id,
         "ledger_path_sha256": databricks_ledger_path_sha256(ledger_path),
         "ledger_prefix": terminal_prefix.to_record(),
-        "predecessor_prefix": batch_authorization.predecessor_prefix.to_record(),
-        "producer_batch_prefix": batch_authorization.batch_prefix.to_record(),
+        "predecessor_prefix": opening_authorization.predecessor_prefix.to_record(),
+        "producer_batch_prefix": opening_authorization.batch_prefix.to_record(),
         "plan_sha256": plan["closed_record_sha256"],
         "submit_payload_sha256": [
-            contract["submit_payload_sha256"] for contract in contracts
+            contract["submit_payload_sha256"] for _round, contract, _receipt in attempts
         ],
         "submit_receipt_sha256": [
-            receipt["closed_record_sha256"] for receipt in submit_receipts
+            receipt["closed_record_sha256"] for _round, _contract, receipt in attempts
         ],
         "terminal_actual_sha256": terminal_actual_hashes,
         "terminal_receipt_sha256": [
@@ -2994,8 +3613,8 @@ def replay_gpu_qualification_launch_authorization_v2(
         evidence_file_sha256=evidence_file_sha256,
         ledger_id=ledger.ledger_id,
         ledger_path_sha256=databricks_ledger_path_sha256(ledger_path),
-        predecessor_prefix=batch_authorization.predecessor_prefix,
-        producer_batch_prefix=batch_authorization.batch_prefix,
+        predecessor_prefix=opening_authorization.predecessor_prefix,
+        producer_batch_prefix=opening_authorization.batch_prefix,
         ledger_prefix=terminal_prefix,
         causal_closure_sha256=databricks_v1._canonical_json_sha256(causal_closure),
     )
@@ -3326,6 +3945,7 @@ __all__ = [
     "GPU_QUALIFICATION_V2_LOCAL_WORK_ROOT",
     "GPU_QUALIFICATION_V2_OUTPUT_FILENAME",
     "GPU_QUALIFICATION_V2_BATCH_MARKER_RECORD_TYPE",
+    "GPU_QUALIFICATION_V2_CAPACITY_RETRY_LEASE_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_PHASE_LEASE_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_POST_INTENT_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_SUBMIT_RECEIPT_RECORD_TYPE",
@@ -3336,6 +3956,7 @@ __all__ = [
     "render_gpu_qualification_submit_payloads_v2",
     "replay_gpu_qualification_launch_authorization_v2",
     "resume_gpu_qualification_job_submissions_v2",
+    "retry_gpu_qualification_capacity_failures_v2",
     "submit_gpu_qualification_jobs_v2",
     "validate_gpu_qualification_submit_payloads_v2",
     "write_gpu_qualification_bootstrap_runner_v2",
