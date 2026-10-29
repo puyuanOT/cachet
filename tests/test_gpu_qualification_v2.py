@@ -35,6 +35,7 @@ from document_kv_cache.gpu_qualification_v2 import (
     build_gpu_qualification_plan_v2,
     build_gpu_runtime_verification_v2,
     build_local_preflight_evidence_v2,
+    gpu_qualification_v2_capacity_retry_attempt_id,
     gpu_qualification_v2_runtime_closure,
     pins_from_gpu_qualification_plan_v2,
     validate_gpu_qualification_plan_v2_record,
@@ -417,9 +418,42 @@ def _valid_runtime_verification() -> tuple[dict[str, Any], dict[str, Any], str]:
     return plan, record, job_id
 
 
-def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[str, Any]:
+def _ledger_terminal_actual_sha256(
+    *,
+    attempt_id: str,
+    duration_seconds: float,
+    control_plane_status_sha256: str,
+    run_id: str,
+    submit_payload_sha256: str,
+    terminal_state: str,
+) -> str:
+    return sha256(
+        qualification_v1.canonical_gpu_qualification_json(
+            {
+                "actual_cluster_duration_seconds": duration_seconds,
+                "actual_cluster_hours": duration_seconds / 3600.0,
+                "attempt_id": attempt_id,
+                "control_plane_status_sha256": control_plane_status_sha256,
+                "run_id": run_id,
+                "submit_payload_sha256": submit_payload_sha256,
+                "terminal_state": terminal_state,
+                "verification_source": "direct_databricks_runs_get",
+            }
+        ).encode()
+    ).hexdigest()
+
+
+def _valid_terminal_receipt_v2(
+    result: dict[str, Any],
+    *,
+    index: int,
+    retry_index: int = 0,
+) -> dict[str, Any]:
     duration_seconds = 60.0
     node_type_id = qualification_v1._expected_node_type(result["hardware_id"])
+    ledger_attempt_id = gpu_qualification_v2_capacity_retry_attempt_id(
+        result["reservation_attempt_id"], retry_index
+    )
     record: dict[str, Any] = {
         "authorization_source": "direct_databricks_runs_get",
         "closed_record_sha256": "",
@@ -433,10 +467,9 @@ def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[st
         "end_time_ms": 1_777_000_120_000,
         "job_id": result["job_id"],
         "ledger_actual_cluster_duration_seconds": duration_seconds,
+        "ledger_attempt_id": ledger_attempt_id,
         "ledger_id": GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX.ledger_id,
-        "ledger_terminal_actual_sha256": sha256(
-            f"terminal-{index}".encode()
-        ).hexdigest(),
+        "ledger_terminal_actual_sha256": "",
         "life_cycle_state": "TERMINATED",
         "node_type_id": node_type_id,
         "output_json": result["output_json"],
@@ -468,15 +501,61 @@ def _valid_terminal_receipt_v2(result: dict[str, Any], *, index: int) -> dict[st
         "task_run_id": str(20_000 + index),
         "task_start_time_ms": 1_777_000_030_000,
     }
+    record["ledger_terminal_actual_sha256"] = _ledger_terminal_actual_sha256(
+        attempt_id=ledger_attempt_id,
+        duration_seconds=duration_seconds,
+        control_plane_status_sha256=record["control_plane_status_sha256"],
+        run_id=record["cloud_run_id"],
+        submit_payload_sha256=record["submit_payload_sha256"],
+        terminal_state="succeeded",
+    )
     _seal_v2(record)
     return record
 
 
+def _capacity_retry_entry_v2(
+    receipt: dict[str, Any],
+    *,
+    retry_index: int,
+    run_id: str,
+) -> dict[str, Any]:
+    attempt_id = gpu_qualification_v2_capacity_retry_attempt_id(
+        receipt["reservation_attempt_id"], retry_index
+    )
+    entry: dict[str, Any] = {
+        "actual_cluster_duration_seconds": 412.5,
+        "attempt_id": attempt_id,
+        "control_plane_status_sha256": sha256(
+            f"capacity-{attempt_id}".encode()
+        ).hexdigest(),
+        "job_id": receipt["job_id"],
+        "ledger_terminal_actual_sha256": "",
+        "retry_index": retry_index,
+        "run_id": run_id,
+        "submit_payload_sha256": sha256(f"submit-{attempt_id}".encode()).hexdigest(),
+        "terminal_state": "internal_error",
+        "termination_reason": "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE",
+    }
+    entry["ledger_terminal_actual_sha256"] = _ledger_terminal_actual_sha256(
+        attempt_id=attempt_id,
+        duration_seconds=entry["actual_cluster_duration_seconds"],
+        control_plane_status_sha256=entry["control_plane_status_sha256"],
+        run_id=run_id,
+        submit_payload_sha256=entry["submit_payload_sha256"],
+        terminal_state="internal_error",
+    )
+    return entry
+
+
 def _valid_aggregate_evidence_v2(
     plan: dict[str, Any] | None = None,
+    *,
+    final_retry_indices: dict[int, int] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if plan is None:
         plan = _valid_plan()
+    retry_indices = dict(final_retry_indices or {})
+    capacity_retries: list[dict[str, Any]] = []
     plan_sha256 = plan["closed_record_sha256"]
     local = build_local_preflight_evidence_v2(
         plan_sha256=plan_sha256,
@@ -526,12 +605,26 @@ def _valid_aggregate_evidence_v2(
             measurements=measurements,
         )
         jobs.append(result)
-        terminal_receipts.append(_valid_terminal_receipt_v2(result, index=index))
+        receipt = _valid_terminal_receipt_v2(
+            result,
+            index=index,
+            retry_index=retry_indices.get(index, 0),
+        )
+        terminal_receipts.append(receipt)
+        capacity_retries.extend(
+            _capacity_retry_entry_v2(
+                receipt,
+                retry_index=retry_index,
+                run_id=str(30_000 + 100 * index + retry_index),
+            )
+            for retry_index in range(retry_indices.get(index, 0))
+        )
     cloud = _build_governed_cloud_gpu_evidence_v2(
         plan_sha256=plan_sha256,
         jobs=jobs,
         terminal_receipts=terminal_receipts,
         selected_gpu_memory_utilization=0.75,
+        capacity_retries=capacity_retries,
     )
     evidence = _build_governed_gpu_qualification_evidence_v2(
         campaign_id=PUBLICATION_CAMPAIGN_ID,
@@ -1389,6 +1482,150 @@ def test_v2_aggregate_projects_repeat_generation_and_selects_full_l40s_proof(
     _seal_v2(evidence)
 
     with pytest.raises(ValueError, match="structures are not equivalent"):
+        validate_gpu_qualification_evidence_v2_record(
+            evidence,
+            plan_record=plan,
+            expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+            expected_artifact_pins=_pins(),
+        )
+
+
+def test_v2_aggregate_discloses_capacity_retries_before_each_final_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, evidence = _valid_aggregate_evidence_v2(final_retry_indices={0: 2, 5: 1})
+    _accept_non_throughput_measurements(monkeypatch)
+
+    selection = validate_gpu_qualification_evidence_v2_record(
+        evidence,
+        plan_record=plan,
+        expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+        expected_artifact_pins=_pins(),
+    )
+
+    cloud = evidence["cloud_gpu_evidence"]
+    job_ids = [job["job_id"] for job in plan["cloud_qualification"]["jobs"]]
+    assert selection.plan_sha256 == plan["closed_record_sha256"]
+    assert [
+        (item["job_id"], item["retry_index"]) for item in cloud["capacity_retries"]
+    ] == [(job_ids[0], 0), (job_ids[0], 1), (job_ids[5], 0)]
+    receipt = cloud["terminal_receipts"][0]
+    assert receipt["ledger_attempt_id"] == (
+        f"{receipt['reservation_attempt_id']}-capacity-retry-02"
+    )
+    assert cloud["terminal_receipts"][1]["ledger_attempt_id"] == (
+        cloud["terminal_receipts"][1]["reservation_attempt_id"]
+    )
+
+
+def test_v2_receipt_projection_rebinds_the_runner_attempt_zero_ledger_digest() -> None:
+    _plan, evidence = _valid_aggregate_evidence_v2(final_retry_indices={0: 3})
+    cloud = evidence["cloud_gpu_evidence"]
+    receipt = cloud["terminal_receipts"][0]
+    result = cloud["jobs"][0]
+
+    projected = qualification_v2._project_terminal_receipt_v2_to_v1(
+        receipt,
+        projected_result=result,
+    )
+
+    assert "ledger_attempt_id" not in projected
+    assert projected["ledger_terminal_actual_sha256"] == (
+        _ledger_terminal_actual_sha256(
+            attempt_id=result["reservation_attempt_id"],
+            duration_seconds=60.0,
+            control_plane_status_sha256=receipt["control_plane_status_sha256"],
+            run_id=result["cloud_run_id"],
+            submit_payload_sha256=receipt["submit_payload_sha256"],
+            terminal_state="succeeded",
+        )
+    )
+    assert projected["ledger_terminal_actual_sha256"] != (
+        receipt["ledger_terminal_actual_sha256"]
+    )
+
+
+def _rebind_first_receipt_ledger_attempt(cloud: dict[str, Any], attempt: str) -> None:
+    receipt = cloud["terminal_receipts"][0]
+    receipt["ledger_attempt_id"] = attempt.format(base=receipt["reservation_attempt_id"])
+    _seal_v2(receipt)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda cloud: cloud["capacity_retries"].pop(0),
+            "do not close each job's failed attempts",
+        ),
+        (
+            lambda cloud: cloud["capacity_retries"].reverse(),
+            "do not close each job's failed attempts",
+        ),
+        (
+            lambda cloud: cloud["capacity_retries"][0].update(
+                termination_reason="DRIVER_UNREACHABLE"
+            ),
+            "not a bound capacity failure",
+        ),
+        (
+            lambda cloud: cloud["capacity_retries"][1].update(
+                terminal_state="succeeded"
+            ),
+            "not a bound capacity failure",
+        ),
+        (
+            lambda cloud: cloud["capacity_retries"][0].update(
+                actual_cluster_duration_seconds=1.0
+            ),
+            "not a bound capacity failure",
+        ),
+        (
+            lambda cloud: cloud["capacity_retries"][0].update(
+                run_id=cloud["terminal_receipts"][0]["cloud_run_id"]
+            ),
+            "run IDs must be unique",
+        ),
+        (
+            lambda cloud: cloud["capacity_retries"][0].update(extra=True),
+            "capacity retry v2 does not use the closed schema",
+        ),
+        (
+            lambda cloud: _rebind_first_receipt_ledger_attempt(cloud, "{base}"),
+            "does not bind its ledger attempt",
+        ),
+        (
+            lambda cloud: _rebind_first_receipt_ledger_attempt(
+                cloud, "{base}-capacity-retry-16"
+            ),
+            "neither the job attempt nor a capacity retry",
+        ),
+    ],
+    ids=[
+        "omitted",
+        "reordered",
+        "non-capacity-reason",
+        "succeeded-retry",
+        "unbound-ledger-digest",
+        "reused-run-id",
+        "open-schema",
+        "receipt-hides-its-retry",
+        "attempt-bound",
+    ],
+)
+def test_v2_aggregate_rejects_unbound_capacity_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Any,
+    message: str,
+) -> None:
+    plan, evidence = _valid_aggregate_evidence_v2(final_retry_indices={0: 2})
+    _accept_non_throughput_measurements(monkeypatch)
+    cloud = evidence["cloud_gpu_evidence"]
+    mutate(cloud)
+    _seal_v2(cloud)
+    _seal_v2(evidence)
+
+    with pytest.raises(ValueError, match=message):
         validate_gpu_qualification_evidence_v2_record(
             evidence,
             plan_record=plan,

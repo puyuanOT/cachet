@@ -23,6 +23,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksLedgerPrefix,
     databricks_ledger_prefix_from_record,
 )
+from document_kv_cache.databricks_runs import DATABRICKS_CAPACITY_TERMINATION_REASONS
 import document_kv_cache.gpu_qualification as qualification_v1
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_PATCHED_WHEEL_SHA256,
@@ -84,6 +85,12 @@ LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_RECORD_TYPE: Final = (
 )
 LOCKED_RUNTIME_V2_PACKAGE_INSTALLATION_SCHEMA_VERSION: Final = 2
 GPU_QUALIFICATION_V2_SCHEMA_VERSION: Final = 2
+# A planned job runs at most this many ledgered attempts.  Every attempt before
+# its last must be a never-started capacity failure, resubmitted with the same
+# payload under its own ledger attempt.
+GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS: Final = 16
+_CAPACITY_RETRY_ATTEMPT_SUFFIX: Final = "-capacity-retry-"
+_CAPACITY_RETRY_TERMINAL_STATES: Final = frozenset({"failed", "internal_error"})
 GPU_QUALIFICATION_V2_CACHET_PACKAGE_VERSION: Final = "0.2.0"
 GPU_QUALIFICATION_V2_ARTIFACT_KEYS: Final = (
     "cachet_source_tree_sha256",
@@ -194,6 +201,7 @@ _CLOUD_EVIDENCE_KEYS: Final = frozenset(
         "all_planned_jobs_succeeded",
         "authorization_source",
         "auto_backend_diagnostics_only",
+        "capacity_retries",
         "closed_record_sha256",
         "job_count",
         "jobs",
@@ -249,6 +257,7 @@ _TERMINAL_RECEIPT_KEYS: Final = frozenset(
         "end_time_ms",
         "job_id",
         "ledger_actual_cluster_duration_seconds",
+        "ledger_attempt_id",
         "ledger_id",
         "ledger_terminal_actual_sha256",
         "life_cycle_state",
@@ -274,6 +283,20 @@ _TERMINAL_RECEIPT_KEYS: Final = frozenset(
         "task_result_state",
         "task_run_id",
         "task_start_time_ms",
+    }
+)
+_CAPACITY_RETRY_KEYS: Final = frozenset(
+    {
+        "actual_cluster_duration_seconds",
+        "attempt_id",
+        "control_plane_status_sha256",
+        "job_id",
+        "ledger_terminal_actual_sha256",
+        "retry_index",
+        "run_id",
+        "submit_payload_sha256",
+        "terminal_state",
+        "termination_reason",
     }
 )
 _VLLM_PATCH_MEMBER_SHA256: Final = MappingProxyType(
@@ -1060,6 +1083,7 @@ def _build_governed_cloud_gpu_evidence_v2(
     jobs: Sequence[Mapping[str, Any]],
     terminal_receipts: Sequence[Mapping[str, Any]],
     selected_gpu_memory_utilization: float,
+    capacity_retries: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Seal collector-owned v2 cloud evidence from native v2 records."""
 
@@ -1070,6 +1094,7 @@ def _build_governed_cloud_gpu_evidence_v2(
         "all_planned_jobs_succeeded": True,
         "authorization_source": "direct_databricks_runs_get",
         "auto_backend_diagnostics_only": True,
+        "capacity_retries": [dict(item) for item in capacity_retries],
         "closed_record_sha256": "",
         "job_count": len(job_records),
         "jobs": job_records,
@@ -1251,6 +1276,12 @@ def _validate_cloud_gpu_evidence_v2(
                 plan_record=plan_record,
             )
         )
+    _validate_capacity_retries_v2(
+        normalized.get("capacity_retries"),
+        plan_jobs=plan_jobs,
+        plan_sha256=plan_sha256,
+        terminal_receipts=validated_receipts,
+    )
 
     projected_jobs = [
         _project_gpu_job_result_v2_to_v1(
@@ -1264,6 +1295,7 @@ def _validate_cloud_gpu_evidence_v2(
         for receipt, result in zip(validated_receipts, projected_jobs, strict=True)
     ]
     projected_cloud = dict(normalized)
+    projected_cloud.pop("capacity_retries")
     projected_cloud["jobs"] = projected_jobs
     projected_cloud["record_type"] = (
         qualification_v1.GPU_QUALIFICATION_CLOUD_EVIDENCE_RECORD_TYPE
@@ -1318,7 +1350,166 @@ def _validate_terminal_receipt_v2_original(
     ).hexdigest()
     if normalized.get("result_file_sha256") != expected_result_file_sha256:
         raise ValueError("terminal receipt v2 result_file_sha256 differs")
+    _capacity_retry_index_v2(
+        normalized.get("ledger_attempt_id"),
+        attempt_id=qualification_v1._expected_reservation_attempt_id(  # noqa: SLF001
+            str(plan_record.get("closed_record_sha256")),
+            str(planned_job.get("job_id")),
+        ),
+    )
+    for field_name in (
+        "control_plane_status_sha256",
+        "ledger_terminal_actual_sha256",
+        "submit_payload_sha256",
+    ):
+        _require_sha256(normalized.get(field_name), f"terminal receipt v2 {field_name}")
+    if normalized.get("ledger_terminal_actual_sha256") != (
+        _ledger_terminal_actual_sha256_v2(
+            normalized,
+            attempt_id=str(normalized["ledger_attempt_id"]),
+            duration_field="ledger_actual_cluster_duration_seconds",
+            run_id_field="cloud_run_id",
+            terminal_state="succeeded",
+        )
+    ):
+        raise ValueError("terminal receipt v2 does not bind its ledger attempt")
     return normalized
+
+
+def gpu_qualification_v2_capacity_retry_attempt_id(
+    attempt_id: str,
+    retry_index: int,
+) -> str:
+    """Return the ledger attempt ID of a job's *retry_index*-th capacity retry.
+
+    Index zero is the job's attempt-zero ID itself, which its runner also
+    reports on every retry because the retried payload is otherwise unchanged.
+    """
+
+    base = _required_string(attempt_id, "attempt_id")
+    if (
+        type(retry_index) is not int
+        or not 0 <= retry_index < GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS
+    ):
+        raise ValueError("GPU qualification v2 capacity retry index is out of bounds")
+    if retry_index == 0:
+        return base
+    return f"{base}{_CAPACITY_RETRY_ATTEMPT_SUFFIX}{retry_index:02d}"
+
+
+def _capacity_retry_index_v2(ledger_attempt_id: Any, *, attempt_id: str) -> int:
+    for retry_index in range(GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS):
+        if ledger_attempt_id == gpu_qualification_v2_capacity_retry_attempt_id(
+            attempt_id, retry_index
+        ):
+            return retry_index
+    raise ValueError("ledger attempt is neither the job attempt nor a capacity retry")
+
+
+def _ledger_terminal_actual_sha256_v2(
+    record: Mapping[str, Any],
+    *,
+    attempt_id: str,
+    duration_field: str,
+    run_id_field: str,
+    terminal_state: str,
+) -> str:
+    duration = record.get(duration_field)
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+        or duration < 0
+    ):
+        raise ValueError(f"{duration_field} must be a finite non-negative number")
+    ledger_terminal_actual = {
+        "actual_cluster_duration_seconds": duration,
+        "actual_cluster_hours": duration / 3600.0,
+        "attempt_id": attempt_id,
+        "control_plane_status_sha256": record.get("control_plane_status_sha256"),
+        "run_id": record.get(run_id_field),
+        "submit_payload_sha256": record.get("submit_payload_sha256"),
+        "terminal_state": terminal_state,
+        "verification_source": "direct_databricks_runs_get",
+    }
+    return sha256(
+        canonical_gpu_qualification_json(ledger_terminal_actual).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_capacity_retries_v2(
+    value: Any,
+    *,
+    plan_jobs: Sequence[Mapping[str, Any]],
+    plan_sha256: str,
+    terminal_receipts: Sequence[Mapping[str, Any]],
+) -> None:
+    """Require each job's capacity failures to precede its final ledger attempt.
+
+    A job whose successful attempt is retry ``k`` must disclose exactly its
+    failed attempts ``0..k-1``, in plan order, each a never-started capacity
+    failure bound to the ledger terminal event it was reconciled into.
+    """
+
+    entries = _record_sequence(value, "cloud GPU capacity retries v2")
+    attempt_ids = {
+        str(job["job_id"]): qualification_v1._expected_reservation_attempt_id(  # noqa: SLF001
+            plan_sha256, str(job["job_id"])
+        )
+        for job in plan_jobs
+    }
+    expected_positions: list[tuple[str, int]] = []
+    run_ids = {str(receipt.get("cloud_run_id")) for receipt in terminal_receipts}
+    for planned_job, receipt in zip(plan_jobs, terminal_receipts, strict=True):
+        job_id = str(planned_job["job_id"])
+        final_index = _capacity_retry_index_v2(
+            receipt.get("ledger_attempt_id"), attempt_id=attempt_ids[job_id]
+        )
+        expected_positions.extend((job_id, index) for index in range(final_index))
+    for entry in entries:
+        _require_exact_keys(entry, _CAPACITY_RETRY_KEYS, "cloud GPU capacity retry v2")
+        if type(entry.get("retry_index")) is not int or entry.get("job_id") not in (
+            attempt_ids
+        ):
+            raise ValueError("cloud GPU capacity retry v2 identity is invalid")
+    if [(entry["job_id"], entry["retry_index"]) for entry in entries] != (
+        expected_positions
+    ):
+        raise ValueError(
+            "cloud GPU capacity retries v2 do not close each job's failed attempts"
+        )
+    for entry in entries:
+        attempt_id = gpu_qualification_v2_capacity_retry_attempt_id(
+            attempt_ids[entry["job_id"]], entry["retry_index"]
+        )
+        run_id = qualification_v1._canonical_databricks_run_id(  # noqa: SLF001
+            entry.get("run_id"), "cloud GPU capacity retry v2 run_id"
+        )
+        if run_id in run_ids:
+            raise ValueError("cloud GPU capacity retry v2 run IDs must be unique")
+        run_ids.add(run_id)
+        for field_name in (
+            "control_plane_status_sha256",
+            "ledger_terminal_actual_sha256",
+            "submit_payload_sha256",
+        ):
+            _require_sha256(entry.get(field_name), f"capacity retry v2 {field_name}")
+        terminal_state = entry.get("terminal_state")
+        if (
+            entry.get("attempt_id") != attempt_id
+            or terminal_state not in _CAPACITY_RETRY_TERMINAL_STATES
+            or entry.get("termination_reason")
+            not in DATABRICKS_CAPACITY_TERMINATION_REASONS
+            or entry.get("ledger_terminal_actual_sha256")
+            != _ledger_terminal_actual_sha256_v2(
+                entry,
+                attempt_id=attempt_id,
+                duration_field="actual_cluster_duration_seconds",
+                run_id_field="run_id",
+                terminal_state=str(terminal_state),
+            )
+        ):
+            raise ValueError("cloud GPU capacity retry v2 is not a bound capacity failure")
 
 
 def _project_terminal_receipt_v2_to_v1(
@@ -1326,9 +1517,22 @@ def _project_terminal_receipt_v2_to_v1(
     *,
     projected_result: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Create an ephemeral v1 receipt for an already-validated v2 receipt."""
+    """Create an ephemeral v1 receipt for an already-validated v2 receipt.
+
+    v1 binds the ledger terminal event to the attempt-zero ID the runner
+    reports, so the projection re-derives that digest after the v2 receipt has
+    proved the event under its actual capacity-retry ledger attempt.
+    """
 
     projected = dict(receipt)
+    projected.pop("ledger_attempt_id")
+    projected["ledger_terminal_actual_sha256"] = _ledger_terminal_actual_sha256_v2(
+        receipt,
+        attempt_id=str(receipt["reservation_attempt_id"]),
+        duration_field="ledger_actual_cluster_duration_seconds",
+        run_id_field="cloud_run_id",
+        terminal_state="succeeded",
+    )
     projected["record_type"] = (
         qualification_v1.GPU_QUALIFICATION_TERMINAL_RECEIPT_RECORD_TYPE
     )
@@ -1598,6 +1802,7 @@ __all__ = [
     "GPU_QUALIFICATION_V2_JOB_RESULT_RECORD_TYPE",
     "GPU_QUALIFICATION_V2_LOCAL_CHECK_IDS",
     "GPU_QUALIFICATION_V2_LOCAL_PREFLIGHT_RECORD_TYPE",
+    "GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS",
     "GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX",
     "GPU_QUALIFICATION_V2_OPENING_TERMINAL_GPU_HOURS",
     "GPU_QUALIFICATION_V2_PLAN_RECORD_TYPE",
@@ -1616,6 +1821,7 @@ __all__ = [
     "build_gpu_qualification_plan_v2",
     "build_gpu_runtime_verification_v2",
     "build_local_preflight_evidence_v2",
+    "gpu_qualification_v2_capacity_retry_attempt_id",
     "gpu_qualification_v2_runtime_closure",
     "pins_from_gpu_qualification_plan_v2",
     "validate_gpu_job_result_v2_record",

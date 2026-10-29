@@ -642,6 +642,49 @@ is `FAILED` under the same all-jobs, attempt-zero contract, its plan cannot be
 launched again, and its successor binds a fresh source closure and this
 complete prefix as its predecessor.
 
+The vLLM 0.30.0 qualification of source revision `88c7a2e` is the last batch
+judged under that contract and is retained as non-authorizing evidence. Its
+plan is
+`26af46e31f92451d61c184a1a4e28aa7fe34904d68d75bd42d3222f6b7e5bc79`,
+its source tree is
+`509fcedfff91b4776432a9b3e78b30131375da54505d7918ec8e743f97cdd045`,
+and its phase batch is
+`b0a95e863de2b87af5a45cccfcf6bf1a05fc1a18273170330c370e817ec1349c`.
+Ten attempt-zero jobs succeeded, but four clusters never started: A10G
+matched-token-logit run `879902182499751`, L4 32k/c4 runs `721350934202143`
+(GMU 0.70) and `1109959219787741` (GMU 0.75), and L40S generation-throughput
+run `371889181014954`. Their direct `runs/get` records show
+`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE` for three of them and
+`CLUSTER_OPERATION_TIMEOUT` for the GMU 0.75 run, and no GPU result artifact
+was written. The fourteen terminal attempts consumed 4.786669444444444
+GPU-hours, 1.9332041666666666 of them spent waiting on the four clusters that
+never started, and closed the exact 336/289/336 prefix
+`6d6a15abf651525bd163250967d77d88fb5f90f2821627ddd9e6dfbfb0b031e2`
+at 814.6162972222218 terminal GPU-hours, with zero active reservations and
+1209.3837027777781 hours remaining under the raised 2,024-hour cap. The batch
+is `FAILED`, its plan cannot be launched again, and its successor binds a fresh
+source closure and this complete prefix as its predecessor.
+
+Successor qualification batches retry capacity failures under the rule the
+full-score phases already use. Once a round reaches terminal closure, the
+controller classifies each failed job from its direct `runs/get` record. A job
+is a capacity failure only when its task never reached a Spark context, ran
+for zero execution time, and Databricks terminated its cluster with
+`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE` or `CLUSTER_OPERATION_TIMEOUT`.
+When every failed job is a capacity failure, the controller seals a retry
+round lease and reserves fresh `{attempt}-capacity-retry-NN` ledger attempts
+for exactly those jobs at the closed round's terminal prefix, under the usual
+cap and headroom admission. Each retry resubmits the job's attempt-zero
+payload with only its idempotency token rebound to the new attempt. Rounds
+continue until every job succeeds. A single non-capacity failure stops the
+chain and fails the batch, as does a job reaching 16 attempts. The
+qualification evidence lists every retried attempt with its run ID and
+termination reason, and the launch authorization binds both the attempt-zero
+predecessor prefix and the final round's terminal prefix. The 0.30.0
+publication report discloses the retried attempts and their GPU-hours as
+`ledger.qualification_capacity_retries`, recomputed from the ledger between
+that predecessor prefix and the latency collection prefix.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local

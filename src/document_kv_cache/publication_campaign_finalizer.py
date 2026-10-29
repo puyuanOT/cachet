@@ -67,8 +67,13 @@ from document_kv_cache.full_score_execution import (
     require_full_score_chain_restart_ledger,
     validate_full_score_aggregate_record,
 )
+from document_kv_cache.gpu_qualification import GPU_QUALIFICATION_MAX_CLOUD_JOBS
 from document_kv_cache.gpu_qualification_databricks import (
     GPUQualificationLaunchAuthorization,
+)
+from document_kv_cache.gpu_qualification_v2 import (
+    GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS,
+    gpu_qualification_v2_capacity_retry_attempt_id,
 )
 from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
@@ -244,7 +249,9 @@ _VLLM_0300_LEDGER_KEYS = _LEDGER_KEYS | {
     "full_score_abandoned_attempts",
     "full_score_capacity_retries",
     "latency_recovered_balance",
+    "qualification_capacity_retries",
 }
+_QUALIFICATION_V2_WORKLOAD_PREFIX = "gpuq-v2/"
 _CAP_RAISE_KEYS = frozenset(
     {
         "from_cap_cluster_hours",
@@ -618,6 +625,7 @@ def finalize_vllm_0300_publication_campaign(
         PublicationLatencyMultiPlanCollectionAuthorization
     ),
     latency_summary_record: Mapping[str, Any],
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     full_score_inventory: FullScoreInventory,
     full_score_shard_plan_record: Mapping[str, Any],
     full_score_execution_plan_record: Mapping[str, Any],
@@ -631,7 +639,8 @@ def finalize_vllm_0300_publication_campaign(
 
     Latency evidence is the collection that binds each frozen job to the closed
     job record it ran under, so no single latency execution plan is replayed.
-    The report discloses the plan set and how each job is tied to the ledger.
+    The report discloses the plan set and how each job is tied to the ledger,
+    and the never-started GPU qualification attempts that were resubmitted.
     """
 
     if type(latency_collection_authorization) is not (
@@ -696,6 +705,7 @@ def finalize_vllm_0300_publication_campaign(
     ledger_record = _validated_multi_plan_campaign_ledger_projection(
         latency_collection_authorization=latency_collection_authorization,
         campaign_plan_record=campaign_plan_record,
+        qualification_launch_authorization=qualification_launch_authorization,
         full_score_execution_plan_record=full_score_execution_plan_record,
         full_score_aggregate_record=recomputed_full_score_aggregate,
         final_consumer_authorization=final_consumer_authorization,
@@ -727,6 +737,7 @@ def validate_vllm_0300_publication_finalization(
         PublicationLatencyMultiPlanCollectionAuthorization
     ),
     latency_summary_record: Mapping[str, Any],
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     full_score_inventory: FullScoreInventory,
     full_score_shard_plan_record: Mapping[str, Any],
     full_score_execution_plan_record: Mapping[str, Any],
@@ -752,6 +763,7 @@ def validate_vllm_0300_publication_finalization(
         campaign_plan_record=campaign_plan_record,
         latency_collection_authorization=latency_collection_authorization,
         latency_summary_record=latency_summary_record,
+        qualification_launch_authorization=qualification_launch_authorization,
         full_score_inventory=full_score_inventory,
         full_score_shard_plan_record=full_score_shard_plan_record,
         full_score_execution_plan_record=full_score_execution_plan_record,
@@ -797,6 +809,7 @@ def load_vllm_0300_publication_finalization(
         PublicationLatencyMultiPlanCollectionAuthorization
     ),
     latency_summary_record: Mapping[str, Any],
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     full_score_inventory: FullScoreInventory,
     full_score_shard_plan_record: Mapping[str, Any],
     full_score_execution_plan_record: Mapping[str, Any],
@@ -815,6 +828,7 @@ def load_vllm_0300_publication_finalization(
             campaign_plan_record=campaign_plan_record,
             latency_collection_authorization=latency_collection_authorization,
             latency_summary_record=latency_summary_record,
+            qualification_launch_authorization=qualification_launch_authorization,
             full_score_inventory=full_score_inventory,
             full_score_shard_plan_record=full_score_shard_plan_record,
             full_score_execution_plan_record=full_score_execution_plan_record,
@@ -1253,6 +1267,7 @@ def _validated_multi_plan_campaign_ledger_projection(
         PublicationLatencyMultiPlanCollectionAuthorization
     ),
     campaign_plan_record: Mapping[str, Any],
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
     full_score_execution_plan_record: Mapping[str, Any],
     full_score_aggregate_record: Mapping[str, Any],
     final_consumer_authorization: FullScorePhaseAuthorization,
@@ -1260,6 +1275,13 @@ def _validated_multi_plan_campaign_ledger_projection(
 ) -> dict[str, Any]:
     if type(final_consumer_authorization) is not FullScorePhaseAuthorization:
         raise TypeError("final_consumer_authorization has the wrong authority type")
+    if (
+        type(qualification_launch_authorization)
+        is not GPUQualificationLaunchAuthorization
+    ):
+        raise TypeError(
+            "qualification_launch_authorization has the wrong authority type"
+        )
     latency_prefix = require_publication_latency_multi_plan_collection_authorization(
         latency_collection_authorization,
         campaign_plan_record=campaign_plan_record,
@@ -1285,7 +1307,113 @@ def _validated_multi_plan_campaign_ledger_projection(
         "attempt_count": _required_nonnegative_int(recovered, "attempt_count"),
         "cluster_hours": _recovered_cluster_hours(recovered),
     }
+    projection["qualification_capacity_retries"] = _qualification_capacity_retries(
+        qualification_launch_authorization,
+        latency_prefix=latency_prefix,
+        ledger_path=ledger_path,
+    )
     return projection
+
+
+def _qualification_capacity_retries(
+    qualification_launch_authorization: GPUQualificationLaunchAuthorization,
+    *,
+    latency_prefix: DatabricksLedgerPrefix,
+    ledger_path: str | Path,
+) -> dict[str, Any]:
+    """Return the attempts the GPU qualification resubmitted, and their hours.
+
+    The qualification spans the contiguous ledger range from its opening
+    predecessor to its terminal prefix, and must be the last qualification
+    before the latency prefix.  Each job's earlier attempts must have failed
+    and its last must have succeeded.  Whether each failure was a never-started
+    capacity failure is proved by the qualification replay that issued the
+    authority, which re-derives every retry round from its closed predecessor.
+    """
+
+    qualification = qualification_launch_authorization
+    opening = qualification.predecessor_prefix
+    terminal = qualification.ledger_prefix
+    live = read_databricks_cluster_hour_ledger_json(ledger_path)
+    if (
+        qualification.ledger_id != live.ledger_id
+        or qualification.ledger_path_sha256 != databricks_ledger_path_sha256(ledger_path)
+        or not (
+            opening.reservation_count
+            < terminal.reservation_count
+            <= latency_prefix.reservation_count
+        )
+        or any(
+            databricks_ledger_prefix_at_counts(
+                live,
+                reservation_count=prefix.reservation_count,
+                submission_receipt_count=prefix.submission_receipt_count,
+                terminal_actual_count=prefix.terminal_actual_count,
+            )
+            != prefix
+            for prefix in (opening, terminal, latency_prefix)
+        )
+    ):
+        raise ValueError("qualification authority is not a ledger prefix before latency")
+    reservations = live.reservations[
+        opening.reservation_count : terminal.reservation_count
+    ]
+    receipts = live.submission_receipts[
+        opening.submission_receipt_count : terminal.submission_receipt_count
+    ]
+    terminals = live.terminal_actuals[
+        opening.terminal_actual_count : terminal.terminal_actual_count
+    ]
+    attempt_ids = [item.attempt_id for item in reservations]
+    plan_workload_prefix = (
+        f"{_QUALIFICATION_V2_WORKLOAD_PREFIX}{qualification.plan_sha256[:16]}/"
+    )
+    if (
+        [item.attempt_id for item in receipts] != attempt_ids
+        or [item.attempt_id for item in terminals] != attempt_ids
+        or any(
+            not item.workload_id.startswith(plan_workload_prefix)
+            for item in reservations
+        )
+    ):
+        raise ValueError("qualification ledger range contains an unrelated append")
+    if any(
+        item.workload_id.startswith(_QUALIFICATION_V2_WORKLOAD_PREFIX)
+        for item in live.reservations[
+            terminal.reservation_count : latency_prefix.reservation_count
+        ]
+    ):
+        raise ValueError("a later GPU qualification precedes the latency prefix")
+    jobs: dict[str, list[int]] = {}
+    for index, reservation in enumerate(reservations):
+        jobs.setdefault(reservation.workload_id, []).append(index)
+    if len(jobs) > GPU_QUALIFICATION_MAX_CLOUD_JOBS:
+        raise ValueError("qualification ledger range has too many jobs")
+    retried: list[int] = []
+    for indices in jobs.values():
+        if (
+            len(indices) > GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS
+            or [reservations[index].attempt_id for index in indices]
+            != [
+                gpu_qualification_v2_capacity_retry_attempt_id(
+                    reservations[indices[0]].attempt_id, retry_index
+                )
+                for retry_index in range(len(indices))
+            ]
+            or terminals[indices[-1]].terminal_state != "succeeded"
+            or any(
+                terminals[index].terminal_state not in {"failed", "internal_error"}
+                for index in indices[:-1]
+            )
+        ):
+            raise ValueError("qualification attempts are not capacity retries")
+        retried.extend(indices[:-1])
+    return {
+        "attempt_count": len(retried),
+        "cluster_hours": math.fsum(
+            terminals[index].actual_cluster_hours for index in retried
+        ),
+    }
 
 
 def _campaign_ledger_projection_after_latency(
@@ -1776,7 +1904,12 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
         full_score_prefix_record
     )
     retry_attempt_count = (
-        _validated_report_capacity_retries(ledger.get("full_score_capacity_retries"))
+        _validated_report_capacity_retries(
+            ledger.get("full_score_capacity_retries"),
+            label="full-score",
+            max_attempt_count=PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES
+            * (FULL_SCORE_PHASE_MAX_ATTEMPTS - 1),
+        )
         if multi_plan
         else 0
     )
@@ -1854,19 +1987,33 @@ def _validate_report_envelope(record: Mapping[str, Any]) -> None:
         _validate_report_abandoned_attempts(
             ledger.get("full_score_abandoned_attempts")
         )
+        # Qualification precedes the latency prefix, so no report prefix count
+        # can cross-check its retries; the finalizer derives them from the
+        # live ledger range the qualification authority closed.
+        _validated_report_capacity_retries(
+            ledger.get("qualification_capacity_retries"),
+            label="qualification",
+            max_attempt_count=GPU_QUALIFICATION_MAX_CLOUD_JOBS
+            * (GPU_QUALIFICATION_V2_MAX_JOB_ATTEMPTS - 1),
+        )
         _validate_latency_provenance_projection(
             _mapping(record, "latency_provenance"),
             recovered_balance=_mapping(ledger, "latency_recovered_balance"),
         )
 
 
-def _validated_report_capacity_retries(value: Any) -> int:
+def _validated_report_capacity_retries(
+    value: Any,
+    *,
+    label: str,
+    max_attempt_count: int,
+) -> int:
     if not isinstance(value, Mapping):
-        raise ValueError("report full-score capacity retries must be an object")
+        raise ValueError(f"report {label} capacity retries must be an object")
     _require_exact_keys(
         value,
         _CAPACITY_RETRY_KEYS,
-        "report full-score capacity retries",
+        f"report {label} capacity retries",
     )
     attempt_count = _required_nonnegative_int(value, "attempt_count")
     cluster_hours = value.get("cluster_hours")
@@ -1875,10 +2022,9 @@ def _validated_report_capacity_retries(value: Any) -> int:
         or not math.isfinite(cluster_hours)
         or cluster_hours < 0.0
         or (attempt_count == 0 and cluster_hours != 0.0)
-        or attempt_count
-        > PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES * (FULL_SCORE_PHASE_MAX_ATTEMPTS - 1)
+        or attempt_count > max_attempt_count
     ):
-        raise ValueError("report full-score capacity retries are invalid")
+        raise ValueError(f"report {label} capacity retries are invalid")
     return attempt_count
 
 
