@@ -1944,6 +1944,18 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "`{attempt}-capacity-retry-NN` ledger attempts" in compact_ledger_doc
     assert "as does a job reaching 16 attempts" in compact_ledger_doc
     assert "`ledger.qualification_capacity_retries`" in compact_ledger_doc
+    assert "The latest abandoned attempt may be a succeeded producer" in (
+        compact_ledger_doc
+    )
+    assert "`ledger.full_score_abandoned_attempts`" in compact_ledger_doc
+    assert "fifteen wave-zero producer attempts from four abandoned chains" in (
+        compact_ledger_doc
+    )
+    assert "vLLM 0.30.0 qualification of source revision `8323fc7`" in (
+        compact_ledger_doc
+    )
+    assert "exact 351/304/351 prefix" in compact_ledger_doc
+    assert "818.6004038888888 terminal GPU-hours" in compact_ledger_doc
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -1975,6 +1987,11 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "509fcedfff91b4776432a9b3e78b30131375da54505d7918ec8e743f97cdd045",
         "b0a95e863de2b87af5a45cccfcf6bf1a05fc1a18273170330c370e817ec1349c",
         "6d6a15abf651525bd163250967d77d88fb5f90f2821627ddd9e6dfbfb0b031e2",
+        "b3cab611b21088663d9eb312f43d9be4d5bd264fc03d4e783915137d0b8e2c14",
+        "cc545c39839327b97105ef3a14b7f8191308babc456865019c9ef9e8dcc91cb6",
+        "508782899e93c7f016fbb23d8ccc38c0d2859c88ea46244d4ddbcc5b35d6c1e8",
+        "43090efae61bee7b7709275ca06d6ae5d58b67a21a2ed831f0279b3074caa415",
+        "738d42f6b1406e8688b72c991328b5e02783226febf87cc153e5a0f1a35b1af0",
     ):
         assert digest in compact_ledger_doc
     assert (
