@@ -11,12 +11,20 @@ from typing import Any
 
 import pytest
 
+from qualification_ledger_fixture import write_opening_ledger
+
+import document_kv_cache.databricks_resource_ledger as ledger_api
+import document_kv_cache.gpu_qualification_databricks as gpu_qualification_databricks
 import document_kv_cache.publication_campaign_finalizer as campaign_finalizer
 import document_kv_cache.publication_campaign_tables as campaign_tables
 from document_kv_cache.benchmark_gates import (
     BENCHMARK_PUBLICATION_GATE_RECORD_TYPE,
 )
 from document_kv_cache.benchmarks import NIAH_CELL_IDS, SUPPORTED_V1_DATASETS
+from document_kv_cache.gpu_qualification import GPUQualificationSelection
+from document_kv_cache.gpu_qualification_v2 import (
+    gpu_qualification_v2_capacity_retry_attempt_id,
+)
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -2455,6 +2463,10 @@ def _synthetic_vllm_0300_report_inputs() -> dict[str, Any]:
         "attempt_count": 47,
         "cluster_hours": 552.0,
     }
+    ledger["qualification_capacity_retries"] = {
+        "attempt_count": 0,
+        "cluster_hours": 0.0,
+    }
     return {
         **inputs,
         "campaign_plan_record": campaign_plan,
@@ -2933,12 +2945,31 @@ def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
         "require_publication_latency_multi_plan_collection_authorization",
         require_multi_plan,
     )
+
+    class FakeQualificationAuthorization:
+        pass
+
+    qualification = FakeQualificationAuthorization()
+    qualification_calls: list[tuple[Any, dict[str, Any]]] = []
+
+    def qualification_retries(observed: Any, **observed_kwargs: Any) -> Any:
+        qualification_calls.append((observed, observed_kwargs))
+        return {"attempt_count": 3, "cluster_hours": 0.75}
+
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "GPUQualificationLaunchAuthorization",
+        FakeQualificationAuthorization,
+    )
+    monkeypatch.setattr(
+        campaign_finalizer, "_qualification_capacity_retries", qualification_retries
+    )
     campaign_plan = {"closed_record_sha256": _digest("campaign-plan")}
     multi_plan_kwargs = {
         key: value
         for key, value in kwargs.items()
         if key != "latency_execution_plan_record"
-    }
+    } | {"qualification_launch_authorization": qualification}
 
     projection = campaign_finalizer._validated_multi_plan_campaign_ledger_projection(
         campaign_plan_record=campaign_plan,
@@ -2950,6 +2981,7 @@ def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
         "full_score_abandoned_attempts": {"attempt_count": 0, "cluster_hours": 0.0},
         "full_score_capacity_retries": {"attempt_count": 0, "cluster_hours": 0.0},
         "latency_recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0},
+        "qualification_capacity_retries": {"attempt_count": 3, "cluster_hours": 0.75},
     }
     assert calls == [
         {
@@ -2958,11 +2990,24 @@ def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
             "require_complete_current_prefix": False,
         }
     ]
-    with pytest.raises(TypeError, match="wrong authority type"):
-        campaign_finalizer._validated_multi_plan_campaign_ledger_projection(
-            campaign_plan_record=campaign_plan,
-            **{**multi_plan_kwargs, "final_consumer_authorization": object()},
+    assert qualification_calls == [
+        (
+            qualification,
+            {
+                "latency_prefix": case["latency_prefix"],
+                "ledger_path": kwargs["ledger_path"],
+            },
         )
+    ]
+    for authority_name in (
+        "final_consumer_authorization",
+        "qualification_launch_authorization",
+    ):
+        with pytest.raises(TypeError, match="wrong authority type"):
+            campaign_finalizer._validated_multi_plan_campaign_ledger_projection(
+                campaign_plan_record=campaign_plan,
+                **{**multi_plan_kwargs, authority_name: object()},
+            )
 
 
 def test_vllm_0300_finalizer_replays_the_multi_plan_authority(
@@ -3040,8 +3085,11 @@ def test_vllm_0300_finalizer_replays_the_multi_plan_authority(
         replayed["full_score"] = deepcopy(authoritative_full_score)
         return replayed["full_score"]
 
+    qualification = object()
+
     def project_ledger(**kwargs: Any) -> dict[str, Any]:
         assert kwargs["latency_collection_authorization"] is authorization
+        assert kwargs["qualification_launch_authorization"] is qualification
         assert kwargs["full_score_aggregate_record"] is replayed["full_score"]
         return deepcopy(inputs["ledger_record"])
 
@@ -3067,6 +3115,7 @@ def test_vllm_0300_finalizer_replays_the_multi_plan_authority(
         "campaign_plan_record": inputs["campaign_plan_record"],
         "latency_collection_authorization": authorization,
         "latency_summary_record": deepcopy(authoritative_latency),
+        "qualification_launch_authorization": qualification,
         "full_score_inventory": inventory,
         "full_score_shard_plan_record": inputs["full_score_shard_plan_record"],
         "full_score_execution_plan_record": inputs[
@@ -3176,6 +3225,7 @@ def test_vllm_0300_writer_and_loader_round_trip_with_authority_replay(
         campaign_plan_record={"closed_record_sha256": _digest("campaign")},
         latency_collection_authorization=None,
         latency_summary_record=None,
+        qualification_launch_authorization=None,
         full_score_inventory=None,
         full_score_shard_plan_record=None,
         full_score_execution_plan_record=None,
@@ -3192,3 +3242,339 @@ def test_vllm_0300_writer_and_loader_round_trip_with_authority_replay(
     assert replays[0]["campaign_plan_record"] == {
         "closed_record_sha256": _digest("campaign")
     }
+    assert "qualification_launch_authorization" in replays[0]
+
+
+def _vllm_0300_report_with_qualification_retries(
+    retries: Any,
+) -> dict[str, Any]:
+    report = _synthetic_vllm_0300_report()
+    report["ledger"]["qualification_capacity_retries"] = retries
+    _reclose(report)
+    return report
+
+
+def test_vllm_0300_report_discloses_qualification_capacity_retries() -> None:
+    report = _vllm_0300_report_with_qualification_retries(
+        {"attempt_count": 4, "cluster_hours": 0.75}
+    )
+
+    campaign_finalizer.validate_vllm_0271_publication_report_pair(
+        report,
+        campaign_finalizer._publication_gate_for_report(report),
+    )
+
+
+@pytest.mark.parametrize(
+    ("retries", "message"),
+    [
+        ({"attempt_count": 1, "cluster_hours": 1}, "qualification capacity retries"),
+        ({"attempt_count": 0, "cluster_hours": 0.5}, "qualification capacity retries"),
+        ({"attempt_count": 241, "cluster_hours": 1.0}, "qualification capacity retries"),
+        ({"attempt_count": -1, "cluster_hours": 0.0}, "non-negative integer"),
+        (
+            {"attempt_count": 1, "cluster_hours": 0.5, "jobs": []},
+            "closed schema",
+        ),
+        (None, "must be an object"),
+    ],
+)
+def test_vllm_0300_report_rejects_inconsistent_qualification_retries(
+    retries: Any,
+    message: str,
+) -> None:
+    report = _vllm_0300_report_with_qualification_retries(retries)
+
+    with pytest.raises(ValueError, match=message):
+        campaign_finalizer._validate_report_envelope(report)
+
+
+def test_vllm_0300_report_requires_the_qualification_retry_disclosure() -> None:
+    report = _synthetic_vllm_0300_report()
+    del report["ledger"]["qualification_capacity_retries"]
+    _reclose(report)
+
+    with pytest.raises(ValueError, match="closed schema"):
+        campaign_finalizer._validate_report_envelope(report)
+
+
+_QUALIFICATION_PLAN_SHA256 = _digest("qualification-plan")
+_QUALIFICATION_FAILURE_SECONDS = 900.0
+
+
+def _qualification_attempts(
+    final_retry_indices: dict[str, int],
+) -> list[tuple[str, str, str]]:
+    """Return ``(attempt_id, workload_id, terminal_state)`` in round order."""
+
+    attempts: list[tuple[str, str, str]] = []
+    for retry_index in range(max(final_retry_indices.values()) + 1):
+        for job_id, final_index in final_retry_indices.items():
+            if retry_index > final_index:
+                continue
+            attempts.append(
+                (
+                    gpu_qualification_v2_capacity_retry_attempt_id(
+                        f"gpuq-v2-attempt-{job_id}", retry_index
+                    ),
+                    f"gpuq-v2/{_QUALIFICATION_PLAN_SHA256[:16]}/{job_id}",
+                    "succeeded" if retry_index == final_index else "internal_error",
+                )
+            )
+    return attempts
+
+
+def _qualification_retry_ledger(
+    tmp_path: Path,
+    attempts: list[tuple[str, str, str]],
+    *,
+    later_workloads: tuple[str, ...] = ("latency:job-000",),
+) -> tuple[Path, Any, Any]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    ledger_path = tmp_path / "campaign-ledger.json"
+    write_opening_ledger(ledger_path, ledger_id="synthetic-publication-ledger")
+    opening = ledger_api.databricks_ledger_prefix(
+        ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path)
+    )
+    later = [
+        (f"later-{index}", workload_id, "succeeded")
+        for index, workload_id in enumerate(later_workloads)
+    ]
+    terminal = opening
+    for index, (attempt_id, workload_id, terminal_state) in enumerate(
+        [*attempts, *later]
+    ):
+        if index == len(attempts):
+            terminal = ledger_api.databricks_ledger_prefix(
+                ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path)
+            )
+        ledger_api.reserve_databricks_run_attempt_json(
+            ledger_path,
+            {
+                "run_name": f"synthetic-{index:03d}",
+                "timeout_seconds": 3600,
+                "tasks": [
+                    {
+                        "task_key": "synthetic-qualification",
+                        "timeout_seconds": 3600,
+                        "max_retries": 0,
+                        "new_cluster": {
+                            "num_workers": 0,
+                            "node_type_id": "g6.8xlarge",
+                        },
+                        "spark_python_task": {
+                            "python_file": "dbfs:/unit-fixtures/qualification.py",
+                        },
+                    }
+                ],
+            },
+            attempt_id=attempt_id,
+            workload_id=workload_id,
+        )
+        ledger_api.record_databricks_run_submission_receipt_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            submit_response={"run_id": 70_000 + index},
+        )
+        state = {
+            "failed": {"life_cycle_state": "TERMINATED", "result_state": "FAILED"},
+            "internal_error": {
+                "life_cycle_state": "INTERNAL_ERROR",
+                "result_state": "FAILED",
+            },
+            "succeeded": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+        }[terminal_state]
+        duration_ms = int(
+            1_000
+            * (
+                1_800.0
+                if terminal_state == "succeeded"
+                else _QUALIFICATION_FAILURE_SECONDS
+            )
+        )
+        ledger_api.record_databricks_verified_run_terminal_actual_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            run_record={
+                "run_id": 70_000 + index,
+                "state": state,
+                "tasks": [
+                    {
+                        "end_time": 1_000 + duration_ms,
+                        "run_id": 80_000 + index,
+                        "start_time": 1_000,
+                        "state": state,
+                        "task_key": "synthetic-qualification",
+                    }
+                ],
+            },
+        )
+    if not later:
+        terminal = ledger_api.databricks_ledger_prefix(
+            ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path)
+        )
+    latency_prefix = ledger_api.databricks_ledger_prefix(
+        ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path)
+    )
+    authorization = gpu_qualification_databricks._issue_gpu_qualification_launch_authorization(
+        selection=GPUQualificationSelection(
+            attention_backend="TRITON_ATTN",
+            gpu_memory_utilization=0.70,
+            generation_hardware_id="aws-g6e-l40s",
+            generation_databricks_node_type_id="g6e.8xlarge",
+            generation_artifacts_sha256=_digest("generation-artifacts"),
+            generation_prefix_tokens_per_second=40.0,
+            plan_sha256=_QUALIFICATION_PLAN_SHA256,
+        ),
+        plan_sha256=_QUALIFICATION_PLAN_SHA256,
+        evidence_closed_record_sha256=_digest("qualification-evidence"),
+        evidence_file_sha256=_digest("qualification-evidence-file"),
+        ledger_id=opening.ledger_id,
+        ledger_path_sha256=ledger_api.databricks_ledger_path_sha256(ledger_path),
+        predecessor_prefix=opening,
+        producer_batch_prefix=opening,
+        ledger_prefix=terminal,
+        causal_closure_sha256=_digest("qualification-causal-closure"),
+    )
+    return ledger_path, authorization, latency_prefix
+
+
+def test_vllm_0300_ledger_projection_derives_qualification_capacity_retries(
+    tmp_path: Path,
+) -> None:
+    ledger_path, authorization, latency_prefix = _qualification_retry_ledger(
+        tmp_path,
+        _qualification_attempts({"job-a": 1, "job-b": 0, "job-c": 2}),
+    )
+
+    assert campaign_finalizer._qualification_capacity_retries(
+        authorization,
+        latency_prefix=latency_prefix,
+        ledger_path=ledger_path,
+    ) == {
+        "attempt_count": 3,
+        "cluster_hours": 3 * _QUALIFICATION_FAILURE_SECONDS / 3600.0,
+    }
+
+    clean_path, clean, clean_latency = _qualification_retry_ledger(
+        tmp_path / "clean",
+        _qualification_attempts({"job-a": 0, "job-b": 0}),
+        later_workloads=(),
+    )
+    assert campaign_finalizer._qualification_capacity_retries(
+        clean,
+        latency_prefix=clean_latency,
+        ledger_path=clean_path,
+    ) == {"attempt_count": 0, "cluster_hours": 0.0}
+
+
+def _tamper_final_attempt_failed(
+    attempts: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    attempt_id, workload_id, _state = attempts[-1]
+    return [*attempts[:-1], (attempt_id, workload_id, "failed")]
+
+
+def _tamper_retry_id_skips_an_index(
+    attempts: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    attempt_id, workload_id, state = attempts[-1]
+    return [
+        *attempts[:-1],
+        (attempt_id.replace("-capacity-retry-01", "-capacity-retry-02"), workload_id, state),
+    ]
+
+
+def _tamper_foreign_plan_workload(
+    attempts: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    attempt_id, _workload_id, state = attempts[0]
+    return [
+        (attempt_id, f"gpuq-v2/{'0' * 16}/job-a", state),
+        *attempts[1:],
+    ]
+
+
+def _tamper_attempt_bound_exceeded(
+    _attempts: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    base = "gpuq-v2-attempt-job-a"
+    workload_id = f"gpuq-v2/{_QUALIFICATION_PLAN_SHA256[:16]}/job-a"
+    return [
+        (
+            base if index == 0 else f"{base}-capacity-retry-{index:02d}",
+            workload_id,
+            "succeeded" if index == 16 else "internal_error",
+        )
+        for index in range(17)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        (_tamper_final_attempt_failed, "not capacity retries"),
+        (_tamper_retry_id_skips_an_index, "not capacity retries"),
+        (_tamper_foreign_plan_workload, "unrelated append"),
+        (_tamper_attempt_bound_exceeded, "not capacity retries"),
+    ],
+)
+def test_vllm_0300_qualification_retries_reject_an_unclosed_attempt_range(
+    tamper: Any,
+    message: str,
+    tmp_path: Path,
+) -> None:
+    ledger_path, authorization, latency_prefix = _qualification_retry_ledger(
+        tmp_path,
+        tamper(_qualification_attempts({"job-a": 0, "job-b": 1})),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        campaign_finalizer._qualification_capacity_retries(
+            authorization,
+            latency_prefix=latency_prefix,
+            ledger_path=ledger_path,
+        )
+
+
+def test_vllm_0300_qualification_retries_require_the_last_qualification(
+    tmp_path: Path,
+) -> None:
+    attempts = _qualification_attempts({"job-a": 1, "job-b": 0})
+    ledger_path, authorization, latency_prefix = _qualification_retry_ledger(
+        tmp_path,
+        attempts,
+        later_workloads=(attempts[0][1],),
+    )
+
+    with pytest.raises(ValueError, match="later GPU qualification"):
+        campaign_finalizer._qualification_capacity_retries(
+            authorization,
+            latency_prefix=latency_prefix,
+            ledger_path=ledger_path,
+        )
+
+
+def test_vllm_0300_qualification_retries_require_a_live_prefix_before_latency(
+    tmp_path: Path,
+) -> None:
+    ledger_path, authorization, latency_prefix = _qualification_retry_ledger(
+        tmp_path,
+        _qualification_attempts({"job-a": 1, "job-b": 0}),
+    )
+    other_path, _other, other_latency = _qualification_retry_ledger(
+        tmp_path / "other",
+        _qualification_attempts({"job-a": 0, "job-b": 0}),
+    )
+
+    for observed_latency, observed_path in (
+        (authorization.predecessor_prefix, ledger_path),
+        (other_latency, ledger_path),
+        (latency_prefix, other_path),
+    ):
+        with pytest.raises(ValueError, match="not a ledger prefix before latency"):
+            campaign_finalizer._qualification_capacity_retries(
+                authorization,
+                latency_prefix=observed_latency,
+                ledger_path=observed_path,
+            )
