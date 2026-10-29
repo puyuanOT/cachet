@@ -4129,20 +4129,29 @@ def test_failed_wave_zero_chain_restarts_under_a_fresh_latency_authority(campaig
     assert json.loads(restarted_intent.read_bytes())["attempt_id"] == attempt_id
 
 
-def test_wave_zero_chain_restart_refuses_to_discard_a_succeeded_producer(campaign):
-    collected = _collect_wave_zero_producer(campaign, label="continuable-chain")
+def test_wave_zero_chain_restarts_over_a_succeeded_producer(campaign):
+    collected = _collect_wave_zero_producer(campaign, label="unclosed-chain")
     ledger_path = collected["ledger_path"]
-    current = databricks_ledger_prefix(
-        read_databricks_cluster_hour_ledger_json(ledger_path)
-    )
+    closed = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert [item.terminal_state for item in closed.terminal_actuals] == [
+        "succeeded"
+    ]
+    current = databricks_ledger_prefix(closed)
     campaign["latency_collection_authorization"].ledger_prefix = current
-    ledger_before = ledger_path.read_bytes()
-    with pytest.raises(ValueError, match="requires a failed latest attempt"):
-        _reserve_fresh_wave_zero_producer(
-            campaign, ledger_path, attempt_id="wave-000-producer-discarding"
-        )
-    assert ledger_path.read_bytes() == ledger_before
-    assert not _wave_zero_producer_intent_path(campaign, ledger_path, current).exists()
+    _ledger, restarted = _reserve_fresh_wave_zero_producer(
+        campaign, ledger_path, attempt_id="wave-000-producer-restarted"
+    )
+    assert restarted.attempt_ordinal == 0
+    assert restarted.predecessor_prefix == current
+    assert _wave_zero_producer_intent_path(campaign, ledger_path, current).exists()
+    abandoned = full_score.require_full_score_chain_restart_ledger(
+        read_databricks_cluster_hour_ledger_json(ledger_path),
+        predecessor_prefix=current,
+        execution_plan=campaign["execution_plan"],
+    )
+    assert [(item.attempt_id, item.terminal_state) for item in abandoned] == [
+        (closed.terminal_actuals[0].attempt_id, "succeeded")
+    ]
 
 
 def _chain_ledger(campaign, label, attempts):
@@ -4198,6 +4207,12 @@ def _chain_ledger(campaign, label, attempts):
             ((0, "consumer"), "timed_out"),
         ],
         [((0, "producer"), "internal_error"), ("other-plan", "succeeded")],
+        [((0, "producer"), "succeeded")],
+        [
+            ((0, "producer"), "internal_error"),
+            ((0, "producer"), "internal_error"),
+            ((0, "producer"), "succeeded"),
+        ],
     ),
 )
 def test_wave_zero_chain_restart_admits_an_abandoned_chain(campaign, attempts):
@@ -4217,9 +4232,16 @@ def test_wave_zero_chain_restart_admits_an_abandoned_chain(campaign, attempts):
 @pytest.mark.parametrize(
     ("attempts", "message"),
     (
-        ([((0, "producer"), "succeeded")], "requires a failed latest attempt"),
         (
             [((0, "producer"), "succeeded"), ((0, "consumer"), "succeeded")],
+            "cannot discard a closed consumer",
+        ),
+        (
+            [
+                ((0, "producer"), "succeeded"),
+                ((0, "consumer"), "succeeded"),
+                ((0, "producer"), "internal_error"),
+            ],
             "cannot discard a closed consumer",
         ),
         (

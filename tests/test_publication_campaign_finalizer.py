@@ -1416,14 +1416,20 @@ def test_campaign_ledger_projection_discloses_an_abandoned_wave_zero_chain(
     assert projection["latency_terminal_prefix"] == case["latency_prefix"].to_record()
 
 
+def test_campaign_ledger_projection_discloses_a_chain_ending_in_a_succeeded_producer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    _abandon_before_latency(case, [(0, "internal_error", 5.1), (0, "succeeded", 2.0)])
+
+    assert _projection_disclosing_abandoned_attempts(case)[
+        "full_score_abandoned_attempts"
+    ] == {"attempt_count": 2, "cluster_hours": 7.1}
+
+
 @pytest.mark.parametrize(
     ("attempts", "message"),
     [
-        pytest.param(
-            [(0, "internal_error", 5.1), (0, "succeeded", 2.0)],
-            "requires a failed latest attempt",
-            id="continuable-producer",
-        ),
         pytest.param(
             [(0, "succeeded", 2.0), (1, "succeeded", 2.0), (2, "failed", 1.0)],
             "limited to wave zero",
