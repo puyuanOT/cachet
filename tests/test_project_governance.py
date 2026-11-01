@@ -1966,6 +1966,20 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "Ready-closure run `805880152638655`" in compact_ledger_doc
     assert "exact 367/320/367 prefix" in compact_ledger_doc
     assert "833.199095 terminal GPU-hours" in compact_ledger_doc
+    assert "vLLM 0.30.0 qualification of source revision `5efe2a5`" in (
+        compact_ledger_doc
+    )
+    assert "Databricks holds no run for any of them" in compact_ledger_doc
+    assert "rebuilt offline from the direct `runs/get` record" in compact_ledger_doc
+    assert "receipt-less `legacy_manual` path" in compact_ledger_doc
+    assert "exact 381/331/381 prefix" in compact_ledger_doc
+    assert "836.545991111111 terminal GPU-hours" in compact_ledger_doc
+    assert "destroyed the only copy of the patched vLLM 0.30.0 wheel" in (
+        compact_ledger_doc
+    )
+    assert "pins this file as the recovered manifest" in compact_ledger_doc
+    assert "accepts either exact file identity" in compact_ledger_doc
+    assert "still reproduces the sealed closure" in compact_ledger_doc
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -2008,6 +2022,13 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "e063b3931d0914243ddc58b0dbd22ff637943c806f1ea1fa4b4adef627a5decb",
         "182dfdf99155894418e11104f3c78e1936f2ee4bb0a6798bfb4aacc9463f6935",
         "d221964df11a1951ad84590129fad4e36ce4d913566f18d6de2efd2476e1427f",
+        "aca6e81d08d2fb68b1362840d6d793dae55ee4476e569dbb79ff8e2c0d510ba2",
+        "ccccb195690f4cddc1b80a4d937da8322afa77eb56a1f642c2ad0c6cda918cd0",
+        "94852279e97a3221c2a50c6d956268f0e5bca77bf83f739ea0ffdf58a37eedcd",
+        "8d2902856daff1ee0b1080deb6c36c0d7cc369c26df67a3498b07416ed1ffbc6",
+        "193c095deeb1636a4cf5f873ed6b07bedf0f466c91e3df34417b357e9f125c03",
+        "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247",
+        "10bf77702ce827d38d3a4dd7ec950033da4525a71135dbf0d1297d01e02024d8",
     ):
         assert digest in compact_ledger_doc
     assert (

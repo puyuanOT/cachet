@@ -760,6 +760,55 @@ at 833.199095 terminal GPU-hours, with zero active reservations and 1190.800905
 hours remaining. The successor binds a fresh source closure and this complete
 prefix as its predecessor.
 
+The vLLM 0.30.0 qualification of source revision `5efe2a5` is retained as
+non-authorizing evidence. Its plan is
+`aca6e81d08d2fb68b1362840d6d793dae55ee4476e569dbb79ff8e2c0d510ba2`
+and its source tree is
+`ccccb195690f4cddc1b80a4d937da8322afa77eb56a1f642c2ad0c6cda918cd0`.
+Eleven attempt-zero jobs succeeded, consuming 3.346896111111111 GPU-hours. The
+local controller then died with its cloud VM before it submitted the other
+three: L40S generation throughput and the L4 and A10G automatic-backend
+diagnostics. Databricks holds no run for any of them. The VM loss also destroyed
+the local ledger file and the batch's controller records, including its phase
+batch record. The ledger was rebuilt offline from the direct `runs/get` record
+of every ledgered run. The rebuild reproduces the package-pinned 166/119/166
+opening prefix, all 45 later checkpoint prefixes known for this ledger,
+including every vLLM 0.30.0 prefix recorded above, and all eleven submitted
+payload digests of this batch. The three unsubmitted reservations
+were then closed as `failed` at zero GPU-hours through the receipt-less
+`legacy_manual` path. The ledger stands at the exact 381/331/381 prefix
+`94852279e97a3221c2a50c6d956268f0e5bca77bf83f739ea0ffdf58a37eedcd`
+at 836.545991111111 terminal GPU-hours, with zero active reservations and
+1187.454008888889 hours remaining. The batch is `FAILED`, its plan cannot be
+launched again, and its successor binds a fresh source closure and this
+complete prefix as its predecessor.
+
+The same VM loss destroyed the only copy of the patched vLLM 0.30.0 wheel
+manifest, whose sealed file is 2,609 bytes with SHA-256
+`8d2902856daff1ee0b1080deb6c36c0d7cc369c26df67a3498b07416ed1ffbc6`.
+The runtime artifact closure file
+`193c095deeb1636a4cf5f873ed6b07bedf0f466c91e3df34417b357e9f125c03` and every
+earlier attestation name that identity, so it stays pinned. The patched wheel
+itself survives on the Volume. Re-running the deterministic repack of the
+official wheel
+`e98cb69659bfcfc849cf11ce0781a7161d40b02b51a6c3636924a5909f2aabcc`
+reproduces the patched wheel
+`07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247`
+byte for byte. The manifest it regenerates is 2,615 bytes with SHA-256
+`10bf77702ce827d38d3a4dd7ec950033da4525a71135dbf0d1297d01e02024d8`.
+Its validated fields match the sealed contract: the package version, the
+patched wheel's name, hash, and size, and the three-member patch closure. Its
+build-toolchain field names the Linux rebuild host and its runtime-lock field
+names the pinned source lock
+`8b6f8618fff84070d44b35a2d6a54d5fc5831ecd8c375b5cbe9d847aeb3fae5d`. No
+validator reads those two fields, and the lost file's values for them cannot be
+recovered, so the bytes differ. The package pins this file as the recovered
+manifest. Runtime-closure validation
+accepts either exact file identity, applies the same manifest and wheel checks,
+and still reproduces the sealed closure. A v2 source closure records the file
+it actually bound, so every qualification from this revision onward names the
+recovered manifest in its `patched_vllm_manifest` reference.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local

@@ -78,6 +78,17 @@ VLLM_PATCHED_MANIFEST_SHA256 = (
     "8d2902856daff1ee0b1080deb6c36c0d7cc369c26df67a3498b07416ed1ffbc6"
 )
 VLLM_PATCHED_MANIFEST_SIZE = 2_609
+# The sealed manifest bytes above were lost with their build host. A byte-identical
+# deterministic repack regenerated this manifest; it may stand in for the sealed
+# file, but the closure record keeps naming the sealed identity.
+VLLM_PATCHED_RECOVERED_MANIFEST_SHA256 = (
+    "10bf77702ce827d38d3a4dd7ec950033da4525a71135dbf0d1297d01e02024d8"
+)
+VLLM_PATCHED_RECOVERED_MANIFEST_SIZE = 2_615
+VLLM_PATCHED_MANIFEST_FILE_IDENTITIES: tuple[tuple[str, int], ...] = (
+    (VLLM_PATCHED_MANIFEST_SHA256, VLLM_PATCHED_MANIFEST_SIZE),
+    (VLLM_PATCHED_RECOVERED_MANIFEST_SHA256, VLLM_PATCHED_RECOVERED_MANIFEST_SIZE),
+)
 _VLLM_PATCHED_MEMBER_CLOSURE: tuple[Mapping[str, str], ...] = (
     {
         "id": "vllm-qwen-attention-disable-e5m2-query-quant",
@@ -579,11 +590,10 @@ def _validate_vllm_artifacts(
     wheel_path: Path,
     manifest_path: Path,
 ) -> Mapping[str, Any]:
-    manifest_bytes = _read_exact_small_file(
+    manifest_bytes = _read_pinned_small_file(
         manifest_path,
         expected_name=VLLM_PATCHED_MANIFEST_FILENAME,
-        expected_sha256=VLLM_PATCHED_MANIFEST_SHA256,
-        expected_size=VLLM_PATCHED_MANIFEST_SIZE,
+        identities=VLLM_PATCHED_MANIFEST_FILE_IDENTITIES,
         label="immutable patched vLLM manifest",
     )
     manifest = _canonical_record_from_bytes(manifest_bytes)
@@ -699,8 +709,26 @@ def _read_exact_small_file(
     expected_size: int,
     label: str,
 ) -> bytes:
+    return _read_pinned_small_file(
+        path,
+        expected_name=expected_name,
+        identities=((expected_sha256, expected_size),),
+        label=label,
+    )
+
+
+def _read_pinned_small_file(
+    path: Path,
+    *,
+    expected_name: str,
+    identities: tuple[tuple[str, int], ...],
+    label: str,
+) -> bytes:
     if path.name != expected_name:
         raise ValueError(f"{label} filename differs")
+    if not identities:
+        raise ValueError(f"{label} has no pinned identity")
+    max_size = max(size for _, size in identities)
     descriptor = _open_regular_nofollow(path, label=label)
     try:
         before = os.fstat(descriptor)
@@ -712,7 +740,7 @@ def _read_exact_small_file(
                 break
             chunks.append(chunk)
             total += len(chunk)
-            if total > expected_size:
+            if total > max_size:
                 raise ValueError(f"{label} exceeds exact size")
         after = os.fstat(descriptor)
     finally:
@@ -720,8 +748,7 @@ def _read_exact_small_file(
     content = b"".join(chunks)
     if (
         _stable_stat(before) != _stable_stat(after)
-        or len(content) != expected_size
-        or sha256(content).hexdigest() != expected_sha256
+        or (sha256(content).hexdigest(), len(content)) not in identities
     ):
         raise ValueError(f"{label} size, SHA-256, or stable stat differs")
     return content
@@ -874,7 +901,9 @@ __all__ = [
     "RUNTIME_ARTIFACT_CLOSURE_RECORD_TYPE",
     "RUNTIME_ARTIFACT_CLOSURE_SCHEMA_VERSION",
     "RuntimeArtifactClosure",
+    "VLLM_PATCHED_MANIFEST_FILE_IDENTITIES",
     "VLLM_PATCHED_MANIFEST_SHA256",
+    "VLLM_PATCHED_RECOVERED_MANIFEST_SHA256",
     "VLLM_PATCHED_WHEEL_SHA256",
     "VLLM_RUNTIME_BASE_LOCK_DISTRIBUTION_COUNT",
     "VLLM_RUNTIME_BASE_LOCK_FILENAME",
