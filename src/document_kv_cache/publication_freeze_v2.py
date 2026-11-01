@@ -69,6 +69,7 @@ from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
+    VLLM_PATCHED_MANIFEST_FILE_IDENTITIES,
     VLLM_PATCHED_MANIFEST_SHA256,
     VLLM_PATCHED_MANIFEST_SIZE,
     VLLM_PATCHED_WHEEL_SHA256,
@@ -1601,22 +1602,19 @@ def _require_runtime_artifact_file_pins(
     *,
     pins: GPUQualificationArtifactPinsV2,
 ) -> None:
-    expected = {
-        "runtime_source_lock": (VLLM_RUNTIME_LOCK_SHA256, VLLM_RUNTIME_SOURCE_LOCK_SIZE),
-        "runtime_lock": (pins.runtime_lock_sha256, VLLM_RUNTIME_BASE_LOCK_SIZE),
-        "patched_vllm_wheel": (pins.patched_vllm_wheel_sha256, VLLM_PATCHED_WHEEL_SIZE),
-        "patched_vllm_manifest": (VLLM_PATCHED_MANIFEST_SHA256, VLLM_PATCHED_MANIFEST_SIZE),
+    expected: dict[str, tuple[tuple[str, int], ...]] = {
+        "runtime_source_lock": ((VLLM_RUNTIME_LOCK_SHA256, VLLM_RUNTIME_SOURCE_LOCK_SIZE),),
+        "runtime_lock": ((pins.runtime_lock_sha256, VLLM_RUNTIME_BASE_LOCK_SIZE),),
+        "patched_vllm_wheel": ((pins.patched_vllm_wheel_sha256, VLLM_PATCHED_WHEEL_SIZE),),
+        "patched_vllm_manifest": VLLM_PATCHED_MANIFEST_FILE_IDENTITIES,
         "pristine_flashinfer_wheel": (
-            FLASHINFER_RUNTIME_WHEEL_SHA256,
-            FLASHINFER_RUNTIME_WHEEL_SIZE,
+            (FLASHINFER_RUNTIME_WHEEL_SHA256, FLASHINFER_RUNTIME_WHEEL_SIZE),
         ),
         "patched_flashinfer_wheel": (
-            pins.patched_flashinfer_wheel_sha256,
-            FLASHINFER_RUNTIME_WHEEL_SIZE,
+            (pins.patched_flashinfer_wheel_sha256, FLASHINFER_RUNTIME_WHEEL_SIZE),
         ),
         "runtime_closure_manifest": (
-            pins.runtime_closure_manifest_sha256,
-            RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
+            (pins.runtime_closure_manifest_sha256, RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE),
         ),
     }
     if tuple(paths) != (
@@ -1627,12 +1625,13 @@ def _require_runtime_artifact_file_pins(
         raise ValueError("v2 runtime artifact path coverage differs")
     if pins.patched_flashinfer_wheel_sha256 != FLASHINFER_RUNTIME_WHEEL_SHA256:
         raise ValueError("v2 runtime artifact 'patched_flashinfer_wheel' differs")
-    for label, (expected_sha256, expected_size) in expected.items():
+    for label, identities in expected.items():
         path = paths[label]
-        if (
-            freeze_v1._file_sha256(path) != expected_sha256  # noqa: SLF001
-            or path.stat().st_size != expected_size
-        ):
+        observed = (
+            freeze_v1._file_sha256(path),  # noqa: SLF001
+            path.stat().st_size,
+        )
+        if observed not in identities:
             raise ValueError(f"v2 runtime artifact {label!r} differs")
 
 

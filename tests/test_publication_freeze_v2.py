@@ -18,6 +18,7 @@ import document_kv_cache.gpu_qualification_v2 as qualification_v2
 import document_kv_cache.publication_inputs as full_score_inputs
 import document_kv_cache.publication_freeze as freeze_v1
 import document_kv_cache.publication_freeze_v2 as freeze_v2
+import document_kv_cache.runtime_artifact_closure as runtime_closure
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.runtime_artifact_closure import (
     FLASHINFER_RUNTIME_WHEEL_SHA256,
@@ -1048,6 +1049,85 @@ def test_runtime_artifact_check_dispatches_exact_eight_bound_paths(
         "file_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         "file_size": 6_634,
     }
+
+
+def test_runtime_artifact_pins_admit_only_sealed_or_recovered_vllm_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pins = _pins()
+    digests: dict[Path, str] = {}
+
+    def stage(label: str, digest: str, size: int) -> Path:
+        path = tmp_path / label
+        with path.open("wb") as stream:
+            stream.truncate(size)
+        digests[path] = digest
+        return path
+
+    paths = {
+        "runtime_source_lock": stage(
+            "runtime_source_lock",
+            runtime_closure.VLLM_RUNTIME_LOCK_SHA256,
+            runtime_closure.VLLM_RUNTIME_SOURCE_LOCK_SIZE,
+        ),
+        "runtime_lock": stage(
+            "runtime_lock",
+            pins.runtime_lock_sha256,
+            runtime_closure.VLLM_RUNTIME_BASE_LOCK_SIZE,
+        ),
+        "patched_vllm_wheel": stage(
+            "patched_vllm_wheel",
+            pins.patched_vllm_wheel_sha256,
+            runtime_closure.VLLM_PATCHED_WHEEL_SIZE,
+        ),
+        "patched_vllm_manifest": stage(
+            "patched_vllm_manifest",
+            runtime_closure.VLLM_PATCHED_RECOVERED_MANIFEST_SHA256,
+            runtime_closure.VLLM_PATCHED_RECOVERED_MANIFEST_SIZE,
+        ),
+        "pristine_flashinfer_wheel": stage(
+            "pristine_flashinfer_wheel",
+            FLASHINFER_RUNTIME_WHEEL_SHA256,
+            runtime_closure.FLASHINFER_RUNTIME_WHEEL_SIZE,
+        ),
+        "patched_flashinfer_wheel": stage(
+            "patched_flashinfer_wheel",
+            pins.patched_flashinfer_wheel_sha256,
+            runtime_closure.FLASHINFER_RUNTIME_WHEEL_SIZE,
+        ),
+        "patched_flashinfer_manifest": _touch(tmp_path / "patched_flashinfer_manifest"),
+        "runtime_closure_manifest": stage(
+            "runtime_closure_manifest",
+            pins.runtime_closure_manifest_sha256,
+            runtime_closure.RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
+        ),
+    }
+    monkeypatch.setattr(freeze_v1, "_file_sha256", lambda path: digests[Path(path)])
+
+    freeze_v2._require_runtime_artifact_file_pins(paths, pins=pins)
+
+    stage(
+        "patched_vllm_manifest",
+        runtime_closure.VLLM_PATCHED_MANIFEST_SHA256,
+        runtime_closure.VLLM_PATCHED_MANIFEST_SIZE,
+    )
+    freeze_v2._require_runtime_artifact_file_pins(paths, pins=pins)
+
+    for digest, size in (
+        (
+            runtime_closure.VLLM_PATCHED_RECOVERED_MANIFEST_SHA256,
+            runtime_closure.VLLM_PATCHED_MANIFEST_SIZE,
+        ),
+        (
+            runtime_closure.VLLM_PATCHED_MANIFEST_SHA256,
+            runtime_closure.VLLM_PATCHED_RECOVERED_MANIFEST_SIZE,
+        ),
+        (_digest("other-vllm-manifest"), runtime_closure.VLLM_PATCHED_MANIFEST_SIZE),
+    ):
+        stage("patched_vllm_manifest", digest, size)
+        with pytest.raises(ValueError, match="'patched_vllm_manifest' differs"):
+            freeze_v2._require_runtime_artifact_file_pins(paths, pins=pins)
 
 
 @dataclass

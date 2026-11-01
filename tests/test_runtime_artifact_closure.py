@@ -55,6 +55,9 @@ _VLLM_ROOT = (
 _VLLM_WHEEL = _VLLM_ROOT / closure.VLLM_PATCHED_WHEEL_FILENAME
 _VLLM_MANIFEST = _VLLM_ROOT / closure.VLLM_PATCHED_MANIFEST_FILENAME
 _SEALED_CLOSURE = _ROOT / "tests" / "fixtures" / "vllm_0300_runtime_closure.json"
+_RECOVERED_VLLM_MANIFEST = (
+    _ROOT / "tests" / "fixtures" / "vllm_0300_recovered_patched_manifest.json"
+)
 
 
 @dataclass(frozen=True)
@@ -236,6 +239,88 @@ def test_composite_rejects_vllm_manifest_tamper_before_output(
             output_dir=output,
         )
     assert not output.exists()
+
+
+def _stage_vllm_manifest(root: Path, content: bytes) -> tuple[Path, Path]:
+    root.mkdir()
+    manifest = root / closure.VLLM_PATCHED_MANIFEST_FILENAME
+    manifest.write_bytes(content)
+    wheel = root / closure.VLLM_PATCHED_WHEEL_FILENAME
+    wheel.write_bytes(b"not the patched wheel")
+    return wheel, manifest
+
+
+def test_recovered_vllm_manifest_fixture_is_the_pinned_substitute():
+    content = _RECOVERED_VLLM_MANIFEST.read_bytes()
+    record = json.loads(content)
+
+    assert closure.VLLM_PATCHED_MANIFEST_FILE_IDENTITIES == (
+        (closure.VLLM_PATCHED_MANIFEST_SHA256, closure.VLLM_PATCHED_MANIFEST_SIZE),
+        (
+            closure.VLLM_PATCHED_RECOVERED_MANIFEST_SHA256,
+            closure.VLLM_PATCHED_RECOVERED_MANIFEST_SIZE,
+        ),
+    )
+    assert (sha256(content).hexdigest(), len(content)) == (
+        closure.VLLM_PATCHED_RECOVERED_MANIFEST_SHA256,
+        closure.VLLM_PATCHED_RECOVERED_MANIFEST_SIZE,
+    )
+    assert record["patched_wheel_filename"] == closure.VLLM_PATCHED_WHEEL_FILENAME
+    assert record["patched_wheel_sha256"] == closure.VLLM_PATCHED_WHEEL_SHA256
+    assert record["patched_wheel_size"] == closure.VLLM_PATCHED_WHEEL_SIZE
+    assert record["patch_closure"] == [
+        dict(item) for item in closure._VLLM_PATCHED_MEMBER_CLOSURE
+    ]
+    sealed = json.loads(_SEALED_CLOSURE.read_text())["artifacts"]["vllm"]
+    assert sealed["patched_manifest_file_sha256"] == (
+        closure.VLLM_PATCHED_MANIFEST_SHA256
+    )
+    assert sealed["patched_manifest_file_bytes"] == closure.VLLM_PATCHED_MANIFEST_SIZE
+
+
+def test_recovered_vllm_manifest_passes_every_manifest_check(tmp_path):
+    wheel, manifest = _stage_vllm_manifest(
+        tmp_path / "vllm", _RECOVERED_VLLM_MANIFEST.read_bytes()
+    )
+
+    with pytest.raises(ValueError, match="immutable patched vLLM wheel identity differs"):
+        closure._validate_vllm_artifacts(wheel, manifest)
+
+
+def test_recovered_vllm_manifest_tamper_is_rejected(tmp_path):
+    content = _RECOVERED_VLLM_MANIFEST.read_bytes()
+    same_size = content.replace(b'"python_version": "3.11.16"', b'"python_version": "3.11.17"')
+    assert len(same_size) == len(content) and same_size != content
+    shorter = content.replace(b'"python_version": "3.11.16"', b'"python_version": "3.11.1"')
+    for name, tampered, message in (
+        ("same-size", same_size, "size, SHA-256, or stable stat differs"),
+        ("shorter", shorter, "size, SHA-256, or stable stat differs"),
+        ("longer", content + b" ", "exceeds exact size"),
+    ):
+        wheel, manifest = _stage_vllm_manifest(tmp_path / name, tampered)
+        with pytest.raises(ValueError, match=message):
+            closure._validate_vllm_artifacts(wheel, manifest)
+
+
+def test_recovered_vllm_manifest_reproduces_the_sealed_closure(
+    reviewed_artifacts,
+    tmp_path,
+):
+    vllm_root = tmp_path / "vllm"
+    vllm_root.mkdir()
+    manifest = vllm_root / closure.VLLM_PATCHED_MANIFEST_FILENAME
+    manifest.write_bytes(_RECOVERED_VLLM_MANIFEST.read_bytes())
+
+    observed = validate_vllm_flashinfer_runtime_artifact_closure(
+        **{**_closure_arguments(reviewed_artifacts), "vllm_manifest": manifest},
+        closure_manifest=reviewed_artifacts.first_closure,
+    )
+
+    assert observed == {
+        "closed_record_sha256": closure.RUNTIME_ARTIFACT_CLOSURE_CLOSED_RECORD_SHA256,
+        "file_sha256": closure.RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
+        "file_size": closure.RUNTIME_ARTIFACT_CLOSURE_FILE_SIZE,
+    }
 
 
 def test_resealed_live_success_claim_is_rejected(reviewed_artifacts):

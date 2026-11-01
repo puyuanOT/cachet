@@ -1,0 +1,49 @@
+{
+  "base_version": "0.30.0",
+  "build_toolchain": {
+    "platform": "Linux-6.12.94+-x86_64-with-glibc2.39",
+    "python_implementation": "CPython",
+    "python_version": "3.11.16",
+    "zlib_compile_version": "1.3.2",
+    "zlib_runtime_version": "1.3.2"
+  },
+  "connector_base_source_sha256": "97af64220475c6c9e8273438d7b5138b105ebe6944beb783facb36a3bb76f31b",
+  "package_version": "0.30.0+cu129",
+  "patch_closure": [
+    {
+      "id": "vllm-qwen-attention-disable-e5m2-query-quant",
+      "patched_sha256": "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce",
+      "reason": "vLLM 0.30.0 constructs an E4M3-only query quantizer for fp8_e5m2; E5M2 queries must stay in the model compute dtype.",
+      "relative_path": "vllm/model_executor/layers/attention/attention.py",
+      "source_sha256": "bc897e452f3aea603e353ca42a365d3be8836e9485d78cbf8cc4677baca2fb42"
+    },
+    {
+      "id": "vllm-triton-reshape-cache-e5m2-closure",
+      "patched_sha256": "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08",
+      "reason": "vLLM 0.30.0 otherwise views fp8_e5m2 pages through the platform E4M3 dtype and rejects the SM80-SM88 E5M2 software path.",
+      "relative_path": "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py",
+      "source_sha256": "6cac51475b8c656992a21b2d150acd3a16a95a7ab7d49aab151a3ef13c24b80d"
+    },
+    {
+      "id": "vllm-triton-attention-e5m2-closure",
+      "patched_sha256": "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a",
+      "reason": "vLLM 0.30.0 otherwise binds Triton KV views to E4M3 and rejects fp8_e5m2 on A10G despite the targeted SM80+ E5M2 path.",
+      "relative_path": "vllm/v1/attention/backends/triton_attn.py",
+      "source_sha256": "1057663d110e1d5229495a799027b27277c1eca325d5b6780fa2259afbf58a1a"
+    }
+  ],
+  "patched_wheel_filename": "vllm-0.30.0+cu129-1cachete5m207efe2f8245ff6c1-cp38-abi3-manylinux_2_28_x86_64.whl",
+  "patched_wheel_sha256": "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247",
+  "patched_wheel_size": 537513535,
+  "record_member": "vllm-0.30.0+cu129.dist-info/RECORD",
+  "record_type": "document_kv.vllm_patched_wheel_manifest.v2",
+  "runtime_lock": {
+    "excluded_package": "vllm",
+    "filename": "vllm-0.30.0-cu129-py311-manylinux_2_35.lock",
+    "locked_distribution_count": 198,
+    "sha256": "8b6f8618fff84070d44b35a2d6a54d5fc5831ecd8c375b5cbe9d847aeb3fae5d"
+  },
+  "schema_version": 2,
+  "source_wheel_filename": "vllm-0.30.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl",
+  "source_wheel_sha256": "e98cb69659bfcfc849cf11ce0781a7161d40b02b51a6c3636924a5909f2aabcc"
+}
