@@ -760,6 +760,29 @@ at 833.199095 terminal GPU-hours, with zero active reservations and 1190.800905
 hours remaining. The successor binds a fresh source closure and this complete
 prefix as its predecessor.
 
+The vLLM 0.30.0 qualification of source revision `5efe2a5` is retained as
+non-authorizing evidence. Its plan is
+`aca6e81d08d2fb68b1362840d6d793dae55ee4476e569dbb79ff8e2c0d510ba2`
+and its source tree is
+`ccccb195690f4cddc1b80a4d937da8322afa77eb56a1f642c2ad0c6cda918cd0`.
+Eleven attempt-zero jobs succeeded, consuming 3.346896111111111 GPU-hours. The
+local controller then died with its cloud VM before it submitted the other
+three: L40S generation throughput and the L4 and A10G automatic-backend
+diagnostics. Databricks holds no run for any of them. The VM loss also destroyed
+the local ledger file and the batch's controller records, including its phase
+batch record. The ledger was rebuilt offline from the direct `runs/get` record
+of every ledgered run. The rebuild reproduces the package-pinned 166/119/166
+opening prefix, all 45 later checkpoint prefixes known for this ledger,
+including every vLLM 0.30.0 prefix recorded above, and all eleven submitted
+payload digests of this batch. The three unsubmitted reservations
+were then closed as `failed` at zero GPU-hours through the receipt-less
+`legacy_manual` path. The ledger stands at the exact 381/331/381 prefix
+`94852279e97a3221c2a50c6d956268f0e5bca77bf83f739ea0ffdf58a37eedcd`
+at 836.545991111111 terminal GPU-hours, with zero active reservations and
+1187.454008888889 hours remaining. The batch is `FAILED`, its plan cannot be
+launched again, and its successor binds a fresh source closure and this
+complete prefix as its predecessor.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local
