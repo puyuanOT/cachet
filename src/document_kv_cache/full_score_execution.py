@@ -45,6 +45,7 @@ from document_kv_cache._hardware_targets import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     validate_aws_single_node_gpu_type,
 )
+from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.benchmark_runner import (
     DEFAULT_OPENAI_COMPLETIONS_ENDPOINT,
     benchmark_run_result_from_record,
@@ -57,6 +58,7 @@ from document_kv_cache.benchmark_handoffs import (
 )
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
     DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
@@ -133,6 +135,11 @@ from document_kv_cache.databricks_runs import (
     summarize_databricks_run,
     submit_pre_reserved_databricks_run,
     validate_databricks_run_status_sidecar,
+)
+from document_kv_cache.engine_protocol import (
+    KVKeyPositionEncoding,
+    KVLayout,
+    KVPayloadAxisOrder,
 )
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_BITSANDBYTES_LOADER_SHA256,
@@ -230,6 +237,7 @@ from document_kv_cache.transformers_generator import (
 from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
 )
+from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
 
 FULL_SCORE_WORKER_PAYLOAD_RECORD_TYPE = "cachet.full_score_worker_payload.v2"
@@ -10298,15 +10306,15 @@ def _run_producer_worker(
     generator = load_benchmark_kv_chunk_generator(runtime.generator_factory)
     if getattr(generator, "pre_rope", None) is not True:
         raise ValueError("full-score generator must emit pre-RoPE KV")
-    layout = layout_for_model(
-        runtime.model_id,
-        dtype=FULL_SCORE_KV_DTYPE,
-        pre_rope=True,
-        rope_theta=QWEN3_4B_ROPE_THETA,
-        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
-        shares_kv_storage=False,
-        storage_layout="separate_key_value",
-    )
+    layout = _full_score_handoff_layout(runtime.model_id)
+    if (
+        getattr(generator, "rope_theta", None) != layout.rope_theta
+        or getattr(generator, "rope_rotary_dim", None) != layout.rope_rotary_dim
+    ):
+        raise ValueError(
+            "full-score generator RoPE parameters must match the consumer "
+            "runtime identity"
+        )
     ready_records: list[dict[str, Any]] = []
     try:
         for shard in cast(list[Mapping[str, Any]], payload["shards"]):
@@ -10560,16 +10568,9 @@ def _run_consumer_worker(
     local_root.mkdir(parents=True)
     server_log = local_root / "vllm-server.log"
     connector_telemetry = local_root / "connector-telemetry.jsonl"
-    transfer_config = json.loads(json.dumps(runtime.kv_transfer_config, sort_keys=True))
-    extra_config = transfer_config.get("kv_connector_extra_config")
-    if not isinstance(extra_config, dict):
-        raise ValueError(
-            "kv_transfer_config.kv_connector_extra_config must be an object"
-        )
-    extra_config["document_kv.telemetry_jsonl"] = str(connector_telemetry)
     log_handle = server_log.open("w", encoding="utf-8")
     server = subprocess.Popen(
-        _vllm_server_command(runtime, transfer_config=transfer_config),
+        _vllm_server_command(runtime, telemetry_jsonl=str(connector_telemetry)),
         stdout=log_handle,
         stderr=subprocess.STDOUT,
         text=True,
@@ -11676,10 +11677,73 @@ def _benchmark_command(
     return args
 
 
+def _full_score_handoff_layout(model_id: str) -> KVLayout:
+    return layout_for_model(
+        model_id,
+        dtype=FULL_SCORE_KV_DTYPE,
+        pre_rope=True,
+        rope_theta=QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+        shares_kv_storage=False,
+        storage_layout="separate_key_value",
+    )
+
+
+def _full_score_runtime_identity(runtime: FullScoreRuntimeConfig) -> RuntimeIdentity:
+    layout = _full_score_handoff_layout(runtime.model_id)
+    if layout.key_position_encoding is None:
+        raise ValueError("full-score handoff layout must declare key positions")
+    return RuntimeIdentity(
+        model_id=runtime.model_id,
+        model_revision=runtime.model_revision,
+        tokenizer_id=runtime.tokenizer_id,
+        tokenizer_revision=runtime.tokenizer_revision,
+        lora_id=layout.lora_id,
+        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        layout_version=layout.layout_version,
+        kv_dtype=layout.dtype,
+        block_size=layout.block_size,
+        payload_axis_order=KVPayloadAxisOrder(layout.payload_axis_order).value,
+        key_position_encoding=KVKeyPositionEncoding(
+            layout.key_position_encoding
+        ).value,
+        rope_theta=layout.rope_theta,
+        rope_rotary_dim=layout.rope_rotary_dim,
+    )
+
+
+def _full_score_server_transfer_config(
+    runtime: FullScoreRuntimeConfig,
+    *,
+    telemetry_jsonl: str | None = None,
+) -> dict[str, Any]:
+    """Expand the frozen consumer policy into the config vLLM can load.
+
+    vLLM resolves ``DocumentKVConnector`` only through
+    ``kv_connector_module_path``, and the connector falls back to a no-op
+    provider unless ``document_kv.provider_factory`` names the native one.
+    """
+
+    policy = runtime.kv_transfer_config
+    extra = cast(Mapping[str, Any], policy["kv_connector_extra_config"])
+    return document_kv_transfer_config(
+        kv_connector=cast(str, policy["kv_connector"]),
+        kv_role=cast(str, policy["kv_role"]),
+        payload_cache_max_bytes=cast(
+            int, extra["document_kv.payload_cache_max_bytes"]
+        ),
+        telemetry_jsonl=telemetry_jsonl,
+        runtime_identity=_full_score_runtime_identity(runtime),
+        require_runtime_handshake=cast(
+            bool, extra["document_kv.require_runtime_handshake"]
+        ),
+    )
+
+
 def _vllm_server_command(
     runtime: FullScoreRuntimeConfig,
     *,
-    transfer_config: Mapping[str, Any] | None = None,
+    telemetry_jsonl: str | None = None,
 ) -> list[str]:
     return [
         runtime.python_executable,
@@ -11704,7 +11768,9 @@ def _vllm_server_command(
         str(runtime.gpu_memory_utilization),
         "--kv-transfer-config",
         json.dumps(
-            runtime.kv_transfer_config if transfer_config is None else transfer_config,
+            _full_score_server_transfer_config(
+                runtime, telemetry_jsonl=telemetry_jsonl
+            ),
             separators=(",", ":"),
             sort_keys=True,
         ),
