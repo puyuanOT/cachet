@@ -48,6 +48,7 @@ from document_kv_cache._hardware_targets import (
 from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.benchmark_runner import (
     DEFAULT_OPENAI_COMPLETIONS_ENDPOINT,
+    _vllm_cache_salt,
     benchmark_run_result_from_record,
 )
 from document_kv_cache.benchmark_handoffs import (
@@ -320,6 +321,7 @@ FULL_SCORE_ATTENTION_BACKEND = "TRITON_ATTN"
 FULL_SCORE_GPU_MEMORY_UTILIZATION_CANDIDATES = (0.70, 0.75, 0.80)
 FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN = 73_728
 FULL_SCORE_MODEL_NUM_LAYERS = 36
+FULL_SCORE_KV_BLOCK_SIZE = 16
 FULL_SCORE_DEFAULT_MAX_BACKLOG_BYTES = 500_000_000_000
 FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE = 16
 FULL_SCORE_READY_SHARD_METADATA_ALLOWANCE_BYTES = 64 * 1024 * 1024
@@ -8431,7 +8433,8 @@ def build_full_score_connector_proof(
 
     This parser intentionally accepts only package-owned provider load records.
     File existence is not evidence: every planned Vanilla request must have one
-    successful, full-layer, full-token load; any non-Vanilla load is rejected.
+    successful, full-layer load that decodes the whole Q8 prefix and injects
+    every whole KV block of it; any non-Vanilla load is rejected.
     """
 
     path = Path(connector_telemetry_path)
@@ -8461,11 +8464,16 @@ def build_full_score_connector_proof(
         if vanilla_request_id in expected:
             raise ValueError("connector proof request IDs must be unique")
         item = planned_items[key]
+        cache_prefix_tokens = _required_int(item, "cache_prefix_tokens")
         expected[vanilla_request_id] = {
             "artifact_id": _required_string(vanilla, "artifact_id"),
-            "cache_prefix_tokens": _required_int(item, "cache_prefix_tokens"),
+            "cache_prefix_tokens": cache_prefix_tokens,
             "dataset": key[0],
             "example_id": key[1],
+            "injected_prefix_tokens": _full_score_injected_prefix_tokens(
+                cache_prefix_tokens=cache_prefix_tokens,
+                natural_prompt_tokens=_required_int(item, "natural_prompt_tokens"),
+            ),
         }
     if observed_pair_keys != set(planned_items):
         raise ValueError("connector proof paired coverage is incomplete")
@@ -8501,13 +8509,16 @@ def build_full_score_connector_proof(
         layout = _required_mapping(record, "layout")
         attestation = _required_mapping(record, "cache_state_attestation")
         tokens = cast(int, expected_request["cache_prefix_tokens"])
+        injected_tokens = cast(int, expected_request["injected_prefix_tokens"])
         expected_runtime_bytes = tokens * FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN
         required_counts = {
             "decoded_runtime_payload_bytes": expected_runtime_bytes,
             "expected_runtime_payload_bytes": expected_runtime_bytes,
             "handoff_total_tokens": tokens,
             "layers_loaded": FULL_SCORE_MODEL_NUM_LAYERS,
-            "token_count": tokens,
+            "source_token_end": injected_tokens,
+            "source_token_start": 0,
+            "token_count": injected_tokens,
         }
         if any(
             counts.get(key) != expected_value
@@ -8515,6 +8526,7 @@ def build_full_score_connector_proof(
         ):
             raise ValueError("connector telemetry count/layout coverage drift")
         required_layout = {
+            "block_size": FULL_SCORE_KV_BLOCK_SIZE,
             "bytes_per_token": FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN,
             "dtype": FULL_SCORE_KV_DTYPE,
             "model_id": FULL_SCORE_MODEL_ID,
@@ -8530,8 +8542,8 @@ def build_full_score_connector_proof(
             "cache_method": "vanilla_prefill",
             "decoded_runtime_bytes": expected_runtime_bytes,
             "expected_runtime_bytes": expected_runtime_bytes,
-            "expected_tokens": tokens,
-            "loaded_tokens": tokens,
+            "expected_tokens": injected_tokens,
+            "loaded_tokens": injected_tokens,
             "payload_cache_hit": False,
             "successful_loads": 1,
         }
@@ -8545,6 +8557,7 @@ def build_full_score_connector_proof(
             "cache_prefix_tokens": tokens,
             "dataset": expected_request["dataset"],
             "example_id": expected_request["example_id"],
+            "injected_prefix_tokens": injected_tokens,
             "request_id": request_id,
         }
     if set(observed) != set(expected) or load_record_count != len(expected):
@@ -8557,12 +8570,31 @@ def build_full_score_connector_proof(
         "record_type": FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE,
         "schema_version": FULL_SCORE_CONNECTOR_PROOF_SCHEMA_VERSION,
         "validation": (
-            "exactly_one_successful_full_layer_full_token_q8_load_per_vanilla_request;"
+            "exactly_one_successful_full_layer_q8_load_per_vanilla_request;"
+            "full_prefix_decoded;every_whole_prefix_block_injected;"
             "zero_baseline_loads"
         ),
     }
     proof["closed_record_sha256"] = _closed_record_sha256(proof)
     return proof
+
+
+def _full_score_injected_prefix_tokens(
+    *,
+    cache_prefix_tokens: int,
+    natural_prompt_tokens: int,
+) -> int:
+    """Return the prefix tokens the native provider injects into vLLM blocks.
+
+    vLLM schedules external KV only in whole blocks of a strict prompt prefix,
+    so the trailing partial block of the cached prefix is recomputed.
+    """
+
+    matchable = min(cache_prefix_tokens, natural_prompt_tokens - 1)
+    injected = matchable // FULL_SCORE_KV_BLOCK_SIZE * FULL_SCORE_KV_BLOCK_SIZE
+    if injected <= 0:
+        raise ValueError("Vanilla cache prefix is shorter than one KV block")
+    return injected
 
 
 def _require_full_score_final_consumer_aggregation_authorization(
@@ -11040,6 +11072,16 @@ def _recover_committed_consumer_shard(
     return evidence
 
 
+def _thawed_example_json(value: Any) -> Any:
+    """Copy ``BenchmarkExample``'s deep-frozen JSON into plain containers."""
+
+    if isinstance(value, Mapping):
+        return {key: _thawed_example_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_thawed_example_json(item) for item in value]
+    return value
+
+
 def _full_score_expected_prompt_delivery(
     example: Any,
     *,
@@ -11055,7 +11097,7 @@ def _full_score_expected_prompt_delivery(
     }:
         raise ValueError("Vanilla input lacks its exact handoff parameter mapping")
     params = _json_mapping(
-        arm_params[FULL_SCORE_VANILLA_ARM_ID],
+        _thawed_example_json(arm_params[FULL_SCORE_VANILLA_ARM_ID]),
         "Vanilla input handoff parameters",
     )
     if params.get(DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM) != "runtime":
@@ -11290,7 +11332,7 @@ def _validated_method_measurements(
                 or measurement.artifact_id != expected_artifact_id
             ):
                 raise ValueError("Vanilla measurement handoff identity drift")
-        expected_prefix_cache_salt = (
+        expected_prefix_cache_salt = _vllm_cache_salt(
             f"{shard_id}:{arm_label}:{expected_suite_id}:"
             f"{measurement.dataset}:{measurement.example_id}:{expected_arm}:"
             f"repeat-{measurement.repeat_index}"
@@ -11681,6 +11723,7 @@ def _full_score_handoff_layout(model_id: str) -> KVLayout:
     return layout_for_model(
         model_id,
         dtype=FULL_SCORE_KV_DTYPE,
+        block_size=FULL_SCORE_KV_BLOCK_SIZE,
         pre_rope=True,
         rope_theta=QWEN3_4B_ROPE_THETA,
         rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
@@ -16136,6 +16179,7 @@ __all__ = [
     "FULL_SCORE_GENERATOR_QUANTIZATION",
     "FULL_SCORE_GENERATOR_QUANTIZATION_CONFIG",
     "FULL_SCORE_GENERATOR_VERSION",
+    "FULL_SCORE_KV_BLOCK_SIZE",
     "FULL_SCORE_KV_DTYPE",
     "FULL_SCORE_LIVE_P90_DRAWS",
     "FULL_SCORE_LIVE_P90_RECORD_TYPE",

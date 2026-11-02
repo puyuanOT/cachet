@@ -695,12 +695,12 @@ fail there after its producer phase succeeds. The full-score workload ID is
 keyed by the execution plan alone, so a chain under a new qualification still
 sees every earlier chain. The 0.30.0 report discloses these attempts as
 `ledger.full_score_abandoned_attempts`. Before the latency prefix, the ledger
-holds twenty wave-zero attempts from six abandoned chains, nineteen producers
-and one consumer, using 114.68173555555553 GPU-hours. Two of those chains
-closed their producer phase and then failed in the ready closure: the `ee77ee4`
-chain, whose closure exceeded its two-hour bound, and the `0e45b07` chain
-recorded below. The `02ca22f` chain, also recorded below, failed in its
-consumer phase.
+holds twenty-two wave-zero attempts from seven abandoned chains, twenty
+producers and two consumers, using 129.54191972222222 GPU-hours. Two of those
+chains closed their producer phase and then failed in the ready closure: the
+`ee77ee4` chain, whose closure exceeded its two-hour bound, and the `0e45b07`
+chain recorded below. The `02ca22f` and `e2e0a58` chains, also recorded below,
+failed in their consumer phases.
 
 Each remote CPU coordinator keeps its local controller state in a directory
 under the shared phase lease root. The directory is named for the
@@ -843,6 +843,42 @@ at the exact 398/348/398 prefix
 `55740af7bfee17de3f767ebd4861a667c6344e8034fd30b342295f979cc46359`
 at 853.0619266666665 terminal GPU-hours, with zero active reservations and
 1170.9380733333335 hours remaining. The successor binds a fresh source closure
+and this complete prefix as its predecessor.
+
+The vLLM 0.30.0 qualification of source revision `e2e0a58` succeeded but
+authorizes nothing. Its plan is
+`de274fb0fb9f7ee8667b3c268c0712048c5a1294e0467e0b5c16eb2c14ae071d`,
+its source tree is
+`d17b0ee3ce74cb4ddd66172e711683143e7a743ad17691605f55b99f187ef3ec`,
+and its phase batch is
+`57107a5887dc65145fdf27186aa60f6227b3911a0bd2c270dc0a1ec9b8ca361f`.
+All fourteen attempt-zero jobs succeeded, consuming 3.442263888888889 GPU-hours
+and closing the exact 412/362/412 prefix
+`f76ef108464e94f95724264de8649bc6bcb38668310edf0b4904dfb709f55634`.
+Its full score abandoned the earlier chains and closed the wave-zero producer
+phase, terminal
+`641193c9ddb7ca8a61ca252929787bbc25c21a5903f86341f251e7248848873c`, in one
+attempt using 8.16375138888889 GPU-hours. Ready-closure run `793130748693406`
+succeeded. Every task of consumer run `304739615275375` started its vLLM
+server and ran both scoring passes, then all sixteen failed with
+`baseline_prefill measurement prompt-delivery protocol drift` before
+committing evidence. The consumer's output validator had never replayed real
+runner output. It expected the raw per-request cache-salt identity, but the
+runner sends any identity longer than 128 characters as `cachet-h-` plus its
+SHA-256, and every full-score identity is longer. Two more defects sat behind
+that one. The Vanilla check passed the example's frozen handoff parameters to
+`json.dumps`, which rejects them. The connector proof required each load to
+inject the whole cached prefix, but the native provider injects only the
+prefix's whole 16-token blocks and vLLM recomputes the rest; only 4,987 of the
+83,653 inventory prefixes are block-aligned. The successor expects the hashed
+salt, thaws the parameters before normalizing them, and requires each load to
+decode the full prefix and inject every whole block of it. A consumer test now
+runs on a producer-built ready shard with the real runner and the native
+provider's own load records, then replays the committed evidence. The chain
+used 14.860184166666667 GPU-hours. The ledger stands at the exact 414/364/414
+prefix `d3ffbd0576427d78721fc2f7022d6adbfc31f66af871fc0cddd2c5d7f39f3f99`
+at 871.3643747222221 terminal GPU-hours, with zero active reservations and
+1152.6356252777778 hours remaining. The successor binds a fresh source closure
 and this complete prefix as its predecessor.
 
 Every publication `runs/submit` payload also carries a package-derived,

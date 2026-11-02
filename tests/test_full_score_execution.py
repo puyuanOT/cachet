@@ -7,12 +7,14 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from hashlib import sha256
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import cachet.full_score_execution as cachet_full_score
+import document_kv_cache.benchmark_runner as benchmark_runner
 import document_kv_cache.full_score_execution as full_score
 from document_kv_cache.serving_env import (
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
@@ -1351,10 +1353,12 @@ def test_publication_paths_are_confined_and_local_fixtures_are_nonauthorizing(
         )
 
 
-def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
+def test_connector_proof_requires_one_whole_block_q8_load_per_vanilla_request(
     campaign,
 ):
     shard = campaign["execution_plan"]["waves"][0]["shards"][0]
+    block_size = full_score.FULL_SCORE_KV_BLOCK_SIZE
+    assert any(item["cache_prefix_tokens"] % block_size for item in shard["items"])
     pairs = []
     telemetry = []
     for item in shard["items"]:
@@ -1378,6 +1382,7 @@ def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
             }
         )
         tokens = item["cache_prefix_tokens"]
+        injected = tokens // block_size * block_size
         runtime_bytes = tokens * full_score.FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN
         telemetry.append(
             {
@@ -1387,8 +1392,8 @@ def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
                     "cache_method": "vanilla_prefill",
                     "decoded_runtime_bytes": runtime_bytes,
                     "expected_runtime_bytes": runtime_bytes,
-                    "expected_tokens": tokens,
-                    "loaded_tokens": tokens,
+                    "expected_tokens": injected,
+                    "loaded_tokens": injected,
                     "payload_cache_hit": False,
                     "successful_loads": 1,
                 },
@@ -1397,10 +1402,13 @@ def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
                     "expected_runtime_payload_bytes": runtime_bytes,
                     "handoff_total_tokens": tokens,
                     "layers_loaded": full_score.FULL_SCORE_MODEL_NUM_LAYERS,
-                    "token_count": tokens,
+                    "source_token_end": injected,
+                    "source_token_start": 0,
+                    "token_count": injected,
                 },
                 "event": "load_request",
                 "layout": {
+                    "block_size": block_size,
                     "bytes_per_token": (
                         full_score.FULL_SCORE_Q8_BYTES_PER_CACHE_PREFIX_TOKEN
                     ),
@@ -1426,17 +1434,45 @@ def test_connector_proof_requires_one_exact_full_q8_load_per_vanilla_request(
         shard=shard,
     )
     assert proof["load_count"] == len(shard["items"])
-    telemetry[0]["counts"]["layers_loaded"] -= 1
-    telemetry_path.write_text(
-        "".join(json.dumps(record) + "\n" for record in telemetry),
-        encoding="utf-8",
+    assert [load["injected_prefix_tokens"] for load in proof["loads"]] == [
+        record["counts"]["token_count"] for record in telemetry
+    ]
+    unaligned = next(
+        record
+        for record in telemetry
+        if record["counts"]["handoff_total_tokens"] % block_size
     )
-    with pytest.raises(ValueError, match="count/layout coverage drift"):
-        full_score.build_full_score_connector_proof(
-            telemetry_path,
-            paired_examples=pairs,
-            shard=shard,
+    for drift, message in (
+        (
+            lambda records: records[0]["counts"].update(
+                layers_loaded=records[0]["counts"]["layers_loaded"] - 1
+            ),
+            "count/layout coverage drift",
+        ),
+        (
+            lambda records: records[telemetry.index(unaligned)]["counts"].update(
+                token_count=unaligned["counts"]["handoff_total_tokens"],
+                source_token_end=unaligned["counts"]["handoff_total_tokens"],
+            ),
+            "count/layout coverage drift",
+        ),
+        (
+            lambda records: records[0]["layout"].update(block_size=2 * block_size),
+            "model layout drift",
+        ),
+    ):
+        drifted = copy.deepcopy(telemetry)
+        drift(drifted)
+        telemetry_path.write_text(
+            "".join(json.dumps(record) + "\n" for record in drifted),
+            encoding="utf-8",
         )
+        with pytest.raises(ValueError, match=message):
+            full_score.build_full_score_connector_proof(
+                telemetry_path,
+                paired_examples=pairs,
+                shard=shard,
+            )
 
 
 def test_niah_measurement_cell_and_raw_protocol_must_replay_from_bound_source():
@@ -1952,6 +1988,198 @@ def test_consumer_runtime_identity_admits_producer_ready_shard_handoffs(
         provider._verify_runtime_compatibility(load)
         with pytest.raises(ValueError, match="prompt_template_version"):
             drifted._verify_runtime_compatibility(load)
+
+
+class _NativeProviderCompletionHandler(BaseHTTPRequestHandler):
+    """Answer like vLLM's streaming completions and record provider loads."""
+
+    def log_message(self, *_args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        state = self.server.state
+        token_ids = _ReadyShardTokenizer()(
+            body["prompt"], return_tensors="pt", add_special_tokens=False
+        )["input_ids"][0]
+        with state["lock"]:
+            state["requests"].append(body)
+            if "kv_transfer_params" in body:
+                _record_native_provider_load(
+                    state["provider"],
+                    body,
+                    token_ids=token_ids,
+                    ordinal=len(state["requests"]),
+                )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        common = {"created": 0, "id": "cmpl-test", "model": body["model"]}
+        chunks = [
+            {
+                **common,
+                "choices": [{"finish_reason": None, "index": 0, "text": "answer"}],
+            },
+            {
+                **common,
+                "choices": [{"finish_reason": "stop", "index": 0, "text": ""}],
+            },
+            {
+                **common,
+                "choices": [],
+                "usage": {
+                    "completion_tokens": 1,
+                    "prompt_tokens": len(token_ids),
+                    "total_tokens": len(token_ids) + 1,
+                },
+            },
+        ]
+        for chunk in chunks:
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+
+
+def _record_native_provider_load(provider, body, *, token_ids, ordinal):
+    request = SimpleNamespace(
+        request_id=f"cmpl-{body['request_id']}-0-{ordinal:08x}",
+        kv_transfer_params=body["kv_transfer_params"],
+        num_tokens=len(token_ids),
+        prompt_token_ids=list(token_ids),
+    )
+    matched_tokens, _load_async = provider.get_num_new_matched_tokens(request, 0)
+    block_ids = list(range(-(-len(token_ids) // full_score.FULL_SCORE_KV_BLOCK_SIZE)))
+    provider.update_state_after_alloc(request, (block_ids,), matched_tokens)
+    (load,) = provider.build_connector_meta(
+        SimpleNamespace(
+            scheduled_new_reqs=[
+                SimpleNamespace(req_id=request.request_id, block_ids=(block_ids,))
+            ]
+        )
+    ).loads
+    reservation = load.actions.reservation
+    provider._write_load_telemetry(
+        load,
+        total_ns=1,
+        payload_materialize_ns=1,
+        payload_merge_ns=1,
+        payload_view_ns=1,
+        layer_load_ns=1,
+        layers_loaded=reservation.layout.num_layers,
+        decoded_runtime_bytes=reservation.total_tokens
+        * reservation.layout.bytes_per_token,
+        payload_cache_hits=0,
+        payload_cache_misses=1,
+        payload_loading={},
+        error_type=None,
+        error_message=None,
+    )
+
+
+def _run_benchmark_runner_in_process(argv, *, env, cwd=None):
+    del env, cwd
+    assert list(argv[1:3]) == ["-m", "document_kv_cache.benchmark_runner"]
+    assert benchmark_runner.main(list(argv[3:])) == 0
+
+
+def test_consumer_evidence_replays_from_runner_and_native_provider_bytes(
+    campaign, tmp_path
+):
+    producer_payload = _ready_shard_producer_payload(campaign, tmp_path)
+    shard = producer_payload["shards"][0]
+    ready = _produce_test_ready_shard(campaign, producer_payload, shard)
+    payload = copy.deepcopy(
+        next(
+            candidate
+            for candidate in _phase_payloads(campaign, 0, "consumer")
+            if shard["shard_id"]
+            in {item["shard_id"] for item in candidate["shards"]}
+        )
+    )
+    payload["durable_output_root"] = producer_payload["durable_output_root"]
+    payload["ephemeral_root"] = str(tmp_path / "consumer-ephemeral")
+    local_root = tmp_path / "consumer-local"
+    local_root.mkdir()
+    connector_telemetry = local_root / "connector-telemetry.jsonl"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _NativeProviderCompletionHandler)
+    runtime = replace(
+        campaign["bundle"].runtime, server_port=server.server_address[1]
+    )
+    server.state = {
+        "lock": threading.Lock(),
+        "provider": _provider_from_vllm_config(
+            SimpleNamespace(
+                kv_transfer_config=_consumer_server_transfer_config(
+                    runtime, telemetry_jsonl=str(connector_telemetry)
+                )
+            )
+        ),
+        "requests": [],
+    }
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server_log = local_root / "vllm-server.log"
+    try:
+        with server_log.open("w", encoding="utf-8") as log_handle:
+            log_handle.write("vLLM API server ready\n")
+            evidence = full_score._consume_ready_shard(
+                payload,
+                shard,
+                inventory=campaign["inventory"],
+                shard_plan=campaign["shard_plan"],
+                execution_plan=campaign["execution_plan"],
+                producer_completion={
+                    "ready_shards": [
+                        {
+                            "ready_record_sha256": ready["closed_record_sha256"],
+                            "shard_id": shard["shard_id"],
+                        }
+                    ]
+                },
+                runtime=runtime,
+                runtime_verification=_runtime_verification(),
+                runner=_run_benchmark_runner_in_process,
+                server=SimpleNamespace(pid=os.getpid()),
+                server_log=server_log,
+                connector_telemetry=connector_telemetry,
+                log_handle=log_handle,
+                local_root=local_root,
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    requests = server.state["requests"]
+    assert len(requests) == 2 * len(shard["items"])
+    assert all(body["cache_salt"].startswith("cachet-h-") for body in requests)
+    durable_dir = (
+        Path(payload["durable_output_root"])
+        / "evidence"
+        / "wave-000"
+        / shard["shard_id"]
+    )
+    replayed, deletion = full_score.load_governed_full_score_shard_evidence(
+        durable_dir,
+        inventory=campaign["inventory"],
+        shard_plan=campaign["shard_plan"],
+        execution_plan=campaign["execution_plan"],
+    )
+    assert replayed == evidence
+    assert deletion is not None
+    assert not full_score._ready_shard_dir(payload, shard["shard_id"]).exists()
+    planned = {item["example_id"]: item for item in shard["items"]}
+    loads = evidence["connector_proof"]["loads"]
+    assert len(loads) == len(planned)
+    for load in loads:
+        cache_tokens = planned[load["example_id"]]["cache_prefix_tokens"]
+        assert load["cache_prefix_tokens"] == cache_tokens
+        assert load["injected_prefix_tokens"] == (
+            cache_tokens
+            // full_score.FULL_SCORE_KV_BLOCK_SIZE
+            * full_score.FULL_SCORE_KV_BLOCK_SIZE
+        )
+    assert any(
+        load["injected_prefix_tokens"] < load["cache_prefix_tokens"]
+        for load in loads
+    )
 
 
 def test_producer_rejects_generator_rope_that_the_consumer_would_refuse(
