@@ -1,5 +1,6 @@
 import copy
 import errno
+import importlib
 import json
 import os
 import threading
@@ -26,7 +27,7 @@ import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
 import document_kv_cache.publication_latency_execution as publication_latency
 import document_kv_cache.runtime_artifact_closure as runtime_artifact_closure
 import document_kv_cache.flashinfer_wheel_repack as flashinfer_wheel_repack
-from document_kv_cache.artifact_identity import TokenContract
+from document_kv_cache.artifact_identity import RuntimeIdentity, TokenContract
 from document_kv_cache.benchmark_handoffs import (
     BenchmarkHandoffEntry,
     BenchmarkHandoffManifest,
@@ -65,7 +66,6 @@ from document_kv_cache.gpu_qualification_v2 import (
     GPUQualificationArtifactPinsV2,
 )
 from document_kv_cache.kvpack import PackChunk
-from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import KVCacheKey
 from document_kv_cache.publication_campaign import PUBLICATION_CAMPAIGN_ID
 from document_kv_cache.publication_inputs import (
@@ -79,6 +79,17 @@ from document_kv_cache.runtime_artifact_closure import (
     RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
     VLLM_PATCHED_WHEEL_SHA256,
     VLLM_RUNTIME_BASE_LOCK_SHA256,
+)
+from vllm_kv_injection.vllm_dynamic_connector import (
+    DOCUMENT_KV_CONNECTOR_MODULE_PATH,
+    _provider_from_vllm_config,
+)
+from vllm_kv_injection.vllm_native_provider import (
+    DocumentKVNativeProvider,
+    build_document_kv_provider,
+)
+from vllm_kv_injection.vllm_native_provider_constants import (
+    DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
 )
 from test_gpu_qualification_v2 import (
     _accept_non_throughput_measurements,
@@ -1769,15 +1780,7 @@ def _produce_test_ready_shard(campaign, payload, shard):
         )
         for item in shard["items"]
     }
-    layout = layout_for_model(
-        full_score.FULL_SCORE_MODEL_ID,
-        dtype=full_score.FULL_SCORE_KV_DTYPE,
-        pre_rope=True,
-        rope_theta=full_score.QWEN3_4B_ROPE_THETA,
-        rope_rotary_dim=full_score.QWEN3_4B_ROPE_ROTARY_DIM,
-        shares_kv_storage=False,
-        storage_layout="separate_key_value",
-    )
+    layout = full_score._full_score_handoff_layout(full_score.FULL_SCORE_MODEL_ID)
     return full_score._produce_ready_shard(
         payload,
         shard,
@@ -1850,6 +1853,131 @@ def test_producer_commits_ready_shard_in_place_without_directory_rename(
         == ready
     )
     assert _produce_test_ready_shard(campaign, payload, shard) == ready
+
+
+def _consumer_server_transfer_config(runtime, *, telemetry_jsonl):
+    command = full_score._vllm_server_command(
+        runtime, telemetry_jsonl=telemetry_jsonl
+    )
+    assert command.count("--kv-transfer-config") == 1
+    return json.loads(command[command.index("--kv-transfer-config") + 1])
+
+
+def test_consumer_server_loads_the_native_document_connector(campaign):
+    runtime = campaign["bundle"].runtime
+    frozen_policy = copy.deepcopy(dict(runtime.kv_transfer_config))
+
+    transfer = _consumer_server_transfer_config(
+        runtime, telemetry_jsonl="/local_disk0/consumer/connector-telemetry.jsonl"
+    )
+
+    assert transfer["kv_connector"] == "DocumentKVConnector"
+    assert transfer["kv_role"] == "kv_consumer"
+    assert transfer["kv_connector_module_path"] == DOCUMENT_KV_CONNECTOR_MODULE_PATH
+    assert hasattr(
+        importlib.import_module(transfer["kv_connector_module_path"]),
+        transfer["kv_connector"],
+    )
+    extra = transfer["kv_connector_extra_config"]
+    assert extra["document_kv.provider_factory"] == DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
+    assert extra["document_kv.payload_cache_max_bytes"] == 0
+    assert extra["document_kv.require_runtime_handshake"] is True
+    assert (
+        extra["document_kv.telemetry_jsonl"]
+        == "/local_disk0/consumer/connector-telemetry.jsonl"
+    )
+    identity = RuntimeIdentity.from_record(extra["document_kv.runtime_identity"])
+    assert identity.model_id == runtime.model_id
+    assert identity.model_revision == runtime.model_revision
+    assert identity.tokenizer_revision == runtime.tokenizer_revision
+    assert identity.kv_dtype == full_score.FULL_SCORE_KV_DTYPE
+    assert identity.key_position_encoding == "pre_rope"
+    assert identity.rope_theta == full_score.QWEN3_4B_ROPE_THETA
+    assert identity.rope_rotary_dim == full_score.QWEN3_4B_ROPE_ROTARY_DIM
+    provider = _provider_from_vllm_config(SimpleNamespace(kv_transfer_config=transfer))
+    assert isinstance(provider, DocumentKVNativeProvider)
+    assert provider.provider_factory == DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
+    assert provider.runtime_identity == identity
+    assert provider.require_runtime_handshake is True
+    assert dict(runtime.kv_transfer_config) == frozen_policy
+    dry_run_server = full_score.render_full_score_worker_command_plan(
+        _phase_payloads(campaign, 0, "consumer")[0]
+    )["server"]
+    dry_run_transfer = json.loads(
+        dry_run_server[dry_run_server.index("--kv-transfer-config") + 1]
+    )
+    assert "document_kv.telemetry_jsonl" not in (
+        dry_run_transfer["kv_connector_extra_config"]
+    )
+    dry_run_transfer["kv_connector_extra_config"]["document_kv.telemetry_jsonl"] = (
+        "/local_disk0/consumer/connector-telemetry.jsonl"
+    )
+    assert dry_run_transfer == transfer
+
+
+def test_consumer_runtime_identity_admits_producer_ready_shard_handoffs(
+    campaign, tmp_path
+):
+    payload = _ready_shard_producer_payload(campaign, tmp_path)
+    shard = payload["shards"][0]
+    _produce_test_ready_shard(campaign, payload, shard)
+    ready_dir = full_score._ready_shard_dir(payload, shard["shard_id"])
+    datasets = sorted({item["dataset"] for item in shard["items"]})
+    examples = full_score._load_ready_examples(
+        {dataset: ready_dir / "enriched" / f"{dataset}.jsonl" for dataset in datasets}
+    )
+    assert len(examples) == len(shard["items"])
+    transfer = _consumer_server_transfer_config(
+        campaign["bundle"].runtime,
+        telemetry_jsonl=str(tmp_path / "connector-telemetry.jsonl"),
+    )
+    provider = _provider_from_vllm_config(SimpleNamespace(kv_transfer_config=transfer))
+    drifted_extra = dict(transfer["kv_connector_extra_config"])
+    drifted_extra["document_kv.runtime_identity"] = {
+        **drifted_extra["document_kv.runtime_identity"],
+        "prompt_template_version": "drifted-template",
+    }
+    drifted = build_document_kv_provider(vllm_config=None, extra_config=drifted_extra)
+
+    for (_dataset, example_id), example in sorted(examples.items()):
+        request = SimpleNamespace(
+            request_id=f"cmpl-{example_id}",
+            kv_transfer_params=example.arm_kv_transfer_params[
+                full_score.FULL_SCORE_VANILLA_ARM_ID
+            ],
+        )
+        load = provider.source.get_load(request)
+        assert load is not None
+        assert load.actions.reservation.artifact_identity is not None
+        provider._verify_runtime_compatibility(load)
+        with pytest.raises(ValueError, match="prompt_template_version"):
+            drifted._verify_runtime_compatibility(load)
+
+
+def test_producer_rejects_generator_rope_that_the_consumer_would_refuse(
+    campaign, tmp_path, monkeypatch
+):
+    layout = full_score._full_score_handoff_layout(full_score.FULL_SCORE_MODEL_ID)
+    generator = _ReadyShardGenerator(layout)
+    generator.rope_theta = 1_000_000.0
+    monkeypatch.setattr(full_score, "_worker_environment", lambda _runtime: {})
+    monkeypatch.setattr(full_score, "_observe_producer_hardware", lambda: {})
+    monkeypatch.setattr(
+        full_score, "load_benchmark_kv_chunk_generator", lambda _factory: generator
+    )
+    payload = _ready_shard_producer_payload(campaign, tmp_path)
+
+    with pytest.raises(ValueError, match="RoPE parameters must match"):
+        full_score._run_producer_worker(
+            payload,
+            inventory=campaign["inventory"],
+            shard_plan=campaign["shard_plan"],
+            execution_plan=campaign["execution_plan"],
+            source_records={},
+            runtime=campaign["bundle"].runtime,
+            runtime_verification=_runtime_verification(),
+        )
+    assert not (tmp_path / "durable").exists()
 
 
 def test_ready_wave_wait_treats_an_empty_record_claim_as_pending(

@@ -695,10 +695,12 @@ fail there after its producer phase succeeds. The full-score workload ID is
 keyed by the execution plan alone, so a chain under a new qualification still
 sees every earlier chain. The 0.30.0 report discloses these attempts as
 `ledger.full_score_abandoned_attempts`. Before the latency prefix, the ledger
-holds seventeen wave-zero producer attempts from five abandoned chains, using
-102.0129975 GPU-hours. Two of those chains closed their producer phase and then
-failed in the ready closure: the `ee77ee4` chain, whose closure exceeded its
-two-hour bound, and the `0e45b07` chain recorded below.
+holds twenty wave-zero attempts from six abandoned chains, nineteen producers
+and one consumer, using 114.68173555555553 GPU-hours. Two of those chains
+closed their producer phase and then failed in the ready closure: the `ee77ee4`
+chain, whose closure exceeded its two-hour bound, and the `0e45b07` chain
+recorded below. The `02ca22f` chain, also recorded below, failed in its
+consumer phase.
 
 Each remote CPU coordinator keeps its local controller state in a directory
 under the shared phase lease root. The directory is named for the
@@ -808,6 +810,40 @@ accepts either exact file identity, applies the same manifest and wheel checks,
 and still reproduces the sealed closure. A v2 source closure records the file
 it actually bound, so every qualification from this revision onward names the
 recovered manifest in its `patched_vllm_manifest` reference.
+
+The vLLM 0.30.0 qualification of source revision `02ca22f` succeeded but
+authorizes nothing. Its plan is
+`1da3889bdb18f010b198af49947ef4006d3bd58cb9ff08fe7e8775050590a77c`,
+its source tree is
+`a6ffeca415e119c3d201b69e8c50f8859d3bb0caf82ee46c421d440fbc34f937`,
+and its phase batch is
+`2782fa40f60854e4241593edbde2e8aa83142a5025381d16c1100d8d84fc7339`.
+All fourteen attempt-zero jobs succeeded, consuming 3.8471975 GPU-hours and
+closing the exact 395/345/395 prefix
+`b1eb28847740aeca38e1719730fa7eaa62b0b18e5732b8b00829a10db12069c8`.
+Its full score abandoned the earlier chains and closed the wave-zero producer
+phase, terminal
+`5791245e4109f4c224faaa04a197b3ab2c142d40e59c1efc0571e9df78887080`, in two
+attempts using 9.078998888888888 GPU-hours. One attempt-0 task never started
+because of
+`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`, and attempt 1 reran it.
+Ready-closure run `1088778984816828` succeeded. All sixteen tasks of consumer
+run `946423203173294` then failed before scoring, because vLLM rejected
+`Unsupported connector type: DocumentKVConnector`. The consumer had passed
+the frozen three-key transfer policy to vLLM unchanged. vLLM 0.30.0 resolves a
+connector outside its built-in registry only through
+`kv_connector_module_path`, and the policy named no provider factory or
+runtime identity. The successor keeps that policy frozen in the execution plan
+and expands it only at server launch. It adds the connector module path, the
+native provider factory, and a runtime identity derived from the same handoff
+layout the producer stamps, so the required handshake admits the producer's
+artifacts. The producer refuses a generator whose RoPE parameters differ from
+that identity. The chain used 12.668738055555554 GPU-hours. The ledger stands
+at the exact 398/348/398 prefix
+`55740af7bfee17de3f767ebd4861a667c6344e8034fd30b342295f979cc46359`
+at 853.0619266666665 terminal GPU-hours, with zero active reservations and
+1170.9380733333335 hours remaining. The successor binds a fresh source closure
+and this complete prefix as its predecessor.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
