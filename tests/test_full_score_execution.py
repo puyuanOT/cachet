@@ -3,6 +3,7 @@ import errno
 import importlib
 import json
 import os
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -2082,7 +2083,7 @@ def _run_benchmark_runner_in_process(argv, *, env, cwd=None):
 
 
 def test_consumer_evidence_replays_from_runner_and_native_provider_bytes(
-    campaign, tmp_path
+    campaign, tmp_path, monkeypatch
 ):
     producer_payload = _ready_shard_producer_payload(campaign, tmp_path)
     shard = producer_payload["shards"][0]
@@ -2117,6 +2118,14 @@ def test_consumer_evidence_replays_from_runner_and_native_provider_bytes(
     }
     threading.Thread(target=server.serve_forever, daemon=True).start()
     server_log = local_root / "vllm-server.log"
+    copy_file_object = shutil.copyfileobj
+
+    def copy_while_server_logs(reader, writer, *args, **kwargs):
+        copy_file_object(reader, writer, *args, **kwargs)
+        with server_log.open("a", encoding="utf-8") as live_log:
+            live_log.write("Engine 000: Avg prompt throughput: 0.0 tokens/s\n")
+
+    monkeypatch.setattr(shutil, "copyfileobj", copy_while_server_logs)
     try:
         with server_log.open("w", encoding="utf-8") as log_handle:
             log_handle.write("vLLM API server ready\n")
@@ -2165,6 +2174,10 @@ def test_consumer_evidence_replays_from_runner_and_native_provider_bytes(
     assert replayed == evidence
     assert deletion is not None
     assert not full_score._ready_shard_dir(payload, shard["shard_id"]).exists()
+    preserved_log = (durable_dir / "vllm-server.log").read_bytes()
+    assert preserved_log.startswith(b"vLLM API server ready\n")
+    assert server_log.read_bytes().startswith(preserved_log)
+    assert len(server_log.read_bytes()) > len(preserved_log)
     planned = {item["example_id"]: item for item in shard["items"]}
     loads = evidence["connector_proof"]["loads"]
     assert len(loads) == len(planned)
@@ -2180,6 +2193,46 @@ def test_consumer_evidence_replays_from_runner_and_native_provider_bytes(
         load["injected_prefix_tokens"] < load["cache_prefix_tokens"]
         for load in loads
     )
+
+
+def test_consumer_worker_rereads_only_its_own_ready_records(campaign):
+    completion = _producer_completion(campaign, 0)
+    payload = _phase_payloads(campaign, 0, "consumer")[0]
+    own = {shard["shard_id"] for shard in payload["shards"]}
+    ready_files = {
+        item["shard_id"]: Path(item["path"])
+        for item in completion["ready_record_files"]
+    }
+    consumed_elsewhere = sorted(set(ready_files) - own)
+    assert consumed_elsewhere
+    for shard_id in consumed_elsewhere:
+        ready_files[shard_id].unlink()
+
+    full_score._validate_consumer_worker_producer_completion(
+        completion,
+        payload=payload,
+        execution_plan=campaign["execution_plan"],
+    )
+    with pytest.raises(ValueError, match="ready-record path must be an existing regular"):
+        full_score._validate_producer_phase_completion(
+            completion,
+            execution_plan=campaign["execution_plan"],
+            expected_wave_index=0,
+        )
+    with pytest.raises(ValueError, match="file scope is not in the wave"):
+        full_score._validate_producer_phase_completion(
+            completion,
+            execution_plan=campaign["execution_plan"],
+            expected_wave_index=0,
+            ready_file_shard_ids=frozenset({"full-score-shard-not-planned"}),
+        )
+    ready_files[sorted(own)[0]].unlink()
+    with pytest.raises(ValueError, match="ready-record path must be an existing regular"):
+        full_score._validate_consumer_worker_producer_completion(
+            completion,
+            payload=payload,
+            execution_plan=campaign["execution_plan"],
+        )
 
 
 def test_producer_rejects_generator_rope_that_the_consumer_would_refuse(

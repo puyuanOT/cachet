@@ -10193,10 +10193,10 @@ def run_full_score_worker(
             completion_sha256,
             closure_digest=True,
         )
-        _validate_producer_phase_completion(
+        _validate_consumer_worker_producer_completion(
             producer_completion,
+            payload=payload,
             execution_plan=execution_record,
-            expected_wave_index=_required_int(payload, "wave_index"),
         )
         return _run_consumer_worker(
             payload,
@@ -10547,6 +10547,23 @@ def _delete_intermediate_kvpack(shard_uri: str, *, output_dir: Path) -> None:
     shard_path.unlink()
 
 
+def _validate_consumer_worker_producer_completion(
+    producer_completion: Mapping[str, Any],
+    *,
+    payload: Mapping[str, Any],
+    execution_plan: Mapping[str, Any],
+) -> None:
+    _validate_producer_phase_completion(
+        producer_completion,
+        execution_plan=execution_plan,
+        expected_wave_index=_required_int(payload, "wave_index"),
+        ready_file_shard_ids=frozenset(
+            _required_string(shard, "shard_id")
+            for shard in cast(list[Mapping[str, Any]], payload["shards"])
+        ),
+    )
+
+
 def _run_consumer_worker(
     payload: Mapping[str, Any],
     *,
@@ -10790,6 +10807,10 @@ def _consume_ready_shard(
         raise ValueError("shard connector telemetry is empty or unterminated")
     shard_connector_telemetry = shard_local / "connector-telemetry.jsonl"
     _exclusive_write_bytes(shard_connector_telemetry, shard_connector_bytes)
+    # The still-running vLLM server keeps appending to its log (for example
+    # periodic throughput lines), so only a point-in-time copy is preservable.
+    server_log_snapshot = shard_local / "vllm-server.log"
+    _exclusive_write_bytes(server_log_snapshot, server_log.read_bytes())
     connector_proof = build_full_score_connector_proof(
         shard_connector_telemetry,
         paired_examples=paired,
@@ -10814,7 +10835,7 @@ def _consume_ready_shard(
         ("baseline_raw_output", baseline_path, "baseline-raw-output.json"),
         ("vanilla_raw_output", vanilla_path, "vanilla-raw-output.json"),
         ("runtime_telemetry", telemetry_path, "runtime-telemetry.json"),
-        ("server_log", server_log, "vllm-server.log"),
+        ("server_log", server_log_snapshot, "vllm-server.log"),
         (
             "connector_telemetry",
             shard_connector_telemetry,
@@ -13356,7 +13377,15 @@ def _validate_producer_phase_completion(
     expected_wave_index: int,
     compact_artifact_resolver: FullScoreCompactArtifactResolver | None = None,
     ready_files_attested_remotely: bool = False,
+    ready_file_shard_ids: frozenset[str] | None = None,
 ) -> None:
+    """Validate a producer-phase completion and re-read its ready-record files.
+
+    ``ready_file_shard_ids`` limits the re-read to those shards. Consumers
+    delete their own ready shards once evidence is durable, so another
+    consumer of the same wave can only rely on the files of its own shards.
+    """
+
     if not isinstance(record, Mapping):
         raise ValueError("consumer phase requires producer-phase completion")
     if record.get("record_type") != FULL_SCORE_PRODUCER_PHASE_COMPLETION_RECORD_TYPE:
@@ -13381,6 +13410,10 @@ def _validate_producer_phase_completion(
     expected_ids = sorted(cast(list[str], waves[expected_wave_index]["shard_ids"]))
     if record.get("shard_ids") != expected_ids:
         raise ValueError("producer-phase completion shard coverage drift")
+    if ready_file_shard_ids is not None and (
+        not ready_file_shard_ids or not ready_file_shard_ids <= set(expected_ids)
+    ):
+        raise ValueError("producer ready-record file scope is not in the wave")
     ready_shards = record.get("ready_shards")
     if not isinstance(ready_shards, list) or len(ready_shards) != len(expected_ids):
         raise ValueError("producer-phase completion ready-shard coverage drift")
@@ -13436,7 +13469,9 @@ def _validate_producer_phase_completion(
             "ready_record_sha256"
         ):
             raise ValueError("producer ready-record compact/file binding drift")
-        if ready_files_attested_remotely:
+        if ready_files_attested_remotely or (
+            ready_file_shard_ids is not None and shard_id not in ready_file_shard_ids
+        ):
             continue
         ready_file = _governed_compact_file(
             _required_string(file_record, "path"),
@@ -14679,7 +14714,7 @@ def _durable_copy(source: Path, destination: Path) -> None:
         sha256(source.read_bytes()).hexdigest()
         != sha256(destination.read_bytes()).hexdigest()
     ):
-        raise RuntimeError("durable evidence copy checksum mismatch")
+        raise RuntimeError(f"durable evidence copy checksum mismatch: {source.name}")
 
 
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:

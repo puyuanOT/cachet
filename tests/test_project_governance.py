@@ -1948,10 +1948,13 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         compact_ledger_doc
     )
     assert "`ledger.full_score_abandoned_attempts`" in compact_ledger_doc
-    assert "twenty-two wave-zero attempts from seven abandoned chains" in (
+    assert "twenty-six wave-zero attempts from eight abandoned chains" in (
         compact_ledger_doc
     )
-    assert "129.54191972222222 GPU-hours" in compact_ledger_doc
+    assert "148.0647525 GPU-hours" in compact_ledger_doc
+    assert "no abandoned chain closed a consumer phase or authorized a score" in (
+        compact_ledger_doc
+    )
     assert "bound to the closed phase it verifies" in compact_ledger_doc
     assert "marks even `SystemExit(0)` as `FAILED`" in compact_ledger_doc
     assert "vLLM 0.30.0 qualification of source revision `8323fc7`" in (
@@ -1998,6 +2001,15 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "inject every whole block of it" in compact_ledger_doc
     assert "exact 414/364/414 prefix" in compact_ledger_doc
     assert "871.3643747222221 terminal GPU-hours" in compact_ledger_doc
+    assert "vLLM 0.30.0 qualification of source revision `12d22d9`" in (
+        compact_ledger_doc
+    )
+    assert "Consumer run `160479608912772`" in compact_ledger_doc
+    assert "`durable evidence copy checksum mismatch`" in compact_ledger_doc
+    assert "preserves a point-in-time copy of the server log" in compact_ledger_doc
+    assert "re-reads only its own shards' ready records" in compact_ledger_doc
+    assert "exact 432/382/432 prefix" in compact_ledger_doc
+    assert "893.4019491666666 terminal GPU-hours" in compact_ledger_doc
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -2059,6 +2071,12 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "f76ef108464e94f95724264de8649bc6bcb38668310edf0b4904dfb709f55634",
         "641193c9ddb7ca8a61ca252929787bbc25c21a5903f86341f251e7248848873c",
         "d3ffbd0576427d78721fc2f7022d6adbfc31f66af871fc0cddd2c5d7f39f3f99",
+        "7becfb73d555149acadbe1426ff20e723d21d53d068f248687a04c5e9eb36718",
+        "fc2a7a8c879fa16e38ce31210022bd05385500cc677a399ded3b725889a7eb9c",
+        "6f672af3a953916ee803990691380faa8c4aa57605e8ea778769aa6df87a540f",
+        "ad43f93dbb2170502325a5bfb9265ac3fdba6027aac17d1a8d9afbbdc12c9f88",
+        "4ef81207e1190bf2c3b70997680503be40d09b55f55c3bef21eb6802ef76cf86",
+        "2901803b0469731738a2b76ff6b3eb88a0dd442cc766c28e88040588155839c2",
     ):
         assert digest in compact_ledger_doc
     assert (
