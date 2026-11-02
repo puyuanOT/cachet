@@ -688,19 +688,21 @@ that predecessor prefix and the latency collection prefix.
 A full-score chain restarts only from wave zero, after a fresh latency
 collection, and never resumes the chain it abandons. Every earlier attempt of
 the execution plan must be a terminal wave-zero producer or consumer, and none
-of its consumers may have succeeded, so no score from an abandoned chain
-exists. The latest abandoned attempt may be a succeeded producer: the CPU ready
+of its consumer attempts may have succeeded, so no abandoned chain closed a
+consumer phase or authorized a score. Shard evidence that individual consumer
+tasks committed stays under the abandoned chain's qualification-bound
+namespace. The latest abandoned attempt may be a succeeded producer: the CPU ready
 closure between producer and consumer is not a ledger attempt, so a chain can
 fail there after its producer phase succeeds. The full-score workload ID is
 keyed by the execution plan alone, so a chain under a new qualification still
 sees every earlier chain. The 0.30.0 report discloses these attempts as
 `ledger.full_score_abandoned_attempts`. Before the latency prefix, the ledger
-holds twenty-two wave-zero attempts from seven abandoned chains, twenty
-producers and two consumers, using 129.54191972222222 GPU-hours. Two of those
+holds twenty-six wave-zero attempts from eight abandoned chains, twenty-three
+producers and three consumers, using 148.0647525 GPU-hours. Two of those
 chains closed their producer phase and then failed in the ready closure: the
 `ee77ee4` chain, whose closure exceeded its two-hour bound, and the `0e45b07`
-chain recorded below. The `02ca22f` and `e2e0a58` chains, also recorded below,
-failed in their consumer phases.
+chain recorded below. The `02ca22f`, `e2e0a58`, and `12d22d9` chains, also
+recorded below, failed in their consumer phases.
 
 Each remote CPU coordinator keeps its local controller state in a directory
 under the shared phase lease root. The directory is named for the
@@ -879,6 +881,49 @@ used 14.860184166666667 GPU-hours. The ledger stands at the exact 414/364/414
 prefix `d3ffbd0576427d78721fc2f7022d6adbfc31f66af871fc0cddd2c5d7f39f3f99`
 at 871.3643747222221 terminal GPU-hours, with zero active reservations and
 1152.6356252777778 hours remaining. The successor binds a fresh source closure
+and this complete prefix as its predecessor.
+
+The vLLM 0.30.0 qualification of source revision `12d22d9` succeeded but
+authorizes nothing. Its plan is
+`7becfb73d555149acadbe1426ff20e723d21d53d068f248687a04c5e9eb36718`,
+its source tree is
+`fc2a7a8c879fa16e38ce31210022bd05385500cc677a399ded3b725889a7eb9c`,
+and its phase batch is
+`6f672af3a953916ee803990691380faa8c4aa57605e8ea778769aa6df87a540f`.
+Its local submitter failed on a TLS end-of-file while polling the thirteenth
+job; the package resume replayed the durable batch from that point and
+submitted only the unreceipted fourteenth job. All fourteen attempt-zero jobs
+succeeded, consuming 3.5147416666666667 GPU-hours and closing the exact
+428/378/428 prefix
+`ad43f93dbb2170502325a5bfb9265ac3fdba6027aac17d1a8d9afbbdc12c9f88`.
+Its full score abandoned the earlier chains and closed the wave-zero producer
+phase, terminal
+`4ef81207e1190bf2c3b70997680503be40d09b55f55c3bef21eb6802ef76cf86`, in three
+attempts using 10.722627222222222 GPU-hours. Two attempt-0 tasks and then one
+attempt-1 task never started because of
+`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`. Ready-closure run
+`722864372841730` succeeded. Consumer run `160479608912772` was the first to
+pass the corrected output validators and connector proof on real hardware:
+thirteen of its sixteen tasks committed and replayed their shard evidence and
+deleted their ready shards. One task never started because of
+`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`. The task holding
+`full-score-shard-00006` failed with `durable evidence copy checksum
+mismatch`: the consumer copied the still-running vLLM server's log, which
+grew between the copy and its readback. The last task to get a cluster
+failed at startup with `producer ready-record path governed path must be an
+existing regular file`. Each consumer worker re-read the ready-record file of
+every shard in the wave, but consumers delete their own ready shards once
+their evidence is durable, and the first had already done so. The successor
+preserves a point-in-time copy of the server log, and each consumer re-reads
+only its own shards' ready records. The completion record still binds every
+shard's ready-record digest. The consumer phase never closed, so the thirteen
+committed shards are not a score; they stay under this chain's
+qualification-bound namespace, which no successor reads. The chain used
+18.52283277777778 GPU-hours. The ledger stands at the exact 432/382/432
+prefix
+`2901803b0469731738a2b76ff6b3eb88a0dd442cc766c28e88040588155839c2`
+at 893.4019491666666 terminal GPU-hours, with zero active reservations and
+1130.5980508333334 hours remaining. The successor binds a fresh source closure
 and this complete prefix as its predecessor.
 
 Every publication `runs/submit` payload also carries a package-derived,
