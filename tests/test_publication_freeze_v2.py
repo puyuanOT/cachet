@@ -8,7 +8,7 @@ import io
 import json
 from pathlib import Path
 import tarfile
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, cast
 import zipfile
 
 import pytest
@@ -1732,6 +1732,66 @@ def test_live_preflight_executes_latency_once_after_remote_and_detects_mutation(
     ]
     ruff_path.write_bytes(original_ruff_bytes)
     assert replay_source_rebuilds == [False] * 5
+
+
+def test_v2_fresh_launch_refuses_only_active_campaign_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import document_kv_cache.databricks_runs as databricks_runs
+
+    class _PastActiveRunCheck(Exception):
+        pass
+
+    listings: list[tuple[int, bool]] = []
+    active: tuple[dict[str, Any], ...] = ()
+
+    def list_active(_config: Any, *, max_runs: int, include_run_name: bool):
+        listings.append((max_runs, include_run_name))
+        return active
+
+    def node_types(*_args: Any, **_kwargs: Any):
+        raise _PastActiveRunCheck
+
+    monkeypatch.setattr(
+        freeze_v2,
+        "require_databricks_current_user_name",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(databricks_runs, "list_active_databricks_runs", list_active)
+    monkeypatch.setattr(databricks_runs, "list_databricks_node_types", node_types)
+    config = freeze_v2.DatabricksWorkspaceConfig("https://workspace.example", "secret")
+
+    def validate(*, fresh: bool) -> None:
+        freeze_v2._validate_live_workspace_and_remote_artifacts_v2(
+            config,
+            inputs=cast(Any, None),
+            plan={},
+            single_user_name="user@example.com",
+            require_fresh_workspace=fresh,
+        )
+
+    foreign = {
+        "life_cycle_state": "RUNNING",
+        "run_id": 7,
+        "run_name": "ssh-server-bootstrap-1102-185510-mzs8kdke",
+    }
+    for active in ((), (foreign,)):
+        with pytest.raises(_PastActiveRunCheck):
+            validate(fresh=True)
+    for campaign_run_name in (
+        "cachet-gpu-qualification-campaign-job",
+        "cachet-vllm-0271-full-score-wave-000-producer",
+        None,
+    ):
+        active = (
+            foreign,
+            {"life_cycle_state": "PENDING", "run_id": 9, "run_name": campaign_run_name},
+        )
+        with pytest.raises(ValueError, match="requires zero active campaign runs"):
+            validate(fresh=True)
+        with pytest.raises(_PastActiveRunCheck):
+            validate(fresh=False)
+    assert listings == [(256, True)] * 8
 
 
 def test_v2_artifact_and_check_role_constants_are_exact() -> None:

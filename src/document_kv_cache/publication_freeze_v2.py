@@ -105,6 +105,8 @@ _PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SHA256: Final = (
     "42ec0c1580fcbba7feabfa0426e935aebff9dd5d5dd14706f5163ee70abbbef1"
 )
 _PUBLICATION_FULL_SCORE_SHARD_PLAN_FILE_SIZE: Final = 80_028_701
+# Every campaign Jobs submission is named with this prefix.
+_CAMPAIGN_RUN_NAME_PREFIX: Final = "cachet-"
 
 _SOURCE_FILE_ROLES: Final = (
     "cachet_package_wheel",
@@ -1821,6 +1823,14 @@ def _preflight_bundle_file_hashes(evidence_path: Path) -> dict[str, str]:
     }
 
 
+def _active_run_may_belong_to_campaign(run: Mapping[str, Any]) -> bool:
+    # An unnamed run cannot be shown to be outside the campaign.
+    run_name = run.get("run_name")
+    return not isinstance(run_name, str) or run_name.startswith(
+        _CAMPAIGN_RUN_NAME_PREFIX
+    )
+
+
 def _validate_live_workspace_and_remote_artifacts_v2(
     config: DatabricksWorkspaceConfig,
     *,
@@ -1839,9 +1849,15 @@ def _validate_live_workspace_and_remote_artifacts_v2(
         config,
         expected_user_name=single_user_name,
     )
-    active_runs = list_active_databricks_runs(config, max_runs=256)
-    if require_fresh_workspace and active_runs:
-        raise ValueError("v2 qualification launch requires zero active runs")
+    active_runs = list_active_databricks_runs(
+        config,
+        max_runs=256,
+        include_run_name=True,
+    )
+    if require_fresh_workspace and any(
+        _active_run_may_belong_to_campaign(run) for run in active_runs
+    ):
+        raise ValueError("v2 qualification launch requires zero active campaign runs")
     node_types = list_databricks_node_types(config, max_node_types=1_024)
     observed_nodes = {
         item.get("node_type_id") for item in node_types if isinstance(item, Mapping)

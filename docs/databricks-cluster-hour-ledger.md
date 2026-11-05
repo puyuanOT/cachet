@@ -685,6 +685,19 @@ publication report discloses the retried attempts and their GPU-hours as
 `ledger.qualification_capacity_retries`, recomputed from the ledger between
 that predecessor prefix and the latency collection prefix.
 
+A fresh qualification launch requires zero active campaign runs in the
+workspace. Every campaign submission is named `cachet-…`, so the launch lists
+the workspace's active Jobs runs with their validated names and refuses while
+any of them carries that prefix or has no name. Other active runs, such as an
+operator's interactive session, do not block it: they hold no campaign
+reservation and share no cluster with the batch. The crash-point resume of an
+already reserved batch never refuses because of active runs. Whenever any run
+is active, Databricks returns `has_more: false` together with a page token; the
+listing follows that token once and requires the page it names to be empty and
+final. Earlier revisions rejected that response, so any active run failed every
+live qualification validation, including the controller's launch-authorization
+replay.
+
 A full-score chain restarts only from wave zero, after a fresh latency
 collection, and never resumes the chain it abandons. Every earlier attempt of
 the execution plan must be a terminal wave-zero producer or consumer, and none

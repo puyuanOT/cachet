@@ -1944,6 +1944,17 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "`{attempt}-capacity-retry-NN` ledger attempts" in compact_ledger_doc
     assert "as does a job reaching 16 attempts" in compact_ledger_doc
     assert "`ledger.qualification_capacity_retries`" in compact_ledger_doc
+    assert (
+        "A fresh qualification launch requires zero active campaign runs in the "
+        "workspace."
+    ) in compact_ledger_doc
+    assert (
+        "refuses while any of them carries that prefix or has no name"
+    ) in compact_ledger_doc
+    assert (
+        "follows that token once and requires the page it names to be empty and "
+        "final"
+    ) in compact_ledger_doc
     assert "The latest abandoned attempt may be a succeeded producer" in (
         compact_ledger_doc
     )

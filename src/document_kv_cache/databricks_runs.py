@@ -1929,15 +1929,22 @@ def list_active_databricks_runs(
     config: DatabricksWorkspaceConfig,
     *,
     max_runs: int = DATABRICKS_ACTIVE_RUNS_MAX_ENTRIES,
+    include_run_name: bool = False,
     opener: DatabricksBinaryURLOpener | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """Return a bounded, sanitized snapshot of every active Jobs run."""
+    """Return a bounded, sanitized snapshot of every active Jobs run.
+
+    With ``include_run_name`` each entry also carries the run's validated
+    ``run_name``, or ``None`` when Databricks reports no name.
+    """
 
     _validate_databricks_entry_cap(
         max_runs,
         upper_bound=DATABRICKS_ACTIVE_RUNS_MAX_ENTRIES,
         label="max_runs",
     )
+    if type(include_run_name) is not bool:
+        raise TypeError("include_run_name must be a bool")
     resolved_opener = (
         _databricks_no_redirect_urlopen
         if opener is None
@@ -1947,6 +1954,7 @@ def list_active_databricks_runs(
     seen_tokens: set[str] = set()
     page_token: str | None = None
     page_count = 0
+    trailing_page = False
     while True:
         page_count += 1
         if page_count > DATABRICKS_ACTIVE_RUNS_MAX_PAGES:
@@ -1982,8 +1990,16 @@ def list_active_databricks_runs(
         raw_runs = page.get("runs", [])
         if not isinstance(raw_runs, list) or len(raw_runs) > page_limit:
             raise RuntimeError("Databricks active-runs page entry cap drift")
+        if trailing_page and raw_runs:
+            raise RuntimeError(
+                "Databricks active-runs pagination metadata is contradictory"
+            )
         for raw_run in raw_runs:
-            run = _validated_active_databricks_run(raw_run, token=config.token)
+            run = _validated_active_databricks_run(
+                raw_run,
+                token=config.token,
+                include_run_name=include_run_name,
+            )
             run_id = cast(int, run["run_id"])
             if run_id in runs:
                 raise RuntimeError("Databricks active-runs response duplicates run_id")
@@ -2009,10 +2025,14 @@ def list_active_databricks_runs(
                     "Databricks active-runs response omitted its next page token"
                 )
             break
-        if has_more is False:
+        if trailing_page:
             raise RuntimeError(
                 "Databricks active-runs pagination metadata is contradictory"
             )
+        if has_more is False:
+            # Databricks returns a token past its final nonempty page. Follow it
+            # once and require that page to be empty and final.
+            trailing_page = True
         if next_page_token in seen_tokens:
             raise RuntimeError("Databricks active-runs page token repeated")
         if len(runs) >= max_runs:
@@ -4957,6 +4977,7 @@ def _validated_active_databricks_run(
     value: Any,
     *,
     token: str,
+    include_run_name: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise RuntimeError("Databricks active-run entry must be an object")
@@ -4975,10 +4996,30 @@ def _validated_active_databricks_run(
         token=token,
         label="Databricks active-run life_cycle_state",
     )
-    return {
+    record: dict[str, Any] = {
         "life_cycle_state": life_cycle_state,
         "run_id": run_id,
     }
+    if include_run_name:
+        run_name = value.get("run_name")
+        if run_name is not None:
+            if (
+                not isinstance(run_name, str)
+                or not run_name
+                or len(run_name) > 4_096
+                or any(
+                    ord(character) < 32 or ord(character) == 127
+                    for character in run_name
+                )
+            ):
+                raise RuntimeError("Databricks active-run run_name is invalid")
+            _require_databricks_non_secret_text(
+                run_name,
+                token=token,
+                label="Databricks active-run run_name",
+            )
+        record["run_name"] = run_name
+    return record
 
 
 def _validated_databricks_metadata_header(value: Any, label: str) -> str:

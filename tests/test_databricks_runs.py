@@ -1391,6 +1391,108 @@ def test_list_active_runs_is_paginated_bounded_sorted_and_sanitized():
     assert opener.timeouts == [17, 17]
 
 
+def test_list_active_runs_verifies_the_empty_page_past_a_final_token():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    run = {"run_id": 5, "state": {"life_cycle_state": "RUNNING"}}
+    final_page_with_token = {
+        "runs": [run],
+        "has_more": False,
+        "next_page_token": "past-final",
+        "prev_page_token": "before",
+    }
+    opener = _SequentialBinaryOpener([final_page_with_token, {"has_more": False}])
+
+    assert list_active_databricks_runs(config, opener=opener) == (
+        {"life_cycle_state": "RUNNING", "run_id": 5},
+    )
+    assert len(opener.requests) == 2
+    assert opener.requests[1].full_url.endswith(
+        "active_only=true&limit=20&page_token=past-final"
+    )
+
+    for trailing_page, message in (
+        (
+            {"runs": [{"run_id": 6, "state": {"life_cycle_state": "RUNNING"}}]},
+            "pagination metadata is contradictory",
+        ),
+        ({"runs": [], "next_page_token": "again"}, "pagination metadata is contradictory"),
+        (
+            {"runs": [], "has_more": False, "next_page_token": "again"},
+            "pagination metadata is contradictory",
+        ),
+        ({"runs": [], "has_more": True}, "omitted its next page token"),
+    ):
+        with pytest.raises(RuntimeError, match=message):
+            list_active_databricks_runs(
+                config,
+                opener=_SequentialBinaryOpener([final_page_with_token, trailing_page]),
+            )
+
+
+def test_list_active_runs_reports_validated_run_names_only_on_request():
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    page = {
+        "has_more": False,
+        "runs": [
+            {
+                "run_id": 7,
+                "run_name": "ssh-server-bootstrap-1102",
+                "state": {"life_cycle_state": "RUNNING"},
+            },
+            {"run_id": 3, "state": {"life_cycle_state": "PENDING"}},
+        ],
+    }
+
+    assert list_active_databricks_runs(
+        config,
+        include_run_name=True,
+        opener=_SequentialBinaryOpener([page]),
+    ) == (
+        {"life_cycle_state": "PENDING", "run_id": 3, "run_name": None},
+        {
+            "life_cycle_state": "RUNNING",
+            "run_id": 7,
+            "run_name": "ssh-server-bootstrap-1102",
+        },
+    )
+    assert list_active_databricks_runs(
+        config,
+        opener=_SequentialBinaryOpener([page]),
+    ) == (
+        {"life_cycle_state": "PENDING", "run_id": 3},
+        {"life_cycle_state": "RUNNING", "run_id": 7},
+    )
+    for run_name, message in (
+        ("", "run_name is invalid"),
+        (17, "run_name is invalid"),
+        ("tab\tname", "run_name is invalid"),
+        ("x" * 4_097, "run_name is invalid"),
+        ("Bearer abc.def", "run_name contains secret-like text"),
+        ("job secret-token", "run_name contains secret-like text"),
+    ):
+        forged = {
+            "runs": [
+                {
+                    "run_id": 1,
+                    "run_name": run_name,
+                    "state": {"life_cycle_state": "RUNNING"},
+                }
+            ]
+        }
+        with pytest.raises(RuntimeError, match=message):
+            list_active_databricks_runs(
+                config,
+                include_run_name=True,
+                opener=_SequentialBinaryOpener([forged]),
+            )
+    with pytest.raises(TypeError, match="include_run_name must be a bool"):
+        list_active_databricks_runs(
+            config,
+            include_run_name=1,
+            opener=_SequentialBinaryOpener([page]),
+        )
+
+
 def test_list_active_runs_empty_snapshot_and_entry_cap_fail_closed():
     config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
     assert (
