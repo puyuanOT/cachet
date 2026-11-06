@@ -4803,6 +4803,51 @@ def _capacity_task(**overrides):
         ),
         (
             {
+                "state": {
+                    "life_cycle_state": "INTERNAL_ERROR",
+                    "result_state": "FAILED",
+                    "state_message": (
+                        "Cluster '0101-abc' was terminated. Reason: "
+                        "AWS_REQUEST_LIMIT_EXCEEDED (CLIENT_ERROR). Parameters: "
+                        "aws_api_error_code:RequestLimitExceeded"
+                    ),
+                }
+            },
+            "AWS_REQUEST_LIMIT_EXCEEDED",
+        ),
+        (
+            {
+                "state": {
+                    "life_cycle_state": "INTERNAL_ERROR",
+                    "result_state": "FAILED",
+                    "state_message": (
+                        "Unexpected failure while waiting for the cluster "
+                        "(0101-abc) to be ready: Cluster '0101-abc' was "
+                        "terminated. Reason: CLOUD_PROVIDER_LAUNCH_FAILURE "
+                        "(CLOUD_FAILURE). Parameters: aws_api_error_code:"
+                        "InternalError"
+                    ),
+                }
+            },
+            "CLOUD_PROVIDER_LAUNCH_FAILURE",
+        ),
+        (
+            {
+                "state": {
+                    "life_cycle_state": "INTERNAL_ERROR",
+                    "result_state": "FAILED",
+                    "state_message": (
+                        "Unexpected failure while waiting for the cluster "
+                        "(0202-other) to be ready: Cluster '0101-abc' was "
+                        "terminated. Reason: CLOUD_PROVIDER_LAUNCH_FAILURE "
+                        "(CLOUD_FAILURE)."
+                    ),
+                }
+            },
+            None,
+        ),
+        (
+            {
                 "cluster_instance": {
                     "cluster_id": "0101-abc",
                     "spark_context_id": "1234",

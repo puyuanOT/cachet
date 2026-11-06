@@ -670,7 +670,12 @@ full-score phases already use. Once a round reaches terminal closure, the
 controller classifies each failed job from its direct `runs/get` record. A job
 is a capacity failure only when its task never reached a Spark context, ran
 for zero execution time, and Databricks terminated its cluster with
-`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE` or `CLUSTER_OPERATION_TIMEOUT`.
+`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`, `CLUSTER_OPERATION_TIMEOUT`,
+`AWS_REQUEST_LIMIT_EXCEEDED`, or `CLOUD_PROVIDER_LAUNCH_FAILURE`. The last two
+are AWS refusing or failing the instance launch request itself, so like the
+first two they prove the cluster never booted. Jobs may prefix the termination
+message with the cluster wait it abandoned; that wait must name the same
+cluster. Revisions through `215d83c` accepted only the first two reasons.
 When every failed job is a capacity failure, the controller seals a retry
 round lease and reserves fresh `{attempt}-capacity-retry-NN` ledger attempts
 for exactly those jobs at the closed round's terminal prefix, under the usual
