@@ -271,7 +271,9 @@ _LATENCY_PROVENANCE_KEYS = frozenset(
 )
 _RECOVERED_BALANCE_KEYS = frozenset({"attempt_count", "cluster_hours"})
 _CAPACITY_RETRY_KEYS = frozenset({"attempt_count", "cluster_hours"})
-_ABANDONED_ATTEMPT_KEYS = frozenset({"attempt_count", "cluster_hours"})
+_ABANDONED_ATTEMPT_KEYS = frozenset(
+    {"attempt_count", "closed_consumer_phase_count", "cluster_hours"}
+)
 _FORBIDDEN_REPORT_KEYS = frozenset(
     {
         "answer",
@@ -1556,8 +1558,15 @@ def _campaign_ledger_projection_after_latency(
             "cluster_hours": retry_cluster_hours,
         }
     if disclose_abandoned_attempts:
+        workloads = {item.attempt_id: item.workload_id for item in live.reservations}
         projection["full_score_abandoned_attempts"] = {
             "attempt_count": len(abandoned),
+            "closed_consumer_phase_count": sum(
+                1
+                for item in abandoned
+                if item.terminal_state == "succeeded"
+                and workloads[item.attempt_id].endswith(":consumer")
+            ),
             "cluster_hours": math.fsum(item.actual_cluster_hours for item in abandoned),
         }
     return projection
@@ -2029,11 +2038,12 @@ def _validated_report_capacity_retries(
 
 
 def _validate_report_abandoned_attempts(value: Any) -> None:
-    """Require the disclosed wave-zero chain the full score restarted over.
+    """Require the disclosed chains the full score restarted over.
 
     Those attempts precede the latency terminal prefix, so no prefix count in
     the report can cross-check them; the finalizer derives them from the live
-    ledger before it writes the report.
+    ledger before it writes the report.  Each closed consumer phase among them
+    is a scored wave the report does not use.
     """
 
     if not isinstance(value, Mapping):
@@ -2044,12 +2054,14 @@ def _validate_report_abandoned_attempts(value: Any) -> None:
         "report abandoned full-score attempts",
     )
     attempt_count = _required_nonnegative_int(value, "attempt_count")
+    closed_consumers = _required_nonnegative_int(value, "closed_consumer_phase_count")
     cluster_hours = value.get("cluster_hours")
     if (
         type(cluster_hours) is not float
         or not math.isfinite(cluster_hours)
         or cluster_hours < 0.0
         or (attempt_count == 0 and cluster_hours != 0.0)
+        or closed_consumers > attempt_count
     ):
         raise ValueError("report abandoned full-score attempts are invalid")
 

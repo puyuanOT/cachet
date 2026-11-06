@@ -4692,6 +4692,138 @@ def test_wave_zero_chain_restart_refuses_a_chain_that_could_continue(
     )
 
 
+_PINNED_CHAIN_ATTEMPTS = [
+    ((0, "producer"), "internal_error"),
+    ((0, "producer"), "succeeded"),
+    ((0, "consumer"), "succeeded"),
+    ((1, "producer"), "succeeded"),
+    ((1, "consumer"), "succeeded"),
+    ((2, "producer"), "internal_error"),
+]
+
+
+def _pin_launch_failure_chain(monkeypatch, campaign, ledger, *, opening, closing):
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
+        campaign["execution_plan"]["closed_record_sha256"],
+    )
+    for name, count in (("OPENING", opening), ("CLOSING", closing)):
+        monkeypatch.setattr(
+            full_score,
+            f"FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_{name}_PREFIX",
+            databricks_ledger_prefix_at_counts(
+                ledger,
+                reservation_count=count,
+                submission_receipt_count=0,
+                terminal_actual_count=count,
+            ),
+        )
+
+
+def test_chain_restart_admits_only_the_pinned_launch_failure_chain(
+    campaign, monkeypatch
+):
+    attempts = [((0, "producer"), "internal_error"), *_PINNED_CHAIN_ATTEMPTS]
+    ledger = _chain_ledger(campaign, "pinned-chain", attempts)
+    current = databricks_ledger_prefix(ledger)
+    with pytest.raises(ValueError, match="limited to wave zero"):
+        full_score.require_full_score_chain_restart_ledger(
+            ledger,
+            predecessor_prefix=current,
+            execution_plan=campaign["execution_plan"],
+        )
+
+    _pin_launch_failure_chain(
+        monkeypatch, campaign, ledger, opening=1, closing=len(attempts)
+    )
+    abandoned = full_score.require_full_score_chain_restart_ledger(
+        ledger,
+        predecessor_prefix=current,
+        execution_plan=campaign["execution_plan"],
+    )
+    assert [(item.attempt_id, item.terminal_state) for item in abandoned] == [
+        (f"pinned-chain-{index}", terminal_state)
+        for index, (_workload, terminal_state) in enumerate(attempts)
+    ]
+    inside = databricks_ledger_prefix_at_counts(
+        ledger,
+        reservation_count=len(attempts) - 1,
+        submission_receipt_count=0,
+        terminal_actual_count=len(attempts) - 1,
+    )
+    with pytest.raises(ValueError, match="limited to wave zero"):
+        full_score.require_full_score_chain_restart_ledger(
+            ledger,
+            predecessor_prefix=inside,
+            execution_plan=campaign["execution_plan"],
+        )
+
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX",
+        replace(
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+            prefix_sha256="0" * 64,
+        ),
+    )
+    with pytest.raises(ValueError, match="limited to wave zero"):
+        full_score.require_full_score_chain_restart_ledger(
+            ledger,
+            predecessor_prefix=current,
+            execution_plan=campaign["execution_plan"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "message"),
+    (
+        (
+            [((0, "producer"), "succeeded"), ((0, "consumer"), "succeeded")],
+            [],
+            "cannot discard a closed consumer",
+        ),
+        (
+            [],
+            [((0, "producer"), "succeeded"), ((0, "consumer"), "succeeded")],
+            "cannot discard a closed consumer",
+        ),
+        ([], [((1, "producer"), "failed")], "limited to wave zero"),
+    ),
+)
+def test_chain_restart_holds_attempts_outside_the_pinned_chain_to_wave_zero(
+    campaign, monkeypatch, before, after, message
+):
+    label = f"pinned-outside-{len(before)}-{len(after)}"
+    attempts = [*before, *_PINNED_CHAIN_ATTEMPTS, *after]
+    ledger = _chain_ledger(campaign, label, attempts)
+    _pin_launch_failure_chain(
+        monkeypatch,
+        campaign,
+        ledger,
+        opening=len(before),
+        closing=len(before) + len(_PINNED_CHAIN_ATTEMPTS),
+    )
+    with pytest.raises(ValueError, match=message):
+        full_score.require_full_score_chain_restart_ledger(
+            ledger,
+            predecessor_prefix=databricks_ledger_prefix(ledger),
+            execution_plan=campaign["execution_plan"],
+        )
+
+
+def test_pinned_launch_failure_chain_binds_the_failed_wave_three_producer():
+    opening = full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX
+    closing = full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX
+    assert opening.ledger_id == closing.ledger_id
+    assert closing.reservation_count - opening.reservation_count == 22
+    assert (
+        closing.submission_receipt_count - opening.submission_receipt_count == 22
+    )
+    assert closing.terminal_actual_count - opening.terminal_actual_count == 22
+    assert closing.reservation_count == closing.terminal_actual_count
+
+
 def test_capacity_retry_submits_only_never_started_tasks_without_p90(campaign):
     reserved = _reserve_wave_zero_producer(campaign, label="retry-scope")
     _failure, retry = _collect_capacity_outcome(

@@ -706,21 +706,35 @@ replay.
 A full-score chain restarts only from wave zero, after a fresh latency
 collection, and never resumes the chain it abandons. Every earlier attempt of
 the execution plan must be a terminal wave-zero producer or consumer, and none
-of its consumer attempts may have succeeded, so no abandoned chain closed a
-consumer phase or authorized a score. Shard evidence that individual consumer
+of its consumer attempts may have succeeded, so no chain abandoned under this
+rule closed a consumer phase or authorized a score. Shard evidence that individual consumer
 tasks committed stays under the abandoned chain's qualification-bound
 namespace. The latest abandoned attempt may be a succeeded producer: the CPU ready
 closure between producer and consumer is not a ledger attempt, so a chain can
 fail there after its producer phase succeeds. The full-score workload ID is
 keyed by the execution plan alone, so a chain under a new qualification still
 sees every earlier chain. The 0.30.0 report discloses these attempts as
-`ledger.full_score_abandoned_attempts`. Before the latency prefix, the ledger
-holds twenty-six wave-zero attempts from eight abandoned chains, twenty-three
-producers and three consumers, using 148.0647525 GPU-hours. Two of those
-chains closed their producer phase and then failed in the ready closure: the
-`ee77ee4` chain, whose closure exceeded its two-hour bound, and the `0e45b07`
-chain recorded below. The `02ca22f`, `e2e0a58`, and `12d22d9` chains, also
-recorded below, failed in their consumer phases.
+`ledger.full_score_abandoned_attempts`, with the number of consumer phases they
+closed as its `closed_consumer_phase_count`. Before the `215d83c` chain, the
+ledger held twenty-six wave-zero attempts from eight abandoned chains,
+twenty-three producers and three consumers, using 148.0647525 GPU-hours. Two of
+those chains closed their producer phase and then failed in the ready closure:
+the `ee77ee4` chain, whose closure exceeded its two-hour bound, and the
+`0e45b07` chain recorded below. The `02ca22f`, `e2e0a58`, and `12d22d9` chains,
+also recorded below, failed in their consumer phases.
+
+The `215d83c` chain, recorded below, is the one exception to the wave-zero
+rule. It closed three waves before its wave-three producer attempt failed only
+because AWS throttled or failed every cluster launch, under termination reasons
+its revision did not classify as capacity failures. That attempt could neither
+retry nor close, so the chain could not continue. The package pins the chain
+by its opening 446/396/446 and closing 468/418/468 ledger prefixes and exempts
+exactly those twenty-two attempts while the ledger carries both prefixes
+exactly. Every other earlier attempt still has to satisfy the wave-zero rule.
+Its three closed consumer phases scored waves that no successor reads or
+reports. With it, the ledger holds forty-eight abandoned attempts from nine
+chains, thirty-three producers and fifteen consumers, using 227.20783333333333
+GPU-hours, and the report discloses three closed consumer phases.
 
 Each remote CPU coordinator keeps its local controller state in a directory
 under the shared phase lease root. The directory is named for the
@@ -943,6 +957,52 @@ prefix
 at 893.4019491666666 terminal GPU-hours, with zero active reservations and
 1130.5980508333334 hours remaining. The successor binds a fresh source closure
 and this complete prefix as its predecessor.
+
+The vLLM 0.30.0 qualification of source revision `215d83c` succeeded, and its
+full score closed three waves before it was abandoned. Its plan is
+`0f0f9b3391868f27b8f56d689a6858fe1fef69be3eca4c2aed06b12ee8b1dced`,
+its source tree is
+`e6cac4e1baf0a41006cf5b7d243cb2f3e3d1be41e2b61bd2a064ae336d4bf90b`,
+and its phase batch is
+`4891bb70cf5da431f7faba3ad358a2f6488dab5ace16b935f3a4b431f7b99cb1`.
+All fourteen attempt-zero jobs succeeded, consuming 4.000561944444445
+GPU-hours and closing the exact 446/396/446 prefix
+`313af4ec8428178433a863d2ed3f9c6d046825d1e9ad259e67787653136029f7`
+at 897.4025111111109 terminal GPU-hours. Its full score abandoned the earlier
+chains and closed six phases. The wave-zero producer closed terminal
+`ac0159bb82c045dd0ef0215f6ad5fac3d1e47e26601268a2a0fbebab462ace97` in three
+attempts and the consumer closed
+`9388a32af27f2abfa3daa085174c8289423cb0836cb0d8b5383e5c314eac2aef` in four.
+The wave-one producer closed
+`27a720f02491edec04cff57c903a8c0584e3cb404f721356ebd5a4bd16b6ce3c` and the
+consumer closed
+`1b3735de8d5cb6ddaa1b878858454f36a42aed5ff8fedc464cd5d2a73c7e5498`, each in
+two. The wave-two producer closed
+`31e00d9d39d7faf590ff2998be579a1dbab19bca0935b44029fe90ad2cc1015d` in two and
+the consumer closed
+`e9d548a7fd793ba707024a21498f513752f6408fc805287fd7b4be99d6a6bf7e` in six.
+Every retry reran only tasks that never started because of
+`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`. The wave-three producer's
+attempts 0 and 1 left fifteen and then thirteen tasks that never started for
+the same reason. In attempt 2, run `37620315851874`, none of the thirteen
+tasks reached a Spark context. For eight of them AWS returned
+`AWS_REQUEST_LIMIT_EXCEEDED`, throttling `ec2:RunInstances` because of an
+operational issue in its us-west-2 availability zones. For four it returned
+`CLOUD_PROVIDER_LAUNCH_FAILURE` with an EC2 `InternalError`, and for one
+`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`. The revision classified only the
+last as a capacity failure, so collection recorded the attempt's terminal
+actual and then refused its capacity-failure record. The phase could neither
+retry nor close. The wave-three producer used 15.942399722222222 GPU-hours in
+three attempts, and the chain used 79.14308083333333 GPU-hours in twenty-two
+attempts. Its three closed consumer phases are scores no successor reads; they
+stay under this chain's qualification-bound namespace. The ledger stands at
+the exact 468/418/468 prefix
+`bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df`
+at 976.5455919444444 terminal GPU-hours, with zero active reservations and
+1047.4544080555556 hours remaining. The successor classifies both launch
+failures as capacity failures, pins this chain as the one abandoned past wave
+zero, and binds a fresh source closure and this complete prefix as its
+predecessor.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and

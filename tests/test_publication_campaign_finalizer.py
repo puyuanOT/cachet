@@ -1398,7 +1398,7 @@ def test_campaign_ledger_projection_discloses_an_abandoned_wave_zero_chain(
     case = _synthetic_campaign_ledger_projection_case(monkeypatch)
     assert _projection_disclosing_abandoned_attempts(case)[
         "full_score_abandoned_attempts"
-    ] == {"attempt_count": 0, "cluster_hours": 0.0}
+    ] == {"attempt_count": 0, "closed_consumer_phase_count": 0, "cluster_hours": 0.0}
     _abandon_before_latency(
         case,
         [(0, "succeeded", 2.0), (1, "failed", 0.5), (0, "internal_error", 5.1)],
@@ -1411,6 +1411,7 @@ def test_campaign_ledger_projection_discloses_an_abandoned_wave_zero_chain(
     projection = _projection_disclosing_abandoned_attempts(case)
     assert projection["full_score_abandoned_attempts"] == {
         "attempt_count": 3,
+        "closed_consumer_phase_count": 0,
         "cluster_hours": 7.6,
     }
     assert projection["latency_terminal_prefix"] == case["latency_prefix"].to_record()
@@ -1424,7 +1425,33 @@ def test_campaign_ledger_projection_discloses_a_chain_ending_in_a_succeeded_prod
 
     assert _projection_disclosing_abandoned_attempts(case)[
         "full_score_abandoned_attempts"
-    ] == {"attempt_count": 2, "cluster_hours": 7.1}
+    ] == {"attempt_count": 2, "closed_consumer_phase_count": 0, "cluster_hours": 7.1}
+
+
+def test_campaign_ledger_projection_counts_closed_consumers_of_an_abandoned_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    attempts = [
+        (0, "succeeded", 2.0),
+        (1, "succeeded", 1.5),
+        (1, "internal_error", 0.5),
+        (2, "succeeded", 0.25),
+        (3, "succeeded", 1.0),
+        (4, "internal_error", 0.75),
+    ]
+    _abandon_before_latency(case, attempts)
+    start = case["latency_prefix"].reservation_count - len(attempts)
+    pinned = tuple(case["live"].terminal_actuals[start : start + len(attempts)])
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "require_full_score_chain_restart_ledger",
+        lambda *_args, **_kwargs: pinned,
+    )
+
+    assert _projection_disclosing_abandoned_attempts(case)[
+        "full_score_abandoned_attempts"
+    ] == {"attempt_count": 6, "closed_consumer_phase_count": 2, "cluster_hours": 6.0}
 
 
 @pytest.mark.parametrize(
@@ -2459,6 +2486,7 @@ def _synthetic_vllm_0300_report_inputs() -> dict[str, Any]:
     ledger["cap_raises"] = []
     ledger["full_score_abandoned_attempts"] = {
         "attempt_count": 0,
+        "closed_consumer_phase_count": 0,
         "cluster_hours": 0.0,
     }
     ledger["full_score_capacity_retries"] = {
@@ -2804,9 +2832,14 @@ def _vllm_0300_report_with_abandoned_attempts(
     return report
 
 
-def test_vllm_0300_report_discloses_an_abandoned_wave_zero_chain() -> None:
+@pytest.mark.parametrize("closed_consumers", [0, 1])
+def test_vllm_0300_report_discloses_an_abandoned_chain(closed_consumers: int) -> None:
     report = _vllm_0300_report_with_abandoned_attempts(
-        {"attempt_count": 1, "cluster_hours": 5.1}
+        {
+            "attempt_count": 2,
+            "closed_consumer_phase_count": closed_consumers,
+            "cluster_hours": 5.1,
+        }
     )
 
     campaign_finalizer.validate_vllm_0271_publication_report_pair(
@@ -2815,17 +2848,27 @@ def test_vllm_0300_report_discloses_an_abandoned_wave_zero_chain() -> None:
     )
 
 
+def _abandoned(attempts: Any, closed: Any, hours: Any) -> dict[str, Any]:
+    return {
+        "attempt_count": attempts,
+        "closed_consumer_phase_count": closed,
+        "cluster_hours": hours,
+    }
+
+
 @pytest.mark.parametrize(
     ("abandoned", "message"),
     [
-        ({"attempt_count": 1, "cluster_hours": 5}, "abandoned full-score attempts"),
-        ({"attempt_count": 0, "cluster_hours": 5.1}, "abandoned full-score attempts"),
-        ({"attempt_count": 1, "cluster_hours": -1.0}, "abandoned full-score attempts"),
-        ({"attempt_count": -1, "cluster_hours": 0.0}, "non-negative integer"),
-        (
-            {"attempt_count": 1, "cluster_hours": 5.1, "attempts": []},
-            "closed schema",
-        ),
+        (_abandoned(1, 0, 5), "abandoned full-score attempts"),
+        (_abandoned(0, 0, 5.1), "abandoned full-score attempts"),
+        (_abandoned(1, 0, -1.0), "abandoned full-score attempts"),
+        (_abandoned(1, 2, 5.1), "abandoned full-score attempts"),
+        (_abandoned(0, 1, 0.0), "abandoned full-score attempts"),
+        (_abandoned(-1, 0, 0.0), "non-negative integer"),
+        (_abandoned(1, -1, 5.1), "non-negative integer"),
+        (_abandoned(1, True, 5.1), "non-negative integer"),
+        ({"attempt_count": 1, "cluster_hours": 5.1}, "closed schema"),
+        (_abandoned(1, 0, 5.1) | {"attempts": []}, "closed schema"),
         (None, "must be an object"),
     ],
 )
@@ -2984,7 +3027,11 @@ def test_vllm_0300_ledger_projection_adds_the_recovered_balance(
 
     assert projection == single_plan | {
         "cap_raises": [],
-        "full_score_abandoned_attempts": {"attempt_count": 0, "cluster_hours": 0.0},
+        "full_score_abandoned_attempts": {
+            "attempt_count": 0,
+            "closed_consumer_phase_count": 0,
+            "cluster_hours": 0.0,
+        },
         "full_score_capacity_retries": {"attempt_count": 0, "cluster_hours": 0.0},
         "latency_recovered_balance": {"attempt_count": 47, "cluster_hours": 552.0},
         "qualification_capacity_retries": {"attempt_count": 3, "cluster_hours": 0.75},
