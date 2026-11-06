@@ -274,6 +274,29 @@ FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION = 1
 # Every capacity-failed attempt is a separately ledgered single-attempt run.
 FULL_SCORE_PHASE_MAX_ATTEMPTS = 16
 FULL_SCORE_CAPACITY_TERMINATION_REASONS = DATABRICKS_CAPACITY_TERMINATION_REASONS
+# The one chain abandoned past wave zero.  Its wave-three producer attempt
+# failed only because clusters never launched, under termination reasons its
+# qualified revision did not classify as capacity failures, so it could
+# neither retry nor continue.  The two prefixes bind every one of its attempts.
+FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256 = (
+    "88315f8bcae2317659fea61c05b7e5c56e7e56dd1330368fdccfe816c453ad84"
+)
+FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX = DatabricksLedgerPrefix(
+    ledger_id="representative-canary-823bd9d82a5c1730",
+    cap_cluster_hours=2024.0,
+    reservation_count=446,
+    submission_receipt_count=396,
+    terminal_actual_count=446,
+    prefix_sha256="313af4ec8428178433a863d2ed3f9c6d046825d1e9ad259e67787653136029f7",
+)
+FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX = DatabricksLedgerPrefix(
+    ledger_id="representative-canary-823bd9d82a5c1730",
+    cap_cluster_hours=2024.0,
+    reservation_count=468,
+    submission_receipt_count=418,
+    terminal_actual_count=468,
+    prefix_sha256="bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
+)
 FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE = "cachet.full_score_connector_proof.v1"
 FULL_SCORE_CONNECTOR_PROOF_SCHEMA_VERSION = 1
 FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE = "publication"
@@ -7220,8 +7243,11 @@ def require_full_score_chain_restart_ledger(
     closed no consumer successfully, so it never produced a score.  Its latest
     attempt may be a succeeded producer, because the CPU ready closure between
     producer and consumer is not a ledger attempt and can fail after it.  The
-    returned terminals, in reservation order, are what a report must disclose.
-    The caller must already have bound ``predecessor_prefix`` to ``ledger``.
+    one exception is the launch-failure chain pinned by its opening and closing
+    ledger prefixes, which is exempt only while the ledger carries both exactly.
+    The returned terminals, in reservation order, are what a report must
+    disclose.  The caller must already have bound ``predecessor_prefix`` to
+    ``ledger``.
     """
 
     producer = _full_score_phase_workload_id(
@@ -7232,8 +7258,10 @@ def require_full_score_chain_restart_ledger(
     )
     plan_workloads = producer.removesuffix("wave-000:producer")
     prior = [
-        item
-        for item in ledger.reservations[: predecessor_prefix.reservation_count]
+        (index, item)
+        for index, item in enumerate(
+            ledger.reservations[: predecessor_prefix.reservation_count]
+        )
         if item.workload_id.startswith(plan_workloads)
     ]
     if not prior:
@@ -7242,17 +7270,74 @@ def require_full_score_chain_restart_ledger(
         item.attempt_id: item
         for item in ledger.terminal_actuals[: predecessor_prefix.terminal_actual_count]
     }
-    if any(item.workload_id not in {producer, consumer} for item in prior):
+    exempt = _full_score_launch_failure_abandoned_chain_positions(
+        ledger,
+        predecessor_prefix=predecessor_prefix,
+        plan_workloads=plan_workloads,
+    )
+    restartable = [item for index, item in prior if index not in exempt]
+    if any(item.workload_id not in {producer, consumer} for item in restartable):
         raise ValueError("full-score chain restart is limited to wave zero")
-    if any(item.attempt_id not in terminals for item in prior):
+    if any(item.attempt_id not in terminals for _index, item in prior):
         raise ValueError("full-score chain restart requires terminal prior attempts")
     if any(
         item.workload_id == consumer
         and terminals[item.attempt_id].terminal_state == "succeeded"
-        for item in prior
+        for item in restartable
     ):
         raise ValueError("full-score chain restart cannot discard a closed consumer")
-    return tuple(terminals[item.attempt_id] for item in prior)
+    return tuple(terminals[item.attempt_id] for _index, item in prior)
+
+
+def _full_score_launch_failure_abandoned_chain_positions(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    predecessor_prefix: DatabricksLedgerPrefix,
+    plan_workloads: str,
+) -> range:
+    """Return the reservation positions of the pinned launch-failure chain.
+
+    The range is empty unless the restart opens after the chain closed and the
+    ledger carries both pinned prefixes exactly, so a forked or rewritten
+    ledger falls back to the wave-zero rule.
+    """
+
+    opening = FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX
+    closing = FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX
+    if (
+        plan_workloads
+        != f"full-score:{FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256}:"
+        or ledger.ledger_id != closing.ledger_id
+        or predecessor_prefix.reservation_count < closing.reservation_count
+        or predecessor_prefix.submission_receipt_count
+        < closing.submission_receipt_count
+        or predecessor_prefix.terminal_actual_count < closing.terminal_actual_count
+    ):
+        return range(0)
+    for pinned in (opening, closing):
+        observed = databricks_ledger_prefix_at_counts(
+            ledger,
+            reservation_count=pinned.reservation_count,
+            submission_receipt_count=pinned.submission_receipt_count,
+            terminal_actual_count=pinned.terminal_actual_count,
+        )
+        if observed != pinned:
+            return range(0)
+    chain_terminals = {
+        item.attempt_id
+        for item in ledger.terminal_actuals[
+            opening.terminal_actual_count : closing.terminal_actual_count
+        ]
+    }
+    if any(
+        not item.workload_id.startswith(plan_workloads)
+        or item.attempt_id not in chain_terminals
+        for item in ledger.reservations[
+            opening.reservation_count : closing.reservation_count
+        ]
+    ):
+        return range(0)
+    return range(opening.reservation_count, closing.reservation_count)
 
 
 def _require_full_score_historical_reservation_policy(
@@ -16216,6 +16301,9 @@ __all__ = [
     "FULL_SCORE_GENERATOR_VERSION",
     "FULL_SCORE_KV_BLOCK_SIZE",
     "FULL_SCORE_KV_DTYPE",
+    "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX",
+    "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
+    "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX",
     "FULL_SCORE_LIVE_P90_DRAWS",
     "FULL_SCORE_LIVE_P90_RECORD_TYPE",
     "FULL_SCORE_LIVE_P90_SCHEMA_VERSION",

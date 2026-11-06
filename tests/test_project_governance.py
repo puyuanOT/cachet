@@ -1963,9 +1963,22 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         compact_ledger_doc
     )
     assert "148.0647525 GPU-hours" in compact_ledger_doc
-    assert "no abandoned chain closed a consumer phase or authorized a score" in (
+    assert (
+        "no chain abandoned under this rule closed a consumer phase or "
+        "authorized a score"
+    ) in compact_ledger_doc
+    assert (
+        "`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`, `CLUSTER_OPERATION_TIMEOUT`, "
+        "`AWS_REQUEST_LIMIT_EXCEEDED`, or `CLOUD_PROVIDER_LAUNCH_FAILURE`"
+    ) in compact_ledger_doc
+    assert "that wait must name the same cluster" in compact_ledger_doc
+    assert "is the one exception to the wave-zero rule" in compact_ledger_doc
+    assert "opening 446/396/446 and closing 468/418/468 ledger prefixes" in (
         compact_ledger_doc
     )
+    assert "`closed_consumer_phase_count`" in compact_ledger_doc
+    assert "forty-eight abandoned attempts from nine chains" in compact_ledger_doc
+    assert "227.20783333333333 GPU-hours" in compact_ledger_doc
     assert "bound to the closed phase it verifies" in compact_ledger_doc
     assert "marks even `SystemExit(0)` as `FAILED`" in compact_ledger_doc
     assert "vLLM 0.30.0 qualification of source revision `8323fc7`" in (
@@ -2021,6 +2034,15 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "re-reads only its own shards' ready records" in compact_ledger_doc
     assert "exact 432/382/432 prefix" in compact_ledger_doc
     assert "893.4019491666666 terminal GPU-hours" in compact_ledger_doc
+    assert "vLLM 0.30.0 qualification of source revision `215d83c`" in (
+        compact_ledger_doc
+    )
+    assert "In attempt 2, run `37620315851874`" in compact_ledger_doc
+    assert "throttling `ec2:RunInstances`" in compact_ledger_doc
+    assert "refused its capacity-failure record" in compact_ledger_doc
+    assert "exact 446/396/446 prefix" in compact_ledger_doc
+    assert "exact 468/418/468 prefix" in compact_ledger_doc
+    assert "976.5455919444444 terminal GPU-hours" in compact_ledger_doc
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -2088,8 +2110,27 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "ad43f93dbb2170502325a5bfb9265ac3fdba6027aac17d1a8d9afbbdc12c9f88",
         "4ef81207e1190bf2c3b70997680503be40d09b55f55c3bef21eb6802ef76cf86",
         "2901803b0469731738a2b76ff6b3eb88a0dd442cc766c28e88040588155839c2",
+        "0f0f9b3391868f27b8f56d689a6858fe1fef69be3eca4c2aed06b12ee8b1dced",
+        "e6cac4e1baf0a41006cf5b7d243cb2f3e3d1be41e2b61bd2a064ae336d4bf90b",
+        "4891bb70cf5da431f7faba3ad358a2f6488dab5ace16b935f3a4b431f7b99cb1",
+        "313af4ec8428178433a863d2ed3f9c6d046825d1e9ad259e67787653136029f7",
+        "ac0159bb82c045dd0ef0215f6ad5fac3d1e47e26601268a2a0fbebab462ace97",
+        "9388a32af27f2abfa3daa085174c8289423cb0836cb0d8b5383e5c314eac2aef",
+        "27a720f02491edec04cff57c903a8c0584e3cb404f721356ebd5a4bd16b6ce3c",
+        "1b3735de8d5cb6ddaa1b878858454f36a42aed5ff8fedc464cd5d2a73c7e5498",
+        "31e00d9d39d7faf590ff2998be579a1dbab19bca0935b44029fe90ad2cc1015d",
+        "e9d548a7fd793ba707024a21498f513752f6408fc805287fd7b4be99d6a6bf7e",
+        "bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
     ):
         assert digest in compact_ledger_doc
+    full_score_source = (
+        REPO_ROOT / "src" / "document_kv_cache" / "full_score_execution.py"
+    ).read_text(encoding="utf-8")
+    for digest in (
+        "313af4ec8428178433a863d2ed3f9c6d046825d1e9ad259e67787653136029f7",
+        "bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
+    ):
+        assert f'prefix_sha256="{digest}"' in full_score_source
     assert (
         "publication-q8-v2/{q8-plan[:12]}-{qualification-plan[:12]}-"
         "{runner[:12]}/worker-{index:02d}" in compact_ledger_doc

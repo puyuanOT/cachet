@@ -132,12 +132,19 @@ _DATABRICKS_AUTH_CHECK_ENDPOINT = "/api/2.0/preview/scim/v2/Me"
 _DATABRICKS_IDEMPOTENCY_TOKEN_DOMAIN = "cachet.databricks_runs.submit_idempotency.v1"
 _DATABRICKS_IDEMPOTENCY_TOKEN_RE = re.compile(r"cachet-[0-9a-f]{57}\Z")
 # Cluster-termination reasons that prove a task never reached its driver: the
-# cloud had no instance, or the launch exceeded the Databricks launch bound.
+# cloud had no instance, throttled or failed the instance launch request, or
+# the launch exceeded the Databricks launch bound.
 DATABRICKS_CAPACITY_TERMINATION_REASONS = (
     "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE",
     "CLUSTER_OPERATION_TIMEOUT",
+    "AWS_REQUEST_LIMIT_EXCEEDED",
+    "CLOUD_PROVIDER_LAUNCH_FAILURE",
 )
+# Jobs prefixes some launch failures with the wait it abandoned; that wait must
+# name the same cluster as the termination it reports.
 _DATABRICKS_CAPACITY_STATE_MESSAGE = re.compile(
+    r"(?:Unexpected failure while waiting for the cluster "
+    r"\((?P<waited_cluster_id>[^)]+)\) to be ready: )?"
     r"Cluster '(?P<cluster_id>[^']+)' was terminated\. "
     r"Reason: (?P<reason>[A-Z][A-Z0-9_]*) \([A-Z][A-Z0-9_]*\)\."
 )
@@ -1813,8 +1820,9 @@ def databricks_task_capacity_failure_reason(task: Mapping[str, Any]) -> str | No
     """Return the capacity reason when a task's cluster never reached its driver.
 
     The proof is the absent Spark context, zero execution time, and a cluster
-    termination reason restricted to cloud capacity or launch timeout.  Any
-    task that ran user code has a Spark context and is never retryable.
+    termination reason restricted to cloud capacity, a throttled or failed
+    cloud instance launch, or launch timeout.  Any task that ran user code has
+    a Spark context and is never retryable.
     """
 
     state = task.get("state")
@@ -1841,6 +1849,7 @@ def databricks_task_capacity_failure_reason(task: Mapping[str, Any]) -> str | No
     if (
         match is None
         or match["cluster_id"] != cluster_id
+        or match["waited_cluster_id"] not in (None, cluster_id)
         or match["reason"] not in DATABRICKS_CAPACITY_TERMINATION_REASONS
     ):
         return None
