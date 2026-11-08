@@ -4704,26 +4704,28 @@ _PINNED_CHAIN_ATTEMPTS = [
 ]
 
 
-def _pin_launch_failure_chain(monkeypatch, campaign, ledger, *, opening, closing):
-    monkeypatch.setattr(
-        full_score,
-        "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
-        campaign["execution_plan"]["closed_record_sha256"],
-    )
-    for name, count in (("OPENING", opening), ("CLOSING", closing)):
-        monkeypatch.setattr(
-            full_score,
-            f"FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_{name}_PREFIX",
-            databricks_ledger_prefix_at_counts(
-                ledger,
-                reservation_count=count,
-                submission_receipt_count=0,
-                terminal_actual_count=count,
-            ),
+def _pin_abandoned_chains(monkeypatch, campaign, ledger, *chains):
+    def prefix(count):
+        return databricks_ledger_prefix_at_counts(
+            ledger,
+            reservation_count=count,
+            submission_receipt_count=0,
+            terminal_actual_count=count,
         )
 
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
+        campaign["execution_plan"]["closed_record_sha256"],
+    )
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PINNED_ABANDONED_CHAINS",
+        tuple((prefix(opening), prefix(closing)) for opening, closing in chains),
+    )
 
-def test_chain_restart_admits_only_the_pinned_launch_failure_chain(
+
+def test_chain_restart_admits_only_the_pinned_abandoned_chains(
     campaign, monkeypatch
 ):
     attempts = [((0, "producer"), "internal_error"), *_PINNED_CHAIN_ATTEMPTS]
@@ -4736,9 +4738,7 @@ def test_chain_restart_admits_only_the_pinned_launch_failure_chain(
             execution_plan=campaign["execution_plan"],
         )
 
-    _pin_launch_failure_chain(
-        monkeypatch, campaign, ledger, opening=1, closing=len(attempts)
-    )
+    _pin_abandoned_chains(monkeypatch, campaign, ledger, (1, len(attempts)))
     abandoned = full_score.require_full_score_chain_restart_ledger(
         ledger,
         predecessor_prefix=current,
@@ -4761,13 +4761,79 @@ def test_chain_restart_admits_only_the_pinned_launch_failure_chain(
             execution_plan=campaign["execution_plan"],
         )
 
+    ((opening, closing),) = full_score.FULL_SCORE_PINNED_ABANDONED_CHAINS
     monkeypatch.setattr(
         full_score,
-        "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX",
-        replace(
-            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
-            prefix_sha256="0" * 64,
-        ),
+        "FULL_SCORE_PINNED_ABANDONED_CHAINS",
+        ((opening, replace(closing, prefix_sha256="0" * 64)),),
+    )
+    with pytest.raises(ValueError, match="limited to wave zero"):
+        full_score.require_full_score_chain_restart_ledger(
+            ledger,
+            predecessor_prefix=current,
+            execution_plan=campaign["execution_plan"],
+        )
+
+
+def test_chain_restart_admits_each_pinned_chain_only_on_its_own_prefixes(
+    campaign, monkeypatch
+):
+    chain = len(_PINNED_CHAIN_ATTEMPTS)
+    attempts = [
+        ((0, "producer"), "internal_error"),
+        *_PINNED_CHAIN_ATTEMPTS,
+        ((0, "producer"), "failed"),
+        *_PINNED_CHAIN_ATTEMPTS,
+    ]
+    ledger = _chain_ledger(campaign, "pinned-chains", attempts)
+    current = databricks_ledger_prefix(ledger)
+    first = (1, 1 + chain)
+    second = (2 + chain, len(attempts))
+
+    for pinned in ((first,), (second,)):
+        _pin_abandoned_chains(monkeypatch, campaign, ledger, *pinned)
+        with pytest.raises(ValueError, match="limited to wave zero"):
+            full_score.require_full_score_chain_restart_ledger(
+                ledger,
+                predecessor_prefix=current,
+                execution_plan=campaign["execution_plan"],
+            )
+
+    _pin_abandoned_chains(monkeypatch, campaign, ledger, first, second)
+    abandoned = full_score.require_full_score_chain_restart_ledger(
+        ledger,
+        predecessor_prefix=current,
+        execution_plan=campaign["execution_plan"],
+    )
+    assert [item.attempt_id for item in abandoned] == [
+        f"pinned-chains-{index}" for index in range(len(attempts))
+    ]
+
+    pinned_chains = full_score.FULL_SCORE_PINNED_ABANDONED_CHAINS
+    for tampered in range(len(pinned_chains)):
+        opening, closing = pinned_chains[tampered]
+        monkeypatch.setattr(
+            full_score,
+            "FULL_SCORE_PINNED_ABANDONED_CHAINS",
+            tuple(
+                (opening, replace(closing, prefix_sha256="0" * 64))
+                if index == tampered
+                else item
+                for index, item in enumerate(pinned_chains)
+            ),
+        )
+        with pytest.raises(ValueError, match="limited to wave zero"):
+            full_score.require_full_score_chain_restart_ledger(
+                ledger,
+                predecessor_prefix=current,
+                execution_plan=campaign["execution_plan"],
+            )
+
+    monkeypatch.setattr(
+        full_score, "FULL_SCORE_PINNED_ABANDONED_CHAINS", pinned_chains
+    )
+    monkeypatch.setattr(
+        full_score, "FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256", "0" * 64
     )
     with pytest.raises(ValueError, match="limited to wave zero"):
         full_score.require_full_score_chain_restart_ledger(
@@ -4799,12 +4865,11 @@ def test_chain_restart_holds_attempts_outside_the_pinned_chain_to_wave_zero(
     label = f"pinned-outside-{len(before)}-{len(after)}"
     attempts = [*before, *_PINNED_CHAIN_ATTEMPTS, *after]
     ledger = _chain_ledger(campaign, label, attempts)
-    _pin_launch_failure_chain(
+    _pin_abandoned_chains(
         monkeypatch,
         campaign,
         ledger,
-        opening=len(before),
-        closing=len(before) + len(_PINNED_CHAIN_ATTEMPTS),
+        (len(before), len(before) + len(_PINNED_CHAIN_ATTEMPTS)),
     )
     with pytest.raises(ValueError, match=message):
         full_score.require_full_score_chain_restart_ledger(
@@ -4814,16 +4879,48 @@ def test_chain_restart_holds_attempts_outside_the_pinned_chain_to_wave_zero(
         )
 
 
-def test_pinned_launch_failure_chain_binds_the_failed_wave_three_producer():
-    opening = full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX
-    closing = full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX
+@pytest.mark.parametrize(
+    ("opening", "closing", "attempts"),
+    (
+        (
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+            22,
+        ),
+        (
+            full_score.FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+            full_score.FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+            25,
+        ),
+    ),
+)
+def test_pinned_abandoned_chain_binds_every_attempt(opening, closing, attempts):
     assert opening.ledger_id == closing.ledger_id
-    assert closing.reservation_count - opening.reservation_count == 22
+    assert closing.reservation_count - opening.reservation_count == attempts
     assert (
-        closing.submission_receipt_count - opening.submission_receipt_count == 22
+        closing.submission_receipt_count - opening.submission_receipt_count
+        == attempts
     )
-    assert closing.terminal_actual_count - opening.terminal_actual_count == 22
+    assert closing.terminal_actual_count - opening.terminal_actual_count == attempts
     assert closing.reservation_count == closing.terminal_actual_count
+
+
+def test_pinned_abandoned_chains_are_ordered_and_disjoint():
+    chains = full_score.FULL_SCORE_PINNED_ABANDONED_CHAINS
+    assert chains == (
+        (
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+        ),
+        (
+            full_score.FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+            full_score.FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+        ),
+    )
+    assert all(
+        earlier[1].reservation_count <= later[0].reservation_count
+        for earlier, later in zip(chains, chains[1:])
+    )
 
 
 def test_capacity_retry_submits_only_never_started_tasks_without_p90(campaign):

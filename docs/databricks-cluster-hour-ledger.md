@@ -723,18 +723,26 @@ the `ee77ee4` chain, whose closure exceeded its two-hour bound, and the
 `0e45b07` chain recorded below. The `02ca22f`, `e2e0a58`, and `12d22d9` chains,
 also recorded below, failed in their consumer phases.
 
-The `215d83c` chain, recorded below, is the one exception to the wave-zero
-rule. It closed three waves before its wave-three producer attempt failed only
-because AWS throttled or failed every cluster launch, under termination reasons
-its revision did not classify as capacity failures. That attempt could neither
-retry nor close, so the chain could not continue. The package pins the chain
-by its opening 446/396/446 and closing 468/418/468 ledger prefixes and exempts
-exactly those twenty-two attempts while the ledger carries both prefixes
-exactly. Every other earlier attempt still has to satisfy the wave-zero rule.
-Its three closed consumer phases scored waves that no successor reads or
-reports. With it, the ledger holds forty-eight abandoned attempts from nine
-chains, thirty-three producers and fifteen consumers, using 227.20783333333333
-GPU-hours, and the report discloses three closed consumer phases.
+The `215d83c` and `5f07618` chains, recorded below, are the only exceptions to
+the wave-zero rule. The `215d83c` chain closed three waves before its
+wave-three producer attempt failed only because AWS throttled or failed every
+cluster launch, under termination reasons its revision did not classify as
+capacity failures. The `5f07618` chain closed eight waves and its wave-eight
+producer before its wave-eight consumer attempt failed only because GitHub's
+release CDN returned gateway errors for downloads that every worker makes
+before scoring, and its revision did not retry them. Neither failed attempt
+could retry or close, so neither chain could continue. The
+package pins each chain by its opening and closing ledger prefixes:
+446/396/446 to 468/418/468 for `215d83c`, and 482/432/482 to 507/457/507 for
+`5f07618`. It exempts exactly those twenty-two and twenty-five attempts, each
+chain only while the ledger carries both of its prefixes exactly, so a forked or
+rewritten ledger loses the exemption only for the chain whose prefixes no longer
+match. Every other earlier attempt still has to satisfy the wave-zero rule.
+Their eleven closed consumer phases scored waves that no successor reads or
+reports. With them, the ledger holds seventy-three abandoned attempts from ten
+chains, forty-six producers and twenty-seven consumers, using
+366.38667055555555 GPU-hours, and the report discloses eleven closed consumer
+phases.
 
 Each remote CPU coordinator keeps its local controller state in a directory
 under the shared phase lease root. The directory is named for the
@@ -1003,6 +1011,57 @@ at 976.5455919444444 terminal GPU-hours, with zero active reservations and
 failures as capacity failures, pins this chain as the one abandoned past wave
 zero, and binds a fresh source closure and this complete prefix as its
 predecessor.
+
+The vLLM 0.30.0 qualification of source revision `5f07618` succeeded, and its
+full score closed eight waves before it was abandoned. Its plan is
+`04a3c11347b1e87c201972df96fba4975d1bc912ac5239581bca41f35d8716fe`,
+its source tree is
+`d3b0219eb01a7d672ed7f5eb622b17bc910092eb63d6a69e719d0c9f7eb73978`,
+and its phase batch is
+`62e1d7aa108cc48ad3f8cb1fe1dff5c18e85fbaba53e776f54a3bc9ee4b2dad7`.
+All fourteen attempt-zero jobs succeeded, consuming 3.5898616666666667
+GPU-hours and closing the exact 482/432/482 prefix
+`bcccf951892d00236c2c6a86814ce0500f519515e7c366b1fb9ecdddcd35e998`
+at 980.1354536111111 terminal GPU-hours. Its first latency collection failed
+because the three Volume plan directories holding all ten block-one latency
+results had been deleted outside the campaign. The collection re-renders
+every historical latency payload and compares its bytes, so nothing else could
+substitute for them. All seventy-two required result files were restored
+byte-for-byte from the content-addressed latency cache of the abandoned
+`215d83c` chain, whose collection had verified them, and the second collection
+succeeded unchanged. Its full score abandoned the earlier chains and closed
+seventeen phases: every producer and consumer phase of waves zero through
+seven, and the wave-eight producer. The wave-zero consumer and the wave-one and
+wave-two producers each closed in two attempts, and the wave-five producer and
+wave-seven consumer each in three. Every retry reran only tasks that never
+started because of `AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`. In the
+wave-eight consumer's only attempt, run `1111755166713548`, fifteen of the
+sixteen workers failed before scoring, every one on an HTTP 504 from GitHub's
+release CDN. Four failed downloading the pinned `virtualenv` bootstrap from
+`https://github.com/pypa/virtualenv/releases/download/20.39.1/virtualenv.pyz`,
+which every worker needs because `ensurepip` is unavailable on the Databricks
+runtime Python. Eleven failed while pip fetched the locked `flashinfer-cubin`
+or `flashinfer-jit-cache` 0.6.18.post1 wheel from the FlashInfer GitHub
+releases; pip retries HTTP 500, 502, and 503 but not 504. The attempt used
+3.310138333333333 GPU-hours. Its failures were not never-started capacity
+failures, so collection refused its capacity-failure record and the phase
+could neither retry nor close. The chain used 139.17883722222223 GPU-hours in
+twenty-five attempts, thirteen producers and twelve consumers. Its eight closed
+consumer phases are scores no successor reads; they stay under this chain's
+qualification-bound namespace. The ledger stands at the exact 507/457/507
+prefix
+`55e24ba17899593c2f27d2d4c2aa82b290c2db07b52272ea02d2e3784dea6b3f`
+at 1119.3142908333334 terminal GPU-hours, with zero active reservations and
+904.6857091666666 hours remaining. In every worker, the successor retries the
+`virtualenv` bootstrap download after HTTP 408, 429, 500, 502, 503, or 504
+responses and after connection, timeout, and TLS errors, while other HTTP
+errors and digest mismatches still fail at once. Because pip exits with one
+status for every failure, the successor reruns each of its two installs that
+download from package indexes, the runtime lock and the BitsAndBytes plugin,
+whole after any failure. Both retries wait 10, 20, 40, 80, 160, 300, and 300
+seconds before giving up after the eighth try. Installs of local wheels stay
+single-shot. It pins this chain as the second chain abandoned past wave zero
+and binds a fresh source closure and this complete prefix as its predecessor.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and

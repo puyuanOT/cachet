@@ -274,11 +274,14 @@ FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION = 1
 # Every capacity-failed attempt is a separately ledgered single-attempt run.
 FULL_SCORE_PHASE_MAX_ATTEMPTS = 16
 FULL_SCORE_CAPACITY_TERMINATION_REASONS = DATABRICKS_CAPACITY_TERMINATION_REASONS
-# The one chain abandoned past wave zero.  Its wave-three producer attempt
-# failed only because clusters never launched, under termination reasons its
-# qualified revision did not classify as capacity failures, so it could
-# neither retry nor continue.  The two prefixes bind every one of its attempts.
-FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256 = (
+# The chains abandoned past wave zero, each bound attempt by attempt by the
+# ledger prefixes that open and close it.  Each stopped only on an outside
+# failure its qualified revision could neither retry nor survive: the 215d83c
+# chain's wave-three producer clusters never launched, under termination
+# reasons that revision did not classify as capacity failures, and the 5f07618
+# chain's wave-eight consumer workers could not download their virtualenv
+# bootstrap or locked FlashInfer wheels through GitHub release gateway errors.
+FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256 = (
     "88315f8bcae2317659fea61c05b7e5c56e7e56dd1330368fdccfe816c453ad84"
 )
 FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX = DatabricksLedgerPrefix(
@@ -296,6 +299,34 @@ FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX = DatabricksLedgerPrefi
     submission_receipt_count=418,
     terminal_actual_count=468,
     prefix_sha256="bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
+)
+FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX = DatabricksLedgerPrefix(
+    ledger_id="representative-canary-823bd9d82a5c1730",
+    cap_cluster_hours=2024.0,
+    reservation_count=482,
+    submission_receipt_count=432,
+    terminal_actual_count=482,
+    prefix_sha256="bcccf951892d00236c2c6a86814ce0500f519515e7c366b1fb9ecdddcd35e998",
+)
+FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX = DatabricksLedgerPrefix(
+    ledger_id="representative-canary-823bd9d82a5c1730",
+    cap_cluster_hours=2024.0,
+    reservation_count=507,
+    submission_receipt_count=457,
+    terminal_actual_count=507,
+    prefix_sha256="55e24ba17899593c2f27d2d4c2aa82b290c2db07b52272ea02d2e3784dea6b3f",
+)
+FULL_SCORE_PINNED_ABANDONED_CHAINS: tuple[
+    tuple[DatabricksLedgerPrefix, DatabricksLedgerPrefix], ...
+] = (
+    (
+        FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+        FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+    ),
+    (
+        FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+        FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+    ),
 )
 FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE = "cachet.full_score_connector_proof.v1"
 FULL_SCORE_CONNECTOR_PROOF_SCHEMA_VERSION = 1
@@ -7311,9 +7342,9 @@ def require_full_score_chain_restart_ledger(
     closed no consumer successfully, so it never produced a score.  Its latest
     attempt may be a succeeded producer, because the CPU ready closure between
     producer and consumer is not a ledger attempt and can fail after it.  The
-    one exception is the launch-failure chain pinned by its opening and closing
-    ledger prefixes, which is exempt only while the ledger carries both exactly.
-    The returned terminals, in reservation order, are what a report must
+    exceptions are the chains in ``FULL_SCORE_PINNED_ABANDONED_CHAINS``, each
+    exempt only while the ledger carries both its opening and closing prefixes
+    exactly.  The returned terminals, in reservation order, are what a report must
     disclose.  The caller must already have bound ``predecessor_prefix`` to
     ``ledger``.
     """
@@ -7338,7 +7369,7 @@ def require_full_score_chain_restart_ledger(
         item.attempt_id: item
         for item in ledger.terminal_actuals[: predecessor_prefix.terminal_actual_count]
     }
-    exempt = _full_score_launch_failure_abandoned_chain_positions(
+    exempt = _full_score_pinned_abandoned_chain_positions(
         ledger,
         predecessor_prefix=predecessor_prefix,
         plan_workloads=plan_workloads,
@@ -7357,25 +7388,46 @@ def require_full_score_chain_restart_ledger(
     return tuple(terminals[item.attempt_id] for _index, item in prior)
 
 
-def _full_score_launch_failure_abandoned_chain_positions(
+def _full_score_pinned_abandoned_chain_positions(
     ledger: DatabricksClusterHourLedger,
     *,
     predecessor_prefix: DatabricksLedgerPrefix,
     plan_workloads: str,
+) -> frozenset[int]:
+    """Return the reservation positions of every pinned abandoned chain."""
+
+    if plan_workloads != f"full-score:{FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256}:":
+        return frozenset()
+    return frozenset(
+        position
+        for opening, closing in FULL_SCORE_PINNED_ABANDONED_CHAINS
+        for position in _full_score_pinned_abandoned_chain_range(
+            ledger,
+            predecessor_prefix=predecessor_prefix,
+            plan_workloads=plan_workloads,
+            opening=opening,
+            closing=closing,
+        )
+    )
+
+
+def _full_score_pinned_abandoned_chain_range(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    predecessor_prefix: DatabricksLedgerPrefix,
+    plan_workloads: str,
+    opening: DatabricksLedgerPrefix,
+    closing: DatabricksLedgerPrefix,
 ) -> range:
-    """Return the reservation positions of the pinned launch-failure chain.
+    """Return the reservation positions of one pinned abandoned chain.
 
     The range is empty unless the restart opens after the chain closed and the
     ledger carries both pinned prefixes exactly, so a forked or rewritten
-    ledger falls back to the wave-zero rule.
+    ledger falls back to the wave-zero rule for that chain.
     """
 
-    opening = FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX
-    closing = FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX
     if (
-        plan_workloads
-        != f"full-score:{FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256}:"
-        or ledger.ledger_id != closing.ledger_id
+        ledger.ledger_id != closing.ledger_id
         or predecessor_prefix.reservation_count < closing.reservation_count
         or predecessor_prefix.submission_receipt_count
         < closing.submission_receipt_count
@@ -16349,9 +16401,12 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 __all__ = [
+    "FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
     "FULL_SCORE_AGGREGATE_RECORD_TYPE",
     "FULL_SCORE_AGGREGATE_SCHEMA_VERSION",
     "FULL_SCORE_ATTENTION_BACKEND",
+    "FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX",
+    "FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX",
     "FULL_SCORE_CAPACITY_TERMINATION_REASONS",
     "FULL_SCORE_CONSUMER_NODE_TYPE_ID",
     "FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE",
@@ -16370,7 +16425,6 @@ __all__ = [
     "FULL_SCORE_KV_BLOCK_SIZE",
     "FULL_SCORE_KV_DTYPE",
     "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX",
-    "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
     "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX",
     "FULL_SCORE_LIVE_P90_DRAWS",
     "FULL_SCORE_LIVE_P90_RECORD_TYPE",
@@ -16391,6 +16445,7 @@ __all__ = [
     "FULL_SCORE_PHASE_MAX_ATTEMPTS",
     "FULL_SCORE_PHASE_TERMINAL_RECORD_TYPE",
     "FULL_SCORE_PHASE_TERMINAL_SCHEMA_VERSION",
+    "FULL_SCORE_PINNED_ABANDONED_CHAINS",
     "FULL_SCORE_PRODUCER_HARDWARE_TARGET",
     "FULL_SCORE_PRODUCER_NODE_TYPE_ID",
     "FULL_SCORE_PRODUCER_ZONE_ID",
