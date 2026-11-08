@@ -204,7 +204,11 @@ def test_locked_runtime_child_preserves_managed_parent_and_launch_binding(
             env=env,
         )
 
-    namespace["subprocess"] = SimpleNamespace(check_call=checked_child)
+    namespace["subprocess"] = SimpleNamespace(
+        call=checked_child,
+        check_call=checked_child,
+        CalledProcessError=subprocess.CalledProcessError,
+    )
     monkeypatch.setattr(sys, "argv", [str(runner), *argv])
 
     def bootstrap():
