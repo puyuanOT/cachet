@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import shutil
+import subprocess
 import threading
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
@@ -7978,6 +7979,87 @@ def test_full_score_runner_never_retries_a_bootstrap_digest_mismatch(
     assert len(requests) == 1
     assert sleeps == []
     assert list(tmp_path.iterdir()) == []
+
+
+def _package_index_install_namespace(monkeypatch, returncodes):
+    namespace = {"__name__": "full_score_package_index_install_test"}
+    exec(
+        compile(
+            full_score.FULL_SCORE_RUNNER_SCRIPT,
+            "full_score_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    calls = []
+    sleeps = []
+
+    def call(command, env):
+        calls.append((command, env))
+        return returncodes[min(len(calls), len(returncodes)) - 1]
+
+    monkeypatch.setattr(namespace["subprocess"], "call", call)
+    monkeypatch.setattr(namespace["time"], "sleep", sleeps.append)
+    return namespace, calls, sleeps
+
+
+def test_full_score_runner_retries_failed_package_index_installs(
+    monkeypatch,
+    capsys,
+):
+    namespace, calls, sleeps = _package_index_install_namespace(
+        monkeypatch, [1, 2, 0]
+    )
+    command = ["python", "-m", "pip", "install", "-r", "lock.txt"]
+    environment = {"PIP_NO_INPUT": "1"}
+
+    namespace["_install_from_package_indexes"](command, environment=environment)
+
+    assert calls == [(command, environment)] * 3
+    assert sleeps == [10, 20]
+    assert capsys.readouterr().err.splitlines() == [
+        "pip install failed (exit status 1); retrying in 10 s",
+        "pip install failed (exit status 2); retrying in 20 s",
+    ]
+
+
+def test_full_score_runner_bounds_package_index_install_retries(monkeypatch):
+    namespace, calls, sleeps = _package_index_install_namespace(monkeypatch, [1])
+    command = ["python", "-m", "pip", "install", "-r", "lock.txt"]
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        namespace["_install_from_package_indexes"](command, environment={})
+
+    assert raised.value.returncode == 1
+    assert raised.value.cmd == command
+    assert sleeps == [10, 20, 40, 80, 160, 300, 300]
+    assert len(calls) == 8
+
+
+def test_full_score_runner_retries_only_the_package_index_installs():
+    script = full_score.FULL_SCORE_RUNNER_SCRIPT
+    installs = script.split("def _bootstrap(", 1)[1].split("_install_from_package_indexes(")
+    assert len(installs) == 3
+    assert installs[1].lstrip().startswith(
+        '[*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", base_lock]'
+    )
+    assert installs[2].split("]", 1)[0].split() == [
+        "[",
+        "*pip,",
+        '"install",',
+        '"--no-deps",',
+        '"--require-hashes",',
+        '"--only-binary",',
+        '":all:",',
+        '"-r",',
+        "plugin_requirements,",
+    ]
+    for spec in ("vllm_spec", "flashinfer_spec", "package_spec"):
+        assert (
+            'subprocess.check_call(\n        [*pip, "install", "--no-deps", '
+            + spec
+            + "]"
+        ) in script
 
 
 def test_native_v2_runtime_binding_rejects_attestation_and_artifact_drift():

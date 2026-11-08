@@ -425,10 +425,10 @@ __GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
 VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
 VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
 VIRTUALENV_BOOTSTRAP_SHA256 = __CACHET_VIRTUALENV_BOOTSTRAP_SHA256__
-# Every worker downloads the bootstrap from GitHub's release CDN, whose
-# transient gateway errors otherwise fail the whole phase.
-VIRTUALENV_BOOTSTRAP_RETRY_DELAYS_SECONDS = (10, 20, 40, 80, 160, 300, 300)
-VIRTUALENV_BOOTSTRAP_RETRY_HTTP_CODES = frozenset({408, 429, 500, 502, 503, 504})
+# Every worker downloads the bootstrap and some locked wheels from GitHub's
+# release CDN, whose transient gateway errors otherwise fail the whole phase.
+DOWNLOAD_RETRY_DELAYS_SECONDS = (10, 20, 40, 80, 160, 300, 300)
+DOWNLOAD_RETRY_HTTP_CODES = frozenset({408, 429, 500, 502, 503, 504})
 
 
 def _cluster_path(uri: str) -> str:
@@ -492,7 +492,7 @@ def _download_virtualenv_bootstrap(temporary: str) -> None:
 
 def _is_transient_download_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in VIRTUALENV_BOOTSTRAP_RETRY_HTTP_CODES
+        return exc.code in DOWNLOAD_RETRY_HTTP_CODES
     return isinstance(
         exc,
         (
@@ -522,7 +522,7 @@ def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
         return target
     temporary = target + ".tmp"
     try:
-        for delay in (*VIRTUALENV_BOOTSTRAP_RETRY_DELAYS_SECONDS, None):
+        for delay in (*DOWNLOAD_RETRY_DELAYS_SECONDS, None):
             try:
                 _download_virtualenv_bootstrap(temporary)
                 break
@@ -570,6 +570,31 @@ def _create_runtime_venv(
             [sys.executable, bootstrap, "--clear", "--copies", venv_dir],
             env=environment,
         )
+
+
+def _install_from_package_indexes(
+    command: list[str],
+    *,
+    environment: dict[str, str],
+) -> None:
+    # pip never retries HTTP 504 and exits with one status for every failure,
+    # so an install that downloads from package indexes is retried whole.
+    for delay in (*DOWNLOAD_RETRY_DELAYS_SECONDS, None):
+        returncode = subprocess.call(command, env=environment)
+        if returncode == 0:
+            return
+        if delay is None:
+            raise subprocess.CalledProcessError(returncode, command)
+        print(
+            "pip install failed (exit status "
+            + str(returncode)
+            + "); retrying in "
+            + str(delay)
+            + " s",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(delay)
 
 
 def _bootstrap(argv: list[str]) -> None:
@@ -707,9 +732,9 @@ def _bootstrap(argv: list[str]) -> None:
     base_lock, plugin_requirements = _bnb_plugin_install_paths(
         runtime_lock, os.path.dirname(venv_dir)
     )
-    subprocess.check_call(
+    _install_from_package_indexes(
         [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", base_lock],
-        env=pip_environment,
+        environment=pip_environment,
     )
     vllm_spec = (
         "vllm @ " + pathlib.Path(patched_vllm_wheel).resolve().as_uri()
@@ -729,7 +754,7 @@ def _bootstrap(argv: list[str]) -> None:
         env=pip_environment,
     )
     if plugin_requirements is not None:
-        subprocess.check_call(
+        _install_from_package_indexes(
             [
                 *pip,
                 "install",
@@ -740,7 +765,7 @@ def _bootstrap(argv: list[str]) -> None:
                 "-r",
                 plugin_requirements,
             ],
-            env=pip_environment,
+            environment=pip_environment,
         )
     subprocess.check_call(
         [*pip, "install", "--no-deps", flashinfer_spec],
