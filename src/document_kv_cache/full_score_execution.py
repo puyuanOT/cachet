@@ -1279,6 +1279,12 @@ class DatabricksFullScoreJobConfig:
         _require_sha256(self.runner_sha256, field_name="runner_sha256")
         if self.runner_sha256 != FULL_SCORE_RUNNER_SHA256:
             raise ValueError("runner_sha256 does not identify the frozen runner")
+        # Databricks runs whatever file sits at python_file, and workers only
+        # check its digest after their clusters start.
+        if Path(self.runner_python_file).parent.name != self.runner_sha256:
+            raise ValueError(
+                "runner_python_file must sit in a directory named by runner_sha256"
+            )
         _require_sha256(self.runtime_lock_sha256, field_name="runtime_lock_sha256")
         _require_sha256(
             self.patched_vllm_wheel_sha256,

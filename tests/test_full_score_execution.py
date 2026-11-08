@@ -353,7 +353,9 @@ def _runtime_verification():
         "patched_flashinfer_wheel_uri": "dbfs:/runtime/patched-flashinfer.whl",
         "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
         "patched_vllm_wheel_uri": "dbfs:/runtime/patched-vllm.whl",
-        "runner_python_file": "dbfs:/runner/full-score.py",
+        "runner_python_file": (
+            f"dbfs:/runner/{full_score.FULL_SCORE_RUNNER_SHA256}/full-score.py"
+        ),
         "runner_sha256": full_score.FULL_SCORE_RUNNER_SHA256,
         "runtime_closure_manifest_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         "runtime_closure_manifest_uri": "dbfs:/runtime/closure.json",
@@ -567,7 +569,9 @@ def campaign(tmp_path, monkeypatch):
         durable_output_root="dbfs:/full-score/durable",
         ephemeral_root="/local_disk0/full-score",
         runtime=runtime,
-        runner_python_file="dbfs:/runner/full-score.py",
+        runner_python_file=(
+            f"dbfs:/runner/{full_score.FULL_SCORE_RUNNER_SHA256}/full-score.py"
+        ),
         runner_sha256=full_score.FULL_SCORE_RUNNER_SHA256,
         package_wheel_uri="dbfs:/runtime/cachet.whl",
         package_wheel_sha256=package_sha,
@@ -685,7 +689,10 @@ def _volume_campaign(campaign, *, vllm_wheel_name="patched-vllm.whl"):
         },
         durable_output_root=f"{volume}/full-score",
         runtime=runtime,
-        runner_python_file=f"{volume}/runtime/full-score-runner.py",
+        runner_python_file=(
+            f"{volume}/runtime/{full_score.FULL_SCORE_RUNNER_SHA256}/"
+            "full-score-runner.py"
+        ),
         package_wheel_uri=f"{volume}/runtime/cachet.whl",
         gpu_qualification=qualification,
     )
@@ -2782,6 +2789,24 @@ def test_full_score_freezes_six_hour_task_and_run_timeout(campaign):
             campaign["bundle"].runtime,
             kv_transfer_config=transfer_with_fallback,
         )
+
+
+def test_full_score_job_requires_runner_file_named_by_its_digest(campaign):
+    job = campaign["job"]
+    earlier_runner = (
+        "dbfs:/runner/"
+        "839d637e57b31a5d02a7fc46eccef4850e60cbebc80b322c9a2d06477d859744/"
+        "full-score.py"
+    )
+
+    assert Path(job.runner_python_file).parent.name == job.runner_sha256
+    for runner_python_file in (
+        earlier_runner,
+        "dbfs:/runner/full-score.py",
+        f"dbfs:/runner/{job.runner_sha256}.py",
+    ):
+        with pytest.raises(ValueError, match="directory named by runner_sha256"):
+            replace(job, runner_python_file=runner_python_file)
 
 
 def test_consumer_reservation_replays_completion_instead_of_trusting_closure(

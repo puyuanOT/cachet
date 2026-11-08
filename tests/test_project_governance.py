@@ -1979,8 +1979,8 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "loses the exemption only for the chain whose prefixes no longer match"
     ) in compact_ledger_doc
     assert "`closed_consumer_phase_count`" in compact_ledger_doc
-    assert "seventy-three abandoned attempts from ten chains" in compact_ledger_doc
-    assert "366.38667055555555 GPU-hours" in compact_ledger_doc
+    assert "seventy-four abandoned attempts from eleven chains" in compact_ledger_doc
+    assert "368.23190277777775 GPU-hours" in compact_ledger_doc
     assert "eleven closed consumer phases" in compact_ledger_doc
     assert "bound to the closed phase it verifies" in compact_ledger_doc
     assert "marks even `SystemExit(0)` as `FAILED`" in compact_ledger_doc
@@ -2077,6 +2077,22 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "gives every qualification sentinel the same retries" in (
         compact_ledger_doc
     )
+    assert "vLLM 0.30.0 qualification of source revision `631848d` succeeded" in (
+        compact_ledger_doc
+    )
+    assert "exact 535/485/535 prefix" in compact_ledger_doc
+    assert "1125.5864088888889 terminal GPU-hours" in compact_ledger_doc
+    assert "88 files of twelve block-two jobs" in compact_ledger_doc
+    assert "first attempt, run `730512942658019`" in compact_ledger_doc
+    assert "`full-score runner SHA-256 does not match`" in compact_ledger_doc
+    assert "1.845232222222222 GPU-hours" in compact_ledger_doc
+    assert "exact 536/486/536 prefix" in compact_ledger_doc
+    assert "1127.431641111111 terminal GPU-hours" in compact_ledger_doc
+    assert "896.568358888889 hours remaining" in compact_ledger_doc
+    assert "admits it as abandoned without a pin" in compact_ledger_doc
+    assert "not sit in a directory named by its `runner_sha256`" in (
+        compact_ledger_doc
+    )
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -2164,6 +2180,13 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "c7d78e3f5cf92617a6172bbc8646e427895be9c4f79492d7b5d575a7c196aa08",
         "598c8c2220bc32e2a0aaa7cbecf2921d3950b1b9524213c15437bc201e716a2c",
         "c82dd1492b9f963018c1aeda7e862d1512019993896d000fa584e491eb098f4c",
+        "80609de306fe59ddaf96b8d69369fe3c729f7e3190718e1f2f3a27efc616c695",
+        "af97d6ef6a8fcaaefa78839684ef144a70e3b3b24aa7e712666a592b6c89a69e",
+        "681ce919d8a7f470330696314ff15f35b7da0dc213cb3d79ca01878ed1905929",
+        "f2f52a4882009b50c62c2564e1c8757ea44641b731be113fa312da8847d22969",
+        "839d637e57b31a5d02a7fc46eccef4850e60cbebc80b322c9a2d06477d859744",
+        "2e841da1db26179adae70d7c75826da3c6a3a31e6c13f6e33d408cb62c093438",
+        "27c9a540ff05278030b43c0185b2dd099dcd87e108306fe573f2ba96ea5cc757",
     ):
         assert digest in compact_ledger_doc
     full_score_source = (

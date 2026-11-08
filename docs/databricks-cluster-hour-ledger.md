@@ -739,9 +739,10 @@ chain only while the ledger carries both of its prefixes exactly, so a forked or
 rewritten ledger loses the exemption only for the chain whose prefixes no longer
 match. Every other earlier attempt still has to satisfy the wave-zero rule.
 Their eleven closed consumer phases scored waves that no successor reads or
-reports. With them, the ledger holds seventy-three abandoned attempts from ten
-chains, forty-six producers and twenty-seven consumers, using
-366.38667055555555 GPU-hours, and the report discloses eleven closed consumer
+reports. The `631848d` chain, also recorded below, stayed in wave zero and
+needs no pin. With all three, the ledger holds seventy-four abandoned attempts
+from eleven chains, forty-seven producers and twenty-seven consumers, using
+368.23190277777775 GPU-hours, and the report discloses eleven closed consumer
 phases.
 
 Each remote CPU coordinator keeps its local controller state in a directory
@@ -1093,6 +1094,42 @@ local files without dependencies and stay single-shot. The sentinels and the
 full-score workers take one retry schedule from `serving_env`. No attempt of
 this qualification belongs to a full-score plan, so the successor's full score
 restarts over the same two pinned chains.
+
+The vLLM 0.30.0 qualification of source revision `631848d` succeeded, and its
+full score failed in its first attempt. Its plan is
+`80609de306fe59ddaf96b8d69369fe3c729f7e3190718e1f2f3a27efc616c695`,
+its source tree is
+`af97d6ef6a8fcaaefa78839684ef144a70e3b3b24aa7e712666a592b6c89a69e`,
+and its phase batch is
+`681ce919d8a7f470330696314ff15f35b7da0dc213cb3d79ca01878ed1905929`.
+All fourteen attempt-zero jobs succeeded, including the three L4 jobs the
+`2ab3ff6` qualification lost, consuming 3.327582777777778 GPU-hours and
+closing the exact 535/485/535 prefix
+`f2f52a4882009b50c62c2564e1c8757ea44641b731be113fa312da8847d22969`
+at 1125.5864088888889 terminal GPU-hours. Before its latency collection, the
+Volume had lost the result files of fifteen more latency jobs outside the
+campaign: 24 files of three block-one jobs, found before the `2ab3ff6`
+qualification, and 88 files of twelve block-two jobs. All were restored
+byte-for-byte from the same content-addressed latency cache, and the
+collection succeeded unchanged. In
+its wave-zero producer's first attempt, run `730512942658019`, all sixteen
+workers failed within a minute of starting, before any download. Each task's
+`python_file` named the runner staged on the Volume for the earlier chains,
+`839d637e57b31a5d02a7fc46eccef4850e60cbebc80b322c9a2d06477d859744`, while
+every payload carried this revision's runner digest
+`2e841da1db26179adae70d7c75826da3c6a3a31e6c13f6e33d408cb62c093438`, so
+every worker refused the file Databricks ran with `full-score runner SHA-256
+does not match`. The failure was not a never-started capacity failure, so
+collection refused its capacity-failure record. The attempt used
+1.845232222222222 GPU-hours. The ledger stands at the exact 536/486/536
+prefix
+`27c9a540ff05278030b43c0185b2dd099dcd87e108306fe573f2ba96ea5cc757`
+at 1127.431641111111 terminal GPU-hours, with zero active reservations and
+896.568358888889 hours remaining. The chain stayed in wave zero and closed no
+consumer, so the wave-zero rule admits it as abandoned without a pin. The
+successor refuses a Databricks full-score job whose `runner_python_file` does
+not sit in a directory named by its `runner_sha256`, so a stale staging record
+now fails before any reservation instead of on every worker.
 
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
