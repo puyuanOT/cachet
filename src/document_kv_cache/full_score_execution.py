@@ -409,11 +409,15 @@ FULL_SCORE_RUNNER_SCRIPT = (
 import argparse
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import pathlib
+import ssl
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 
 __GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
@@ -421,6 +425,10 @@ __GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
 VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
 VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
 VIRTUALENV_BOOTSTRAP_SHA256 = __CACHET_VIRTUALENV_BOOTSTRAP_SHA256__
+# Every worker downloads the bootstrap from GitHub's release CDN, whose
+# transient gateway errors otherwise fail the whole phase.
+VIRTUALENV_BOOTSTRAP_RETRY_DELAYS_SECONDS = (10, 20, 40, 80, 160, 300, 300)
+VIRTUALENV_BOOTSTRAP_RETRY_HTTP_CODES = frozenset({408, 429, 500, 502, 503, 504})
 
 
 def _cluster_path(uri: str) -> str:
@@ -468,6 +476,35 @@ def _pip_subprocess_environment() -> dict[str, str]:
     return env
 
 
+def _download_virtualenv_bootstrap(temporary: str) -> None:
+    request = urllib.request.Request(
+        VIRTUALENV_BOOTSTRAP_URL,
+        headers={"User-Agent": "cachet-publication-bootstrap"},
+    )
+    with urllib.request.urlopen(request, timeout=120.0) as response:
+        with open(temporary, "wb") as stream:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                stream.write(chunk)
+
+
+def _is_transient_download_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in VIRTUALENV_BOOTSTRAP_RETRY_HTTP_CODES
+    return isinstance(
+        exc,
+        (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            ssl.SSLError,
+        ),
+    )
+
+
 def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
     target = os.path.join(
@@ -484,18 +521,24 @@ def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
             raise RuntimeError("virtualenv bootstrap SHA-256 mismatch: " + observed)
         return target
     temporary = target + ".tmp"
-    request = urllib.request.Request(
-        VIRTUALENV_BOOTSTRAP_URL,
-        headers={"User-Agent": "cachet-publication-bootstrap"},
-    )
     try:
-        with urllib.request.urlopen(request, timeout=120.0) as response:
-            with open(temporary, "wb") as stream:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    stream.write(chunk)
+        for delay in (*VIRTUALENV_BOOTSTRAP_RETRY_DELAYS_SECONDS, None):
+            try:
+                _download_virtualenv_bootstrap(temporary)
+                break
+            except Exception as exc:
+                if delay is None or not _is_transient_download_error(exc):
+                    raise
+                print(
+                    "virtualenv bootstrap download failed ("
+                    + type(exc).__name__
+                    + "); retrying in "
+                    + str(delay)
+                    + " s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(delay)
         observed = _sha256(temporary)
         if observed != VIRTUALENV_BOOTSTRAP_SHA256:
             raise RuntimeError(

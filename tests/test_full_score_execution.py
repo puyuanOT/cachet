@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import threading
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from hashlib import sha256
@@ -7850,6 +7851,133 @@ def test_full_score_runner_rejects_tampered_cached_virtualenv_pyz(
         namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
 
     assert target.read_bytes() == b"tampered cached virtualenv"
+
+
+class _BootstrapResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._chunks = [payload[:7], payload[7:], b""]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self, _size: int) -> bytes:
+        return self._chunks.pop(0)
+
+
+def _bootstrap_download_namespace(monkeypatch, outcomes):
+    namespace = {"__name__": "full_score_bootstrap_retry_test"}
+    exec(
+        compile(
+            full_score.FULL_SCORE_RUNNER_SCRIPT,
+            "full_score_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    payload = b"reviewed virtualenv bootstrap fixture"
+    namespace["VIRTUALENV_BOOTSTRAP_SHA256"] = sha256(payload).hexdigest()
+    requests = []
+    sleeps = []
+
+    def urlopen(request, timeout):
+        requests.append((request.full_url, timeout))
+        outcome = outcomes[min(len(requests), len(outcomes)) - 1]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return _BootstrapResponse(outcome)
+
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", urlopen)
+    monkeypatch.setattr(namespace["time"], "sleep", sleeps.append)
+    return namespace, payload, requests, sleeps
+
+
+def _gateway_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(VIRTUALENV_BOOTSTRAP_URL, code, "error", None, None)
+
+
+def test_full_score_runner_retries_transient_bootstrap_download_failures(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    fixture = b"reviewed virtualenv bootstrap fixture"
+    namespace, payload, requests, sleeps = _bootstrap_download_namespace(
+        monkeypatch,
+        [
+            _gateway_error(504),
+            urllib.error.URLError(ConnectionResetError("reset")),
+            TimeoutError("read timed out"),
+            fixture,
+        ],
+    )
+
+    path = namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert Path(path).read_bytes() == payload
+    assert sleeps == [10, 20, 40]
+    assert requests == [(VIRTUALENV_BOOTSTRAP_URL, 120.0)] * 4
+    assert sorted(item.name for item in tmp_path.iterdir()) == [Path(path).name]
+    assert capsys.readouterr().err.splitlines() == [
+        "virtualenv bootstrap download failed (HTTPError); retrying in 10 s",
+        "virtualenv bootstrap download failed (URLError); retrying in 20 s",
+        "virtualenv bootstrap download failed (TimeoutError); retrying in 40 s",
+    ]
+
+
+@pytest.mark.parametrize("code", [403, 404])
+def test_full_score_runner_does_not_retry_a_permanent_bootstrap_error(
+    monkeypatch,
+    tmp_path,
+    code,
+):
+    namespace, _payload, requests, sleeps = _bootstrap_download_namespace(
+        monkeypatch,
+        [_gateway_error(code), b"unused"],
+    )
+
+    with pytest.raises(Exception, match=f"HTTP Error {code}"):
+        namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert len(requests) == 1
+    assert sleeps == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_full_score_runner_bounds_bootstrap_download_retries(monkeypatch, tmp_path):
+    namespace, _payload, requests, sleeps = _bootstrap_download_namespace(
+        monkeypatch,
+        [_gateway_error(503)],
+    )
+
+    with pytest.raises(Exception, match="HTTP Error 503"):
+        namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert sleeps == [10, 20, 40, 80, 160, 300, 300]
+    assert len(requests) == 8
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_full_score_runner_never_retries_a_bootstrap_digest_mismatch(
+    monkeypatch,
+    tmp_path,
+):
+    namespace, _payload, requests, sleeps = _bootstrap_download_namespace(
+        monkeypatch,
+        [b"substituted virtualenv bootstrap"],
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="downloaded virtualenv bootstrap SHA-256 mismatch",
+    ):
+        namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert len(requests) == 1
+    assert sleeps == []
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_native_v2_runtime_binding_rejects_attestation_and_artifact_drift():
