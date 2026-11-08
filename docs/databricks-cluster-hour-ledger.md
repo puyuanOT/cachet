@@ -1063,6 +1063,37 @@ seconds before giving up after the eighth try. Installs of local wheels stay
 single-shot. It pins this chain as the second chain abandoned past wave zero
 and binds a fresh source closure and this complete prefix as its predecessor.
 
+The vLLM 0.30.0 qualification of source revision `2ab3ff6` failed before its
+full score could start. Its plan is
+`5bf4dcb073b27a11e9c92fca8b510255cec5cc3685810b72adf3f87b8e4f8d48`,
+its source tree is
+`c7d78e3f5cf92617a6172bbc8646e427895be9c4f79492d7b5d575a7c196aa08`,
+and its phase batch is
+`598c8c2220bc32e2a0aaa7cbecf2921d3950b1b9524213c15437bc201e716a2c`.
+Eleven of its fourteen attempt-zero jobs succeeded. The other three ran on L4
+and failed while building their runtimes, again on GitHub's release CDN.
+`aws-g6-l4-forced-triton-runtime-handoff`, run `355629181986220`, and
+`aws-g6-l4-packed-page-roundtrip`, run `829413181485539`, received HTTP 504
+and 503 responses for the `virtualenv` bootstrap.
+`aws-g6-l4-matched-token-logit`, run `511004107376201`, failed when pip
+exhausted its own retries of HTTP 502 responses for the locked
+`flashinfer-cubin` wheel. The qualification sentinels download through their
+own code path, which had none of the full-score workers' retries. None of the
+failures was a capacity failure, so none could be retried and the
+qualification produced no evidence. Its fourteen attempts used
+2.944535277777778 GPU-hours. The ledger stands at the exact 521/471/521 prefix
+`c82dd1492b9f963018c1aeda7e862d1512019993896d000fa584e491eb098f4c`
+at 1122.2588261111111 terminal GPU-hours, with zero active reservations and
+901.7411738888889 hours remaining. Its successor gives every qualification
+sentinel the same retries: the `virtualenv` bootstrap download is retried on
+the same responses and errors, and the runtime-lock and BitsAndBytes-plugin
+installs are rerun whole after any failure, with the same waits. The
+sentinel's installs of the patched vLLM, FlashInfer, and Cachet wheels read
+local files without dependencies and stay single-shot. The sentinels and the
+full-score workers take one retry schedule from `serving_env`. No attempt of
+this qualification belongs to a full-score plan, so the successor's full score
+restarts over the same two pinned chains.
+
 Every publication `runs/submit` payload also carries a package-derived,
 64-character Databricks idempotency token bound to its attempt identity and
 canonical payload bytes. A durable pre-POST claim prevents concurrent local

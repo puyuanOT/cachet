@@ -7916,6 +7916,7 @@ def test_bootstrap_builds_and_launches_only_the_locked_runtime(monkeypatch):
     assert VIRTUALENV_BOOTSTRAP_URL in script
     assert VIRTUALENV_BOOTSTRAP_SHA256 in script
     assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in script
+    assert "__CACHET_DOWNLOAD_RETRY_" not in script
     assert "runtime-closure-manifest-sha256" in script
     assert "patched-flashinfer-wheel-sha256" in script
     assert 'pip, "check"' not in script

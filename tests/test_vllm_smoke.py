@@ -35,6 +35,7 @@ from document_kv_cache.serving_env import (
     VLLM_WHEEL_INSTALL_SPEC,
     VLLM_WHEEL_SHA256,
     VLLM_WHEEL_URL,
+    VIRTUALENV_BOOTSTRAP_URL,
     vllm_runtime_lock_path,
 )
 from document_kv_cache.runtime_artifact_closure import (
@@ -1428,6 +1429,109 @@ def test_materialize_virtualenv_bootstrap_hash_gates_zipapp(monkeypatch, tmp_pat
     path.write_bytes(b"corrupt")
     with pytest.raises(RuntimeError, match="SHA-256"):
         public_vllm_smoke.materialize_virtualenv_bootstrap(tmp_path)
+
+
+def _virtualenv_download_outcomes(monkeypatch, outcomes):
+    payload = b"self-contained virtualenv fixture"
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "VIRTUALENV_BOOTSTRAP_SHA256",
+        hashlib.sha256(payload).hexdigest(),
+    )
+    requests = []
+    sleeps = []
+
+    def urlopen(request, timeout):
+        requests.append((request.full_url, timeout))
+        outcome = outcomes[min(len(requests), len(outcomes)) - 1]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return io.BytesIO(outcome)
+
+    monkeypatch.setattr(public_vllm_smoke.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(public_vllm_smoke.time, "sleep", sleeps.append)
+    return payload, requests, sleeps
+
+
+def _virtualenv_gateway_error(code):
+    return public_vllm_smoke.urllib.error.HTTPError(
+        VIRTUALENV_BOOTSTRAP_URL, code, "error", None, None
+    )
+
+
+def test_materialize_virtualenv_bootstrap_retries_transient_failures(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    payload, requests, sleeps = _virtualenv_download_outcomes(
+        monkeypatch,
+        [
+            _virtualenv_gateway_error(504),
+            public_vllm_smoke.urllib.error.URLError(ConnectionResetError("reset")),
+            TimeoutError("read timed out"),
+            b"self-contained virtualenv fixture",
+        ],
+    )
+
+    path = public_vllm_smoke.materialize_virtualenv_bootstrap(tmp_path)
+
+    assert path.read_bytes() == payload
+    assert sleeps == [10, 20, 40]
+    assert requests == [(VIRTUALENV_BOOTSTRAP_URL, 120.0)] * 4
+    assert sorted(item.name for item in tmp_path.iterdir()) == [path.name]
+    assert capsys.readouterr().err.splitlines() == [
+        "virtualenv bootstrap download failed (HTTPError); retrying in 10 s",
+        "virtualenv bootstrap download failed (URLError); retrying in 20 s",
+        "virtualenv bootstrap download failed (TimeoutError); retrying in 40 s",
+    ]
+
+
+@pytest.mark.parametrize("code", [403, 404])
+def test_materialize_virtualenv_bootstrap_fails_permanent_errors_at_once(
+    monkeypatch,
+    tmp_path,
+    code,
+):
+    _payload, requests, sleeps = _virtualenv_download_outcomes(
+        monkeypatch, [_virtualenv_gateway_error(code)]
+    )
+
+    with pytest.raises(public_vllm_smoke.urllib.error.HTTPError):
+        public_vllm_smoke.materialize_virtualenv_bootstrap(tmp_path)
+
+    assert len(requests) == 1
+    assert sleeps == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_materialize_virtualenv_bootstrap_bounds_retries(monkeypatch, tmp_path):
+    _payload, requests, sleeps = _virtualenv_download_outcomes(
+        monkeypatch, [_virtualenv_gateway_error(503)]
+    )
+
+    with pytest.raises(public_vllm_smoke.urllib.error.HTTPError):
+        public_vllm_smoke.materialize_virtualenv_bootstrap(tmp_path)
+
+    assert sleeps == [10, 20, 40, 80, 160, 300, 300]
+    assert len(requests) == 8
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_materialize_virtualenv_bootstrap_never_retries_a_digest_mismatch(
+    monkeypatch,
+    tmp_path,
+):
+    _payload, requests, sleeps = _virtualenv_download_outcomes(
+        monkeypatch, [b"substituted virtualenv bootstrap"]
+    )
+
+    with pytest.raises(RuntimeError, match="downloaded virtualenv bootstrap SHA-256"):
+        public_vllm_smoke.materialize_virtualenv_bootstrap(tmp_path)
+
+    assert len(requests) == 1
+    assert sleeps == []
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_verify_vllm_runtime_patch_closure_is_read_only(monkeypatch, tmp_path):

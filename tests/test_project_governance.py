@@ -2064,6 +2064,19 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "exact 507/457/507 prefix" in compact_ledger_doc
     assert "1119.3142908333334 terminal GPU-hours" in compact_ledger_doc
     assert "904.6857091666666 hours remaining" in compact_ledger_doc
+    assert "vLLM 0.30.0 qualification of source revision `2ab3ff6` failed" in (
+        compact_ledger_doc
+    )
+    for run_id in ("355629181986220", "829413181485539", "511004107376201"):
+        assert f"run `{run_id}`" in compact_ledger_doc
+    assert "exhausted its own retries of HTTP 502 responses" in compact_ledger_doc
+    assert "2.944535277777778 GPU-hours" in compact_ledger_doc
+    assert "exact 521/471/521 prefix" in compact_ledger_doc
+    assert "1122.2588261111111 terminal GPU-hours" in compact_ledger_doc
+    assert "901.7411738888889 hours remaining" in compact_ledger_doc
+    assert "gives every qualification sentinel the same retries" in (
+        compact_ledger_doc
+    )
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -2147,6 +2160,10 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "62e1d7aa108cc48ad3f8cb1fe1dff5c18e85fbaba53e776f54a3bc9ee4b2dad7",
         "bcccf951892d00236c2c6a86814ce0500f519515e7c366b1fb9ecdddcd35e998",
         "55e24ba17899593c2f27d2d4c2aa82b290c2db07b52272ea02d2e3784dea6b3f",
+        "5bf4dcb073b27a11e9c92fca8b510255cec5cc3685810b72adf3f87b8e4f8d48",
+        "c7d78e3f5cf92617a6172bbc8646e427895be9c4f79492d7b5d575a7c196aa08",
+        "598c8c2220bc32e2a0aaa7cbecf2921d3950b1b9524213c15437bc201e716a2c",
+        "c82dd1492b9f963018c1aeda7e862d1512019993896d000fa584e491eb098f4c",
     ):
         assert digest in compact_ledger_doc
     full_score_source = (

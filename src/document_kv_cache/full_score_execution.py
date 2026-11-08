@@ -168,6 +168,8 @@ from document_kv_cache._gpu_qualification_sentinels_v2 import (
     _run_bounded_binary_subprocess,
 )
 from document_kv_cache.serving_env import (
+    DOWNLOAD_RETRY_DELAYS_SECONDS,
+    DOWNLOAD_RETRY_HTTP_CODES,
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
     VIRTUALENV_BOOTSTRAP_SHA256,
@@ -456,10 +458,8 @@ __GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
 VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
 VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
 VIRTUALENV_BOOTSTRAP_SHA256 = __CACHET_VIRTUALENV_BOOTSTRAP_SHA256__
-# Every worker downloads the bootstrap and some locked wheels from GitHub's
-# release CDN, whose transient gateway errors otherwise fail the whole phase.
-DOWNLOAD_RETRY_DELAYS_SECONDS = (10, 20, 40, 80, 160, 300, 300)
-DOWNLOAD_RETRY_HTTP_CODES = frozenset({408, 429, 500, 502, 503, 504})
+DOWNLOAD_RETRY_DELAYS_SECONDS = __CACHET_DOWNLOAD_RETRY_DELAYS_SECONDS__
+DOWNLOAD_RETRY_HTTP_CODES = frozenset(__CACHET_DOWNLOAD_RETRY_HTTP_CODES__)
 
 
 def _cluster_path(uri: str) -> str:
@@ -834,6 +834,14 @@ if __name__ == "__main__":
     .replace(
         "__CACHET_VIRTUALENV_BOOTSTRAP_SHA256__",
         repr(VIRTUALENV_BOOTSTRAP_SHA256),
+    )
+    .replace(
+        "__CACHET_DOWNLOAD_RETRY_DELAYS_SECONDS__",
+        repr(DOWNLOAD_RETRY_DELAYS_SECONDS),
+    )
+    .replace(
+        "__CACHET_DOWNLOAD_RETRY_HTTP_CODES__",
+        repr(DOWNLOAD_RETRY_HTTP_CODES),
     )
     .replace(
         "__GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__",

@@ -637,6 +637,83 @@ def test_runtime_installer_rejects_nonexact_sealed_plan_or_job_before_install(
         )
 
 
+def _runtime_install_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+    returncodes: list[int],
+) -> tuple[list[tuple[list[str], dict[str, Any]]], list[float]]:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    sleeps: list[float] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append((command, kwargs))
+        returncode = returncodes[min(len(calls), len(returncodes)) - 1]
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(runtime_v2.subprocess, "run", run)
+    monkeypatch.setattr(runtime_v2, "sleep", sleeps.append)
+    return calls, sleeps
+
+
+def test_runtime_installer_retries_failed_package_index_installs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls, sleeps = _runtime_install_outcomes(monkeypatch, [1, 2, 0])
+    command = ["python", "-m", "pip", "install", "-r", "lock.txt"]
+
+    runtime_v2._run_runtime_install(
+        command, retry=True, environment={"PIP_NO_INPUT": "1"}, cwd=tmp_path
+    )
+
+    assert [call for call, _kwargs in calls] == [command] * 3
+    assert all(
+        kwargs
+        == {"check": True, "timeout": 3_600, "env": {"PIP_NO_INPUT": "1"}, "cwd": tmp_path}
+        for _call, kwargs in calls
+    )
+    assert sleeps == [10, 20]
+    assert capsys.readouterr().err.splitlines() == [
+        "pip install failed (exit status 1); retrying in 10 s",
+        "pip install failed (exit status 2); retrying in 20 s",
+    ]
+
+
+def test_runtime_installer_bounds_package_index_install_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls, sleeps = _runtime_install_outcomes(monkeypatch, [1])
+
+    with pytest.raises(subprocess.CalledProcessError):
+        runtime_v2._run_runtime_install(
+            ["pip"], retry=True, environment={}, cwd=tmp_path
+        )
+
+    assert len(calls) == 8
+    assert sleeps == [10, 20, 40, 80, 160, 300, 300]
+
+
+def test_runtime_installer_runs_local_wheel_installs_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls, sleeps = _runtime_install_outcomes(monkeypatch, [1, 0])
+
+    with pytest.raises(subprocess.CalledProcessError):
+        runtime_v2._run_runtime_install(
+            ["pip"], retry=False, environment={}, cwd=tmp_path
+        )
+
+    assert len(calls) == 1
+    assert sleeps == []
+    assert runtime_v2._PACKAGE_INDEX_INSTALL_LABELS == frozenset(
+        {"base_lock", "bnb_plugin"}
+    )
+
+
 def test_standalone_verifier_pip_check_is_exact_bounded_binary_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

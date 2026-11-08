@@ -192,6 +192,10 @@ VIRTUALENV_BOOTSTRAP_URL = (
 VIRTUALENV_BOOTSTRAP_SHA256 = (
     "8a22f3495357316e30db13f4bdee8487fe27137fa94d383ba1e6fe3e242b6165"
 )
+# GPU jobs download the bootstrap and some locked wheels from GitHub's release
+# CDN, whose transient gateway errors otherwise fail the whole job.
+DOWNLOAD_RETRY_DELAYS_SECONDS = (10, 20, 40, 80, 160, 300, 300)
+DOWNLOAD_RETRY_HTTP_CODES = (408, 429, 500, 502, 503, 504)
 
 # Pinned compiled direct dependencies.  The cu12 extras mirror the
 # transformation in vLLM's tagged Dockerfile when CUDA_VERSION has major
@@ -777,6 +781,8 @@ __all__ = [
     "VIRTUALENV_BOOTSTRAP_SHA256",
     "VIRTUALENV_BOOTSTRAP_URL",
     "VIRTUALENV_BOOTSTRAP_VERSION",
+    "DOWNLOAD_RETRY_DELAYS_SECONDS",
+    "DOWNLOAD_RETRY_HTTP_CODES",
     "gpu_runtime_warning_environment_overrides",
     "augment_vllm_runtime_lock_indexes",
     "patched_vllm_wheel_install_spec",
