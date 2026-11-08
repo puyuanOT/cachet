@@ -67,6 +67,7 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.serving_env import (
+    DOWNLOAD_RETRY_DELAYS_SECONDS,
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
     VLLM_PATCHED_WHEEL_SHA256_ENV,
@@ -760,6 +761,39 @@ _BNB_PLUGIN_REQUIREMENTS = (
     b"vllm-bnb-plugin==0.0.3 \\\n"
     b"    --hash=sha256:46d5ce93018ea8daf92bc15235f19a01078e1f4c16303f5946cc1575404c094c\n"
 )
+_PACKAGE_INDEX_INSTALL_LABELS: Final = frozenset({"base_lock", "bnb_plugin"})
+
+
+def _run_runtime_install(
+    command: list[str],
+    *,
+    retry: bool,
+    environment: Mapping[str, str],
+    cwd: Path,
+) -> None:
+    # pip never retries HTTP 504 and exits with one status for every failure,
+    # so an install that downloads from package indexes is retried whole.
+    delays = (*DOWNLOAD_RETRY_DELAYS_SECONDS, None) if retry else (None,)
+    for delay in delays:
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                timeout=3_600,
+                env=dict(environment),
+                cwd=cwd,
+            )
+            return
+        except subprocess.CalledProcessError as exc:
+            if delay is None:
+                raise
+            print(
+                f"pip install failed (exit status {exc.returncode}); "
+                f"retrying in {delay} s",
+                file=sys.stderr,
+                flush=True,
+            )
+            sleep(delay)
 
 
 def _base_lock_requirements_for_install(
@@ -935,8 +969,8 @@ def run_gpu_qualification_sentinel_v2(
         expected_labels.insert(2, "bnb_plugin")
     if [label for label, _arguments in commands] != expected_labels:
         raise RuntimeError("v2 runtime install order differs")
-    for _label, arguments in commands:
-        subprocess.run(
+    for label, arguments in commands:
+        _run_runtime_install(
             [
                 str(runtime_python),
                 "-m",
@@ -944,9 +978,8 @@ def run_gpu_qualification_sentinel_v2(
                 "install",
                 *arguments,
             ],
-            check=True,
-            timeout=3_600,
-            env=environment,
+            retry=label in _PACKAGE_INDEX_INSTALL_LABELS,
+            environment=environment,
             cwd=runtime_dir,
         )
     subprocess.run(

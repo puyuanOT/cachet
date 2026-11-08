@@ -4,7 +4,9 @@ import importlib
 import json
 import os
 import shutil
+import subprocess
 import threading
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from hashlib import sha256
@@ -351,7 +353,9 @@ def _runtime_verification():
         "patched_flashinfer_wheel_uri": "dbfs:/runtime/patched-flashinfer.whl",
         "patched_vllm_wheel_sha256": VLLM_PATCHED_WHEEL_SHA256,
         "patched_vllm_wheel_uri": "dbfs:/runtime/patched-vllm.whl",
-        "runner_python_file": "dbfs:/runner/full-score.py",
+        "runner_python_file": (
+            f"dbfs:/runner/{full_score.FULL_SCORE_RUNNER_SHA256}/full-score.py"
+        ),
         "runner_sha256": full_score.FULL_SCORE_RUNNER_SHA256,
         "runtime_closure_manifest_sha256": RUNTIME_ARTIFACT_CLOSURE_FILE_SHA256,
         "runtime_closure_manifest_uri": "dbfs:/runtime/closure.json",
@@ -565,7 +569,9 @@ def campaign(tmp_path, monkeypatch):
         durable_output_root="dbfs:/full-score/durable",
         ephemeral_root="/local_disk0/full-score",
         runtime=runtime,
-        runner_python_file="dbfs:/runner/full-score.py",
+        runner_python_file=(
+            f"dbfs:/runner/{full_score.FULL_SCORE_RUNNER_SHA256}/full-score.py"
+        ),
         runner_sha256=full_score.FULL_SCORE_RUNNER_SHA256,
         package_wheel_uri="dbfs:/runtime/cachet.whl",
         package_wheel_sha256=package_sha,
@@ -683,7 +689,10 @@ def _volume_campaign(campaign, *, vllm_wheel_name="patched-vllm.whl"):
         },
         durable_output_root=f"{volume}/full-score",
         runtime=runtime,
-        runner_python_file=f"{volume}/runtime/full-score-runner.py",
+        runner_python_file=(
+            f"{volume}/runtime/{full_score.FULL_SCORE_RUNNER_SHA256}/"
+            "full-score-runner.py"
+        ),
         package_wheel_uri=f"{volume}/runtime/cachet.whl",
         gpu_qualification=qualification,
     )
@@ -2782,6 +2791,24 @@ def test_full_score_freezes_six_hour_task_and_run_timeout(campaign):
         )
 
 
+def test_full_score_job_requires_runner_file_named_by_its_digest(campaign):
+    job = campaign["job"]
+    earlier_runner = (
+        "dbfs:/runner/"
+        "839d637e57b31a5d02a7fc46eccef4850e60cbebc80b322c9a2d06477d859744/"
+        "full-score.py"
+    )
+
+    assert Path(job.runner_python_file).parent.name == job.runner_sha256
+    for runner_python_file in (
+        earlier_runner,
+        "dbfs:/runner/full-score.py",
+        f"dbfs:/runner/{job.runner_sha256}.py",
+    ):
+        with pytest.raises(ValueError, match="directory named by runner_sha256"):
+            replace(job, runner_python_file=runner_python_file)
+
+
 def test_consumer_reservation_replays_completion_instead_of_trusting_closure(
     campaign,
     monkeypatch,
@@ -4702,26 +4729,28 @@ _PINNED_CHAIN_ATTEMPTS = [
 ]
 
 
-def _pin_launch_failure_chain(monkeypatch, campaign, ledger, *, opening, closing):
-    monkeypatch.setattr(
-        full_score,
-        "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
-        campaign["execution_plan"]["closed_record_sha256"],
-    )
-    for name, count in (("OPENING", opening), ("CLOSING", closing)):
-        monkeypatch.setattr(
-            full_score,
-            f"FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_{name}_PREFIX",
-            databricks_ledger_prefix_at_counts(
-                ledger,
-                reservation_count=count,
-                submission_receipt_count=0,
-                terminal_actual_count=count,
-            ),
+def _pin_abandoned_chains(monkeypatch, campaign, ledger, *chains):
+    def prefix(count):
+        return databricks_ledger_prefix_at_counts(
+            ledger,
+            reservation_count=count,
+            submission_receipt_count=0,
+            terminal_actual_count=count,
         )
 
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
+        campaign["execution_plan"]["closed_record_sha256"],
+    )
+    monkeypatch.setattr(
+        full_score,
+        "FULL_SCORE_PINNED_ABANDONED_CHAINS",
+        tuple((prefix(opening), prefix(closing)) for opening, closing in chains),
+    )
 
-def test_chain_restart_admits_only_the_pinned_launch_failure_chain(
+
+def test_chain_restart_admits_only_the_pinned_abandoned_chains(
     campaign, monkeypatch
 ):
     attempts = [((0, "producer"), "internal_error"), *_PINNED_CHAIN_ATTEMPTS]
@@ -4734,9 +4763,7 @@ def test_chain_restart_admits_only_the_pinned_launch_failure_chain(
             execution_plan=campaign["execution_plan"],
         )
 
-    _pin_launch_failure_chain(
-        monkeypatch, campaign, ledger, opening=1, closing=len(attempts)
-    )
+    _pin_abandoned_chains(monkeypatch, campaign, ledger, (1, len(attempts)))
     abandoned = full_score.require_full_score_chain_restart_ledger(
         ledger,
         predecessor_prefix=current,
@@ -4759,13 +4786,79 @@ def test_chain_restart_admits_only_the_pinned_launch_failure_chain(
             execution_plan=campaign["execution_plan"],
         )
 
+    ((opening, closing),) = full_score.FULL_SCORE_PINNED_ABANDONED_CHAINS
     monkeypatch.setattr(
         full_score,
-        "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX",
-        replace(
-            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
-            prefix_sha256="0" * 64,
-        ),
+        "FULL_SCORE_PINNED_ABANDONED_CHAINS",
+        ((opening, replace(closing, prefix_sha256="0" * 64)),),
+    )
+    with pytest.raises(ValueError, match="limited to wave zero"):
+        full_score.require_full_score_chain_restart_ledger(
+            ledger,
+            predecessor_prefix=current,
+            execution_plan=campaign["execution_plan"],
+        )
+
+
+def test_chain_restart_admits_each_pinned_chain_only_on_its_own_prefixes(
+    campaign, monkeypatch
+):
+    chain = len(_PINNED_CHAIN_ATTEMPTS)
+    attempts = [
+        ((0, "producer"), "internal_error"),
+        *_PINNED_CHAIN_ATTEMPTS,
+        ((0, "producer"), "failed"),
+        *_PINNED_CHAIN_ATTEMPTS,
+    ]
+    ledger = _chain_ledger(campaign, "pinned-chains", attempts)
+    current = databricks_ledger_prefix(ledger)
+    first = (1, 1 + chain)
+    second = (2 + chain, len(attempts))
+
+    for pinned in ((first,), (second,)):
+        _pin_abandoned_chains(monkeypatch, campaign, ledger, *pinned)
+        with pytest.raises(ValueError, match="limited to wave zero"):
+            full_score.require_full_score_chain_restart_ledger(
+                ledger,
+                predecessor_prefix=current,
+                execution_plan=campaign["execution_plan"],
+            )
+
+    _pin_abandoned_chains(monkeypatch, campaign, ledger, first, second)
+    abandoned = full_score.require_full_score_chain_restart_ledger(
+        ledger,
+        predecessor_prefix=current,
+        execution_plan=campaign["execution_plan"],
+    )
+    assert [item.attempt_id for item in abandoned] == [
+        f"pinned-chains-{index}" for index in range(len(attempts))
+    ]
+
+    pinned_chains = full_score.FULL_SCORE_PINNED_ABANDONED_CHAINS
+    for tampered in range(len(pinned_chains)):
+        opening, closing = pinned_chains[tampered]
+        monkeypatch.setattr(
+            full_score,
+            "FULL_SCORE_PINNED_ABANDONED_CHAINS",
+            tuple(
+                (opening, replace(closing, prefix_sha256="0" * 64))
+                if index == tampered
+                else item
+                for index, item in enumerate(pinned_chains)
+            ),
+        )
+        with pytest.raises(ValueError, match="limited to wave zero"):
+            full_score.require_full_score_chain_restart_ledger(
+                ledger,
+                predecessor_prefix=current,
+                execution_plan=campaign["execution_plan"],
+            )
+
+    monkeypatch.setattr(
+        full_score, "FULL_SCORE_PINNED_ABANDONED_CHAINS", pinned_chains
+    )
+    monkeypatch.setattr(
+        full_score, "FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256", "0" * 64
     )
     with pytest.raises(ValueError, match="limited to wave zero"):
         full_score.require_full_score_chain_restart_ledger(
@@ -4797,12 +4890,11 @@ def test_chain_restart_holds_attempts_outside_the_pinned_chain_to_wave_zero(
     label = f"pinned-outside-{len(before)}-{len(after)}"
     attempts = [*before, *_PINNED_CHAIN_ATTEMPTS, *after]
     ledger = _chain_ledger(campaign, label, attempts)
-    _pin_launch_failure_chain(
+    _pin_abandoned_chains(
         monkeypatch,
         campaign,
         ledger,
-        opening=len(before),
-        closing=len(before) + len(_PINNED_CHAIN_ATTEMPTS),
+        (len(before), len(before) + len(_PINNED_CHAIN_ATTEMPTS)),
     )
     with pytest.raises(ValueError, match=message):
         full_score.require_full_score_chain_restart_ledger(
@@ -4812,16 +4904,48 @@ def test_chain_restart_holds_attempts_outside_the_pinned_chain_to_wave_zero(
         )
 
 
-def test_pinned_launch_failure_chain_binds_the_failed_wave_three_producer():
-    opening = full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX
-    closing = full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX
+@pytest.mark.parametrize(
+    ("opening", "closing", "attempts"),
+    (
+        (
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+            22,
+        ),
+        (
+            full_score.FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+            full_score.FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+            25,
+        ),
+    ),
+)
+def test_pinned_abandoned_chain_binds_every_attempt(opening, closing, attempts):
     assert opening.ledger_id == closing.ledger_id
-    assert closing.reservation_count - opening.reservation_count == 22
+    assert closing.reservation_count - opening.reservation_count == attempts
     assert (
-        closing.submission_receipt_count - opening.submission_receipt_count == 22
+        closing.submission_receipt_count - opening.submission_receipt_count
+        == attempts
     )
-    assert closing.terminal_actual_count - opening.terminal_actual_count == 22
+    assert closing.terminal_actual_count - opening.terminal_actual_count == attempts
     assert closing.reservation_count == closing.terminal_actual_count
+
+
+def test_pinned_abandoned_chains_are_ordered_and_disjoint():
+    chains = full_score.FULL_SCORE_PINNED_ABANDONED_CHAINS
+    assert chains == (
+        (
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+            full_score.FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+        ),
+        (
+            full_score.FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+            full_score.FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+        ),
+    )
+    assert all(
+        earlier[1].reservation_count <= later[0].reservation_count
+        for earlier, later in zip(chains, chains[1:])
+    )
 
 
 def test_capacity_retry_submits_only_never_started_tasks_without_p90(campaign):
@@ -7817,6 +7941,7 @@ def test_bootstrap_builds_and_launches_only_the_locked_runtime(monkeypatch):
     assert VIRTUALENV_BOOTSTRAP_URL in script
     assert VIRTUALENV_BOOTSTRAP_SHA256 in script
     assert "__CACHET_VIRTUALENV_BOOTSTRAP_" not in script
+    assert "__CACHET_DOWNLOAD_RETRY_" not in script
     assert "runtime-closure-manifest-sha256" in script
     assert "patched-flashinfer-wheel-sha256" in script
     assert 'pip, "check"' not in script
@@ -7850,6 +7975,214 @@ def test_full_score_runner_rejects_tampered_cached_virtualenv_pyz(
         namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
 
     assert target.read_bytes() == b"tampered cached virtualenv"
+
+
+class _BootstrapResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._chunks = [payload[:7], payload[7:], b""]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self, _size: int) -> bytes:
+        return self._chunks.pop(0)
+
+
+def _bootstrap_download_namespace(monkeypatch, outcomes):
+    namespace = {"__name__": "full_score_bootstrap_retry_test"}
+    exec(
+        compile(
+            full_score.FULL_SCORE_RUNNER_SCRIPT,
+            "full_score_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    payload = b"reviewed virtualenv bootstrap fixture"
+    namespace["VIRTUALENV_BOOTSTRAP_SHA256"] = sha256(payload).hexdigest()
+    requests = []
+    sleeps = []
+
+    def urlopen(request, timeout):
+        requests.append((request.full_url, timeout))
+        outcome = outcomes[min(len(requests), len(outcomes)) - 1]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return _BootstrapResponse(outcome)
+
+    monkeypatch.setattr(namespace["urllib"].request, "urlopen", urlopen)
+    monkeypatch.setattr(namespace["time"], "sleep", sleeps.append)
+    return namespace, payload, requests, sleeps
+
+
+def _gateway_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(VIRTUALENV_BOOTSTRAP_URL, code, "error", None, None)
+
+
+def test_full_score_runner_retries_transient_bootstrap_download_failures(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    fixture = b"reviewed virtualenv bootstrap fixture"
+    namespace, payload, requests, sleeps = _bootstrap_download_namespace(
+        monkeypatch,
+        [
+            _gateway_error(504),
+            urllib.error.URLError(ConnectionResetError("reset")),
+            TimeoutError("read timed out"),
+            fixture,
+        ],
+    )
+
+    path = namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert Path(path).read_bytes() == payload
+    assert sleeps == [10, 20, 40]
+    assert requests == [(VIRTUALENV_BOOTSTRAP_URL, 120.0)] * 4
+    assert sorted(item.name for item in tmp_path.iterdir()) == [Path(path).name]
+    assert capsys.readouterr().err.splitlines() == [
+        "virtualenv bootstrap download failed (HTTPError); retrying in 10 s",
+        "virtualenv bootstrap download failed (URLError); retrying in 20 s",
+        "virtualenv bootstrap download failed (TimeoutError); retrying in 40 s",
+    ]
+
+
+@pytest.mark.parametrize("code", [403, 404])
+def test_full_score_runner_does_not_retry_a_permanent_bootstrap_error(
+    monkeypatch,
+    tmp_path,
+    code,
+):
+    namespace, _payload, requests, sleeps = _bootstrap_download_namespace(
+        monkeypatch,
+        [_gateway_error(code), b"unused"],
+    )
+
+    with pytest.raises(Exception, match=f"HTTP Error {code}"):
+        namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert len(requests) == 1
+    assert sleeps == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_full_score_runner_bounds_bootstrap_download_retries(monkeypatch, tmp_path):
+    namespace, _payload, requests, sleeps = _bootstrap_download_namespace(
+        monkeypatch,
+        [_gateway_error(503)],
+    )
+
+    with pytest.raises(Exception, match="HTTP Error 503"):
+        namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert sleeps == [10, 20, 40, 80, 160, 300, 300]
+    assert len(requests) == 8
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_full_score_runner_never_retries_a_bootstrap_digest_mismatch(
+    monkeypatch,
+    tmp_path,
+):
+    namespace, _payload, requests, sleeps = _bootstrap_download_namespace(
+        monkeypatch,
+        [b"substituted virtualenv bootstrap"],
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="downloaded virtualenv bootstrap SHA-256 mismatch",
+    ):
+        namespace["_materialize_virtualenv_bootstrap"](str(tmp_path))
+
+    assert len(requests) == 1
+    assert sleeps == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def _package_index_install_namespace(monkeypatch, returncodes):
+    namespace = {"__name__": "full_score_package_index_install_test"}
+    exec(
+        compile(
+            full_score.FULL_SCORE_RUNNER_SCRIPT,
+            "full_score_runner.py",
+            "exec",
+        ),
+        namespace,
+    )
+    calls = []
+    sleeps = []
+
+    def call(command, env):
+        calls.append((command, env))
+        return returncodes[min(len(calls), len(returncodes)) - 1]
+
+    monkeypatch.setattr(namespace["subprocess"], "call", call)
+    monkeypatch.setattr(namespace["time"], "sleep", sleeps.append)
+    return namespace, calls, sleeps
+
+
+def test_full_score_runner_retries_failed_package_index_installs(
+    monkeypatch,
+    capsys,
+):
+    namespace, calls, sleeps = _package_index_install_namespace(
+        monkeypatch, [1, 2, 0]
+    )
+    command = ["python", "-m", "pip", "install", "-r", "lock.txt"]
+    environment = {"PIP_NO_INPUT": "1"}
+
+    namespace["_install_from_package_indexes"](command, environment=environment)
+
+    assert calls == [(command, environment)] * 3
+    assert sleeps == [10, 20]
+    assert capsys.readouterr().err.splitlines() == [
+        "pip install failed (exit status 1); retrying in 10 s",
+        "pip install failed (exit status 2); retrying in 20 s",
+    ]
+
+
+def test_full_score_runner_bounds_package_index_install_retries(monkeypatch):
+    namespace, calls, sleeps = _package_index_install_namespace(monkeypatch, [1])
+    command = ["python", "-m", "pip", "install", "-r", "lock.txt"]
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        namespace["_install_from_package_indexes"](command, environment={})
+
+    assert raised.value.returncode == 1
+    assert raised.value.cmd == command
+    assert sleeps == [10, 20, 40, 80, 160, 300, 300]
+    assert len(calls) == 8
+
+
+def test_full_score_runner_retries_only_the_package_index_installs():
+    script = full_score.FULL_SCORE_RUNNER_SCRIPT
+    installs = script.split("def _bootstrap(", 1)[1].split("_install_from_package_indexes(")
+    assert len(installs) == 3
+    assert installs[1].lstrip().startswith(
+        '[*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", base_lock]'
+    )
+    assert installs[2].split("]", 1)[0].split() == [
+        "[",
+        "*pip,",
+        '"install",',
+        '"--no-deps",',
+        '"--require-hashes",',
+        '"--only-binary",',
+        '":all:",',
+        '"-r",',
+        "plugin_requirements,",
+    ]
+    for spec in ("vllm_spec", "flashinfer_spec", "package_spec"):
+        assert (
+            'subprocess.check_call(\n        [*pip, "install", "--no-deps", '
+            + spec
+            + "]"
+        ) in script
 
 
 def test_native_v2_runtime_binding_rejects_attestation_and_artifact_drift():

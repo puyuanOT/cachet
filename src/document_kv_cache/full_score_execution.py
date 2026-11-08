@@ -168,6 +168,8 @@ from document_kv_cache._gpu_qualification_sentinels_v2 import (
     _run_bounded_binary_subprocess,
 )
 from document_kv_cache.serving_env import (
+    DOWNLOAD_RETRY_DELAYS_SECONDS,
+    DOWNLOAD_RETRY_HTTP_CODES,
     GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
     GPU_RUNTIME_PYTHONWARNINGS,
     VIRTUALENV_BOOTSTRAP_SHA256,
@@ -274,11 +276,14 @@ FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION = 1
 # Every capacity-failed attempt is a separately ledgered single-attempt run.
 FULL_SCORE_PHASE_MAX_ATTEMPTS = 16
 FULL_SCORE_CAPACITY_TERMINATION_REASONS = DATABRICKS_CAPACITY_TERMINATION_REASONS
-# The one chain abandoned past wave zero.  Its wave-three producer attempt
-# failed only because clusters never launched, under termination reasons its
-# qualified revision did not classify as capacity failures, so it could
-# neither retry nor continue.  The two prefixes bind every one of its attempts.
-FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256 = (
+# The chains abandoned past wave zero, each bound attempt by attempt by the
+# ledger prefixes that open and close it.  Each stopped only on an outside
+# failure its qualified revision could neither retry nor survive: the 215d83c
+# chain's wave-three producer clusters never launched, under termination
+# reasons that revision did not classify as capacity failures, and the 5f07618
+# chain's wave-eight consumer workers could not download their virtualenv
+# bootstrap or locked FlashInfer wheels through GitHub release gateway errors.
+FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256 = (
     "88315f8bcae2317659fea61c05b7e5c56e7e56dd1330368fdccfe816c453ad84"
 )
 FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX = DatabricksLedgerPrefix(
@@ -296,6 +301,34 @@ FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX = DatabricksLedgerPrefi
     submission_receipt_count=418,
     terminal_actual_count=468,
     prefix_sha256="bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
+)
+FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX = DatabricksLedgerPrefix(
+    ledger_id="representative-canary-823bd9d82a5c1730",
+    cap_cluster_hours=2024.0,
+    reservation_count=482,
+    submission_receipt_count=432,
+    terminal_actual_count=482,
+    prefix_sha256="bcccf951892d00236c2c6a86814ce0500f519515e7c366b1fb9ecdddcd35e998",
+)
+FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX = DatabricksLedgerPrefix(
+    ledger_id="representative-canary-823bd9d82a5c1730",
+    cap_cluster_hours=2024.0,
+    reservation_count=507,
+    submission_receipt_count=457,
+    terminal_actual_count=507,
+    prefix_sha256="55e24ba17899593c2f27d2d4c2aa82b290c2db07b52272ea02d2e3784dea6b3f",
+)
+FULL_SCORE_PINNED_ABANDONED_CHAINS: tuple[
+    tuple[DatabricksLedgerPrefix, DatabricksLedgerPrefix], ...
+] = (
+    (
+        FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+        FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+    ),
+    (
+        FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX,
+        FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX,
+    ),
 )
 FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE = "cachet.full_score_connector_proof.v1"
 FULL_SCORE_CONNECTOR_PROOF_SCHEMA_VERSION = 1
@@ -409,11 +442,15 @@ FULL_SCORE_RUNNER_SCRIPT = (
 import argparse
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import pathlib
+import ssl
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 
 __GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
@@ -421,6 +458,8 @@ __GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__
 VIRTUALENV_BOOTSTRAP_VERSION = __CACHET_VIRTUALENV_BOOTSTRAP_VERSION__
 VIRTUALENV_BOOTSTRAP_URL = __CACHET_VIRTUALENV_BOOTSTRAP_URL__
 VIRTUALENV_BOOTSTRAP_SHA256 = __CACHET_VIRTUALENV_BOOTSTRAP_SHA256__
+DOWNLOAD_RETRY_DELAYS_SECONDS = __CACHET_DOWNLOAD_RETRY_DELAYS_SECONDS__
+DOWNLOAD_RETRY_HTTP_CODES = frozenset(__CACHET_DOWNLOAD_RETRY_HTTP_CODES__)
 
 
 def _cluster_path(uri: str) -> str:
@@ -468,6 +507,35 @@ def _pip_subprocess_environment() -> dict[str, str]:
     return env
 
 
+def _download_virtualenv_bootstrap(temporary: str) -> None:
+    request = urllib.request.Request(
+        VIRTUALENV_BOOTSTRAP_URL,
+        headers={"User-Agent": "cachet-publication-bootstrap"},
+    )
+    with urllib.request.urlopen(request, timeout=120.0) as response:
+        with open(temporary, "wb") as stream:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                stream.write(chunk)
+
+
+def _is_transient_download_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in DOWNLOAD_RETRY_HTTP_CODES
+    return isinstance(
+        exc,
+        (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            ssl.SSLError,
+        ),
+    )
+
+
 def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
     target = os.path.join(
@@ -484,18 +552,24 @@ def _materialize_virtualenv_bootstrap(output_dir: str) -> str:
             raise RuntimeError("virtualenv bootstrap SHA-256 mismatch: " + observed)
         return target
     temporary = target + ".tmp"
-    request = urllib.request.Request(
-        VIRTUALENV_BOOTSTRAP_URL,
-        headers={"User-Agent": "cachet-publication-bootstrap"},
-    )
     try:
-        with urllib.request.urlopen(request, timeout=120.0) as response:
-            with open(temporary, "wb") as stream:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    stream.write(chunk)
+        for delay in (*DOWNLOAD_RETRY_DELAYS_SECONDS, None):
+            try:
+                _download_virtualenv_bootstrap(temporary)
+                break
+            except Exception as exc:
+                if delay is None or not _is_transient_download_error(exc):
+                    raise
+                print(
+                    "virtualenv bootstrap download failed ("
+                    + type(exc).__name__
+                    + "); retrying in "
+                    + str(delay)
+                    + " s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(delay)
         observed = _sha256(temporary)
         if observed != VIRTUALENV_BOOTSTRAP_SHA256:
             raise RuntimeError(
@@ -527,6 +601,31 @@ def _create_runtime_venv(
             [sys.executable, bootstrap, "--clear", "--copies", venv_dir],
             env=environment,
         )
+
+
+def _install_from_package_indexes(
+    command: list[str],
+    *,
+    environment: dict[str, str],
+) -> None:
+    # pip never retries HTTP 504 and exits with one status for every failure,
+    # so an install that downloads from package indexes is retried whole.
+    for delay in (*DOWNLOAD_RETRY_DELAYS_SECONDS, None):
+        returncode = subprocess.call(command, env=environment)
+        if returncode == 0:
+            return
+        if delay is None:
+            raise subprocess.CalledProcessError(returncode, command)
+        print(
+            "pip install failed (exit status "
+            + str(returncode)
+            + "); retrying in "
+            + str(delay)
+            + " s",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(delay)
 
 
 def _bootstrap(argv: list[str]) -> None:
@@ -664,9 +763,9 @@ def _bootstrap(argv: list[str]) -> None:
     base_lock, plugin_requirements = _bnb_plugin_install_paths(
         runtime_lock, os.path.dirname(venv_dir)
     )
-    subprocess.check_call(
+    _install_from_package_indexes(
         [*pip, "install", "--require-hashes", "--only-binary", ":all:", "-r", base_lock],
-        env=pip_environment,
+        environment=pip_environment,
     )
     vllm_spec = (
         "vllm @ " + pathlib.Path(patched_vllm_wheel).resolve().as_uri()
@@ -686,7 +785,7 @@ def _bootstrap(argv: list[str]) -> None:
         env=pip_environment,
     )
     if plugin_requirements is not None:
-        subprocess.check_call(
+        _install_from_package_indexes(
             [
                 *pip,
                 "install",
@@ -697,7 +796,7 @@ def _bootstrap(argv: list[str]) -> None:
                 "-r",
                 plugin_requirements,
             ],
-            env=pip_environment,
+            environment=pip_environment,
         )
     subprocess.check_call(
         [*pip, "install", "--no-deps", flashinfer_spec],
@@ -735,6 +834,14 @@ if __name__ == "__main__":
     .replace(
         "__CACHET_VIRTUALENV_BOOTSTRAP_SHA256__",
         repr(VIRTUALENV_BOOTSTRAP_SHA256),
+    )
+    .replace(
+        "__CACHET_DOWNLOAD_RETRY_DELAYS_SECONDS__",
+        repr(DOWNLOAD_RETRY_DELAYS_SECONDS),
+    )
+    .replace(
+        "__CACHET_DOWNLOAD_RETRY_HTTP_CODES__",
+        repr(DOWNLOAD_RETRY_HTTP_CODES),
     )
     .replace(
         "__GPU_QUALIFICATION_SYSTEM_CUDA_PARENT_ATTESTATION_RUNNER_FRAGMENT__",
@@ -1172,6 +1279,12 @@ class DatabricksFullScoreJobConfig:
         _require_sha256(self.runner_sha256, field_name="runner_sha256")
         if self.runner_sha256 != FULL_SCORE_RUNNER_SHA256:
             raise ValueError("runner_sha256 does not identify the frozen runner")
+        # Databricks runs whatever file sits at python_file, and workers only
+        # check its digest after their clusters start.
+        if Path(self.runner_python_file).parent.name != self.runner_sha256:
+            raise ValueError(
+                "runner_python_file must sit in a directory named by runner_sha256"
+            )
         _require_sha256(self.runtime_lock_sha256, field_name="runtime_lock_sha256")
         _require_sha256(
             self.patched_vllm_wheel_sha256,
@@ -7243,9 +7356,9 @@ def require_full_score_chain_restart_ledger(
     closed no consumer successfully, so it never produced a score.  Its latest
     attempt may be a succeeded producer, because the CPU ready closure between
     producer and consumer is not a ledger attempt and can fail after it.  The
-    one exception is the launch-failure chain pinned by its opening and closing
-    ledger prefixes, which is exempt only while the ledger carries both exactly.
-    The returned terminals, in reservation order, are what a report must
+    exceptions are the chains in ``FULL_SCORE_PINNED_ABANDONED_CHAINS``, each
+    exempt only while the ledger carries both its opening and closing prefixes
+    exactly.  The returned terminals, in reservation order, are what a report must
     disclose.  The caller must already have bound ``predecessor_prefix`` to
     ``ledger``.
     """
@@ -7270,7 +7383,7 @@ def require_full_score_chain_restart_ledger(
         item.attempt_id: item
         for item in ledger.terminal_actuals[: predecessor_prefix.terminal_actual_count]
     }
-    exempt = _full_score_launch_failure_abandoned_chain_positions(
+    exempt = _full_score_pinned_abandoned_chain_positions(
         ledger,
         predecessor_prefix=predecessor_prefix,
         plan_workloads=plan_workloads,
@@ -7289,25 +7402,46 @@ def require_full_score_chain_restart_ledger(
     return tuple(terminals[item.attempt_id] for _index, item in prior)
 
 
-def _full_score_launch_failure_abandoned_chain_positions(
+def _full_score_pinned_abandoned_chain_positions(
     ledger: DatabricksClusterHourLedger,
     *,
     predecessor_prefix: DatabricksLedgerPrefix,
     plan_workloads: str,
+) -> frozenset[int]:
+    """Return the reservation positions of every pinned abandoned chain."""
+
+    if plan_workloads != f"full-score:{FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256}:":
+        return frozenset()
+    return frozenset(
+        position
+        for opening, closing in FULL_SCORE_PINNED_ABANDONED_CHAINS
+        for position in _full_score_pinned_abandoned_chain_range(
+            ledger,
+            predecessor_prefix=predecessor_prefix,
+            plan_workloads=plan_workloads,
+            opening=opening,
+            closing=closing,
+        )
+    )
+
+
+def _full_score_pinned_abandoned_chain_range(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    predecessor_prefix: DatabricksLedgerPrefix,
+    plan_workloads: str,
+    opening: DatabricksLedgerPrefix,
+    closing: DatabricksLedgerPrefix,
 ) -> range:
-    """Return the reservation positions of the pinned launch-failure chain.
+    """Return the reservation positions of one pinned abandoned chain.
 
     The range is empty unless the restart opens after the chain closed and the
     ledger carries both pinned prefixes exactly, so a forked or rewritten
-    ledger falls back to the wave-zero rule.
+    ledger falls back to the wave-zero rule for that chain.
     """
 
-    opening = FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX
-    closing = FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX
     if (
-        plan_workloads
-        != f"full-score:{FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256}:"
-        or ledger.ledger_id != closing.ledger_id
+        ledger.ledger_id != closing.ledger_id
         or predecessor_prefix.reservation_count < closing.reservation_count
         or predecessor_prefix.submission_receipt_count
         < closing.submission_receipt_count
@@ -16281,9 +16415,12 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 __all__ = [
+    "FULL_SCORE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
     "FULL_SCORE_AGGREGATE_RECORD_TYPE",
     "FULL_SCORE_AGGREGATE_SCHEMA_VERSION",
     "FULL_SCORE_ATTENTION_BACKEND",
+    "FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX",
+    "FULL_SCORE_BOOTSTRAP_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX",
     "FULL_SCORE_CAPACITY_TERMINATION_REASONS",
     "FULL_SCORE_CONSUMER_NODE_TYPE_ID",
     "FULL_SCORE_CONNECTOR_PROOF_RECORD_TYPE",
@@ -16302,7 +16439,6 @@ __all__ = [
     "FULL_SCORE_KV_BLOCK_SIZE",
     "FULL_SCORE_KV_DTYPE",
     "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_CLOSING_PREFIX",
-    "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_EXECUTION_PLAN_SHA256",
     "FULL_SCORE_LAUNCH_FAILURE_ABANDONED_CHAIN_OPENING_PREFIX",
     "FULL_SCORE_LIVE_P90_DRAWS",
     "FULL_SCORE_LIVE_P90_RECORD_TYPE",
@@ -16323,6 +16459,7 @@ __all__ = [
     "FULL_SCORE_PHASE_MAX_ATTEMPTS",
     "FULL_SCORE_PHASE_TERMINAL_RECORD_TYPE",
     "FULL_SCORE_PHASE_TERMINAL_SCHEMA_VERSION",
+    "FULL_SCORE_PINNED_ABANDONED_CHAINS",
     "FULL_SCORE_PRODUCER_HARDWARE_TARGET",
     "FULL_SCORE_PRODUCER_NODE_TYPE_ID",
     "FULL_SCORE_PRODUCER_ZONE_ID",

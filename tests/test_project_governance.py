@@ -1972,13 +1972,16 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "`AWS_REQUEST_LIMIT_EXCEEDED`, or `CLOUD_PROVIDER_LAUNCH_FAILURE`"
     ) in compact_ledger_doc
     assert "that wait must name the same cluster" in compact_ledger_doc
-    assert "is the one exception to the wave-zero rule" in compact_ledger_doc
-    assert "opening 446/396/446 and closing 468/418/468 ledger prefixes" in (
-        compact_ledger_doc
-    )
+    assert "are the only exceptions to the wave-zero rule" in compact_ledger_doc
+    assert "446/396/446 to 468/418/468 for `215d83c`" in compact_ledger_doc
+    assert "482/432/482 to 507/457/507 for `5f07618`" in compact_ledger_doc
+    assert (
+        "loses the exemption only for the chain whose prefixes no longer match"
+    ) in compact_ledger_doc
     assert "`closed_consumer_phase_count`" in compact_ledger_doc
-    assert "forty-eight abandoned attempts from nine chains" in compact_ledger_doc
-    assert "227.20783333333333 GPU-hours" in compact_ledger_doc
+    assert "seventy-four abandoned attempts from eleven chains" in compact_ledger_doc
+    assert "368.23190277777775 GPU-hours" in compact_ledger_doc
+    assert "eleven closed consumer phases" in compact_ledger_doc
     assert "bound to the closed phase it verifies" in compact_ledger_doc
     assert "marks even `SystemExit(0)` as `FAILED`" in compact_ledger_doc
     assert "vLLM 0.30.0 qualification of source revision `8323fc7`" in (
@@ -2043,6 +2046,53 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "exact 446/396/446 prefix" in compact_ledger_doc
     assert "exact 468/418/468 prefix" in compact_ledger_doc
     assert "976.5455919444444 terminal GPU-hours" in compact_ledger_doc
+    assert "vLLM 0.30.0 qualification of source revision `5f07618`" in (
+        compact_ledger_doc
+    )
+    assert "exact 482/432/482 prefix" in compact_ledger_doc
+    assert "980.1354536111111 terminal GPU-hours" in compact_ledger_doc
+    assert "restored byte-for-byte from the content-addressed latency cache" in (
+        compact_ledger_doc
+    )
+    assert "wave-eight consumer's only attempt, run `1111755166713548`" in (
+        compact_ledger_doc
+    )
+    assert "pip retries HTTP 500, 502, and 503 but not 504" in compact_ledger_doc
+    assert "139.17883722222223 GPU-hours in twenty-five attempts" in (
+        compact_ledger_doc
+    )
+    assert "exact 507/457/507 prefix" in compact_ledger_doc
+    assert "1119.3142908333334 terminal GPU-hours" in compact_ledger_doc
+    assert "904.6857091666666 hours remaining" in compact_ledger_doc
+    assert "vLLM 0.30.0 qualification of source revision `2ab3ff6` failed" in (
+        compact_ledger_doc
+    )
+    for run_id in ("355629181986220", "829413181485539", "511004107376201"):
+        assert f"run `{run_id}`" in compact_ledger_doc
+    assert "exhausted its own retries of HTTP 502 responses" in compact_ledger_doc
+    assert "2.944535277777778 GPU-hours" in compact_ledger_doc
+    assert "exact 521/471/521 prefix" in compact_ledger_doc
+    assert "1122.2588261111111 terminal GPU-hours" in compact_ledger_doc
+    assert "901.7411738888889 hours remaining" in compact_ledger_doc
+    assert "gives every qualification sentinel the same retries" in (
+        compact_ledger_doc
+    )
+    assert "vLLM 0.30.0 qualification of source revision `631848d` succeeded" in (
+        compact_ledger_doc
+    )
+    assert "exact 535/485/535 prefix" in compact_ledger_doc
+    assert "1125.5864088888889 terminal GPU-hours" in compact_ledger_doc
+    assert "88 files of twelve block-two jobs" in compact_ledger_doc
+    assert "first attempt, run `730512942658019`" in compact_ledger_doc
+    assert "`full-score runner SHA-256 does not match`" in compact_ledger_doc
+    assert "1.845232222222222 GPU-hours" in compact_ledger_doc
+    assert "exact 536/486/536 prefix" in compact_ledger_doc
+    assert "1127.431641111111 terminal GPU-hours" in compact_ledger_doc
+    assert "896.568358888889 hours remaining" in compact_ledger_doc
+    assert "admits it as abandoned without a pin" in compact_ledger_doc
+    assert "not sit in a directory named by its `runner_sha256`" in (
+        compact_ledger_doc
+    )
     for digest in (
         "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
         "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
@@ -2121,6 +2171,22 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "31e00d9d39d7faf590ff2998be579a1dbab19bca0935b44029fe90ad2cc1015d",
         "e9d548a7fd793ba707024a21498f513752f6408fc805287fd7b4be99d6a6bf7e",
         "bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
+        "04a3c11347b1e87c201972df96fba4975d1bc912ac5239581bca41f35d8716fe",
+        "d3b0219eb01a7d672ed7f5eb622b17bc910092eb63d6a69e719d0c9f7eb73978",
+        "62e1d7aa108cc48ad3f8cb1fe1dff5c18e85fbaba53e776f54a3bc9ee4b2dad7",
+        "bcccf951892d00236c2c6a86814ce0500f519515e7c366b1fb9ecdddcd35e998",
+        "55e24ba17899593c2f27d2d4c2aa82b290c2db07b52272ea02d2e3784dea6b3f",
+        "5bf4dcb073b27a11e9c92fca8b510255cec5cc3685810b72adf3f87b8e4f8d48",
+        "c7d78e3f5cf92617a6172bbc8646e427895be9c4f79492d7b5d575a7c196aa08",
+        "598c8c2220bc32e2a0aaa7cbecf2921d3950b1b9524213c15437bc201e716a2c",
+        "c82dd1492b9f963018c1aeda7e862d1512019993896d000fa584e491eb098f4c",
+        "80609de306fe59ddaf96b8d69369fe3c729f7e3190718e1f2f3a27efc616c695",
+        "af97d6ef6a8fcaaefa78839684ef144a70e3b3b24aa7e712666a592b6c89a69e",
+        "681ce919d8a7f470330696314ff15f35b7da0dc213cb3d79ca01878ed1905929",
+        "f2f52a4882009b50c62c2564e1c8757ea44641b731be113fa312da8847d22969",
+        "839d637e57b31a5d02a7fc46eccef4850e60cbebc80b322c9a2d06477d859744",
+        "2e841da1db26179adae70d7c75826da3c6a3a31e6c13f6e33d408cb62c093438",
+        "27c9a540ff05278030b43c0185b2dd099dcd87e108306fe573f2ba96ea5cc757",
     ):
         assert digest in compact_ledger_doc
     full_score_source = (
@@ -2129,6 +2195,8 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     for digest in (
         "313af4ec8428178433a863d2ed3f9c6d046825d1e9ad259e67787653136029f7",
         "bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
+        "bcccf951892d00236c2c6a86814ce0500f519515e7c366b1fb9ecdddcd35e998",
+        "55e24ba17899593c2f27d2d4c2aa82b290c2db07b52272ea02d2e3784dea6b3f",
     ):
         assert f'prefix_sha256="{digest}"' in full_score_source
     assert (

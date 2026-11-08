@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import gc
 from hashlib import sha256
+import http.client
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -14,6 +15,7 @@ import re
 from pathlib import Path
 import shutil
 import signal
+import ssl
 import stat
 import subprocess
 import sys
@@ -167,6 +169,8 @@ from document_kv_cache.serving_env import (
     VLLM_WHEEL_SHA256,
     VLLM_WHEEL_URL,
     GPU_RUNTIME_PYTHONWARNINGS,
+    DOWNLOAD_RETRY_DELAYS_SECONDS,
+    DOWNLOAD_RETRY_HTTP_CODES,
     VIRTUALENV_BOOTSTRAP_FILENAME,
     VIRTUALENV_BOOTSTRAP_SHA256,
     VIRTUALENV_BOOTSTRAP_URL,
@@ -5106,14 +5110,21 @@ def materialize_virtualenv_bootstrap(output_dir: Path) -> Path:
         return target
 
     temporary = target.with_suffix(".tmp")
-    request = urllib.request.Request(
-        VIRTUALENV_BOOTSTRAP_URL,
-        headers={"User-Agent": "cachet-vllm-runtime-bootstrap"},
-    )
     try:
-        with urllib.request.urlopen(request, timeout=120.0) as response:
-            with temporary.open("wb") as stream:
-                shutil.copyfileobj(response, stream)
+        for delay in (*DOWNLOAD_RETRY_DELAYS_SECONDS, None):
+            try:
+                _download_virtualenv_bootstrap(temporary)
+                break
+            except Exception as exc:
+                if delay is None or not _is_transient_download_error(exc):
+                    raise
+                print(
+                    f"virtualenv bootstrap download failed ({type(exc).__name__}); "
+                    f"retrying in {delay} s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(delay)
         observed = _file_sha256(temporary)
         if observed != VIRTUALENV_BOOTSTRAP_SHA256:
             raise RuntimeError(
@@ -5125,6 +5136,31 @@ def materialize_virtualenv_bootstrap(output_dir: Path) -> Path:
         temporary.unlink(missing_ok=True)
         raise
     return target
+
+
+def _download_virtualenv_bootstrap(temporary: Path) -> None:
+    request = urllib.request.Request(
+        VIRTUALENV_BOOTSTRAP_URL,
+        headers={"User-Agent": "cachet-vllm-runtime-bootstrap"},
+    )
+    with urllib.request.urlopen(request, timeout=120.0) as response:
+        with temporary.open("wb") as stream:
+            shutil.copyfileobj(response, stream)
+
+
+def _is_transient_download_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in DOWNLOAD_RETRY_HTTP_CODES
+    return isinstance(
+        exc,
+        (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            ssl.SSLError,
+        ),
+    )
 
 
 def _file_sha256(path: Path) -> str:
