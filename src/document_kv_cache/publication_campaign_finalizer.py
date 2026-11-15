@@ -1537,7 +1537,9 @@ def _campaign_ledger_projection_after_latency(
         raise ValueError("publication final ledger is active or below hard headroom")
     projection: dict[str, Any] = {
         "final_accounted_cluster_hours": live.accounted_cluster_hours,
-        "final_active_reserved_cluster_hours": live.active_reserved_cluster_hours,
+        # A closed ledger reports its active hours as an empty sum (int 0), but
+        # the report envelope requires the JSON float 0.0.
+        "final_active_reserved_cluster_hours": 0.0,
         "final_active_reserved_task_count": live.active_reserved_task_count,
         "final_remaining_cluster_hours": live.remaining_cluster_hours,
         "full_score_terminal_prefix": final_prefix.to_record(),

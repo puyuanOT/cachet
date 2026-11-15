@@ -1508,6 +1508,26 @@ def test_campaign_ledger_projection_rejects_active_or_underfunded_ledger(
         )
 
 
+def test_campaign_ledger_projection_records_closed_ledger_hours_as_float(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = ledger_api.DatabricksClusterHourLedger(
+        ledger_id="closed-ledger",
+        cap_cluster_hours=1024.0,
+    )
+    case = _synthetic_campaign_ledger_projection_case(monkeypatch)
+    case["live"].active_reserved_cluster_hours = closed.active_reserved_cluster_hours
+
+    projection = campaign_finalizer._validated_campaign_ledger_projection(
+        **case["projection_kwargs"]
+    )
+
+    assert campaign_finalizer._json_type_exact_equal(
+        projection["final_active_reserved_cluster_hours"],
+        0.0,
+    )
+
+
 def test_finalizer_replays_both_authorities_before_ledger_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
