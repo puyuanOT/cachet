@@ -1349,14 +1349,15 @@ def test_publication_cas_admission_bound_covers_all_paired_scores_and_metadata()
     assert remote.FULL_SCORE_REMOTE_EVIDENCE_PAIR_OUTPUT_MAX_BYTES == 1_024
     assert remote.FULL_SCORE_REMOTE_EVIDENCE_PAIR_MAX_BYTES == 13_312
     assert remote.FULL_SCORE_REMOTE_CAS_WAVE_COUNT == 10
-    assert 6 * 160 + 6 * 10 + 4 * 10 + 2 * 9 + 2 == 1_080
-    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BINDINGS == 1_080
+    assert remote.FULL_SCORE_REMOTE_CAS_CAPACITY_RETRY_BINDINGS == 3 * 15 * 2 * 10
+    assert 6 * 160 + 6 * 10 + 4 * 10 + 2 * 9 + 2 + 900 == 1_980
+    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BINDINGS == 1_980
     evidence_and_coordinator_bytes = 1_543_504_896
     assert remote.FULL_SCORE_REMOTE_CAS_MAX_BYTES == (
-        evidence_and_coordinator_bytes + (1_080 - 2 * 160 - 4 * 10) * 16 * 1024 * 1024
+        evidence_and_coordinator_bytes + (1_980 - 2 * 160 - 4 * 10) * 16 * 1024 * 1024
     )
-    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BYTES == 13_623_100_416
-    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == 13_627_524_096
+    assert remote.FULL_SCORE_REMOTE_CAS_MAX_BYTES == 28_722_594_816
+    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == 28_730_704_896
 
 
 def test_controller_recovers_lost_submit_response_with_same_token(

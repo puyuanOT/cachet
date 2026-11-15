@@ -118,12 +118,19 @@ FULL_SCORE_REMOTE_CAS_WAVE_COUNT: Final = (
 # wave, each GPU phase's submit payload, runs/get record, and terminal record,
 # plus both coordinators' result and attestation; one producer and one consumer
 # live-P90 admission for every nonzero wave; and the GPU qualification plan and
-# evidence.
+# evidence.  Every capacity retry of a GPU phase also binds its own submit
+# payload, runs/get record, and capacity-failure record.
 FULL_SCORE_REMOTE_CAS_EVIDENCE_BINDINGS: Final = (
     2 * full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
 )
 FULL_SCORE_REMOTE_CAS_COORDINATOR_OUTPUT_BINDINGS: Final = (
     2 * 2 * FULL_SCORE_REMOTE_CAS_WAVE_COUNT
+)
+FULL_SCORE_REMOTE_CAS_CAPACITY_RETRY_BINDINGS: Final = (
+    3
+    * (full_score.FULL_SCORE_PHASE_MAX_ATTEMPTS - 1)
+    * 2
+    * FULL_SCORE_REMOTE_CAS_WAVE_COUNT
 )
 FULL_SCORE_REMOTE_CAS_MAX_BINDINGS: Final = (
     6 * full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
@@ -131,6 +138,7 @@ FULL_SCORE_REMOTE_CAS_MAX_BINDINGS: Final = (
     + FULL_SCORE_REMOTE_CAS_COORDINATOR_OUTPUT_BINDINGS
     + 2 * (FULL_SCORE_REMOTE_CAS_WAVE_COUNT - 1)
     + 2
+    + FULL_SCORE_REMOTE_CAS_CAPACITY_RETRY_BINDINGS
 )
 FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES: Final = 4 * 1024
 FULL_SCORE_REMOTE_CAS_MAX_BYTES: Final = (
@@ -5329,6 +5337,7 @@ if __name__ == "__main__":  # pragma: no cover
 
 __all__ = [
     "FULL_SCORE_REMOTE_CAMPAIGN_CLOSED_RECORD_SHA256",
+    "FULL_SCORE_REMOTE_CAS_CAPACITY_RETRY_BINDINGS",
     "FULL_SCORE_REMOTE_CAS_MAX_BINDINGS",
     "FULL_SCORE_REMOTE_CAS_MAX_BYTES",
     "FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES",

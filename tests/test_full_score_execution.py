@@ -5271,13 +5271,24 @@ def test_stock_mac_capacity_retry_replays_through_files_cas(campaign, monkeypatc
     remote_files[submit_uri] = full_score._canonical_pretty_json_bytes(submit)
     terminal_uri = f"{control}/wave-000-producer-terminal.json"
     failure_uri = f"{control}/wave-000-producer-capacity-failure-00.json"
+    runs_get_uri = f"{control}/wave-000-producer-runs-get-00.json"
+
+    def bound_uris() -> set[str]:
+        return {
+            json.loads(path.read_text())["uri"]
+            for path in (cas.root / "bindings").iterdir()
+        }
+
+    for uri in (qualification.plan_uri, qualification.evidence_uri):
+        compact_io.download(uri)
+    before_failure = bound_uris()
     failure, retry = (
         full_score_remote.collect_governed_full_score_remote_phase_attempt_outcome(
             workspace,
             cas=cas,
             submission_authorization=submission,
             submit_payload_uri=submit_uri,
-            control_plane_run_uri=f"{control}/wave-000-producer-runs-get-00.json",
+            control_plane_run_uri=runs_get_uri,
             terminal_record_uri=terminal_uri,
             capacity_failure_record_uri=failure_uri,
             single_user_name="researcher@example.com",
@@ -5296,6 +5307,13 @@ def test_stock_mac_capacity_retry_replays_through_files_cas(campaign, monkeypatc
     assert remote_files[failure_uri] == full_score._canonical_pretty_json_bytes(failure)
     assert terminal_uri not in remote_files
     assert retry.failure_records == ((failure_uri, failure["closed_record_sha256"]),)
+    assert bound_uris() - before_failure == {submit_uri, runs_get_uri, failure_uri}
+    assert full_score_remote.FULL_SCORE_REMOTE_CAS_CAPACITY_RETRY_BINDINGS == (
+        3
+        * (full_score.FULL_SCORE_PHASE_MAX_ATTEMPTS - 1)
+        * 2
+        * full_score_remote.FULL_SCORE_REMOTE_CAS_WAVE_COUNT
+    )
 
     restarted = full_score_remote.replay_governed_full_score_remote_phase_capacity_retry_authorization(
         workspace,
