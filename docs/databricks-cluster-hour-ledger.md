@@ -152,32 +152,61 @@ Do not split a representative reservation and submission into two commands.
 The `--representative-canary` path binds both the workload ID and payload to the
 ordered ten-workload manifest. The coupled path prevents a payload-file edit
 between accounting and the Jobs API request. An over-cap or invalid reservation
-performs no POST. If the POST fails, its reservation deliberately remains active
-until terminal information is available or the operator accounts for the failed
-attempt.
+performs no POST. If the POST fails, or its response or receipt write is lost,
+the reservation deliberately remains active. When the payload carries the
+package-derived idempotency token (native-runtime-v2 vLLM canaries require
+one), recover the attempt by replaying the identical bytes:
+
+```bash
+cachet-databricks-runs recover-reserved-submit \
+  --payload-json .cachet/vllm-baseline-submit.json \
+  --ledger-json .cachet/representative-canary-cluster-hours.json \
+  --attempt-id vllm-baseline-attempt-01
+```
+
+Databricks returns the run already created for that token, so recovery starts
+at most one run and binds its receipt; an attempt that already has a receipt
+returns it without another POST. A payload without the token has no safe retry,
+because a second POST could start a second billed run. Its reservation stays
+active until the operator finds the run in Databricks and binds its receipt
+with `record_databricks_run_submission_receipt_json`, or knows the request was
+never sent and closes it with `terminal --attest-never-posted`.
 
 The ledger persists the payload SHA-256, bounded task timeouts, and safe
 identifiers—not the payload, credentials, workspace URL, response, or task
 output. Attempt IDs are unique. A failed submission still consumes its
 reservation until it is explicitly recorded terminal.
 
-When Databricks reports a terminal state, record the aggregate actual cluster
-duration. For a multi-task payload, sum the task cluster durations rather than
-using the overall wall-clock interval:
+A submitted attempt is reconciled from its direct terminal `runs/get` record,
+which sums the task cluster durations rather than using the overall wall-clock
+interval. Databricks measures each task from cluster setup through cleanup, so
+a `TIMEDOUT` task overshoots its timeout; the verified duration is recorded and
+counted in full even when it exceeds the reservation. `BLOCKED` and
+`WAITING_FOR_RETRY` are not terminal and leave the reservation active. If
+verified overshoot pushes accounted hours past the cap, the ledger stays
+readable and in-flight attempts can still be reconciled, but every new
+reservation is refused until a quiescent `raise-cap`.
+
+The manual `terminal` command closes an attempt from an unverified,
+operator-supplied duration. It is only for an attempt that was never POSTed,
+and requires `--attest-never-posted`:
 
 ```bash
 cachet-databricks-resource-ledger terminal \
   --ledger-json .cachet/representative-canary-cluster-hours.json \
   --attempt-id vllm-baseline-attempt-01 \
-  --terminal-state succeeded \
-  --actual-cluster-duration-seconds 2712
+  --terminal-state failed \
+  --actual-cluster-duration-seconds 0 \
+  --attest-never-posted
 ```
 
-Terminal reconciliation replaces that attempt's active worst-case reservation
-with its actual duration. It never releases more than the difference between
-the reservation and the recorded actual. Unknown attempts, duplicate terminal
-records, durations above the reservation, malformed payloads, and reservations
-that would exceed the cap fail closed.
+It refuses an attempt that has a submission receipt or a durable POST claim
+(`<ledger>.post-claims/<sha256(attempt_id)>.json`), because closing it would
+orphan a possibly live run that recovery could never re-bind. Terminal
+reconciliation replaces that attempt's active worst-case reservation with its
+actual duration. Unknown attempts, duplicate terminal records, unverified
+durations above the reservation, malformed payloads, and reservations that
+would exceed the cap fail closed.
 
 The ledger uses closed JSON schemas, immutable event objects, an exclusive file
 lock for read-modify-write operations, and atomic replacement. Keep the ledger
