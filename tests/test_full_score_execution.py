@@ -5834,13 +5834,13 @@ def test_terminal_collection_resumes_exact_crash_boundaries_and_races(
     assert len(ledger.terminal_actuals) == 1
 
 
-def _running_run_record(submit_payload, *, run_id):
+def _running_run_record(submit_payload, *, run_id, life_cycle_state="RUNNING"):
     record = _terminal_run_record(submit_payload, run_id=run_id)
     record.pop("end_time")
-    record["state"] = {"life_cycle_state": "RUNNING", "state_message": ""}
+    record["state"] = {"life_cycle_state": life_cycle_state, "state_message": ""}
     for task in record["tasks"]:
         task.pop("end_time")
-        task["state"] = {"life_cycle_state": "RUNNING", "state_message": ""}
+        task["state"] = {"life_cycle_state": life_cycle_state, "state_message": ""}
     return record
 
 
@@ -5945,6 +5945,43 @@ def test_terminal_collection_supersedes_a_legacy_running_snapshot(campaign):
     )
     assert superseding.read_bytes() == terminated_bytes
     assert reserved["run_path"].read_bytes() == running_bytes
+
+
+@pytest.mark.parametrize("life_cycle_state", ["BLOCKED", "WAITING_FOR_RETRY"])
+def test_terminal_collection_supersedes_a_legacy_blocked_or_retrying_snapshot(
+    campaign,
+    life_cycle_state,
+):
+    reserved = _reserve_wave_zero_producer(
+        campaign,
+        label=f"collector-legacy-{life_cycle_state.lower()}",
+    )
+    pending = _running_run_record(
+        reserved["submit_payload"],
+        run_id=81_001,
+        life_cycle_state=life_cycle_state,
+    )
+    ledger_before = reserved["ledger_path"].read_bytes()
+    with pytest.raises(ValueError, match="runs/get response is not terminal"):
+        _collect_with_runs_get(campaign, reserved, pending)
+    assert not reserved["run_path"].exists()
+    assert reserved["ledger_path"].read_bytes() == ledger_before
+
+    pending_bytes = full_score._canonical_pretty_json_bytes(pending)
+    reserved["run_path"].write_bytes(pending_bytes)
+    terminated = _terminal_run_record(reserved["submit_payload"], run_id=81_001)
+    record, _authorization = _collect_with_runs_get(campaign, reserved, terminated)
+    superseding = _superseding_run_path(reserved["run_path"])
+    assert reserved["run_path"].read_bytes() == pending_bytes
+    assert superseding.read_bytes() == (
+        full_score._canonical_pretty_json_bytes(terminated)
+    )
+    assert record["control_plane"]["path"] == str(superseding)
+    ledger = read_databricks_cluster_hour_ledger_json(reserved["ledger_path"])
+    assert [item.control_plane_status_sha256 for item in ledger.terminal_actuals] == [
+        full_score._ledger_mapping_sha256(terminated)
+    ]
+    assert ledger.active_reserved_task_count == 0
 
 
 @pytest.mark.parametrize("ledger_recorded", [False, True])
