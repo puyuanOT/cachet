@@ -2853,7 +2853,8 @@ def _validate_capacity_failure_run_v2(
 
     A never-started task may report missing or zero times, exactly as the
     ledger reconciles them to zero seconds; the ledger terminal this record is
-    digest-bound to stays the only timing authority.
+    digest-bound to stays the only timing authority.  A task that reports
+    times must still nest them inside the run's own interval.
     """
 
     cloud_run_id = databricks_v1._databricks_run_id(
@@ -2898,22 +2899,22 @@ def _validate_capacity_failure_run_v2(
         task_state.get("life_cycle_state") == "TERMINATED"
         and task_state.get("result_state") == "SUCCESS"
     )
-    start_time = task.get("start_time")
-    end_time = task.get("end_time")
-    never_started = (start_time is None and end_time is None) or (
-        type(start_time) is int
-        and start_time == 0
-        and type(end_time) is int
-        and end_time == 0
+    task_start = task.get("start_time")
+    task_end = task.get("end_time")
+    never_started = (task_start is None and task_end is None) or (
+        type(task_start) is int
+        and task_start == 0
+        and type(task_end) is int
+        and task_end == 0
     )
-    if not (
-        (never_started and not run_succeeded and not task_succeeded)
-        or (
-            type(start_time) is int
-            and type(end_time) is int
-            and 0 <= start_time < end_time
+    if type(task_start) is int and type(task_end) is int and 0 <= task_start < task_end:
+        run_start = databricks_v1._nonnegative_int(
+            run.get("start_time"), "run.start_time"
         )
-    ):
+        run_end = databricks_v1._positive_int(run.get("end_time"), "run.end_time")
+        if not run_start <= task_start < task_end <= run_end:
+            raise ValueError("qualification task interval is not nested in the run")
+    elif not (never_started and not run_succeeded and not task_succeeded):
         raise ValueError(
             "failed qualification task requires increasing millisecond times, "
             "or zero/missing times for a never-started task"

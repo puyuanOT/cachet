@@ -2808,6 +2808,81 @@ def test_v2_never_started_capacity_failure_still_binds_run_identity(
     assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
 
 
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("task_starts_before_run", "task interval is not nested in the run"),
+        ("task_ends_after_run", "task interval is not nested in the run"),
+        ("run_start_missing", "run.start_time must be a non-negative integer"),
+        ("run_end_missing", "run.end_time must be a positive integer"),
+    ),
+)
+def test_v2_capacity_failure_with_task_times_nests_them_in_the_run(
+    tamper: str,
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    failed_attempt = case.cloud.attempt_ids[6]
+    case.cloud.capacity_failures = {failed_attempt: _CAPACITY}
+    original_submit = case.cloud.submit
+
+    def submit_with_unnested_run(
+        config: DatabricksWorkspaceConfig,
+        payload: Mapping[str, Any],
+        *,
+        ledger_path: str | Path,
+        attempt_id: str,
+        batch_authorization: Any,
+    ) -> dict[str, Any]:
+        response = original_submit(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=batch_authorization,
+        )
+        if attempt_id == failed_attempt:
+            # The ledger reconciles task times only, so it records this run.
+            run = case.cloud.runs[str(response["run_id"])]
+            task = run["tasks"][0]
+            assert (
+                run["start_time"]
+                < task["start_time"]
+                < task["end_time"]
+                < run["end_time"]
+            )
+            if tamper == "task_starts_before_run":
+                task["start_time"] = run["start_time"] - 1
+            elif tamper == "task_ends_after_run":
+                task["end_time"] = run["end_time"] + 1
+            elif tamper == "run_start_missing":
+                del run["start_time"]
+            else:
+                del run["end_time"]
+        return response
+
+    monkeypatch.setattr(
+        databricks_v2, "submit_pre_reserved_databricks_run", submit_with_unnested_run
+    )
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert databricks_v2._terminal_actual_v2(
+        ledger, failed_attempt
+    ).control_plane_status_sha256 == ledger_api.databricks_control_plane_status_sha256(
+        case.cloud.runs[str(case.cloud._run_id(failed_attempt))]
+    )
+    ledger_bytes = case.ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _retry_capacity_failures(case)
+
+    assert case.ledger_path.read_bytes() == ledger_bytes
+    assert not _retry_root(case, 1).exists()
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+
+
 def test_v2_non_ascii_runs_get_digests_match_the_ledger_through_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
