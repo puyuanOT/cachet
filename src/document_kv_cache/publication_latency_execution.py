@@ -9401,6 +9401,17 @@ _AUXILIARY_RERUN_JOB_KEYS: Final = frozenset(
         "zone_id",
     }
 )
+_AUXILIARY_RERUN_COHERENCE_KEYS: Final = frozenset(
+    {
+        "comparison_family",
+        "completion_gap_seconds",
+        "control_job_id",
+        "treatment_job_id",
+        "zone_equal",
+        *(key for key, _ in _LATENCY_COHERENCE_FIELDS),
+        *(key for key, _ in _AUXILIARY_RERUN_PAIR_FIELDS),
+    }
+)
 _AUXILIARY_RERUN_LABELS: Final = MappingProxyType(
     {
         "precision-bf16": ("BF16 payload/runtime KV vs Q8", "16k, concurrency 4, L4/NVMe"),
@@ -9433,9 +9444,22 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
         PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS * len(PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS)
     ):
         raise ValueError("auxiliary re-run jobs do not match the plan")
+    if not _json_type_exact_equal(
+        record.get("analysis"), _publication_latency_summary_analysis()
+    ):
+        raise ValueError("auxiliary re-run analysis drifts from the campaign design")
     chains: list[list[dict[str, Any]]] = []
     for job in _mapping_sequence(record, "jobs"):
         _require_exact_keys(job, set(_AUXILIARY_RERUN_JOB_KEYS), "auxiliary re-run job")
+        kind = job["job_id"][len("block-00-"):]
+        expected_node, expected_gmu = _auxiliary_rerun_frozen_node_and_gmu(kind)
+        if job.get("node_type_id") != expected_node or not _json_type_exact_equal(
+            job.get("gpu_memory_utilization"), expected_gmu
+        ):
+            raise ValueError(
+                f"auxiliary re-run job {job['job_id']!r} drifts from its frozen "
+                "node or GPU memory utilization"
+            )
         if job.get("execution_plan_sha256") != (
             publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, job.get("attempt"))
         ):
@@ -9468,6 +9492,16 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
         for key, _ in (*_LATENCY_COHERENCE_FIELDS, *_AUXILIARY_RERUN_PAIR_FIELDS)
     ):
         raise ValueError("auxiliary re-run comparison pairs are not plan-coherent")
+    for row in coherence:
+        _require_exact_keys(row, _AUXILIARY_RERUN_COHERENCE_KEYS, "auxiliary re-run pair")
+        gap = row.get("completion_gap_seconds")
+        if (
+            type(row.get("zone_equal")) is not bool
+            or type(gap) not in (int, float)
+            or not math.isfinite(gap)
+            or gap < 0
+        ):
+            raise ValueError("auxiliary re-run pair zone or completion gap is invalid")
     if [
         (row.get("comparison_family"), row.get("control_job_id"), row.get("treatment_job_id"))
         for row in coherence
@@ -9500,6 +9534,30 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
         f"auxiliary-rerun-{kind}" for kind in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
     ] or any(cell.get("cell_sha256") != _descriptive_cell_sha256(cell) for cell in cells):
         raise ValueError("auxiliary re-run descriptive cells drift")
+    for cell, kind in zip(cells, PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS, strict=True):
+        if [
+            _required_string(block, "job_id")
+            for block in _mapping_sequence(cell, "physical_blocks")
+        ] != [
+            f"block-{block:02d}-{kind}"
+            for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+        ]:
+            raise ValueError(
+                f"auxiliary re-run cell {cell.get('cell_id')!r} does not pool its "
+                "five block jobs"
+            )
+
+
+def _auxiliary_rerun_frozen_node_and_gmu(kind: str) -> tuple[str, float]:
+    if kind == "hardware-a10g":
+        return (
+            databricks_node_type_for_hardware_target("aws-g5-a10g"),
+            GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
+        )
+    node = databricks_node_type_for_hardware_target("aws-g6-l4")
+    if kind == "precision-bf16":
+        return node, PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+    return node, 0.90
 
 
 def _speedup_cell(metric: Mapping[str, Any]) -> tuple[str, str]:

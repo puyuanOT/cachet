@@ -6304,10 +6304,10 @@ def _auxiliary_rerun_case(monkeypatch):
             },
             "cell_id": cell_id,
             "cell_sha256": "",
-            "job_ids": list(job_ids),
             "p50_time_to_completion_seconds": 20.0,
             "p50_ttft_seconds": 6.0,
             "p95_ttft_seconds": 7.0,
+            "physical_blocks": [{"job_id": job_id} for job_id in job_ids],
         }
         cell["cell_sha256"] = execution._descriptive_cell_sha256(cell)
         return cell
@@ -6748,6 +6748,54 @@ def test_auxiliary_rerun_record_validator_rechecks_estimate_design(
             tampered["coherence"][1],
             tampered["coherence"][0],
         )
+    tampered["closed_record_sha256"] = execution._closed_record_sha256(tampered)
+
+    with pytest.raises(ValueError, match=match):
+        execution.validate_publication_latency_auxiliary_rerun_record(tampered)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "match"),
+    (
+        ("bf16_gmu", "'block-02-precision-bf16' drifts from its frozen node"),
+        ("bf16_gmu_type", "'block-02-precision-bf16' drifts from its frozen node"),
+        ("a10g_node", "'block-03-hardware-a10g' drifts from its frozen node"),
+        ("disk_gmu", "'block-01-storage-disk' drifts from its frozen node"),
+        ("cell_jobs", "cell 'auxiliary-rerun-storage-ram' does not pool its five block jobs"),
+        ("pair_extra_key", "auxiliary re-run pair"),
+        ("pair_zone_type", "pair zone or completion gap is invalid"),
+        ("pair_negative_gap", "pair zone or completion gap is invalid"),
+        ("analysis", "analysis drifts from the campaign design"),
+    ),
+)
+def test_auxiliary_rerun_record_validator_rechecks_rendered_runtime_and_cells(
+    monkeypatch, tamper, match
+):
+    plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
+    record = _aggregate_auxiliary_rerun(plan, jobs, results, attempts)
+    tampered = json.loads(json.dumps(record))
+    by_job = {job["job_id"]: job for job in tampered["jobs"]}
+    cells = {cell["cell_id"]: cell for cell in tampered["descriptive_cells"]}
+    if tamper == "bf16_gmu":
+        by_job["block-02-precision-bf16"]["gpu_memory_utilization"] = 0.9
+    elif tamper == "bf16_gmu_type":
+        by_job["block-02-precision-bf16"]["gpu_memory_utilization"] = "0.8"
+    elif tamper == "a10g_node":
+        by_job["block-03-hardware-a10g"]["node_type_id"] = "g6.8xlarge"
+    elif tamper == "disk_gmu":
+        by_job["block-01-storage-disk"]["gpu_memory_utilization"] = 0.85
+    elif tamper == "cell_jobs":
+        cell = cells["auxiliary-rerun-storage-ram"]
+        cell["physical_blocks"][0]["job_id"] = "block-01-16k-c4-vanilla"
+        cell["cell_sha256"] = execution._descriptive_cell_sha256(cell)
+    elif tamper == "pair_extra_key":
+        tampered["coherence"][0]["note"] = "re-run"
+    elif tamper == "pair_zone_type":
+        tampered["coherence"][0]["zone_equal"] = "anything"
+    elif tamper == "pair_negative_gap":
+        tampered["coherence"][0]["completion_gap_seconds"] = -1.0
+    else:
+        tampered["analysis"]["bootstrap_draws"] = 1
     tampered["closed_record_sha256"] = execution._closed_record_sha256(tampered)
 
     with pytest.raises(ValueError, match=match):
