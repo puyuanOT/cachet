@@ -6137,7 +6137,7 @@ def _auxiliary_rerun_case(monkeypatch):
         "hardware-a10g": ("auxiliary", "hardware-a10g", "hardware", "16k-c4-vanilla"),
     }
     ttft_speed = {"storage-ram": 2.0, "storage-uc": 0.5, "precision-bf16": 0.8, "hardware-a10g": 1.25}
-    jobs, results, parsed = [], [], {}
+    jobs, results, attempts, parsed = [], [], [], {}
     for index, job_id in enumerate(plan["job_ids"]):
         block = int(job_id[6:8])
         kind = job_id[9:]
@@ -6177,8 +6177,19 @@ def _auxiliary_rerun_case(monkeypatch):
                 "benchmark_record": {"job_id": job_id},
                 "closed_record_sha256": f"{index + 100:064x}",
                 "completed_at": f"2026-11-16T0{block}:00:00+00:00",
+                "execution_plan_sha256": plan_sha256,
                 "job_id": job_id,
                 "task_identity": {"cloud_run_id": str(1000 + index)},
+            }
+        )
+        attempts.append(
+            {
+                "attempt": 1,
+                "cloud_run_id": str(1000 + index),
+                "execution_plan_sha256": plan_sha256,
+                "job_id": job_id,
+                "result_present": True,
+                "result_state": "SUCCESS",
             }
         )
         storage = kind.startswith("storage-")
@@ -6228,13 +6239,46 @@ def _auxiliary_rerun_case(monkeypatch):
 
     monkeypatch.setattr(execution, "_descriptive_cell_record", descriptive_cell)
     monkeypatch.setattr(execution, "PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS", 200)
-    return plan, jobs, results
+    return plan, jobs, results, attempts
+
+
+def _retry_auxiliary_rerun_job(plan, jobs, results, attempts, job_id, earlier):
+    """Move ``job_id`` to attempt ``len(earlier) + 1`` after ``earlier`` attempts."""
+
+    chosen = len(earlier) + 1
+    digest = execution.publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, chosen)
+    next(job for job in jobs if job["job_id"] == job_id)["execution_plan_sha256"] = digest
+    result = next(item for item in results if item["job_id"] == job_id)
+    result["execution_plan_sha256"] = digest
+    last = next(item for item in attempts if item["job_id"] == job_id)
+    last.update(attempt=chosen, execution_plan_sha256=digest)
+    for number, (cloud_run_id, result_state) in enumerate(earlier, start=1):
+        attempts.append(
+            {
+                "attempt": number,
+                "cloud_run_id": cloud_run_id,
+                "execution_plan_sha256": (
+                    execution.publication_latency_auxiliary_rerun_attempt_plan_sha256(
+                        plan, number
+                    )
+                ),
+                "job_id": job_id,
+                "result_present": False,
+                "result_state": result_state,
+            }
+        )
+
+
+def _aggregate_auxiliary_rerun(plan, jobs, results, attempts):
+    return execution.aggregate_publication_latency_auxiliary_rerun(
+        plan, jobs, results, attempt_records=attempts
+    )
 
 
 def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monkeypatch):
-    plan, jobs, results = _auxiliary_rerun_case(monkeypatch)
+    plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
 
-    record = execution.aggregate_publication_latency_auxiliary_rerun(plan, jobs, results)
+    record = _aggregate_auxiliary_rerun(plan, jobs, results, attempts)
 
     assert record["record_type"] == execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_RECORD_TYPE
     assert record["closed_record_sha256"] == execution._closed_record_sha256(record)
@@ -6281,6 +6325,15 @@ def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monke
     assert len(record["coherence"]) == 20
     assert all(row["execution_plan_equal"] and row["runtime_equal"] for row in record["coherence"])
     assert [job["job_id"] for job in record["jobs"]] == plan["job_ids"]
+    assert record["jobs"][0]["attempts"] == [
+        {
+            "attempt": 1,
+            "cloud_run_id": "1000",
+            "execution_plan_sha256": record["plan_sha256"],
+            "result_present": True,
+            "result_state": "SUCCESS",
+        }
+    ]
 
     committed = json.loads(json.dumps(record, indent=2, sort_keys=True))
     execution.validate_publication_latency_auxiliary_rerun_record(committed)
@@ -6321,18 +6374,32 @@ def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monke
 
 
 def test_auxiliary_rerun_accepts_a_retry_of_the_same_plan(monkeypatch):
-    plan, jobs, results = _auxiliary_rerun_case(monkeypatch)
-    target = next(job for job in jobs if job["job_id"] == "block-02-storage-ram")
-    target["execution_plan_sha256"] = (
-        execution.publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, 2)
+    plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
+    _retry_auxiliary_rerun_job(
+        plan, jobs, results, attempts, "block-02-storage-ram", [("9001", "FAILED")]
+    )
+    _retry_auxiliary_rerun_job(
+        plan,
+        jobs,
+        results,
+        attempts,
+        "block-04-hardware-a10g",
+        [("9002", None), ("9003", "CANCELED")],
     )
 
-    record = execution.aggregate_publication_latency_auxiliary_rerun(plan, jobs, results)
+    record = _aggregate_auxiliary_rerun(plan, jobs, results, list(reversed(attempts)))
 
-    attempts = {job["job_id"]: job["attempt"] for job in record["jobs"]}
-    assert attempts.pop("block-02-storage-ram") == 2
-    assert set(attempts.values()) == {1}
+    chosen = {job["job_id"]: job["attempt"] for job in record["jobs"]}
+    assert chosen.pop("block-02-storage-ram") == 2
+    assert chosen.pop("block-04-hardware-a10g") == 3
+    assert set(chosen.values()) == {1}
     assert all(row["execution_plan_equal"] for row in record["coherence"])
+    retried = next(job for job in record["jobs"] if job["job_id"] == "block-04-hardware-a10g")
+    assert [
+        (item["attempt"], item["cloud_run_id"], item["result_present"], item["result_state"])
+        for item in retried["attempts"]
+    ] == [(1, "9002", False, None), (2, "9003", False, "CANCELED"), (3, "1023", True, "SUCCESS")]
+    assert retried["cloud_run_id"] == "1023"
     region = execution.render_publication_latency_auxiliary_rerun_region(
         record,
         {
@@ -6353,14 +6420,39 @@ def test_auxiliary_rerun_accepts_a_retry_of_the_same_plan(monkeypatch):
             }
         },
     )
-    assert "1 of them ran on a later attempt of the same plan" in region
-    assert "`block-02-storage-ram` (attempt 2)" in region
+    assert (
+        "2 of them ran on a later attempt of the same plan after every earlier attempt "
+        "ended without a result: `block-02-storage-ram` (attempt 2; attempt 1 ended "
+        "`FAILED`), `block-04-hardware-a10g` (attempt 3; attempt 1 ended without a "
+        "result state; attempt 2 ended `CANCELED`)."
+    ) in region
 
     committed = json.loads(json.dumps(record))
     committed["jobs"][0]["attempt"] = 2
     committed["closed_record_sha256"] = execution._closed_record_sha256(committed)
     with pytest.raises(ValueError, match="attempt is outside the plan"):
         execution.validate_publication_latency_auxiliary_rerun_record(committed)
+    index = plan["job_ids"].index("block-04-hardware-a10g")
+    for path, value, match in (
+        (("attempts", 1, "result_present"), True, "earlier attempt .* left a result"),
+        (("attempts", 0, "result_state"), "SUCCESS", "earlier attempt .* left a result"),
+        (("attempts", 0, "cloud_run_id"), "1000", "share a Databricks run"),
+        (("cloud_run_id",), "9003", "not its last attempt"),
+        (("attempts", 1, "attempt"), 4, "not numbered 1..k"),
+    ):
+        tampered = json.loads(json.dumps(record))
+        target = tampered["jobs"][index]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        tampered["closed_record_sha256"] = execution._closed_record_sha256(tampered)
+        with pytest.raises(ValueError, match=match):
+            execution.validate_publication_latency_auxiliary_rerun_record(tampered)
+    truncated = json.loads(json.dumps(record))
+    del truncated["jobs"][index]["attempts"][-1]
+    truncated["closed_record_sha256"] = execution._closed_record_sha256(truncated)
+    with pytest.raises(ValueError, match="did not succeed with a result"):
+        execution.validate_publication_latency_auxiliary_rerun_record(truncated)
     with pytest.raises(ValueError, match="attempt is out of range"):
         execution.publication_latency_auxiliary_rerun_attempt_plan_sha256(
             plan, execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_MAX_ATTEMPTS + 1
@@ -6382,7 +6474,7 @@ def test_auxiliary_rerun_accepts_a_retry_of_the_same_plan(monkeypatch):
     ),
 )
 def test_auxiliary_rerun_rejects_incoherent_or_incomplete_runs(monkeypatch, tamper, match):
-    plan, jobs, results = _auxiliary_rerun_case(monkeypatch)
+    plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
     target = next(job for job in jobs if job["job_id"] == "block-03-storage-ram")
     if tamper == "wheel":
         target["artifact_files"] = [{"role": "package_wheel", "sha256": "c" * 64}]
@@ -6396,7 +6488,91 @@ def test_auxiliary_rerun_rejects_incoherent_or_incomplete_runs(monkeypatch, tamp
         plan["job_ids"] = plan["job_ids"][:-1]
 
     with pytest.raises(ValueError, match=match):
-        execution.aggregate_publication_latency_auxiliary_rerun(plan, jobs, results)
+        _aggregate_auxiliary_rerun(plan, jobs, results, attempts)
+
+
+def _evidence(attempts, job_id, attempt):
+    return next(
+        item for item in attempts if item["job_id"] == job_id and item["attempt"] == attempt
+    )
+
+
+@pytest.mark.parametrize(
+    ("tamper", "match"),
+    (
+        ("earlier_result", "earlier attempt of auxiliary re-run job 'block-02-storage-ram' left a result"),
+        ("earlier_success", "earlier attempt of auxiliary re-run job 'block-02-storage-ram' left a result"),
+        ("stale_attempt", "'block-02-storage-ram' is attempt 1, not its last attempt 2"),
+        ("chosen_without_result", "last attempt of auxiliary re-run job 'block-02-storage-ram'"),
+        ("chosen_failed", "last attempt of auxiliary re-run job 'block-02-storage-ram'"),
+        ("gap", "attempts of 'block-02-storage-ram' are not numbered 1..k"),
+        ("duplicate", "attempt 1 of 'block-02-storage-ram' is unexpected"),
+        ("missing", "'block-05-storage-uc' has no attempt evidence"),
+        ("unknown_job", "attempt 1 of 'block-06-storage-uc' is unexpected"),
+        ("attempt_plan", "attempt 1 of 'block-02-storage-ram' is outside the plan"),
+        ("other_run", "result 'block-02-storage-ram' is not from its last attempt's run"),
+        ("shared_run", "share a Databricks run"),
+        ("integer_run_id", "cloud_run_id must be a string"),
+        ("unknown_state", "not a Databricks state"),
+        ("string_presence", "result_present must be a boolean"),
+        ("extra_key", "attempt record schema is not closed"),
+        ("result_plan", "result 'block-02-storage-ram' plan drift"),
+    ),
+)
+def test_auxiliary_rerun_rejects_unproven_attempts(monkeypatch, tamper, match):
+    plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
+    _retry_auxiliary_rerun_job(
+        plan, jobs, results, attempts, "block-02-storage-ram", [("9001", "FAILED")]
+    )
+    first = _evidence(attempts, "block-02-storage-ram", 1)
+    last = _evidence(attempts, "block-02-storage-ram", 2)
+    if tamper == "earlier_result":
+        first["result_present"] = True
+    elif tamper == "earlier_success":
+        first["result_state"] = "SUCCESS"
+    elif tamper == "stale_attempt":
+        job = next(item for item in jobs if item["job_id"] == "block-02-storage-ram")
+        job["execution_plan_sha256"] = first["execution_plan_sha256"]
+        result = next(item for item in results if item["job_id"] == "block-02-storage-ram")
+        result["execution_plan_sha256"] = first["execution_plan_sha256"]
+        result["task_identity"]["cloud_run_id"] = "9001"
+    elif tamper == "chosen_without_result":
+        last["result_present"] = False
+    elif tamper == "chosen_failed":
+        last["result_state"] = "FAILED"
+    elif tamper == "gap":
+        last.update(
+            attempt=3,
+            execution_plan_sha256=(
+                execution.publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, 3)
+            ),
+        )
+    elif tamper == "duplicate":
+        attempts.append({**first, "cloud_run_id": "9009"})
+    elif tamper == "missing":
+        attempts[:] = [item for item in attempts if item["job_id"] != "block-05-storage-uc"]
+    elif tamper == "unknown_job":
+        attempts.append({**first, "cloud_run_id": "9009", "job_id": "block-06-storage-uc"})
+    elif tamper == "attempt_plan":
+        first["execution_plan_sha256"] = last["execution_plan_sha256"]
+    elif tamper == "other_run":
+        last["cloud_run_id"] = "9009"
+    elif tamper == "shared_run":
+        first["cloud_run_id"] = "1000"
+    elif tamper == "integer_run_id":
+        first["cloud_run_id"] = 9001
+    elif tamper == "unknown_state":
+        first["result_state"] = "RUNNING"
+    elif tamper == "string_presence":
+        first["result_present"] = "false"
+    elif tamper == "extra_key":
+        first["run_page_url"] = "https://example.invalid/run/9001"
+    else:
+        result = next(item for item in results if item["job_id"] == "block-02-storage-ram")
+        result["execution_plan_sha256"] = first["execution_plan_sha256"]
+
+    with pytest.raises(ValueError, match=match):
+        _aggregate_auxiliary_rerun(plan, jobs, results, attempts)
 
 
 def test_frozen_design_comparison_pairs_cover_every_estimand():

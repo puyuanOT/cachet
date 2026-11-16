@@ -8782,10 +8782,97 @@ def publication_latency_auxiliary_rerun_attempt_plan_sha256(
     return _canonical_sha256(plan if attempt == 1 else {**plan, "attempt": attempt})
 
 
+# Databricks RunResultState values; a run that terminates without one is null.
+_DATABRICKS_RUN_RESULT_STATES: Final = frozenset(
+    {
+        "CANCELED",
+        "DISABLED",
+        "EXCLUDED",
+        "FAILED",
+        "MAXIMUM_CONCURRENT_RUNS_REACHED",
+        "SUCCESS",
+        "SUCCESS_WITH_FAILURES",
+        "TIMEDOUT",
+        "UPSTREAM_CANCELED",
+        "UPSTREAM_FAILED",
+    }
+)
+_AUXILIARY_RERUN_ATTEMPT_KEYS: Final = frozenset(
+    {
+        "attempt",
+        "cloud_run_id",
+        "execution_plan_sha256",
+        "result_present",
+        "result_state",
+    }
+)
+
+
+def _auxiliary_rerun_attempt_chain(
+    plan: Mapping[str, Any],
+    job_id: str,
+    attempts: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return one job's attempts 1..k, failing unless only attempt k left a result.
+
+    An attempt that succeeded must have left a result, so only an attempt that
+    ended otherwise (or without a result state) can be superseded.
+    """
+
+    if not attempts:
+        raise ValueError(f"auxiliary re-run job {job_id!r} has no attempt evidence")
+    chain: list[dict[str, Any]] = []
+    for number, item in enumerate(attempts, start=1):
+        _require_exact_keys(
+            item, _AUXILIARY_RERUN_ATTEMPT_KEYS, f"auxiliary re-run attempt of {job_id!r}"
+        )
+        if type(item.get("attempt")) is not int or item.get("attempt") != number:
+            raise ValueError(
+                f"auxiliary re-run attempts of {job_id!r} are not numbered 1..k"
+            )
+        if item.get("execution_plan_sha256") != (
+            publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, number)
+        ):
+            raise ValueError(
+                f"auxiliary re-run attempt {number} of {job_id!r} is outside the plan"
+            )
+        cloud_run_id = item.get("cloud_run_id")
+        if not isinstance(cloud_run_id, str):
+            raise ValueError("auxiliary re-run attempt cloud_run_id must be a string")
+        _databricks_id(cloud_run_id, "auxiliary re-run attempt cloud_run_id")
+        if type(item.get("result_present")) is not bool:
+            raise ValueError("auxiliary re-run attempt result_present must be a boolean")
+        result_state = item.get("result_state")
+        if result_state is not None and result_state not in _DATABRICKS_RUN_RESULT_STATES:
+            raise ValueError("auxiliary re-run attempt result_state is not a Databricks state")
+        chain.append({key: item[key] for key in sorted(_AUXILIARY_RERUN_ATTEMPT_KEYS)})
+    *earlier, chosen = chain
+    if any(item["result_present"] or item["result_state"] == "SUCCESS" for item in earlier):
+        raise ValueError(
+            f"an earlier attempt of auxiliary re-run job {job_id!r} left a result"
+        )
+    if chosen["result_present"] is not True or chosen["result_state"] != "SUCCESS":
+        raise ValueError(
+            f"the last attempt of auxiliary re-run job {job_id!r} did not succeed "
+            "with a result"
+        )
+    return chain
+
+
+def _require_unique_auxiliary_rerun_runs(
+    chains: Sequence[Sequence[Mapping[str, Any]]],
+) -> None:
+    run_ids = [item["cloud_run_id"] for chain in chains for item in chain]
+    if len(set(run_ids)) != len(run_ids):
+        raise ValueError("auxiliary re-run attempts share a Databricks run")
+
+
 def aggregate_publication_latency_auxiliary_rerun(
     plan_record: Mapping[str, Any],
     job_records: Sequence[Mapping[str, Any]],
     result_records: Sequence[Mapping[str, Any]],
+    *,
+    attempt_records: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Estimate the four auxiliary contrasts from one plan-coherent re-run.
 
@@ -8794,6 +8881,12 @@ def aggregate_publication_latency_auxiliary_rerun(
     wheel and source tree, so every compared pair differs only in its design
     fields. Estimation reuses the campaign's paired crossed bootstrap and makes
     no claim about the core Baseline/Vanilla grid.
+
+    ``attempt_records`` lists every submitted attempt of every job: ``job_id``,
+    ``attempt``, ``execution_plan_sha256``, ``cloud_run_id``, the terminal
+    Databricks ``result_state`` (or null) and ``result_present``. Each job's
+    attempts must be 1..k with only attempt k, the one aggregated, leaving a
+    result.
     """
 
     plan = json.loads(_canonical_json(dict(plan_record)))
@@ -8832,11 +8925,51 @@ def aggregate_publication_latency_auxiliary_rerun(
         results_by_id[job_id] = json.loads(_canonical_json(dict(result)))
     if set(results_by_id) != set(jobs_by_id):
         raise ValueError("auxiliary re-run needs one sealed result for every job")
+    evidence_by_job: dict[str, dict[int, dict[str, Any]]] = {
+        job_id: {} for job_id in expected_ids
+    }
+    for item in attempt_records:
+        _require_exact_keys(
+            item,
+            _AUXILIARY_RERUN_ATTEMPT_KEYS | {"job_id"},
+            "auxiliary re-run attempt record",
+        )
+        job_id = _required_string(item, "job_id")
+        attempt = _required_int(item, "attempt")
+        if job_id not in evidence_by_job or attempt in evidence_by_job[job_id]:
+            raise ValueError(
+                f"auxiliary re-run attempt {attempt} of {job_id!r} is unexpected"
+            )
+        evidence_by_job[job_id][attempt] = json.loads(
+            _canonical_json({key: value for key, value in item.items() if key != "job_id"})
+        )
+    attempt_chains = {
+        job_id: _auxiliary_rerun_attempt_chain(
+            plan, job_id, [evidence[number] for number in sorted(evidence)]
+        )
+        for job_id, evidence in evidence_by_job.items()
+    }
+    _require_unique_auxiliary_rerun_runs(list(attempt_chains.values()))
     attempts: dict[str, int] = {}
     for job_id, job in jobs_by_id.items():
         attempt = attempt_by_plan_sha256.get(_required_sha256(job, "execution_plan_sha256"))
         if attempt is None:
             raise ValueError(f"auxiliary re-run job {job_id!r} is outside the plan")
+        chain = attempt_chains[job_id]
+        if attempt != len(chain):
+            raise ValueError(
+                f"auxiliary re-run job {job_id!r} is attempt {attempt}, not its "
+                f"last attempt {len(chain)}"
+            )
+        result = results_by_id[job_id]
+        if result.get("execution_plan_sha256") != job["execution_plan_sha256"]:
+            raise ValueError(f"auxiliary re-run result {job_id!r} plan drift")
+        if _databricks_id(
+            _mapping(result, "task_identity").get("cloud_run_id"), "cloud_run_id"
+        ) != chain[-1]["cloud_run_id"]:
+            raise ValueError(
+                f"auxiliary re-run result {job_id!r} is not from its last attempt's run"
+            )
         attempts[job_id] = attempt
         if _latency_package_wheel_sha256(job) != plan.get("package_wheel_sha256"):
             raise ValueError(f"auxiliary re-run job {job_id!r} wheel drift")
@@ -8971,9 +9104,8 @@ def aggregate_publication_latency_auxiliary_rerun(
         "jobs": [
             {
                 "attempt": attempts[job_id],
-                "cloud_run_id": _mapping(results_by_id[job_id], "task_identity").get(
-                    "cloud_run_id"
-                ),
+                "attempts": attempt_chains[job_id],
+                "cloud_run_id": attempt_chains[job_id][-1]["cloud_run_id"],
                 "completed_at": _required_string(results_by_id[job_id], "completed_at"),
                 "execution_plan_sha256": _required_sha256(
                     jobs_by_id[job_id], "execution_plan_sha256"
@@ -9021,6 +9153,21 @@ _AUXILIARY_RERUN_RECORD_KEYS: Final = frozenset(
         "schema_version",
     }
 )
+_AUXILIARY_RERUN_JOB_KEYS: Final = frozenset(
+    {
+        "attempt",
+        "attempts",
+        "cloud_run_id",
+        "completed_at",
+        "execution_plan_sha256",
+        "gpu_memory_utilization",
+        "job_id",
+        "job_record_sha256",
+        "node_type_id",
+        "result_sha256",
+        "zone_id",
+    }
+)
 _AUXILIARY_RERUN_LABELS: Final = MappingProxyType(
     {
         "precision-bf16": ("BF16 payload/runtime KV vs Q8", "16k, concurrency 4, L4/NVMe"),
@@ -9053,11 +9200,23 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
         PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS * len(PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS)
     ):
         raise ValueError("auxiliary re-run jobs do not match the plan")
+    chains: list[list[dict[str, Any]]] = []
     for job in _mapping_sequence(record, "jobs"):
+        _require_exact_keys(job, _AUXILIARY_RERUN_JOB_KEYS, "auxiliary re-run job")
         if job.get("execution_plan_sha256") != (
             publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, job.get("attempt"))
         ):
             raise ValueError("auxiliary re-run job attempt is outside the plan")
+        chain = _auxiliary_rerun_attempt_chain(
+            plan, job["job_id"], _mapping_sequence(job, "attempts")
+        )
+        if (
+            job["attempt"] != len(chain)
+            or job.get("cloud_run_id") != chain[-1]["cloud_run_id"]
+        ):
+            raise ValueError("auxiliary re-run job is not its last attempt")
+        chains.append(chain)
+    _require_unique_auxiliary_rerun_runs(chains)
     if record.get("results_sha256") != _canonical_sha256(
         [
             [job["job_id"], _required_sha256(job, "result_sha256")]
@@ -9111,13 +9270,23 @@ def render_publication_latency_auxiliary_rerun_region(
         for item in _mapping_sequence(_mapping(campaign_report, "latency"), "estimates")
     }
     retried = [
-        f"`{job['job_id']}` (attempt {job['attempt']})"
+        f"`{job['job_id']}` (attempt {job['attempt']}; "
+        + "; ".join(
+            f"attempt {item['attempt']} ended "
+            + (
+                f"`{item['result_state']}`"
+                if item["result_state"] is not None
+                else "without a result state"
+            )
+            for item in job["attempts"][:-1]
+        )
+        + ")"
         for job in record["jobs"]
         if job["attempt"] > 1
     ]
     retry_note = (
-        f" {len(retried)} of them ran on a later attempt of the same plan after an "
-        f"earlier attempt returned no result: {', '.join(retried)}."
+        f" {len(retried)} of them ran on a later attempt of the same plan after "
+        f"every earlier attempt ended without a result: {', '.join(retried)}."
         if retried
         else ""
     )
