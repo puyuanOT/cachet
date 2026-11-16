@@ -3780,6 +3780,7 @@ def _append_recovered_balance_seed(
         attempt_id=attempt_id,
         terminal_state="succeeded",
         actual_cluster_duration_seconds=seconds,
+        attest_never_posted=True,
     )
 
 

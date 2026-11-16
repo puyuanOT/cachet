@@ -253,6 +253,14 @@ return as a production dependency.
   dataset-stratified bootstrap intervals.
 - `publication_inputs.py` builds the 32-example latency schedules and complete,
   natural-length, token-balanced full-score inventory and shard plan.
+- `quality_v2.py` defines quality benchmark protocol v2: Qwen3 chat framing,
+  256-token decoding, the versioned tolerant `<final_answer>` parser with strict
+  format compliance reported separately, WikiBio references without `-lrb-`
+  disambiguators, natural-text NIAH haystacks, and paired bootstrap
+  non-inferiority scoring.
+- `quality_v2_job.py` runs one quality-v2 chunk on a single-GPU Databricks node:
+  Transformers producer, then one vLLM 0.30.0 boot serving full prefill and the
+  cached arm over the same examples.
 - `release_bundle.py` copies validated release evidence, optional benchmark
   plan execution records, Databricks run-status records, package wheels, and
   PR-evidence, release preflight, GitHub-governance, repository-hygiene, and

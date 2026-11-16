@@ -2155,6 +2155,7 @@ def test_v2_replay_reissues_identical_authority_after_a_later_phase_appends(
             attempt_id=later_attempt_id,
             terminal_state="succeeded",
             actual_cluster_duration_seconds=0.0,
+            attest_never_posted=True,
         )
     later = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
     assert ledger_api.databricks_ledger_prefix(later) != closed

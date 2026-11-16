@@ -79,6 +79,8 @@ _PUBLIC_SUBMODULES = frozenset(
         "publication_l4_handoff_regeneration",
         "publication_latency_handoff_generation",
         "publication_latency_execution",
+        "quality_v2",
+        "quality_v2_job",
         "release_bundle",
         "release_evidence",
         "reference_method",
