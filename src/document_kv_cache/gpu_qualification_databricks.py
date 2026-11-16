@@ -53,6 +53,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
     databricks_cluster_hour_ledger_to_record,
+    databricks_control_plane_status_sha256,
     databricks_ledger_cap_after_prefix,
     databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
@@ -4427,7 +4428,7 @@ def collect_gpu_qualification_evidence(
             contract=contract,
             submit_receipt=submit_receipt,
         )
-        control_plane_status_sha256 = _canonical_json_sha256(run)
+        control_plane_status_sha256 = databricks_control_plane_status_sha256(run)
         if (
             actual.verification_source != "direct_databricks_runs_get"
             or actual.run_id != run_identity["cloud_run_id"]
@@ -5083,7 +5084,7 @@ def _failed_attempt_reconciliation_entry(
     return {
         "actual_cluster_duration_seconds": duration_seconds,
         "attempt_id": contract["reservation_attempt_id"],
-        "control_plane_status_sha256": _canonical_json_sha256(run),
+        "control_plane_status_sha256": databricks_control_plane_status_sha256(run),
         "file_sha256": _required_sha256(
             evidence_file_sha256, "evidence_file_sha256"
         ),
@@ -5481,12 +5482,6 @@ def _terminal_receipt_record(
     phase_batch_record_sha256: str,
 ) -> dict[str, Any]:
     result_bytes = (canonical_gpu_qualification_json(result) + "\n").encode("utf-8")
-    control_plane_bytes = json.dumps(
-        run,
-        allow_nan=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
     ledger_terminal_record = {
         "actual_cluster_duration_seconds": (
             ledger_terminal_actual.actual_cluster_duration_seconds
@@ -5507,7 +5502,7 @@ def _terminal_receipt_record(
         "cloud_cluster_id": run_identity["cloud_cluster_id"],
         "cloud_run_id": run_identity["cloud_run_id"],
         "collected_at_utc": collected_at_utc,
-        "control_plane_status_sha256": sha256(control_plane_bytes).hexdigest(),
+        "control_plane_status_sha256": databricks_control_plane_status_sha256(run),
         "driver_node_type_id": run_identity["driver_node_type_id"],
         "end_time_ms": run_identity["end_time_ms"],
         "job_id": contract["job_id"],

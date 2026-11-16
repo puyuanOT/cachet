@@ -274,6 +274,8 @@ class _PackageOwnedCloud:
         # Capacity failures whose task reports "missing" or "zero" times, the
         # shapes Databricks returns for a task that never started.
         self.never_started_task_times: dict[str, str] = {}
+        # Appended to every run and task state_message.
+        self.state_message_suffix = ""
 
     def _attempt_position(self, attempt_id: str) -> tuple[int, int]:
         base, separator, retry = attempt_id.partition("-capacity-retry-")
@@ -315,6 +317,8 @@ class _PackageOwnedCloud:
         task_start = run_start + 1_000
         task_end = task_start + 5_000
         succeeded = {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"}
+        if self.state_message_suffix:
+            succeeded["state_message"] = self.state_message_suffix.lstrip()
         task_record: dict[str, Any] = {
             "attempt_number": 0,
             "cluster_instance": {"cluster_id": f"cluster-{run_id}"},
@@ -333,6 +337,7 @@ class _PackageOwnedCloud:
                 "state_message": (
                     f"Cluster 'cluster-{run_id}' was terminated. Reason: "
                     f"{self.capacity_failures[attempt_id]} (CLOUD_FAILURE)."
+                    f"{self.state_message_suffix}"
                 ),
             }
             task_record["state"] = dict(run_state)
@@ -2532,3 +2537,61 @@ def test_v2_never_started_capacity_failure_still_binds_run_identity(
     assert case.ledger_path.read_bytes() == ledger_bytes
     assert not _retry_root(case, 1).exists()
     assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+
+
+def test_v2_non_ascii_runs_get_digests_match_the_ledger_through_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    failed_attempt = case.cloud.attempt_ids[8]
+    case.cloud.capacity_failures = {failed_attempt: _CAPACITY}
+    case.cloud.state_message_suffix = " AWS couldn\u2019t place the instance."
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+    failed_run = case.cloud.runs[str(case.cloud._run_id(failed_attempt))]
+    assert "\u2019" in failed_run["state"]["state_message"]
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    failed_actual = databricks_v2._terminal_actual_v2(ledger, failed_attempt)
+    assert failed_actual.control_plane_status_sha256 == (
+        ledger_api.databricks_control_plane_status_sha256(failed_run)
+    )
+    assert failed_actual.control_plane_status_sha256 != (
+        databricks_v1._canonical_json_sha256(failed_run)
+    )
+
+    leases = _retry_capacity_failures(case)
+
+    retried = _retry_attempt(case, 8, 1)
+    assert [lease["attempt_ids"] for lease in leases] == [[retried]]
+    assert leases[0]["capacity_failures"][0]["control_plane_status_sha256"] == (
+        failed_actual.control_plane_status_sha256
+    )
+    _install_minimal_governed_evidence_stubs(
+        case, _final_attempt_results(case, {8: 1}), monkeypatch
+    )
+    evidence_root = tmp_path / "qualification-evidence-v2"
+    evidence, authorization = databricks_v2.collect_gpu_qualification_evidence_v2(
+        case.config,
+        **_collector_kwargs(case, evidence_root),
+        now=lambda: datetime(2026, 8, 26, 12, 0, tzinfo=UTC),
+    )
+    completed = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    for receipt in evidence["cloud_gpu_evidence"]["terminal_receipts"]:
+        run = case.cloud.runs[receipt["cloud_run_id"]]
+        assert "\u2019" in run["state"]["state_message"]
+        assert receipt["control_plane_status_sha256"] == (
+            databricks_v2._terminal_actual_v2(
+                completed, receipt["ledger_attempt_id"]
+            ).control_plane_status_sha256
+        )
+    monkeypatch.setattr(
+        databricks_v2,
+        "get_databricks_run",
+        lambda *_args, **_kwargs: pytest.fail("durable v2 replay reached runs/get"),
+    )
+    assert databricks_v2.replay_gpu_qualification_launch_authorization_v2(
+        config=case.config,
+        **_collector_kwargs(case, evidence_root),
+        expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+        expected_artifact_pins=_pins(),
+    ) == authorization

@@ -2331,6 +2331,41 @@ def test_exclusive_evidence_write_fails_closed_when_directory_fsync_fails(
     assert not output.exists()
 
 
+def test_control_plane_status_digest_uses_the_ledger_encoding_on_both_sides():
+    ascii_run = {
+        "run_id": 7,
+        "state": {"life_cycle_state": "TERMINATED", "state_message": "ok"},
+        "tasks": [{"run_id": 8, "task_key": "task"}],
+    }
+    non_ascii_run = {
+        **ascii_run,
+        "state": {**ascii_run["state"], "state_message": "couldn\u2019t place"},
+    }
+    ledger_encoding = hashlib.sha256(
+        json.dumps(
+            non_ascii_run, allow_nan=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert resource_ledger.databricks_control_plane_status_sha256(ascii_run) == (
+        qualification_job._canonical_json_sha256(ascii_run)
+    )
+    assert resource_ledger.databricks_control_plane_status_sha256(
+        non_ascii_run
+    ) == ledger_encoding
+    assert ledger_encoding != qualification_job._canonical_json_sha256(non_ascii_run)
+    assert (
+        qualification_job.databricks_control_plane_status_sha256
+        is resource_ledger.databricks_control_plane_status_sha256
+    )
+    with pytest.raises(TypeError, match="run_record must be a mapping"):
+        resource_ledger.databricks_control_plane_status_sha256([])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="canonical JSON values"):
+        resource_ledger.databricks_control_plane_status_sha256(
+            {"run_id": float("nan")}
+        )
+
+
 def test_collected_identity_closure_rejects_reused_cluster_or_task_run_id():
     contracts = (
         {
@@ -6267,7 +6302,11 @@ def test_launch_capability_cannot_be_constructed_by_record_only_callers():
         )
 
 
+@pytest.mark.parametrize(
+    "state_message", (None, "Run succeeded; Databricks didn\u2019t retry it.")
+)
 def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
+    state_message: str | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -6346,6 +6385,8 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
                 }
             ],
         }
+        if state_message is not None:
+            runs[str(run_id)]["state"]["state_message"] = state_message
         result = {
             "closed_record_sha256": "",
             "cloud_cluster_id": f"cluster-{run_id}",
@@ -6461,11 +6502,19 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
         for item in ledger.terminal_actuals
         if item.attempt_id in qualification_attempt_ids
     )
+    actual_status_sha256 = {
+        item.run_id: item.control_plane_status_sha256
+        for item in ledger.terminal_actuals
+        if item.attempt_id in qualification_attempt_ids
+    }
     for receipt_path in terminal_root.glob("*.json"):
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         assert receipt["ledger_id"] == CAMPAIGN_LEDGER_ID
         assert receipt["ledger_actual_cluster_duration_seconds"] == 5.0
         assert len(receipt["ledger_terminal_actual_sha256"]) == 64
+        assert receipt["control_plane_status_sha256"] == (
+            actual_status_sha256[receipt["cloud_run_id"]]
+        )
 
 
 def test_collector_reconciles_a_never_started_failure_before_rejecting_campaign(

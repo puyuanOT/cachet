@@ -33,6 +33,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
+    databricks_control_plane_status_sha256,
     databricks_ledger_cap_after_prefix,
     databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
@@ -2853,7 +2854,7 @@ def _capacity_failure_entry_v2(
         or actual.run_id != run_identity["cloud_run_id"]
         or actual.submit_payload_sha256 != contract["submit_payload_sha256"]
         or actual.control_plane_status_sha256
-        != databricks_v1._canonical_json_sha256(run)
+        != databricks_control_plane_status_sha256(run)
     ):
         raise RuntimeError("v2 failed attempt differs from direct runs/get")
     if run_identity["succeeded"] is True or actual.terminal_state == "succeeded":
@@ -3418,7 +3419,7 @@ def collect_gpu_qualification_evidence_v2(
             or actual.run_id != run_identity["cloud_run_id"]
             or actual.submit_payload_sha256 != contract["submit_payload_sha256"]
             or actual.control_plane_status_sha256
-            != databricks_v1._canonical_json_sha256(run)
+            != databricks_control_plane_status_sha256(run)
         ):
             raise RuntimeError("v2 terminal actual differs from direct runs/get")
         if (
