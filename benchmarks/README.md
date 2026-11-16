@@ -405,7 +405,33 @@ sizes, but not byte-identical payloads. A first launch of the re-run, stopped
 when the bundle loss surfaced, is superseded and none of its results are used.
 
 <!-- cachet:vllm-0300-auxiliary-latency-rerun:begin -->
+Re-run `closed_record_sha256`: `18a51fc96e21af35960e6532fb2b0533d89279f22912b9bb5a9c04ce842af201`; execution plan `219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a`. All 30 jobs share one campaign, source revision and tree, package wheel, runtime artifact closure, qualification pins and campaign sources, each runs its cell's frozen runtime, and each serves the handoff its plan binds to it. Every compared pair runs the same input files and request schedule and differs only in the treatment's design (the RAM payload cache and the Unity Catalog handoff stage, each with its cache telemetry policy; the BF16 handoff bundle, KV dtype and GPU memory utilization; the A10G node and GPU memory utilization), its zone, and its per-job output and stage paths. 1 of them ran on a later attempt of the same plan after every earlier attempt ended without a result: `block-04-hardware-a10g` (attempt 2; attempt 1 ended `FAILED`).
+
+| Treatment vs reference | Setting | TTFT speedup, campaign | TTFT 95% CI, campaign | TTFT speedup, re-run | TTFT 95% CI, re-run | TTC speedup, campaign | TTC 95% CI, campaign | TTC speedup, re-run | TTC 95% CI, re-run |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 payload/runtime KV vs Q8 | 16k, concurrency 4, L4/NVMe | 0.5388 | [0.5221, 0.5557] | 0.5495 | [0.5307, 0.5842] | 0.7282 | [0.7207, 0.7359] | 0.7346 | [0.7295, 0.7418] |
+| RAM vs Disk | 16k, concurrency 4, L4 | 1.6704 | [1.6523, 1.6989] | 1.6958 | [1.6661, 1.7275] | 1.1132 | [1.1085, 1.1185] | 1.1162 | [1.1112, 1.1206] |
+| Unity Catalog vs Disk | 16k, concurrency 4, L4 | 0.5754 | [0.5585, 0.5927] | 0.6027 | [0.5877, 0.6183] | 0.8410 | [0.8337, 0.8483] | 0.8587 | [0.8520, 0.8653] |
+| A10G vs L4 | 16k, concurrency 4, local NVMe | 0.9556 | [0.9356, 0.9677] | 0.9508 | [0.9209, 1.0087] | 1.0671 | [1.0584, 1.0746] | 1.0670 | [1.0564, 1.0786] |
+
+| Re-run cell | Node | GPU memory utilization | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s) | Connector loads | Cold-read attestations | Payload-cache hits |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16k-c4-vanilla | `g6.8xlarge` | 0.9 | 6.4916 | 7.5494 | 26.4159 | 1280 | 1280 | 0 |
+| storage-disk | `g6.8xlarge` | 0.9 | 6.8776 | 7.2199 | 26.8575 | 1280 | 1280 | 0 |
+| storage-ram | `g6.8xlarge` | 0.9 | 4.1039 | 4.1368 | 24.0584 | 1280 | 0 | 1280 |
+| storage-uc | `g6.8xlarge` | 0.9 | 11.4368 | 12.4040 | 31.2418 | 1280 | 1280 | 0 |
+| precision-bf16 | `g6.8xlarge` | 0.8 | 12.1343 | 12.3122 | 36.1443 | 1280 | 1280 | 0 |
+| hardware-a10g | `g5.8xlarge` | 0.85 | 7.0004 | 7.1971 | 24.9018 | 1280 | 1280 | 0 |
 <!-- cachet:vllm-0300-auxiliary-latency-rerun:end -->
+
+The re-run reproduces every campaign contrast closely: the four TTFT speedups
+move by at most 0.03× and the TTC speedups by at most 0.02×, so the mixed
+plans, uneven warmup, and unmeasured cold reads did not materially change the
+campaign's auxiliary rows. RAM remains the only faster storage tier (1.70×
+TTFT and 1.12× TTC against Disk) and Unity Catalog stays slower (0.60× and
+0.86×). BF16 payloads, twice the bytes of Q8, take about 1.8 times as long to
+first token (0.55×). The A10G node matches the L4 within noise on TTFT (0.95×,
+interval 0.92–1.01) and completes requests about 7% faster end to end.
 
 ### Serving Platform
 
