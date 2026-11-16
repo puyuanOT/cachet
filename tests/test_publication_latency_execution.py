@@ -6766,6 +6766,7 @@ def test_auxiliary_rerun_record_validator_rechecks_estimate_design(
         ("pair_zone_type", "pair zone or completion gap is invalid"),
         ("pair_negative_gap", "pair zone or completion gap is invalid"),
         ("analysis", "analysis drifts from the campaign design"),
+        ("job_rename", "auxiliary re-run jobs do not match the plan"),
     ),
 )
 def test_auxiliary_rerun_record_validator_rechecks_rendered_runtime_and_cells(
@@ -6794,6 +6795,13 @@ def test_auxiliary_rerun_record_validator_rechecks_rendered_runtime_and_cells(
         tampered["coherence"][0]["zone_equal"] = "anything"
     elif tamper == "pair_negative_gap":
         tampered["coherence"][0]["completion_gap_seconds"] = -1.0
+    elif tamper == "job_rename":
+        renamed = "block-03-hardware-a1og"
+        job = by_job["block-03-hardware-a10g"]
+        job.update(job_id=renamed, node_type_id="g6.8xlarge", gpu_memory_utilization=0.9)
+        job_ids = tampered["plan"]["job_ids"]
+        job_ids[job_ids.index("block-03-hardware-a10g")] = renamed
+        tampered["plan_sha256"] = execution._canonical_sha256(tampered["plan"])
     else:
         tampered["analysis"]["bootstrap_draws"] = 1
     tampered["closed_record_sha256"] = execution._closed_record_sha256(tampered)

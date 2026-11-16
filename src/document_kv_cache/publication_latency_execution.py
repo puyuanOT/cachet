@@ -9096,11 +9096,7 @@ def aggregate_publication_latency_auxiliary_rerun(
         publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, attempt): attempt
         for attempt in range(1, PUBLICATION_LATENCY_AUXILIARY_RERUN_MAX_ATTEMPTS + 1)
     }
-    expected_ids = [
-        f"block-{block:02d}-{kind}"
-        for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
-        for kind in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
-    ]
+    expected_ids = _auxiliary_rerun_expected_job_ids()
     if plan.get("job_ids") != expected_ids:
         raise ValueError("auxiliary re-run plan must list every block's six cells")
     handoff_sources = _mapping(plan, "handoff_sources")
@@ -9440,9 +9436,7 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
     if record.get("plan_sha256") != _canonical_sha256(plan):
         raise ValueError("auxiliary re-run plan digest drift")
     job_ids = [_required_string(job, "job_id") for job in _mapping_sequence(record, "jobs")]
-    if job_ids != plan.get("job_ids") or len(job_ids) != (
-        PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS * len(PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS)
-    ):
+    if job_ids != plan.get("job_ids") or job_ids != _auxiliary_rerun_expected_job_ids():
         raise ValueError("auxiliary re-run jobs do not match the plan")
     if not _json_type_exact_equal(
         record.get("analysis"), _publication_latency_summary_analysis()
@@ -9548,7 +9542,17 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
             )
 
 
+def _auxiliary_rerun_expected_job_ids() -> list[str]:
+    return [
+        f"block-{block:02d}-{kind}"
+        for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+        for kind in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
+    ]
+
+
 def _auxiliary_rerun_frozen_node_and_gmu(kind: str) -> tuple[str, float]:
+    if kind not in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS:
+        raise ValueError(f"auxiliary re-run job kind {kind!r} is unknown")
     if kind == "hardware-a10g":
         return (
             databricks_node_type_for_hardware_target("aws-g5-a10g"),
