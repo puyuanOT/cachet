@@ -73,6 +73,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourReservation,
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
+    _sequential_hours_sum,
     canonical_databricks_submit_payload_snapshot,
     databricks_ledger_prefix,
     databricks_ledger_prefix_from_record,
@@ -6735,7 +6736,9 @@ def submit_publication_latency_launch_wave(
             ):
                 raise ValueError("latency batch reservation member drift")
         proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
-        proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
+        proposed_hours = _sequential_hours_sum(
+            item.reserved_cluster_hours for item in reservations
+        )
         if batch_live.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
             raise ValueError(
                 "latency publication requires the 1024-hour ledger or its approved "

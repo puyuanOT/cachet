@@ -59,6 +59,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksBatchReservationAuthorization,
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
+    _sequential_hours_sum,
     canonical_databricks_submit_payload_snapshot,
     databricks_ledger_path_sha256,
     databricks_ledger_prefix,
@@ -1752,7 +1753,9 @@ def reserve_and_submit_publication_bf16_handoff_worker_wave(
                 or reservation.reserved_cluster_hours != 5.0
             ):
                 raise ValueError("BF16 batch reservation member drift")
-        proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
+        proposed_hours = _sequential_hours_sum(
+            item.reserved_cluster_hours for item in reservations
+        )
         proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
         if batch_live.cap_cluster_hours not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
             raise ValueError(

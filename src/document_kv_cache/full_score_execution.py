@@ -105,6 +105,7 @@ from document_kv_cache.databricks_resource_ledger import (
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
     _ledger_terminal_state,
+    _sequential_hours_sum,
     canonical_databricks_submit_payload_snapshot,
     databricks_cluster_hour_ledger_from_record,
     databricks_cluster_hour_ledger_to_record,
@@ -4135,7 +4136,7 @@ def build_governed_full_score_phase_terminal_record(
     if observed_task_keys != set(expected_by_key):
         raise ValueError("Databricks terminal status omits a full-score task")
     # Sum in runs/get order, exactly as the ledger reconciled the same response.
-    billed_gpu_seconds = sum(
+    billed_gpu_seconds = _sequential_hours_sum(
         cast(float, item["billed_gpu_seconds"]) for item in task_billing
     )
     task_billing.sort(key=lambda item: cast(int, item["worker_index"]))
