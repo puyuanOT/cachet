@@ -1753,23 +1753,42 @@ def _discard_unwritten_post_intents_v2(
     *,
     contracts: Sequence[Mapping[str, Any]],
     ledger: DatabricksClusterHourLedger,
+    receipt_count: int,
+    terminal_count: int,
 ) -> None:
-    """Drop zero-length intents: an intent that never got its bytes preceded no POST."""
+    """Drop the one zero-length intent that provably preceded no POST.
 
+    The former in-place writer could leave an intent without bytes only for
+    the next member to POST once every earlier member closed; any other
+    zero-length intent fails closed.
+    """
+
+    intent_paths = tuple(
+        root / f"{contract['job_id']}.post-intent-v2" for contract in contracts
+    )
+    unwritten = tuple(
+        index
+        for index, intent_path in enumerate(intent_paths)
+        if intent_path.is_file()
+        and not intent_path.is_symlink()
+        and intent_path.stat().st_size == 0
+    )
+    if not unwritten:
+        return
     receipted = {item.attempt_id for item in ledger.submission_receipts}
-    discarded = False
-    for contract in contracts:
-        intent_path = root / f"{contract['job_id']}.post-intent-v2"
-        if (
-            intent_path.is_file()
-            and not intent_path.is_symlink()
-            and intent_path.stat().st_size == 0
-            and contract["reservation_attempt_id"] not in receipted
-        ):
-            intent_path.unlink()
-            discarded = True
-    if discarded:
-        databricks_v1._fsync_directory(root)
+    marker_path = root / _V2_BATCH_MARKER_FILENAME
+    if (
+        unwritten != (receipt_count,)
+        or terminal_count != receipt_count
+        or contracts[receipt_count]["reservation_attempt_id"] in receipted
+        or not marker_path.is_file()
+        or marker_path.is_symlink()
+    ):
+        raise ValueError(
+            "v2 zero-length post intent is not the canonical unposted crash point"
+        )
+    intent_paths[receipt_count].unlink()
+    databricks_v1._fsync_directory(root)
 
 
 def _submit_fresh_round_v2(
@@ -2484,7 +2503,13 @@ def _replay_batch_marker_v2(
         lease_record=lease,
         batch_authorization=authorization,
     )
-    _discard_unwritten_post_intents_v2(root, contracts=contracts, ledger=live)
+    _discard_unwritten_post_intents_v2(
+        root,
+        contracts=contracts,
+        ledger=live,
+        receipt_count=receipt_count,
+        terminal_count=terminal_count,
+    )
     marker = _validated_resume_evidence_prefix_v2(
         root=root,
         plan=plan,

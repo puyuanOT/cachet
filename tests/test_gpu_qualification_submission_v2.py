@@ -1219,7 +1219,7 @@ def test_resume_keeps_an_empty_intent_whose_post_the_ledger_receipted(
     }
     ledger_before = case.ledger_path.read_bytes()
 
-    with pytest.raises(ValueError, match="newline-terminated JSON object"):
+    with pytest.raises(ValueError, match="not the canonical unposted crash point"):
         databricks_v2.resume_gpu_qualification_job_submissions_v2(
             case.config,
             **case.call_kwargs(),
@@ -1228,6 +1228,59 @@ def test_resume_keeps_an_empty_intent_whose_post_the_ledger_receipted(
     assert intent_path.read_bytes() == b""
     assert case.ledger_path.read_bytes() == ledger_before
     assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids[:3])
+
+
+@pytest.mark.parametrize(
+    ("stopped_member", "empty_intent_indices"),
+    (
+        ("intent", (5,)),
+        ("intent", (2, 5)),
+        ("marker", (0,)),
+    ),
+)
+def test_resume_rejects_an_empty_intent_off_the_unposted_crash_point(
+    stopped_member: str,
+    empty_intent_indices: tuple[int, ...],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    target_name = {
+        "intent": f"{job_ids[2]}.post-intent-v2",
+        "marker": "batch-reserved-v2.json",
+    }[stopped_member]
+    survivors = _install_hard_stop(
+        monkeypatch, case.receipt_root / target_name, "before_write"
+    )
+    with pytest.raises(_HardStop):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config, **case.call_kwargs()
+        )
+    _restore_after_hard_stop(case.receipt_root, survivors)
+    for index in empty_intent_indices:
+        (case.receipt_root / f"{job_ids[index]}.post-intent-v2").write_bytes(b"")
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert not {
+        case.cloud.attempt_ids[index] for index in empty_intent_indices
+    } & {item.attempt_id for item in ledger.submission_receipts}
+    posted = list(case.cloud.post_attempt_ids)
+    assert posted == list(
+        case.cloud.attempt_ids[: {"intent": 2, "marker": 0}[stopped_member]]
+    )
+    root_before = _root_snapshot(case.receipt_root)
+    ledger_before = case.ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match="not the canonical unposted crash point"):
+        databricks_v2.resume_gpu_qualification_job_submissions_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+
+    assert _root_snapshot(case.receipt_root) == root_before
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert case.cloud.post_attempt_ids == posted
+    assert case.cloud.resume_attempt_ids == []
 
 
 def test_reservation_postcommit_exception_retains_lease_for_exact_resume(
