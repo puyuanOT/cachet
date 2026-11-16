@@ -12,11 +12,14 @@ from document_kv_cache.benchmarks import (
     DatasetScoreContext,
     extract_single_final_answer,
 )
+import document_kv_cache.quality_v2 as quality_v2_module
 from document_kv_cache.full_score_execution import FULL_SCORE_RUNNER_SCRIPT
 from document_kv_cache.quality_v2 import (
     QUALITY_V2_MAX_REGRESSION,
     QUALITY_V2_PARSER_DIGEST,
     QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    QUALITY_V2_README_MARKERS,
+    QUALITY_V2_REPORT_RECORD_TYPE,
     biography_v3_entity_scores,
     build_quality_v2_niah_records,
     extract_first_final_answer,
@@ -24,9 +27,13 @@ from document_kv_cache.quality_v2 import (
     quality_v2_primary_metric,
     quality_v2_prompt_parts,
     quality_v2_protocol_record,
+    quality_v2_report_record,
     quality_v2_scorer_registry,
+    render_quality_v2_readme_region,
     strip_biography_disambiguator,
     summarize_quality_v2_pairs,
+    validate_quality_v2_readme_region,
+    validate_quality_v2_report_record,
 )
 from document_kv_cache.quality_v2_job import (
     QUALITY_V2_MAX_MODEL_LEN,
@@ -266,6 +273,114 @@ class TestSummary:
             summarize_quality_v2_pairs([_row("e0", "", 1.0)], [_row("e1", "", 1.0)])
         with pytest.raises(ValueError, match="duplicate"):
             summarize_quality_v2_pairs([_row("e0", "", 1.0)] * 2, [_row("e0", "", 1.0)])
+
+
+def _report_rows() -> tuple[list[dict], list[dict], dict]:
+    metrics = {
+        "biography": ("exact_match",),
+        "hotpotqa": ("exact_match", "f1"),
+        "musique": ("answer_em", "answer_f1"),
+        "niah": ("accuracy",),
+    }
+    baseline, cached = [], []
+    for dataset, names in metrics.items():
+        count = 36 if dataset == "niah" else 40
+        for index in range(count):
+            metadata = {"niah_cell_id": NIAH_CELL_IDS[index % 9]} if dataset == "niah" else {}
+            references = ["john smith -lrb- actor -rrb-"] if index < 4 else ["jane doe"]
+            base_score = 1.0 if index % 2 else 0.0
+            cached_score = 0.0 if dataset == "hotpotqa" and index % 4 == 1 else base_score
+            for rows, score, text in (
+                (baseline, base_score, "<final_answer>a</final_answer>"),
+                (cached, cached_score, "[document id=1] <final_answer>a</final_answer>"),
+            ):
+                rows.append(
+                    {
+                        "completion_tokens": 12,
+                        "dataset": dataset,
+                        "error": None,
+                        "example_id": f"{dataset}-{index}",
+                        "metadata": metadata,
+                        "output_text": text,
+                        "prompt_tokens": 900,
+                        "quality_scores": {name: score for name in names},
+                        "references": references,
+                    }
+                )
+    execution = {
+        "chunks": [
+            {"chunk_id": f"{dataset}-00", "dataset": dataset, "examples": 36 if dataset == "niah" else 40}
+            for dataset in metrics
+        ],
+        "package_wheel_sha256": "a" * 64,
+        "plan_sha256": "b" * 64,
+        "vanilla_arm_id": "vanilla_prefill",
+    }
+    return baseline, cached, execution
+
+
+class TestReport:
+    def test_report_seals_verdicts_and_renders_from_committed_json(self) -> None:
+        baseline, cached, execution = _report_rows()
+        record = quality_v2_report_record(baseline, cached, execution=execution, bootstrap_draws=400)
+
+        assert record["record_type"] == QUALITY_V2_REPORT_RECORD_TYPE
+        assert record["verdicts"]["hotpotqa"]["meets_non_inferiority"] is False
+        assert record["verdicts"]["hotpotqa"]["difference"] == pytest.approx(-0.25)
+        assert record["verdicts"]["musique"]["meets_non_inferiority"] is True
+        assert record["verdicts"]["niah"]["meets_non_inferiority"] is True
+        assert set(record["verdicts"]) == {"hotpotqa", "musique", "niah"}
+        assert record["diagnostics"]["biography"]["reference_split"]["disambiguated_reference"]["pairs"] == 4
+        assert record["diagnostics"]["hotpotqa"]["cached"]["document_markup_in_output_rate"] == 1.0
+        assert sum(cell["pairs"] for cell in record["diagnostics"]["niah"]["cells"].values()) == 36
+
+        committed = json.loads(json.dumps(record, indent=2, sort_keys=True))
+        validate_quality_v2_report_record(committed)
+        region = render_quality_v2_readme_region(committed)
+        assert region == render_quality_v2_readme_region(record)
+        assert "| HotpotQA | Headline, primary | Exact match | 40 | 0.500 | 0.250 | -0.250 |" in region
+        assert "| Does not meet |" in region
+        assert "| Biography | Diagnostic | Exact match |" in region
+        assert region.index("8k, needle at 10%") < region.index("32k, needle at 90%")
+        begin, end = QUALITY_V2_README_MARKERS
+        readme = f"# Benchmarks\n\n{begin}{region}{end}\n"
+        validate_quality_v2_readme_region(readme, committed)
+        with pytest.raises(ValueError, match="differs from the sealed report"):
+            validate_quality_v2_readme_region(readme.replace("0.250", "0.260"), committed)
+
+    @pytest.mark.parametrize(
+        ("tamper", "match"),
+        (
+            ("closure", "closure is invalid"),
+            ("verdict", "closure is invalid|verdicts do not follow"),
+            ("protocol", "protocol differs"),
+            ("chunks", "chunk examples do not match"),
+        ),
+    )
+    def test_validator_rejects_tampered_reports(self, tamper: str, match: str) -> None:
+        baseline, cached, execution = _report_rows()
+        record = quality_v2_report_record(baseline, cached, execution=execution, bootstrap_draws=50)
+        if tamper == "closure":
+            record["summaries"]["niah"]["pairs"] += 1
+        elif tamper == "verdict":
+            record["verdicts"]["hotpotqa"]["meets_non_inferiority"] = True
+            record["closed_record_sha256"] = quality_v2_module._closed_sha256(record)
+        elif tamper == "protocol":
+            record["protocol"]["max_tokens"] = 64
+            record["closed_record_sha256"] = quality_v2_module._closed_sha256(record)
+        else:
+            record["execution"]["chunks"][0]["examples"] += 1
+            record["closed_record_sha256"] = quality_v2_module._closed_sha256(record)
+        with pytest.raises(ValueError, match=match):
+            validate_quality_v2_report_record(record)
+
+    def test_report_requires_every_protocol_dataset(self) -> None:
+        baseline, cached, execution = _report_rows()
+        baseline = [row for row in baseline if row["dataset"] != "musique"]
+        cached = [row for row in cached if row["dataset"] != "musique"]
+        execution["chunks"] = [c for c in execution["chunks"] if c["dataset"] != "musique"]
+        with pytest.raises(ValueError, match="every protocol dataset"):
+            quality_v2_report_record(baseline, cached, execution=execution, bootstrap_draws=10)
 
 
 class TestJob:

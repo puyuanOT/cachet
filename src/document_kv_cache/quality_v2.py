@@ -70,17 +70,25 @@ __all__ = [
     "QUALITY_V2_HEADLINE_DATASETS",
     "QUALITY_V2_DIAGNOSTIC_DATASETS",
     "QUALITY_V2_MAX_REGRESSION",
+    "QUALITY_V2_README_MARKERS",
+    "QUALITY_V2_REPORT_RECORD_TYPE",
+    "QUALITY_V2_REPORT_SCHEMA_VERSION",
     "QualityV2DatasetSummary",
     "biography_v3_entity_scores",
     "build_quality_v2_niah_records",
     "extract_first_final_answer",
     "niah_v2_exact_value_scores",
+    "quality_v2_diagnostics",
     "quality_v2_primary_metric",
     "quality_v2_prompt_parts",
     "quality_v2_protocol_record",
+    "quality_v2_report_record",
     "quality_v2_scorer_registry",
+    "render_quality_v2_readme_region",
     "strip_biography_disambiguator",
     "summarize_quality_v2_pairs",
+    "validate_quality_v2_readme_region",
+    "validate_quality_v2_report_record",
 ]
 
 QUALITY_V2_PROTOCOL_ID = "cachet-vllm-0.30.0-quality-v2"
@@ -90,8 +98,8 @@ QUALITY_V2_MAX_TOKENS = 256
 QUALITY_V2_NIAH_SEED = 20_261_115
 QUALITY_V2_HEADLINE_DATASETS = ("hotpotqa", "musique", "niah")
 QUALITY_V2_DIAGNOSTIC_DATASETS = ("biography",)
-# Largest accepted drop of the cached arm below full prefill on a headline
-# dataset's primary metric, as the upper end of a 95% paired bootstrap interval.
+# Non-inferiority margin: on a headline dataset's primary metric the lower end of
+# the 95% paired bootstrap interval of (cached - full prefill) must be >= -0.02.
 QUALITY_V2_MAX_REGRESSION = 0.02
 
 _CHAT_USER_OPEN = "<|im_start|>user\n"
@@ -587,3 +595,360 @@ def _bootstrap_mean_interval(
     population = list(values)
     means = sorted(math.fsum(rng.choices(population, k=count)) / count for _ in range(draws))
     return (means[int(0.025 * (draws - 1))], means[int(math.ceil(0.975 * (draws - 1)))])
+
+
+QUALITY_V2_REPORT_RECORD_TYPE = "cachet.quality_v2_report.v1"
+QUALITY_V2_REPORT_SCHEMA_VERSION = 1
+QUALITY_V2_README_MARKERS = (
+    "<!-- cachet:vllm-0300-quality-v2:begin -->",
+    "<!-- cachet:vllm-0300-quality-v2:end -->",
+)
+_QUALITY_V2_BOOTSTRAP_SEED = 20_261_115
+_QUALITY_V2_PARSER_STATUSES = (
+    "ok",
+    "missing_block",
+    "multiple_or_malformed_blocks",
+    "empty_answer",
+)
+_DOCUMENT_MARKUP = re.compile(r"\[/?(?:document|chunk) id=")
+_REPORT_KEYS = frozenset(
+    {
+        "bootstrap",
+        "closed_record_sha256",
+        "diagnostics",
+        "execution",
+        "protocol",
+        "record_type",
+        "schema_version",
+        "summaries",
+        "verdicts",
+    }
+)
+_EXECUTION_REQUIRED_KEYS = frozenset(
+    {"chunks", "package_wheel_sha256", "plan_sha256", "vanilla_arm_id"}
+)
+_DATASET_LABELS = {
+    "biography": "Biography",
+    "hotpotqa": "HotpotQA",
+    "musique": "MuSiQue",
+    "niah": "NIAH",
+}
+_METRIC_LABELS = {
+    "accuracy": "Exact-value accuracy",
+    "answer_em": "Answer exact match, alias-max",
+    "answer_f1": "Answer F1, alias-max",
+    "exact_match": "Exact match",
+    "f1": "Answer F1",
+}
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+
+
+def _closed_sha256(record: Mapping[str, Any]) -> str:
+    body = dict(record)
+    body["closed_record_sha256"] = ""
+    return sha256(_canonical(body).encode("utf-8")).hexdigest()
+
+
+def _mean_or_zero(values: Iterable[float]) -> float:
+    values = list(values)
+    return statistics.fmean(values) if values else 0.0
+
+
+def quality_v2_diagnostics(
+    baseline_measurements: Iterable[Mapping[str, Any]],
+    cached_measurements: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Per-dataset parse outcomes, NIAH grid cells and the biography reference split."""
+
+    by_key: dict[tuple[str, str], dict[str, Mapping[str, Any]]] = defaultdict(dict)
+    for arm, rows in (("baseline", baseline_measurements), ("cached", cached_measurements)):
+        for row in rows:
+            by_key[(str(row["dataset"]), str(row["example_id"]))][arm] = row
+    if any(set(pair) != {"baseline", "cached"} for pair in by_key.values()):
+        raise ValueError("diagnostics need paired baseline and cached measurements")
+    diagnostics: dict[str, Any] = {}
+    for dataset in sorted({key[0] for key in by_key}):
+        pairs = [by_key[key] for key in sorted(by_key) if key[0] == dataset]
+        metric = quality_v2_primary_metric(dataset)
+        item: dict[str, Any] = {}
+        for arm in ("baseline", "cached"):
+            rows = [pair[arm] for pair in pairs]
+            statuses = {status: 0 for status in _QUALITY_V2_PARSER_STATUSES}
+            for row in rows:
+                statuses[extract_first_final_answer(str(row.get("output_text") or "")).status] += 1
+            item[arm] = {
+                "document_markup_in_output_rate": _mean_or_zero(
+                    float(bool(_DOCUMENT_MARKUP.search(str(row.get("output_text") or ""))))
+                    for row in rows
+                ),
+                "mean_prompt_tokens": _mean_or_zero(
+                    float(row.get("prompt_tokens") or 0) for row in rows
+                ),
+                "parser_statuses": statuses,
+            }
+        if dataset == "biography":
+            split: dict[str, Any] = {}
+            for label, disambiguated in (
+                ("disambiguated_reference", True),
+                ("plain_reference", False),
+            ):
+                subset = [
+                    pair
+                    for pair in pairs
+                    if any("-lrb-" in str(ref) for ref in pair["baseline"].get("references") or [])
+                    is disambiguated
+                ]
+                split[label] = {
+                    "pairs": len(subset),
+                    **{
+                        arm: _mean_or_zero(_score(pair[arm], metric) for pair in subset)
+                        for arm in ("baseline", "cached")
+                    },
+                }
+            item["reference_split"] = split
+        if dataset == "niah":
+            cells: dict[str, list[dict[str, Mapping[str, Any]]]] = defaultdict(list)
+            for pair in pairs:
+                cell_id = (pair["baseline"].get("metadata") or {}).get("niah_cell_id")
+                if cell_id not in NIAH_CELL_IDS:
+                    raise ValueError("NIAH measurement is missing its grid cell")
+                cells[str(cell_id)].append(pair)
+            item["cells"] = {
+                cell_id: {
+                    "pairs": len(cells[cell_id]),
+                    **{
+                        arm: _mean_or_zero(_score(pair[arm], metric) for pair in cells[cell_id])
+                        for arm in ("baseline", "cached")
+                    },
+                }
+                for cell_id in NIAH_CELL_IDS
+                if cell_id in cells
+            }
+        diagnostics[dataset] = item
+    return diagnostics
+
+
+def _quality_v2_verdicts(summaries: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    verdicts = {}
+    for dataset in QUALITY_V2_HEADLINE_DATASETS:
+        name = quality_v2_primary_metric(dataset)
+        metric = summaries[dataset]["metrics"][name]
+        verdicts[dataset] = {
+            "difference": metric["difference"],
+            "difference_ci95_high": metric["difference_ci95_high"],
+            "difference_ci95_low": metric["difference_ci95_low"],
+            "meets_non_inferiority": metric["difference_ci95_low"] >= -QUALITY_V2_MAX_REGRESSION,
+            "metric": name,
+        }
+    return verdicts
+
+
+def quality_v2_report_record(
+    baseline_measurements: Iterable[Mapping[str, Any]],
+    cached_measurements: Iterable[Mapping[str, Any]],
+    *,
+    execution: Mapping[str, Any],
+    bootstrap_draws: int = 10_000,
+) -> dict[str, Any]:
+    """Seal one complete quality-v2 run into a publishable report record.
+
+    ``execution`` carries run provenance: the plan and package wheel digests, the
+    cached arm id, and one entry per chunk with its dataset and example count.
+    """
+
+    baseline = list(baseline_measurements)
+    cached = list(cached_measurements)
+    summaries = {
+        dataset: summary.to_record()
+        for dataset, summary in summarize_quality_v2_pairs(
+            baseline,
+            cached,
+            bootstrap_draws=bootstrap_draws,
+            seed=_QUALITY_V2_BOOTSTRAP_SEED,
+        ).items()
+    }
+    if set(summaries) != {*QUALITY_V2_HEADLINE_DATASETS, *QUALITY_V2_DIAGNOSTIC_DATASETS}:
+        raise ValueError("quality-v2 report must cover every protocol dataset")
+    record: dict[str, Any] = {
+        "bootstrap": {
+            "draws": bootstrap_draws,
+            "interval": "percentile_95_over_paired_examples",
+            "seed": _QUALITY_V2_BOOTSTRAP_SEED,
+        },
+        "closed_record_sha256": "",
+        "diagnostics": quality_v2_diagnostics(baseline, cached),
+        "execution": json.loads(_canonical(dict(execution))),
+        "protocol": quality_v2_protocol_record(),
+        "record_type": QUALITY_V2_REPORT_RECORD_TYPE,
+        "schema_version": QUALITY_V2_REPORT_SCHEMA_VERSION,
+        "summaries": summaries,
+        "verdicts": _quality_v2_verdicts(summaries),
+    }
+    record["closed_record_sha256"] = _closed_sha256(record)
+    validate_quality_v2_report_record(record)
+    return record
+
+
+def validate_quality_v2_report_record(record: Mapping[str, Any]) -> None:
+    """Fail unless ``record`` is a complete, self-consistent quality-v2 report."""
+
+    if not isinstance(record, Mapping) or set(record) != _REPORT_KEYS:
+        raise ValueError("quality-v2 report has the wrong fields")
+    if record["record_type"] != QUALITY_V2_REPORT_RECORD_TYPE:
+        raise ValueError("quality-v2 report record_type is invalid")
+    if record["schema_version"] != QUALITY_V2_REPORT_SCHEMA_VERSION:
+        raise ValueError("quality-v2 report schema_version is invalid")
+    if record["closed_record_sha256"] != _closed_sha256(record):
+        raise ValueError("quality-v2 report closure is invalid")
+    if record["protocol"] != quality_v2_protocol_record():
+        raise ValueError("quality-v2 report protocol differs from this library")
+    datasets = set(QUALITY_V2_HEADLINE_DATASETS) | set(QUALITY_V2_DIAGNOSTIC_DATASETS)
+    summaries = record["summaries"]
+    diagnostics = record["diagnostics"]
+    if set(summaries) != datasets or set(diagnostics) != datasets:
+        raise ValueError("quality-v2 report must cover every protocol dataset")
+    for dataset, summary in summaries.items():
+        pairs = summary.get("pairs")
+        if type(pairs) is not int or pairs <= 0:
+            raise ValueError(f"quality-v2 {dataset} summary has no pairs")
+        if quality_v2_primary_metric(dataset) not in summary.get("metrics", {}):
+            raise ValueError(f"quality-v2 {dataset} summary lacks its primary metric")
+        for arm in ("baseline", "cached"):
+            statuses = diagnostics[dataset][arm]["parser_statuses"]
+            if set(statuses) != set(_QUALITY_V2_PARSER_STATUSES) or sum(statuses.values()) != pairs:
+                raise ValueError(f"quality-v2 {dataset} parser statuses do not cover the pairs")
+    if record["verdicts"] != _quality_v2_verdicts(summaries):
+        raise ValueError("quality-v2 report verdicts do not follow from its summaries")
+    if sum(cell["pairs"] for cell in diagnostics["niah"]["cells"].values()) != (
+        summaries["niah"]["pairs"]
+    ):
+        raise ValueError("quality-v2 NIAH grid does not cover every pair")
+    if sum(item["pairs"] for item in diagnostics["biography"]["reference_split"].values()) != (
+        summaries["biography"]["pairs"]
+    ):
+        raise ValueError("quality-v2 biography reference split does not cover every pair")
+    execution = record["execution"]
+    if not isinstance(execution, Mapping) or not _EXECUTION_REQUIRED_KEYS <= set(execution):
+        raise ValueError("quality-v2 report execution provenance is incomplete")
+    examples: dict[str, int] = defaultdict(int)
+    for chunk in execution["chunks"]:
+        examples[str(chunk["dataset"])] += int(chunk["examples"])
+    if dict(examples) != {dataset: summary["pairs"] for dataset, summary in summaries.items()}:
+        raise ValueError("quality-v2 chunk examples do not match the scored pairs")
+
+
+def _rate_pair(values: Mapping[str, float]) -> str:
+    return f"{100 * values['baseline']:.1f}% / {100 * values['cached']:.1f}%"
+
+
+def render_quality_v2_readme_region(record: Mapping[str, Any]) -> str:
+    """Render the governed README tables for one sealed quality-v2 report."""
+
+    validate_quality_v2_report_record(record)
+    summaries = record["summaries"]
+    diagnostics = record["diagnostics"]
+    verdicts = record["verdicts"]
+    margin = f"−{QUALITY_V2_MAX_REGRESSION:.2f}"
+    lines = [
+        "",
+        f"Report `closed_record_sha256`: `{record['closed_record_sha256']}`. "
+        f"Protocol `{record['protocol']['protocol_id']}`, parser "
+        f"`{QUALITY_V2_PARSER_ID}` v{QUALITY_V2_PARSER_VERSION}, "
+        f"{record['bootstrap']['draws']:,} paired bootstrap draws.",
+        "",
+        "| Dataset | Role | Metric | Pairs | Full prefill | Vanilla KV "
+        "| Vanilla − full prefill | Paired 95% CI "
+        f"| Non-inferiority (CI low ≥ {margin}) |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    ordered = [*QUALITY_V2_HEADLINE_DATASETS, *QUALITY_V2_DIAGNOSTIC_DATASETS]
+    for dataset in ordered:
+        summary = summaries[dataset]
+        primary = quality_v2_primary_metric(dataset)
+        names = [primary, *sorted(name for name in summary["metrics"] if name != primary)]
+        for name in names:
+            metric = summary["metrics"][name]
+            if dataset in verdicts and name == primary:
+                role = "Headline, primary"
+                verdict = "Meets" if verdicts[dataset]["meets_non_inferiority"] else "Does not meet"
+            elif dataset in verdicts:
+                role = "Headline, secondary"
+                verdict = "Not assessed"
+            else:
+                role = "Diagnostic"
+                verdict = "Not assessed"
+            lines.append(
+                f"| {_DATASET_LABELS[dataset]} | {role} | {_METRIC_LABELS.get(name, name)} "
+                f"| {summary['pairs']:,} | {metric['baseline']:.3f} | {metric['cached']:.3f} "
+                f"| {metric['difference']:+.3f} "
+                f"| [{metric['difference_ci95_low']:+.3f}, {metric['difference_ci95_high']:+.3f}] "
+                f"| {verdict} |"
+            )
+    lines += [
+        "",
+        "| Dataset | Strict whole-output format (full / Vanilla) "
+        "| Answer extracted (full / Vanilla) | Reached 256-token cap (full / Vanilla) "
+        "| Mean completion tokens (full / Vanilla) | Document markup echoed (full / Vanilla) "
+        "| Request errors (full / Vanilla) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for dataset in ordered:
+        summary = summaries[dataset]
+        markup = {
+            arm: diagnostics[dataset][arm]["document_markup_in_output_rate"]
+            for arm in ("baseline", "cached")
+        }
+        tokens = summary["mean_completion_tokens"]
+        errors = summary["errors"]
+        lines.append(
+            f"| {_DATASET_LABELS[dataset]} | {_rate_pair(summary['strict_format_rate'])} "
+            f"| {_rate_pair(summary['tolerant_parse_rate'])} "
+            f"| {_rate_pair(summary['token_cap_rate'])} "
+            f"| {tokens['baseline']:.1f} / {tokens['cached']:.1f} | {_rate_pair(markup)} "
+            f"| {errors['baseline']} / {errors['cached']} |"
+        )
+    lines += [
+        "",
+        "| NIAH cell | Pairs | Full prefill accuracy | Vanilla KV accuracy | Vanilla − full prefill |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    niah_cells = diagnostics["niah"]["cells"]
+    for cell_id in (cell_id for cell_id in NIAH_CELL_IDS if cell_id in niah_cells):
+        cell = niah_cells[cell_id]
+        _, context, _, depth = cell_id.split("-")
+        lines.append(
+            f"| {context}, needle at {int(depth)}% | {cell['pairs']:,} | {cell['baseline']:.3f} "
+            f"| {cell['cached']:.3f} | {cell['cached'] - cell['baseline']:+.3f} |"
+        )
+    lines += [
+        "",
+        "| Biography reference | Pairs | Full prefill exact match | Vanilla KV exact match |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for label, title in (
+        ("disambiguated_reference", "Had a WikiBio `-lrb- … -rrb-` disambiguator"),
+        ("plain_reference", "Plain title"),
+    ):
+        item = diagnostics["biography"]["reference_split"][label]
+        lines.append(
+            f"| {title} | {item['pairs']:,} | {item['baseline']:.3f} | {item['cached']:.3f} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def validate_quality_v2_readme_region(readme: str, record: Mapping[str, Any]) -> None:
+    """Fail unless ``readme`` holds exactly the rendered quality-v2 region."""
+
+    begin, end = QUALITY_V2_README_MARKERS
+    if readme.count(begin) != 1 or readme.count(end) != 1:
+        raise ValueError("README must contain one quality-v2 region")
+    start = readme.index(begin) + len(begin)
+    stop = readme.index(end)
+    if stop < start or readme[start:stop] != render_quality_v2_readme_region(record):
+        raise ValueError("README quality-v2 region differs from the sealed report")
