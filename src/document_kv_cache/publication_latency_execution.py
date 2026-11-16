@@ -151,6 +151,7 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
     PUBLICATION_CAMPAIGN_REPEATS_PER_EXAMPLE,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
+    PUBLICATION_CAMPAIGN_STORAGE_CONTROL_SETTING,
     PUBLICATION_CAMPAIGN_STORAGE_EXAMPLES_PER_DATASET,
     PUBLICATION_CAMPAIGN_STORAGE_REPEATS_PER_EXAMPLE,
     PUBLICATION_CAMPAIGN_STORAGE_REQUESTS_PER_CELL,
@@ -212,6 +213,9 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.vllm_smoke import (
+    LATENCY_WARMUP_PREFIX_CACHE_SALT,
+    LATENCY_WARMUP_RECORD_TYPE,
+    LATENCY_WARMUP_REQUEST_ID_PREFIX,
     VLLMNativeRuntimeBundleV2,
     VLLMSmokeBenchmarkConfig,
     run_vllm_smoke_benchmark,
@@ -298,8 +302,15 @@ PUBLICATION_LATENCY_RAM_PAYLOAD_CACHE_BYTES: Final = 16 * 1024**3
 PUBLICATION_LATENCY_RAM_PRIME_TARGETS: Final = 8
 # Must match the request IDs minted by vllm_smoke.prime_payload_cache.
 PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX: Final = "cachet-payload-prime:"
+# One untimed request per dataset per job, sent in waves of the cell's request
+# parallelism (at most 4), so every arm warms prefill, decode and its connector
+# path the same way before the first timed request.
+PUBLICATION_LATENCY_WARMUP_REQUESTS: Final = 4
 PUBLICATION_LATENCY_Q8_DTYPE: Final = "fp8_e5m2"
 PUBLICATION_LATENCY_BF16_DTYPE: Final = "bfloat16"
+# Eager vLLM 0.30.0 at the L4 0.9 default over-allocates the BF16 KV cache and
+# OOMs on the first prefill; plans that carry this policy record what is served.
+PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION: Final = 0.8
 PUBLICATION_LATENCY_RESTORED_Q8_SOURCE_KIND: Final = "restored_q8_bundle"
 PUBLICATION_LATENCY_L4_REGENERATED_SOURCE_KIND: Final = "l4_regenerated_bundle"
 # Spark Python task parameters are capped near 10000 bytes, which an inline
@@ -4242,6 +4253,9 @@ def build_publication_latency_execution_plan(
         "runtime_policy": {
             "attention_backend": selection.attention_backend,
             "availability": PUBLICATION_LATENCY_DATABRICKS_AVAILABILITY,
+            "bf16_gpu_memory_utilization": (
+                PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+            ),
             "data_security_mode": PUBLICATION_LATENCY_DATABRICKS_DATA_SECURITY_MODE,
             "databricks_spark_version": DEFAULT_DATABRICKS_SPARK_VERSION,
             "decode_headroom_tokens": GPU_QUALIFICATION_DECODE_HEADROOM_TOKENS,
@@ -4612,6 +4626,10 @@ def validate_publication_latency_execution_plan_record(
         "single_user_name": source_single_user_name,
         "zones": list(PUBLICATION_LATENCY_DATABRICKS_ZONES),
     }
+    if "bf16_gpu_memory_utilization" in runtime:
+        expected_runtime["bf16_gpu_memory_utilization"] = (
+            PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+        )
     if dict(runtime) != expected_runtime:
         raise ValueError("publication latency runtime policy drift")
     schedule_bindings = _mapping_sequence(sources, "schedules")
@@ -5702,6 +5720,9 @@ def _render_publication_latency_job_record(
             _mapping(sources, "source_closure"),
             "single_user_name",
         ),
+        bf16_gpu_memory_utilization=_mapping(
+            execution_plan_record, "runtime_policy"
+        ).get("bf16_gpu_memory_utilization"),
     )
     input_files = [
         final_artifacts.file(
@@ -5947,15 +5968,7 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
     if request_order.get("workload_id") != expected_workload:
         raise ValueError("publication latency schedule workload binding drift")
     runtime = _mapping(record, "runtime")
-    expected_runtime = _job_runtime_policy(
-        cell,
-        selected_32k_gmu=_finite_positive_number(
-            runtime.get("selected_32k_l4_gpu_memory_utilization"),
-            "selected_32k_l4_gpu_memory_utilization",
-        ),
-        single_user_name=_required_string(runtime, "single_user_name"),
-    )
-    if dict(runtime) != expected_runtime:
+    if dict(runtime) != _expected_job_runtime(cell, runtime):
         raise ValueError("publication latency job runtime policy drift")
     cache_policy = _cache_policy(cell)
     if record.get("cache_telemetry_policy") != cache_policy:
@@ -5999,12 +6012,36 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
         raise ValueError("publication latency result path drift")
 
 
+def _expected_job_runtime(
+    cell: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _job_runtime_policy(
+        cell,
+        selected_32k_gmu=_finite_positive_number(
+            runtime.get("selected_32k_l4_gpu_memory_utilization"),
+            "selected_32k_l4_gpu_memory_utilization",
+        ),
+        single_user_name=_required_string(runtime, "single_user_name"),
+        # Job records rendered from plans that predate the BF16 policy carry 0.9.
+        bf16_gpu_memory_utilization=(
+            PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+            if runtime.get("gpu_memory_utilization")
+            == PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+            else None
+        ),
+    )
+
+
 def _job_runtime_policy(
     descriptor: Mapping[str, Any],
     *,
     selected_32k_gmu: float,
     single_user_name: str,
+    bf16_gpu_memory_utilization: float | None = None,
 ) -> dict[str, Any]:
+    """Return one job's runtime; plans without a BF16 GMU record the L4 0.9."""
+
     principal = _validated_single_user_name(single_user_name)
     input_tokens = _required_int(descriptor, "input_tokens")
     request_parallelism = _required_int(descriptor, "request_parallelism")
@@ -6020,6 +6057,8 @@ def _job_runtime_policy(
         gpu_memory_utilization = GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION
     elif input_tokens == 32_768:
         gpu_memory_utilization = selected_32k_gmu
+    elif setting_id == "precision-bf16" and bf16_gpu_memory_utilization is not None:
+        gpu_memory_utilization = bf16_gpu_memory_utilization
     else:
         gpu_memory_utilization = 0.90
     timeout_seconds = _job_timeout_seconds(descriptor)
@@ -8507,6 +8546,204 @@ def _latency_plan_set(jobs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
     ]
 
 
+# Runtime fields each comparison varies by design; every other field, apart
+# from the zone, must be equal between the two compared jobs.
+_LATENCY_COMPARISON_DESIGN_RUNTIME_FIELDS: Final = MappingProxyType(
+    {
+        "method": frozenset({"zone_id"}),
+        "storage": frozenset({"zone_id"}),
+        "precision": frozenset(
+            {"gpu_memory_utilization", "runtime_kv_dtype", "zone_id"}
+        ),
+        "hardware": frozenset(
+            {"gpu_memory_utilization", "hardware_target", "node_type_id", "zone_id"}
+        ),
+    }
+)
+_LATENCY_COHERENCE_FIELDS: Final = (
+    ("execution_plan_equal", "execution plan"),
+    ("package_wheel_equal", "package wheel"),
+    ("source_tree_equal", "source tree"),
+    ("runtime_equal", "runtime"),
+)
+
+
+def _latency_comparison_pairs(
+    cells: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    """Name every control/treatment job pair a latency estimand compares.
+
+    Storage-disk is the shared control of the storage trio, so its pairs with
+    RAM and UC close the trio; its own core reference feeds no estimand.
+    """
+
+    core_by_unit: dict[str, dict[str, str]] = {}
+    for job_id, cell in cells.items():
+        if cell.get("job_kind") == "core":
+            core_by_unit.setdefault(_required_string(cell, "matched_pair_id"), {})[
+                _required_string(cell, "method_id")
+            ] = job_id
+    pairs: list[dict[str, str]] = []
+    for unit_id, members in core_by_unit.items():
+        if set(members) != {"baseline_prefill", "vanilla_prefill"}:
+            raise ValueError(f"latency matched pair {unit_id!r} is incomplete")
+        pairs.append(
+            {
+                "comparison_family": "method",
+                "comparison_unit_id": unit_id,
+                "control_job_id": members["baseline_prefill"],
+                "treatment_job_id": members["vanilla_prefill"],
+            }
+        )
+    for job_id, cell in cells.items():
+        if (
+            cell.get("job_kind") != "auxiliary"
+            or cell.get("setting_id") == PUBLICATION_CAMPAIGN_STORAGE_CONTROL_SETTING[0]
+        ):
+            continue
+        family = _required_string(cell, "comparison_family")
+        reference_id = _required_string(cell, "reference_core_cell_id")
+        if (
+            family not in _LATENCY_COMPARISON_DESIGN_RUNTIME_FIELDS
+            or family == "method"
+            or reference_id not in cells
+        ):
+            raise ValueError(f"latency comparison for {job_id!r} is unresolved")
+        pairs.append(
+            {
+                "comparison_family": family,
+                "comparison_unit_id": (
+                    f"block-{_required_int(cell, 'deployment_block'):02d}-storage-trio"
+                    if family == "storage"
+                    else job_id
+                ),
+                "control_job_id": reference_id,
+                "treatment_job_id": job_id,
+            }
+        )
+    return pairs
+
+
+def _latency_package_wheel_sha256(job: Mapping[str, Any]) -> str:
+    wheels = [
+        _required_sha256(item, "sha256")
+        for item in _mapping_sequence(job, "artifact_files")
+        if item.get("role") == "package_wheel"
+    ]
+    if len(wheels) != 1:
+        raise ValueError("latency job record must carry exactly one package wheel")
+    return wheels[0]
+
+
+def _latency_pair_coherence(
+    control: Mapping[str, Any],
+    treatment: Mapping[str, Any],
+    *,
+    comparison_family: str,
+) -> dict[str, bool]:
+    design_fields = _LATENCY_COMPARISON_DESIGN_RUNTIME_FIELDS[comparison_family]
+    control_runtime = _mapping(control, "runtime")
+    treatment_runtime = _mapping(treatment, "runtime")
+    return {
+        "execution_plan_equal": _required_sha256(control, "execution_plan_sha256")
+        == _required_sha256(treatment, "execution_plan_sha256"),
+        "package_wheel_equal": _latency_package_wheel_sha256(control)
+        == _latency_package_wheel_sha256(treatment),
+        "source_tree_equal": _required_sha256(control, "source_tree_sha256")
+        == _required_sha256(treatment, "source_tree_sha256"),
+        "runtime_equal": _json_type_exact_equal(
+            {
+                key: value
+                for key, value in control_runtime.items()
+                if key not in design_fields
+            },
+            {
+                key: value
+                for key, value in treatment_runtime.items()
+                if key not in design_fields
+            },
+        ),
+        "zone_equal": control_runtime.get("zone_id")
+        == treatment_runtime.get("zone_id"),
+    }
+
+
+def _require_latency_plan_coherence(
+    jobs_by_id: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Fail unless every compared pair ran under one plan, wheel and tree."""
+
+    cells = {job_id: _mapping(job, "cell") for job_id, job in jobs_by_id.items()}
+    for pair in _latency_comparison_pairs(cells):
+        control_id = pair["control_job_id"]
+        treatment_id = pair["treatment_job_id"]
+        coherence = _latency_pair_coherence(
+            jobs_by_id[control_id],
+            jobs_by_id[treatment_id],
+            comparison_family=pair["comparison_family"],
+        )
+        drift = [
+            label for key, label in _LATENCY_COHERENCE_FIELDS if not coherence[key]
+        ]
+        if drift:
+            raise ValueError(
+                f"latency {pair['comparison_family']} comparison "
+                f"{pair['comparison_unit_id']!r} pairs {control_id!r} with "
+                f"{treatment_id!r} across a different {', '.join(drift)}; rerun "
+                "the whole comparison unit under one launch plan"
+            )
+
+
+def publication_latency_plan_coherence_table(
+    collection: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Disclose, per compared job pair, whether both jobs ran as one launch.
+
+    Pure over a multi-plan collection record (no ledger, workspace or file
+    access), so reports can disclose pairs that legacy collections joined
+    across launch plans. ``runtime_equal`` ignores the zone and the runtime
+    fields the comparison varies by design. ``completion_gap_seconds`` is the
+    absolute difference between the two sealed results' ``completed_at``.
+    """
+
+    jobs_by_id = {
+        _required_string(entry, "job_id"): _mapping(entry, "job_record")
+        for entry in _mapping_sequence(collection, "jobs")
+    }
+    completed_at = {
+        _required_string(result, "job_id"): datetime.fromisoformat(
+            _required_string(result, "completed_at")
+        )
+        for result in _mapping_sequence(collection, "results")
+    }
+    if set(completed_at) != set(jobs_by_id):
+        raise ValueError("latency collection results do not cover its jobs")
+    rows: list[dict[str, Any]] = []
+    for pair in _latency_comparison_pairs(
+        {job_id: _mapping(job, "cell") for job_id, job in jobs_by_id.items()}
+    ):
+        control_id = pair["control_job_id"]
+        treatment_id = pair["treatment_job_id"]
+        coherence = _latency_pair_coherence(
+            jobs_by_id[control_id],
+            jobs_by_id[treatment_id],
+            comparison_family=pair["comparison_family"],
+        )
+        rows.append(
+            {
+                **pair,
+                **coherence,
+                "coherent": all(coherence[key] for key, _ in _LATENCY_COHERENCE_FIELDS),
+                "completion_gap_seconds": abs(
+                    (
+                        completed_at[treatment_id] - completed_at[control_id]
+                    ).total_seconds()
+                ),
+            }
+        )
+    return rows
+
+
 def _latency_collection_causal_closure_sha256(
     *,
     collection_sha256: str,
@@ -8596,6 +8833,7 @@ def collect_publication_latency_multi_plan_campaign(
     selected_run_ids: Mapping[str, str],
     ledger_path: str | Path,
     controller_cas_root: str | Path,
+    superseded_success_reasons: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], PublicationLatencyMultiPlanCollectionAuthorization]:
     """Join one selected successful run per frozen job across its launch plans.
 
@@ -8605,6 +8843,11 @@ def collect_publication_latency_multi_plan_campaign(
     receipt re-recorded by run ID under the exact timeout-only stand-in
     payload, or no ledger record at all, which is accepted only when the
     recreated ledger carries recovered-balance seeds for the spent hours.
+
+    Every job's ledger attempts are listed in ``job_attempts``.  A superseded
+    attempt that succeeded is a discarded result, so collection refuses it
+    unless ``superseded_success_reasons`` maps its attempt ID to the recorded
+    reason for discarding it.
     """
 
     descriptors = _campaign_latency_job_descriptors(campaign_plan_record)
@@ -8662,9 +8905,28 @@ def collect_publication_latency_multi_plan_campaign(
     }
     if len(principals) != 1 or len(input_bundles) != 1:
         raise ValueError("multi-plan latency jobs differ in principal or input bundle")
+    _require_latency_plan_coherence(
+        {
+            _required_string(job, "job_id"): job
+            for _run_id, _run, job, _payload, _identity in observed
+        }
+    )
     workspace_identity = require_databricks_current_user_name(
         config,
         expected_user_name=next(iter(principals)),
+    )
+
+    selected_attempt_ids = {
+        _required_string(job, "reservation_attempt_id")
+        for _run_id, _run, job, _payload, _identity in observed
+    }
+    initial_superseded = _superseded_latency_attempts(
+        initial_ledger,
+        job_ids=set(descriptors),
+        selected_attempt_ids=selected_attempt_ids,
+    )
+    success_reasons = _superseded_success_reasons(
+        initial_superseded, superseded_success_reasons
     )
 
     receipts_by_attempt = {
@@ -8807,11 +9069,10 @@ def collect_publication_latency_multi_plan_campaign(
     superseded_attempts = _superseded_latency_attempts(
         final_ledger,
         job_ids=set(descriptors),
-        selected_attempt_ids={
-            _required_string(item["job_record"], "reservation_attempt_id")
-            for item in jobs
-        },
+        selected_attempt_ids=selected_attempt_ids,
     )
+    if superseded_attempts != initial_superseded:
+        raise RuntimeError("latency superseded attempts changed during collection")
     recovered_seeds = [
         item
         for item in final_ledger.terminal_actuals
@@ -8825,6 +9086,12 @@ def collect_publication_latency_multi_plan_campaign(
         ),
         "closed_record_sha256": "",
         "engine_version": PUBLICATION_CAMPAIGN_ENGINE_VERSION,
+        "job_attempts": _latency_job_attempts(
+            final_ledger,
+            terminal_receipts=terminal_receipts,
+            superseded_attempts=superseded_attempts,
+            success_reasons=success_reasons,
+        ),
         "job_count": len(jobs),
         "jobs": jobs,
         "ledger": {
@@ -8894,6 +9161,157 @@ def _superseded_latency_attempts(
     return sorted(superseded, key=lambda item: item["attempt_id"])
 
 
+def _superseded_success_reasons(
+    superseded: Sequence[Mapping[str, Any]],
+    reasons: Mapping[str, str] | None,
+) -> dict[str, str]:
+    succeeded = {
+        item["attempt_id"]: item["job_id"]
+        for item in superseded
+        if item["terminal_state"] == "succeeded"
+    }
+    supplied = {} if reasons is None else reasons
+    if not isinstance(supplied, Mapping) or any(
+        not isinstance(key, str) or not isinstance(value, str) or not value.strip()
+        for key, value in supplied.items()
+    ):
+        raise ValueError("superseded latency success reasons must be non-empty text")
+    for attempt_id, job_id in sorted(succeeded.items()):
+        if attempt_id not in supplied:
+            raise ValueError(
+                f"superseded latency attempt {attempt_id!r} for {job_id!r} "
+                "succeeded; discarding its result needs a recorded reason"
+            )
+    unknown = sorted(set(supplied) - set(succeeded))
+    if unknown:
+        raise ValueError(
+            "superseded latency success reasons name attempts that are not "
+            f"superseded successes: {unknown}"
+        )
+    return {attempt_id: supplied[attempt_id] for attempt_id in sorted(succeeded)}
+
+
+def _latency_job_attempts(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    terminal_receipts: Sequence[Mapping[str, Any]],
+    superseded_attempts: Sequence[Mapping[str, Any]],
+    success_reasons: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    run_by_attempt = {
+        item.attempt_id: item.run_id
+        for item in ledger.terminal_actuals
+        if item.run_id is not None
+    } | {item.attempt_id: item.run_id for item in ledger.submission_receipts}
+    superseded_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in superseded_attempts:
+        attempt_id = item["attempt_id"]
+        superseded_by_job[item["job_id"]].append(
+            {
+                "attempt_id": attempt_id,
+                "run_id": run_by_attempt.get(attempt_id),
+                "selected": False,
+                "supersession_reason": success_reasons.get(attempt_id),
+                "terminal_state": item["terminal_state"],
+            }
+        )
+    return [
+        {
+            "attempts": sorted(
+                [
+                    {
+                        "attempt_id": receipt["attempt_id"],
+                        "run_id": receipt["run_id"],
+                        "selected": True,
+                        "supersession_reason": None,
+                        "terminal_state": "succeeded",
+                    },
+                    *superseded_by_job[receipt["job_id"]],
+                ],
+                key=lambda attempt: attempt["attempt_id"],
+            ),
+            "job_id": receipt["job_id"],
+        }
+        for receipt in terminal_receipts
+    ]
+
+
+def _validate_latency_job_attempts(
+    job_attempts: Sequence[Mapping[str, Any]],
+    *,
+    receipts: Sequence[Mapping[str, Any]],
+    superseded_attempts: Sequence[Mapping[str, Any]],
+) -> None:
+    if len(job_attempts) != len(receipts):
+        raise ValueError("publication latency job attempts are incomplete")
+    listed_superseded: list[dict[str, Any]] = []
+    for entry, receipt in zip(job_attempts, receipts, strict=True):
+        _require_exact_keys(
+            entry, {"attempts", "job_id"}, "publication latency job attempts"
+        )
+        job_id = receipt.get("job_id")
+        if entry.get("job_id") != job_id:
+            raise ValueError("publication latency job attempts are out of order")
+        attempt_ids: list[str] = []
+        selected_count = 0
+        for attempt in _mapping_sequence(entry, "attempts"):
+            _require_exact_keys(
+                attempt,
+                {
+                    "attempt_id",
+                    "run_id",
+                    "selected",
+                    "supersession_reason",
+                    "terminal_state",
+                },
+                "publication latency job attempt",
+            )
+            attempt_id = _required_string(attempt, "attempt_id")
+            terminal_state = _required_string(attempt, "terminal_state")
+            run_id = attempt.get("run_id")
+            if run_id is not None:
+                _databricks_id(run_id, "latency attempt run ID")
+            reason = attempt.get("supersession_reason")
+            selected = attempt.get("selected")
+            if type(selected) is not bool:
+                raise ValueError("publication latency attempt selection is not boolean")
+            if selected:
+                selected_count += 1
+                if (
+                    attempt_id != receipt.get("attempt_id")
+                    or run_id != receipt.get("run_id")
+                    or terminal_state != "succeeded"
+                    or reason is not None
+                ):
+                    raise ValueError("publication latency selected attempt drift")
+            elif terminal_state == "succeeded":
+                if not isinstance(reason, str) or not reason.strip():
+                    raise ValueError(
+                        f"superseded latency attempt {attempt_id!r} for {job_id!r} "
+                        "succeeded without a recorded reason"
+                    )
+            elif reason is not None:
+                raise ValueError("publication latency supersession reason drift")
+            if not selected:
+                listed_superseded.append(
+                    {
+                        "attempt_id": attempt_id,
+                        "job_id": job_id,
+                        "terminal_state": terminal_state,
+                    }
+                )
+            attempt_ids.append(attempt_id)
+        if selected_count != 1 or attempt_ids != sorted(set(attempt_ids)):
+            raise ValueError("publication latency job attempts are not canonical")
+    if not _json_type_exact_equal(
+        sorted(listed_superseded, key=lambda item: item["attempt_id"]),
+        superseded_attempts,
+    ):
+        raise ValueError(
+            "publication latency job attempts differ from the superseded attempts"
+        )
+
+
 def _is_recovered_balance_attempt(attempt_id: str) -> bool:
     return attempt_id.startswith(PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX)
 
@@ -8951,10 +9369,16 @@ def validate_publication_latency_multi_plan_collection_record(
     *,
     campaign_plan_record: Mapping[str, Any],
 ) -> None:
-    """Revalidate one multi-plan collection offline against the frozen design."""
+    """Revalidate one multi-plan collection offline against the frozen design.
+
+    Collections that list ``job_attempts`` were made under the per-pair launch
+    coherence and superseded-success rules, so both are re-enforced; legacy
+    collections without it are validated as they were collected.
+    """
 
     descriptors = _campaign_latency_job_descriptors(campaign_plan_record)
     campaign_id = _required_string(campaign_plan_record, "campaign_id")
+    lists_job_attempts = "job_attempts" in record
     _require_exact_keys(
         record,
         {
@@ -8970,7 +9394,8 @@ def validate_publication_latency_multi_plan_collection_record(
             "results",
             "schema_version",
             "terminal_receipts",
-        },
+        }
+        | ({"job_attempts"} if lists_job_attempts else set()),
         "publication latency multi-plan collection",
     )
     if (
@@ -9145,6 +9570,20 @@ def validate_publication_latency_multi_plan_collection_record(
         jobs=jobs,
         receipts=receipts,
     )
+    if lists_job_attempts:
+        _validate_latency_job_attempts(
+            _mapping_sequence(record, "job_attempts"),
+            receipts=receipts,
+            superseded_attempts=_mapping_sequence(
+                _mapping(record, "ledger"), "superseded_attempts"
+            ),
+        )
+        _require_latency_plan_coherence(
+            {
+                _required_string(entry, "job_id"): _mapping(entry, "job_record")
+                for entry in jobs
+            }
+        )
 
 
 def _validate_multi_plan_ledger_binding(
@@ -10944,6 +11383,8 @@ def publication_latency_vllm_config(
             else None
         ),
         prewarm_payload_cache=cell.get("setting_id") == "storage-ram",
+        require_kv_cache_concurrency=True,
+        latency_warmup_requests=PUBLICATION_LATENCY_WARMUP_REQUESTS,
         hardware_target=_required_string(runtime, "hardware_target"),
         dataset_specs=input_specs,
         allow_dataset_subset=False,
@@ -11095,6 +11536,7 @@ def seal_publication_latency_job_result(
         config.connector_telemetry_copy_path,
         job_record=job_record,
         benchmark_record=benchmark,
+        warmup_request_count=PUBLICATION_LATENCY_WARMUP_REQUESTS,
     )
     if _mapping(job_record, "cell").get("setting_id") == "storage-ram":
         cache_summary.update(
@@ -11554,6 +11996,8 @@ def _validate_publication_latency_runtime_metadata(
     for field_name, value in expected.items():
         if metadata.get(field_name) != value:
             raise ValueError(f"vLLM metadata {field_name} drift")
+    _validate_publication_latency_kv_capacity_metadata(metadata, runtime=runtime)
+    _validate_publication_latency_warmup_metadata(metadata, job_record=job_record)
     if (
         metadata.get("strict_runtime_closure") is not True
         or metadata.get("vllm_runtime_lock_verification_scope") != "final-runtime"
@@ -11592,11 +12036,133 @@ def _validate_publication_latency_runtime_metadata(
         raise ValueError("vLLM installed patch closure did not pass")
 
 
+def _validate_publication_latency_kv_capacity_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    runtime: Mapping[str, Any],
+) -> None:
+    max_model_len = _required_int(runtime, "max_model_len")
+    max_num_seqs = _required_int(runtime, "max_num_seqs")
+    capacity = _mapping(metadata, "vllm_kv_cache_capacity")
+    _require_exact_keys(
+        capacity,
+        {
+            "gpu_kv_cache_tokens",
+            "max_concurrency",
+            "max_model_len",
+            "max_num_seqs",
+            "source",
+        },
+        "vLLM KV cache capacity",
+    )
+    max_concurrency = capacity.get("max_concurrency")
+    kv_cache_tokens = capacity.get("gpu_kv_cache_tokens")
+    if (
+        capacity.get("source") != "vllm_startup_log"
+        or capacity.get("max_model_len") != max_model_len
+        or capacity.get("max_num_seqs") != max_num_seqs
+        or type(max_concurrency) is not float
+        or not max_concurrency >= max_num_seqs
+        or not (
+            kv_cache_tokens is None
+            or (
+                type(kv_cache_tokens) is int
+                and kv_cache_tokens >= max_num_seqs * max_model_len
+            )
+        )
+    ):
+        raise ValueError(
+            "vLLM metadata does not prove a KV cache for max_num_seqs requests"
+        )
+    preemptions = _mapping(metadata, "vllm_preemptions")
+    _require_exact_keys(
+        preemptions,
+        {"metric", "metric_exposed", "preemptions", "unavailable_reason"},
+        "vLLM preemptions",
+    )
+    exposed = preemptions.get("metric_exposed")
+    reason = preemptions.get("unavailable_reason")
+    if (
+        preemptions.get("metric") != "vllm:num_preemptions_total"
+        or not (
+            (
+                exposed is True
+                and type(preemptions.get("preemptions")) is int
+                and preemptions.get("preemptions") == 0
+                and reason is None
+            )
+            or (
+                exposed is False
+                and preemptions.get("preemptions") is None
+                and isinstance(reason, str)
+                and bool(reason)
+            )
+        )
+    ):
+        raise ValueError("vLLM metadata preemption evidence drift")
+
+
+def _validate_publication_latency_warmup_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    job_record: Mapping[str, Any],
+) -> None:
+    runtime = _mapping(job_record, "runtime")
+    method_id = _required_string(_mapping(job_record, "cell"), "method_id")
+    uses_handoff = method_id == "vanilla_prefill"
+    count = PUBLICATION_LATENCY_WARMUP_REQUESTS
+    max_tokens = _required_int(runtime, "max_output_tokens")
+    force_max_tokens = runtime.get("force_max_tokens") is True
+    warmup = _mapping(metadata, "latency_warmup")
+    expected = {
+        "record_type": LATENCY_WARMUP_RECORD_TYPE,
+        "schema_version": 1,
+        "ok": True,
+        "timed": False,
+        "benchmark_id": _required_string(job_record, "job_id"),
+        "requests_per_arm": count,
+        "request_parallelism": _required_int(runtime, "request_parallelism"),
+        "max_tokens": max_tokens,
+        "force_max_tokens": force_max_tokens,
+        "prompt_text_mode": "logical",
+        "prefix_cache_namespace": LATENCY_WARMUP_PREFIX_CACHE_SALT,
+        "arms": [
+            {
+                "arm_id": (
+                    PUBLICATION_LATENCY_VANILLA_ARM_ID
+                    if uses_handoff
+                    else BASELINE_PREFILL_ARM
+                ),
+                "connector_load_count": count if uses_handoff else 0,
+                "request_count": count,
+                "uses_cachet_handoff": uses_handoff,
+            }
+        ],
+        "issues": [],
+    }
+    for field_name, value in expected.items():
+        if not _json_type_exact_equal(warmup.get(field_name), value):
+            raise ValueError(f"latency warmup metadata {field_name} drift")
+    rows = _mapping_sequence(warmup, "rows")
+    if (
+        len(rows) != count
+        or any(
+            row.get("ok") is not True
+            or type(row.get("completion_tokens")) is not int
+            or (force_max_tokens and row.get("completion_tokens") != max_tokens)
+            for row in rows
+        )
+        or len({row.get("cache_salt_sha256") for row in rows}) != count
+    ):
+        raise ValueError("latency warmup metadata does not prove every request")
+
+
 def _publication_latency_cache_telemetry_summary(
     path: Path,
     *,
     job_record: Mapping[str, Any],
     benchmark_record: Mapping[str, Any],
+    warmup_request_count: int = 0,
 ) -> dict[str, Any]:
     method_id = _required_string(_mapping(job_record, "cell"), "method_id")
     if method_id == "baseline_prefill":
@@ -11652,6 +12218,26 @@ def _publication_latency_cache_telemetry_summary(
                 PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX
             )
         ]
+    # Untimed warmup loads share the telemetry file; the warmup record in the
+    # job metadata proves them, so only their exact count is checked here.
+    warmup_ids = [
+        item.get("benchmark_request_id")
+        for item in loads
+        if str(item.get("benchmark_request_id")).startswith(
+            LATENCY_WARMUP_REQUEST_ID_PREFIX
+        )
+    ]
+    if len(warmup_ids) != warmup_request_count or len(set(warmup_ids)) != len(
+        warmup_ids
+    ):
+        raise ValueError("latency warmup connector telemetry count drift")
+    loads = [
+        item
+        for item in loads
+        if not str(item.get("benchmark_request_id")).startswith(
+            LATENCY_WARMUP_REQUEST_ID_PREFIX
+        )
+    ]
     benchmark = benchmark_run_result_from_record(
         benchmark_record,
         evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,
@@ -11696,6 +12282,14 @@ def _publication_latency_cache_telemetry_summary(
             or attestation.get("successful_loads") != 1
         ):
             raise ValueError("Vanilla connector byte/token/layout telemetry drift")
+        residency = attestation.get("page_cache_residency")
+        if attestation.get("eviction_succeeded") is True and not (
+            _measured_empty_page_cache(residency)
+        ):
+            raise ValueError(
+                "Vanilla connector eviction is not backed by a measured empty "
+                "page cache"
+            )
         expected_stored_bytes = _nonnegative_int(
             attestation.get("expected_stored_bytes"), "expected_stored_bytes"
         )
@@ -11754,6 +12348,29 @@ def _publication_latency_cache_telemetry_summary(
     }
     _validate_cache_telemetry_summary(summary, job_record=job_record)
     return summary
+
+
+def _measured_empty_page_cache(residency: object) -> bool:
+    if not isinstance(residency, Mapping) or set(residency) != {
+        "method",
+        "resident_fraction",
+        "resident_pages",
+        "total_pages",
+        "unavailable_reason",
+    }:
+        return False
+    total_pages = residency.get("total_pages")
+    resident_fraction = residency.get("resident_fraction")
+    return (
+        residency.get("method") == "mincore"
+        and type(residency.get("resident_pages")) is int
+        and residency.get("resident_pages") == 0
+        and type(total_pages) is int
+        and total_pages > 0
+        and type(resident_fraction) is float
+        and resident_fraction == 0.0
+        and residency.get("unavailable_reason") is None
+    )
 
 
 def _ram_payload_cache_artifact_summary(
@@ -13607,6 +14224,7 @@ __all__ = [
     "collect_publication_latency_source_closure",
     "execute_publication_latency_job_record",
     "main",
+    "publication_latency_plan_coherence_table",
     "publication_latency_reservation_attempt_id",
     "publication_latency_source_closure_control_roots",
     "publication_latency_submit_payloads",

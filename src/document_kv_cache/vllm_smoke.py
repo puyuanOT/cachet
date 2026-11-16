@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import gc
 from hashlib import sha256
 import http.client
@@ -213,6 +214,19 @@ SERVER_PORT = 8000
 BASELINE_PREFIX_CACHE_SALT = "cachet-baseline-prefill"
 CACHE_PREFIX_CACHE_SALT = "cachet-kv-cache"
 PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT = "cachet-payload-cache-prime"
+LATENCY_WARMUP_PREFIX_CACHE_SALT = "cachet-latency-warmup"
+LATENCY_WARMUP_REQUEST_ID_PREFIX = f"{LATENCY_WARMUP_PREFIX_CACHE_SALT}:"
+LATENCY_WARMUP_RECORD_TYPE = "document_kv.vllm_latency_warmup.v1"
+VLLM_MAX_CONCURRENCY_LOG_RE = re.compile(
+    r"Maximum concurrency for ([0-9][0-9,]*) tokens per request: "
+    r"([0-9]+(?:\.[0-9]+)?)x"
+)
+VLLM_GPU_KV_CACHE_SIZE_LOG_RE = re.compile(r"GPU KV cache size: ([0-9][0-9,]*) tokens")
+VLLM_PREEMPTIONS_METRIC = "vllm:num_preemptions_total"
+VLLM_PREEMPTIONS_METRIC_RE = re.compile(
+    r"^vllm:num_preemptions(?:_total)?(?:\{[^}\n]*\})?[ \t]+([0-9][0-9.eE+-]*)[ \t]*$",
+    re.MULTILINE,
+)
 PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
@@ -287,6 +301,10 @@ __all__ = [
     "verify_vllm_runtime_lock_installation",
     "materialize_virtualenv_bootstrap",
     "verify_vllm_runtime_patch_closure",
+    "verify_vllm_kv_cache_capacity",
+    "verify_vllm_no_preemptions",
+    "vllm_kv_cache_capacity_from_log",
+    "vllm_preemptions_from_metrics",
     "build_vllm_server_args",
     "document_kv_transfer_config_for_smoke",
     "build_benchmark_runner_args",
@@ -302,6 +320,7 @@ __all__ = [
     "prepare_publication_latency_inputs",
     "release_handoff_generation_resources",
     "prime_payload_cache",
+    "run_latency_warmup",
     "attest_payload_cache_measurements",
     "smoke_dataset_records",
     "parse_dataset_specs",
@@ -720,6 +739,8 @@ class VLLMSmokeBenchmarkConfig:
     native_runtime_v2: VLLMNativeRuntimeBundleV2 | None = None
     representative_handoff_source: RepresentativeHandoffSourceV1 | None = None
     representative_supplement_provenance: RepresentativeSupplementProvenanceV1 | None = None
+    require_kv_cache_concurrency: bool = False
+    latency_warmup_requests: int = 0
 
     def __post_init__(self) -> None:
         supplement = self.representative_supplement_provenance
@@ -776,6 +797,15 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("max_tokens must be positive")
         if type(self.force_max_tokens) is not bool:
             raise ValueError("force_max_tokens must be a boolean")
+        if type(self.require_kv_cache_concurrency) is not bool:
+            raise ValueError("require_kv_cache_concurrency must be a boolean")
+        if (
+            self.require_kv_cache_concurrency
+            and self.kv_connector_mode == LMCACHE_KV_CONNECTOR_MODE
+        ):
+            raise ValueError(
+                "require_kv_cache_concurrency is not supported for the LMCache runner"
+            )
         if (
             isinstance(self.temperature, bool)
             or not isinstance(self.temperature, (int, float))
@@ -1313,6 +1343,21 @@ class VLLMSmokeBenchmarkConfig:
         if self.prewarm_payload_cache and not self.runs_document_kv_cache_arm:
             raise ValueError(
                 "benchmark_prewarm_payload_cache requires a Cachet handoff benchmark arm"
+            )
+        if (
+            type(self.latency_warmup_requests) is not int
+            or self.latency_warmup_requests < 0
+        ):
+            raise ValueError("latency_warmup_requests must be a non-negative integer")
+        if self.latency_warmup_requests and (
+            not self.dataset_specs
+            or not (self.benchmark_arms or self.benchmark_arm_specs)
+            or self.kv_connector_mode != CACHET_KV_CONNECTOR_MODE
+            or self.cache_runtime_prompt
+        ):
+            raise ValueError(
+                "latency_warmup_requests requires prepared datasets, explicit "
+                "benchmark arms, kv_connector_mode='cachet' and logical prompts"
             )
         if self.cache_runtime_prompt and not self.dataset_specs:
             raise ValueError(
@@ -1979,9 +2024,24 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
             timeout_seconds=config.server_start_timeout_seconds,
         )
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
+        if config.require_kv_cache_concurrency:
+            metadata["vllm_kv_cache_capacity"] = verify_vllm_kv_cache_capacity(config)
+            write_json(config.metadata_path, metadata)
         prewarm_cache_prefixes(config, dataset_paths)
         prime_payload_cache(config, dataset_paths)
+        warmup = run_latency_warmup(config, dataset_paths)
+        if warmup is not None:
+            metadata["latency_warmup"] = warmup
+            write_json(config.metadata_path, metadata)
+            if warmup["ok"] is not True:
+                raise RuntimeError(
+                    "vLLM latency warmup failed: "
+                    f"{'; '.join(cast(list[str], warmup['issues'])[:3])}"
+                )
         run_benchmark_runner(config, dataset_paths)
+        if config.require_kv_cache_concurrency:
+            metadata["vllm_preemptions"] = verify_vllm_no_preemptions(config)
+            write_json(config.metadata_path, metadata)
         attest_payload_cache_measurements(config)
         if is_multi:
             # Hybrid handoff: measure per-turn TTFT (turn-1 docs->Cachet, follow-ups->LMCache).
@@ -4398,6 +4458,213 @@ def attest_payload_cache_measurements(config: VLLMSmokeBenchmarkConfig) -> None:
         )
 
 
+def run_latency_warmup(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: Mapping[str, Path],
+) -> dict[str, object] | None:
+    """Send every measured arm the same untimed warmup before timing starts.
+
+    Each arm gets ``latency_warmup_requests`` full logical prompts, cycling over
+    the datasets, under the timed decode settings with warmup-only request IDs
+    and prefix-cache salts. Prefill, decode and, for a Cachet arm, the
+    connector load all run without leaving a prefix-cache entry a timed request
+    can match. Requests go out in waves of the timed request parallelism so
+    batched decode is warmed too. The returned record is not ``ok`` when any
+    warmup request, its decode length or its connector load is wrong.
+    """
+
+    count = config.latency_warmup_requests
+    if not count:
+        return None
+    suite = load_v1_jsonl_suite(
+        suite_id=f"{config.benchmark_id}-latency-warmup",
+        paths=dataset_paths,
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+    )
+    by_dataset: dict[str, list[Any]] = {}
+    for example in sorted(
+        suite.examples, key=lambda item: (item.dataset, item.example_id)
+    ):
+        by_dataset.setdefault(example.dataset, []).append(example)
+    datasets = sorted(by_dataset)
+    examples: list[Any] = []
+    for index in range(count):
+        candidates = by_dataset[datasets[index % len(datasets)]]
+        examples.append(candidates[(index // len(datasets)) % len(candidates)])
+    cache_arm_ids = _prepared_cache_arm_ids(config)
+    arm_ids = (
+        tuple(str(spec["arm_id"]) for spec in config.benchmark_arm_specs)
+        if config.benchmark_arm_specs
+        else config.benchmark_arms
+    )
+    completions_url = f"{config.server_base_url}/v1/completions"
+    issues: list[str] = []
+    rows: list[dict[str, object]] = []
+    arms: list[dict[str, object]] = []
+    for arm_id in arm_ids:
+        uses_handoff = arm_id in cache_arm_ids
+        requests: list[tuple[dict[str, object], dict[str, object]]] = []
+        for index, example in enumerate(examples):
+            identity = (
+                f"{config.benchmark_id}:{arm_id}:{index}:"
+                f"{example.dataset}:{example.example_id}"
+            )
+            digest = sha256(identity.encode("utf-8")).hexdigest()
+            request_id = f"{LATENCY_WARMUP_REQUEST_ID_PREFIX}{digest}"
+            cache_salt = f"{LATENCY_WARMUP_PREFIX_CACHE_SALT}:{digest}"
+            body: dict[str, object] = {
+                "add_special_tokens": False,
+                "model": SERVED_MODEL_NAME,
+                "prompt": _payload_cache_prime_prompt_text(example),
+                "max_tokens": config.max_tokens,
+                "temperature": config.temperature,
+                "cache_salt": cache_salt,
+                "request_id": request_id,
+            }
+            if config.generation_seed is not None:
+                body["seed"] = config.generation_seed
+            if config.force_max_tokens:
+                body["ignore_eos"] = True
+            if uses_handoff:
+                params = _prepared_params_by_arm(
+                    example, cache_arm_ids=cache_arm_ids
+                )[arm_id]
+                if not params:
+                    raise ValueError(
+                        f"prepared example {example.dataset}:{example.example_id} "
+                        f"has no Cachet handoff params for {arm_id!r}"
+                    )
+                kv_transfer_params = dict(params)
+                kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
+                kv_transfer_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = request_id
+                body["kv_transfer_params"] = kv_transfer_params
+            requests.append(
+                (
+                    body,
+                    {
+                        "arm_id": arm_id,
+                        "dataset": example.dataset,
+                        "warmup_index": index,
+                        "request_id_sha256": sha256(
+                            request_id.encode("utf-8")
+                        ).hexdigest(),
+                        "cache_salt_sha256": sha256(
+                            cache_salt.encode("utf-8")
+                        ).hexdigest(),
+                    },
+                )
+            )
+        arm_rows = _send_latency_warmup_waves(
+            completions_url,
+            requests,
+            parallelism=config.request_parallelism,
+            timeout_seconds=config.timeout_seconds,
+        )
+        for row in arm_rows:
+            label = f"warmup {row['warmup_index']} for {arm_id}"
+            completion_tokens = row.get("completion_tokens")
+            if row["ok"] is not True:
+                issues.append(f"{label} failed: {row.get('error_type')}")
+            elif type(completion_tokens) is not int or not (
+                completion_tokens == config.max_tokens
+                if config.force_max_tokens
+                else completion_tokens > 0
+            ):
+                issues.append(f"{label} did not decode the timed output length")
+        connector_loads = 0
+        if uses_handoff:
+            expected = {str(body["request_id"]) for body, _row in requests}
+            try:
+                telemetry = _read_jsonl_records(config.connector_telemetry_path)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                telemetry = []
+                issues.append(
+                    f"warmup connector telemetry could not be read: {type(exc).__name__}"
+                )
+            loads: dict[str, int] = {}
+            for record in telemetry:
+                request_id = record.get("benchmark_request_id")
+                if request_id in expected and record.get("success") is True:
+                    loads[request_id] = loads.get(request_id, 0) + 1
+            connector_loads = sum(loads.values())
+            if loads != dict.fromkeys(expected, 1):
+                issues.append(
+                    f"warmup for {arm_id} expected one successful connector load "
+                    f"per request, observed {connector_loads}"
+                )
+        rows.extend(arm_rows)
+        arms.append(
+            {
+                "arm_id": arm_id,
+                "connector_load_count": connector_loads,
+                "request_count": len(requests),
+                "uses_cachet_handoff": uses_handoff,
+            }
+        )
+    return {
+        "record_type": LATENCY_WARMUP_RECORD_TYPE,
+        "schema_version": 1,
+        "ok": not issues,
+        "timed": False,
+        "benchmark_id": config.benchmark_id,
+        "requests_per_arm": count,
+        "request_parallelism": config.request_parallelism,
+        "max_tokens": config.max_tokens,
+        "force_max_tokens": config.force_max_tokens,
+        "prompt_text_mode": "logical",
+        "prefix_cache_namespace": LATENCY_WARMUP_PREFIX_CACHE_SALT,
+        "arms": arms,
+        "rows": rows,
+        "issues": issues,
+    }
+
+
+def _send_latency_warmup_waves(
+    url: str,
+    requests: Sequence[tuple[Mapping[str, object], Mapping[str, object]]],
+    *,
+    parallelism: int,
+    timeout_seconds: float,
+) -> list[dict[str, object]]:
+    def send(
+        request: tuple[Mapping[str, object], Mapping[str, object]],
+    ) -> dict[str, object]:
+        body, identity = request
+        row: dict[str, object] = dict(identity)
+        started = time.monotonic()
+        try:
+            ttft, _text, usage = _stream_completion_ttft(
+                url, body, timeout_seconds=timeout_seconds
+            )
+        except Exception as exc:
+            row.update(
+                {
+                    "ok": False,
+                    "elapsed_seconds": time.monotonic() - started,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc) or type(exc).__name__,
+                }
+            )
+            return row
+        row.update(
+            {
+                "ok": True,
+                "elapsed_seconds": time.monotonic() - started,
+                "ttft_seconds": ttft,
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+            }
+        )
+        return row
+
+    rows: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=parallelism) as pool:
+        for start in range(0, len(requests), parallelism):
+            rows.extend(pool.map(send, requests[start : start + parallelism]))
+    return rows
+
+
 def _payload_cache_prime_targets(
     config: VLLMSmokeBenchmarkConfig,
     dataset_paths: Mapping[str, Path],
@@ -6615,6 +6882,110 @@ def fetch_served_model_ids(models_url: str) -> set[str]:
         item["id"]
         for item in payload["data"]
         if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+
+
+def vllm_kv_cache_capacity_from_log(
+    log_text: str,
+    *,
+    max_model_len: int,
+    max_num_seqs: int,
+) -> dict[str, object]:
+    """Prove the started KV cache holds ``max_num_seqs`` full-length requests.
+
+    vLLM rounds the reported concurrency to two decimals, so the logged KV
+    cache token count is checked as well; a 3.996x cache cannot pass for 4.
+    """
+
+    reports = [
+        (int(tokens.replace(",", "")), float(value))
+        for tokens, value in VLLM_MAX_CONCURRENCY_LOG_RE.findall(log_text)
+    ]
+    if not reports:
+        raise RuntimeError("vLLM startup log does not report its KV cache concurrency")
+    if any(tokens != max_model_len for tokens, _value in reports):
+        raise RuntimeError(
+            "vLLM reported KV cache concurrency for a different max_model_len"
+        )
+    kv_cache_tokens = [
+        int(tokens.replace(",", ""))
+        for tokens in VLLM_GPU_KV_CACHE_SIZE_LOG_RE.findall(log_text)
+    ]
+    max_concurrency = min(value for _tokens, value in reports)
+    gpu_kv_cache_tokens = min(kv_cache_tokens) if kv_cache_tokens else None
+    if max_concurrency < max_num_seqs or (
+        gpu_kv_cache_tokens is not None
+        and gpu_kv_cache_tokens < max_num_seqs * max_model_len
+    ):
+        raise RuntimeError(
+            f"vLLM KV cache holds {max_concurrency:.2f} requests of "
+            f"{max_model_len} tokens, fewer than max_num_seqs={max_num_seqs}; "
+            "the timed run would queue or preempt requests"
+        )
+    return {
+        "gpu_kv_cache_tokens": gpu_kv_cache_tokens,
+        "max_concurrency": max_concurrency,
+        "max_model_len": max_model_len,
+        "max_num_seqs": max_num_seqs,
+        "source": "vllm_startup_log",
+    }
+
+
+def verify_vllm_kv_cache_capacity(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
+    return vllm_kv_cache_capacity_from_log(
+        config.server_log_path.read_text(encoding="utf-8", errors="replace"),
+        max_model_len=config.max_model_len,
+        max_num_seqs=config.max_num_seqs,
+    )
+
+
+def vllm_preemptions_from_metrics(metrics_text: str) -> int | None:
+    """Sum vLLM's preemption counter over its label sets; None if not exported."""
+
+    values = [
+        float(value) for value in VLLM_PREEMPTIONS_METRIC_RE.findall(metrics_text)
+    ]
+    if not values:
+        return None
+    total = math.fsum(values)
+    if not math.isfinite(total) or total < 0 or total != int(total):
+        raise RuntimeError("vLLM preemption counter is not a non-negative count")
+    return int(total)
+
+
+def verify_vllm_no_preemptions(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
+    """Fail if vLLM preempted any request; record explicitly when it cannot tell."""
+
+    metrics_url = f"{config.server_base_url}/metrics"
+    try:
+        with urllib.request.urlopen(metrics_url, timeout=30) as response:
+            preemptions = vllm_preemptions_from_metrics(
+                response.read().decode("utf-8", errors="replace")
+            )
+    except (OSError, urllib.error.URLError) as exc:
+        return {
+            "metric": VLLM_PREEMPTIONS_METRIC,
+            "metric_exposed": False,
+            "preemptions": None,
+            "unavailable_reason": f"{type(exc).__name__}: {exc}",
+        }
+    if preemptions is None:
+        return {
+            "metric": VLLM_PREEMPTIONS_METRIC,
+            "metric_exposed": False,
+            "preemptions": None,
+            "unavailable_reason": f"{metrics_url} does not export the counter",
+        }
+    if preemptions:
+        raise RuntimeError(
+            f"vLLM preempted {preemptions} requests during the timed run; its KV "
+            "cache could not hold max_num_seqs requests at once"
+        )
+    return {
+        "metric": VLLM_PREEMPTIONS_METRIC,
+        "metric_exposed": True,
+        "preemptions": 0,
+        "unavailable_reason": None,
     }
 
 

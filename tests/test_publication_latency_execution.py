@@ -1,10 +1,12 @@
 import ast
 import inspect
 import io
+import itertools
 import json
 import math
 import os
 import random
+import re
 import shutil
 import statistics
 import subprocess
@@ -419,6 +421,126 @@ def test_condition_timeouts_and_runtime_zone_are_closed():
         == 0.90
     )
     assert runtime["gpu_memory_utilization"] == 0.75
+
+
+def test_bf16_runtime_policy_records_the_served_gpu_memory_utilization(
+    monkeypatch, capsys
+):
+    jobs = _descriptors()
+    bf16 = next(job for job in jobs if job.get("setting_id") == "precision-bf16")
+    reference = next(
+        job for job in jobs if job["job_id"] == bf16["reference_core_cell_id"]
+    )
+
+    def policy(descriptor, bf16_gmu):
+        return execution._job_runtime_policy(
+            descriptor,
+            selected_32k_gmu=0.75,
+            single_user_name="publication@example.com",
+            bf16_gpu_memory_utilization=bf16_gmu,
+        )
+
+    current = policy(bf16, execution.PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION)
+    legacy = policy(bf16, None)
+    assert current["gpu_memory_utilization"] == 0.8
+    assert legacy["gpu_memory_utilization"] == 0.90
+    assert policy(reference, 0.8) == policy(reference, None)
+    assert policy(reference, 0.8)["gpu_memory_utilization"] == 0.90
+    assert execution._expected_job_runtime(bf16, current) == current
+    assert execution._expected_job_runtime(bf16, legacy) == legacy
+    drifted = {**current, "gpu_memory_utilization": 0.85}
+    assert execution._expected_job_runtime(bf16, drifted) != drifted
+
+    monkeypatch.setattr(
+        execution, "validate_publication_latency_job_record", lambda _record: None
+    )
+    job = _native_v2_job_record(method_id="vanilla_prefill")
+    for recorded in (0.8, 0.9):
+        job["runtime"] = {
+            **job["runtime"],
+            "gpu_memory_utilization": recorded,
+            "runtime_kv_dtype": execution.PUBLICATION_LATENCY_BF16_DTYPE,
+        }
+        config = execution.publication_latency_vllm_config(job)
+        assert config.gpu_memory_utilization == 0.8
+        assert config.require_kv_cache_concurrency is True
+        shimmed = "bf16 publication handoff gpu-memory-utilization" in (
+            capsys.readouterr().out
+        )
+        assert shimmed is (recorded == 0.9)
+
+
+def _kv_capacity_metadata(**overrides):
+    metadata = {
+        "vllm_kv_cache_capacity": {
+            "gpu_kv_cache_tokens": 91_104,
+            "max_concurrency": 5.39,
+            "max_model_len": 16_896,
+            "max_num_seqs": 4,
+            "source": "vllm_startup_log",
+        },
+        "vllm_preemptions": {
+            "metric": "vllm:num_preemptions_total",
+            "metric_exposed": True,
+            "preemptions": 0,
+            "unavailable_reason": None,
+        },
+    }
+    for section, values in overrides.items():
+        metadata[section] = (
+            None if values is None else {**metadata[section], **values}
+        )
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({}, None),
+        (
+            {
+                "vllm_preemptions": {
+                    "metric_exposed": False,
+                    "preemptions": None,
+                    "unavailable_reason": "URLError: connection refused",
+                }
+            },
+            None,
+        ),
+        ({"vllm_kv_cache_capacity": {"gpu_kv_cache_tokens": None}}, None),
+        ({"vllm_kv_cache_capacity": None}, "vllm_kv_cache_capacity"),
+        (
+            {"vllm_kv_cache_capacity": {"max_concurrency": 3.99}},
+            "KV cache for max_num_seqs",
+        ),
+        (
+            {"vllm_kv_cache_capacity": {"gpu_kv_cache_tokens": 67_583}},
+            "KV cache for max_num_seqs",
+        ),
+        (
+            {"vllm_kv_cache_capacity": {"max_model_len": 8_704}},
+            "KV cache for max_num_seqs",
+        ),
+        ({"vllm_preemptions": {"preemptions": 1}}, "preemption evidence drift"),
+        (
+            {"vllm_preemptions": {"metric_exposed": False, "preemptions": None}},
+            "preemption evidence drift",
+        ),
+    ),
+)
+def test_latency_metadata_requires_kv_capacity_and_no_preemptions(overrides, message):
+    runtime = {"max_model_len": 16_896, "max_num_seqs": 4}
+    metadata = _kv_capacity_metadata(**overrides)
+
+    if message is None:
+        execution._validate_publication_latency_kv_capacity_metadata(
+            metadata, runtime=runtime
+        )
+    else:
+        with pytest.raises(ValueError, match=message):
+            execution._validate_publication_latency_kv_capacity_metadata(
+                metadata, runtime=runtime
+            )
 
 
 def test_submit_payload_rejects_timeout_and_zone_tampering():
@@ -1704,6 +1826,11 @@ def test_one_arm_latency_configs_emit_component_evidence(monkeypatch, method_id)
     config = execution.publication_latency_vllm_config(job)
 
     assert config.benchmark_evidence_policy == "smoke"
+    assert (
+        config.latency_warmup_requests
+        == execution.PUBLICATION_LATENCY_WARMUP_REQUESTS
+        == 4
+    )
     runner_args = vllm_smoke.build_benchmark_runner_args(
         config,
         vllm_smoke.parse_dataset_specs(config.dataset_specs),
@@ -4579,9 +4706,23 @@ def _realistic_local_path_connector_load(
     expected_stored_bytes = 4096
     expected_runtime_bytes = 8192
     expected_tokens = 128
+    residency = (
+        {}
+        if payload_cache_hit
+        else {
+            "page_cache_residency": {
+                "method": "mincore",
+                "resident_fraction": 0.0,
+                "resident_pages": 0,
+                "total_pages": 1,
+                "unavailable_reason": None,
+            }
+        }
+    )
     return {
         "benchmark_request_id": request_id,
         "cache_state_attestation": {
+            **residency,
             "bytes_read": 0 if payload_cache_hit else expected_stored_bytes,
             "cold_read_attested": cold_read_attested,
             "eviction_requested": not payload_cache_hit,
@@ -4710,6 +4851,198 @@ def test_payload_cache_prime_request_id_prefix_matches_vllm_smoke():
     ) in source
 
 
+@pytest.mark.parametrize(
+    "host_cache_state", ["cold_eviction_required", "prewarmed_payload_cache"]
+)
+def test_cache_telemetry_excludes_exactly_the_untimed_warmup_loads(
+    monkeypatch, host_cache_state
+):
+    request_ids = [
+        f"block-01-request-{index:03d}"
+        for index in range(execution.PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL)
+    ]
+    benchmark = SimpleNamespace(
+        measurements=tuple(
+            SimpleNamespace(
+                metadata={
+                    execution.PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY: request_id
+                }
+            )
+            for request_id in request_ids
+        )
+    )
+    monkeypatch.setattr(
+        execution,
+        "benchmark_run_result_from_record",
+        lambda *_args, **_kwargs: benchmark,
+    )
+    monkeypatch.setattr(execution, "_file_sha256", lambda _path: "a" * 64)
+    ram = host_cache_state == "prewarmed_payload_cache"
+
+    def summarize(records: list[dict], warmup_request_count: int) -> dict:
+        monkeypatch.setattr(
+            execution,
+            "_read_jsonl_file",
+            lambda *_args, **_kwargs: records,
+        )
+        return execution._publication_latency_cache_telemetry_summary(
+            Path("connector-telemetry.jsonl"),
+            job_record={
+                "cache_telemetry_policy": {"host_cache_state": host_cache_state},
+                "cell": {"method_id": "vanilla_prefill"},
+                "runtime": {"runtime_kv_dtype": "bfloat16"},
+            },
+            benchmark_record={},
+            warmup_request_count=warmup_request_count,
+        )
+
+    def loads(ids: list[str]) -> list[dict]:
+        return [
+            _realistic_local_path_connector_load(
+                request_id, cold_read_attested=not ram, payload_cache_hit=ram
+            )
+            for request_id in ids
+        ]
+
+    prime = _ram_payload_cache_prime_loads() if ram else []
+    warmup = loads(
+        [
+            f"{vllm_smoke.LATENCY_WARMUP_REQUEST_ID_PREFIX}{index:064x}"
+            for index in range(execution.PUBLICATION_LATENCY_WARMUP_REQUESTS)
+        ]
+    )
+    measured = loads(request_ids)
+    count = execution.PUBLICATION_LATENCY_WARMUP_REQUESTS
+
+    assert summarize(prime + warmup + measured, count) == summarize(
+        prime + measured, 0
+    )
+    assert summarize(prime + warmup + measured, count)["load_count"] == len(
+        request_ids
+    )
+    for forged, expected_count in (
+        (prime + warmup[1:] + measured, count),
+        (prime + warmup[:-1] + warmup[:1] + measured, count),
+        (prime + warmup + measured, 0),
+        (prime + measured, count),
+    ):
+        with pytest.raises(ValueError, match="latency warmup connector telemetry"):
+            summarize(forged, expected_count)
+
+
+def _publication_latency_warmup_record(monkeypatch, method_id):
+    monkeypatch.setattr(
+        execution, "validate_publication_latency_job_record", lambda _record: None
+    )
+    job = _native_v2_job_record(method_id=method_id)
+    config = execution.publication_latency_vllm_config(job)
+    examples = [
+        SimpleNamespace(
+            dataset=dataset,
+            example_id=f"{dataset}-{index}",
+            arm_kv_transfer_params={},
+            kv_transfer_params={"document_kv.handoff_json": "{}"},
+        )
+        for dataset in SUPPORTED_V1_DATASETS
+        for index in range(2)
+    ]
+    telemetry = []
+
+    def fake_stream(url, body, *, timeout_seconds):
+        params = body.get("kv_transfer_params")
+        if params is not None:
+            telemetry.append(
+                {
+                    "benchmark_request_id": params[
+                        vllm_smoke.DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM
+                    ],
+                    "success": True,
+                }
+            )
+        return 0.1, "x", {"prompt_tokens": 1, "completion_tokens": body["max_tokens"]}
+
+    monkeypatch.setattr(
+        vllm_smoke,
+        "load_v1_jsonl_suite",
+        lambda **_kwargs: SimpleNamespace(examples=examples),
+    )
+    monkeypatch.setattr(
+        vllm_smoke,
+        "_payload_cache_prime_prompt_text",
+        lambda example: f"prompt for {example.example_id}",
+    )
+    monkeypatch.setattr(vllm_smoke, "_stream_completion_ttft", fake_stream)
+    monkeypatch.setattr(vllm_smoke, "_read_jsonl_records", lambda _path: telemetry)
+    return job, vllm_smoke.run_latency_warmup(config, {})
+
+
+def _tamper_warmup_row_decode(warmup):
+    warmup["rows"][0]["completion_tokens"] -= 1
+
+
+def _tamper_warmup_reused_salt(warmup):
+    warmup["rows"][1]["cache_salt_sha256"] = warmup["rows"][0]["cache_salt_sha256"]
+
+
+@pytest.mark.parametrize("method_id", ["baseline_prefill", "vanilla_prefill"])
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        (None, None),
+        (lambda warmup: warmup.__setitem__("ok", False), "metadata ok drift"),
+        (lambda warmup: warmup.__setitem__("timed", True), "metadata timed drift"),
+        (
+            lambda warmup: warmup.__setitem__("request_parallelism", 4),
+            "metadata request_parallelism drift",
+        ),
+        (
+            lambda warmup: warmup["arms"][0].__setitem__("connector_load_count", 3),
+            "metadata arms drift",
+        ),
+        (lambda warmup: warmup["rows"].pop(), "does not prove every request"),
+        (_tamper_warmup_row_decode, "does not prove every request"),
+        (_tamper_warmup_reused_salt, "does not prove every request"),
+    ),
+)
+def test_latency_warmup_metadata_must_prove_every_untimed_request(
+    monkeypatch, method_id, tamper, message
+):
+    job, warmup = _publication_latency_warmup_record(monkeypatch, method_id)
+    assert warmup["ok"] is True, warmup["issues"]
+    assert warmup["arms"] == [
+        {
+            "arm_id": (
+                execution.PUBLICATION_LATENCY_VANILLA_ARM_ID
+                if method_id == "vanilla_prefill"
+                else "baseline_prefill"
+            ),
+            "connector_load_count": (
+                execution.PUBLICATION_LATENCY_WARMUP_REQUESTS
+                if method_id == "vanilla_prefill"
+                else 0
+            ),
+            "request_count": execution.PUBLICATION_LATENCY_WARMUP_REQUESTS,
+            "uses_cachet_handoff": method_id == "vanilla_prefill",
+        }
+    ]
+    assert sorted(row["dataset"] for row in warmup["rows"]) == sorted(
+        SUPPORTED_V1_DATASETS
+    )
+    if tamper is not None:
+        tamper(warmup)
+    metadata = {"latency_warmup": warmup}
+
+    if message is None:
+        execution._validate_publication_latency_warmup_metadata(
+            metadata, job_record=job
+        )
+    else:
+        with pytest.raises(ValueError, match=message):
+            execution._validate_publication_latency_warmup_metadata(
+                metadata, job_record=job
+            )
+
+
 def test_mounted_path_load_count_requires_verified_uc_backend_reads(monkeypatch):
     request_ids = [
         f"request-{index:03d}"
@@ -4786,6 +5119,86 @@ def test_mounted_path_load_count_requires_verified_uc_backend_reads(monkeypatch)
     assert uc["backend_bytes_read"] == uc["expected_backend_bytes_read"]
     assert disk["mounted_path_load_count"] == 0
     assert disk["cold_read_attested_count"] == len(request_ids)
+
+
+@pytest.mark.parametrize(
+    ("host_cache_state", "cold_read_attested"),
+    (
+        ("cold_eviction_required", True),
+        ("mounted_path_evicted_backend_cache_unproven", False),
+    ),
+)
+@pytest.mark.parametrize(
+    "residency",
+    (
+        None,
+        {"resident_pages": 1, "resident_fraction": 1.0},
+        {"resident_fraction": 0},
+        {"total_pages": 0},
+        {
+            "method": None,
+            "resident_fraction": None,
+            "resident_pages": None,
+            "total_pages": None,
+            "unavailable_reason": "mmap failed: No such device",
+        },
+        {"extra": True},
+    ),
+)
+def test_storage_eviction_requires_a_measured_empty_page_cache(
+    monkeypatch, host_cache_state, cold_read_attested, residency
+):
+    request_ids = [
+        f"request-{index:03d}"
+        for index in range(execution.PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL)
+    ]
+    benchmark = SimpleNamespace(
+        measurements=tuple(
+            SimpleNamespace(
+                metadata={
+                    execution.PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY: request_id
+                }
+            )
+            for request_id in request_ids
+        )
+    )
+    monkeypatch.setattr(
+        execution,
+        "benchmark_run_result_from_record",
+        lambda *_args, **_kwargs: benchmark,
+    )
+    monkeypatch.setattr(execution, "_file_sha256", lambda _path: "a" * 64)
+    records = [
+        _realistic_local_path_connector_load(
+            request_id,
+            cold_read_attested=cold_read_attested,
+            payload_cache_hit=False,
+        )
+        for request_id in request_ids
+    ]
+    monkeypatch.setattr(
+        execution, "_read_jsonl_file", lambda *_args, **_kwargs: records
+    )
+
+    def summarize() -> dict:
+        return execution._publication_latency_cache_telemetry_summary(
+            Path("connector-telemetry.jsonl"),
+            job_record={
+                "cache_telemetry_policy": {"host_cache_state": host_cache_state},
+                "cell": {"method_id": "vanilla_prefill"},
+                "runtime": {"runtime_kv_dtype": "bfloat16"},
+            },
+            benchmark_record={},
+        )
+
+    assert summarize()["eviction_succeeded_count"] == len(request_ids)
+    attestation = records[7]["cache_state_attestation"]
+    if residency is None:
+        del attestation["page_cache_residency"]
+    else:
+        attestation["page_cache_residency"].update(residency)
+    with pytest.raises(ValueError, match="measured empty page cache"):
+        summarize()
 
 
 def test_descriptive_cell_validator_rejects_resource_and_cache_tampering():
@@ -4998,14 +5411,51 @@ _RECOVERED_SEED = (
     f"{execution.PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX}seed-00"
 )
 _SUPERSEDED_ATTEMPT = f"publication-latency/{'f' * 20}/job-a"
+# job-a and job-c are one core baseline/vanilla pair; job-b is the storage
+# control, which no estimand pairs with a core job.
+_MULTI_PLAN_DESIGN = {
+    "job-a": {
+        "job_kind": "core",
+        "matched_pair_id": "pair-1",
+        "method_id": "baseline_prefill",
+    },
+    "job-b": {
+        "comparison_family": "storage",
+        "job_kind": "auxiliary",
+        "setting_id": "storage-disk",
+    },
+    "job-c": {
+        "job_kind": "core",
+        "matched_pair_id": "pair-1",
+        "method_id": "vanilla_prefill",
+    },
+}
+_MULTI_PLAN_WHEELS = {"a" * 64: "1" * 64, "b" * 64: "2" * 64}
 
 
-def _multi_plan_job(job_id, index):
-    plan_sha256 = _MULTI_PLAN_PLANS[job_id]
+def _multi_plan_descriptor(job_id, index):
+    return {"job_id": job_id, "position": index, **_MULTI_PLAN_DESIGN[job_id]}
+
+
+def _multi_plan_job(
+    job_id,
+    index,
+    *,
+    plan_sha256=None,
+    package_wheel_sha256=None,
+    source_tree_sha256="3" * 64,
+    runtime_overrides=None,
+):
+    plan_sha256 = plan_sha256 or _MULTI_PLAN_PLANS[job_id]
     job = {
-        "artifact_files": [{"role": "package_wheel", "sha256": f"{index}" * 64}],
+        "artifact_files": [
+            {
+                "role": "package_wheel",
+                "sha256": package_wheel_sha256 or _MULTI_PLAN_WHEELS[plan_sha256],
+            }
+        ],
         "campaign_id": PUBLICATION_CAMPAIGN_ID,
-        "cell": {"job_id": job_id, "position": index, "zone_id": "us-west-2b"},
+        "cell": {**_multi_plan_descriptor(job_id, index), "zone_id": "us-west-2b"},
         "closed_record_sha256": "",
         "execution_plan_sha256": plan_sha256,
         "job_id": job_id,
@@ -5017,10 +5467,13 @@ def _multi_plan_job(job_id, index):
             "run_timeout_seconds": 3600,
             "single_user_name": "publication@example.com",
             "zone_id": "us-west-2b",
+            **(runtime_overrides or {}),
         },
-        "source_tree_sha256": "3" * 64,
+        "source_tree_sha256": source_tree_sha256,
         "task_key": f"latency_{index}",
     }
+    if job["runtime"]["zone_id"] != "us-west-2b":
+        job["cell"]["zone_id"] = job["runtime"]["zone_id"]
     job["closed_record_sha256"] = execution._closed_record_sha256(job)
     return job
 
@@ -5101,13 +5554,19 @@ def _multi_plan_case(
     seed_recovered_balance=True,
     reserve_unreceipted=False,
     finish_superseded=True,
+    superseded_state="failed",
+    job_c_overrides=None,
 ):
     jobs = {
-        job_id: _multi_plan_job(job_id, index)
+        job_id: _multi_plan_job(
+            job_id,
+            index,
+            **((job_c_overrides or {}) if job_id == "job-c" else {}),
+        )
         for index, job_id in enumerate(_MULTI_PLAN_PLANS, start=1)
     }
     descriptors = {
-        job_id: {"job_id": job_id, "position": index}
+        job_id: _multi_plan_descriptor(job_id, index)
         for index, job_id in enumerate(_MULTI_PLAN_PLANS, start=1)
     }
     runs = {
@@ -5117,6 +5576,7 @@ def _multi_plan_case(
     results = {
         job_id: {
             "closed_record_sha256": f"{index + 4}" * 64,
+            "completed_at": f"2026-11-0{index + 1}T00:00:00+00:00",
             "files": [],
             "job_id": job_id,
             "task_identity": {
@@ -5205,7 +5665,7 @@ def _multi_plan_case(
     launch(
         _SUPERSEDED_ATTEMPT,
         _stand_in_payload(jobs["job-a"], timeout=7200),
-        legacy_state="failed" if finish_superseded else None,
+        legacy_state=superseded_state if finish_superseded else None,
     )
     launch(
         jobs["job-a"]["reservation_attempt_id"],
@@ -5230,7 +5690,9 @@ def _multi_plan_case(
     )
 
 
-def _collect_multi_plan(case, tmp_path, *, selected_run_ids=None):
+def _collect_multi_plan(
+    case, tmp_path, *, selected_run_ids=None, superseded_success_reasons=None
+):
     return execution.collect_publication_latency_multi_plan_campaign(
         case.config,
         campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
@@ -5239,6 +5701,7 @@ def _collect_multi_plan(case, tmp_path, *, selected_run_ids=None):
         ),
         ledger_path=case.ledger_path,
         controller_cas_root=tmp_path / "cas",
+        superseded_success_reasons=superseded_success_reasons,
     )
 
 
@@ -5311,7 +5774,7 @@ def test_multi_plan_collection_binds_each_job_to_the_plan_it_ran_under(
     assert [
         (item["execution_plan_sha256"], item["job_ids"]) for item in record["plan_set"]
     ] == [("a" * 64, ["job-a", "job-c"]), ("b" * 64, ["job-b"])]
-    assert record["plan_set"][0]["package_wheel_sha256s"] == ["1" * 64, "3" * 64]
+    assert record["plan_set"][0]["package_wheel_sha256s"] == ["1" * 64]
     assert record["ledger"]["recovered_balance"] == {
         "attempt_count": 1,
         "cluster_hours": 0.5,
@@ -5322,6 +5785,42 @@ def test_multi_plan_collection_binds_each_job_to_the_plan_it_ran_under(
             "job_id": "job-a",
             "terminal_state": "failed",
         }
+    ]
+    assert record["job_attempts"] == [
+        {
+            "attempts": [
+                {
+                    "attempt_id": case.jobs["job-a"]["reservation_attempt_id"],
+                    "run_id": "101",
+                    "selected": True,
+                    "supersession_reason": None,
+                    "terminal_state": "succeeded",
+                },
+                {
+                    "attempt_id": _SUPERSEDED_ATTEMPT,
+                    "run_id": None,
+                    "selected": False,
+                    "supersession_reason": None,
+                    "terminal_state": "failed",
+                },
+            ],
+            "job_id": "job-a",
+        },
+        *(
+            {
+                "attempts": [
+                    {
+                        "attempt_id": case.jobs[job_id]["reservation_attempt_id"],
+                        "run_id": _MULTI_PLAN_RUN_IDS[job_id],
+                        "selected": True,
+                        "supersession_reason": None,
+                        "terminal_state": "succeeded",
+                    }
+                ],
+                "job_id": job_id,
+            }
+            for job_id in ("job-b", "job-c")
+        ),
     ]
     receipts = {item["job_id"]: item for item in record["terminal_receipts"]}
     assert receipts["job-a"]["ledger_submit_payload_sha256"] == (
@@ -5464,6 +5963,222 @@ def test_multi_plan_collection_rejects_runs_outside_the_frozen_cell(
     assert case.ledger_path.read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    ("job_c_overrides", "drift"),
+    (
+        ({"plan_sha256": "b" * 64}, "execution plan, package wheel"),
+        ({"package_wheel_sha256": "9" * 64}, "package wheel"),
+        ({"source_tree_sha256": "8" * 64}, "source tree"),
+        ({"runtime_overrides": {"run_timeout_seconds": 7200}}, "runtime"),
+    ),
+)
+def test_multi_plan_collection_rejects_pairs_split_across_launches(
+    tmp_path, monkeypatch, job_c_overrides, drift
+):
+    case = _multi_plan_case(tmp_path, monkeypatch, job_c_overrides=job_c_overrides)
+    before = case.ledger_path.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "latency method comparison 'pair-1' pairs 'job-a' with 'job-c' "
+            f"across a different {drift}; rerun"
+        ),
+    ):
+        _collect_multi_plan(case, tmp_path)
+    assert case.ledger_path.read_bytes() == before
+
+
+def test_multi_plan_collection_needs_a_reason_to_supersede_a_success(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(tmp_path, monkeypatch, superseded_state="succeeded")
+    before = case.ledger_path.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            f"superseded latency attempt {_SUPERSEDED_ATTEMPT!r} for 'job-a' "
+            "succeeded; discarding its result needs a recorded reason"
+        ),
+    ):
+        _collect_multi_plan(case, tmp_path)
+    for reasons, message in (
+        ({_SUPERSEDED_ATTEMPT: " "}, "must be non-empty text"),
+        (
+            {_SUPERSEDED_ATTEMPT: "rerun", "publication-latency/x/job-b": "rerun"},
+            "not superseded successes",
+        ),
+    ):
+        with pytest.raises(ValueError, match=message):
+            _collect_multi_plan(case, tmp_path, superseded_success_reasons=reasons)
+    assert case.ledger_path.read_bytes() == before
+
+    reason = "result tree lost to a volume outage; rerun under the same plan"
+    record, _authorization = _collect_multi_plan(
+        case,
+        tmp_path,
+        superseded_success_reasons={_SUPERSEDED_ATTEMPT: reason},
+    )
+    assert record["job_attempts"][0]["attempts"][1] == {
+        "attempt_id": _SUPERSEDED_ATTEMPT,
+        "run_id": None,
+        "selected": False,
+        "supersession_reason": reason,
+        "terminal_state": "succeeded",
+    }
+    unexplained = deepcopy(record)
+    unexplained["job_attempts"][0]["attempts"][1]["supersession_reason"] = None
+    with pytest.raises(ValueError, match="succeeded without a recorded reason"):
+        execution.validate_publication_latency_multi_plan_collection_record(
+            _reseal(unexplained), campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+        )
+
+
+def test_multi_plan_collection_rejects_failed_superseded_reasons(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="not superseded successes"):
+        _collect_multi_plan(
+            case,
+            tmp_path,
+            superseded_success_reasons={_SUPERSEDED_ATTEMPT: "not needed"},
+        )
+
+
+def test_plan_coherence_table_discloses_pairs_joined_across_launches(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(
+        tmp_path,
+        monkeypatch,
+        job_c_overrides={"runtime_overrides": {"zone_id": "us-west-2c"}},
+    )
+    record, _authorization = _collect_multi_plan(case, tmp_path)
+
+    assert execution.publication_latency_plan_coherence_table(record) == [
+        {
+            "coherent": True,
+            "comparison_family": "method",
+            "comparison_unit_id": "pair-1",
+            "completion_gap_seconds": 2 * 24 * 60 * 60.0,
+            "control_job_id": "job-a",
+            "execution_plan_equal": True,
+            "package_wheel_equal": True,
+            "runtime_equal": True,
+            "source_tree_equal": True,
+            "treatment_job_id": "job-c",
+            "zone_equal": False,
+        }
+    ]
+
+    require_coherence = execution._require_latency_plan_coherence
+    monkeypatch.setattr(
+        execution, "_require_latency_plan_coherence", lambda _jobs: None
+    )
+    split_case = _multi_plan_case(
+        tmp_path / "split",
+        monkeypatch,
+        job_c_overrides={"plan_sha256": "b" * 64},
+    )
+    split, _authorization = _collect_multi_plan(split_case, tmp_path / "split")
+    monkeypatch.setattr(
+        execution, "_require_latency_plan_coherence", require_coherence
+    )
+    with pytest.raises(ValueError, match="'pair-1' pairs 'job-a' with 'job-c'"):
+        execution.validate_publication_latency_multi_plan_collection_record(
+            split, campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+        )
+    legacy = deepcopy(split)
+    del legacy["job_attempts"]
+    execution.validate_publication_latency_multi_plan_collection_record(
+        _reseal(legacy), campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+    )
+    snapshot = deepcopy(legacy)
+    (row,) = execution.publication_latency_plan_coherence_table(legacy)
+    assert legacy == snapshot
+    assert {
+        key: row[key]
+        for key in (
+            "coherent",
+            "execution_plan_equal",
+            "package_wheel_equal",
+            "runtime_equal",
+            "source_tree_equal",
+        )
+    } == {
+        "coherent": False,
+        "execution_plan_equal": False,
+        "package_wheel_equal": False,
+        "runtime_equal": True,
+        "source_tree_equal": True,
+    }
+
+
+def test_frozen_design_comparison_pairs_cover_every_estimand():
+    campaign = publication_campaign_plan_to_record(
+        build_publication_campaign_plan(
+            PUBLICATION_CAMPAIGN_ID,
+            campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+            campaign_opening_terminal_gpu_hours=(
+                PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            ),
+        )
+    )
+    descriptors = execution._campaign_latency_job_descriptors(campaign)
+    pairs = execution._latency_comparison_pairs(descriptors)
+
+    families = [pair["comparison_family"] for pair in pairs]
+    assert {family: families.count(family) for family in set(families)} == {
+        "hardware": 5,
+        "method": 45,
+        "precision": 5,
+        "storage": 10,
+    }
+    paired = {pair["control_job_id"] for pair in pairs} | {
+        pair["treatment_job_id"] for pair in pairs
+    }
+    assert paired == set(descriptors)
+    storage = [pair for pair in pairs if pair["comparison_family"] == "storage"]
+    assert {pair["control_job_id"] for pair in storage} == {
+        f"block-{block:02d}-storage-disk" for block in range(1, 6)
+    }
+    assert all(
+        pair["comparison_unit_id"] == f"{pair['control_job_id'][:8]}-storage-trio"
+        for pair in storage
+    )
+    launched = {
+        job_id: {
+            "artifact_files": [{"role": "package_wheel", "sha256": "1" * 64}],
+            "execution_plan_sha256": "a" * 64,
+            "runtime": execution._job_runtime_policy(
+                {**descriptor, "zone_id": zone_id},
+                selected_32k_gmu=0.75,
+                single_user_name="publication@example.com",
+            ),
+            "source_tree_sha256": "3" * 64,
+        }
+        for (job_id, descriptor), zone_id in zip(
+            descriptors.items(),
+            itertools.cycle(execution.PUBLICATION_LATENCY_DATABRICKS_ZONES),
+            strict=False,
+        )
+    }
+    for pair in pairs:
+        assert all(
+            execution._latency_pair_coherence(
+                launched[pair["control_job_id"]],
+                launched[pair["treatment_job_id"]],
+                comparison_family=pair["comparison_family"],
+            )[key]
+            for key, _label in execution._LATENCY_COHERENCE_FIELDS
+        ), pair
+
+
 def _tamper_binding_to_ledger_receipt(record):
     for collection in (record["jobs"], record["terminal_receipts"]):
         for item in collection:
@@ -5505,6 +6220,22 @@ def _tamper_receipt_for_balance_job(record):
     record["terminal_receipts"][2]["ledger_submit_payload_sha256"] = "0" * 64
 
 
+def _tamper_dropped_superseded_attempt(record):
+    record["job_attempts"][0]["attempts"].pop()
+
+
+def _tamper_selected_attempt_run(record):
+    record["job_attempts"][1]["attempts"][0]["run_id"] = "999"
+
+
+def _tamper_failed_attempt_reason(record):
+    record["job_attempts"][0]["attempts"][1]["supersession_reason"] = "rerun"
+
+
+def _tamper_job_attempt_order(record):
+    record["job_attempts"].reverse()
+
+
 @pytest.mark.parametrize(
     ("tamper", "message"),
     (
@@ -5515,6 +6246,10 @@ def _tamper_receipt_for_balance_job(record):
         (_tamper_cluster, "not unique"),
         (_tamper_terminal_closure, "terminal actual closure drift"),
         (_tamper_receipt_for_balance_job, "carry no ledger receipt"),
+        (_tamper_dropped_superseded_attempt, "differ from the superseded attempts"),
+        (_tamper_selected_attempt_run, "selected attempt drift"),
+        (_tamper_failed_attempt_reason, "supersession reason drift"),
+        (_tamper_job_attempt_order, "job attempts are out of order"),
     ),
 )
 def test_multi_plan_collection_record_rejects_tampering_offline(

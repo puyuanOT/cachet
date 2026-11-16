@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
 import os
 import pickle
+import sys
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -1289,16 +1291,50 @@ def test_native_provider_loads_uri_payload_via_mmap_matches_inline(
     assert observed_memoryview == [True]
 
 
-def test_native_provider_evicts_page_cache_before_mmap_when_enabled(tmp_path, monkeypatch):
+_COLD_RESIDENCY = {
+    "method": "mincore",
+    "resident_fraction": 0.0,
+    "resident_pages": 0,
+    "total_pages": 1,
+    "unavailable_reason": None,
+}
+
+
+@pytest.mark.parametrize(
+    ("residency", "cold"),
+    (
+        (_COLD_RESIDENCY, True),
+        ({**_COLD_RESIDENCY, "resident_fraction": 1.0, "resident_pages": 1}, False),
+        (
+            {
+                "method": None,
+                "resident_fraction": None,
+                "resident_pages": None,
+                "total_pages": None,
+                "unavailable_reason": "mincore is not available on this platform",
+            },
+            False,
+        ),
+    ),
+)
+def test_native_provider_evicts_page_cache_before_mmap_when_enabled(
+    tmp_path, monkeypatch, residency, cold
+):
     # With DOCUMENT_KV_EVICT_PAGE_CACHE=1 the cold-hydrate path must drop the payload
     # file from the OS page cache (posix_fadvise DONTNEED) before mapping it, so the
-    # host->device copy reads cold from disk. Injected KV must still be correct.
+    # host->device copy reads cold from disk. Injected KV must still be correct, and
+    # the read is only attested cold when the page cache is measured empty.
     calls: list[tuple[int, int, int, int]] = []
     sync_calls: list[int] = []
 
     def fake_fadvise(fd, offset, length, advice):
         calls.append((fd, offset, length, advice))
 
+    def fake_residency(fd):
+        assert len(calls) == 1 and calls[0][0] == fd
+        return dict(residency)
+
+    monkeypatch.setattr(vllm_native_provider, "_page_cache_residency", fake_residency)
     monkeypatch.setattr(os, "posix_fadvise", fake_fadvise, raising=False)
     monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
     monkeypatch.setattr(os, "sync", lambda: sync_calls.append(1), raising=False)
@@ -1338,8 +1374,66 @@ def test_native_provider_evicts_page_cache_before_mmap_when_enabled(tmp_path, mo
     assert cache_state["source"] == "local_path"
     assert cache_state["bytes_read"] == len(payload())
     assert cache_state["eviction_requested"] is True
-    assert cache_state["eviction_succeeded"] is True
-    assert cache_state["cold_read_attested"] is True
+    assert cache_state["eviction_succeeded"] is cold
+    assert cache_state["cold_read_attested"] is cold
+    assert cache_state["page_cache_residency"] == residency
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="mincore semantics are Linux-only"
+)
+def test_page_cache_residency_counts_resident_pages_with_mincore(tmp_path, monkeypatch):
+    path = tmp_path / "payload.kv"
+    path.write_bytes(b"\x01" * (3 * mmap.PAGESIZE + 1))
+    assert path.read_bytes()
+
+    with open(path, "rb") as handle:
+        resident = vllm_native_provider._page_cache_residency(handle.fileno())
+        monkeypatch.setattr(os, "geteuid", lambda: os.fstat(handle.fileno()).st_uid + 1)
+        foreign = vllm_native_provider._page_cache_residency(handle.fileno())
+        monkeypatch.undo()
+        monkeypatch.setattr(vllm_native_provider, "_libc_page_cache_calls", lambda: None)
+        unsupported = vllm_native_provider._page_cache_residency(handle.fileno())
+
+    assert resident == {
+        "method": "mincore",
+        "resident_fraction": 1.0,
+        "resident_pages": 4,
+        "total_pages": 4,
+        "unavailable_reason": None,
+    }
+    assert vllm_native_provider._page_cache_residency_is_cold(resident) is False
+    for unavailable, reason in (
+        (foreign, "does not own"),
+        (unsupported, "not available on this platform"),
+    ):
+        assert unavailable["method"] is None
+        assert unavailable["resident_pages"] is None
+        assert reason in unavailable["unavailable_reason"]
+        assert vllm_native_provider._page_cache_residency_is_cold(unavailable) is False
+    assert vllm_native_provider._page_cache_residency_is_cold(_COLD_RESIDENCY) is True
+    assert vllm_native_provider._page_cache_residency_is_cold(None) is False
+
+
+def test_mmap_payload_view_reports_residency_only_when_evicting(tmp_path, monkeypatch):
+    path = tmp_path / "payload.kv"
+    path.write_bytes(b"hello cachet")
+    monkeypatch.setattr(os, "posix_fadvise", lambda *a: None, raising=False)
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+    monkeypatch.setattr(
+        vllm_native_provider, "_page_cache_residency", lambda fd: dict(_COLD_RESIDENCY)
+    )
+    observed: list[object] = []
+
+    cold = vllm_native_provider._mmap_payload_view(
+        str(path), evict_page_cache=True, on_page_cache_residency=observed.append
+    )
+    warm = vllm_native_provider._mmap_payload_view(
+        str(path), on_page_cache_residency=observed.append
+    )
+
+    assert bytes(cold) == bytes(warm) == b"hello cachet"
+    assert observed == [_COLD_RESIDENCY]
 
 
 def test_read_payload_view_streams_full_file(tmp_path):
