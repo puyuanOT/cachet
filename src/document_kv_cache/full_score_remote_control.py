@@ -42,6 +42,7 @@ from document_kv_cache.databricks_runs import (
     upload_databricks_volume_file_bytes_exclusive,
 )
 from document_kv_cache.databricks_resource_ledger import (
+    DatabricksLedgerPrefix,
     databricks_ledger_prefix_from_record,
 )
 from document_kv_cache.publication_inputs import FullScoreInventory
@@ -116,13 +117,15 @@ FULL_SCORE_REMOTE_CAS_WAVE_COUNT: Final = (
     full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
     // full_score.FULL_SCORE_DEFAULT_MAX_SHARDS_PER_WAVE
 )
-# One campaign-wide CAS: per shard, producer and consumer worker payloads, the
-# ready record, evidence, deletion attestation, and matched billing block; per
-# wave, each GPU phase's submit payload, runs/get record, and terminal record,
-# plus both coordinators' result and attestation; one producer and one consumer
-# live-P90 admission for every nonzero wave; and the GPU qualification plan and
-# evidence.  Every capacity retry of a GPU phase also binds its own submit
-# payload, runs/get record, and capacity-failure record.
+# One CAS per full-score chain, scoped by its wave-zero producer's opening
+# ledger prefix so a restarted chain cannot reuse it: per shard, producer and
+# consumer worker payloads, the ready record, evidence, deletion attestation,
+# and matched billing block; per wave, each GPU phase's submit payload,
+# runs/get record, and terminal record, plus both coordinators' result and
+# attestation; one producer and one consumer live-P90 admission for every
+# nonzero wave; and the GPU qualification plan and evidence.  Every capacity
+# retry of a GPU phase also binds its own submit payload, runs/get record, and
+# capacity-failure record.
 FULL_SCORE_REMOTE_CAS_EVIDENCE_BINDINGS: Final = (
     2 * full_score.FULL_SCORE_PUBLICATION_SHARD_COUNT
 )
@@ -160,9 +163,13 @@ FULL_SCORE_REMOTE_CAS_MAX_BYTES: Final = (
     )
     * FULL_SCORE_REMOTE_COMPACT_RECORD_MAX_BYTES
 )
+FULL_SCORE_REMOTE_CAS_CHAIN_SCOPE_RECORD_TYPE: Final = (
+    "cachet.full_score_compact_cas_chain_scope.v1"
+)
+# Every binding file and the one chain scope share the metadata file cap.
 FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES: Final = (
     FULL_SCORE_REMOTE_CAS_MAX_BYTES
-    + FULL_SCORE_REMOTE_CAS_MAX_BINDINGS * FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES
+    + (FULL_SCORE_REMOTE_CAS_MAX_BINDINGS + 1) * FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES
 )
 FULL_SCORE_REMOTE_CONTROLLER_POST_INTENT_RECORD_TYPE: Final = (
     "cachet.full_score_remote_controller_post_intent.v1"
@@ -270,6 +277,7 @@ FULL_SCORE_REMOTE_COORDINATOR_RUNNER_SHA256: Final = sha256(
 
 _SHA256_LENGTH = 64
 _REMOTE_AUTHORIZATION_ISSUER = object()
+_CAS_CHAIN_SCOPE_FILENAME: Final = "chain-scope.json"
 _REMOTE_COORDINATOR_TERMINAL_LIFE_CYCLE_STATES: Final = frozenset(
     {"INTERNAL_ERROR", "SKIPPED", "TERMINATED"}
 )
@@ -872,7 +880,7 @@ class FullScoreCompactArtifactCAS:
             (bindings, "compact CAS bindings directory"),
         ):
             _require_real_directory(path, label)
-        allowed_root = {"blobs", "bindings", ".cas.lock"}
+        allowed_root = {"blobs", "bindings", ".cas.lock", _CAS_CHAIN_SCOPE_FILENAME}
         observed_root = {entry.name for entry in self.root.iterdir()}
         if (
             not observed_root <= allowed_root
@@ -883,6 +891,13 @@ class FullScoreCompactArtifactCAS:
             raise ValueError("compact CAS lock is missing")
         if ".cas.lock" in observed_root:
             _require_regular_entry(self.root / ".cas.lock", "compact CAS lock")
+        if _CAS_CHAIN_SCOPE_FILENAME in observed_root:
+            scope_size = _require_regular_child_entry(
+                self.root / _CAS_CHAIN_SCOPE_FILENAME,
+                "compact CAS chain scope",
+            ).st_size
+            if not 0 < scope_size <= FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES:
+                raise ValueError("compact CAS chain scope violates its metadata cap")
         if {entry.name for entry in blobs.iterdir()} != {"sha256"}:
             raise ValueError("compact CAS blobs directory contains unexpected entries")
         total = 0
@@ -954,6 +969,53 @@ class FullScoreCompactArtifactCAS:
 
     def bind_record(self, uri: str, record: Mapping[str, Any]) -> Path:
         return self.bind_bytes(uri, _pretty_json_bytes(record))
+
+    def bind_chain_scope(
+        self,
+        *,
+        execution_plan_sha256: str,
+        ledger_path_sha256: str,
+        opening_prefix: DatabricksLedgerPrefix,
+    ) -> None:
+        """Scope this CAS to one full-score chain, or require that same chain.
+
+        The binding cap budgets exactly one chain.  A wave-zero chain restart
+        opens at a later ledger prefix, so it needs a fresh CAS root instead of
+        accumulating its abandoned predecessor's records here.  A CAS written
+        before scopes existed is adopted by the first chain that scopes it.
+        """
+
+        if not isinstance(opening_prefix, DatabricksLedgerPrefix):
+            raise TypeError("compact CAS chain scope requires a ledger prefix")
+        scope_bytes = _pretty_json_bytes(
+            {
+                "execution_plan_sha256": _require_sha256(
+                    execution_plan_sha256, "execution_plan_sha256"
+                ),
+                "ledger_path_sha256": _require_sha256(
+                    ledger_path_sha256, "ledger_path_sha256"
+                ),
+                "opening_prefix": opening_prefix.to_record(),
+                "record_type": FULL_SCORE_REMOTE_CAS_CHAIN_SCOPE_RECORD_TYPE,
+            }
+        )
+        if len(scope_bytes) > FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES:
+            raise ValueError("compact CAS chain scope exceeds its metadata cap")
+        scope_path = self.root / _CAS_CHAIN_SCOPE_FILENAME
+        with self._locked():
+            if os.path.lexists(scope_path):
+                stored = _read_regular_file_no_follow(
+                    scope_path,
+                    "compact CAS chain scope",
+                    max_bytes=FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES,
+                )
+                if stored != scope_bytes:
+                    raise ValueError(
+                        "compact CAS is scoped to another full-score chain; a "
+                        "restarted chain requires a fresh CAS root"
+                    )
+                return
+            _write_or_require_bytes(scope_path, scope_bytes, "compact CAS chain scope")
 
     def resolve(self, uri: str) -> Path:
         """Resolve only a previously byte-bound URI to its immutable CAS blob."""
@@ -1205,6 +1267,20 @@ def _prepare_remote_phase_collection(
     ):
         raise ValueError("remote phase collection workspace/principal authority drift")
     compact_io = FullScoreRemoteCompactArtifactIO(workspace, cas)
+    if (
+        submission_authorization.wave_index == 0
+        and submission_authorization.phase == "producer"
+    ):
+        capacity_retry = submission_authorization.capacity_retry
+        cas.bind_chain_scope(
+            execution_plan_sha256=submission_authorization.execution_plan_sha256,
+            ledger_path_sha256=submission_authorization.ledger_path_sha256,
+            opening_prefix=(
+                submission_authorization.predecessor_prefix
+                if capacity_retry is None
+                else capacity_retry.phase_predecessor_prefix
+            ),
+        )
     uris = (
         _volume_file_uri(submit_payload_uri, "submit_payload_uri"),
         *(

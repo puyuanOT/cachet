@@ -5354,12 +5354,13 @@ def test_stock_mac_capacity_retry_replays_through_files_cas(campaign, monkeypatc
     remote_files[retry_submit_uri] = full_score._canonical_pretty_json_bytes(
         retry_submit
     )
+    retry_cas = full_score_remote.FullScoreCompactArtifactCAS(
+        campaign["tmp_path"] / "capacity-mac-retry-cas"
+    )
     terminal, phase_authorization = (
         full_score_remote.collect_governed_full_score_remote_phase_attempt_outcome(
             workspace,
-            cas=full_score_remote.FullScoreCompactArtifactCAS(
-                campaign["tmp_path"] / "capacity-mac-retry-cas"
-            ),
+            cas=retry_cas,
             submission_authorization=retry_submission,
             submit_payload_uri=retry_submit_uri,
             control_plane_run_uri=f"{control}/wave-000-producer-runs-get-01.json",
@@ -5383,12 +5384,12 @@ def test_stock_mac_capacity_retry_replays_through_files_cas(campaign, monkeypatc
         range(16)
     )
     assert terminal["capacity_retry"]["attempts"][0]["path"] == failure_uri
+    assert (retry_cas.root / "chain-scope.json").read_bytes() == (
+        cas.root / "chain-scope.json"
+    ).read_bytes()
 
 
-def test_stock_mac_collection_supersedes_a_legacy_running_snapshot(
-    campaign,
-    monkeypatch,
-):
+def _stock_mac_wave_zero_producer(campaign, monkeypatch, *, label, run_id):
     local_worker_files = campaign["worker_files"]
     campaign = _volume_campaign(campaign)
     local_worker_files.update(campaign["worker_files"])
@@ -5432,12 +5433,12 @@ def test_stock_mac_collection_supersedes_a_legacy_running_snapshot(
         ),
     )
     cas = full_score_remote.FullScoreCompactArtifactCAS(
-        campaign["tmp_path"] / "legacy-running-mac-cas"
+        campaign["tmp_path"] / f"{label}-cas"
     )
     compact_io = full_score_remote.FullScoreRemoteCompactArtifactIO(workspace, cas)
     for uri in sorted(campaign["worker_files"]):
         compact_io.download(uri)
-    ledger_path = campaign["tmp_path"] / "legacy-running-mac-ledger.json"
+    ledger_path = campaign["tmp_path"] / f"{label}-ledger.json"
     create_databricks_cluster_hour_ledger_json(
         ledger_path,
         ledger_id="publication-full-score",
@@ -5453,7 +5454,7 @@ def test_stock_mac_collection_supersedes_a_legacy_running_snapshot(
         "shard_plan": campaign["shard_plan"],
         "ledger_path": ledger_path,
     }
-    attempt_id = "legacy-running-mac-wave-000-producer"
+    attempt_id = f"{label}-wave-000-producer"
     submit = full_score.build_databricks_full_score_run_submit_payload(
         campaign["job"],
         _phase_payloads(campaign, 0, "producer"),
@@ -5479,51 +5480,142 @@ def test_stock_mac_collection_supersedes_a_legacy_running_snapshot(
             predecessor_authorization=campaign["latency_collection_authorization"],
             latency_execution_plan_record=campaign["latency_execution_plan_record"],
             compact_artifact_resolver=cas.resolve,
-            opener=_FakeDatabricksOpener({"run_id": 81_001}),
+            opener=_FakeDatabricksOpener({"run_id": run_id}),
             **phase_kwargs,
         )
     )
     control = f"{campaign['bundle'].durable_output_root}/control/phase"
     submit_uri = f"{control}/wave-000-producer-submit-00.json"
     remote_files[submit_uri] = full_score._canonical_pretty_json_bytes(submit)
-    runs_get_uri = f"{control}/wave-000-producer-runs-get-00.json"
-    superseding_uri = f"{control}/wave-000-producer-runs-get-00.terminal.json"
-    terminal_uri = f"{control}/wave-000-producer-terminal.json"
-    running_bytes = full_score._canonical_pretty_json_bytes(
-        _running_run_record(submit, run_id=81_001)
+    return SimpleNamespace(
+        cas=cas,
+        compact_io=compact_io,
+        control=control,
+        ledger_path=ledger_path,
+        phase_kwargs=phase_kwargs,
+        remote_files=remote_files,
+        submission=submission,
+        submit=submit,
+        submit_uri=submit_uri,
+        workspace=workspace,
     )
-    compact_io.publish(runs_get_uri, running_bytes)
-    terminated = _terminal_run_record(submit, run_id=81_001)
+
+
+def _collect_stock_mac_wave_zero_producer(mac, *, cas, run_payload, run_id):
+    return full_score_remote.collect_governed_full_score_remote_phase_attempt(
+        mac.workspace,
+        cas=cas,
+        submission_authorization=mac.submission,
+        submit_payload_uri=mac.submit_uri,
+        control_plane_run_uri=f"{mac.control}/wave-000-producer-runs-get-00.json",
+        terminal_record_uri=f"{mac.control}/wave-000-producer-terminal.json",
+        single_user_name="researcher@example.com",
+        opener=_RoutingDatabricksOpener(
+            submit_payload={"run_id": run_id},
+            run_payload=run_payload,
+        ),
+        **mac.phase_kwargs,
+    )
+
+
+def test_stock_mac_collection_supersedes_a_legacy_running_snapshot(
+    campaign,
+    monkeypatch,
+):
+    mac = _stock_mac_wave_zero_producer(
+        campaign,
+        monkeypatch,
+        label="legacy-running-mac",
+        run_id=81_001,
+    )
+    runs_get_uri = f"{mac.control}/wave-000-producer-runs-get-00.json"
+    superseding_uri = f"{mac.control}/wave-000-producer-runs-get-00.terminal.json"
+    terminal_uri = f"{mac.control}/wave-000-producer-terminal.json"
+    running_bytes = full_score._canonical_pretty_json_bytes(
+        _running_run_record(mac.submit, run_id=81_001)
+    )
+    mac.compact_io.publish(runs_get_uri, running_bytes)
+    terminated = _terminal_run_record(mac.submit, run_id=81_001)
 
     def collect():
-        return full_score_remote.collect_governed_full_score_remote_phase_attempt(
-            workspace,
-            cas=cas,
-            submission_authorization=submission,
-            submit_payload_uri=submit_uri,
-            control_plane_run_uri=runs_get_uri,
-            terminal_record_uri=terminal_uri,
-            single_user_name="researcher@example.com",
-            opener=_RoutingDatabricksOpener(
-                submit_payload={"run_id": 81_001},
-                run_payload=terminated,
-            ),
-            **phase_kwargs,
+        return _collect_stock_mac_wave_zero_producer(
+            mac,
+            cas=mac.cas,
+            run_payload=terminated,
+            run_id=81_001,
         )
 
     terminal, authorization = collect()
+    remote_files = mac.remote_files
     assert remote_files[runs_get_uri] == running_bytes
     assert remote_files[superseding_uri] == (
         full_score._canonical_pretty_json_bytes(terminated)
     )
-    assert cas.resolve(superseding_uri).read_bytes() == remote_files[superseding_uri]
+    assert (
+        mac.cas.resolve(superseding_uri).read_bytes() == remote_files[superseding_uri]
+    )
     assert terminal["control_plane"]["path"] == superseding_uri
     assert remote_files[terminal_uri] == full_score._canonical_pretty_json_bytes(
         terminal
     )
     assert collect() == (terminal, authorization)
-    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    ledger = read_databricks_cluster_hour_ledger_json(mac.ledger_path)
     assert ledger.active_reserved_task_count == 0
+
+
+def test_stock_mac_restarted_chain_cannot_reuse_a_scoped_cas(campaign, monkeypatch):
+    mac = _stock_mac_wave_zero_producer(
+        campaign,
+        monkeypatch,
+        label="restart-scope-mac",
+        run_id=81_001,
+    )
+    abandoned_opening = replace(
+        mac.submission.predecessor_prefix,
+        prefix_sha256=sha256(b"abandoned-chain-opening").hexdigest(),
+    )
+    mac.cas.bind_chain_scope(
+        execution_plan_sha256=mac.submission.execution_plan_sha256,
+        ledger_path_sha256=mac.submission.ledger_path_sha256,
+        opening_prefix=abandoned_opening,
+    )
+    bindings_before = sorted(path.name for path in (mac.cas.root / "bindings").iterdir())
+    terminated = _terminal_run_record(mac.submit, run_id=81_001)
+
+    with pytest.raises(ValueError, match="scoped to another full-score chain"):
+        _collect_stock_mac_wave_zero_producer(
+            mac,
+            cas=mac.cas,
+            run_payload=terminated,
+            run_id=81_001,
+        )
+    assert (
+        sorted(path.name for path in (mac.cas.root / "bindings").iterdir())
+        == bindings_before
+    )
+    assert not any("runs-get" in uri for uri in mac.remote_files)
+    assert not read_databricks_cluster_hour_ledger_json(
+        mac.ledger_path
+    ).terminal_actuals
+
+    fresh = full_score_remote.FullScoreCompactArtifactCAS(
+        campaign["tmp_path"] / "restart-scope-fresh-cas"
+    )
+    terminal, authorization = _collect_stock_mac_wave_zero_producer(
+        mac,
+        cas=fresh,
+        run_payload=terminated,
+        run_id=81_001,
+    )
+    assert type(authorization) is full_score.FullScorePhaseAuthorization
+    scope = json.loads((fresh.root / "chain-scope.json").read_bytes())
+    assert scope["opening_prefix"] == mac.submission.predecessor_prefix.to_record()
+    assert _collect_stock_mac_wave_zero_producer(
+        mac,
+        cas=fresh,
+        run_payload=terminated,
+        run_id=81_001,
+    ) == (terminal, authorization)
 
 
 def test_publication_aggregate_requires_current_final_consumer_authority(campaign):

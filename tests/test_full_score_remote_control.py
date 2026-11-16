@@ -1345,6 +1345,66 @@ def test_compact_cas_resolve_rechecks_symlink_ancestors(tmp_path):
         cas.resolve(uri)
 
 
+def test_compact_cas_is_scoped_to_exactly_one_full_score_chain(tmp_path):
+    cas = remote.FullScoreCompactArtifactCAS(tmp_path / "cas")
+    uri = "dbfs:/Volumes/catalog/schema/volume/result.json"
+    cas.bind_bytes(uri, b"record")
+    opening = DatabricksLedgerPrefix(
+        ledger_id="publication-full-score",
+        cap_cluster_hours=1024.0,
+        reservation_count=7,
+        submission_receipt_count=7,
+        terminal_actual_count=7,
+        prefix_sha256=_digest("opening"),
+    )
+    restarted = replace(
+        opening,
+        reservation_count=9,
+        submission_receipt_count=9,
+        terminal_actual_count=9,
+        prefix_sha256=_digest("restarted-opening"),
+    )
+    scope = {
+        "execution_plan_sha256": _digest("execution"),
+        "ledger_path_sha256": _digest("ledger-path"),
+        "opening_prefix": opening,
+    }
+
+    cas.bind_chain_scope(**scope)
+    scope_path = cas.root / "chain-scope.json"
+    scope_bytes = scope_path.read_bytes()
+    assert json.loads(scope_bytes) == {
+        "execution_plan_sha256": _digest("execution"),
+        "ledger_path_sha256": _digest("ledger-path"),
+        "opening_prefix": opening.to_record(),
+        "record_type": remote.FULL_SCORE_REMOTE_CAS_CHAIN_SCOPE_RECORD_TYPE,
+    }
+    remote.FullScoreCompactArtifactCAS(cas.root).bind_chain_scope(**scope)
+    assert [path.name for path in (cas.root / "bindings").iterdir()] == [
+        f"{remote._canonical_sha256(uri)}.json"
+    ]
+    assert cas.resolve(uri).read_bytes() == b"record"
+    for drift in (
+        {"opening_prefix": restarted},
+        {"execution_plan_sha256": _digest("other-execution")},
+        {"ledger_path_sha256": _digest("other-ledger-path")},
+    ):
+        with pytest.raises(ValueError, match="scoped to another full-score chain"):
+            cas.bind_chain_scope(**{**scope, **drift})
+    assert scope_path.read_bytes() == scope_bytes
+
+    fresh = remote.FullScoreCompactArtifactCAS(tmp_path / "restarted-cas")
+    fresh.bind_chain_scope(**{**scope, "opening_prefix": restarted})
+    scope_path.unlink()
+    scope_path.symlink_to(fresh.root / "chain-scope.json")
+    with pytest.raises(ValueError, match="chain scope must be a regular file"):
+        cas.resolve(uri)
+    scope_path.unlink()
+    scope_path.write_bytes(b"x" * (remote.FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES + 1))
+    with pytest.raises(ValueError, match="chain scope violates its metadata cap"):
+        cas.resolve(uri)
+
+
 def test_publication_cas_admission_bound_covers_all_paired_scores_and_metadata():
     assert remote.FULL_SCORE_REMOTE_EVIDENCE_PAIR_OUTPUT_MAX_BYTES == 1_024
     assert remote.FULL_SCORE_REMOTE_EVIDENCE_PAIR_MAX_BYTES == 13_312
@@ -1357,7 +1417,10 @@ def test_publication_cas_admission_bound_covers_all_paired_scores_and_metadata()
         evidence_and_coordinator_bytes + (1_980 - 2 * 160 - 4 * 10) * 16 * 1024 * 1024
     )
     assert remote.FULL_SCORE_REMOTE_CAS_MAX_BYTES == 28_722_594_816
-    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == 28_730_704_896
+    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == (
+        28_722_594_816 + (1_980 + 1) * 4 * 1024
+    )
+    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == 28_730_708_992
 
 
 def test_controller_recovers_lost_submit_response_with_same_token(
