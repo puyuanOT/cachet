@@ -284,7 +284,9 @@ _DATABRICKS_NONTERMINAL_LIFE_CYCLE_STATES = frozenset(
 # A stored runs/get snapshot replaces the fresh response only when the two
 # agree on every field read from it by the ledger's verified terminal actual,
 # the capacity-failure classifier, and the phase terminal and capacity-failure
-# builders; a field any of them starts reading must be added here.
+# builders; a field any of them starts reading must be added here.  Run-level
+# page URL, state message, times and cluster id are only type-checked by the
+# run-status sidecar validator, bill nothing, and are not compared.
 _FULL_SCORE_ADOPTED_RUN_FIELDS = ("repair_history", "run_id", "run_name")
 _FULL_SCORE_ADOPTED_RUN_STATE_FIELDS = ("life_cycle_state", "result_state")
 _FULL_SCORE_ADOPTED_TASK_FIELDS = (
