@@ -189,7 +189,11 @@ return as a production dependency.
 - `publication_campaign_finalizer.py` recomputes the complete latency and
   full-score branches, proves their exact shared-ledger succession, emits only
   sanitized table projections and digest bindings, and creates the sole
-  standard publication gate bound to the sealed campaign-report digest.
+  standard publication gate bound to the sealed campaign-report digest. Its
+  authority replay is in-process: it needs the live collectors' authority
+  objects and the unchanged campaign ledger, so after the campaign only the
+  offline pair validator runs (internal consistency and pinned digests). The
+  vLLM 0.30.0 campaign's source of truth is tag `vllm-0300-publication-ffb1f1d`.
 - `publication_campaign_tables.py` validates the exact sanitized report/gate
   pair and deterministically renders and byte-checks the governed public
   Markdown table regions plus the digest-bound appendix README; manual result

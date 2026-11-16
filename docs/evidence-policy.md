@@ -93,6 +93,36 @@ by a secure umask (`0600`, `0640`, or `0644`, including read-only variants);
 crash recovery accepts only the sealed mode, and every load still requires
 stable canonical bytes plus complete source and ledger replay.
 
+That replay is in-process verification at finalization time, not a durable
+verifier. Finalizing, validating a finalization, and loading all take the
+latency collection, GPU qualification launch, and final full-score consumer
+authorities (0.27.1 also takes the handoff and source-closure authorities).
+Only the live collectors issue them, in the process that ran them, and none is
+serialized. Replay also rereads the campaign ledger, binds its resolved
+absolute path, and requires the final consumer to end at the complete current
+ledger prefix, so moving, copying, or appending to the ledger after the final
+consumer stops replay. A fresh process cannot replay a published pair.
+
+After the campaign, the only check that runs is the offline
+`validate_vllm_0271_publication_report_pair`, which needs no authority. It
+checks the report's exact schema and self-digest; the pinned campaign,
+full-score execution-plan, inventory, and shard-plan digests; the fixed
+coverage counts and the 15,360–16,640 cold-attestation range; that the
+latency-summary digest is the digest of the summary rebuilt from the report's
+own latency tables; the quality identities and scorer/protocol contracts; the
+ledger closure, accounting, and cap-raise history; and that the gate is the one
+rebuilt from the report. It does not check that the latency-collection or
+full-score aggregate digests name real records, that any number came from
+Databricks evidence, or that the ledger prefixes match any ledger file, so an
+internally consistent resealed report passes. The gate is an integrity gate
+with no quality or latency threshold, and latency results are
+estimation-only. The publication-table renderer runs only this offline check.
+
+The source of truth for the vLLM 0.30.0 campaign is the tagged commit
+`vllm-0300-publication-ffb1f1d`. Its published report was finalized by that
+code plus the closed-ledger projection fix that writes
+`final_active_reserved_cluster_hours` as `0.0`.
+
 Human-readable campaign tables are a deterministic projection of that exact
 pair, not a second hand-edited evidence source. The publication-table renderer
 uses fixed row identities and order, type-exact finite numeric formatting, and

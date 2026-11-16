@@ -3,6 +3,11 @@
 The renderer accepts only an exact, passing report/gate pair. It performs no
 I/O: callers own the surrounding Markdown and replace its uniquely delimited
 regions with :func:`replace_vllm_0271_publication_table_regions`.
+
+Acceptance means the offline pair validator passed. That validator checks the
+report's internal consistency and pinned source digests, not that its numbers
+came from the campaign's evidence; the authority replay runs only in the
+finalizing process (see :mod:`document_kv_cache.publication_campaign_finalizer`).
 """
 
 from __future__ import annotations

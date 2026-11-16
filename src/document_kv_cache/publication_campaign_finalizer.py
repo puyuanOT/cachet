@@ -5,6 +5,35 @@ joins them to one uninterrupted ledger lineage, projects sanitized tables, and
 binds the result to the standard benchmark publication-gate record.  The 0.27.1
 report replays one latency execution plan; the 0.30.0 report replays a
 multi-plan latency collection and discloses its plan set and ledger bindings.
+
+Verification is in-process, at finalization time.  Finalization, and the replay
+that the ``validate_*_finalization`` and ``load_*`` functions perform, take
+authority objects that only the live collectors issue, in the process that ran
+them: the latency collection, GPU qualification launch, and final full-score
+consumer authorities (0.27.1 also takes the handoff and source-closure
+authorities).  None of them is serialized.  Replay also rereads the campaign
+ledger, binds its resolved absolute path, and requires the final consumer to
+end at the complete current ledger prefix, so it fails once the ledger is
+moved, copied, or appended to.  A fresh process cannot replay a published pair.
+
+What outlives the campaign is the sealed report/gate pair and
+:func:`validate_vllm_0271_publication_report_pair`, which needs no authority.
+It checks the report's exact schema and self-digest; the pinned campaign,
+full-score execution-plan, inventory, and shard-plan digests; the fixed
+coverage counts and the cold-attestation range; that the latency-summary digest
+is the digest of the summary rebuilt from the report's own latency tables; the
+quality identities and scorer/protocol contracts; the ledger closure,
+accounting, and cap-raise history; and that the gate is the one rebuilt from
+the report.  It does not check that the latency-collection or full-score
+aggregate digests name real records, that any number came from Databricks
+evidence, or that the ledger prefixes match any ledger file, so an internally
+consistent resealed report passes.  The gate is an integrity gate: it sets no
+quality or latency threshold.
+
+The source of truth for the 0.30.0 campaign is the tagged commit
+``vllm-0300-publication-ffb1f1d``.  Its published report was finalized by that
+code plus the closed-ledger projection fix that writes
+``final_active_reserved_cluster_hours`` as ``0.0``.
 """
 
 from __future__ import annotations
@@ -347,7 +376,11 @@ def finalize_vllm_0271_publication_campaign(
     compact_artifact_resolver: FullScoreCompactArtifactResolver,
     ledger_path: str | Path,
 ) -> PublicationCampaignFinalization:
-    """Recompute both evidence branches and emit one digest-bound standard gate."""
+    """Recompute both evidence branches and emit one digest-bound standard gate.
+
+    Runs only in the process holding the live collectors' authorities, against
+    the unmoved campaign ledger; see the module docstring.
+    """
 
     validate_publication_latency_execution_plan_record(latency_execution_plan_record)
     if type(latency_collection_authorization) is not (
@@ -458,7 +491,11 @@ def validate_vllm_0271_publication_finalization(
     compact_artifact_resolver: FullScoreCompactArtifactResolver,
     ledger_path: str | Path,
 ) -> None:
-    """Rebuild *finalization* from its authorities and require exact equality."""
+    """Rebuild *finalization* from its authorities and require exact equality.
+
+    The authorities exist only in the finalizing process, so this replay is
+    in-process; see the module docstring.
+    """
 
     if not isinstance(finalization, PublicationCampaignFinalization):
         raise TypeError("finalization must be PublicationCampaignFinalization")
@@ -500,7 +537,11 @@ def write_vllm_0271_publication_finalization(
     finalization: PublicationCampaignFinalization,
     directory: str | Path,
 ) -> tuple[Path, Path]:
-    """Write an exact gate/report pair with the report as the commit file."""
+    """Write an exact gate/report pair with the report as the commit file.
+
+    Writing checks only the offline pair validator; the authority replay
+    happened when *finalization* was built.
+    """
 
     if not isinstance(finalization, PublicationCampaignFinalization):
         raise TypeError("finalization must be PublicationCampaignFinalization")
@@ -593,7 +634,12 @@ def load_vllm_0271_publication_finalization(
     compact_artifact_resolver: FullScoreCompactArtifactResolver,
     ledger_path: str | Path,
 ) -> PublicationCampaignFinalization:
-    """Load canonical report/gate bytes and replay all source authorities."""
+    """Load canonical report/gate bytes and replay all source authorities.
+
+    The replay needs the finalizing process's authority objects and the
+    unmoved, unappended campaign ledger, so it is an in-process round trip
+    check, not a durable verifier; see the module docstring.
+    """
 
     return _load_publication_finalization(
         directory,
@@ -643,6 +689,13 @@ def finalize_vllm_0300_publication_campaign(
     job record it ran under, so no single latency execution plan is replayed.
     The report discloses the plan set and how each job is tied to the ledger,
     and the never-started GPU qualification attempts that were resubmitted.
+
+    Verification happens here, in-process: the latency collection, GPU
+    qualification, and final consumer authorities exist only in the process
+    that collected them, and the ledger must be the unmoved file whose
+    complete current prefix ends at the final consumer.  The source of truth
+    for the 0.30.0 campaign is tag ``vllm-0300-publication-ffb1f1d``; see the
+    module docstring for what the offline pair validator checks afterwards.
     """
 
     if type(latency_collection_authorization) is not (
@@ -749,7 +802,11 @@ def validate_vllm_0300_publication_finalization(
     compact_artifact_resolver: FullScoreCompactArtifactResolver,
     ledger_path: str | Path,
 ) -> None:
-    """Rebuild a 0.30.0 *finalization* from its authorities and require equality."""
+    """Rebuild a 0.30.0 *finalization* from its authorities and require equality.
+
+    This replay is in-process: it needs the same authority objects as
+    :func:`finalize_vllm_0300_publication_campaign` and the unchanged ledger.
+    """
 
     if not isinstance(finalization, PublicationCampaignFinalization):
         raise TypeError("finalization must be PublicationCampaignFinalization")
@@ -792,7 +849,11 @@ def write_vllm_0300_publication_finalization(
     finalization: PublicationCampaignFinalization,
     directory: str | Path,
 ) -> tuple[Path, Path]:
-    """Write an exact 0.30.0 gate/report pair with the report as the commit file."""
+    """Write an exact 0.30.0 gate/report pair with the report as the commit file.
+
+    Writing checks only the offline pair validator; the authority replay
+    happened when *finalization* was built.
+    """
 
     if not isinstance(finalization, PublicationCampaignFinalization):
         raise TypeError("finalization must be PublicationCampaignFinalization")
@@ -821,7 +882,14 @@ def load_vllm_0300_publication_finalization(
     compact_artifact_resolver: FullScoreCompactArtifactResolver,
     ledger_path: str | Path,
 ) -> PublicationCampaignFinalization:
-    """Load a 0.30.0 report/gate pair and replay all source authorities."""
+    """Load a 0.30.0 report/gate pair and replay all source authorities.
+
+    The replay needs the finalizing process's authority objects and the
+    unmoved, unappended campaign ledger, so it is an in-process round trip
+    check, not a durable verifier.  After the campaign, only
+    :func:`validate_vllm_0271_publication_report_pair` can run; see the module
+    docstring for what it does and does not check.
+    """
 
     return _load_publication_finalization(
         directory,
@@ -1627,7 +1695,13 @@ def validate_vllm_0271_publication_report_pair(
     report_record: Mapping[str, Any],
     gate_record: Mapping[str, Any],
 ) -> None:
-    """Validate one exact sanitized report and its standard publication gate."""
+    """Validate one exact sanitized report and its standard publication gate.
+
+    This offline check needs no authority and is the only one that can run
+    after the campaign.  It proves internal consistency and the pinned source
+    digests, not that the report came from the campaign's evidence; see the
+    module docstring.
+    """
 
     report = _json_object_copy(report_record, "publication campaign report")
     gate = _json_object_copy(gate_record, "publication campaign gate")
