@@ -295,11 +295,15 @@ exact match falls from 0.462 to 0.187 and MuSiQue from 0.182 to 0.008, with
 intervals far below −0.02. Vanilla prefills each document on its own, so no
 document attends to another, and these are the two datasets whose answers
 bridge facts across documents (HotpotQA examples carry up to 10 documents and
-MuSiQue up to 20). The failures differ by dataset. An extracted answer counts
-as an abstention when it begins with "unknown", "none", "do not know",
-"cannot", "it is not possible", "not enough", "insufficient", "there is no",
-or "no information", or says the documents do not provide, mention, specify,
-state, contain, or include the answer. By that rule, 4,177 of HotpotQA's 6,017
+MuSiQue up to 20). The failures differ by dataset. Ignoring case, an
+extracted answer counts as an abstention when it begins with the words
+"unknown", "none", "do not know", "don't know", "I do not know", "I don't
+know", "cannot", "can't", "it is not possible", "it is impossible", "it is
+unclear", "not enough", "insufficient", or "there is no", or when it contains
+"do not", "does not", or "did not" followed by provide, mention, specify,
+state, contain, include, say, or indicate; "not" followed by provided,
+mentioned, specified, stated, given, or available; or "no information" or
+"no mention". By that rule, 4,177 of HotpotQA's 6,017
 Vanilla misses (69%) are wrong answers, 1,519 (25%) abstain, and 321 (5%) have
 no extractable answer. On MuSiQue, Vanilla mostly declines: of its 2,397
 misses, 1,420 (59%) abstain, 423 (18%) have no extractable answer, and 554

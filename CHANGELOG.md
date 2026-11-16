@@ -17,6 +17,10 @@
 - `packaging` pinned to 26.3.
 - Benchmark records: the vLLM 0.30.0 campaign report, the quality v2 report,
   and the plan-coherent auxiliary latency re-run.
+- Removed the superseded `benchmarks/current/` summary, the earlier result
+  folders under `benchmarks/{databricks,native-engine,sglang,storage,vllm}/`
+  (their index READMEs remain), and six PR-evidence folders for superseded
+  benchmark results under `docs/release-ops/pr-evidence/`.
 
 ## 0.2.0
 
