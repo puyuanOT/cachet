@@ -1877,17 +1877,17 @@ def _render_storage(cells: Mapping[str, Mapping[str, Any]]) -> str:
             (
                 "Local NVMe disk",
                 cells["auxiliary-storage-disk"],
-                "Dedicated strict-cold five-block control",
+                "Five-block control; cold reads attested, page-cache residency unmeasured",
             ),
             (
                 "RAM",
                 cells["auxiliary-storage-ram"],
-                "Prewarmed 16-GiB provider payload cache; cold GPU",
+                "Prewarmed 16-GiB payload cache; priming also warmed the serving process",
             ),
             (
                 "Unity Catalog mounted path",
                 cells["auxiliary-storage-uc"],
-                "OS eviction proved; backend cache unproven",
+                "OS eviction requested, residency unmeasured; backend cache unproven",
             ),
             (
                 "Hybrid RAM/disk/Unity Catalog",

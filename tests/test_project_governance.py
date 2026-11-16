@@ -1411,7 +1411,8 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     score_table = _markdown_section(root_readme, "Benchmark Dataset Score Table")
     compact_root_readme = " ".join(root_readme.split())
 
-    assert "L40S is the sole publication handoff generator" in compact_root_readme
+    assert "L40S was the designed sole handoff generator" in compact_root_readme
+    assert "served an L4-regenerated bundle" in compact_root_readme
     assert "same-hardware fresh-load byte reproducibility" in compact_root_readme
     assert "cross-hardware logical/token/layout/size equivalence" in compact_root_readme
 

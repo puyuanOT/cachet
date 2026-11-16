@@ -173,10 +173,11 @@ Cachet is alpha software. The current human-readable benchmark summary lives in
 [`benchmarks/README.md`](benchmarks/), which publishes the vLLM 0.30.0
 campaign's latency estimates, a separately sealed answer-quality benchmark, and
 a plan-coherent re-run of the auxiliary latency contrasts. In the quality
-benchmark, the per-document Vanilla KV cache matches full prefill on needle
-retrieval but loses substantial accuracy on multi-hop question answering
-(HotpotQA and MuSiQue). You do not need cloud infrastructure to try the local
-quickstart.
+benchmark, the per-document Vanilla KV cache loses substantial accuracy on
+multi-hop question answering over several documents (HotpotQA and MuSiQue).
+It matches full prefill on single-document needle retrieval, which tests that
+cached KV survives transfer rather than cross-document reuse. You do not need
+cloud infrastructure to try the local quickstart.
 
 ## Contributing
 

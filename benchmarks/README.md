@@ -55,7 +55,7 @@ production job is submitted.
 | Model weights | bitsandbytes 4-bit runtime weights; the model identifier is not itself a prequantized 4-bit checkpoint |
 | Serving engine | vLLM `0.30.0`, ported from the frozen vLLM `0.27.1` design |
 | Core serving hardware | AWS g6/L4, `g6.8xlarge` |
-| Handoff generation hardware | AWS g6e/L40S; L40S is the sole publication handoff generator, and generated bundles are reused by timed serving jobs |
+| Handoff generation hardware | AWS g6e/L40S was the designed sole handoff generator, and generated bundles are reused by timed serving jobs. Bundles later lost from the campaign volume were regenerated on L4 with the same pinned generator and runtime: 23 of the 70 handoff-serving latency jobs (all fifteen 8k Vanilla jobs, six 32k Vanilla jobs, and two BF16 jobs) served an L4-regenerated bundle, and 18 served an L40S bundle restored byte for byte and joined to a sealed job that staged the same bytes |
 | Default document/runtime KV | Q8, `fp8_e5m2`, pre-RoPE keys with absolute-position injection |
 | Input contexts | 8k, 16k, and 32k prepared prompts |
 | Closed-loop request concurrency | 1, 2, and 4; zero think time |
@@ -235,7 +235,8 @@ the v1 audit showed to be broken:
   v2 (the first closed `<final_answer>` block that is not the echoed
   placeholder); strict whole-output compliance is reported separately;
 - Biography references and predictions are compared without WikiBio
-  `-lrb- … -rrb-` disambiguators, and Biography is diagnostic only: its
+  `-lrb- … -rrb-` disambiguators or other parenthesised text, and Biography
+  is diagnostic only: its
   title exact match is not a reliable quality measure (see below);
 - NIAH uses natural-text haystacks (HotpotQA and MuSiQue context paragraphs)
   with a numeric needle at a paragraph boundary, over the same 3-by-3 grid.
@@ -290,20 +291,32 @@ Report `closed_record_sha256`: `86e6707aa056ab8f36306584e509e3fa391dd6946e0ad94d
 
 Vanilla KV does not meet the margin on either multi-hop dataset. HotpotQA
 exact match falls from 0.462 to 0.187 and MuSiQue from 0.182 to 0.008, with
-intervals far below −0.02. On MuSiQue only 9.8% of Vanilla outputs meet the
-strict whole-output format, against 98.6% with full prefill, and they run about
-five times longer. NIAH single-needle retrieval is
-identical at every length and depth. Vanilla prefills each document on its
-own, so no document attends to another: lookups inside one document survive,
-while questions that bridge facts across documents do not. The cached answers
-stay fluent and name entities from the retrieved documents, but often the
-wrong ones.
+intervals far below −0.02. Vanilla prefills each document on its own, so no
+document attends to another, and these are the two datasets whose answers
+bridge facts across documents (HotpotQA examples carry up to 10 documents and
+MuSiQue up to 20). The failures differ by dataset. On HotpotQA, 4,784 of the
+6,017 Vanilla misses are fluent wrong answers, 912 abstain, and 321 have no
+extractable answer. On MuSiQue, Vanilla mostly gives up: of 2,397 misses,
+1,134 abstain with "Unknown", "None", "Not provided", or similar, 423 have no
+extractable answer, and 840 are wrong answers. Only 9.8% of its MuSiQue
+outputs meet the strict whole-output format, against 98.6% with full prefill,
+and they run about five times longer.
+
+NIAH and Biography examples each carry exactly one document, so per-document
+caching removes no cross-document attention there. Their results test whether
+independently generated KV survives transfer, Q8 storage, and absolute-position
+injection, not whether multi-document answers survive separate caching. On
+that test NIAH single-needle retrieval is identical at every length and depth.
 
 The Biography split comes from its source data. Each subject's name is masked
-by its exact article title, so a disambiguated title rarely matches the text
-and the name stays visible (149 of 220 such examples in this subset, against 6
-of 1,780 plain titles). Both arms read a visible name equally well and neither
-can recover a masked one.
+by its exact article title. A disambiguated title such as
+`name -lrb- occupation -rrb-` never occurs verbatim in the text, so nothing is
+masked, and the stripped title still appears verbatim in 149 of these 220
+examples (against 6 of 1,780 plain titles). Nearly every disambiguated-title
+match comes from those visible names: 127 of 128 with full prefill and 126 of
+127 with Vanilla KV. Plain titles match 24 and 29 times, 21 and 26 of them
+where the title does not appear verbatim; the name can still appear in another
+form, such as with a middle name. Both arms behave alike on this split.
 
 ## Ablation Tables
 
@@ -330,9 +343,9 @@ canonical 32-example dataset domain; callers cannot choose a favorable subset.
 <!-- cachet:vllm-0271-publication-table:storage:begin -->
 | Storage tier | P50 TTFT (s) | P50 TTC (s) | Status |
 | --- | ---: | ---: | --- |
-| Local NVMe disk | 6.7933 | 26.5914 | Dedicated strict-cold five-block control |
-| RAM | 4.0985 | 23.9506 | Prewarmed 16-GiB provider payload cache; cold GPU |
-| Unity Catalog mounted path | 11.5882 | 31.3847 | OS eviction proved; backend cache unproven |
+| Local NVMe disk | 6.7933 | 26.5914 | Five-block control; cold reads attested, page-cache residency unmeasured |
+| RAM | 4.0985 | 23.9506 | Prewarmed 16-GiB payload cache; priming also warmed the serving process |
+| Unity Catalog mounted path | 11.5882 | 31.3847 | OS eviction requested, residency unmeasured; backend cache unproven |
 | Hybrid RAM/disk/Unity Catalog | N/A (not implemented) | N/A (not implemented) | N/A (not implemented); combined serving policy unsupported |
 <!-- cachet:vllm-0271-publication-table:storage:end -->
 
@@ -363,7 +376,10 @@ review after the report was sealed:
 The re-run repeats the 16k, concurrency-4 core Vanilla reference and all five
 auxiliary cells in each of five blocks: 30 jobs under one launch plan, one
 wheel, and one source tree. Every arm runs the same four untimed, uniquely
-cache-salted warmup requests before timing. Cold reads are attested only when
+cache-salted warmup requests before timing. The RAM arm still sends its 16
+payload-cache priming requests first, because a populated payload cache is the
+treatment it measures; after the shared warmup, every arm starts timing with a
+warm serving process. Cold reads are attested only when
 `mincore` reports zero resident pages after eviction, and the BF16 runtime
 records the 0.8 setting it runs at. The estimands use the campaign's paired
 crossed bootstrap, with each contrast divided by its own re-run control. The
@@ -432,7 +448,7 @@ pair under `appendix/vllm-0271-publication-v1/`. Raw Jobs API responses,
 credentials, wheels, logs, generated datasets, prompt payloads, and local
 scratch output do not belong here.
 
-Publication requires all of the following:
+The frozen vLLM 0.27.1 design required all of the following:
 
 - the frozen campaign source and wheel identity;
 - one closed campaign record and exact input provenance;
@@ -445,12 +461,21 @@ Publication requires all of the following:
 - matched fresh-cluster latency execution records for all planned cells;
 - the corrected complete paired score execution record;
 - resource, cache-state, and Databricks control-plane attestations; and
-- one sealed, sanitized `cachet.vllm_0271_publication_report.v1` that
-  reaggregates both branches, binds the exact 115-job latency closure and
-  160-shard full-score closure, and projects the published tables; and
+- one sealed, sanitized campaign report that reaggregates both branches,
+  binds the exact 115-job latency closure and 160-shard full-score closure,
+  and projects the published tables; and
 - its exact passing `document_kv.benchmark_publication_gate.v1` pair, whose
   `benchmark_payload_digest` equals the campaign report's
   `closed_record_sha256`.
+
+The vLLM 0.30.0 finalizer that produced the published
+`cachet.vllm_0300_publication_report.v1` replays the latency collection, GPU
+qualification, and final full-score consumer authorities. It does not replay
+the L40S handoff-generation or tree-closure attestations: after the campaign
+volume lost those trees, each latency job record instead carries its own
+handoff provenance (distributed L40S generation, a closed BF16 bundle, a
+byte-identical restored bundle, or an L4-regenerated bundle), and the
+collection verifies it per job.
 
 The isolated one-arm latency jobs are component evidence under the `smoke`
 policy. They make no standalone comparative claim. Publication is authorized

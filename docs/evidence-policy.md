@@ -60,7 +60,9 @@ comparative publication claim. This does not relax the publication gate. The
 vLLM 0.27.1 campaign finalizer must independently revalidate all 115 component
 records, exactly reaggregate the latency summary and complete paired full-score
 aggregate, prove their uninterrupted shared-ledger lineage, and emit one
-sanitized `cachet.vllm_0271_publication_report.v1`. The only passing campaign
+sanitized `cachet.vllm_0271_publication_report.v1`; the vLLM 0.30.0 port that
+produced the published results emits `cachet.vllm_0300_publication_report.v1`
+instead, and the offline validator below accepts either. The only passing campaign
 gate is the exact `document_kv.benchmark_publication_gate.v1` record whose
 `benchmark_payload_digest` equals that report's `closed_record_sha256`.
 Each preserved full-score raw run must also replay the frozen suite, isolated

@@ -3181,10 +3181,11 @@ def _canonical_sha256(value: Any) -> str:
 def _json_type_exact_equal(left: Any, right: Any) -> bool:
     """Compare JSON values without Python's bool/int/float equality coercions.
 
-    Both sides must be plain JSON (dicts, lists, strings, numbers, booleans,
-    ``None``).  Any other value, such as a nested ``MappingProxyType``, raises
-    ``TypeError`` instead of comparing unequal.  Non-finite floats have no JSON
-    encoding and compare unequal.
+    Values are compared through ``json.dumps``, so a tuple equals the list
+    with the same items and int, float, bool, or ``None`` dict keys equal
+    their string forms.  Values ``json.dumps`` cannot encode, such as a nested
+    ``MappingProxyType``, raise ``TypeError`` instead of comparing unequal.
+    Non-finite floats have no JSON encoding and compare unequal.
     """
 
     try:

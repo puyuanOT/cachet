@@ -47,7 +47,7 @@ lengths.
 | Dataset / task scope | Dataset names and example count |
 | Quality metric | Versioned governed full-dataset metric and answer-parser identity, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
-| Campaign report | Sealed `cachet.vllm_0271_publication_report.v1` record, or `N/A` outside that campaign |
+| Campaign report | Sealed `cachet.vllm_0300_publication_report.v1` record (or the frozen-design `cachet.vllm_0271_publication_report.v1`), or `N/A` outside that campaign |
 | Publication gate | Passing `document_kv.benchmark_publication_gate.v1` record |
 
 For method comparisons, fix the complete setting and vary only the method. For

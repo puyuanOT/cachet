@@ -1,8 +1,9 @@
 """Regenerate one lost publication handoff bundle on single-GPU L4 producers.
 
 The distributed L40S producers' qualification envelope and execution records
-were removed from the campaign volume together with the 32k Q8 and 16k BF16
-bundle bytes.  This path reruns the same pinned pre-RoPE Transformers
+were removed from the campaign volume together with bundle bytes; the 8k and
+32k Q8 bundles and the 16k BF16 bundle were regenerated here, and later the
+16k Q8 bundle for the auxiliary latency re-run.  This path reruns the same pinned pre-RoPE Transformers
 generator inside the same locked runtime on L4.  Each shard reproduces the
 original producers' worker directories under the original producer root, so
 the enriched rows carry the same absolute handoff paths and every regenerated
