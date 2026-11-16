@@ -211,6 +211,7 @@ def _copy_retained_live_ledger(
         attempt_id=attempt_id,
         terminal_state="succeeded",
         actual_cluster_duration_seconds=0.0,
+        attest_never_posted=True,
     )
     assert successor.active_reserved_task_count == 0
     assert successor.active_reserved_cluster_hours == 0.0
@@ -850,6 +851,39 @@ def test_terminal_barrier_timeout_stops_before_next_post_and_resume_closes_first
     )
     second_post = case.cloud.events.index(("post", case.cloud.attempt_ids[1]))
     assert first_terminal_get < second_post
+
+
+@pytest.mark.parametrize("life_cycle_state", ["BLOCKED", "WAITING_FOR_RETRY"])
+def test_terminal_barrier_keeps_blocked_and_retry_waiting_runs_reserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    life_cycle_state: str,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+
+    def waiting_get(
+        config: DatabricksWorkspaceConfig,
+        run_id: str,
+    ) -> dict[str, Any]:
+        run = case.cloud.get_run(config, run_id)
+        run["state"] = {"life_cycle_state": life_cycle_state, "result_state": None}
+        return run
+
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", waiting_get)
+    monkeypatch.setattr(databricks_v2, "_V2_TERMINAL_WAIT_SECONDS", 0.0)
+
+    with pytest.raises(TimeoutError, match="timed out waiting for v2 qualification"):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    interrupted = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(interrupted.submission_receipts) == opening.submission_receipt_count + 1
+    assert len(interrupted.terminal_actuals) == opening.terminal_actual_count
+    assert interrupted.active_reserved_cluster_hours > 0.0
+    assert case.cloud.post_attempt_ids == [case.cloud.attempt_ids[0]]
 
 
 def test_successor_fresh_submit_uses_complete_live_opening_predecessor(

@@ -1,5 +1,6 @@
 from dataclasses import fields
 from pathlib import Path
+import errno
 import gc
 import hashlib
 import io
@@ -2497,6 +2498,114 @@ def test_publication_vanilla_stages_closed_handoffs_and_persists_attestation(
     assert config.publication_handoff_staging_attestation_copy_path.read_bytes() == (
         attestation_path.read_bytes()
     )
+
+
+def _staging_attestation_paths(tmp_path, content=b'{"attestation": "staged"}\n'):
+    source = tmp_path / "local-stage" / "attestation.json"
+    source.parent.mkdir()
+    source.write_bytes(content)
+    return source, tmp_path / "volume-output" / "attestation-copy.json"
+
+
+def _reject_hard_links(monkeypatch):
+    def reject_link(*_args, **_kwargs):
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(public_vllm_smoke.os, "link", reject_link)
+
+
+@pytest.mark.parametrize("hard_links", [True, False])
+def test_publication_staging_attestation_is_fsynced_before_it_becomes_visible(
+    tmp_path, monkeypatch, hard_links
+):
+    source, target = _staging_attestation_paths(tmp_path)
+    if not hard_links:
+        _reject_hard_links(monkeypatch)
+    original_fsync = public_vllm_smoke.os.fsync
+    target_visible_at_fsync = []
+
+    def recording_fsync(descriptor):
+        target_visible_at_fsync.append(target.exists())
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(public_vllm_smoke.os, "fsync", recording_fsync)
+
+    public_vllm_smoke._persist_publication_handoff_staging_attestation(source, target)
+    public_vllm_smoke._persist_publication_handoff_staging_attestation(source, target)
+
+    assert target_visible_at_fsync == [False]
+    assert target.read_bytes() == source.read_bytes()
+    assert [path.name for path in target.parent.iterdir()] == [target.name]
+    source.write_bytes(b'{"attestation": "different"}\n')
+    with pytest.raises(FileExistsError, match="refusing to overwrite a different"):
+        public_vllm_smoke._persist_publication_handoff_staging_attestation(
+            source, target
+        )
+    assert target.read_bytes() == b'{"attestation": "staged"}\n'
+
+
+@pytest.mark.parametrize("hard_links", [True, False])
+def test_publication_staging_attestation_replaces_an_interrupted_empty_placeholder(
+    tmp_path, monkeypatch, hard_links
+):
+    source, target = _staging_attestation_paths(tmp_path)
+    if not hard_links:
+        _reject_hard_links(monkeypatch)
+    target.parent.mkdir()
+    target.touch()
+
+    public_vllm_smoke._persist_publication_handoff_staging_attestation(source, target)
+
+    assert target.read_bytes() == source.read_bytes()
+    assert [path.name for path in target.parent.iterdir()] == [target.name]
+
+
+def test_publication_staging_attestation_failed_write_leaves_no_partial_target(
+    tmp_path, monkeypatch
+):
+    source, target = _staging_attestation_paths(tmp_path)
+
+    def failing_fsync(_descriptor):
+        raise OSError(errno.EIO, "volume write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(public_vllm_smoke.os, "fsync", failing_fsync)
+        with pytest.raises(OSError, match="volume write failed"):
+            public_vllm_smoke._persist_publication_handoff_staging_attestation(
+                source, target
+            )
+    assert list(target.parent.iterdir()) == []
+
+    public_vllm_smoke._persist_publication_handoff_staging_attestation(source, target)
+
+    assert target.read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("identical", [True, False])
+def test_publication_staging_attestation_resolves_a_concurrent_writer(
+    tmp_path, monkeypatch, identical
+):
+    source, target = _staging_attestation_paths(tmp_path)
+    concurrent = source.read_bytes() if identical else b'{"attestation": "other"}\n'
+    original_link = public_vllm_smoke.os.link
+
+    def racing_link(source_name, target_name, *args, **kwargs):
+        Path(target_name).write_bytes(concurrent)
+        return original_link(source_name, target_name, *args, **kwargs)
+
+    monkeypatch.setattr(public_vllm_smoke.os, "link", racing_link)
+
+    if identical:
+        public_vllm_smoke._persist_publication_handoff_staging_attestation(
+            source, target
+        )
+    else:
+        with pytest.raises(FileExistsError, match="refusing to overwrite a different"):
+            public_vllm_smoke._persist_publication_handoff_staging_attestation(
+                source, target
+            )
+    assert target.read_bytes() == concurrent
+    assert [path.name for path in target.parent.iterdir()] == [target.name]
 
 
 def _storage_source_row(dataset, example_id, *, query="Who is described?"):

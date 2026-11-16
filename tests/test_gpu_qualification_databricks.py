@@ -2113,6 +2113,7 @@ def _seed_terminal_cluster_hours(ledger_path: Path, hours: float) -> None:
             attempt_id=attempt_id,
             terminal_state="succeeded",
             actual_cluster_duration_seconds=actual_hours * 3600.0,
+            attest_never_posted=True,
         )
         remaining -= actual_hours
         index += 1
@@ -2259,6 +2260,45 @@ def test_control_plane_terminal_validation_binds_run_task_and_launch_cluster():
             planned_job=planned_job,
             contract=contract,
             submit_receipt=submit_receipt,
+        )
+
+
+@pytest.mark.parametrize("life_cycle_state", ["BLOCKED", "WAITING_FOR_RETRY"])
+@pytest.mark.parametrize("level", ["run", "task"])
+def test_control_plane_validation_treats_blocked_and_retry_wait_as_nonterminal(
+    level, life_cycle_state
+):
+    plan = _plan()
+    payloads = _render(plan, _artifact_uris())
+    contract = qualification_job._validated_qualification_payloads(plan, payloads)[0]
+    submitted_task = payloads[0]["tasks"][0]
+    task = {
+        "attempt_number": 0,
+        "cluster_instance": {"cluster_id": "cluster-10000"},
+        "end_time": 1_900_000,
+        "new_cluster": submitted_task["new_cluster"],
+        "run_id": 20_000,
+        "start_time": 1_100_000,
+        "state": {"life_cycle_state": "TERMINATED", "result_state": "FAILED"},
+        "task_key": submitted_task["task_key"],
+    }
+    run = {
+        "end_time": 2_000_000,
+        "run_id": 10_000,
+        "run_name": payloads[0]["run_name"],
+        "run_type": "SUBMIT_RUN",
+        "start_time": 1_000_000,
+        "state": {"life_cycle_state": "TERMINATED", "result_state": "FAILED"},
+        "tasks": [task],
+    }
+    (run if level == "run" else task)["state"] = {"life_cycle_state": life_cycle_state}
+
+    with pytest.raises(ValueError, match="not terminal"):
+        qualification_job._validate_control_plane_run(
+            run,
+            planned_job=plan["cloud_qualification"]["jobs"][0],
+            contract=contract,
+            submit_receipt={"cloud_run_id": "10000"},
         )
 
 
