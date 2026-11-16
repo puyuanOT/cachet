@@ -55,7 +55,7 @@ production job is submitted.
 | Model weights | bitsandbytes 4-bit runtime weights; the model identifier is not itself a prequantized 4-bit checkpoint |
 | Serving engine | vLLM `0.30.0`, ported from the frozen vLLM `0.27.1` design |
 | Core serving hardware | AWS g6/L4, `g6.8xlarge` |
-| Handoff generation hardware | AWS g6e/L40S was the designed sole handoff generator, and generated bundles are reused by timed serving jobs. Bundles later lost from the campaign volume were regenerated on L4 with the same pinned generator and runtime: 23 of the 70 handoff-serving latency jobs (all fifteen 8k Vanilla jobs, six 32k Vanilla jobs, and two BF16 jobs) served an L4-regenerated bundle, and 18 served an L40S bundle restored byte for byte and joined to a sealed job that staged the same bytes |
+| Handoff generation hardware | AWS g6e/L40S was the designed sole handoff generator, and generated bundles are reused by timed serving jobs. Bundles later lost from the campaign volume were regenerated on L4 with the same pinned generator and runtime (same files and sizes, not byte-identical payloads). Of the 70 latency jobs that serve a handoff bundle, 23 served an L4-regenerated bundle (all fifteen 8k Vanilla jobs, six 32k Vanilla jobs, and two BF16 jobs), 18 served a byte-identical restored copy of an L40S bundle, and the other 29 served their original L40S bundles |
 | Default document/runtime KV | Q8, `fp8_e5m2`, pre-RoPE keys with absolute-position injection |
 | Input contexts | 8k, 16k, and 32k prepared prompts |
 | Closed-loop request concurrency | 1, 2, and 4; zero think time |
@@ -235,7 +235,8 @@ the v1 audit showed to be broken:
   v2 (the first closed `<final_answer>` block that is not the echoed
   placeholder); strict whole-output compliance is reported separately;
 - Biography references and predictions are compared without WikiBio
-  `-lrb- … -rrb-` disambiguators or other parenthesised text, and Biography
+  `-lrb- … -rrb-` disambiguators (WikiBio's tokenised parentheses) or other
+  parenthesised text, and Biography
   is diagnostic only: its
   title exact match is not a reliable quality measure (see below);
 - NIAH uses natural-text haystacks (HotpotQA and MuSiQue context paragraphs)
@@ -294,29 +295,37 @@ exact match falls from 0.462 to 0.187 and MuSiQue from 0.182 to 0.008, with
 intervals far below −0.02. Vanilla prefills each document on its own, so no
 document attends to another, and these are the two datasets whose answers
 bridge facts across documents (HotpotQA examples carry up to 10 documents and
-MuSiQue up to 20). The failures differ by dataset. On HotpotQA, 4,784 of the
-6,017 Vanilla misses are fluent wrong answers, 912 abstain, and 321 have no
-extractable answer. On MuSiQue, Vanilla mostly gives up: of 2,397 misses,
-1,134 abstain with "Unknown", "None", "Not provided", or similar, 423 have no
-extractable answer, and 840 are wrong answers. Only 9.8% of its MuSiQue
-outputs meet the strict whole-output format, against 98.6% with full prefill,
-and they run about five times longer.
+MuSiQue up to 20). The failures differ by dataset. Counting as an abstention
+any extracted answer that declines ("Unknown", "None", "I do not know") or
+says the documents do not provide, mention, or specify the answer, about
+4,200 of HotpotQA's 6,017 Vanilla misses (70%) are wrong answers, about 1,500
+(25%) abstain, and 321 have no extractable answer. On MuSiQue, Vanilla mostly
+declines: of its 2,397 misses, about 1,400 (58%) abstain, 423 (18%) have no
+extractable answer, and about 580 (24%) are wrong answers; full prefill
+abstains on about a third of its own misses. The split is approximate,
+because some answers deny the question's premise rather than decline. Only
+9.8% of Vanilla's MuSiQue outputs meet the strict whole-output format, against
+98.6% with full prefill, and they run about five times longer.
 
 NIAH and Biography examples each carry exactly one document, so per-document
 caching removes no cross-document attention there. Their results test whether
 independently generated KV survives transfer, Q8 storage, and absolute-position
 injection, not whether multi-document answers survive separate caching. On
 that test NIAH single-needle retrieval is identical at every length and depth.
+Both arms answer all 1,000 items correctly, so NIAH is at its ceiling and
+cannot show a small loss.
 
-The Biography split comes from its source data. Each subject's name is masked
-by its exact article title. A disambiguated title such as
-`name -lrb- occupation -rrb-` never occurs verbatim in the text, so nothing is
-masked, and the stripped title still appears verbatim in 149 of these 220
-examples (against 6 of 1,780 plain titles). Nearly every disambiguated-title
-match comes from those visible names: 127 of 128 with full prefill and 126 of
-127 with Vanilla KV. Plain titles match 24 and 29 times, 21 and 26 of them
-where the title does not appear verbatim; the name can still appear in another
-form, such as with a middle name. Both arms behave alike on this split.
+The Biography split comes from its source data. WikiBio writes parentheses
+as the tokens `-lrb-` and `-rrb-`, and the dataset masks each subject by
+replacing every exact occurrence of the article title with "the subject". A
+disambiguated title such as `name -lrb- occupation -rrb-` never occurs in the
+text, so nothing is masked, and the title without its disambiguator still
+appears as a whole name in 149 of these 220 examples (against 1 of 1,780 plain
+titles). Nearly every disambiguated-title match comes from those visible
+names: 127 of 128 with full prefill and 126 of 127 with Vanilla KV. Plain
+titles match 24 and 29 times, 23 and 28 of them where the title does not
+appear; the name can still appear in another form, such as with a middle
+name. Both arms behave alike on this split.
 
 ## Ablation Tables
 
@@ -471,7 +480,8 @@ The frozen vLLM 0.27.1 design required all of the following:
 The vLLM 0.30.0 finalizer that produced the published
 `cachet.vllm_0300_publication_report.v1` replays the latency collection, GPU
 qualification, and final full-score consumer authorities. It does not replay
-the L40S handoff-generation or tree-closure attestations: after the campaign
+the L40S handoff-generation, Q8/BF16 tree-closure, or latency-source-closure
+attestations: after the campaign
 volume lost those trees, each latency job record instead carries its own
 handoff provenance (distributed L40S generation, a closed BF16 bundle, a
 byte-identical restored bundle, or an L4-regenerated bundle), and the
