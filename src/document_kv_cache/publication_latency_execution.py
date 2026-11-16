@@ -8894,6 +8894,37 @@ def _auxiliary_rerun_control_kind(setting_id: str) -> str:
     return "storage-disk" if setting_id in {"storage-ram", "storage-uc"} else "16k-c4-vanilla"
 
 
+def _auxiliary_rerun_estimate_design() -> list[dict[str, Any]]:
+    """Return the campaign's auxiliary projections with re-run controls and treatments."""
+
+    projection = {
+        _required_string(item, "estimand_id"): item
+        for item in _publication_latency_estimand_projection_design()
+    }
+    return [
+        {
+            **projection[f"auxiliary-{setting_id}"],
+            "control_cell_id": (
+                f"auxiliary-rerun-{_auxiliary_rerun_control_kind(setting_id)}"
+            ),
+            "treatment_cell_id": f"auxiliary-rerun-{setting_id}",
+        }
+        for setting_id, _family, _description in PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
+    ]
+
+
+def _auxiliary_rerun_comparison_pairs() -> list[tuple[str, str, str]]:
+    return [
+        (
+            family,
+            f"block-{block:02d}-{_auxiliary_rerun_control_kind(setting_id)}",
+            f"block-{block:02d}-{setting_id}",
+        )
+        for setting_id, family, _description in PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
+        for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+    ]
+
+
 def _auxiliary_rerun_handoff_source(job: Mapping[str, Any]) -> dict[str, Any]:
     """Return the stage-free handoff identity the re-run plan binds per job."""
 
@@ -9268,12 +9299,8 @@ def aggregate_publication_latency_auxiliary_rerun(
         )
         for kind in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
     ]
-    projection = {
-        _required_string(item, "estimand_id"): item
-        for item in _publication_latency_estimand_projection_design()
-    }
     estimates: list[dict[str, Any]] = []
-    for spec in specs:
+    for spec, design in zip(specs, _auxiliary_rerun_estimate_design(), strict=True):
         paired_logs = _paired_log_ratios_by_block(spec, result_by_job=results_by_id)
         metric_records: dict[str, Any] = {}
         for metric_name in ("ttft_seconds", "time_to_completion_seconds"):
@@ -9297,15 +9324,9 @@ def aggregate_publication_latency_auxiliary_rerun(
                 "confidence_interval_95": [lower, upper],
                 "geometric_mean_speedup": point,
             }
-        control_kind = _auxiliary_rerun_control_kind(spec["setting_id"])
-        estimates.append(
-            {
-                **projection[spec["estimand_id"]],
-                "control_cell_id": f"auxiliary-rerun-{control_kind}",
-                "metrics": metric_records,
-                "treatment_cell_id": f"auxiliary-rerun-{spec['setting_id']}",
-            }
-        )
+        if design["estimand_id"] != spec["estimand_id"]:  # pragma: no cover - static.
+            raise RuntimeError("auxiliary re-run estimand order drift")
+        estimates.append({**design, "metrics": metric_records})
 
     record: dict[str, Any] = {
         "analysis": _publication_latency_summary_analysis(),
@@ -9447,11 +9468,24 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
         for key, _ in (*_LATENCY_COHERENCE_FIELDS, *_AUXILIARY_RERUN_PAIR_FIELDS)
     ):
         raise ValueError("auxiliary re-run comparison pairs are not plan-coherent")
+    if [
+        (row.get("comparison_family"), row.get("control_job_id"), row.get("treatment_job_id"))
+        for row in coherence
+    ] != _auxiliary_rerun_comparison_pairs():
+        raise ValueError("auxiliary re-run comparison pairs drift from the design")
     estimates = _mapping_sequence(record, "estimates")
     if [item.get("setting_id") for item in estimates] != [
         setting_id for setting_id, _family, _description in PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
     ]:
         raise ValueError("auxiliary re-run must estimate the four auxiliary contrasts")
+    for item, design in zip(estimates, _auxiliary_rerun_estimate_design(), strict=True):
+        if set(item) != {*design, "metrics"} or not _json_type_exact_equal(
+            {key: item[key] for key in design}, design
+        ):
+            raise ValueError(
+                f"auxiliary re-run estimate {item.get('estimand_id')!r} drifts from "
+                "its projection design"
+            )
     for item in estimates:
         for metric_name in ("ttft", "time_to_completion"):
             metric = _mapping(_mapping(item, "metrics"), metric_name)

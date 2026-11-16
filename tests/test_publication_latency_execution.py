@@ -6701,6 +6701,59 @@ def test_auxiliary_rerun_pairs_may_differ_in_their_design_fields(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    ("tamper", "match"),
+    (
+        ("ram_control", "estimate 'auxiliary-storage-ram' drifts from its projection design"),
+        ("bf16_control", "estimate 'auxiliary-precision-bf16' drifts from its projection design"),
+        ("campaign_control", "estimate 'auxiliary-hardware-a10g' drifts from its projection design"),
+        ("treatment", "estimate 'auxiliary-storage-uc' drifts from its projection design"),
+        ("paired_request_count", "estimate 'auxiliary-storage-uc' drifts from its projection design"),
+        ("speedup_direction", "estimate 'auxiliary-precision-bf16' drifts from its projection design"),
+        ("extra_field", "estimate 'auxiliary-storage-ram' drifts from its projection design"),
+        ("missing_field", "estimate 'auxiliary-hardware-a10g' drifts from its projection design"),
+        ("pair_control", "comparison pairs drift from the design"),
+        ("pair_order", "comparison pairs drift from the design"),
+    ),
+)
+def test_auxiliary_rerun_record_validator_rechecks_estimate_design(
+    monkeypatch, tamper, match
+):
+    plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
+    record = _aggregate_auxiliary_rerun(plan, jobs, results, attempts)
+    tampered = json.loads(json.dumps(record))
+    by_setting = {item["setting_id"]: item for item in tampered["estimates"]}
+    if tamper == "ram_control":
+        by_setting["storage-ram"]["control_cell_id"] = "auxiliary-rerun-16k-c4-vanilla"
+    elif tamper == "bf16_control":
+        by_setting["precision-bf16"]["control_cell_id"] = "auxiliary-rerun-storage-disk"
+    elif tamper == "campaign_control":
+        by_setting["hardware-a10g"]["control_cell_id"] = "core-vanilla_prefill-16384-c4"
+    elif tamper == "treatment":
+        by_setting["storage-uc"]["treatment_cell_id"] = "auxiliary-storage-uc"
+    elif tamper == "paired_request_count":
+        by_setting["storage-uc"]["paired_request_count"] += 1
+    elif tamper == "speedup_direction":
+        by_setting["precision-bf16"]["speedup_direction"] = (
+            "treatment_latency_divided_by_control_latency"
+        )
+    elif tamper == "extra_field":
+        by_setting["storage-ram"]["note"] = "re-run"
+    elif tamper == "missing_field":
+        del by_setting["hardware-a10g"]["input_tokens"]
+    elif tamper == "pair_control":
+        tampered["coherence"][5]["control_job_id"] = "block-01-16k-c4-vanilla"
+    else:
+        tampered["coherence"][0], tampered["coherence"][1] = (
+            tampered["coherence"][1],
+            tampered["coherence"][0],
+        )
+    tampered["closed_record_sha256"] = execution._closed_record_sha256(tampered)
+
+    with pytest.raises(ValueError, match=match):
+        execution.validate_publication_latency_auxiliary_rerun_record(tampered)
+
+
 def _handoff_source(job):
     return {key: deepcopy(job["handoff"][key]) for key in ("binding", "source_kind")}
 
