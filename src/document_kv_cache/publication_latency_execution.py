@@ -8795,6 +8795,7 @@ def collect_publication_latency_multi_plan_campaign(
     selected_run_ids: Mapping[str, str],
     ledger_path: str | Path,
     controller_cas_root: str | Path,
+    superseded_success_reasons: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], PublicationLatencyMultiPlanCollectionAuthorization]:
     """Join one selected successful run per frozen job across its launch plans.
 
@@ -8804,6 +8805,11 @@ def collect_publication_latency_multi_plan_campaign(
     receipt re-recorded by run ID under the exact timeout-only stand-in
     payload, or no ledger record at all, which is accepted only when the
     recreated ledger carries recovered-balance seeds for the spent hours.
+
+    Every job's ledger attempts are listed in ``job_attempts``.  A superseded
+    attempt that succeeded is a discarded result, so collection refuses it
+    unless ``superseded_success_reasons`` maps its attempt ID to the recorded
+    reason for discarding it.
     """
 
     descriptors = _campaign_latency_job_descriptors(campaign_plan_record)
@@ -8870,6 +8876,19 @@ def collect_publication_latency_multi_plan_campaign(
     workspace_identity = require_databricks_current_user_name(
         config,
         expected_user_name=next(iter(principals)),
+    )
+
+    selected_attempt_ids = {
+        _required_string(job, "reservation_attempt_id")
+        for _run_id, _run, job, _payload, _identity in observed
+    }
+    initial_superseded = _superseded_latency_attempts(
+        initial_ledger,
+        job_ids=set(descriptors),
+        selected_attempt_ids=selected_attempt_ids,
+    )
+    success_reasons = _superseded_success_reasons(
+        initial_superseded, superseded_success_reasons
     )
 
     receipts_by_attempt = {
@@ -9012,11 +9031,10 @@ def collect_publication_latency_multi_plan_campaign(
     superseded_attempts = _superseded_latency_attempts(
         final_ledger,
         job_ids=set(descriptors),
-        selected_attempt_ids={
-            _required_string(item["job_record"], "reservation_attempt_id")
-            for item in jobs
-        },
+        selected_attempt_ids=selected_attempt_ids,
     )
+    if superseded_attempts != initial_superseded:
+        raise RuntimeError("latency superseded attempts changed during collection")
     recovered_seeds = [
         item
         for item in final_ledger.terminal_actuals
@@ -9030,6 +9048,12 @@ def collect_publication_latency_multi_plan_campaign(
         ),
         "closed_record_sha256": "",
         "engine_version": PUBLICATION_CAMPAIGN_ENGINE_VERSION,
+        "job_attempts": _latency_job_attempts(
+            final_ledger,
+            terminal_receipts=terminal_receipts,
+            superseded_attempts=superseded_attempts,
+            success_reasons=success_reasons,
+        ),
         "job_count": len(jobs),
         "jobs": jobs,
         "ledger": {
@@ -9099,6 +9123,157 @@ def _superseded_latency_attempts(
     return sorted(superseded, key=lambda item: item["attempt_id"])
 
 
+def _superseded_success_reasons(
+    superseded: Sequence[Mapping[str, Any]],
+    reasons: Mapping[str, str] | None,
+) -> dict[str, str]:
+    succeeded = {
+        item["attempt_id"]: item["job_id"]
+        for item in superseded
+        if item["terminal_state"] == "succeeded"
+    }
+    supplied = {} if reasons is None else reasons
+    if not isinstance(supplied, Mapping) or any(
+        not isinstance(key, str) or not isinstance(value, str) or not value.strip()
+        for key, value in supplied.items()
+    ):
+        raise ValueError("superseded latency success reasons must be non-empty text")
+    for attempt_id, job_id in sorted(succeeded.items()):
+        if attempt_id not in supplied:
+            raise ValueError(
+                f"superseded latency attempt {attempt_id!r} for {job_id!r} "
+                "succeeded; discarding its result needs a recorded reason"
+            )
+    unknown = sorted(set(supplied) - set(succeeded))
+    if unknown:
+        raise ValueError(
+            "superseded latency success reasons name attempts that are not "
+            f"superseded successes: {unknown}"
+        )
+    return {attempt_id: supplied[attempt_id] for attempt_id in sorted(succeeded)}
+
+
+def _latency_job_attempts(
+    ledger: DatabricksClusterHourLedger,
+    *,
+    terminal_receipts: Sequence[Mapping[str, Any]],
+    superseded_attempts: Sequence[Mapping[str, Any]],
+    success_reasons: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    run_by_attempt = {
+        item.attempt_id: item.run_id
+        for item in ledger.terminal_actuals
+        if item.run_id is not None
+    } | {item.attempt_id: item.run_id for item in ledger.submission_receipts}
+    superseded_by_job: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in superseded_attempts:
+        attempt_id = item["attempt_id"]
+        superseded_by_job[item["job_id"]].append(
+            {
+                "attempt_id": attempt_id,
+                "run_id": run_by_attempt.get(attempt_id),
+                "selected": False,
+                "supersession_reason": success_reasons.get(attempt_id),
+                "terminal_state": item["terminal_state"],
+            }
+        )
+    return [
+        {
+            "attempts": sorted(
+                [
+                    {
+                        "attempt_id": receipt["attempt_id"],
+                        "run_id": receipt["run_id"],
+                        "selected": True,
+                        "supersession_reason": None,
+                        "terminal_state": "succeeded",
+                    },
+                    *superseded_by_job[receipt["job_id"]],
+                ],
+                key=lambda attempt: attempt["attempt_id"],
+            ),
+            "job_id": receipt["job_id"],
+        }
+        for receipt in terminal_receipts
+    ]
+
+
+def _validate_latency_job_attempts(
+    job_attempts: Sequence[Mapping[str, Any]],
+    *,
+    receipts: Sequence[Mapping[str, Any]],
+    superseded_attempts: Sequence[Mapping[str, Any]],
+) -> None:
+    if len(job_attempts) != len(receipts):
+        raise ValueError("publication latency job attempts are incomplete")
+    listed_superseded: list[dict[str, Any]] = []
+    for entry, receipt in zip(job_attempts, receipts, strict=True):
+        _require_exact_keys(
+            entry, {"attempts", "job_id"}, "publication latency job attempts"
+        )
+        job_id = receipt.get("job_id")
+        if entry.get("job_id") != job_id:
+            raise ValueError("publication latency job attempts are out of order")
+        attempt_ids: list[str] = []
+        selected_count = 0
+        for attempt in _mapping_sequence(entry, "attempts"):
+            _require_exact_keys(
+                attempt,
+                {
+                    "attempt_id",
+                    "run_id",
+                    "selected",
+                    "supersession_reason",
+                    "terminal_state",
+                },
+                "publication latency job attempt",
+            )
+            attempt_id = _required_string(attempt, "attempt_id")
+            terminal_state = _required_string(attempt, "terminal_state")
+            run_id = attempt.get("run_id")
+            if run_id is not None:
+                _databricks_id(run_id, "latency attempt run ID")
+            reason = attempt.get("supersession_reason")
+            selected = attempt.get("selected")
+            if type(selected) is not bool:
+                raise ValueError("publication latency attempt selection is not boolean")
+            if selected:
+                selected_count += 1
+                if (
+                    attempt_id != receipt.get("attempt_id")
+                    or run_id != receipt.get("run_id")
+                    or terminal_state != "succeeded"
+                    or reason is not None
+                ):
+                    raise ValueError("publication latency selected attempt drift")
+            elif terminal_state == "succeeded":
+                if not isinstance(reason, str) or not reason.strip():
+                    raise ValueError(
+                        f"superseded latency attempt {attempt_id!r} for {job_id!r} "
+                        "succeeded without a recorded reason"
+                    )
+            elif reason is not None:
+                raise ValueError("publication latency supersession reason drift")
+            if not selected:
+                listed_superseded.append(
+                    {
+                        "attempt_id": attempt_id,
+                        "job_id": job_id,
+                        "terminal_state": terminal_state,
+                    }
+                )
+            attempt_ids.append(attempt_id)
+        if selected_count != 1 or attempt_ids != sorted(set(attempt_ids)):
+            raise ValueError("publication latency job attempts are not canonical")
+    if not _json_type_exact_equal(
+        sorted(listed_superseded, key=lambda item: item["attempt_id"]),
+        superseded_attempts,
+    ):
+        raise ValueError(
+            "publication latency job attempts differ from the superseded attempts"
+        )
+
+
 def _is_recovered_balance_attempt(attempt_id: str) -> bool:
     return attempt_id.startswith(PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX)
 
@@ -9156,10 +9331,16 @@ def validate_publication_latency_multi_plan_collection_record(
     *,
     campaign_plan_record: Mapping[str, Any],
 ) -> None:
-    """Revalidate one multi-plan collection offline against the frozen design."""
+    """Revalidate one multi-plan collection offline against the frozen design.
+
+    Collections that list ``job_attempts`` were made under the per-pair launch
+    coherence and superseded-success rules, so both are re-enforced; legacy
+    collections without it are validated as they were collected.
+    """
 
     descriptors = _campaign_latency_job_descriptors(campaign_plan_record)
     campaign_id = _required_string(campaign_plan_record, "campaign_id")
+    lists_job_attempts = "job_attempts" in record
     _require_exact_keys(
         record,
         {
@@ -9175,7 +9356,8 @@ def validate_publication_latency_multi_plan_collection_record(
             "results",
             "schema_version",
             "terminal_receipts",
-        },
+        }
+        | ({"job_attempts"} if lists_job_attempts else set()),
         "publication latency multi-plan collection",
     )
     if (
@@ -9350,6 +9532,20 @@ def validate_publication_latency_multi_plan_collection_record(
         jobs=jobs,
         receipts=receipts,
     )
+    if lists_job_attempts:
+        _validate_latency_job_attempts(
+            _mapping_sequence(record, "job_attempts"),
+            receipts=receipts,
+            superseded_attempts=_mapping_sequence(
+                _mapping(record, "ledger"), "superseded_attempts"
+            ),
+        )
+        _require_latency_plan_coherence(
+            {
+                _required_string(entry, "job_id"): _mapping(entry, "job_record")
+                for entry in jobs
+            }
+        )
 
 
 def _validate_multi_plan_ledger_binding(

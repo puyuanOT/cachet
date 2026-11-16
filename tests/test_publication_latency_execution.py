@@ -5143,6 +5143,7 @@ def _multi_plan_case(
     seed_recovered_balance=True,
     reserve_unreceipted=False,
     finish_superseded=True,
+    superseded_state="failed",
     job_c_overrides=None,
 ):
     jobs = {
@@ -5252,7 +5253,7 @@ def _multi_plan_case(
     launch(
         _SUPERSEDED_ATTEMPT,
         _stand_in_payload(jobs["job-a"], timeout=7200),
-        legacy_state="failed" if finish_superseded else None,
+        legacy_state=superseded_state if finish_superseded else None,
     )
     launch(
         jobs["job-a"]["reservation_attempt_id"],
@@ -5277,7 +5278,9 @@ def _multi_plan_case(
     )
 
 
-def _collect_multi_plan(case, tmp_path, *, selected_run_ids=None):
+def _collect_multi_plan(
+    case, tmp_path, *, selected_run_ids=None, superseded_success_reasons=None
+):
     return execution.collect_publication_latency_multi_plan_campaign(
         case.config,
         campaign_plan_record=_MULTI_PLAN_CAMPAIGN,
@@ -5286,6 +5289,7 @@ def _collect_multi_plan(case, tmp_path, *, selected_run_ids=None):
         ),
         ledger_path=case.ledger_path,
         controller_cas_root=tmp_path / "cas",
+        superseded_success_reasons=superseded_success_reasons,
     )
 
 
@@ -5369,6 +5373,42 @@ def test_multi_plan_collection_binds_each_job_to_the_plan_it_ran_under(
             "job_id": "job-a",
             "terminal_state": "failed",
         }
+    ]
+    assert record["job_attempts"] == [
+        {
+            "attempts": [
+                {
+                    "attempt_id": case.jobs["job-a"]["reservation_attempt_id"],
+                    "run_id": "101",
+                    "selected": True,
+                    "supersession_reason": None,
+                    "terminal_state": "succeeded",
+                },
+                {
+                    "attempt_id": _SUPERSEDED_ATTEMPT,
+                    "run_id": None,
+                    "selected": False,
+                    "supersession_reason": None,
+                    "terminal_state": "failed",
+                },
+            ],
+            "job_id": "job-a",
+        },
+        *(
+            {
+                "attempts": [
+                    {
+                        "attempt_id": case.jobs[job_id]["reservation_attempt_id"],
+                        "run_id": _MULTI_PLAN_RUN_IDS[job_id],
+                        "selected": True,
+                        "supersession_reason": None,
+                        "terminal_state": "succeeded",
+                    }
+                ],
+                "job_id": job_id,
+            }
+            for job_id in ("job-b", "job-c")
+        ),
     ]
     receipts = {item["job_id"]: item for item in record["terminal_receipts"]}
     assert receipts["job-a"]["ledger_submit_payload_sha256"] == (
@@ -5537,6 +5577,65 @@ def test_multi_plan_collection_rejects_pairs_split_across_launches(
     assert case.ledger_path.read_bytes() == before
 
 
+def test_multi_plan_collection_needs_a_reason_to_supersede_a_success(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(tmp_path, monkeypatch, superseded_state="succeeded")
+    before = case.ledger_path.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            f"superseded latency attempt {_SUPERSEDED_ATTEMPT!r} for 'job-a' "
+            "succeeded; discarding its result needs a recorded reason"
+        ),
+    ):
+        _collect_multi_plan(case, tmp_path)
+    for reasons, message in (
+        ({_SUPERSEDED_ATTEMPT: " "}, "must be non-empty text"),
+        (
+            {_SUPERSEDED_ATTEMPT: "rerun", "publication-latency/x/job-b": "rerun"},
+            "not superseded successes",
+        ),
+    ):
+        with pytest.raises(ValueError, match=message):
+            _collect_multi_plan(case, tmp_path, superseded_success_reasons=reasons)
+    assert case.ledger_path.read_bytes() == before
+
+    reason = "result tree lost to a volume outage; rerun under the same plan"
+    record, _authorization = _collect_multi_plan(
+        case,
+        tmp_path,
+        superseded_success_reasons={_SUPERSEDED_ATTEMPT: reason},
+    )
+    assert record["job_attempts"][0]["attempts"][1] == {
+        "attempt_id": _SUPERSEDED_ATTEMPT,
+        "run_id": None,
+        "selected": False,
+        "supersession_reason": reason,
+        "terminal_state": "succeeded",
+    }
+    unexplained = deepcopy(record)
+    unexplained["job_attempts"][0]["attempts"][1]["supersession_reason"] = None
+    with pytest.raises(ValueError, match="succeeded without a recorded reason"):
+        execution.validate_publication_latency_multi_plan_collection_record(
+            _reseal(unexplained), campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+        )
+
+
+def test_multi_plan_collection_rejects_failed_superseded_reasons(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="not superseded successes"):
+        _collect_multi_plan(
+            case,
+            tmp_path,
+            superseded_success_reasons={_SUPERSEDED_ATTEMPT: "not needed"},
+        )
+
+
 def test_plan_coherence_table_discloses_pairs_joined_across_launches(
     tmp_path, monkeypatch
 ):
@@ -5563,15 +5662,28 @@ def test_plan_coherence_table_discloses_pairs_joined_across_launches(
         }
     ]
 
+    require_coherence = execution._require_latency_plan_coherence
     monkeypatch.setattr(
         execution, "_require_latency_plan_coherence", lambda _jobs: None
     )
-    legacy_case = _multi_plan_case(
-        tmp_path / "legacy",
+    split_case = _multi_plan_case(
+        tmp_path / "split",
         monkeypatch,
         job_c_overrides={"plan_sha256": "b" * 64},
     )
-    legacy, _authorization = _collect_multi_plan(legacy_case, tmp_path / "legacy")
+    split, _authorization = _collect_multi_plan(split_case, tmp_path / "split")
+    monkeypatch.setattr(
+        execution, "_require_latency_plan_coherence", require_coherence
+    )
+    with pytest.raises(ValueError, match="'pair-1' pairs 'job-a' with 'job-c'"):
+        execution.validate_publication_latency_multi_plan_collection_record(
+            split, campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+        )
+    legacy = deepcopy(split)
+    del legacy["job_attempts"]
+    execution.validate_publication_latency_multi_plan_collection_record(
+        _reseal(legacy), campaign_plan_record=_MULTI_PLAN_CAMPAIGN
+    )
     snapshot = deepcopy(legacy)
     (row,) = execution.publication_latency_plan_coherence_table(legacy)
     assert legacy == snapshot
@@ -5696,6 +5808,22 @@ def _tamper_receipt_for_balance_job(record):
     record["terminal_receipts"][2]["ledger_submit_payload_sha256"] = "0" * 64
 
 
+def _tamper_dropped_superseded_attempt(record):
+    record["job_attempts"][0]["attempts"].pop()
+
+
+def _tamper_selected_attempt_run(record):
+    record["job_attempts"][1]["attempts"][0]["run_id"] = "999"
+
+
+def _tamper_failed_attempt_reason(record):
+    record["job_attempts"][0]["attempts"][1]["supersession_reason"] = "rerun"
+
+
+def _tamper_job_attempt_order(record):
+    record["job_attempts"].reverse()
+
+
 @pytest.mark.parametrize(
     ("tamper", "message"),
     (
@@ -5706,6 +5834,10 @@ def _tamper_receipt_for_balance_job(record):
         (_tamper_cluster, "not unique"),
         (_tamper_terminal_closure, "terminal actual closure drift"),
         (_tamper_receipt_for_balance_job, "carry no ledger receipt"),
+        (_tamper_dropped_superseded_attempt, "differ from the superseded attempts"),
+        (_tamper_selected_attempt_run, "selected attempt drift"),
+        (_tamper_failed_attempt_reason, "supersession reason drift"),
+        (_tamper_job_attempt_order, "job attempts are out of order"),
     ),
 )
 def test_multi_plan_collection_record_rejects_tampering_offline(
