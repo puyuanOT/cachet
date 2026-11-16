@@ -4948,25 +4948,9 @@ def _validate_control_plane_run(
     cluster_id = _non_empty_string(
         cluster_instance.get("cluster_id"), "task cluster_id"
     )
-    submitted_task = _required_mapping(payload["tasks"][0], "submitted task")
-    submitted_cluster = _required_mapping(
-        submitted_task.get("new_cluster"), "submitted cluster"
+    observed_cluster = _require_submitted_launch_cluster(
+        task, payload=payload, planned_job=planned_job
     )
-    observed_cluster = _control_plane_launch_cluster(task)
-    for field_name in (
-        "node_type_id",
-        "driver_node_type_id",
-        "spark_version",
-        "data_security_mode",
-        "single_user_name",
-        "num_workers",
-    ):
-        if observed_cluster.get(field_name) != submitted_cluster.get(field_name):
-            raise ValueError(f"runs/get cluster {field_name} differs")
-    expected_node_type = submitted_cluster["node_type_id"]
-    if planned_job.get("hardware_id") == GPU_QUALIFICATION_GENERATION_HARDWARE_ID:
-        if expected_node_type != GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE:
-            raise ValueError("L40S control-plane node type differs")
     succeeded = (
         life_cycle_state == "TERMINATED"
         and result_state == "SUCCESS"
@@ -4990,6 +4974,34 @@ def _validate_control_plane_run(
         "task_run_id": task_run_id_value,
         "task_start_time_ms": task_start,
     }
+
+
+def _require_submitted_launch_cluster(
+    task: Mapping[str, Any],
+    *,
+    payload: Mapping[str, Any],
+    planned_job: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    submitted_task = _required_mapping(payload["tasks"][0], "submitted task")
+    submitted_cluster = _required_mapping(
+        submitted_task.get("new_cluster"), "submitted cluster"
+    )
+    observed_cluster = _control_plane_launch_cluster(task)
+    for field_name in (
+        "node_type_id",
+        "driver_node_type_id",
+        "spark_version",
+        "data_security_mode",
+        "single_user_name",
+        "num_workers",
+    ):
+        if observed_cluster.get(field_name) != submitted_cluster.get(field_name):
+            raise ValueError(f"runs/get cluster {field_name} differs")
+    expected_node_type = submitted_cluster["node_type_id"]
+    if planned_job.get("hardware_id") == GPU_QUALIFICATION_GENERATION_HARDWARE_ID:
+        if expected_node_type != GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE:
+            raise ValueError("L40S control-plane node type differs")
+    return observed_cluster
 
 
 def _failed_attempt_reconciliation_entry(

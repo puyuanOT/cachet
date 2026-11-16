@@ -271,6 +271,9 @@ class _PackageOwnedCloud:
         # cluster termination reason, or after reaching their driver.
         self.capacity_failures: dict[str, str] = {}
         self.driver_failures: set[str] = set()
+        # Capacity failures whose task reports "missing" or "zero" times, the
+        # shapes Databricks returns for a task that never started.
+        self.never_started_task_times: dict[str, str] = {}
 
     def _attempt_position(self, attempt_id: str) -> tuple[int, int]:
         base, separator, retry = attempt_id.partition("-capacity-retry-")
@@ -334,6 +337,13 @@ class _PackageOwnedCloud:
             }
             task_record["state"] = dict(run_state)
             task_record["execution_duration"] = 0
+            task_times = self.never_started_task_times.get(attempt_id)
+            if task_times == "missing":
+                del task_record["start_time"], task_record["end_time"]
+            elif task_times == "zero":
+                task_record["start_time"] = task_record["end_time"] = 0
+            else:
+                assert task_times is None
         elif attempt_id in self.driver_failures:
             run_state = {"life_cycle_state": "TERMINATED", "result_state": "FAILED"}
             task_record["state"] = dict(run_state)
@@ -2420,3 +2430,105 @@ def test_v2_capacity_retry_round_resumes_from_its_exact_crash_point(
     ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
     assert len(ledger.reservations) == case.phase_predecessor.reservation_count + 16
     assert ledger.active_reserved_cluster_hours == 0.0
+
+
+@pytest.mark.parametrize("task_times", ("missing", "zero"))
+def test_v2_capacity_retry_accepts_never_started_task_times_the_ledger_accepts(
+    task_times: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    failed_attempt = case.cloud.attempt_ids[3]
+    case.cloud.capacity_failures = {failed_attempt: _CAPACITY}
+    case.cloud.never_started_task_times = {failed_attempt: task_times}
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+    failed_task = case.cloud.runs[str(case.cloud._run_id(failed_attempt))]["tasks"][0]
+    assert (failed_task.get("start_time"), failed_task.get("end_time")) == (
+        (None, None) if task_times == "missing" else (0, 0)
+    )
+    assert ("start_time" in failed_task) is (task_times == "zero")
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    failed_actual = databricks_v2._terminal_actual_v2(ledger, failed_attempt)
+    assert failed_actual.terminal_state == "internal_error"
+    assert failed_actual.actual_cluster_duration_seconds == 0.0
+
+    leases = _retry_capacity_failures(case)
+
+    retried = _retry_attempt(case, 3, 1)
+    assert [lease["attempt_ids"] for lease in leases] == [[retried]]
+    (failure,) = leases[0]["capacity_failures"]
+    assert failure["job_id"] == job_ids[3]
+    assert failure["termination_reason"] == _CAPACITY
+    assert failure["actual_cluster_duration_seconds"] == 0.0
+    assert failure["run_record"]["tasks"][0] == failed_task
+    assert case.cloud.post_attempt_ids == [*case.cloud.attempt_ids, retried]
+    selection = _install_minimal_governed_evidence_stubs(
+        case, _final_attempt_results(case, {3: 1}), monkeypatch
+    )
+    evidence_root = tmp_path / "qualification-evidence-v2"
+    evidence, authorization = databricks_v2.collect_gpu_qualification_evidence_v2(
+        case.config,
+        **_collector_kwargs(case, evidence_root),
+        now=lambda: datetime(2026, 8, 26, 12, 0, tzinfo=UTC),
+    )
+    assert authorization.selection == selection
+    assert [
+        (entry["job_id"], entry["actual_cluster_duration_seconds"])
+        for entry in evidence["cloud_gpu_evidence"]["capacity_retries"]
+    ] == [(job_ids[3], 0.0)]
+    monkeypatch.setattr(
+        databricks_v2,
+        "get_databricks_run",
+        lambda *_args, **_kwargs: pytest.fail("durable v2 replay reached runs/get"),
+    )
+    assert databricks_v2.replay_gpu_qualification_launch_authorization_v2(
+        config=case.config,
+        **_collector_kwargs(case, evidence_root),
+        expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+        expected_artifact_pins=_pins(),
+    ) == authorization
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("run_id", "run_id differs from the submit receipt"),
+        ("run_name", "run_name differs from the immutable submit payload"),
+        ("task_key", "task_key differs"),
+        ("node_type_id", "cluster node_type_id differs"),
+        ("task_start_only", "zero/missing times for a never-started task"),
+    ),
+)
+def test_v2_never_started_capacity_failure_still_binds_run_identity(
+    tamper: str,
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    failed_attempt = case.cloud.attempt_ids[6]
+    case.cloud.capacity_failures = {failed_attempt: _CAPACITY}
+    case.cloud.never_started_task_times = {failed_attempt: "missing"}
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+    run = case.cloud.runs[str(case.cloud._run_id(failed_attempt))]
+    task = run["tasks"][0]
+    if tamper == "run_id":
+        run["run_id"] = case.cloud._run_id(case.cloud.attempt_ids[7])
+    elif tamper == "run_name":
+        run["run_name"] = "forged-run-name"
+    elif tamper == "task_key":
+        task["task_key"] = "forged_task_key"
+    elif tamper == "node_type_id":
+        task["new_cluster"] = {**task["new_cluster"], "node_type_id": "g5.xlarge"}
+    else:
+        task["start_time"] = 0
+    ledger_bytes = case.ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _retry_capacity_failures(case)
+
+    assert case.ledger_path.read_bytes() == ledger_bytes
+    assert not _retry_root(case, 1).exists()
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)

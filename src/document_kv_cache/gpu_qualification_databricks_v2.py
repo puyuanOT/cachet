@@ -2736,6 +2736,99 @@ def _terminal_actual_v2(
     return matches[0]
 
 
+def _validate_capacity_failure_run_v2(
+    run: Mapping[str, Any],
+    *,
+    planned_job: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    submit_receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind a failed attempt's runs/get identity without requiring it started.
+
+    A never-started task may report missing or zero times, exactly as the
+    ledger reconciles them to zero seconds; the ledger terminal this record is
+    digest-bound to stays the only timing authority.
+    """
+
+    cloud_run_id = databricks_v1._databricks_run_id(
+        run.get("run_id"), "runs/get run_id"
+    )
+    if cloud_run_id != submit_receipt["cloud_run_id"]:
+        raise ValueError("runs/get run_id differs from the submit receipt")
+    payload = databricks_v1._required_mapping(contract.get("payload"), "payload")
+    if run.get("run_name") != payload.get("run_name"):
+        raise ValueError("runs/get run_name differs from the immutable submit payload")
+    if run.get("run_type") not in (None, "SUBMIT_RUN"):
+        raise ValueError("qualification run is not a one-time submit run")
+    if run.get("repair_history") not in (None, []):
+        raise ValueError("qualification run has repair history")
+    if run.get("original_attempt_run_id") not in (None, 0, "0"):
+        raise ValueError("qualification run is not attempt zero")
+    state = databricks_v1._required_mapping(run.get("state"), "runs/get state")
+    if state.get("life_cycle_state") not in _V2_TERMINAL_LIFE_CYCLE_STATES:
+        raise ValueError("qualification runs/get response is not terminal")
+    tasks = run.get("tasks")
+    if (
+        not isinstance(tasks, list)
+        or len(tasks) != 1
+        or not isinstance(tasks[0], Mapping)
+    ):
+        raise ValueError("qualification runs/get must contain exactly one task")
+    task = tasks[0]
+    if task.get("task_key") != contract["task_key"]:
+        raise ValueError("runs/get task_key differs")
+    if task.get("attempt_number") not in (None, 0):
+        raise ValueError("runs/get task was retried")
+    task_state = databricks_v1._required_mapping(
+        task.get("state"), "runs/get task state"
+    )
+    if task_state.get("life_cycle_state") not in _V2_TERMINAL_LIFE_CYCLE_STATES:
+        raise ValueError("qualification task is not terminal")
+    run_succeeded = (
+        state.get("life_cycle_state") == "TERMINATED"
+        and state.get("result_state") == "SUCCESS"
+    )
+    task_succeeded = (
+        task_state.get("life_cycle_state") == "TERMINATED"
+        and task_state.get("result_state") == "SUCCESS"
+    )
+    start_time = task.get("start_time")
+    end_time = task.get("end_time")
+    never_started = (start_time is None and end_time is None) or (
+        type(start_time) is int
+        and start_time == 0
+        and type(end_time) is int
+        and end_time == 0
+    )
+    if not (
+        (never_started and not run_succeeded and not task_succeeded)
+        or (
+            type(start_time) is int
+            and type(end_time) is int
+            and 0 <= start_time < end_time
+        )
+    ):
+        raise ValueError(
+            "failed qualification task requires increasing millisecond times, "
+            "or zero/missing times for a never-started task"
+        )
+    databricks_v1._databricks_run_id(task.get("run_id"), "qualification task run_id")
+    cluster_instance = databricks_v1._required_mapping(
+        task.get("cluster_instance"), "task.cluster_instance"
+    )
+    cluster_id = databricks_v1._non_empty_string(
+        cluster_instance.get("cluster_id"), "task cluster_id"
+    )
+    databricks_v1._require_submitted_launch_cluster(
+        task, payload=payload, planned_job=planned_job
+    )
+    return {
+        "cloud_cluster_id": cluster_id,
+        "cloud_run_id": cloud_run_id,
+        "succeeded": run_succeeded and task_succeeded,
+    }
+
+
 def _capacity_failure_entry_v2(
     *,
     run: Mapping[str, Any],
@@ -2748,7 +2841,7 @@ def _capacity_failure_entry_v2(
     """Prove one failed attempt never reached its driver, from direct runs/get."""
 
     job_id = str(contract["job_id"])
-    run_identity = databricks_v1._validate_control_plane_run(
+    run_identity = _validate_capacity_failure_run_v2(
         run,
         planned_job=planned_job,
         contract=contract,
