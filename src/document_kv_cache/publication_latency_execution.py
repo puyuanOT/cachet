@@ -151,6 +151,7 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS,
     PUBLICATION_CAMPAIGN_REPEATS_PER_EXAMPLE,
     PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL,
+    PUBLICATION_CAMPAIGN_STORAGE_CONTROL_SETTING,
     PUBLICATION_CAMPAIGN_STORAGE_EXAMPLES_PER_DATASET,
     PUBLICATION_CAMPAIGN_STORAGE_REPEATS_PER_EXAMPLE,
     PUBLICATION_CAMPAIGN_STORAGE_REQUESTS_PER_CELL,
@@ -8507,6 +8508,204 @@ def _latency_plan_set(jobs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
     ]
 
 
+# Runtime fields each comparison varies by design; every other field, apart
+# from the zone, must be equal between the two compared jobs.
+_LATENCY_COMPARISON_DESIGN_RUNTIME_FIELDS: Final = MappingProxyType(
+    {
+        "method": frozenset({"zone_id"}),
+        "storage": frozenset({"zone_id"}),
+        "precision": frozenset(
+            {"gpu_memory_utilization", "runtime_kv_dtype", "zone_id"}
+        ),
+        "hardware": frozenset(
+            {"gpu_memory_utilization", "hardware_target", "node_type_id", "zone_id"}
+        ),
+    }
+)
+_LATENCY_COHERENCE_FIELDS: Final = (
+    ("execution_plan_equal", "execution plan"),
+    ("package_wheel_equal", "package wheel"),
+    ("source_tree_equal", "source tree"),
+    ("runtime_equal", "runtime"),
+)
+
+
+def _latency_comparison_pairs(
+    cells: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    """Name every control/treatment job pair a latency estimand compares.
+
+    Storage-disk is the shared control of the storage trio, so its pairs with
+    RAM and UC close the trio; its own core reference feeds no estimand.
+    """
+
+    core_by_unit: dict[str, dict[str, str]] = {}
+    for job_id, cell in cells.items():
+        if cell.get("job_kind") == "core":
+            core_by_unit.setdefault(_required_string(cell, "matched_pair_id"), {})[
+                _required_string(cell, "method_id")
+            ] = job_id
+    pairs: list[dict[str, str]] = []
+    for unit_id, members in core_by_unit.items():
+        if set(members) != {"baseline_prefill", "vanilla_prefill"}:
+            raise ValueError(f"latency matched pair {unit_id!r} is incomplete")
+        pairs.append(
+            {
+                "comparison_family": "method",
+                "comparison_unit_id": unit_id,
+                "control_job_id": members["baseline_prefill"],
+                "treatment_job_id": members["vanilla_prefill"],
+            }
+        )
+    for job_id, cell in cells.items():
+        if (
+            cell.get("job_kind") != "auxiliary"
+            or cell.get("setting_id") == PUBLICATION_CAMPAIGN_STORAGE_CONTROL_SETTING[0]
+        ):
+            continue
+        family = _required_string(cell, "comparison_family")
+        reference_id = _required_string(cell, "reference_core_cell_id")
+        if (
+            family not in _LATENCY_COMPARISON_DESIGN_RUNTIME_FIELDS
+            or family == "method"
+            or reference_id not in cells
+        ):
+            raise ValueError(f"latency comparison for {job_id!r} is unresolved")
+        pairs.append(
+            {
+                "comparison_family": family,
+                "comparison_unit_id": (
+                    f"block-{_required_int(cell, 'deployment_block'):02d}-storage-trio"
+                    if family == "storage"
+                    else job_id
+                ),
+                "control_job_id": reference_id,
+                "treatment_job_id": job_id,
+            }
+        )
+    return pairs
+
+
+def _latency_package_wheel_sha256(job: Mapping[str, Any]) -> str:
+    wheels = [
+        _required_sha256(item, "sha256")
+        for item in _mapping_sequence(job, "artifact_files")
+        if item.get("role") == "package_wheel"
+    ]
+    if len(wheels) != 1:
+        raise ValueError("latency job record must carry exactly one package wheel")
+    return wheels[0]
+
+
+def _latency_pair_coherence(
+    control: Mapping[str, Any],
+    treatment: Mapping[str, Any],
+    *,
+    comparison_family: str,
+) -> dict[str, bool]:
+    design_fields = _LATENCY_COMPARISON_DESIGN_RUNTIME_FIELDS[comparison_family]
+    control_runtime = _mapping(control, "runtime")
+    treatment_runtime = _mapping(treatment, "runtime")
+    return {
+        "execution_plan_equal": _required_sha256(control, "execution_plan_sha256")
+        == _required_sha256(treatment, "execution_plan_sha256"),
+        "package_wheel_equal": _latency_package_wheel_sha256(control)
+        == _latency_package_wheel_sha256(treatment),
+        "source_tree_equal": _required_sha256(control, "source_tree_sha256")
+        == _required_sha256(treatment, "source_tree_sha256"),
+        "runtime_equal": _json_type_exact_equal(
+            {
+                key: value
+                for key, value in control_runtime.items()
+                if key not in design_fields
+            },
+            {
+                key: value
+                for key, value in treatment_runtime.items()
+                if key not in design_fields
+            },
+        ),
+        "zone_equal": control_runtime.get("zone_id")
+        == treatment_runtime.get("zone_id"),
+    }
+
+
+def _require_latency_plan_coherence(
+    jobs_by_id: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Fail unless every compared pair ran under one plan, wheel and tree."""
+
+    cells = {job_id: _mapping(job, "cell") for job_id, job in jobs_by_id.items()}
+    for pair in _latency_comparison_pairs(cells):
+        control_id = pair["control_job_id"]
+        treatment_id = pair["treatment_job_id"]
+        coherence = _latency_pair_coherence(
+            jobs_by_id[control_id],
+            jobs_by_id[treatment_id],
+            comparison_family=pair["comparison_family"],
+        )
+        drift = [
+            label for key, label in _LATENCY_COHERENCE_FIELDS if not coherence[key]
+        ]
+        if drift:
+            raise ValueError(
+                f"latency {pair['comparison_family']} comparison "
+                f"{pair['comparison_unit_id']!r} pairs {control_id!r} with "
+                f"{treatment_id!r} across a different {', '.join(drift)}; rerun "
+                "the whole comparison unit under one launch plan"
+            )
+
+
+def publication_latency_plan_coherence_table(
+    collection: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Disclose, per compared job pair, whether both jobs ran as one launch.
+
+    Pure over a multi-plan collection record (no ledger, workspace or file
+    access), so reports can disclose pairs that legacy collections joined
+    across launch plans. ``runtime_equal`` ignores the zone and the runtime
+    fields the comparison varies by design. ``completion_gap_seconds`` is the
+    absolute difference between the two sealed results' ``completed_at``.
+    """
+
+    jobs_by_id = {
+        _required_string(entry, "job_id"): _mapping(entry, "job_record")
+        for entry in _mapping_sequence(collection, "jobs")
+    }
+    completed_at = {
+        _required_string(result, "job_id"): datetime.fromisoformat(
+            _required_string(result, "completed_at")
+        )
+        for result in _mapping_sequence(collection, "results")
+    }
+    if set(completed_at) != set(jobs_by_id):
+        raise ValueError("latency collection results do not cover its jobs")
+    rows: list[dict[str, Any]] = []
+    for pair in _latency_comparison_pairs(
+        {job_id: _mapping(job, "cell") for job_id, job in jobs_by_id.items()}
+    ):
+        control_id = pair["control_job_id"]
+        treatment_id = pair["treatment_job_id"]
+        coherence = _latency_pair_coherence(
+            jobs_by_id[control_id],
+            jobs_by_id[treatment_id],
+            comparison_family=pair["comparison_family"],
+        )
+        rows.append(
+            {
+                **pair,
+                **coherence,
+                "coherent": all(coherence[key] for key, _ in _LATENCY_COHERENCE_FIELDS),
+                "completion_gap_seconds": abs(
+                    (
+                        completed_at[treatment_id] - completed_at[control_id]
+                    ).total_seconds()
+                ),
+            }
+        )
+    return rows
+
+
 def _latency_collection_causal_closure_sha256(
     *,
     collection_sha256: str,
@@ -8662,6 +8861,12 @@ def collect_publication_latency_multi_plan_campaign(
     }
     if len(principals) != 1 or len(input_bundles) != 1:
         raise ValueError("multi-plan latency jobs differ in principal or input bundle")
+    _require_latency_plan_coherence(
+        {
+            _required_string(job, "job_id"): job
+            for _run_id, _run, job, _payload, _identity in observed
+        }
+    )
     workspace_identity = require_databricks_current_user_name(
         config,
         expected_user_name=next(iter(principals)),
@@ -13607,6 +13812,7 @@ __all__ = [
     "collect_publication_latency_source_closure",
     "execute_publication_latency_job_record",
     "main",
+    "publication_latency_plan_coherence_table",
     "publication_latency_reservation_attempt_id",
     "publication_latency_source_closure_control_roots",
     "publication_latency_submit_payloads",

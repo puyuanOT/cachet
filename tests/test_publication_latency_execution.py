@@ -1,10 +1,12 @@
 import ast
 import inspect
 import io
+import itertools
 import json
 import math
 import os
 import random
+import re
 import shutil
 import statistics
 import subprocess
@@ -4998,14 +5000,51 @@ _RECOVERED_SEED = (
     f"{execution.PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX}seed-00"
 )
 _SUPERSEDED_ATTEMPT = f"publication-latency/{'f' * 20}/job-a"
+# job-a and job-c are one core baseline/vanilla pair; job-b is the storage
+# control, which no estimand pairs with a core job.
+_MULTI_PLAN_DESIGN = {
+    "job-a": {
+        "job_kind": "core",
+        "matched_pair_id": "pair-1",
+        "method_id": "baseline_prefill",
+    },
+    "job-b": {
+        "comparison_family": "storage",
+        "job_kind": "auxiliary",
+        "setting_id": "storage-disk",
+    },
+    "job-c": {
+        "job_kind": "core",
+        "matched_pair_id": "pair-1",
+        "method_id": "vanilla_prefill",
+    },
+}
+_MULTI_PLAN_WHEELS = {"a" * 64: "1" * 64, "b" * 64: "2" * 64}
 
 
-def _multi_plan_job(job_id, index):
-    plan_sha256 = _MULTI_PLAN_PLANS[job_id]
+def _multi_plan_descriptor(job_id, index):
+    return {"job_id": job_id, "position": index, **_MULTI_PLAN_DESIGN[job_id]}
+
+
+def _multi_plan_job(
+    job_id,
+    index,
+    *,
+    plan_sha256=None,
+    package_wheel_sha256=None,
+    source_tree_sha256="3" * 64,
+    runtime_overrides=None,
+):
+    plan_sha256 = plan_sha256 or _MULTI_PLAN_PLANS[job_id]
     job = {
-        "artifact_files": [{"role": "package_wheel", "sha256": f"{index}" * 64}],
+        "artifact_files": [
+            {
+                "role": "package_wheel",
+                "sha256": package_wheel_sha256 or _MULTI_PLAN_WHEELS[plan_sha256],
+            }
+        ],
         "campaign_id": PUBLICATION_CAMPAIGN_ID,
-        "cell": {"job_id": job_id, "position": index, "zone_id": "us-west-2b"},
+        "cell": {**_multi_plan_descriptor(job_id, index), "zone_id": "us-west-2b"},
         "closed_record_sha256": "",
         "execution_plan_sha256": plan_sha256,
         "job_id": job_id,
@@ -5017,10 +5056,13 @@ def _multi_plan_job(job_id, index):
             "run_timeout_seconds": 3600,
             "single_user_name": "publication@example.com",
             "zone_id": "us-west-2b",
+            **(runtime_overrides or {}),
         },
-        "source_tree_sha256": "3" * 64,
+        "source_tree_sha256": source_tree_sha256,
         "task_key": f"latency_{index}",
     }
+    if job["runtime"]["zone_id"] != "us-west-2b":
+        job["cell"]["zone_id"] = job["runtime"]["zone_id"]
     job["closed_record_sha256"] = execution._closed_record_sha256(job)
     return job
 
@@ -5101,13 +5143,18 @@ def _multi_plan_case(
     seed_recovered_balance=True,
     reserve_unreceipted=False,
     finish_superseded=True,
+    job_c_overrides=None,
 ):
     jobs = {
-        job_id: _multi_plan_job(job_id, index)
+        job_id: _multi_plan_job(
+            job_id,
+            index,
+            **((job_c_overrides or {}) if job_id == "job-c" else {}),
+        )
         for index, job_id in enumerate(_MULTI_PLAN_PLANS, start=1)
     }
     descriptors = {
-        job_id: {"job_id": job_id, "position": index}
+        job_id: _multi_plan_descriptor(job_id, index)
         for index, job_id in enumerate(_MULTI_PLAN_PLANS, start=1)
     }
     runs = {
@@ -5117,6 +5164,7 @@ def _multi_plan_case(
     results = {
         job_id: {
             "closed_record_sha256": f"{index + 4}" * 64,
+            "completed_at": f"2026-11-0{index + 1}T00:00:00+00:00",
             "files": [],
             "job_id": job_id,
             "task_identity": {
@@ -5310,7 +5358,7 @@ def test_multi_plan_collection_binds_each_job_to_the_plan_it_ran_under(
     assert [
         (item["execution_plan_sha256"], item["job_ids"]) for item in record["plan_set"]
     ] == [("a" * 64, ["job-a", "job-c"]), ("b" * 64, ["job-b"])]
-    assert record["plan_set"][0]["package_wheel_sha256s"] == ["1" * 64, "3" * 64]
+    assert record["plan_set"][0]["package_wheel_sha256s"] == ["1" * 64]
     assert record["ledger"]["recovered_balance"] == {
         "attempt_count": 1,
         "cluster_hours": 0.5,
@@ -5461,6 +5509,150 @@ def test_multi_plan_collection_rejects_runs_outside_the_frozen_cell(
     with pytest.raises(RuntimeError, match="did not succeed"):
         _collect_multi_plan(case, tmp_path)
     assert case.ledger_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("job_c_overrides", "drift"),
+    (
+        ({"plan_sha256": "b" * 64}, "execution plan, package wheel"),
+        ({"package_wheel_sha256": "9" * 64}, "package wheel"),
+        ({"source_tree_sha256": "8" * 64}, "source tree"),
+        ({"runtime_overrides": {"run_timeout_seconds": 7200}}, "runtime"),
+    ),
+)
+def test_multi_plan_collection_rejects_pairs_split_across_launches(
+    tmp_path, monkeypatch, job_c_overrides, drift
+):
+    case = _multi_plan_case(tmp_path, monkeypatch, job_c_overrides=job_c_overrides)
+    before = case.ledger_path.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "latency method comparison 'pair-1' pairs 'job-a' with 'job-c' "
+            f"across a different {drift}; rerun"
+        ),
+    ):
+        _collect_multi_plan(case, tmp_path)
+    assert case.ledger_path.read_bytes() == before
+
+
+def test_plan_coherence_table_discloses_pairs_joined_across_launches(
+    tmp_path, monkeypatch
+):
+    case = _multi_plan_case(
+        tmp_path,
+        monkeypatch,
+        job_c_overrides={"runtime_overrides": {"zone_id": "us-west-2c"}},
+    )
+    record, _authorization = _collect_multi_plan(case, tmp_path)
+
+    assert execution.publication_latency_plan_coherence_table(record) == [
+        {
+            "coherent": True,
+            "comparison_family": "method",
+            "comparison_unit_id": "pair-1",
+            "completion_gap_seconds": 2 * 24 * 60 * 60.0,
+            "control_job_id": "job-a",
+            "execution_plan_equal": True,
+            "package_wheel_equal": True,
+            "runtime_equal": True,
+            "source_tree_equal": True,
+            "treatment_job_id": "job-c",
+            "zone_equal": False,
+        }
+    ]
+
+    monkeypatch.setattr(
+        execution, "_require_latency_plan_coherence", lambda _jobs: None
+    )
+    legacy_case = _multi_plan_case(
+        tmp_path / "legacy",
+        monkeypatch,
+        job_c_overrides={"plan_sha256": "b" * 64},
+    )
+    legacy, _authorization = _collect_multi_plan(legacy_case, tmp_path / "legacy")
+    snapshot = deepcopy(legacy)
+    (row,) = execution.publication_latency_plan_coherence_table(legacy)
+    assert legacy == snapshot
+    assert {
+        key: row[key]
+        for key in (
+            "coherent",
+            "execution_plan_equal",
+            "package_wheel_equal",
+            "runtime_equal",
+            "source_tree_equal",
+        )
+    } == {
+        "coherent": False,
+        "execution_plan_equal": False,
+        "package_wheel_equal": False,
+        "runtime_equal": True,
+        "source_tree_equal": True,
+    }
+
+
+def test_frozen_design_comparison_pairs_cover_every_estimand():
+    campaign = publication_campaign_plan_to_record(
+        build_publication_campaign_plan(
+            PUBLICATION_CAMPAIGN_ID,
+            campaign_ledger_id=PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256,
+            campaign_ledger_prefix=PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX,
+            campaign_opening_terminal_gpu_hours=(
+                PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            ),
+        )
+    )
+    descriptors = execution._campaign_latency_job_descriptors(campaign)
+    pairs = execution._latency_comparison_pairs(descriptors)
+
+    families = [pair["comparison_family"] for pair in pairs]
+    assert {family: families.count(family) for family in set(families)} == {
+        "hardware": 5,
+        "method": 45,
+        "precision": 5,
+        "storage": 10,
+    }
+    paired = {pair["control_job_id"] for pair in pairs} | {
+        pair["treatment_job_id"] for pair in pairs
+    }
+    assert paired == set(descriptors)
+    storage = [pair for pair in pairs if pair["comparison_family"] == "storage"]
+    assert {pair["control_job_id"] for pair in storage} == {
+        f"block-{block:02d}-storage-disk" for block in range(1, 6)
+    }
+    assert all(
+        pair["comparison_unit_id"] == f"{pair['control_job_id'][:8]}-storage-trio"
+        for pair in storage
+    )
+    launched = {
+        job_id: {
+            "artifact_files": [{"role": "package_wheel", "sha256": "1" * 64}],
+            "execution_plan_sha256": "a" * 64,
+            "runtime": execution._job_runtime_policy(
+                {**descriptor, "zone_id": zone_id},
+                selected_32k_gmu=0.75,
+                single_user_name="publication@example.com",
+            ),
+            "source_tree_sha256": "3" * 64,
+        }
+        for (job_id, descriptor), zone_id in zip(
+            descriptors.items(),
+            itertools.cycle(execution.PUBLICATION_LATENCY_DATABRICKS_ZONES),
+            strict=False,
+        )
+    }
+    for pair in pairs:
+        assert all(
+            execution._latency_pair_coherence(
+                launched[pair["control_job_id"]],
+                launched[pair["treatment_job_id"]],
+                comparison_family=pair["comparison_family"],
+            )[key]
+            for key, _label in execution._LATENCY_COHERENCE_FIELDS
+        ), pair
 
 
 def _tamper_binding_to_ledger_receipt(record):
