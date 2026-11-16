@@ -6260,24 +6260,73 @@ def _persist_publication_handoff_staging_attestation(
     source_path: Path,
     target_path: Path,
 ) -> None:
+    import errno
+
     content = source_path.read_bytes()
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    if target_path.exists():
-        if target_path.read_bytes() != content:
+
+    def existing_matches() -> bool:
+        # An empty target is a placeholder left by an interrupted writer, never
+        # a complete attestation, so it is replaced rather than rejected.
+        existing = target_path.read_bytes()
+        if existing == content:
+            return True
+        if existing:
             raise FileExistsError(
                 "refusing to overwrite a different publication handoff staging "
                 f"attestation: {target_path}"
             )
+        return False
+
+    if target_path.exists() and existing_matches():
         return
+    temporary_path = target_path.with_name(
+        f".{target_path.name}.{os.urandom(8).hex()}.tmp"
+    )
+    descriptor = os.open(
+        temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
+    )
     try:
-        with target_path.open("xb") as handle:
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
-    except FileExistsError:
-        if target_path.read_bytes() != content:
-            raise FileExistsError(
-                "concurrent publication handoff staging attestation differs: "
-                f"{target_path}"
-            ) from None
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary_path, target_path)
+            return
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            if exc.errno not in {
+                errno.EPERM,
+                errno.ENOTSUP,
+                errno.EOPNOTSUPP,
+                errno.ENOSYS,
+            }:
+                raise
+            # Unity Catalog volume FUSE mounts reject hard links.  An empty
+            # O_EXCL claim owns the name and the rename replaces only that
+            # claim, so readers see either the placeholder or complete bytes.
+            try:
+                os.close(
+                    os.open(
+                        target_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
+                    )
+                )
+            except FileExistsError:
+                pass
+            else:
+                os.replace(temporary_path, target_path)
+                return
+        if not existing_matches():
+            os.replace(temporary_path, target_path)
+            if target_path.read_bytes() != content:
+                raise FileExistsError(
+                    "concurrent publication handoff staging attestation differs: "
+                    f"{target_path}"
+                )
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def benchmark_dataset_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, Path]:
