@@ -3105,24 +3105,36 @@ def _canonical_sha256(value: Any) -> str:
 
 
 def _json_type_exact_equal(left: Any, right: Any) -> bool:
-    """Compare JSON values without Python's bool/int/float equality coercions."""
+    """Compare JSON values without Python's bool/int/float equality coercions.
+
+    Both sides must be plain JSON (dicts, lists, strings, numbers, booleans,
+    ``None``).  Any other value, such as a nested ``MappingProxyType``, raises
+    ``TypeError`` instead of comparing unequal.  Non-finite floats have no JSON
+    encoding and compare unequal.
+    """
 
     try:
-        return json.dumps(
+        left_text = json.dumps(
             left,
             allow_nan=False,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
-        ) == json.dumps(
+        )
+        right_text = json.dumps(
             right,
             allow_nan=False,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         )
-    except (TypeError, ValueError):
+    except TypeError as error:
+        raise TypeError(
+            "type-exact JSON comparison requires plain JSON values"
+        ) from error
+    except ValueError:
         return False
+    return left_text == right_text
 
 
 def _closed_record_sha256(record: Mapping[str, Any]) -> str:

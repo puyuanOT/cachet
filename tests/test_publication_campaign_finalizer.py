@@ -7,7 +7,7 @@ import stat
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1123,6 +1123,27 @@ def test_json_type_exact_equality_rejects_python_numeric_coercions() -> None:
     assert not campaign_finalizer._json_type_exact_equal(
         {"example_count": 1},
         {"example_count": 1.0},
+    )
+
+
+def test_json_type_exact_equality_rejects_non_json_values_explicitly() -> None:
+    proxy = MappingProxyType({"example_count": 1})
+
+    for left, right in (
+        ({"nested": proxy}, {"nested": {"example_count": 1}}),
+        (proxy, proxy),
+        ({"rows": (object(),)}, {"rows": [None]}),
+    ):
+        with pytest.raises(TypeError, match="requires plain JSON values"):
+            campaign_finalizer._json_type_exact_equal(left, right)
+    assert campaign_finalizer._json_type_exact_equal(
+        dict(proxy),
+        {"example_count": 1},
+    )
+    assert not campaign_finalizer._json_type_exact_equal(math.nan, math.nan)
+    assert not campaign_finalizer._json_type_exact_equal(
+        {"cluster_hours": math.inf},
+        {"cluster_hours": math.inf},
     )
 
 
