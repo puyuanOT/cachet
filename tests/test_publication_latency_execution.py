@@ -6142,29 +6142,29 @@ def _auxiliary_rerun_case(monkeypatch):
         block = int(job_id[6:8])
         kind = job_id[9:]
         job_kind, setting_id, family, reference = settings[kind]
-        runtime = {
-            "gpu_memory_utilization": 0.8 if kind == "precision-bf16" else 0.9,
-            "hardware_target": "a10g" if kind == "hardware-a10g" else "l4",
-            "node_type_id": "g5.8xlarge" if kind == "hardware-a10g" else "g6.8xlarge",
+        cell = {
+            "comparison_family": family,
+            "deployment_block": block,
+            "input_tokens": 16_384,
+            "job_kind": job_kind,
+            "method_id": "vanilla_prefill",
+            "reference_core_cell_id": (
+                None if reference is None else f"block-{block:02d}-{reference}"
+            ),
             "request_parallelism": 4,
-            "runtime_kv_dtype": "bfloat16" if kind == "precision-bf16" else "fp8_e5m2",
+            "setting_id": setting_id,
             "zone_id": f"us-west-2{'abcd'[index % 4]}",
         }
+        runtime = execution._job_runtime_policy(
+            cell,
+            selected_32k_gmu=0.8,
+            single_user_name="bench@example.com",
+            bf16_gpu_memory_utilization=execution.PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION,
+        )
         jobs.append(
             {
                 "artifact_files": [{"role": "package_wheel", "sha256": "a" * 64}],
-                "cell": {
-                    "comparison_family": family,
-                    "deployment_block": block,
-                    "input_tokens": 16_384,
-                    "job_kind": job_kind,
-                    "method_id": "vanilla_prefill",
-                    "reference_core_cell_id": (
-                        None if reference is None else f"block-{block:02d}-{reference}"
-                    ),
-                    "request_parallelism": 4,
-                    "setting_id": setting_id,
-                },
+                "cell": cell,
                 "closed_record_sha256": f"{index:064x}",
                 "execution_plan_sha256": plan_sha256,
                 "job_id": job_id,
@@ -6358,7 +6358,9 @@ def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monke
         "| RAM vs Disk | 16k, concurrency 4, L4 | 1.0000 | [0.9000, 1.1000] | 2.0000 |"
         in region
     )
-    assert "| hardware-a10g | `g5.8xlarge` | 0.9 | 6.0000 | 7.0000 | 20.0000 | 1280 | 1280 | 0 |" in region
+    assert "| hardware-a10g | `g5.8xlarge` | 0.85 | 6.0000 | 7.0000 | 20.0000 | 1280 | 1280 | 0 |" in region
+    assert "| precision-bf16 | `g6.8xlarge` | 0.8 | 6.0000 |" in region
+    assert "| storage-disk | `g6.8xlarge` | 0.9 | 6.0000 |" in region
     begin, end = execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_README_MARKERS
     readme = f"{begin}{region}{end}"
     execution.validate_publication_latency_auxiliary_rerun_region(
@@ -6468,20 +6470,33 @@ def test_auxiliary_rerun_accepts_a_retry_of_the_same_plan(monkeypatch):
     (
         ("wheel", "wheel drift"),
         ("plan", "outside the plan"),
-        ("runtime", "across a different runtime"),
+        ("runtime", "'block-03-storage-ram' runtime differs from its frozen policy in gpu_memory_utilization"),
+        ("runtime_zone", "'block-03-storage-ram' runtime differs from its frozen policy in zone_id"),
+        ("runtime_extra", "'block-03-storage-ram' runtime differs from its frozen policy in enforce_eager"),
+        ("bf16_legacy_gmu", "'block-03-precision-bf16' runtime differs from its frozen policy in gpu_memory_utilization"),
+        ("a10g_l4_gmu", "'block-03-hardware-a10g' runtime differs from its frozen policy in gpu_memory_utilization"),
         ("missing_result", "one sealed result for every job"),
         ("plan_jobs", "every block's six cells"),
     ),
 )
 def test_auxiliary_rerun_rejects_incoherent_or_incomplete_runs(monkeypatch, tamper, match):
     plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
-    target = next(job for job in jobs if job["job_id"] == "block-03-storage-ram")
+    by_id = {job["job_id"]: job for job in jobs}
+    target = by_id["block-03-storage-ram"]
     if tamper == "wheel":
         target["artifact_files"] = [{"role": "package_wheel", "sha256": "c" * 64}]
     elif tamper == "plan":
         target["execution_plan_sha256"] = "d" * 64
     elif tamper == "runtime":
         target["runtime"]["gpu_memory_utilization"] = 0.85
+    elif tamper == "runtime_zone":
+        target["runtime"]["zone_id"] = "us-east-1a"
+    elif tamper == "runtime_extra":
+        target["runtime"]["enforce_eager"] = True
+    elif tamper == "bf16_legacy_gmu":
+        by_id["block-03-precision-bf16"]["runtime"]["gpu_memory_utilization"] = 0.9
+    elif tamper == "a10g_l4_gmu":
+        by_id["block-03-hardware-a10g"]["runtime"]["gpu_memory_utilization"] = 0.9
     elif tamper == "missing_result":
         results = [item for item in results if item["job_id"] != "block-03-storage-ram"]
     else:

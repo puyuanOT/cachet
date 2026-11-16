@@ -8859,6 +8859,37 @@ def _auxiliary_rerun_attempt_chain(
     return chain
 
 
+def _require_auxiliary_rerun_runtime_policy(job_id: str, job: Mapping[str, Any]) -> None:
+    """Fail unless ``job`` runs its cell's frozen runtime, BF16 at its own GMU.
+
+    Job-record validation still admits BF16 records rendered before the BF16
+    GMU policy at the L4 0.9; the re-run must not.
+    """
+
+    runtime = _mapping(job, "runtime")
+    expected = _job_runtime_policy(
+        _mapping(job, "cell"),
+        selected_32k_gmu=_finite_positive_number(
+            runtime.get("selected_32k_l4_gpu_memory_utilization"),
+            "selected_32k_l4_gpu_memory_utilization",
+        ),
+        single_user_name=_required_string(runtime, "single_user_name"),
+        bf16_gpu_memory_utilization=PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION,
+    )
+    drift = sorted(
+        key
+        for key in set(runtime) | set(expected)
+        if key not in runtime
+        or key not in expected
+        or not _json_type_exact_equal(runtime[key], expected[key])
+    )
+    if drift:
+        raise ValueError(
+            f"auxiliary re-run job {job_id!r} runtime differs from its frozen "
+            f"policy in {', '.join(drift)}"
+        )
+
+
 def _require_unique_auxiliary_rerun_runs(
     chains: Sequence[Sequence[Mapping[str, Any]]],
 ) -> None:
@@ -8975,6 +9006,7 @@ def aggregate_publication_latency_auxiliary_rerun(
             raise ValueError(f"auxiliary re-run job {job_id!r} wheel drift")
         if job.get("source_tree_sha256") != plan.get("source_tree_sha256"):
             raise ValueError(f"auxiliary re-run job {job_id!r} source tree drift")
+        _require_auxiliary_rerun_runtime_policy(job_id, job)
     plan_jobs = {
         job_id: {**job, "execution_plan_sha256": plan_sha256}
         for job_id, job in jobs_by_id.items()
