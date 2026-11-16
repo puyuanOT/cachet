@@ -14,7 +14,7 @@ import math
 import os
 import re
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
@@ -200,6 +200,15 @@ DatabricksBatchReservationValidator = Callable[
     ],
     None,
 ]
+
+
+def _sequential_hours_sum(values: Iterable[float]) -> float:
+    # Persisted accounting is replayed bit-for-bit on read; Python 3.12's
+    # compensated sum() would reject every ledger written by plain addition.
+    total = 0.0
+    for value in values:
+        total += value
+    return total
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,7 +577,7 @@ class DatabricksClusterHourLedger:
     @property
     def active_reserved_cluster_hours(self) -> float:
         closed = self.closed_attempt_ids
-        return sum(
+        return _sequential_hours_sum(
             reservation.reserved_cluster_hours
             for reservation in self.reservations
             if reservation.attempt_id not in closed
@@ -587,7 +596,9 @@ class DatabricksClusterHourLedger:
 
     @property
     def terminal_actual_cluster_hours(self) -> float:
-        return sum(item.actual_cluster_hours for item in self.terminal_actuals)
+        return _sequential_hours_sum(
+            item.actual_cluster_hours for item in self.terminal_actuals
+        )
 
     @property
     def accounted_cluster_hours(self) -> float:
@@ -607,7 +618,7 @@ class DatabricksClusterHourLedger:
             item.attempt_id: item.reserved_cluster_seconds
             for item in self.reservations
         }
-        return self.active_reserved_cluster_hours + sum(
+        return self.active_reserved_cluster_hours + _sequential_hours_sum(
             min(
                 item.actual_cluster_duration_seconds,
                 reserved_seconds[item.attempt_id],
@@ -1722,7 +1733,9 @@ def require_databricks_publication_batch_admission(
     ):
         raise ValueError("publication batch reservation suffix payload drift")
     proposed_tasks = sum(len(item.task_timeout_seconds) for item in reservations)
-    proposed_hours = sum(item.reserved_cluster_hours for item in reservations)
+    proposed_hours = _sequential_hours_sum(
+        item.reserved_cluster_hours for item in reservations
+    )
     if admission_cap not in DATABRICKS_PUBLICATION_LEDGER_CAPS:
         raise ValueError("publication batch requires an approved campaign ledger cap")
     if (

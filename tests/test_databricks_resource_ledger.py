@@ -1,4 +1,5 @@
 import json
+import math
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
@@ -731,6 +732,40 @@ def test_representative_canary_ledger_reserves_ten_attempts_then_reconciles_actu
     assert ledger.terminal_actual_cluster_hours == 1.0
     assert ledger.accounted_cluster_hours == 37.0
     assert read_databricks_cluster_hour_ledger_json(ledger_path) == ledger
+
+
+def test_ledger_accounting_replays_identically_on_every_python_version(tmp_path):
+    ledger_path = tmp_path / "cluster-hours.json"
+    create_representative_canary_cluster_hour_ledger(
+        ledger_path,
+        ledger_id="representative-canary-2026",
+    )
+    for index in range(REPRESENTATIVE_CANARY_JOB_COUNT):
+        reserve_databricks_run_attempt_json(
+            ledger_path,
+            _submit_payload(),
+            attempt_id=f"attempt-{index:02d}",
+            workload_id=f"representative-job-{index:02d}",
+        )
+        record_databricks_run_terminal_actual_json(
+            ledger_path,
+            attempt_id=f"attempt-{index:02d}",
+            terminal_state="succeeded",
+            actual_cluster_duration_seconds=360,
+            attest_never_posted=True,
+        )
+
+    hours = [0.1] * REPRESENTATIVE_CANARY_JOB_COUNT
+    left_to_right = 0.0
+    for value in hours:
+        left_to_right += value
+    assert left_to_right != math.fsum(hours)
+
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    record = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert ledger.terminal_actual_cluster_hours == left_to_right
+    assert record["accounting"]["terminal_actual_cluster_hours"] == left_to_right
+    assert databricks_cluster_hour_ledger_from_record(record) == ledger
 
 
 def test_ledger_rejects_reservation_over_cap_and_duplicate_attempt(tmp_path):
