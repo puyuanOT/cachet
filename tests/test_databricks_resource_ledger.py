@@ -768,6 +768,42 @@ def test_ledger_accounting_replays_identically_on_every_python_version(tmp_path)
     assert databricks_cluster_hour_ledger_from_record(record) == ledger
 
 
+def test_quiescent_ledger_prefixes_keep_their_pre_replay_fix_digests(tmp_path):
+    # Digests minted by the 3.11 sum() accounting before the left-to-right
+    # replay fix; pinned campaign prefixes are all quiescent states like these.
+    ledger_path = tmp_path / "cluster-hours.json"
+    create_representative_canary_cluster_hour_ledger(
+        ledger_path,
+        ledger_id="representative-canary-2026",
+    )
+    empty = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert databricks_ledger_prefix(empty).prefix_sha256 == (
+        "675f2b072e21a205536bf8cb1fd5de5c66a96db229da44545f4073129fbad961"
+    )
+    assert type(empty.terminal_actual_cluster_hours) is int
+
+    reserve_databricks_run_attempt_json(
+        ledger_path,
+        _submit_payload(),
+        attempt_id="attempt-00",
+        workload_id="representative-job-00",
+    )
+    record_databricks_run_terminal_actual_json(
+        ledger_path,
+        attempt_id="attempt-00",
+        terminal_state="succeeded",
+        actual_cluster_duration_seconds=360,
+        attest_never_posted=True,
+    )
+    closed = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert databricks_ledger_prefix(closed).prefix_sha256 == (
+        "a51bf9d975c530534c41f6736472b0401c836cdccc69f8c0b6e107278908c2ab"
+    )
+    accounting = json.loads(ledger_path.read_text(encoding="utf-8"))["accounting"]
+    assert type(accounting["active_reserved_cluster_hours"]) is int
+    assert accounting["active_reserved_cluster_hours"] == 0
+
+
 def test_ledger_rejects_reservation_over_cap_and_duplicate_attempt(tmp_path):
     ledger_path = tmp_path / "cluster-hours.json"
     create_representative_canary_cluster_hour_ledger(

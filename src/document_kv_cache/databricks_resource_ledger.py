@@ -205,7 +205,9 @@ DatabricksBatchReservationValidator = Callable[
 def _sequential_hours_sum(values: Iterable[float]) -> float:
     # Persisted accounting is replayed bit-for-bit on read; Python 3.12's
     # compensated sum() would reject every ledger written by plain addition.
-    total = 0.0
+    # Starting from int 0 keeps an empty sum an int, exactly as 3.11 sum()
+    # wrote it, so ledger prefix digests are unchanged.
+    total: float = 0
     for value in values:
         total += value
     return total
