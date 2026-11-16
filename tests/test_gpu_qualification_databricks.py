@@ -2428,6 +2428,165 @@ def test_discarding_interrupted_writes_rejects_a_non_file_temporary(tmp_path: Pa
     assert temporary.is_dir()
 
 
+def test_discarding_interrupted_writes_requires_the_linked_inode(tmp_path: Path):
+    root = tmp_path / "evidence"
+    root.mkdir()
+    linked = root / "linked.json"
+    linked.write_bytes(b"{}\n")
+    os.link(linked, root / ".linked.json.partial")
+    (root / ".unlinked.json.partial").write_bytes(b"{")
+    stray = root / "stray.json"
+    stray.write_bytes(b"{}\n")
+    (root / ".stray.json.partial").write_bytes(b"{}\n")
+    every_name = sorted(path.name for path in root.iterdir())
+
+    with pytest.raises(ValueError, match=r"not its target's inode: .*stray\.json"):
+        qualification_job._discard_interrupted_canonical_writes(
+            root, ["linked.json", "unlinked.json", "stray.json"]
+        )
+    assert sorted(path.name for path in root.iterdir()) == every_name
+
+    qualification_job._discard_interrupted_canonical_writes(
+        root, ["linked.json", "unlinked.json"]
+    )
+    assert sorted(path.name for path in root.iterdir()) == [
+        ".stray.json.partial",
+        "linked.json",
+        "stray.json",
+    ]
+    assert linked.read_bytes() == b"{}\n"
+    assert linked.stat().st_nlink == 1
+
+
+@pytest.mark.parametrize("crash", ("before_link", "after_link"))
+@pytest.mark.parametrize("member", ("marker", "intent", "receipt"))
+def test_v1_resume_recovers_a_hard_stop_mid_write_exactly_once(
+    member: str,
+    crash: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ledger_path = tmp_path / "cluster-hours.json"
+    receipt_root = tmp_path / "submit-receipts"
+    _copy_retained_campaign_ledger(ledger_path, monkeypatch)
+    plan = _plan()
+    payloads = _render(plan, _artifact_uris())
+    job_ids = [str(job["job_id"]) for job in plan["cloud_qualification"]["jobs"]]
+    local_preflight_path = _write_local_preflight(
+        plan, tmp_path / "local-preflight.json"
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+    target = receipt_root / {
+        "marker": "batch-reserved.json",
+        "intent": f"{job_ids[2]}.post-intent",
+        "receipt": f"{job_ids[2]}.json",
+    }[member]
+    temporary = target.with_name(f".{target.name}.partial")
+    real_link = os.link
+    survivors: dict[str, bytes] = {}
+
+    def link(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        if survivors or Path(destination) != target:
+            real_link(source, destination, *args, **kwargs)
+            return
+        if crash == "after_link":
+            real_link(source, destination, *args, **kwargs)
+        survivors.update(
+            {path.name: path.read_bytes() for path in receipt_root.iterdir()}
+        )
+        raise _HardStop
+
+    submit_opener = _SequentialOpener(
+        [{"run_id": 10_000 + index} for index in range(14)]
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "link", link)
+        with pytest.raises(_HardStop):
+            submit_gpu_qualification_jobs(
+                config,
+                plan_record=plan,
+                submit_payloads=payloads,
+                ledger_path=ledger_path,
+                submit_receipt_root=receipt_root,
+                local_preflight_evidence_path=local_preflight_path,
+                opener=submit_opener,
+                now=lambda: datetime(2026, 8, 24, 0, 0, tzinfo=UTC),
+            )
+    # The writer's in-process cleanup unlinked the temporary; a real kill
+    # leaves it exactly as it was when the stop fired.
+    assert not temporary.exists()
+    if crash == "after_link":
+        os.link(target, temporary)
+    else:
+        temporary.write_bytes(survivors[temporary.name])
+
+    completed_prefix = {
+        "phase-lease.json",
+        "batch-reserved.json",
+        f"{job_ids[0]}.json",
+        f"{job_ids[1]}.json",
+    }
+    linked = {target.name} if crash == "after_link" else set()
+    expected_survivors = {
+        "marker": {"phase-lease.json", temporary.name, *linked},
+        "intent": {*completed_prefix, temporary.name, *linked},
+        "receipt": {
+            *completed_prefix,
+            f"{job_ids[2]}.post-intent",
+            temporary.name,
+            *linked,
+        },
+    }[member]
+    assert {path.name for path in receipt_root.iterdir()} == expected_survivors
+    assert set(survivors) == expected_survivors
+    if crash == "after_link":
+        assert os.path.samefile(target, temporary)
+    posted_before_resume = {"marker": 0, "intent": 2, "receipt": 3}[member]
+    assert len(submit_opener.requests) == posted_before_resume
+
+    resume_opener = _SequentialOpener(
+        [{"run_id": 10_000 + index} for index in range(posted_before_resume, 14)]
+    )
+    resumed = resume_gpu_qualification_job_submissions(
+        config,
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=receipt_root,
+        local_preflight_evidence_path=local_preflight_path,
+        opener=resume_opener,
+    )
+
+    assert [item["cloud_run_id"] for item in resumed] == [
+        str(10_000 + index) for index in range(14)
+    ]
+    assert [
+        json.loads(request.data) for request in resume_opener.requests
+    ] == list(payloads[posted_before_resume:])
+    assert {path.name for path in receipt_root.iterdir()} == {
+        "phase-lease.json",
+        "batch-reserved.json",
+        *(f"{job_id}.json" for job_id in job_ids),
+    }
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert len(ledger.reservations) == (
+        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.reservation_count + 14
+    )
+    assert len(ledger.submission_receipts) == (
+        PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX.submission_receipt_count + 14
+    )
+    marker = json.loads((receipt_root / "batch-reserved.json").read_text("utf-8"))
+    assert qualification_job._load_submit_receipts(
+        receipt_root,
+        contracts=qualification_job._validated_qualification_payloads(
+            plan, payloads
+        ),
+        plan=plan,
+        ledger=ledger,
+        phase_batch_record_sha256=marker["closed_record_sha256"],
+    ) == resumed
+
+
 def test_control_plane_status_digest_uses_the_ledger_encoding_on_both_sides():
     ascii_run = {
         "run_id": 7,

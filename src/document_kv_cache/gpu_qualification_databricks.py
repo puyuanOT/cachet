@@ -1478,6 +1478,19 @@ def _replay_qualification_batch_marker(
     return authorization, marker
 
 
+def _qualification_evidence_names(
+    contracts: Sequence[Mapping[str, Any]],
+) -> frozenset[str]:
+    return frozenset(
+        {
+            _QUALIFICATION_PHASE_LEASE_FILENAME,
+            _QUALIFICATION_BATCH_MARKER_FILENAME,
+            *(f"{contract['job_id']}.json" for contract in contracts),
+            *(f"{contract['job_id']}.post-intent" for contract in contracts),
+        }
+    )
+
+
 def _require_existing_qualification_batch_marker(
     submit_receipt_root: str | Path,
 ) -> None:
@@ -1823,7 +1836,11 @@ def resume_gpu_qualification_job_submissions(
     opener: DatabricksURLOpener | None = None,
     now: Callable[[], datetime] | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """Resume the exact durable fourteen-job phase after a controller restart."""
+    """Resume the exact durable fourteen-job phase after a controller restart.
+
+    Temporaries a hard stop left mid-write are discarded first.  Collectors
+    never discard them, so such a root closes only through this resume.
+    """
 
     plan, _pins = _validated_plan_and_pins(plan_record)
     contracts = _validated_qualification_payloads(plan, submit_payloads)
@@ -1841,15 +1858,18 @@ def resume_gpu_qualification_job_submissions(
         preflight_completed_at,
         submission_boundary=clock(),
     )
+    root = _validated_existing_controller_evidence_root(
+        submit_receipt_root, "submit_receipt_root"
+    )
+    _discard_interrupted_canonical_writes(
+        root, sorted(_qualification_evidence_names(contracts))
+    )
     batch_authorization, batch_marker = _replay_qualification_batch_marker(
         plan=plan,
         contracts=contracts,
         ledger_path=ledger_path,
         submit_receipt_root=submit_receipt_root,
         local_preflight_binding=local_preflight_binding,
-    )
-    root = _validated_existing_controller_evidence_root(
-        submit_receipt_root, "submit_receipt_root"
     )
     receipts: list[dict[str, Any]] = []
     batch_marker_sha256 = str(batch_marker["closed_record_sha256"])
@@ -7006,23 +7026,35 @@ def _discard_interrupted_canonical_writes(
 ) -> None:
     """Remove temporaries a hard stop left before linking them into ``root``.
 
-    A temporary is never authority: its target is either absent or the same
-    fully written inode.
+    A temporary is never authority: its target is either absent (the write was
+    never published) or the same fully written inode (the stop fell between
+    the link and the unlink).  Any other pairing fails closed before anything
+    is removed.
     """
 
-    discarded = False
+    temporaries: list[Path] = []
     for name in names:
-        temporary = _canonical_write_temporary(root / name)
+        target = root / name
+        temporary = _canonical_write_temporary(target)
         if temporary.is_symlink() or (
             temporary.exists() and not temporary.is_file()
         ):
             raise ValueError(
                 f"interrupted canonical write is not a regular file: {temporary}"
             )
-        if temporary.is_file():
-            temporary.unlink()
-            discarded = True
-    if discarded:
+        if not temporary.is_file():
+            continue
+        if (target.exists() or target.is_symlink()) and (
+            target.is_symlink()
+            or not os.path.samestat(target.lstat(), temporary.lstat())
+        ):
+            raise ValueError(
+                f"interrupted canonical write is not its target's inode: {temporary}"
+            )
+        temporaries.append(temporary)
+    for temporary in temporaries:
+        temporary.unlink()
+    if temporaries:
         _fsync_directory(root)
 
 
