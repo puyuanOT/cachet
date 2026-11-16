@@ -170,10 +170,13 @@ Maintainer-only CLIs are documented under
 ## Current Status
 
 Cachet is alpha software. The current human-readable benchmark summary lives in
-[`benchmarks/README.md`](benchmarks/). The public tables have been reset for the
-vLLM 0.27.1 publication campaign; all numeric cells are explicitly pending or
-unsupported until sanitized matched evidence passes the publication gate. You
-do not need cloud infrastructure to try the local quickstart.
+[`benchmarks/README.md`](benchmarks/), which publishes the vLLM 0.30.0
+campaign's latency estimates, a separately sealed answer-quality benchmark, and
+a plan-coherent re-run of the auxiliary latency contrasts. In the quality
+benchmark, the per-document Vanilla KV cache matches full prefill on needle
+retrieval but loses substantial accuracy on multi-hop question answering
+(HotpotQA and MuSiQue). You do not need cloud infrastructure to try the local
+quickstart.
 
 ## Contributing
 

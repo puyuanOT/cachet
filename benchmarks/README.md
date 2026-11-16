@@ -236,7 +236,7 @@ the v1 audit showed to be broken:
   placeholder); strict whole-output compliance is reported separately;
 - Biography references and predictions are compared without WikiBio
   `-lrb- … -rrb-` disambiguators, and Biography is diagnostic only: its
-  title exact match is not a reliable quality measure;
+  title exact match is not a reliable quality measure (see below);
 - NIAH uses natural-text haystacks (HotpotQA and MuSiQue context paragraphs)
   with a numeric needle at a paragraph boundary, over the same 3-by-3 grid.
 
@@ -252,7 +252,58 @@ to change a verdict. The sealed report is
 [`appendix/vllm-0300-quality-v2/quality-v2-report.json`](appendix/vllm-0300-quality-v2/).
 
 <!-- cachet:vllm-0300-quality-v2:begin -->
+Report `closed_record_sha256`: `86e6707aa056ab8f36306584e509e3fa391dd6946e0ad94dfe0e49aa8fcff677`. Protocol `cachet-vllm-0.30.0-quality-v2`, parser `cachet.first_final_answer` v2, 10,000 paired bootstrap draws.
+
+| Dataset | Role | Metric | Pairs | Full prefill | Vanilla KV | Vanilla − full prefill | Paired 95% CI | Non-inferiority (CI low ≥ −0.02) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| HotpotQA | Headline, primary | Exact match | 7,405 | 0.462 | 0.187 | -0.275 | [-0.287, -0.263] | Does not meet |
+| HotpotQA | Headline, secondary | Answer F1 | 7,405 | 0.604 | 0.266 | -0.338 | [-0.350, -0.327] | Not assessed |
+| MuSiQue | Headline, primary | Answer exact match, alias-max | 2,417 | 0.182 | 0.008 | -0.174 | [-0.190, -0.158] | Does not meet |
+| MuSiQue | Headline, secondary | Answer F1, alias-max | 2,417 | 0.265 | 0.026 | -0.240 | [-0.256, -0.223] | Not assessed |
+| NIAH | Headline, primary | Exact-value accuracy | 1,000 | 1.000 | 1.000 | +0.000 | [+0.000, +0.000] | Meets |
+| Biography | Diagnostic | Exact match | 2,000 | 0.076 | 0.078 | +0.002 | [-0.001, +0.005] | Not assessed |
+
+| Dataset | Strict whole-output format (full / Vanilla) | Answer extracted (full / Vanilla) | Reached 256-token cap (full / Vanilla) | Mean completion tokens (full / Vanilla) | Document markup echoed (full / Vanilla) | Request errors (full / Vanilla) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| HotpotQA | 98.5% / 85.1% | 98.6% / 95.7% | 0.0% / 1.7% | 17.3 / 35.7 | 0.0% / 0.3% | 0 / 0 |
+| MuSiQue | 98.6% / 9.8% | 98.8% / 82.5% | 0.2% / 12.5% | 25.7 / 129.4 | 0.0% / 0.5% | 0 / 0 |
+| NIAH | 100.0% / 100.0% | 100.0% / 100.0% | 0.0% / 0.0% | 16.0 / 16.0 | 0.0% / 0.0% | 0 / 0 |
+| Biography | 99.9% / 99.9% | 99.9% / 99.9% | 0.0% / 0.0% | 14.1 / 13.7 | 0.0% / 0.0% | 0 / 0 |
+
+| NIAH cell | Pairs | Full prefill accuracy | Vanilla KV accuracy | Vanilla − full prefill |
+| --- | ---: | ---: | ---: | ---: |
+| 8k, needle at 10% | 112 | 1.000 | 1.000 | +0.000 |
+| 8k, needle at 50% | 111 | 1.000 | 1.000 | +0.000 |
+| 8k, needle at 90% | 111 | 1.000 | 1.000 | +0.000 |
+| 16k, needle at 10% | 111 | 1.000 | 1.000 | +0.000 |
+| 16k, needle at 50% | 111 | 1.000 | 1.000 | +0.000 |
+| 16k, needle at 90% | 111 | 1.000 | 1.000 | +0.000 |
+| 32k, needle at 10% | 111 | 1.000 | 1.000 | +0.000 |
+| 32k, needle at 50% | 111 | 1.000 | 1.000 | +0.000 |
+| 32k, needle at 90% | 111 | 1.000 | 1.000 | +0.000 |
+
+| Biography reference | Pairs | Full prefill exact match | Vanilla KV exact match |
+| --- | ---: | ---: | ---: |
+| Had a WikiBio `-lrb- … -rrb-` disambiguator | 220 | 0.582 | 0.577 |
+| Plain title | 1,780 | 0.013 | 0.016 |
 <!-- cachet:vllm-0300-quality-v2:end -->
+
+Vanilla KV does not meet the margin on either multi-hop dataset. HotpotQA
+exact match falls from 0.462 to 0.187 and MuSiQue from 0.182 to 0.008, with
+intervals far below −0.02. On MuSiQue only 9.8% of Vanilla outputs meet the
+strict whole-output format, against 98.6% with full prefill, and they run about
+five times longer. NIAH single-needle retrieval is
+identical at every length and depth. Vanilla prefills each document on its
+own, so no document attends to another: lookups inside one document survive,
+while questions that bridge facts across documents do not. The cached answers
+stay fluent and name entities from the retrieved documents, but often the
+wrong ones.
+
+The Biography split comes from its source data. Each subject's name is masked
+by its exact article title, so a disambiguated title rarely matches the text
+and the name stays visible (149 of 220 such examples in this subset, against 6
+of 1,780 plain titles). Both arms read a visible name equally well and neither
+can recover a masked one.
 
 ## Ablation Tables
 
