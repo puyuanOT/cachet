@@ -1034,7 +1034,11 @@ def test_finalization_returns_detached_nested_report_projections(
 
     repository_root = Path(__file__).resolve().parents[1]
     benchmark_root = tmp_path / "benchmarks"
-    shutil.copytree(repository_root / "benchmarks", benchmark_root)
+    shutil.copytree(
+        repository_root / "benchmarks",
+        benchmark_root,
+        ignore=shutil.ignore_patterns("vllm-0271-publication-v1", "vllm-0300-*"),
+    )
     root_readme_path = benchmark_root / "README.md"
     pending_readme = root_readme_path.read_bytes().decode("utf-8")
     published_readme = campaign_tables.replace_vllm_0271_publication_table_regions(

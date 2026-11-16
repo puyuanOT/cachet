@@ -1305,6 +1305,14 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         render_vllm_0271_publication_appendix_readme,
         validate_vllm_0271_publication_table_regions,
     )
+    from document_kv_cache.publication_latency_execution import (
+        validate_publication_latency_auxiliary_rerun_record,
+        validate_publication_latency_auxiliary_rerun_region,
+    )
+    from document_kv_cache.quality_v2 import (
+        validate_quality_v2_readme_region,
+        validate_quality_v2_report_record,
+    )
 
     benchmark_root = REPO_ROOT / "benchmarks"
 
@@ -1521,7 +1529,9 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
             stable_read_bytes(campaign_readme_path)
             == expected_campaign_readme_bytes
         )
-        assert "Status: vLLM 0.27.1 campaign published" in root_readme
+        assert (
+            f"Status: vLLM {report['engine_version']} campaign published" in root_readme
+        )
         benchmark_markdown = "\n".join(
             strict_markdown(benchmark_root / relative_path)
             for relative_path, entry_type in initial_tree
@@ -1550,6 +1560,32 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         }
         base_directories = base_directories | {
             "appendix/vllm-0271-publication-v1"
+        }
+        quality_dir = benchmark_root / "appendix" / "vllm-0300-quality-v2"
+        quality_report = canonical_json_record(quality_dir / "quality-v2-report.json")
+        validate_quality_v2_report_record(quality_report)
+        validate_quality_v2_readme_region(root_readme, quality_report)
+        assert quality_report["closed_record_sha256"] in strict_markdown(
+            quality_dir / "README.md"
+        )
+        rerun_dir = benchmark_root / "appendix" / "vllm-0300-auxiliary-latency-rerun"
+        rerun_record = canonical_json_record(rerun_dir / "auxiliary-latency-rerun.json")
+        validate_publication_latency_auxiliary_rerun_record(rerun_record)
+        validate_publication_latency_auxiliary_rerun_region(
+            root_readme, rerun_record, report
+        )
+        assert rerun_record["closed_record_sha256"] in strict_markdown(
+            rerun_dir / "README.md"
+        )
+        expected_files = expected_files | {
+            "appendix/vllm-0300-quality-v2/README.md",
+            "appendix/vllm-0300-quality-v2/quality-v2-report.json",
+            "appendix/vllm-0300-auxiliary-latency-rerun/README.md",
+            "appendix/vllm-0300-auxiliary-latency-rerun/auxiliary-latency-rerun.json",
+        }
+        base_directories = base_directories | {
+            "appendix/vllm-0300-quality-v2",
+            "appendix/vllm-0300-auxiliary-latency-rerun",
         }
 
     unsupported_method_section = _markdown_section(
