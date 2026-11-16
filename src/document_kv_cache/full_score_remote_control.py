@@ -90,6 +90,9 @@ FULL_SCORE_REMOTE_COORDINATOR_SPARK_VERSION: Final = (
 FULL_SCORE_REMOTE_COORDINATOR_JOB_COUNT: Final = (
     PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_JOBS
 )
+# Attempts after zero exist only behind a terminally failed, unattested
+# predecessor; they are CPU jobs beyond the campaign's declared job count.
+FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS: Final = 4
 FULL_SCORE_REMOTE_COORDINATOR_TIMEOUT_SECONDS: Final = (
     PUBLICATION_CAMPAIGN_FULL_SCORE_REMOTE_CPU_TIMEOUT_SECONDS
 )
@@ -182,6 +185,9 @@ FULL_SCORE_REMOTE_CONTROLLER_AUTHORIZATION_RECORD_TYPE: Final = (
 FULL_SCORE_REMOTE_CONTROLLER_WORKSPACE_AUTHORITY_RECORD_TYPE: Final = (
     "cachet.full_score_remote_controller_workspace_authority.v1"
 )
+FULL_SCORE_REMOTE_CONTROLLER_FAILED_ATTEMPT_RECORD_TYPE: Final = (
+    "cachet.full_score_remote_controller_failed_attempt.v1"
+)
 FULL_SCORE_REMOTE_CONTROLLER_SCHEMA_VERSION: Final = 1
 FULL_SCORE_REMOTE_COORDINATOR_RUNNER_SCRIPT = r"""from __future__ import annotations
 
@@ -264,6 +270,13 @@ FULL_SCORE_REMOTE_COORDINATOR_RUNNER_SHA256: Final = sha256(
 
 _SHA256_LENGTH = 64
 _REMOTE_AUTHORIZATION_ISSUER = object()
+_REMOTE_COORDINATOR_TERMINAL_LIFE_CYCLE_STATES: Final = frozenset(
+    {"INTERNAL_ERROR", "SKIPPED", "TERMINATED"}
+)
+# request, result, attestation, and every later attempt's subdirectory.
+_REMOTE_COORDINATOR_CONTROL_DIRECTORY_MAX_ENTRIES: Final = (
+    3 + FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -638,6 +651,76 @@ class FullScoreRemoteTreeAuthorization:
                 "an array of objects"
             )
         return tuple(cast(list[Mapping[str, Any]], value))
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class FullScoreRemoteCoordinatorRetryAuthorization:
+    """Issuer-only proof that one coordinator attempt failed without attesting."""
+
+    action: str
+    execution_plan_sha256: str
+    wave_index: int
+    phase_terminal_record_sha256: str
+    retired_attempt_id: str
+    retired_request_sha256: str
+    retired_controller_lease_root_sha256: str
+    retired_run_id: str
+    failed_attempt_record_sha256: str
+    next_attempt_ordinal: int
+    workspace_host_sha256: str
+    user_name_sha256: str
+
+    def __init__(
+        self,
+        *,
+        request: Mapping[str, Any],
+        controller_lease_root: Path,
+        failed_attempt_record: Mapping[str, Any],
+        workspace_host_sha256: str,
+        user_name_sha256: str,
+        _issuer: object,
+    ) -> None:
+        if _issuer is not _REMOTE_AUTHORIZATION_ISSUER:
+            raise TypeError(
+                "remote coordinator retry authority requires failed-attempt "
+                "retirement"
+            )
+        validate_full_score_remote_coordinator_request(request)
+        next_ordinal = _remote_coordinator_request_attempt_ordinal(request) + 1
+        _require_remote_coordinator_attempt_ordinal(next_ordinal)
+        if failed_attempt_record.get("next_attempt_ordinal") != next_ordinal:
+            raise ValueError("remote coordinator retry ordinal drift")
+        terminal = _required_mapping(request, "phase_terminal")
+        for name, attribute_value in (
+            ("action", request["action"]),
+            ("execution_plan_sha256", request["execution_plan_sha256"]),
+            ("wave_index", request["wave_index"]),
+            ("phase_terminal_record_sha256", terminal["record_sha256"]),
+            ("retired_attempt_id", request["attempt_id"]),
+            ("retired_request_sha256", request["closed_record_sha256"]),
+            (
+                "retired_controller_lease_root_sha256",
+                _controller_lease_root_sha256(controller_lease_root),
+            ),
+            ("retired_run_id", failed_attempt_record["run_id"]),
+            (
+                "failed_attempt_record_sha256",
+                _require_sha256(
+                    failed_attempt_record.get("closed_record_sha256"),
+                    "failed_attempt_record_sha256",
+                ),
+            ),
+            ("next_attempt_ordinal", next_ordinal),
+            (
+                "workspace_host_sha256",
+                _require_sha256(workspace_host_sha256, "workspace_host_sha256"),
+            ),
+            (
+                "user_name_sha256",
+                _require_sha256(user_name_sha256, "user_name_sha256"),
+            ),
+        ):
+            object.__setattr__(self, name, attribute_value)
 
 
 def _require_real_directory(path: Path, label: str) -> None:
@@ -1737,10 +1820,13 @@ def _full_score_remote_control_uris(
     *,
     action: str,
     wave_index: int,
+    attempt_ordinal: int = 0,
 ) -> dict[str, str]:
     root = _volume_directory_uri(durable_output_root, "durable_output_root").rstrip("/")
-    _full_score_remote_coordinator_attempt_id(action, wave_index)
+    _full_score_remote_coordinator_attempt_id(action, wave_index, attempt_ordinal)
     phase_root = f"{root}/control/full-score-remote/{action}/wave-{wave_index:03d}"
+    if attempt_ordinal:
+        phase_root = f"{phase_root}/attempt-{attempt_ordinal:02d}"
     return {
         "attestation": f"{phase_root}/attestation.json",
         "request": f"{phase_root}/request.json",
@@ -1945,6 +2031,7 @@ def _full_score_remote_controller_lease_root(
     *,
     action: str,
     wave_index: int,
+    attempt_ordinal: int = 0,
 ) -> Path:
     if type(phase_authorization) is not full_score.FullScorePhaseAuthorization:
         raise TypeError("remote coordinator requires full-score phase authority")
@@ -1982,9 +2069,11 @@ def _full_score_remote_controller_lease_root(
             "wave_index": wave_index,
         }
     )
-    return _normalized_controller_lease_root(
-        phase_root / f"remote-{action}-wave-{wave_index:03d}-{phase_closure_sha256}"
-    )
+    _require_remote_coordinator_attempt_ordinal(attempt_ordinal)
+    name = f"remote-{action}-wave-{wave_index:03d}-{phase_closure_sha256}"
+    if attempt_ordinal:
+        name = f"{name}-attempt-{attempt_ordinal:02d}"
+    return _normalized_controller_lease_root(phase_root / name)
 
 
 def _require_full_score_remote_controller_lease_root(
@@ -2002,15 +2091,99 @@ def _require_full_score_remote_controller_lease_root(
     return observed
 
 
+def _require_remote_coordinator_attempt_ordinal(attempt_ordinal: int) -> int:
+    if (
+        type(attempt_ordinal) is not int
+        or not 0 <= attempt_ordinal < FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS
+    ):
+        raise ValueError("remote coordinator attempt ordinal is out of range")
+    return attempt_ordinal
+
+
 def _full_score_remote_coordinator_attempt_id(
     action: str,
     wave_index: int,
+    attempt_ordinal: int = 0,
 ) -> str:
     if action not in FULL_SCORE_REMOTE_COORDINATOR_ACTIONS:
         raise ValueError("remote coordinator action is unsupported")
     if type(wave_index) is not int or wave_index < 0:
         raise ValueError("wave_index must be a non-negative integer")
-    return f"vllm-0271-publication-v1:full-score-remote:{action}:wave:{wave_index:03d}"
+    _require_remote_coordinator_attempt_ordinal(attempt_ordinal)
+    attempt_id = (
+        f"vllm-0271-publication-v1:full-score-remote:{action}:wave:{wave_index:03d}"
+    )
+    if attempt_ordinal:
+        return f"{attempt_id}:attempt:{attempt_ordinal:02d}"
+    return attempt_id
+
+
+def _remote_coordinator_request_attempt_ordinal(request: Mapping[str, Any]) -> int:
+    action = cast(str, request.get("action"))
+    wave_index = cast(int, request.get("wave_index"))
+    attempt_id = request.get("attempt_id")
+    for ordinal in range(FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS):
+        if attempt_id == _full_score_remote_coordinator_attempt_id(
+            action, wave_index, ordinal
+        ):
+            return ordinal
+    raise ValueError("remote coordinator request attempt_id drift")
+
+
+def _remote_coordinator_request_control_uris(
+    request: Mapping[str, Any],
+) -> dict[str, str]:
+    return _full_score_remote_control_uris(
+        cast(str, request["durable_output_root"]),
+        action=cast(str, request["action"]),
+        wave_index=cast(int, request["wave_index"]),
+        attempt_ordinal=_remote_coordinator_request_attempt_ordinal(request),
+    )
+
+
+def _remote_coordinator_retry_attempt_ordinal(
+    retry_authorization: object,
+    *,
+    action: str,
+    wave_index: int,
+    phase_authorization: full_score.FullScorePhaseAuthorization,
+) -> int:
+    if retry_authorization is None:
+        return 0
+    if type(retry_authorization) is not FullScoreRemoteCoordinatorRetryAuthorization:
+        raise TypeError(
+            "remote coordinator retry requires failed-attempt retirement authority"
+        )
+    next_ordinal = _require_remote_coordinator_attempt_ordinal(
+        retry_authorization.next_attempt_ordinal
+    )
+    if next_ordinal == 0:
+        raise ValueError("remote coordinator retry ordinal drift")
+    retired_root = _full_score_remote_controller_lease_root(
+        phase_authorization,
+        action=action,
+        wave_index=wave_index,
+        attempt_ordinal=next_ordinal - 1,
+    )
+    if (
+        retry_authorization.action != action
+        or retry_authorization.wave_index != wave_index
+        or retry_authorization.execution_plan_sha256
+        != phase_authorization.execution_plan_sha256
+        or retry_authorization.phase_terminal_record_sha256
+        != phase_authorization.terminal_record_sha256
+        or retry_authorization.retired_attempt_id
+        != _full_score_remote_coordinator_attempt_id(
+            action, wave_index, next_ordinal - 1
+        )
+        or retry_authorization.retired_controller_lease_root_sha256
+        != _controller_lease_root_sha256(retired_root)
+        or retry_authorization.workspace_host_sha256
+        != phase_authorization.workspace_host_sha256
+        or retry_authorization.user_name_sha256 != phase_authorization.user_name_sha256
+    ):
+        raise ValueError("remote coordinator retry authority binding drift")
+    return next_ordinal
 
 
 def build_full_score_remote_coordinator_request(
@@ -2030,8 +2203,16 @@ def build_full_score_remote_coordinator_request(
     coordinator_config: FullScoreRemoteCoordinatorJobConfig,
     phase_authorization: full_score.FullScorePhaseAuthorization,
     phase_terminal_record: Mapping[str, Any],
+    retry_authorization: FullScoreRemoteCoordinatorRetryAuthorization | None = None,
 ) -> FullScoreRemoteCoordinatorRequestAuthorization:
-    """Close one remote tree-verification request after a terminal GPU phase."""
+    """Close one remote tree-verification request after a terminal GPU phase.
+
+    Without *retry_authorization* this closes attempt zero, whose identity,
+    control URIs, controller root and idempotency token are the original ones.
+    A later attempt requires the authority returned by
+    :func:`retire_failed_full_score_remote_coordinator_attempt` for the
+    immediately preceding attempt of the same closed phase.
+    """
 
     if action not in FULL_SCORE_REMOTE_COORDINATOR_ACTIONS:
         raise ValueError("remote coordinator action is unsupported")
@@ -2053,6 +2234,12 @@ def build_full_score_remote_coordinator_request(
         or phase_authorization.phase != expected_phase
     ):
         raise ValueError("remote coordinator phase authority binding drift")
+    attempt_ordinal = _remote_coordinator_retry_attempt_ordinal(
+        retry_authorization,
+        action=action,
+        wave_index=wave_index,
+        phase_authorization=phase_authorization,
+    )
     _require_phase_terminal_worker_payload_binding(
         phase_terminal_record,
         phase_authorization=phase_authorization,
@@ -2074,6 +2261,7 @@ def build_full_score_remote_coordinator_request(
         durable_output_root,
         action=action,
         wave_index=wave_index,
+        attempt_ordinal=attempt_ordinal,
     )
     for uri, label in (
         (result_uri, "result_uri"),
@@ -2131,6 +2319,7 @@ def build_full_score_remote_coordinator_request(
         phase_authorization,
         action=action,
         wave_index=wave_index,
+        attempt_ordinal=attempt_ordinal,
     )
     record: dict[str, Any] = {
         "action": action,
@@ -2138,6 +2327,7 @@ def build_full_score_remote_coordinator_request(
         "attempt_id": _full_score_remote_coordinator_attempt_id(
             action,
             wave_index,
+            attempt_ordinal,
         ),
         "closed_record_sha256": "",
         "controller_singleton": {
@@ -2224,11 +2414,7 @@ def validate_full_score_remote_coordinator_request(
     wave_index = request.get("wave_index")
     if type(wave_index) is not int or wave_index < 0:
         raise ValueError("remote coordinator request wave_index drift")
-    if request.get("attempt_id") != _full_score_remote_coordinator_attempt_id(
-        cast(str, action),
-        wave_index,
-    ):
-        raise ValueError("remote coordinator request attempt_id drift")
+    attempt_ordinal = _remote_coordinator_request_attempt_ordinal(request)
     execution_sha = _require_sha256(
         request.get("execution_plan_sha256"), "execution_plan_sha256"
     )
@@ -2243,6 +2429,7 @@ def validate_full_score_remote_coordinator_request(
         durable_root,
         action=cast(str, action),
         wave_index=wave_index,
+        attempt_ordinal=attempt_ordinal,
     )
     if result_uri != canonical_control_uris["result"]:
         raise ValueError("remote coordinator result URI is not canonical")
@@ -2400,10 +2587,8 @@ def render_full_score_remote_coordinator_submit_payload(
     )
     canonical_request = request_authorization.to_record()
     request_path = _volume_file_uri(request_uri, "request_uri")
-    canonical_control_uris = _full_score_remote_control_uris(
-        cast(str, canonical_request["durable_output_root"]),
-        action=cast(str, canonical_request["action"]),
-        wave_index=cast(int, canonical_request["wave_index"]),
+    canonical_control_uris = _remote_coordinator_request_control_uris(
+        canonical_request
     )
     if request_path != canonical_control_uris["request"]:
         raise ValueError("remote coordinator request URI is not canonical")
@@ -2516,10 +2701,8 @@ def submit_full_score_remote_coordinator(
         request_uri,
         "request_uri",
     )
-    canonical_control_uris = _full_score_remote_control_uris(
-        cast(str, canonical_request["durable_output_root"]),
-        action=cast(str, canonical_request["action"]),
-        wave_index=cast(int, canonical_request["wave_index"]),
+    canonical_control_uris = _remote_coordinator_request_control_uris(
+        canonical_request
     )
     if request_uri != canonical_control_uris["request"]:
         raise ValueError("remote coordinator request URI is not canonical")
@@ -3188,6 +3371,8 @@ def collect_full_score_remote_coordinator(
     root = _prepare_full_score_remote_controller_root(controller_lease_root)
     with _full_score_remote_controller_lock(root):
         paths = _full_score_remote_controller_paths(root)
+        if paths["failed_attempt"].exists():
+            raise ValueError("remote coordinator attempt was retired as failed")
         request_authorization, submit_payload, post_intent, submit_response = (
             _read_full_score_remote_submission_closure(
                 workspace,
@@ -3341,6 +3526,133 @@ def replay_full_score_remote_coordinator_authorization(
             root=root,
             cas=cas,
             request_authorization=request_authorization,
+        )
+
+
+def retire_failed_full_score_remote_coordinator_attempt(
+    workspace: DatabricksWorkspaceConfig,
+    *,
+    controller_root: str | Path,
+    request_authorization: FullScoreRemoteCoordinatorRequestAuthorization,
+) -> FullScoreRemoteCoordinatorRetryAuthorization:
+    """Retire one terminally failed, unattested attempt and authorize the next.
+
+    The submitted run must be terminal without success, the controller must
+    hold no runs/get receipt or authorization, and the attempt's Volume control
+    directory must list its uploaded request but no attestation.  The
+    failed-attempt record is write-once; a replay revalidates it without
+    another runs/get or listing, so a retired attempt can never be collected.
+    """
+
+    request_authorization = (
+        _require_full_score_remote_coordinator_request_authorization(
+            request_authorization
+        )
+    )
+    request = request_authorization.to_record()
+    if (
+        _remote_coordinator_request_attempt_ordinal(request) + 1
+        >= FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS
+    ):
+        raise ValueError("remote coordinator exhausted its bounded attempts")
+    coordinator = _full_score_remote_coordinator_job_config_from_record(
+        _required_mapping(request, "coordinator")
+    )
+    controller_lease_root = _require_full_score_remote_controller_lease_root(
+        request_authorization,
+        controller_root,
+    )
+    _require_remote_request_workspace_identity(
+        workspace,
+        expected_user_name=coordinator.single_user_name,
+        authorization=request_authorization,
+    )
+    root = _prepare_full_score_remote_controller_root(controller_lease_root)
+    with _full_score_remote_controller_lock(root):
+        paths = _full_score_remote_controller_paths(root)
+        request_authorization, submit_payload, post_intent, submit_response = (
+            _read_full_score_remote_submission_closure(
+                workspace,
+                root=root,
+                request_authorization=request_authorization,
+            )
+        )
+        if paths["run_receipt"].exists() or paths["authorization"].exists():
+            raise ValueError(
+                "remote coordinator attempt observed a successful run and cannot "
+                "be retired"
+            )
+        if paths["failed_attempt"].exists():
+            failed_attempt = _read_closed_controller_record(
+                paths["failed_attempt"],
+                "failed-attempt record",
+            )
+        else:
+            run_id = cast(str, submit_response["run_id"])
+            run = _json_mapping(
+                get_databricks_run(workspace, run_id),
+                "remote coordinator runs/get response",
+            )
+            _validate_failed_remote_coordinator_run(
+                run,
+                submit_payload=submit_payload,
+                expected_run_id=run_id,
+            )
+            control_uris = _remote_coordinator_request_control_uris(request)
+            entries = list_databricks_volume_directory(
+                workspace,
+                control_uris["attestation"].rsplit("/", 1)[0],
+                max_entries=_REMOTE_COORDINATOR_CONTROL_DIRECTORY_MAX_ENTRIES,
+            )
+            names = sorted(cast(str, entry["name"]) for entry in entries)
+            if PurePosixPath(control_uris["attestation"]).name in names:
+                raise ValueError(
+                    "remote coordinator attempt wrote an attestation and cannot "
+                    "be retired"
+                )
+            if not any(
+                entry["name"] == PurePosixPath(control_uris["request"]).name
+                and entry.get("is_directory") is False
+                for entry in entries
+            ):
+                raise ValueError(
+                    "remote coordinator control directory does not list its request"
+                )
+            failed_attempt = _controller_failed_attempt_record(
+                run=run,
+                run_id=run_id,
+                request=request,
+                submit_payload=submit_payload,
+                post_intent=post_intent,
+                submit_response=submit_response,
+                control_directory_entries=names,
+            )
+            _validate_controller_failed_attempt_record(
+                failed_attempt,
+                request=request,
+                submit_payload=submit_payload,
+                post_intent=post_intent,
+                submit_response=submit_response,
+            )
+            _write_or_require_bytes(
+                paths["failed_attempt"],
+                _pretty_json_bytes(failed_attempt),
+                "remote controller failed-attempt record",
+            )
+        _validate_controller_failed_attempt_record(
+            failed_attempt,
+            request=request,
+            submit_payload=submit_payload,
+            post_intent=post_intent,
+            submit_response=submit_response,
+        )
+        return FullScoreRemoteCoordinatorRetryAuthorization(
+            request=request,
+            controller_lease_root=root,
+            failed_attempt_record=failed_attempt,
+            workspace_host_sha256=request_authorization.workspace_host_sha256,
+            user_name_sha256=request_authorization.user_name_sha256,
+            _issuer=_REMOTE_AUTHORIZATION_ISSUER,
         )
 
 
@@ -3649,6 +3961,7 @@ def _prepare_full_score_remote_controller_root(value: str | Path) -> Path:
 def _full_score_remote_controller_paths(root: Path) -> dict[str, Path]:
     return {
         "authorization": root / "authorization.json",
+        "failed_attempt": root / "failed-attempt.json",
         "lock": root / ".controller.lock",
         "post_intent": root / "post-intent.json",
         "request": root / "request.json",
@@ -4320,6 +4633,98 @@ def _validate_controller_run_receipt(
         raise ValueError("remote controller runs/get receipt binding drift")
 
 
+def _controller_failed_attempt_record(
+    *,
+    run: Mapping[str, Any],
+    run_id: str,
+    request: Mapping[str, Any],
+    submit_payload: Mapping[str, Any],
+    post_intent: Mapping[str, Any],
+    submit_response: Mapping[str, Any],
+    control_directory_entries: Sequence[str],
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "attempt_id": request["attempt_id"],
+        "closed_record_sha256": "",
+        "control_directory_entries": sorted(control_directory_entries),
+        "next_attempt_ordinal": (
+            _remote_coordinator_request_attempt_ordinal(request) + 1
+        ),
+        "post_intent_record_sha256": post_intent["closed_record_sha256"],
+        "record_type": FULL_SCORE_REMOTE_CONTROLLER_FAILED_ATTEMPT_RECORD_TYPE,
+        "request_sha256": request["closed_record_sha256"],
+        "run": dict(run),
+        "run_id": run_id,
+        "run_record_sha256": _canonical_sha256(run),
+        "schema_version": FULL_SCORE_REMOTE_CONTROLLER_SCHEMA_VERSION,
+        "submit_payload_sha256": _canonical_sha256(submit_payload),
+        "submit_response_record_sha256": submit_response["closed_record_sha256"],
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
+def _validate_controller_failed_attempt_record(
+    record: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any],
+    submit_payload: Mapping[str, Any],
+    post_intent: Mapping[str, Any],
+    submit_response: Mapping[str, Any],
+) -> None:
+    if set(record) != {
+        "attempt_id",
+        "closed_record_sha256",
+        "control_directory_entries",
+        "next_attempt_ordinal",
+        "post_intent_record_sha256",
+        "record_type",
+        "request_sha256",
+        "run",
+        "run_id",
+        "run_record_sha256",
+        "schema_version",
+        "submit_payload_sha256",
+        "submit_response_record_sha256",
+    } or (
+        record.get("record_type")
+        != FULL_SCORE_REMOTE_CONTROLLER_FAILED_ATTEMPT_RECORD_TYPE
+        or record.get("schema_version") != FULL_SCORE_REMOTE_CONTROLLER_SCHEMA_VERSION
+        or record.get("closed_record_sha256") != _closed_record_sha256(record)
+    ):
+        raise ValueError("remote controller failed-attempt record schema drift")
+    run = _required_mapping(record, "run")
+    run_id = _validate_failed_remote_coordinator_run(
+        run,
+        submit_payload=submit_payload,
+        expected_run_id=cast(str, submit_response["run_id"]),
+    )
+    control_uris = _remote_coordinator_request_control_uris(request)
+    entries = record.get("control_directory_entries")
+    if (
+        not isinstance(entries, list)
+        or any(not isinstance(name, str) for name in entries)
+        or entries != sorted(set(entries))
+        or PurePosixPath(control_uris["attestation"]).name in entries
+        or PurePosixPath(control_uris["request"]).name not in entries
+    ):
+        raise ValueError("remote controller failed-attempt directory evidence drift")
+    if (
+        record.get("attempt_id") != request.get("attempt_id")
+        or record.get("next_attempt_ordinal")
+        != _remote_coordinator_request_attempt_ordinal(request) + 1
+        or record.get("run_id") != run_id
+        or record.get("run_record_sha256") != _canonical_sha256(run)
+        or record.get("post_intent_record_sha256")
+        != post_intent.get("closed_record_sha256")
+        or record.get("request_sha256") != request.get("closed_record_sha256")
+        or record.get("submit_payload_sha256") != _canonical_sha256(submit_payload)
+        or record.get("submit_response_record_sha256")
+        != submit_response.get("closed_record_sha256")
+    ):
+        raise ValueError("remote controller failed-attempt record binding drift")
+
+
 def _controller_authorization_record(
     *,
     request: Mapping[str, Any],
@@ -4951,11 +5356,7 @@ def _validate_remote_coordinator_submit_request_binding(
     if parameters[1] != runner.get("file_sha256"):
         raise ValueError("remote coordinator runner SHA-256 binding drift")
     request_uri = _volume_file_uri(parameters[7], "coordinator request URI")
-    canonical_control_uris = _full_score_remote_control_uris(
-        cast(str, request["durable_output_root"]),
-        action=cast(str, request["action"]),
-        wave_index=cast(int, request["wave_index"]),
-    )
+    canonical_control_uris = _remote_coordinator_request_control_uris(request)
     if request_uri != canonical_control_uris["request"]:
         raise ValueError("remote coordinator request URI is not canonical")
     if parameters[8:] != [
@@ -4969,6 +5370,44 @@ def _validate_remote_coordinator_submit_request_binding(
         payload,
         attempt_id=cast(str, request["attempt_id"]),
     )
+
+
+def _validate_failed_remote_coordinator_run(
+    run: Mapping[str, Any],
+    *,
+    submit_payload: Mapping[str, Any],
+    expected_run_id: str,
+) -> str:
+    state = _required_mapping(run, "state")
+    life_cycle_state = state.get("life_cycle_state")
+    if life_cycle_state not in _REMOTE_COORDINATOR_TERMINAL_LIFE_CYCLE_STATES or (
+        life_cycle_state == "TERMINATED" and state.get("result_state") == "SUCCESS"
+    ):
+        raise ValueError("remote coordinator run is not terminally failed")
+    canonical_run_id = _canonical_databricks_run_id(
+        run.get("run_id"), "remote coordinator run_id"
+    )
+    if (
+        canonical_run_id != expected_run_id
+        or run.get("run_name") != submit_payload.get("run_name")
+    ):
+        raise ValueError("remote coordinator runs/get response identity drift")
+    if run.get("repair_history") not in (None, []):
+        raise ValueError("remote coordinator repaired runs cannot be retired")
+    tasks = run.get("tasks", [])
+    if not isinstance(tasks, list):
+        raise ValueError("remote coordinator run task coverage drift")
+    for task in tasks:
+        task_state = _required_mapping(
+            _json_mapping(task, "remote coordinator run task"),
+            "state",
+        )
+        if (
+            task_state.get("life_cycle_state")
+            not in _REMOTE_COORDINATOR_TERMINAL_LIFE_CYCLE_STATES
+        ):
+            raise ValueError("remote coordinator run task is not terminal")
+    return canonical_run_id
 
 
 def _validate_successful_remote_coordinator_run(
@@ -5378,6 +5817,7 @@ __all__ = [
     "FULL_SCORE_REMOTE_COORDINATOR_ACTIONS",
     "FULL_SCORE_REMOTE_COORDINATOR_ATTESTATION_RECORD_TYPE",
     "FULL_SCORE_REMOTE_COORDINATOR_JOB_COUNT",
+    "FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS",
     "FULL_SCORE_REMOTE_COORDINATOR_NODE_TYPE_ID",
     "FULL_SCORE_REMOTE_COORDINATOR_OUTPUT_MAX_BYTES",
     "FULL_SCORE_REMOTE_COORDINATOR_PARAMETERS_MAX_BYTES",
@@ -5394,6 +5834,7 @@ __all__ = [
     "FullScoreRemoteCompactArtifactIO",
     "FullScoreRemoteCoordinatorJobConfig",
     "FullScoreRemoteCoordinatorRequestAuthorization",
+    "FullScoreRemoteCoordinatorRetryAuthorization",
     "FullScoreRemoteTreeAuthorization",
     "build_full_score_remote_coordinator_request",
     "build_full_score_remote_final_coverage_record",
@@ -5409,6 +5850,7 @@ __all__ = [
     "require_full_score_remote_consumer_evidence_authorization",
     "require_full_score_remote_consumer_evidence_authorizations",
     "require_full_score_remote_ready_authorization",
+    "retire_failed_full_score_remote_coordinator_attempt",
     "run_full_score_remote_coordinator",
     "submit_full_score_remote_coordinator",
     "validate_full_score_remote_coordinator_attestation",
