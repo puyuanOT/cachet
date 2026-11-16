@@ -3482,10 +3482,12 @@ def replay_gpu_qualification_launch_authorization_v2(
         ledger=ledger,
         closed=True,
     )
+    # Later phases append to the ledger once this range closes; collection
+    # alone requires the complete live prefix.
     terminal_prefix = require_databricks_batch_terminal_closure(
         ledger,
         final_round.authorization,
-        require_complete_current_prefix=True,
+        require_complete_current_prefix=False,
     )
     rounds = (*closed_rounds, final_round)
     attempts = _final_attempts_v2(contracts, rounds)

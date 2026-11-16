@@ -1885,6 +1885,86 @@ def test_v2_collector_atomically_publishes_exact14_and_replay_is_read_only(
     assert _root_snapshot(evidence_root) == evidence_before
 
 
+@pytest.mark.parametrize("later_terminal", (False, True))
+def test_v2_replay_reissues_identical_authority_after_a_later_phase_appends(
+    later_terminal: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    payloads, contracts, runs, results = (
+        _completed_submission_with_terminal_fixtures(case)
+    )
+    monkeypatch.setattr(
+        databricks_v2,
+        "get_databricks_run",
+        lambda config, run_id: deepcopy(runs[run_id]),
+    )
+    _install_minimal_governed_evidence_stubs(case, results, monkeypatch)
+    evidence_root = tmp_path / "qualification-evidence-v2"
+    _evidence, authorization = databricks_v2.collect_gpu_qualification_evidence_v2(
+        case.config,
+        **_collector_kwargs(case, evidence_root),
+        now=lambda: datetime(2026, 8, 26, 12, 0, tzinfo=UTC),
+    )
+    closed = ledger_api.databricks_ledger_prefix(
+        ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    )
+    assert authorization.ledger_prefix == closed
+
+    later_attempt_id = "v2-test-later-phase-reservation"
+    ledger_api.reserve_databricks_run_attempt_json(
+        case.ledger_path,
+        payloads[0],
+        attempt_id=later_attempt_id,
+        workload_id="v2-test-later-phase",
+    )
+    if later_terminal:
+        ledger_api.record_databricks_run_terminal_actual_json(
+            case.ledger_path,
+            attempt_id=later_attempt_id,
+            terminal_state="succeeded",
+            actual_cluster_duration_seconds=0.0,
+        )
+    later = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert ledger_api.databricks_ledger_prefix(later) != closed
+    assert len(later.reservations) == closed.reservation_count + 1
+    with pytest.raises(ValueError, match="not the complete live ledger"):
+        ledger_api.require_databricks_batch_terminal_closure(
+            later,
+            ledger_api.replay_databricks_run_attempt_batch_authorization_json(
+                case.ledger_path,
+                databricks_v2._batch_requests_v2(case.plan, contracts),
+                expected_predecessor_prefix=case.phase_predecessor,
+            ),
+            require_complete_current_prefix=True,
+        )
+    ledger_before = case.ledger_path.read_bytes()
+    evidence_before = _root_snapshot(evidence_root)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("durable v2 replay performed a cloud or reconciliation write")
+
+    monkeypatch.setattr(databricks_v2, "get_databricks_run", forbidden)
+    monkeypatch.setattr(
+        databricks_v2,
+        "record_databricks_verified_run_terminal_actual_json",
+        forbidden,
+    )
+    monkeypatch.setattr(databricks_v1, "_read_gpu_qualification_result", forbidden)
+    replayed = databricks_v2.replay_gpu_qualification_launch_authorization_v2(
+        config=case.config,
+        **_collector_kwargs(case, evidence_root),
+        expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
+        expected_artifact_pins=_pins(),
+    )
+
+    assert replayed == authorization
+    assert replayed.ledger_prefix == closed
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert _root_snapshot(evidence_root) == evidence_before
+
+
 def test_v2_replay_rejects_partial_terminal_closure_without_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
