@@ -613,6 +613,40 @@ def test_marker_pairs_are_unique_and_frozen() -> None:
     )
 
 
+def test_status_separates_counted_and_cold_attested_requests() -> None:
+    report = _report()
+    report["coverage"]["cold_attested_request_count"] = 16_640
+
+    regions = campaign_tables.render_vllm_0271_publication_table_regions(
+        report,
+        {"synthetic": True},
+    )
+
+    assert regions["status"] == (
+        "> **Status: vLLM 0.30.0 campaign published.** The sanitized campaign "
+        "report and its report-bound publication gate passed. The gate is an "
+        "integrity gate: it checks evidence bindings and fixed coverage "
+        "counts, sets no quality or latency threshold, and latency results "
+        "are estimation-only.\n"
+        ">\n"
+        "> Coverage: 115 latency jobs; 83,653 distinct full-score examples; "
+        "101,573 Vanilla KV cache requests counted by the gate (17,920 latency "
+        "and 83,653 full-score), of which 16,640 latency requests are "
+        "cold-read attested.\n"
+        ">\n"
+        "> Only latency requests carry cold-read attestations. The design "
+        "requires 15,360 to 16,640 of the 17,920: the 1,280 RAM-storage "
+        "requests are served from the in-memory payload cache and never read "
+        "cold, and the 1,280 Unity Catalog requests load through the mounted "
+        "path and need not attest one."
+    )
+    assert "checked cache requests" not in regions["status"]
+    assert (
+        "| vLLM 0.30.0 | Governed campaign published | Report-bound integrity "
+        "gate passed (no quality threshold) |"
+    ) in regions["platform"]
+
+
 def test_campaign_disclosures_render_every_0300_ledger_fact() -> None:
     regions = campaign_tables.render_vllm_0271_publication_table_regions(
         _report(),

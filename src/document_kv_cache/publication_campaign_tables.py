@@ -174,6 +174,16 @@ _LATENCY_PROVENANCE_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _SHA256_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}\Z")
+_LATENCY_CACHE_REQUEST_COUNT: Final = 17_920
+_STORAGE_SETTING_CACHE_REQUEST_COUNT: Final = 1_280
+# RAM-storage requests never attest a cold read and Unity Catalog requests may
+# or may not, so one or two storage settings' requests carry no attestation.
+_MAX_COLD_ATTESTED_REQUEST_COUNT: Final = (
+    _LATENCY_CACHE_REQUEST_COUNT - _STORAGE_SETTING_CACHE_REQUEST_COUNT
+)
+_MIN_COLD_ATTESTED_REQUEST_COUNT: Final = (
+    _MAX_COLD_ATTESTED_REQUEST_COUNT - _STORAGE_SETTING_CACHE_REQUEST_COUNT
+)
 
 _CORE_LATENCY_ROWS: Final[tuple[tuple[str, str, int, int], ...]] = tuple(
     (
@@ -503,7 +513,7 @@ def _validate_rendered_coverage(coverage: Mapping[str, Any]) -> None:
         "full_score_phase_count": 20,
         "full_score_shard_count": 160,
         "full_score_wave_count": 10,
-        "latency_cache_request_count": 17_920,
+        "latency_cache_request_count": _LATENCY_CACHE_REQUEST_COUNT,
         "latency_descriptive_cell_count": 23,
         "latency_estimand_count": 13,
         "latency_job_count": 115,
@@ -515,7 +525,11 @@ def _validate_rendered_coverage(coverage: Mapping[str, Any]) -> None:
         if type(coverage.get(key)) is not type(value) or coverage.get(key) != value:
             raise ValueError(f"publication table coverage field {key!r} drift")
     cold = _int_field(coverage, "cold_attested_request_count", "coverage")
-    if not 15_360 <= cold <= 16_640:
+    if not (
+        _MIN_COLD_ATTESTED_REQUEST_COUNT
+        <= cold
+        <= _MAX_COLD_ATTESTED_REQUEST_COUNT
+    ):
         raise ValueError("publication cold-attestation coverage drift")
 
 
@@ -1203,13 +1217,31 @@ def _render_status(coverage: Mapping[str, Any]) -> str:
     latency_jobs = _int_field(coverage, "latency_job_count", "coverage")
     scored = _int_field(coverage, "full_score_identity_count", "coverage")
     checked = _int_field(coverage, "checked_cache_request_count", "coverage")
+    latency_cache = _int_field(coverage, "latency_cache_request_count", "coverage")
+    full_score_cache = _int_field(
+        coverage, "full_score_cache_request_count", "coverage"
+    )
+    cold = _int_field(coverage, "cold_attested_request_count", "coverage")
     return (
         "> **Status: vLLM "
         + PUBLICATION_CAMPAIGN_ENGINE_VERSION
-        + " campaign published.** The exact sanitized "
-        "campaign report and report-bound publication gate passed.\n>\n"
-        f"> Coverage: {latency_jobs} latency jobs; {scored} distinct full-score "
-        f"examples; {checked} checked cache requests."
+        + " campaign published.** The sanitized campaign report and its "
+        "report-bound publication gate passed. The gate is an integrity gate: "
+        "it checks evidence bindings and fixed coverage counts, sets no "
+        "quality or latency threshold, and latency results are "
+        "estimation-only.\n>\n"
+        f"> Coverage: {latency_jobs:,} latency jobs; {scored:,} distinct "
+        f"full-score examples; {checked:,} Vanilla KV cache requests counted "
+        f"by the gate ({latency_cache:,} latency and {full_score_cache:,} "
+        f"full-score), of which {cold:,} latency requests are cold-read "
+        "attested.\n>\n"
+        "> Only latency requests carry cold-read attestations. The design "
+        f"requires {_MIN_COLD_ATTESTED_REQUEST_COUNT:,} to "
+        f"{_MAX_COLD_ATTESTED_REQUEST_COUNT:,} of the {latency_cache:,}: the "
+        f"{_STORAGE_SETTING_CACHE_REQUEST_COUNT:,} RAM-storage requests are "
+        "served from the in-memory payload cache and never read cold, and the "
+        f"{_STORAGE_SETTING_CACHE_REQUEST_COUNT:,} Unity Catalog requests load "
+        "through the mounted path and need not attest one."
     )
 
 
@@ -1893,7 +1925,7 @@ def _render_platform() -> str:
             (
                 "vLLM " + PUBLICATION_CAMPAIGN_ENGINE_VERSION,
                 "Governed campaign published",
-                "Exact report-bound publication gate passed",
+                "Report-bound integrity gate passed (no quality threshold)",
             ),
             (
                 "SGLang",
