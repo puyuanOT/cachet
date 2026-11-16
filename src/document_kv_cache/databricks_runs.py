@@ -32,9 +32,11 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksBatchReservationAuthorization,
     DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
+    DatabricksLedgerPrefix,
     DatabricksReservationValidator,
     canonical_databricks_submit_payload_snapshot,
     databricks_ledger_path_sha256,
+    databricks_ledger_prefix_at_counts,
     databricks_pre_reserved_post_claim_path,
     record_databricks_run_submission_receipt_json,
     read_databricks_cluster_hour_ledger_json,
@@ -915,33 +917,13 @@ def submit_pre_reserved_databricks_run(
         snapshot,
         attempt_id=attempt_id,
     )
-    if databricks_ledger_path_sha256(ledger_path) != (
-        batch_authorization.ledger_path_sha256
-    ):
-        raise ValueError("pre-reserved submission ledger path binding drift")
-    batch_prefix = require_databricks_batch_reservation_authorization(
-        batch_authorization,
-        expected_predecessor_prefix=batch_authorization.predecessor_prefix,
-        expected_attempt_ids=batch_authorization.attempt_ids,
-        expected_submit_payload_sha256s=batch_authorization.submit_payload_sha256s,
+    _validate_pre_reserved_batch_member(
+        ledger_path,
+        attempt_id=attempt_id,
+        payload_sha256=payload_sha256,
+        batch_authorization=batch_authorization,
+        allow_existing_receipt=False,
     )
-    if attempt_id not in batch_authorization.attempt_ids:
-        raise ValueError("attempt is not a member of the authorized atomic batch")
-    member_index = batch_authorization.attempt_ids.index(attempt_id)
-    if batch_authorization.submit_payload_sha256s[member_index] != payload_sha256:
-        raise ValueError("authorized batch member payload digest drift")
-    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    require_databricks_ledger_prefix(ledger, batch_prefix)
-    reservation = next(
-        (item for item in ledger.reservations if item.attempt_id == attempt_id),
-        None,
-    )
-    if reservation is None or reservation.submit_payload_sha256 != payload_sha256:
-        raise ValueError("pre-reserved attempt does not match the submit payload")
-    if any(item.attempt_id == attempt_id for item in ledger.submission_receipts):
-        raise ValueError("pre-reserved attempt already has a submission receipt")
-    if attempt_id in ledger.closed_attempt_ids:
-        raise ValueError("pre-reserved attempt is already terminal")
     claim_path = _pre_reserved_post_claim_path(ledger_path, attempt_id=attempt_id)
     _require_or_create_pre_reserved_post_claim_root(claim_path)
     with _exclusive_pre_reserved_recovery_lock(claim_path):
@@ -1722,19 +1704,13 @@ def _validate_pre_reserved_batch_member(
         batch_authorization.ledger_path_sha256
     ):
         raise ValueError("pre-reserved submission ledger path binding drift")
-    batch_prefix = require_databricks_batch_reservation_authorization(
-        batch_authorization,
-        expected_predecessor_prefix=batch_authorization.predecessor_prefix,
-        expected_attempt_ids=batch_authorization.attempt_ids,
-        expected_submit_payload_sha256s=batch_authorization.submit_payload_sha256s,
-    )
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    _require_live_batch_reservation_authorization(ledger, batch_authorization)
     if attempt_id not in batch_authorization.attempt_ids:
         raise ValueError("attempt is not a member of the authorized atomic batch")
     member_index = batch_authorization.attempt_ids.index(attempt_id)
     if batch_authorization.submit_payload_sha256s[member_index] != payload_sha256:
         raise ValueError("authorized batch member payload digest drift")
-    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
-    require_databricks_ledger_prefix(ledger, batch_prefix)
     reservation = next(
         (item for item in ledger.reservations if item.attempt_id == attempt_id),
         None,
@@ -1748,6 +1724,39 @@ def _validate_pre_reserved_batch_member(
         raise ValueError("pre-reserved attempt already has a submission receipt")
     if attempt_id in ledger.closed_attempt_ids:
         raise ValueError("pre-reserved attempt is already terminal")
+
+
+def _require_live_batch_reservation_authorization(
+    ledger: DatabricksClusterHourLedger,
+    batch_authorization: DatabricksBatchReservationAuthorization,
+) -> None:
+    batch_prefix = batch_authorization.batch_prefix
+    require_databricks_ledger_prefix(ledger, batch_prefix)
+    predecessor = batch_authorization.predecessor_prefix
+    if not (
+        isinstance(predecessor, DatabricksLedgerPrefix)
+        and predecessor.reservation_count <= batch_prefix.reservation_count
+        and predecessor.submission_receipt_count
+        <= batch_prefix.submission_receipt_count
+        and predecessor.terminal_actual_count <= batch_prefix.terminal_actual_count
+    ):
+        raise ValueError("atomic batch reservation authority binding drift")
+    members = ledger.reservations[
+        predecessor.reservation_count : batch_prefix.reservation_count
+    ]
+    require_databricks_batch_reservation_authorization(
+        batch_authorization,
+        expected_predecessor_prefix=databricks_ledger_prefix_at_counts(
+            ledger,
+            reservation_count=predecessor.reservation_count,
+            submission_receipt_count=predecessor.submission_receipt_count,
+            terminal_actual_count=predecessor.terminal_actual_count,
+        ),
+        expected_attempt_ids=tuple(item.attempt_id for item in members),
+        expected_submit_payload_sha256s=tuple(
+            item.submit_payload_sha256 for item in members
+        ),
+    )
 
 
 @contextmanager

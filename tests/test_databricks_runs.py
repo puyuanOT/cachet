@@ -82,6 +82,7 @@ from document_kv_cache.databricks_resource_ledger import (
     read_databricks_cluster_hour_ledger_json,
     record_databricks_run_terminal_actual_json,
     reserve_databricks_run_attempt_batch_authorized_json,
+    reserve_databricks_run_attempt_json,
 )
 
 
@@ -4450,6 +4451,60 @@ def test_manual_close_racing_claim_publication_prevents_the_post(
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert ledger.submission_receipts == ()
     assert ledger.closed_attempt_ids == frozenset({"idempotent-attempt"})
+
+
+@pytest.mark.parametrize("entrypoint", ["submit", "resume"])
+@pytest.mark.parametrize("tamper", ["foreign_member", "shifted_predecessor"])
+def test_pre_reserved_submission_binds_authorization_to_the_live_ledger(
+    tmp_path, entrypoint, tamper
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    attempt_id = "idempotent-attempt"
+    if tamper == "foreign_member":
+        attempt_id = "outside-attempt"
+        payload = bind_databricks_run_idempotency_token(
+            _bounded_submit_payload(run_name="outside-batch"),
+            attempt_id=attempt_id,
+        )
+        ledger = reserve_databricks_run_attempt_json(
+            ledger_path,
+            payload,
+            attempt_id=attempt_id,
+            workload_id="idempotency-recovery-test",
+        )
+        object.__setattr__(authorization, "attempt_ids", (attempt_id,))
+        object.__setattr__(
+            authorization,
+            "submit_payload_sha256s",
+            (ledger.reservations[-1].submit_payload_sha256,),
+        )
+    else:
+        object.__setattr__(
+            authorization,
+            "predecessor_prefix",
+            authorization.batch_prefix,
+        )
+    service = _IdempotentSubmitService(fail_mode=None)
+    function = (
+        submit_pre_reserved_databricks_run
+        if entrypoint == "submit"
+        else resume_pre_reserved_databricks_run
+    )
+
+    with pytest.raises(ValueError, match="authority binding drift"):
+        function(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id=attempt_id,
+            batch_authorization=authorization,
+            opener=service,
+        )
+    assert service.calls == 0
+    assert read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts == ()
+    assert not _idempotency_claim_path(ledger_path, attempt_id=attempt_id).exists()
 
 
 def _reserved_idempotency_case(tmp_path, *, attempt_id="idempotent-attempt"):
