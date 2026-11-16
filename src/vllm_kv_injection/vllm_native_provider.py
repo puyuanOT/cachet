@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib
 import json
@@ -1074,26 +1075,25 @@ class DocumentKVNativeProvider:
                 os.sync()
                 self._page_cache_synced = True
             self._reap_prefetch(payload_uri)
-            eviction_succeeded = False
-
-            def mark_evicted() -> None:
-                nonlocal eviction_succeeded
-                eviction_succeeded = True
-
+            residencies: list[Mapping[str, object]] = []
             payload = _mmap_payload_view(
                 payload_uri,
                 expected_bytes=expected_bytes,
                 evict_page_cache=evict_here,
-                on_page_cache_evicted=mark_evicted,
+                on_page_cache_residency=residencies.append,
             )
-            self._cache_state_observations[actions.reservation.request_id] = {
+            residency = residencies[0] if residencies else None
+            observation: dict[str, object] = {
                 "source": _payload_source_name(payload_uri),
                 "bytes_read": expected_bytes,
                 "payload_cache_hit": False,
                 "eviction_requested": self._evict_page_cache,
-                "eviction_succeeded": eviction_succeeded,
+                "eviction_succeeded": _page_cache_residency_is_cold(residency),
                 "direct_io": False,
             }
+            if residency is not None:
+                observation["page_cache_residency"] = dict(residency)
+            self._cache_state_observations[actions.reservation.request_id] = observation
             return payload
         result = self._payload_cache.read(
             payload_uri,
@@ -2182,7 +2182,7 @@ def _cache_state_attestation_record(
         and decoded_runtime_bytes == expected_runtime_bytes
         and loaded_tokens == expected_tokens
     )
-    return {
+    record: dict[str, object] = {
         "cache_method": actions.bind.cache_method,
         "artifact_id": "" if identity is None else identity.artifact_id,
         "source": source,
@@ -2203,6 +2203,10 @@ def _cache_state_attestation_record(
         "successful_loads": 1 if successful else 0,
         "cold_read_attested": cold_read_attested,
     }
+    residency = observation.get("page_cache_residency")
+    if isinstance(residency, Mapping):
+        record["page_cache_residency"] = dict(residency)
+    return record
 
 
 def _payload_telemetry(
@@ -2299,6 +2303,114 @@ def _evict_file_from_page_cache(fileno: int) -> None:
         pass
 
 
+# DONTNEED keeps pages that another reader still maps or locks, and pages that
+# are still dirty; any page left behind makes the following read partly warm,
+# so a cold read requires every page of the payload to be gone.
+_COLD_READ_MAX_RESIDENT_PAGES = 0
+_MINCORE_RESIDENT_BIT = bytes(value & 1 for value in range(256))
+
+
+def _page_cache_residency(fileno: int) -> dict[str, object]:
+    """Count the pages of an open file that are still in the OS page cache.
+
+    Maps the file without touching it and asks ``mincore`` which pages are
+    resident. Linux answers "resident" for every page of a file the caller
+    neither owns nor may write (``can_do_mincore`` in mm/mincore.c), so unless
+    this process is root or owns the file it is reported as unmeasurable
+    instead of warm. ``unavailable_reason`` is set whenever no page count could
+    be taken.
+    """
+
+    def unavailable(reason: str) -> dict[str, object]:
+        return {
+            "method": None,
+            "resident_fraction": None,
+            "resident_pages": None,
+            "total_pages": None,
+            "unavailable_reason": reason,
+        }
+
+    try:
+        status = os.fstat(fileno)
+    except OSError as exc:
+        return unavailable(f"fstat failed: {_truncated_error_message(exc)}")
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None and geteuid() not in {0, status.st_uid}:
+        return unavailable(
+            "mincore cannot observe page-cache residency of a file this process "
+            "does not own"
+        )
+    calls = _libc_page_cache_calls()
+    if calls is None:
+        return unavailable("mincore is not available on this platform")
+    ctypes, libc_mmap, libc_munmap, libc_mincore = calls
+    size = status.st_size
+    total_pages = -(-size // mmap.PAGESIZE)
+    resident_pages = 0
+    if size:
+        address = libc_mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, fileno, 0)
+        if address is None or address == ctypes.c_void_p(-1).value:
+            return unavailable(f"mmap failed: {os.strerror(ctypes.get_errno())}")
+        try:
+            vector = (ctypes.c_ubyte * total_pages)()
+            if libc_mincore(address, size, vector) != 0:
+                return unavailable(
+                    f"mincore failed: {os.strerror(ctypes.get_errno())}"
+                )
+            resident_pages = bytes(vector).translate(_MINCORE_RESIDENT_BIT).count(1)
+        finally:
+            libc_munmap(address, size)
+    return {
+        "method": "mincore",
+        "resident_fraction": resident_pages / total_pages if total_pages else 0.0,
+        "resident_pages": resident_pages,
+        "total_pages": total_pages,
+        "unavailable_reason": None,
+    }
+
+
+def _page_cache_residency_is_cold(residency: Mapping[str, object] | None) -> bool:
+    if residency is None or residency.get("unavailable_reason") is not None:
+        return False
+    resident_pages = residency.get("resident_pages")
+    return (
+        residency.get("method") == "mincore"
+        and type(resident_pages) is int
+        and resident_pages <= _COLD_READ_MAX_RESIDENT_PAGES
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _libc_page_cache_calls() -> tuple[Any, Any, Any, Any] | None:
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc_mmap = libc.mmap
+        libc_mmap.restype = ctypes.c_void_p
+        libc_mmap.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_long,
+        )
+        libc_munmap = libc.munmap
+        libc_munmap.restype = ctypes.c_int
+        libc_munmap.argtypes = (ctypes.c_void_p, ctypes.c_size_t)
+        libc_mincore = libc.mincore
+        libc_mincore.restype = ctypes.c_int
+        libc_mincore.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_ubyte),
+        )
+    except (AttributeError, ImportError, OSError, TypeError):
+        return None
+    return ctypes, libc_mmap, libc_munmap, libc_mincore
+
+
 def _read_payload_view(
     payload_uri: str,
     *,
@@ -2346,7 +2458,7 @@ def _mmap_payload_view(
     *,
     expected_bytes: int | None = None,
     evict_page_cache: bool = False,
-    on_page_cache_evicted: Callable[[], None] | None = None,
+    on_page_cache_residency: Callable[[Mapping[str, object]], None] | None = None,
 ) -> memoryview:
     """Memory-map a merged payload so the device copy faults pages on demand.
 
@@ -2358,16 +2470,18 @@ def _mmap_payload_view(
     backing filesystem cannot mmap the file (e.g. some FUSE mounts).
 
     When ``evict_page_cache`` is set the file's pages are dropped from the OS page
-    cache before mapping, forcing the copy to read cold from disk (honest
-    cold-hydrate measurement).
+    cache before mapping, and ``on_page_cache_residency`` receives the residency
+    measured right after the drop (see ``_page_cache_residency``), so a caller
+    can tell an honest cold read from one the drop left partly warm.
     """
 
     path = local_path(payload_uri)
     with open(path, "rb") as handle:
         if evict_page_cache:
             _evict_file_from_page_cache(handle.fileno())
-            if on_page_cache_evicted is not None:
-                on_page_cache_evicted()
+            residency = _page_cache_residency(handle.fileno())
+            if on_page_cache_residency is not None:
+                on_page_cache_residency(residency)
         try:
             mapped = mmap.mmap(handle.fileno(), 0, prot=mmap.PROT_READ)
         except (ValueError, OSError):

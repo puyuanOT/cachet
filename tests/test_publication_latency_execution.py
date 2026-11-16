@@ -4706,9 +4706,23 @@ def _realistic_local_path_connector_load(
     expected_stored_bytes = 4096
     expected_runtime_bytes = 8192
     expected_tokens = 128
+    residency = (
+        {}
+        if payload_cache_hit
+        else {
+            "page_cache_residency": {
+                "method": "mincore",
+                "resident_fraction": 0.0,
+                "resident_pages": 0,
+                "total_pages": 1,
+                "unavailable_reason": None,
+            }
+        }
+    )
     return {
         "benchmark_request_id": request_id,
         "cache_state_attestation": {
+            **residency,
             "bytes_read": 0 if payload_cache_hit else expected_stored_bytes,
             "cold_read_attested": cold_read_attested,
             "eviction_requested": not payload_cache_hit,
@@ -5105,6 +5119,86 @@ def test_mounted_path_load_count_requires_verified_uc_backend_reads(monkeypatch)
     assert uc["backend_bytes_read"] == uc["expected_backend_bytes_read"]
     assert disk["mounted_path_load_count"] == 0
     assert disk["cold_read_attested_count"] == len(request_ids)
+
+
+@pytest.mark.parametrize(
+    ("host_cache_state", "cold_read_attested"),
+    (
+        ("cold_eviction_required", True),
+        ("mounted_path_evicted_backend_cache_unproven", False),
+    ),
+)
+@pytest.mark.parametrize(
+    "residency",
+    (
+        None,
+        {"resident_pages": 1, "resident_fraction": 1.0},
+        {"resident_fraction": 0},
+        {"total_pages": 0},
+        {
+            "method": None,
+            "resident_fraction": None,
+            "resident_pages": None,
+            "total_pages": None,
+            "unavailable_reason": "mmap failed: No such device",
+        },
+        {"extra": True},
+    ),
+)
+def test_storage_eviction_requires_a_measured_empty_page_cache(
+    monkeypatch, host_cache_state, cold_read_attested, residency
+):
+    request_ids = [
+        f"request-{index:03d}"
+        for index in range(execution.PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL)
+    ]
+    benchmark = SimpleNamespace(
+        measurements=tuple(
+            SimpleNamespace(
+                metadata={
+                    execution.PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY: request_id
+                }
+            )
+            for request_id in request_ids
+        )
+    )
+    monkeypatch.setattr(
+        execution,
+        "benchmark_run_result_from_record",
+        lambda *_args, **_kwargs: benchmark,
+    )
+    monkeypatch.setattr(execution, "_file_sha256", lambda _path: "a" * 64)
+    records = [
+        _realistic_local_path_connector_load(
+            request_id,
+            cold_read_attested=cold_read_attested,
+            payload_cache_hit=False,
+        )
+        for request_id in request_ids
+    ]
+    monkeypatch.setattr(
+        execution, "_read_jsonl_file", lambda *_args, **_kwargs: records
+    )
+
+    def summarize() -> dict:
+        return execution._publication_latency_cache_telemetry_summary(
+            Path("connector-telemetry.jsonl"),
+            job_record={
+                "cache_telemetry_policy": {"host_cache_state": host_cache_state},
+                "cell": {"method_id": "vanilla_prefill"},
+                "runtime": {"runtime_kv_dtype": "bfloat16"},
+            },
+            benchmark_record={},
+        )
+
+    assert summarize()["eviction_succeeded_count"] == len(request_ids)
+    attestation = records[7]["cache_state_attestation"]
+    if residency is None:
+        del attestation["page_cache_residency"]
+    else:
+        attestation["page_cache_residency"].update(residency)
+    with pytest.raises(ValueError, match="measured empty page cache"):
+        summarize()
 
 
 def test_descriptive_cell_validator_rejects_resource_and_cache_tampering():

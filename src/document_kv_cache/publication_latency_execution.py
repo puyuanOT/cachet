@@ -12282,6 +12282,14 @@ def _publication_latency_cache_telemetry_summary(
             or attestation.get("successful_loads") != 1
         ):
             raise ValueError("Vanilla connector byte/token/layout telemetry drift")
+        residency = attestation.get("page_cache_residency")
+        if attestation.get("eviction_succeeded") is True and not (
+            _measured_empty_page_cache(residency)
+        ):
+            raise ValueError(
+                "Vanilla connector eviction is not backed by a measured empty "
+                "page cache"
+            )
         expected_stored_bytes = _nonnegative_int(
             attestation.get("expected_stored_bytes"), "expected_stored_bytes"
         )
@@ -12340,6 +12348,29 @@ def _publication_latency_cache_telemetry_summary(
     }
     _validate_cache_telemetry_summary(summary, job_record=job_record)
     return summary
+
+
+def _measured_empty_page_cache(residency: object) -> bool:
+    if not isinstance(residency, Mapping) or set(residency) != {
+        "method",
+        "resident_fraction",
+        "resident_pages",
+        "total_pages",
+        "unavailable_reason",
+    }:
+        return False
+    total_pages = residency.get("total_pages")
+    resident_fraction = residency.get("resident_fraction")
+    return (
+        residency.get("method") == "mincore"
+        and type(residency.get("resident_pages")) is int
+        and residency.get("resident_pages") == 0
+        and type(total_pages) is int
+        and total_pages > 0
+        and type(resident_fraction) is float
+        and resident_fraction == 0.0
+        and residency.get("unavailable_reason") is None
+    )
 
 
 def _ram_payload_cache_artifact_summary(
