@@ -8824,7 +8824,7 @@ def _auxiliary_rerun_attempt_chain(
     chain: list[dict[str, Any]] = []
     for number, item in enumerate(attempts, start=1):
         _require_exact_keys(
-            item, _AUXILIARY_RERUN_ATTEMPT_KEYS, f"auxiliary re-run attempt of {job_id!r}"
+            item, set(_AUXILIARY_RERUN_ATTEMPT_KEYS), f"auxiliary re-run attempt of {job_id!r}"
         )
         if type(item.get("attempt")) is not int or item.get("attempt") != number:
             raise ValueError(
@@ -9135,16 +9135,16 @@ def aggregate_publication_latency_auxiliary_rerun(
     for item in attempt_records:
         _require_exact_keys(
             item,
-            _AUXILIARY_RERUN_ATTEMPT_KEYS | {"job_id"},
+            {*_AUXILIARY_RERUN_ATTEMPT_KEYS, "job_id"},
             "auxiliary re-run attempt record",
         )
         job_id = _required_string(item, "job_id")
-        attempt = _required_int(item, "attempt")
-        if job_id not in evidence_by_job or attempt in evidence_by_job[job_id]:
+        number = _required_int(item, "attempt")
+        if job_id not in evidence_by_job or number in evidence_by_job[job_id]:
             raise ValueError(
-                f"auxiliary re-run attempt {attempt} of {job_id!r} is unexpected"
+                f"auxiliary re-run attempt {number} of {job_id!r} is unexpected"
             )
-        evidence_by_job[job_id][attempt] = json.loads(
+        evidence_by_job[job_id][number] = json.loads(
             _canonical_json({key: value for key, value in item.items() if key != "job_id"})
         )
     attempt_chains = {
@@ -9435,7 +9435,7 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
         raise ValueError("auxiliary re-run jobs do not match the plan")
     chains: list[list[dict[str, Any]]] = []
     for job in _mapping_sequence(record, "jobs"):
-        _require_exact_keys(job, _AUXILIARY_RERUN_JOB_KEYS, "auxiliary re-run job")
+        _require_exact_keys(job, set(_AUXILIARY_RERUN_JOB_KEYS), "auxiliary re-run job")
         if job.get("execution_plan_sha256") != (
             publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, job.get("attempt"))
         ):
