@@ -583,22 +583,7 @@ def _bootstrap_mean_interval(
     if draws <= 0:
         return (statistics.fmean(values), statistics.fmean(values))
     count = len(values)
-    try:
-        import numpy
-    except ImportError:
-        rng = random.Random(seed)
-        means = sorted(
-            sum(values[rng.randrange(count)] for _ in range(count)) / count
-            for _ in range(draws)
-        )
-    else:
-        generator = numpy.random.default_rng(
-            int.from_bytes(sha256(seed.encode("utf-8")).digest()[:8], "big")
-        )
-        array = numpy.asarray(values, dtype=numpy.float64)
-        means = []
-        for start in range(0, draws, 500):
-            block = generator.integers(0, count, size=(min(500, draws - start), count))
-            means.extend(array[block].mean(axis=1).tolist())
-        means.sort()
+    rng = random.Random(seed)
+    population = list(values)
+    means = sorted(math.fsum(rng.choices(population, k=count)) / count for _ in range(draws))
     return (means[int(0.025 * (draws - 1))], means[int(math.ceil(0.975 * (draws - 1)))])
