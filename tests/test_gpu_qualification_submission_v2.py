@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -520,6 +521,66 @@ def _root_snapshot(root: Path) -> tuple[Any, ...]:
     )
 
 
+class _HardStop(BaseException):
+    """A controller kill: on disk, nothing after it happened."""
+
+
+def _install_hard_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    target: Path,
+    crash: str,
+) -> dict[str, bytes]:
+    """Stop the controller once while it writes ``target``.
+
+    ``crash`` is "before_write" (the write never began), "legacy_empty" (the
+    former in-place writer had only created ``target``), or "before_link" (the
+    temporary is durable but not yet linked).  In-process cleanup still runs
+    after the stop, so the returned mapping receives the files a real kill
+    leaves; restore them with ``_restore_after_hard_stop``.
+    """
+
+    survivors: dict[str, bytes] = {}
+    fired: list[bool] = []
+
+    def stop() -> None:
+        fired.append(True)
+        survivors.update(
+            {path.name: path.read_bytes() for path in target.parent.iterdir()}
+        )
+        raise _HardStop(f"hard stop while writing {target.name}")
+
+    if crash == "before_link":
+        real_link = os.link
+
+        def link(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+            if not fired and Path(destination) == target:
+                stop()
+            real_link(source, destination, *args, **kwargs)
+
+        monkeypatch.setattr(os, "link", link)
+    else:
+        assert crash in {"before_write", "legacy_empty"}
+        real_writer = databricks_v1._write_canonical_exclusive
+
+        def writer(record: Mapping[str, Any], path: Path) -> None:
+            if not fired and Path(path) == target:
+                if crash == "legacy_empty":
+                    Path(path).touch()
+                stop()
+            real_writer(record, path)
+
+        monkeypatch.setattr(databricks_v1, "_write_canonical_exclusive", writer)
+    return survivors
+
+
+def _restore_after_hard_stop(root: Path, survivors: Mapping[str, bytes]) -> None:
+    for path in root.iterdir():
+        if path.name not in survivors:
+            path.unlink()
+    for name, content in survivors.items():
+        (root / name).write_bytes(content)
+
+
 def _stable_stat(path: Path) -> tuple[int, int, int, int, int]:
     observed = path.stat()
     return (
@@ -1013,6 +1074,126 @@ def test_resume_recovers_exact_lease_only_crash_and_reserves_once(
     assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
     assert case.cloud.resume_attempt_ids == list(case.cloud.attempt_ids)
     assert case.preflight_freshness == [True, False]
+
+
+@pytest.mark.parametrize(
+    ("member", "crash"),
+    (
+        ("lease", "before_write"),
+        ("lease", "before_link"),
+        ("intent", "legacy_empty"),
+        ("intent", "before_link"),
+        ("receipt", "before_link"),
+    ),
+)
+def test_resume_recovers_a_hard_stop_mid_write_exactly_once(
+    member: str,
+    crash: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    ledger_before = case.ledger_path.read_bytes()
+    target_name = {
+        "lease": "phase-lease-v2.json",
+        "intent": f"{job_ids[2]}.post-intent-v2",
+        "receipt": f"{job_ids[2]}.json",
+    }[member]
+    survivors = _install_hard_stop(
+        monkeypatch, case.receipt_root / target_name, crash
+    )
+
+    with pytest.raises(_HardStop):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config, **case.call_kwargs()
+        )
+    _restore_after_hard_stop(case.receipt_root, survivors)
+
+    temporary = f".{target_name}.partial"
+    completed_prefix = {
+        "phase-lease-v2.json",
+        "batch-reserved-v2.json",
+        f"{job_ids[0]}.json",
+        f"{job_ids[1]}.json",
+    }
+    expected_survivors = {
+        ("lease", "before_write"): set(),
+        ("lease", "before_link"): {temporary},
+        ("intent", "legacy_empty"): {*completed_prefix, target_name},
+        ("intent", "before_link"): {*completed_prefix, temporary},
+        ("receipt", "before_link"): {
+            *completed_prefix,
+            f"{job_ids[2]}.post-intent-v2",
+            temporary,
+        },
+    }[(member, crash)]
+    assert {path.name for path in case.receipt_root.iterdir()} == expected_survivors
+    if crash == "legacy_empty":
+        assert (case.receipt_root / target_name).read_bytes() == b""
+    if member == "lease":
+        assert case.ledger_path.read_bytes() == ledger_before
+    posted_before_resume = {"lease": 0, "intent": 2, "receipt": 3}[member]
+    assert case.cloud.post_attempt_ids == list(
+        case.cloud.attempt_ids[:posted_before_resume]
+    )
+
+    receipts = databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config,
+        **case.call_kwargs(),
+    )
+
+    assert len(receipts) == 14
+    assert {path.name for path in case.receipt_root.iterdir()} == {
+        "phase-lease-v2.json",
+        "batch-reserved-v2.json",
+        *(f"{job_id}.json" for job_id in job_ids),
+    }
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+    assert case.cloud.resume_attempt_ids == list(
+        case.cloud.attempt_ids[0 if member == "lease" else 2 :]
+    )
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    opening = GPU_QUALIFICATION_V2_OPENING_LEDGER_PREFIX
+    assert len(ledger.reservations) == opening.reservation_count + 14
+    assert len(ledger.submission_receipts) == opening.submission_receipt_count + 14
+    assert len(ledger.terminal_actuals) == opening.terminal_actual_count + 14
+    assert ledger.active_reserved_cluster_hours == 0.0
+    for job_id, receipt in zip(job_ids, receipts, strict=True):
+        assert receipt == _json(case.receipt_root / f"{job_id}.json")
+
+
+def test_resume_keeps_an_empty_intent_whose_post_the_ledger_receipted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    survivors = _install_hard_stop(
+        monkeypatch, case.receipt_root / f"{job_ids[2]}.json", "before_link"
+    )
+    with pytest.raises(_HardStop):
+        databricks_v2.submit_gpu_qualification_jobs_v2(
+            case.config, **case.call_kwargs()
+        )
+    _restore_after_hard_stop(case.receipt_root, survivors)
+    intent_path = case.receipt_root / f"{job_ids[2]}.post-intent-v2"
+    intent_path.write_bytes(b"")
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert case.cloud.attempt_ids[2] in {
+        item.attempt_id for item in ledger.submission_receipts
+    }
+    ledger_before = case.ledger_path.read_bytes()
+
+    with pytest.raises(ValueError, match="newline-terminated JSON object"):
+        databricks_v2.resume_gpu_qualification_job_submissions_v2(
+            case.config,
+            **case.call_kwargs(),
+        )
+
+    assert intent_path.read_bytes() == b""
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids[:3])
 
 
 def test_reservation_postcommit_exception_retains_lease_for_exact_resume(
@@ -2595,3 +2776,51 @@ def test_v2_non_ascii_runs_get_digests_match_the_ledger_through_replay(
         expected_campaign_id=PUBLICATION_CAMPAIGN_ID,
         expected_artifact_pins=_pins(),
     ) == authorization
+
+
+@pytest.mark.parametrize("crash", ("before_write", "before_link"))
+def test_v2_capacity_retry_reuses_a_round_root_left_before_its_lease(
+    crash: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(tmp_path, monkeypatch)
+    job_ids = _planned_job_ids(case.plan)
+    case.cloud.capacity_failures = {case.cloud.attempt_ids[5]: _CAPACITY}
+    databricks_v2.submit_gpu_qualification_jobs_v2(case.config, **case.call_kwargs())
+    attempt_zero_receipts = tuple(
+        _json(case.receipt_root / f"{job_id}.json") for job_id in job_ids
+    )
+    ledger_before = case.ledger_path.read_bytes()
+    retry_root = _retry_root(case, 1)
+    survivors = _install_hard_stop(
+        monkeypatch, retry_root / "phase-lease-v2.json", crash
+    )
+
+    with pytest.raises(_HardStop):
+        _retry_capacity_failures(case)
+    _restore_after_hard_stop(retry_root, survivors)
+
+    assert {path.name for path in retry_root.iterdir()} == (
+        set() if crash == "before_write" else {".phase-lease-v2.json.partial"}
+    )
+    assert case.ledger_path.read_bytes() == ledger_before
+    assert databricks_v2.resume_gpu_qualification_job_submissions_v2(
+        case.config, **case.call_kwargs()
+    ) == attempt_zero_receipts
+    assert case.cloud.post_attempt_ids == list(case.cloud.attempt_ids)
+
+    leases = _retry_capacity_failures(case)
+
+    retried = _retry_attempt(case, 5, 1)
+    assert [lease["attempt_ids"] for lease in leases] == [[retried]]
+    assert leases[0] == _json(retry_root / "phase-lease-v2.json")
+    assert {path.name for path in retry_root.iterdir()} == {
+        "phase-lease-v2.json",
+        "batch-reserved-v2.json",
+        f"{job_ids[5]}.json",
+    }
+    assert case.cloud.post_attempt_ids == [*case.cloud.attempt_ids, retried]
+    ledger = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    assert len(ledger.reservations) == case.phase_predecessor.reservation_count + 15
+    assert ledger.active_reserved_cluster_hours == 0.0

@@ -2331,6 +2331,63 @@ def test_exclusive_evidence_write_fails_closed_when_directory_fsync_fails(
     assert not output.exists()
 
 
+class _HardStop(BaseException):
+    """A controller kill: on disk, nothing after it happened."""
+
+
+def test_exclusive_evidence_write_never_exposes_a_torn_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = tmp_path / "evidence"
+    output = root / "evidence.json"
+    temporary = root / ".evidence.json.partial"
+    record = {"closed_record_sha256": "a" * 64, "note": "Databricks didn\u2019t"}
+    content = (canonical_gpu_qualification_json(record) + "\n").encode("utf-8")
+    survivors: dict[str, bytes] = {}
+
+    def stop_before_link(*_args: Any, **_kwargs: Any) -> None:
+        survivors.update({path.name: path.read_bytes() for path in root.iterdir()})
+        raise _HardStop
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "link", stop_before_link)
+        with pytest.raises(_HardStop):
+            qualification_job._write_canonical_exclusive(record, output)
+
+    assert survivors == {temporary.name: content}
+    assert not output.exists()
+    temporary.write_bytes(content)
+    with pytest.raises(ValueError, match="interrupted canonical write left"):
+        qualification_job._write_canonical_exclusive(record, output)
+    assert not output.exists()
+    assert temporary.read_bytes() == content
+
+    qualification_job._discard_interrupted_canonical_writes(root, ["evidence.json"])
+    assert not list(root.iterdir())
+    qualification_job._write_canonical_exclusive(record, output)
+    assert [path.name for path in root.iterdir()] == ["evidence.json"]
+    assert output.read_bytes() == content
+
+    with pytest.raises(FileExistsError, match="canonical output already exists"):
+        qualification_job._write_canonical_exclusive(
+            {"closed_record_sha256": "b" * 64}, output
+        )
+    assert [path.name for path in root.iterdir()] == ["evidence.json"]
+    assert output.read_bytes() == content
+
+
+def test_discarding_interrupted_writes_rejects_a_non_file_temporary(tmp_path: Path):
+    temporary = tmp_path / "evidence" / ".evidence.json.partial"
+    temporary.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="evidence.json"):
+        qualification_job._discard_interrupted_canonical_writes(
+            temporary.parent, ["evidence.json"]
+        )
+
+    assert temporary.is_dir()
+
+
 def test_control_plane_status_digest_uses_the_ledger_encoding_on_both_sides():
     ascii_run = {
         "run_id": 7,
@@ -8684,6 +8741,11 @@ def test_executor_independently_validates_and_exclusively_seals_result(
         "publication_backend_changed": False,
         "trust_remote_code": False,
     }
+
+    def no_fuse_hard_links(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError("Databricks Volumes cannot hard-link")
+
+    monkeypatch.setattr(os, "link", no_fuse_hard_links)
 
     record, output = _execute(tmp_path, monkeypatch, measurements=measurements)
 

@@ -1093,7 +1093,7 @@ def execute_gpu_qualification_job_v2(
         )
         raise
     databricks_v1._remove_success_work_dir(local_work_dir)
-    databricks_v1._write_canonical_exclusive(record, output_path)
+    databricks_v1._write_canonical_exclusive_in_place(record, output_path)
     return record
 
 
@@ -1678,7 +1678,7 @@ def _reserve_round_v2(
             ):
                 raise ValueError("v2 reservation changed a payload")
 
-    receipt_root = databricks_v1._create_fresh_controller_evidence_root(spec.root)
+    receipt_root = _fresh_round_root_v2(spec.root)
     lease_path = receipt_root / _V2_PHASE_LEASE_FILENAME
     databricks_v1._write_canonical_exclusive(spec.lease, lease_path)
     try:
@@ -1708,6 +1708,68 @@ def _reserve_round_v2(
     marker_path = receipt_root / _V2_BATCH_MARKER_FILENAME
     databricks_v1._write_canonical_exclusive(marker, marker_path)
     return authorization, marker
+
+
+def _round_evidence_names_v2(contracts: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    return frozenset(
+        {
+            _V2_PHASE_LEASE_FILENAME,
+            _V2_BATCH_MARKER_FILENAME,
+            *(f"{contract['job_id']}.json" for contract in contracts),
+            *(f"{contract['job_id']}.post-intent-v2" for contract in contracts),
+        }
+    )
+
+
+def _round_root_unstarted_v2(root: Path) -> bool:
+    """Return true for a round root a hard stop left before its lease linked."""
+
+    if root.is_symlink() or not root.is_dir():
+        return False
+    lease_temporary = databricks_v1._canonical_write_temporary(
+        root / _V2_PHASE_LEASE_FILENAME
+    )
+    return all(
+        entry == lease_temporary and entry.is_file() and not entry.is_symlink()
+        for entry in root.iterdir()
+    )
+
+
+def _fresh_round_root_v2(root: Path) -> Path:
+    if _round_root_unstarted_v2(root):
+        existing = databricks_v1._validated_existing_controller_evidence_root(
+            root, "v2 round root"
+        )
+        databricks_v1._discard_interrupted_canonical_writes(
+            existing, (_V2_PHASE_LEASE_FILENAME,)
+        )
+        databricks_v1._fsync_directory(existing.parent)
+        return existing
+    return databricks_v1._create_fresh_controller_evidence_root(root)
+
+
+def _discard_unwritten_post_intents_v2(
+    root: Path,
+    *,
+    contracts: Sequence[Mapping[str, Any]],
+    ledger: DatabricksClusterHourLedger,
+) -> None:
+    """Drop zero-length intents: an intent that never got its bytes preceded no POST."""
+
+    receipted = {item.attempt_id for item in ledger.submission_receipts}
+    discarded = False
+    for contract in contracts:
+        intent_path = root / f"{contract['job_id']}.post-intent-v2"
+        if (
+            intent_path.is_file()
+            and not intent_path.is_symlink()
+            and intent_path.stat().st_size == 0
+            and contract["reservation_attempt_id"] not in receipted
+        ):
+            intent_path.unlink()
+            discarded = True
+    if discarded:
+        databricks_v1._fsync_directory(root)
 
 
 def _submit_fresh_round_v2(
@@ -2338,12 +2400,29 @@ def _replay_batch_marker_v2(
         spec.root,
         "v2 submit_receipt_root",
     )
-    lease = databricks_v1._read_canonical_json_object_file(
-        root / _V2_PHASE_LEASE_FILENAME,
-        "v2 qualification phase lease",
-    )
     contracts = spec.contracts
     phase_predecessor = spec.predecessor
+    databricks_v1._discard_interrupted_canonical_writes(
+        root, sorted(_round_evidence_names_v2(contracts))
+    )
+    lease_path = root / _V2_PHASE_LEASE_FILENAME
+    if not any(root.iterdir()):
+        # A hard stop between creating the root and linking its lease is the
+        # lease-only state before the lease became durable.
+        _require_v2_ledger_predecessor(
+            read_databricks_cluster_hour_ledger_json(ledger_path),
+            plan=plan,
+            ledger_path=ledger_path,
+            expected_predecessor=phase_predecessor,
+            contracts=contracts,
+            label="v2 empty round root recovery",
+        )
+        databricks_v1._fsync_directory(root.parent)
+        databricks_v1._write_canonical_exclusive(spec.lease, lease_path)
+    lease = databricks_v1._read_canonical_json_object_file(
+        lease_path,
+        "v2 qualification phase lease",
+    )
     if canonical_gpu_qualification_json(lease) != canonical_gpu_qualification_json(
         spec.lease
     ):
@@ -2405,6 +2484,7 @@ def _replay_batch_marker_v2(
         lease_record=lease,
         batch_authorization=authorization,
     )
+    _discard_unwritten_post_intents_v2(root, contracts=contracts, ledger=live)
     marker = _validated_resume_evidence_prefix_v2(
         root=root,
         plan=plan,
@@ -3035,7 +3115,8 @@ def _qualification_round_chain_v2(
     only once round ``r - 1`` closed.  Its lease is re-derived from that
     closed round's ledger suffix and the direct runs/get records it binds, so
     a round is replayable only when every failure it retries was a
-    never-started capacity failure.
+    never-started capacity failure.  A retry root a hard stop left before its
+    lease linked is not yet a round; the next retry pass reuses it.
     """
 
     if not isinstance(phase_predecessor, DatabricksLedgerPrefix):
@@ -3055,7 +3136,9 @@ def _qualification_round_chain_v2(
     closed: list[_ReplayedRoundV2] = []
     while True:
         next_root = _capacity_retry_root_v2(root, spec.retry_index + 1)
-        if not (next_root.exists() or next_root.is_symlink()):
+        if not (
+            next_root.exists() or next_root.is_symlink()
+        ) or _round_root_unstarted_v2(next_root):
             return tuple(closed), spec
         ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
         replayed = _replay_round_v2(

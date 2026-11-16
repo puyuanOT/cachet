@@ -25,7 +25,7 @@ import stat
 import subprocess
 import urllib.request
 import zlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -5808,7 +5808,7 @@ def execute_gpu_qualification_job(
         # cleanup itself fails.  Make read-only runtime directories removable,
         # complete cleanup, and only then seal the durable result.
         _remove_success_work_dir(local_work_dir)
-        _write_canonical_exclusive(record, output_path)
+        _write_canonical_exclusive_in_place(record, output_path)
         return record
     except BaseException:
         # Failed attempts retain node-local diagnostics and never publish a
@@ -6923,6 +6923,59 @@ def _file_sha256(path: Path) -> str:
 
 
 def _write_canonical_exclusive(record: Mapping[str, Any], path: Path) -> None:
+    """Publish one controller record whole, or leave ``path`` absent.
+
+    The bytes become durable under a sibling temporary that is hard-linked into
+    place, so a hard stop can leave only that temporary, never a torn record.
+    """
+
+    _require_no_symlink_ancestors(
+        path, label="canonical output path", include_leaf=True
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _require_no_symlink_ancestors(
+        path, label="canonical output path", include_leaf=True
+    )
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"canonical output already exists: {path}")
+    content = (canonical_gpu_qualification_json(record) + "\n").encode("utf-8")
+    temporary = _canonical_write_temporary(path)
+    try:
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640
+        )
+    except FileExistsError as exc:
+        raise ValueError(
+            f"an interrupted canonical write left {temporary}"
+        ) from exc
+    linked = False
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        linked = True
+        temporary.unlink()
+        _fsync_directory(path.parent)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        if linked:
+            path.unlink(missing_ok=True)
+        if path.parent.is_dir() and not path.parent.is_symlink():
+            _fsync_directory(path.parent)
+        raise
+
+
+def _write_canonical_exclusive_in_place(
+    record: Mapping[str, Any], path: Path
+) -> None:
+    """Create one canonical cluster result where hard links are unavailable.
+
+    Databricks Volumes and DBFS FUSE mounts cannot link a temporary into place;
+    their readers require canonical bytes, so a torn result fails closed.
+    """
+
     _require_no_symlink_ancestors(
         path, label="canonical output path", include_leaf=True
     )
@@ -6943,6 +6996,35 @@ def _write_canonical_exclusive(record: Mapping[str, Any], path: Path) -> None:
         if path.parent.is_dir() and not path.parent.is_symlink():
             _fsync_directory(path.parent)
         raise
+
+
+def _canonical_write_temporary(path: Path) -> Path:
+    return path.with_name(f".{path.name}.partial")
+
+
+def _discard_interrupted_canonical_writes(
+    root: Path, names: Iterable[str]
+) -> None:
+    """Remove temporaries a hard stop left before linking them into ``root``.
+
+    A temporary is never authority: its target is either absent or the same
+    fully written inode.
+    """
+
+    discarded = False
+    for name in names:
+        temporary = _canonical_write_temporary(root / name)
+        if temporary.is_symlink() or (
+            temporary.exists() and not temporary.is_file()
+        ):
+            raise ValueError(
+                f"interrupted canonical write is not a regular file: {temporary}"
+            )
+        if temporary.is_file():
+            temporary.unlink()
+            discarded = True
+    if discarded:
+        _fsync_directory(root)
 
 
 def _fsync_directory(path: Path) -> None:

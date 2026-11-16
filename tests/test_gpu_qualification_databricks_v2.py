@@ -1367,6 +1367,11 @@ def test_v2_executor_publishes_valid_result_and_logs_rejected_measurements(
             "vllm_version": GPU_QUALIFICATION_VLLM_VERSION,
         },
     )
+
+    def no_fuse_hard_links(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError("Databricks Volumes cannot hard-link")
+
+    monkeypatch.setattr(os, "link", no_fuse_hard_links)
     timestamps = iter(
         [
             datetime_from_iso("2026-08-25T00:00:00Z"),
