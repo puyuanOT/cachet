@@ -2340,3 +2340,172 @@ def test_consumer_authority_requires_exact_ten_wave_160_shard_coverage():
             authorizations,
             execution_plan=execution,
         )
+
+
+def _ten_wave_consumer_evidence_authorities(durable_root):
+    waves = [
+        {"shard_ids": [f"shard-{wave * 16 + offset:03d}" for offset in range(16)]}
+        for wave in range(10)
+    ]
+    execution = _closed_record("publication-execution", waves=waves)
+    authorizations = []
+    for wave_index, wave in enumerate(waves):
+        result = _close(
+            {
+                "authorization_scope": "publication",
+                "closed_record_sha256": "",
+                "deletion_attestation_sha256": [
+                    _digest(f"deletion-{shard_id}") for shard_id in wave["shard_ids"]
+                ],
+                "execution_plan_sha256": execution["closed_record_sha256"],
+                "next_wave_authorized": True,
+                "record_type": remote.full_score.FULL_SCORE_WAVE_COMPLETION_RECORD_TYPE,
+                "schema_version": 1,
+                "shard_ids": wave["shard_ids"],
+                "wave_index": wave_index,
+            }
+        )
+        bindings = [
+            {
+                "deletion_file_sha256": _digest(f"deletion-file-{shard_id}"),
+                "deletion_record_sha256": _digest(f"deletion-{shard_id}"),
+                "deletion_uri": remote._consumer_evidence_artifact_uri(
+                    durable_root,
+                    wave_index=wave_index,
+                    shard_id=shard_id,
+                    filename="deletion-attestation.json",
+                ),
+                "evidence_file_sha256": _digest(f"evidence-file-{shard_id}"),
+                "evidence_record_sha256": _digest(f"evidence-{shard_id}"),
+                "evidence_uri": remote._consumer_evidence_artifact_uri(
+                    durable_root,
+                    wave_index=wave_index,
+                    shard_id=shard_id,
+                    filename="evidence.json",
+                ),
+                "shard_id": shard_id,
+            }
+            for shard_id in wave["shard_ids"]
+        ]
+        authorizations.append(
+            remote.FullScoreRemoteTreeAuthorization(
+                action="consumer_evidence",
+                execution_plan_sha256=execution["closed_record_sha256"],
+                wave_index=wave_index,
+                durable_output_root=durable_root,
+                request_sha256=_digest(f"request-{wave_index}"),
+                result_uri=f"{durable_root}/control/result-{wave_index}.json",
+                result_file_sha256=_digest(f"result-file-{wave_index}"),
+                result_record_sha256=result["closed_record_sha256"],
+                result_record=result,
+                attestation_uri=f"{durable_root}/control/attestation-{wave_index}.json",
+                attestation_file_sha256=_digest(f"attestation-file-{wave_index}"),
+                attestation_record_sha256=_digest(f"attestation-record-{wave_index}"),
+                coordinator_run_id=str(700 + wave_index),
+                coordinator_run_record_sha256=_digest(f"run-{wave_index}"),
+                controller_authorization_record_sha256=_digest(
+                    f"authorization-{wave_index}"
+                ),
+                runs_get_receipt_record_sha256=_digest(f"receipt-{wave_index}"),
+                phase_terminal_record_sha256=_digest(f"terminal-{wave_index}"),
+                evidence_bindings=bindings,
+                workspace_host_sha256=_digest("https://dbc.example"),
+                user_name_sha256=_digest("researcher@example.com"),
+                _issuer=remote._REMOTE_AUTHORIZATION_ISSUER,
+            )
+        )
+    return execution, authorizations
+
+
+def test_remote_live_p90_admission_consumes_exactly_the_completed_waves(
+    tmp_path,
+    monkeypatch,
+):
+    durable_root = "dbfs:/Volumes/catalog/schema/volume/durable"
+    execution, authorizations = _ten_wave_consumer_evidence_authorities(durable_root)
+    workspace = DatabricksWorkspaceConfig("https://dbc.example", "secret")
+    predecessor = object()
+    monkeypatch.setattr(
+        remote.full_score,
+        "_full_score_predecessor_workspace_identity",
+        lambda value: (
+            _digest("https://dbc.example"),
+            _digest("researcher@example.com"),
+        )
+        if value is predecessor
+        else pytest.fail("unexpected predecessor"),
+    )
+    monkeypatch.setattr(
+        remote,
+        "download_databricks_volume_file_bytes",
+        lambda _workspace, uri, *, max_bytes: json.dumps({"uri": uri}).encode(),
+    )
+    downloaded_waves = []
+    monkeypatch.setattr(
+        remote,
+        "_download_remote_consumer_evidence_bindings",
+        lambda _io, authorization, *, execution_plan: downloaded_waves.append(
+            authorization.wave_index
+        ),
+    )
+    admitted = []
+
+    def write_admission(path, execution_plan, **kwargs):
+        by_wave = remote.full_score._remote_consumer_authorizations_by_wave(
+            kwargs["remote_consumer_authorizations"],
+            execution_plan=execution_plan,
+        )
+        assert set(by_wave) == set(range(kwargs["next_wave_index"]))
+        admitted.append((path, kwargs["next_wave_index"], tuple(by_wave)))
+        return {"admitted": True}
+
+    monkeypatch.setattr(
+        remote.full_score,
+        "write_governed_full_score_live_p90_budget_admission",
+        write_admission,
+    )
+
+    def admit(next_wave_index, wave_authorizations, **extra):
+        downloaded_waves.clear()
+        return remote.write_governed_full_score_remote_live_p90_budget_admission(
+            workspace,
+            cas=remote.FullScoreCompactArtifactCAS(tmp_path / "cas"),
+            path=f"{durable_root}/control/p90-wave-{next_wave_index:03d}.json",
+            execution_plan=execution,
+            completed_block_paths=[f"{durable_root}/control/block-000.json"],
+            remote_consumer_authorizations=wave_authorizations,
+            single_user_name="researcher@example.com",
+            predecessor_authorization=predecessor,
+            **({"next_wave_index": next_wave_index} | extra),
+        )
+
+    for next_wave_index in (1, 4, 9):
+        completed = authorizations[:next_wave_index]
+        assert admit(next_wave_index, list(reversed(completed))) == {"admitted": True}
+        assert admitted[-1] == (
+            f"{durable_root}/control/p90-wave-{next_wave_index:03d}.json",
+            next_wave_index,
+            tuple(range(next_wave_index)),
+        )
+        assert downloaded_waves == list(range(next_wave_index))
+    admitted_count = len(admitted)
+    for next_wave_index, wave_authorizations, error in (
+        (9, authorizations, "every completed-wave remote authority"),
+        (4, authorizations[:3], "every completed-wave remote authority"),
+        (4, [*authorizations[:4], authorizations[3]], "every completed-wave"),
+        (4, authorizations[1:5], "every completed-wave remote authority"),
+        (0, [], "must name a nonzero planned wave"),
+        (10, authorizations, "must name a nonzero planned wave"),
+        (True, authorizations[:1], "must name a nonzero planned wave"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            admit(next_wave_index, wave_authorizations)
+    with pytest.raises(TypeError, match="publication workflow requires"):
+        admit(2, [authorizations[0], object()])
+    other_execution, relocated = _ten_wave_consumer_evidence_authorities(
+        "dbfs:/Volumes/catalog/schema/volume/other"
+    )
+    assert other_execution == execution
+    with pytest.raises(ValueError, match="different durable roots"):
+        admit(2, [authorizations[0], relocated[1]])
+    assert len(admitted) == admitted_count

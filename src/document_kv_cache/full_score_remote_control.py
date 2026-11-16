@@ -1365,12 +1365,45 @@ def write_governed_full_score_remote_live_p90_budget_admission(
     opener: Any | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Publish and replay the wave-boundary P90 gate through Files/CAS."""
+    """Publish and replay the wave-boundary P90 gate through Files/CAS.
 
-    remote_authorizations = require_full_score_remote_consumer_evidence_authorizations(
-        remote_consumer_authorizations,
-        execution_plan=execution_plan,
+    The gate before wave ``next_wave_index`` consumes exactly one consumer
+    authority for each completed wave ``0..next_wave_index-1``.
+    """
+
+    next_wave_index = kwargs.get("next_wave_index")
+    waves = execution_plan.get("waves")
+    if (
+        type(next_wave_index) is not int
+        or not isinstance(waves, list)
+        or not 0 < next_wave_index < len(waves)
+    ):
+        raise ValueError("live P90 next_wave_index must name a nonzero planned wave")
+    if isinstance(remote_consumer_authorizations, (str, bytes)):
+        raise TypeError("live P90 remote consumer authorities must be a sequence")
+    remote_authorizations = tuple(
+        sorted(
+            (
+                require_full_score_remote_consumer_evidence_authorization(
+                    authorization,
+                    execution_plan=execution_plan,
+                )
+                for authorization in remote_consumer_authorizations
+            ),
+            key=lambda authorization: authorization.wave_index,
+        )
     )
+    if [authorization.wave_index for authorization in remote_authorizations] != list(
+        range(next_wave_index)
+    ):
+        raise ValueError(
+            "live P90 requires every completed-wave remote authority exactly once"
+        )
+    durable_roots = {
+        authorization.durable_output_root for authorization in remote_authorizations
+    }
+    if len(durable_roots) != 1:
+        raise ValueError("remote consumer authorities bind different durable roots")
     workspace_pairs = {
         (authorization.workspace_host_sha256, authorization.user_name_sha256)
         for authorization in remote_authorizations
