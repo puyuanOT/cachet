@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 import threading
+import time
 import traceback
 import types
 import urllib.error
@@ -15,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+import document_kv_cache.databricks_resource_ledger as resource_ledger
 import document_kv_cache.databricks_runs as public_databricks_runs
 from document_kv_cache._hardware_targets import (
     HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES,
@@ -4447,6 +4449,75 @@ def test_manual_close_racing_claim_publication_prevents_the_post(
             batch_authorization=authorization,
             opener=service,
         )
+    assert service.calls == 0
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert ledger.submission_receipts == ()
+    assert ledger.closed_attempt_ids == frozenset({"idempotent-attempt"})
+
+
+@pytest.mark.parametrize("entrypoint", ["submit", "resume"])
+def test_claim_published_inside_a_manual_close_window_prevents_the_post(
+    tmp_path, monkeypatch, entrypoint
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    close_checked_claim = threading.Event()
+    claim_published = threading.Event()
+    original_ledger_write = resource_ledger._atomic_write_ledger
+    original_claim_write = public_databricks_runs._write_pre_reserved_post_claim
+
+    def close_write_after_claim(path, ledger):
+        close_checked_claim.set()
+        assert claim_published.wait(10)
+        time.sleep(0.2)
+        return original_ledger_write(path, ledger)
+
+    def publish_after_close_check(*args, **kwargs):
+        assert close_checked_claim.wait(10)
+        result = original_claim_write(*args, **kwargs)
+        claim_published.set()
+        return result
+
+    monkeypatch.setattr(resource_ledger, "_atomic_write_ledger", close_write_after_claim)
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_write_pre_reserved_post_claim",
+        publish_after_close_check,
+    )
+    function = (
+        submit_pre_reserved_databricks_run
+        if entrypoint == "submit"
+        else resume_pre_reserved_databricks_run
+    )
+
+    def manual_close():
+        return record_databricks_run_terminal_actual_json(
+            ledger_path,
+            attempt_id="idempotent-attempt",
+            terminal_state="failed",
+            actual_cluster_duration_seconds=0,
+            attest_never_posted=True,
+        )
+
+    def submit():
+        return function(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        closing = executor.submit(manual_close)
+        submitting = executor.submit(submit)
+        closing.result(timeout=30)
+        with pytest.raises(ValueError, match="already terminal"):
+            submitting.result(timeout=30)
+
     assert service.calls == 0
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert ledger.submission_receipts == ()

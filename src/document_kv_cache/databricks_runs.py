@@ -34,6 +34,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksClusterHourReservation,
     DatabricksLedgerPrefix,
     DatabricksReservationValidator,
+    _exclusive_ledger_lock,
     canonical_databricks_submit_payload_snapshot,
     databricks_ledger_path_sha256,
     databricks_ledger_prefix_at_counts,
@@ -812,7 +813,10 @@ def recover_reserved_databricks_run(
     cloud run.  Recoveries are serialized by the per-attempt advisory lock and
     return an existing receipt without another POST.  Members of an atomic
     batch must be resumed with ``resume_pre_reserved_databricks_run``; an
-    attempt holding a batch POST claim is refused here.
+    attempt holding a batch POST claim is refused here.  The ledger does not
+    record batch membership, so a batch member that has no POST claim yet is
+    not refused: recovering it binds a receipt without a claim and the batch
+    resume path then fails closed.  Never point this at a batch member.
     """
 
     resolved_opener = (
@@ -941,15 +945,17 @@ def submit_pre_reserved_databricks_run(
             submit_payload_sha256=payload_sha256,
             idempotency_token=idempotency_token,
         )
-        # A manual close checks for the claim under the ledger lock, so the
-        # member must still be open once the claim is visible.
-        _validate_pre_reserved_batch_member(
-            ledger_path,
-            attempt_id=attempt_id,
-            payload_sha256=payload_sha256,
-            batch_authorization=batch_authorization,
-            allow_existing_receipt=False,
-        )
+        # A manual close checks for the claim and writes its terminal under the
+        # ledger lock, so re-checking under that lock after the claim is
+        # visible either sees the close or makes every later close refuse.
+        with _exclusive_ledger_lock(Path(ledger_path)):
+            _validate_pre_reserved_batch_member(
+                ledger_path,
+                attempt_id=attempt_id,
+                payload_sha256=payload_sha256,
+                batch_authorization=batch_authorization,
+                allow_existing_receipt=False,
+            )
         response = _databricks_api_json(
             config,
             "POST",
@@ -1124,13 +1130,14 @@ def resume_pre_reserved_databricks_run(
                 submit_payload_sha256=payload_sha256,
                 idempotency_token=idempotency_token,
             )
-            _validate_pre_reserved_batch_member(
-                ledger_path,
-                attempt_id=attempt_id,
-                payload_sha256=payload_sha256,
-                batch_authorization=batch_authorization,
-                allow_existing_receipt=True,
-            )
+            with _exclusive_ledger_lock(Path(ledger_path)):
+                _validate_pre_reserved_batch_member(
+                    ledger_path,
+                    attempt_id=attempt_id,
+                    payload_sha256=payload_sha256,
+                    batch_authorization=batch_authorization,
+                    allow_existing_receipt=True,
+                )
         if receipt is not None:
             return {"run_id": receipt.run_id}
         response = _databricks_api_json(
@@ -5456,7 +5463,8 @@ def main(argv: list[str] | None = None) -> int:
         "recover-reserved-submit",
         help=(
             "Re-POST the identical idempotency-token-bound payload of a "
-            "reserve-and-submit attempt whose response or receipt was lost."
+            "reserve-and-submit attempt whose response or receipt was lost. "
+            "Not for members of an atomic batch reservation; resume those."
         ),
     )
     recover_reserved_parser.add_argument("--payload-json", required=True)

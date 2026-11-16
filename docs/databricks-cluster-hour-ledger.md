@@ -166,7 +166,12 @@ cachet-databricks-runs recover-reserved-submit \
 
 Databricks returns the run already created for that token, so recovery starts
 at most one run and binds its receipt; an attempt that already has a receipt
-returns it without another POST. A payload without the token has no safe retry,
+returns it without another POST. This command is only for single
+reserve-and-submit attempts: the ledger does not record which reservations
+belong to an atomic batch, so it cannot refuse a batch member that has no POST
+claim yet, and recovering one leaves the batch resume path failing closed.
+Resume batch members with `resume_pre_reserved_databricks_run` instead. A
+payload without the token has no safe retry,
 because a second POST could start a second billed run. Its reservation stays
 active until the operator finds the run in Databricks and binds its receipt
 with `record_databricks_run_submission_receipt_json`, or knows the request was
