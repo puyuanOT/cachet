@@ -6320,6 +6320,57 @@ def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monke
         execution.validate_publication_latency_auxiliary_rerun_record(committed)
 
 
+def test_auxiliary_rerun_accepts_a_retry_of_the_same_plan(monkeypatch):
+    plan, jobs, results = _auxiliary_rerun_case(monkeypatch)
+    target = next(job for job in jobs if job["job_id"] == "block-02-storage-ram")
+    target["execution_plan_sha256"] = (
+        execution.publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, 2)
+    )
+
+    record = execution.aggregate_publication_latency_auxiliary_rerun(plan, jobs, results)
+
+    attempts = {job["job_id"]: job["attempt"] for job in record["jobs"]}
+    assert attempts.pop("block-02-storage-ram") == 2
+    assert set(attempts.values()) == {1}
+    assert all(row["execution_plan_equal"] for row in record["coherence"])
+    region = execution.render_publication_latency_auxiliary_rerun_region(
+        record,
+        {
+            "latency": {
+                "estimates": [
+                    {
+                        "estimand_id": item["estimand_id"],
+                        "metrics": {
+                            name: {
+                                "confidence_interval_95": [0.9, 1.1],
+                                "geometric_mean_speedup": 1.0,
+                            }
+                            for name in ("ttft", "time_to_completion")
+                        },
+                    }
+                    for item in record["estimates"]
+                ]
+            }
+        },
+    )
+    assert "1 of them ran on a later attempt of the same plan" in region
+    assert "`block-02-storage-ram` (attempt 2)" in region
+
+    committed = json.loads(json.dumps(record))
+    committed["jobs"][0]["attempt"] = 2
+    committed["closed_record_sha256"] = execution._closed_record_sha256(committed)
+    with pytest.raises(ValueError, match="attempt is outside the plan"):
+        execution.validate_publication_latency_auxiliary_rerun_record(committed)
+    with pytest.raises(ValueError, match="attempt is out of range"):
+        execution.publication_latency_auxiliary_rerun_attempt_plan_sha256(
+            plan, execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_MAX_ATTEMPTS + 1
+        )
+    with pytest.raises(ValueError, match="must not carry an attempt"):
+        execution.publication_latency_auxiliary_rerun_attempt_plan_sha256(
+            {**plan, "attempt": 2}, 2
+        )
+
+
 @pytest.mark.parametrize(
     ("tamper", "match"),
     (

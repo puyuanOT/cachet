@@ -264,6 +264,7 @@ PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS: Final = (
     "precision-bf16",
     "hardware-a10g",
 )
+PUBLICATION_LATENCY_AUXILIARY_RERUN_MAX_ATTEMPTS: Final = 3
 PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING: Final = "ledger_receipt"
 PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING: Final = "recovered_receipt"
 PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING: Final = "recovered_balance"
@@ -8755,6 +8756,29 @@ def publication_latency_plan_coherence_table(
     return rows
 
 
+def publication_latency_auxiliary_rerun_attempt_plan_sha256(
+    plan_record: Mapping[str, Any],
+    attempt: int,
+) -> str:
+    """Return the execution plan digest an auxiliary re-run job carries on ``attempt``.
+
+    A job's ledger identity derives from its plan digest, so a retry after an
+    attempt that produced no result re-submits the identical plan with only an
+    attempt number added.
+    """
+
+    if "attempt" in plan_record:
+        raise ValueError("auxiliary re-run plan must not carry an attempt number")
+    if (
+        isinstance(attempt, bool)
+        or not isinstance(attempt, int)
+        or not 1 <= attempt <= PUBLICATION_LATENCY_AUXILIARY_RERUN_MAX_ATTEMPTS
+    ):
+        raise ValueError("auxiliary re-run attempt is out of range")
+    plan = dict(plan_record)
+    return _canonical_sha256(plan if attempt == 1 else {**plan, "attempt": attempt})
+
+
 def aggregate_publication_latency_auxiliary_rerun(
     plan_record: Mapping[str, Any],
     job_records: Sequence[Mapping[str, Any]],
@@ -8773,6 +8797,10 @@ def aggregate_publication_latency_auxiliary_rerun(
     if not isinstance(plan, dict):  # pragma: no cover - mapping above.
         raise TypeError("auxiliary re-run plan must be an object")
     plan_sha256 = _canonical_sha256(plan)
+    attempt_by_plan_sha256 = {
+        publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, attempt): attempt
+        for attempt in range(1, PUBLICATION_LATENCY_AUXILIARY_RERUN_MAX_ATTEMPTS + 1)
+    }
     expected_ids = [
         f"block-{block:02d}-{kind}"
         for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
@@ -8801,13 +8829,20 @@ def aggregate_publication_latency_auxiliary_rerun(
         results_by_id[job_id] = json.loads(_canonical_json(dict(result)))
     if set(results_by_id) != set(jobs_by_id):
         raise ValueError("auxiliary re-run needs one sealed result for every job")
+    attempts: dict[str, int] = {}
     for job_id, job in jobs_by_id.items():
-        if _required_sha256(job, "execution_plan_sha256") != plan_sha256:
+        attempt = attempt_by_plan_sha256.get(_required_sha256(job, "execution_plan_sha256"))
+        if attempt is None:
             raise ValueError(f"auxiliary re-run job {job_id!r} is outside the plan")
+        attempts[job_id] = attempt
         if _latency_package_wheel_sha256(job) != plan.get("package_wheel_sha256"):
             raise ValueError(f"auxiliary re-run job {job_id!r} wheel drift")
         if job.get("source_tree_sha256") != plan.get("source_tree_sha256"):
             raise ValueError(f"auxiliary re-run job {job_id!r} source tree drift")
+    plan_jobs = {
+        job_id: {**job, "execution_plan_sha256": plan_sha256}
+        for job_id, job in jobs_by_id.items()
+    }
 
     cells = {job_id: _mapping(job, "cell") for job_id, job in jobs_by_id.items()}
     completed_at = {
@@ -8828,8 +8863,8 @@ def aggregate_publication_latency_auxiliary_rerun(
             if control_id not in cells:
                 raise ValueError(f"auxiliary re-run control for {job_id!r} is missing")
             pair = _latency_pair_coherence(
-                jobs_by_id[control_id],
-                jobs_by_id[job_id],
+                plan_jobs[control_id],
+                plan_jobs[job_id],
                 comparison_family=family,
             )
             drift = [label for key, label in _LATENCY_COHERENCE_FIELDS if not pair[key]]
@@ -8932,10 +8967,14 @@ def aggregate_publication_latency_auxiliary_rerun(
         "estimates": estimates,
         "jobs": [
             {
+                "attempt": attempts[job_id],
                 "cloud_run_id": _mapping(results_by_id[job_id], "task_identity").get(
                     "cloud_run_id"
                 ),
                 "completed_at": _required_string(results_by_id[job_id], "completed_at"),
+                "execution_plan_sha256": _required_sha256(
+                    jobs_by_id[job_id], "execution_plan_sha256"
+                ),
                 "gpu_memory_utilization": _mapping(
                     jobs_by_id[job_id], "runtime"
                 ).get("gpu_memory_utilization"),
@@ -9011,6 +9050,11 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
         PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS * len(PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS)
     ):
         raise ValueError("auxiliary re-run jobs do not match the plan")
+    for job in _mapping_sequence(record, "jobs"):
+        if job.get("execution_plan_sha256") != (
+            publication_latency_auxiliary_rerun_attempt_plan_sha256(plan, job.get("attempt"))
+        ):
+            raise ValueError("auxiliary re-run job attempt is outside the plan")
     if record.get("results_sha256") != _canonical_sha256(
         [
             [job["job_id"], _required_sha256(job, "result_sha256")]
@@ -9063,11 +9107,23 @@ def render_publication_latency_auxiliary_rerun_region(
         item.get("estimand_id"): item
         for item in _mapping_sequence(_mapping(campaign_report, "latency"), "estimates")
     }
+    retried = [
+        f"`{job['job_id']}` (attempt {job['attempt']})"
+        for job in record["jobs"]
+        if job["attempt"] > 1
+    ]
+    retry_note = (
+        f" {len(retried)} of them ran on a later attempt of the same plan after an "
+        f"earlier attempt returned no result: {', '.join(retried)}."
+        if retried
+        else ""
+    )
     lines = [
         "",
         f"Re-run `closed_record_sha256`: `{record['closed_record_sha256']}`; execution "
         f"plan `{record['plan_sha256']}`. All {len(record['jobs'])} jobs share one package "
-        "wheel and source tree, and every compared pair differs only in its design fields.",
+        "wheel and source tree, and every compared pair differs only in its design "
+        f"fields.{retry_note}",
         "",
         "| Treatment vs reference | Setting | TTFT speedup, campaign | TTFT 95% CI, campaign "
         "| TTFT speedup, re-run | TTFT 95% CI, re-run | TTC speedup, campaign "
@@ -14599,6 +14655,8 @@ __all__ = [
     "PublicationLatencyWaveAuthorization",
     "PublicationLatencyWaveSubmissionAuthorization",
     "aggregate_publication_latency_auxiliary_rerun",
+    "PUBLICATION_LATENCY_AUXILIARY_RERUN_MAX_ATTEMPTS",
+    "publication_latency_auxiliary_rerun_attempt_plan_sha256",
     "render_publication_latency_auxiliary_rerun_region",
     "validate_publication_latency_auxiliary_rerun_record",
     "validate_publication_latency_auxiliary_rerun_region",
