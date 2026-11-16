@@ -482,10 +482,15 @@ class DatabricksClusterHourLedger:
             reserved_seconds = reservations_by_id[
                 actual.attempt_id
             ].reserved_cluster_seconds
-            if actual.actual_cluster_duration_seconds > reserved_seconds:
+            # Databricks task end-start includes cluster setup and cleanup, so a
+            # verified TIMEDOUT task legitimately overshoots its timeout.
+            if (
+                actual.verification_source != "direct_databricks_runs_get"
+                and actual.actual_cluster_duration_seconds > reserved_seconds
+            ):
                 raise ValueError(
-                    f"terminal actual for attempt {actual.attempt_id!r} exceeds "
-                    "its worst-case timeout reservation"
+                    f"unverified terminal actual for attempt {actual.attempt_id!r} "
+                    "exceeds its worst-case timeout reservation"
                 )
             bound_receipt = submissions_by_id.get(actual.attempt_id)
             if bound_receipt is not None:
@@ -521,14 +526,15 @@ class DatabricksClusterHourLedger:
                 terminal_actuals=terminal_actuals,
             ),
         )
-        if self.accounted_cluster_hours > self.cap_cluster_hours:
+        admitted_cluster_hours = self._admitted_cluster_hours
+        if admitted_cluster_hours > self.cap_cluster_hours:
             raise ValueError(
                 "ledger accounted cluster-hours exceed cap: "
-                f"{self.accounted_cluster_hours} > {self.cap_cluster_hours}"
+                f"{admitted_cluster_hours} > {self.cap_cluster_hours}"
             )
         if (
             self.cap_cluster_hours in DATABRICKS_PUBLICATION_LEDGER_CAPS
-            and self.accounted_cluster_hours
+            and admitted_cluster_hours
             + DATABRICKS_PUBLICATION_UNRESERVED_HEADROOM_HOURS
             > self.cap_cluster_hours
         ):
@@ -586,6 +592,29 @@ class DatabricksClusterHourLedger:
         return self.active_reserved_cluster_hours + self.terminal_actual_cluster_hours
 
     @property
+    def _admitted_cluster_hours(self) -> float:
+        """Accounted hours with each terminal actual clamped to its reservation.
+
+        Admission only ever granted worst-case reservations, so this is the
+        quantity an append can never push past the cap.  Verified overshoot is
+        still counted in full by ``accounted_cluster_hours`` and blocks later
+        reservations through :meth:`reserve`.
+        """
+
+        reserved_seconds = {
+            item.attempt_id: item.reserved_cluster_seconds
+            for item in self.reservations
+        }
+        return self.active_reserved_cluster_hours + sum(
+            min(
+                item.actual_cluster_duration_seconds,
+                reserved_seconds[item.attempt_id],
+            )
+            / 3600.0
+            for item in self.terminal_actuals
+        )
+
+    @property
     def remaining_cluster_hours(self) -> float:
         return self.cap_cluster_hours - self.accounted_cluster_hours
 
@@ -597,6 +626,12 @@ class DatabricksClusterHourLedger:
             raise TypeError("reservation must be DatabricksClusterHourReservation")
         if any(item.attempt_id == reservation.attempt_id for item in self.reservations):
             raise ValueError(f"attempt {reservation.attempt_id!r} is already reserved")
+        if self.accounted_cluster_hours > self.cap_cluster_hours:
+            raise ValueError(
+                f"attempt {reservation.attempt_id!r} cannot be reserved: verified "
+                "terminal actuals already exceed the aggregate cluster-hour cap: "
+                f"{self.accounted_cluster_hours} > {self.cap_cluster_hours}"
+            )
         projected = self.accounted_cluster_hours + reservation.reserved_cluster_hours
         if projected > self.cap_cluster_hours:
             raise ValueError(

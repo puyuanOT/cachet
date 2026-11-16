@@ -828,7 +828,7 @@ def test_terminal_actual_is_single_closed_record_bounded_by_reservation(tmp_path
             terminal_state="failed",
             actual_cluster_duration_seconds=1,
         )
-    with pytest.raises(ValueError, match="exceeds.*reservation"):
+    with pytest.raises(ValueError, match="unverified terminal actual.*exceeds.*reservation"):
         record_databricks_run_terminal_actual_json(
             ledger_path,
             attempt_id="attempt-00",
@@ -848,6 +848,224 @@ def test_terminal_actual_is_single_closed_record_bounded_by_reservation(tmp_path
             attempt_id="attempt-00",
             terminal_state="failed",
             actual_cluster_duration_seconds=120,
+        )
+
+
+def _timed_out_run(*, run_id, task_seconds):
+    run = _terminal_run(run_id=run_id)
+    task = run["tasks"][0]
+    task["end_time"] = task["start_time"] + int(task_seconds * 1000)
+    task["state"] = {"life_cycle_state": "TERMINATED", "result_state": "TIMEDOUT"}
+    run["end_time"] = task["end_time"] + 1_000
+    run["state"] = {"life_cycle_state": "TERMINATED", "result_state": "TIMEDOUT"}
+    return run
+
+
+def _reserve_and_receipt(ledger_path, *, attempt_id, run_id, timeout_seconds):
+    reserve_databricks_run_attempt_json(
+        ledger_path,
+        _submit_payload(timeout_seconds=timeout_seconds),
+        attempt_id=attempt_id,
+        workload_id="representative-vllm",
+    )
+    record_databricks_run_submission_receipt_json(
+        ledger_path,
+        attempt_id=attempt_id,
+        submit_response={"run_id": run_id},
+    )
+
+
+def test_verified_timed_out_actual_above_reservation_is_counted_in_full(tmp_path):
+    ledger_path = tmp_path / "cluster-hours.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-qualification",
+    )
+    _reserve_and_receipt(
+        ledger_path, attempt_id="timed-out-001", run_id=101, timeout_seconds=3600
+    )
+    reserved = read_databricks_cluster_hour_ledger_json(ledger_path)
+    reserved_prefix = databricks_ledger_prefix(reserved)
+
+    terminal = record_databricks_verified_run_terminal_actual_json(
+        ledger_path,
+        attempt_id="timed-out-001",
+        run_record=_timed_out_run(run_id=101, task_seconds=3645),
+    )
+
+    actual = terminal.terminal_actuals[0]
+    assert actual.terminal_state == "timed_out"
+    assert actual.actual_cluster_duration_seconds == 3645.0
+    assert terminal.closed_attempt_ids == frozenset({"timed-out-001"})
+    assert terminal.active_reserved_cluster_hours == 0
+    assert terminal.terminal_actual_cluster_hours == 3645.0 / 3600.0
+    assert terminal.accounted_cluster_hours == 3645.0 / 3600.0
+    assert read_databricks_cluster_hour_ledger_json(ledger_path) == terminal
+    record = databricks_cluster_hour_ledger_to_record(terminal)
+    assert databricks_cluster_hour_ledger_from_record(record) == terminal
+    assert require_databricks_ledger_prefix(terminal, reserved_prefix) == (
+        databricks_ledger_prefix(terminal)
+    )
+    assert (
+        record_databricks_verified_run_terminal_actual_json(
+            ledger_path,
+            attempt_id="timed-out-001",
+            run_record=_timed_out_run(run_id=101, task_seconds=3645),
+        )
+        == terminal
+    )
+
+
+def test_verified_overshoot_past_the_cap_blocks_new_admissions(tmp_path):
+    ledger_path = tmp_path / "cluster-hours.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="small-cap",
+        cap_cluster_hours=2.0,
+    )
+    _reserve_and_receipt(
+        ledger_path, attempt_id="timed-out-001", run_id=101, timeout_seconds=7200
+    )
+    terminal = record_databricks_verified_run_terminal_actual_json(
+        ledger_path,
+        attempt_id="timed-out-001",
+        run_record=_timed_out_run(run_id=101, task_seconds=7245),
+    )
+
+    assert terminal.accounted_cluster_hours == 7245.0 / 3600.0
+    assert terminal.remaining_cluster_hours < 0
+    assert read_databricks_cluster_hour_ledger_json(ledger_path) == terminal
+    with pytest.raises(ValueError, match="already exceed the aggregate"):
+        reserve_databricks_run_attempt_json(
+            ledger_path,
+            _submit_payload(timeout_seconds=60),
+            attempt_id="after-overshoot",
+            workload_id="representative-vllm",
+        )
+    with pytest.raises(ValueError, match="already exceed the aggregate"):
+        reserve_databricks_run_attempt_batch_json(
+            ledger_path,
+            (
+                DatabricksRunAttemptReservationRequest(
+                    attempt_id="after-overshoot-batch",
+                    workload_id="representative-vllm",
+                    submit_payload=_submit_payload(timeout_seconds=60),
+                ),
+            ),
+        )
+    assert read_databricks_cluster_hour_ledger_json(ledger_path) == terminal
+
+    raised = raise_databricks_cluster_hour_ledger_cap_json(
+        ledger_path,
+        expected_current_cap_cluster_hours=2.0,
+        new_cap_cluster_hours=4.0,
+    )
+    assert raised.accounted_cluster_hours == terminal.accounted_cluster_hours
+    admitted = reserve_databricks_run_attempt_json(
+        ledger_path,
+        _submit_payload(timeout_seconds=3600),
+        attempt_id="after-cap-raise",
+        workload_id="representative-vllm",
+    )
+    assert admitted.accounted_cluster_hours == 7245.0 / 3600.0 + 1.0
+
+
+def test_verified_overshoot_consumes_publication_headroom(tmp_path):
+    history_reservations, history_terminals = _closed_publication_history(74)
+    reservation = databricks_submit_payload_reservation(
+        _submit_payload(timeout_seconds=21_600),
+        attempt_id="timed-out-001",
+        workload_id="vllm-publication-campaign",
+    )
+    receipt = DatabricksRunSubmissionReceipt(
+        attempt_id="timed-out-001",
+        run_id="101",
+        submit_payload_sha256=reservation.submit_payload_sha256,
+        submit_response_sha256="b" * 64,
+    )
+
+    def closed_ledger(actual_seconds):
+        return DatabricksClusterHourLedger(
+            ledger_id="publication-campaign",
+            reservations=(*history_reservations, reservation),
+            submission_receipts=(receipt,),
+            terminal_actuals=(
+                *history_terminals,
+                DatabricksClusterHourTerminalActual(
+                    attempt_id="timed-out-001",
+                    terminal_state="timed_out",
+                    actual_cluster_duration_seconds=actual_seconds,
+                    verification_source="direct_databricks_runs_get",
+                    run_id="101",
+                    submit_payload_sha256=reservation.submit_payload_sha256,
+                    control_plane_status_sha256="c" * 64,
+                ),
+            ),
+        )
+
+    next_reservation = databricks_submit_payload_reservation(
+        _submit_payload(timeout_seconds=21_600),
+        attempt_id="next-wave",
+        workload_id="vllm-publication-campaign",
+    )
+    assert closed_ledger(21_600.0).reserve(next_reservation).accounted_cluster_hours == (
+        MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS - 124.0
+    )
+    overshot = closed_ledger(21_645.0)
+    assert overshot.accounted_cluster_hours < overshot.cap_cluster_hours
+    with pytest.raises(ValueError, match="124-hour"):
+        overshot.reserve(next_reservation)
+
+
+def test_ledger_rejects_unverified_actual_above_reservation_at_construction():
+    reservation = databricks_submit_payload_reservation(
+        _submit_payload(timeout_seconds=3600),
+        attempt_id="attempt-001",
+        workload_id="representative-vllm",
+    )
+    receipt = DatabricksRunSubmissionReceipt(
+        attempt_id="attempt-001",
+        run_id="101",
+        submit_payload_sha256=reservation.submit_payload_sha256,
+        submit_response_sha256="b" * 64,
+    )
+    verified = DatabricksClusterHourTerminalActual(
+        attempt_id="attempt-001",
+        terminal_state="timed_out",
+        actual_cluster_duration_seconds=3700.0,
+        verification_source="direct_databricks_runs_get",
+        run_id="101",
+        submit_payload_sha256=reservation.submit_payload_sha256,
+        control_plane_status_sha256="c" * 64,
+    )
+    ledger = DatabricksClusterHourLedger(
+        ledger_id="canary-2026",
+        cap_cluster_hours=1.0,
+        reservations=(reservation,),
+        submission_receipts=(receipt,),
+        terminal_actuals=(verified,),
+    )
+    assert ledger.accounted_cluster_hours == 3700.0 / 3600.0
+
+    with pytest.raises(ValueError, match="unverified terminal actual"):
+        DatabricksClusterHourLedger(
+            ledger_id="canary-2026",
+            reservations=(reservation,),
+            terminal_actuals=(
+                DatabricksClusterHourTerminalActual(
+                    attempt_id="attempt-001",
+                    terminal_state="timed_out",
+                    actual_cluster_duration_seconds=3700.0,
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="accounted cluster-hours exceed cap"):
+        DatabricksClusterHourLedger(
+            ledger_id="canary-2026",
+            cap_cluster_hours=0.5,
+            reservations=(reservation,),
+            submission_receipts=(receipt,),
+            terminal_actuals=(verified,),
         )
 
 
