@@ -423,6 +423,126 @@ def test_condition_timeouts_and_runtime_zone_are_closed():
     assert runtime["gpu_memory_utilization"] == 0.75
 
 
+def test_bf16_runtime_policy_records_the_served_gpu_memory_utilization(
+    monkeypatch, capsys
+):
+    jobs = _descriptors()
+    bf16 = next(job for job in jobs if job.get("setting_id") == "precision-bf16")
+    reference = next(
+        job for job in jobs if job["job_id"] == bf16["reference_core_cell_id"]
+    )
+
+    def policy(descriptor, bf16_gmu):
+        return execution._job_runtime_policy(
+            descriptor,
+            selected_32k_gmu=0.75,
+            single_user_name="publication@example.com",
+            bf16_gpu_memory_utilization=bf16_gmu,
+        )
+
+    current = policy(bf16, execution.PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION)
+    legacy = policy(bf16, None)
+    assert current["gpu_memory_utilization"] == 0.8
+    assert legacy["gpu_memory_utilization"] == 0.90
+    assert policy(reference, 0.8) == policy(reference, None)
+    assert policy(reference, 0.8)["gpu_memory_utilization"] == 0.90
+    assert execution._expected_job_runtime(bf16, current) == current
+    assert execution._expected_job_runtime(bf16, legacy) == legacy
+    drifted = {**current, "gpu_memory_utilization": 0.85}
+    assert execution._expected_job_runtime(bf16, drifted) != drifted
+
+    monkeypatch.setattr(
+        execution, "validate_publication_latency_job_record", lambda _record: None
+    )
+    job = _native_v2_job_record(method_id="vanilla_prefill")
+    for recorded in (0.8, 0.9):
+        job["runtime"] = {
+            **job["runtime"],
+            "gpu_memory_utilization": recorded,
+            "runtime_kv_dtype": execution.PUBLICATION_LATENCY_BF16_DTYPE,
+        }
+        config = execution.publication_latency_vllm_config(job)
+        assert config.gpu_memory_utilization == 0.8
+        assert config.require_kv_cache_concurrency is True
+        shimmed = "bf16 publication handoff gpu-memory-utilization" in (
+            capsys.readouterr().out
+        )
+        assert shimmed is (recorded == 0.9)
+
+
+def _kv_capacity_metadata(**overrides):
+    metadata = {
+        "vllm_kv_cache_capacity": {
+            "gpu_kv_cache_tokens": 91_104,
+            "max_concurrency": 5.39,
+            "max_model_len": 16_896,
+            "max_num_seqs": 4,
+            "source": "vllm_startup_log",
+        },
+        "vllm_preemptions": {
+            "metric": "vllm:num_preemptions_total",
+            "metric_exposed": True,
+            "preemptions": 0,
+            "unavailable_reason": None,
+        },
+    }
+    for section, values in overrides.items():
+        metadata[section] = (
+            None if values is None else {**metadata[section], **values}
+        )
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({}, None),
+        (
+            {
+                "vllm_preemptions": {
+                    "metric_exposed": False,
+                    "preemptions": None,
+                    "unavailable_reason": "URLError: connection refused",
+                }
+            },
+            None,
+        ),
+        ({"vllm_kv_cache_capacity": {"gpu_kv_cache_tokens": None}}, None),
+        ({"vllm_kv_cache_capacity": None}, "vllm_kv_cache_capacity"),
+        (
+            {"vllm_kv_cache_capacity": {"max_concurrency": 3.99}},
+            "KV cache for max_num_seqs",
+        ),
+        (
+            {"vllm_kv_cache_capacity": {"gpu_kv_cache_tokens": 67_583}},
+            "KV cache for max_num_seqs",
+        ),
+        (
+            {"vllm_kv_cache_capacity": {"max_model_len": 8_704}},
+            "KV cache for max_num_seqs",
+        ),
+        ({"vllm_preemptions": {"preemptions": 1}}, "preemption evidence drift"),
+        (
+            {"vllm_preemptions": {"metric_exposed": False, "preemptions": None}},
+            "preemption evidence drift",
+        ),
+    ),
+)
+def test_latency_metadata_requires_kv_capacity_and_no_preemptions(overrides, message):
+    runtime = {"max_model_len": 16_896, "max_num_seqs": 4}
+    metadata = _kv_capacity_metadata(**overrides)
+
+    if message is None:
+        execution._validate_publication_latency_kv_capacity_metadata(
+            metadata, runtime=runtime
+        )
+    else:
+        with pytest.raises(ValueError, match=message):
+            execution._validate_publication_latency_kv_capacity_metadata(
+                metadata, runtime=runtime
+            )
+
+
 def test_submit_payload_rejects_timeout_and_zone_tampering():
     descriptor = next(
         item

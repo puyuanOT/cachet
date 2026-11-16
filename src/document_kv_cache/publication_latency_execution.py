@@ -301,6 +301,9 @@ PUBLICATION_LATENCY_RAM_PRIME_TARGETS: Final = 8
 PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX: Final = "cachet-payload-prime:"
 PUBLICATION_LATENCY_Q8_DTYPE: Final = "fp8_e5m2"
 PUBLICATION_LATENCY_BF16_DTYPE: Final = "bfloat16"
+# Eager vLLM 0.30.0 at the L4 0.9 default over-allocates the BF16 KV cache and
+# OOMs on the first prefill; plans that carry this policy record what is served.
+PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION: Final = 0.8
 PUBLICATION_LATENCY_RESTORED_Q8_SOURCE_KIND: Final = "restored_q8_bundle"
 PUBLICATION_LATENCY_L4_REGENERATED_SOURCE_KIND: Final = "l4_regenerated_bundle"
 # Spark Python task parameters are capped near 10000 bytes, which an inline
@@ -4243,6 +4246,9 @@ def build_publication_latency_execution_plan(
         "runtime_policy": {
             "attention_backend": selection.attention_backend,
             "availability": PUBLICATION_LATENCY_DATABRICKS_AVAILABILITY,
+            "bf16_gpu_memory_utilization": (
+                PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+            ),
             "data_security_mode": PUBLICATION_LATENCY_DATABRICKS_DATA_SECURITY_MODE,
             "databricks_spark_version": DEFAULT_DATABRICKS_SPARK_VERSION,
             "decode_headroom_tokens": GPU_QUALIFICATION_DECODE_HEADROOM_TOKENS,
@@ -4613,6 +4619,10 @@ def validate_publication_latency_execution_plan_record(
         "single_user_name": source_single_user_name,
         "zones": list(PUBLICATION_LATENCY_DATABRICKS_ZONES),
     }
+    if "bf16_gpu_memory_utilization" in runtime:
+        expected_runtime["bf16_gpu_memory_utilization"] = (
+            PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+        )
     if dict(runtime) != expected_runtime:
         raise ValueError("publication latency runtime policy drift")
     schedule_bindings = _mapping_sequence(sources, "schedules")
@@ -5703,6 +5713,9 @@ def _render_publication_latency_job_record(
             _mapping(sources, "source_closure"),
             "single_user_name",
         ),
+        bf16_gpu_memory_utilization=_mapping(
+            execution_plan_record, "runtime_policy"
+        ).get("bf16_gpu_memory_utilization"),
     )
     input_files = [
         final_artifacts.file(
@@ -5948,15 +5961,7 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
     if request_order.get("workload_id") != expected_workload:
         raise ValueError("publication latency schedule workload binding drift")
     runtime = _mapping(record, "runtime")
-    expected_runtime = _job_runtime_policy(
-        cell,
-        selected_32k_gmu=_finite_positive_number(
-            runtime.get("selected_32k_l4_gpu_memory_utilization"),
-            "selected_32k_l4_gpu_memory_utilization",
-        ),
-        single_user_name=_required_string(runtime, "single_user_name"),
-    )
-    if dict(runtime) != expected_runtime:
+    if dict(runtime) != _expected_job_runtime(cell, runtime):
         raise ValueError("publication latency job runtime policy drift")
     cache_policy = _cache_policy(cell)
     if record.get("cache_telemetry_policy") != cache_policy:
@@ -6000,12 +6005,36 @@ def validate_publication_latency_job_record(record: Mapping[str, Any]) -> None:
         raise ValueError("publication latency result path drift")
 
 
+def _expected_job_runtime(
+    cell: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _job_runtime_policy(
+        cell,
+        selected_32k_gmu=_finite_positive_number(
+            runtime.get("selected_32k_l4_gpu_memory_utilization"),
+            "selected_32k_l4_gpu_memory_utilization",
+        ),
+        single_user_name=_required_string(runtime, "single_user_name"),
+        # Job records rendered from plans that predate the BF16 policy carry 0.9.
+        bf16_gpu_memory_utilization=(
+            PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+            if runtime.get("gpu_memory_utilization")
+            == PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION
+            else None
+        ),
+    )
+
+
 def _job_runtime_policy(
     descriptor: Mapping[str, Any],
     *,
     selected_32k_gmu: float,
     single_user_name: str,
+    bf16_gpu_memory_utilization: float | None = None,
 ) -> dict[str, Any]:
+    """Return one job's runtime; plans without a BF16 GMU record the L4 0.9."""
+
     principal = _validated_single_user_name(single_user_name)
     input_tokens = _required_int(descriptor, "input_tokens")
     request_parallelism = _required_int(descriptor, "request_parallelism")
@@ -6021,6 +6050,8 @@ def _job_runtime_policy(
         gpu_memory_utilization = GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION
     elif input_tokens == 32_768:
         gpu_memory_utilization = selected_32k_gmu
+    elif setting_id == "precision-bf16" and bf16_gpu_memory_utilization is not None:
+        gpu_memory_utilization = bf16_gpu_memory_utilization
     else:
         gpu_memory_utilization = 0.90
     timeout_seconds = _job_timeout_seconds(descriptor)
@@ -11345,6 +11376,7 @@ def publication_latency_vllm_config(
             else None
         ),
         prewarm_payload_cache=cell.get("setting_id") == "storage-ram",
+        require_kv_cache_concurrency=True,
         hardware_target=_required_string(runtime, "hardware_target"),
         dataset_specs=input_specs,
         allow_dataset_subset=False,
@@ -11955,6 +11987,7 @@ def _validate_publication_latency_runtime_metadata(
     for field_name, value in expected.items():
         if metadata.get(field_name) != value:
             raise ValueError(f"vLLM metadata {field_name} drift")
+    _validate_publication_latency_kv_capacity_metadata(metadata, runtime=runtime)
     if (
         metadata.get("strict_runtime_closure") is not True
         or metadata.get("vllm_runtime_lock_verification_scope") != "final-runtime"
@@ -11991,6 +12024,72 @@ def _validate_publication_latency_runtime_metadata(
         )
     ):
         raise ValueError("vLLM installed patch closure did not pass")
+
+
+def _validate_publication_latency_kv_capacity_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    runtime: Mapping[str, Any],
+) -> None:
+    max_model_len = _required_int(runtime, "max_model_len")
+    max_num_seqs = _required_int(runtime, "max_num_seqs")
+    capacity = _mapping(metadata, "vllm_kv_cache_capacity")
+    _require_exact_keys(
+        capacity,
+        {
+            "gpu_kv_cache_tokens",
+            "max_concurrency",
+            "max_model_len",
+            "max_num_seqs",
+            "source",
+        },
+        "vLLM KV cache capacity",
+    )
+    max_concurrency = capacity.get("max_concurrency")
+    kv_cache_tokens = capacity.get("gpu_kv_cache_tokens")
+    if (
+        capacity.get("source") != "vllm_startup_log"
+        or capacity.get("max_model_len") != max_model_len
+        or capacity.get("max_num_seqs") != max_num_seqs
+        or type(max_concurrency) is not float
+        or not max_concurrency >= max_num_seqs
+        or not (
+            kv_cache_tokens is None
+            or (
+                type(kv_cache_tokens) is int
+                and kv_cache_tokens >= max_num_seqs * max_model_len
+            )
+        )
+    ):
+        raise ValueError(
+            "vLLM metadata does not prove a KV cache for max_num_seqs requests"
+        )
+    preemptions = _mapping(metadata, "vllm_preemptions")
+    _require_exact_keys(
+        preemptions,
+        {"metric", "metric_exposed", "preemptions", "unavailable_reason"},
+        "vLLM preemptions",
+    )
+    exposed = preemptions.get("metric_exposed")
+    reason = preemptions.get("unavailable_reason")
+    if (
+        preemptions.get("metric") != "vllm:num_preemptions_total"
+        or not (
+            (
+                exposed is True
+                and type(preemptions.get("preemptions")) is int
+                and preemptions.get("preemptions") == 0
+                and reason is None
+            )
+            or (
+                exposed is False
+                and preemptions.get("preemptions") is None
+                and isinstance(reason, str)
+                and bool(reason)
+            )
+        )
+    ):
+        raise ValueError("vLLM metadata preemption evidence drift")
 
 
 def _publication_latency_cache_telemetry_summary(

@@ -1,4 +1,4 @@
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 import gc
 import hashlib
@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
+import urllib.error
 import weakref
 
 import pytest
@@ -238,10 +239,11 @@ def test_publication_options_are_appended_to_preserve_positional_config_api():
         "temperature",
         "generation_seed",
         "payload_cache_prime_target_count",
-        "native_runtime_v2",
-        "representative_handoff_source",
-        "representative_supplement_provenance",
-    ]
+            "native_runtime_v2",
+            "representative_handoff_source",
+            "representative_supplement_provenance",
+            "require_kv_cache_concurrency",
+        ]
 
     assert field_names == [*legacy_fields, *publication_fields]
     assert field_names.index("cache_runtime_prompt") == (
@@ -5947,15 +5949,9 @@ class _FakeResponse:
         return self._payload
 
 
-def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_path):
+def _patch_smoke_orchestration(monkeypatch, tmp_path, config):
     calls = []
     fake_server = object()
-    config = VLLMSmokeBenchmarkConfig(
-        benchmark_id="smoke-1",
-        output_dir=tmp_path / "out",
-        local_root=tmp_path / "local",
-        server_port=8123,
-    )
     dataset_paths = {
         name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()
     }
@@ -6081,6 +6077,19 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         "copy_file_if_exists",
         lambda source, target: calls.append(("copy", source, target)),
     )
+    return calls, fake_server, dataset_paths
+
+
+def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+    )
+    calls, fake_server, dataset_paths = _patch_smoke_orchestration(
+        monkeypatch, tmp_path, config
+    )
 
     run_vllm_smoke_benchmark(config)
 
@@ -6129,6 +6138,155 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     metadata = build_metadata(config)
     assert metadata["server_base_url"] == "http://127.0.0.1:8123"
     assert metadata["hf_home"] == str(tmp_path / "local" / "hf-cache")
+
+
+def test_run_vllm_smoke_benchmark_gates_kv_capacity_around_timed_requests(
+    monkeypatch, tmp_path
+):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+        require_kv_cache_concurrency=True,
+    )
+    calls, _fake_server, _dataset_paths = _patch_smoke_orchestration(
+        monkeypatch, tmp_path, config
+    )
+    capacity = {
+        "gpu_kv_cache_tokens": 20_000,
+        "max_concurrency": 4.88,
+        "max_model_len": 4096,
+        "max_num_seqs": 2,
+        "source": "vllm_startup_log",
+    }
+    preemptions = {
+        "metric": "vllm:num_preemptions_total",
+        "metric_exposed": True,
+        "preemptions": 0,
+        "unavailable_reason": None,
+    }
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "verify_vllm_kv_cache_capacity",
+        lambda cfg: calls.append(("kv_capacity",)) or capacity,
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "verify_vllm_no_preemptions",
+        lambda cfg: calls.append(("preemptions",)) or preemptions,
+    )
+
+    run_vllm_smoke_benchmark(config)
+
+    names = [call[0] for call in calls]
+    assert names[names.index("wait_for_server") : names.index("terminate")] == [
+        "wait_for_server",
+        "copy",
+        "kv_capacity",
+        "run",
+        "preemptions",
+    ]
+    metadata = json.loads(config.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["vllm_kv_cache_capacity"] == capacity
+    assert metadata["vllm_preemptions"] == preemptions
+    with pytest.raises(ValueError, match="not supported for the LMCache runner"):
+        replace(config, kv_connector_mode="lmcache")
+
+
+_VLLM_STARTUP_LOG = """\
+(EngineCore_DP0 pid=4242) INFO 11-16 10:00:00 [gpu_worker.py:298] Available KV cache memory: 12.51 GiB
+(EngineCore_DP0 pid=4242) INFO 11-16 10:00:00 [kv_cache_utils.py:1087] GPU KV cache size: {tokens} tokens
+(EngineCore_DP0 pid=4242) INFO 11-16 10:00:00 [kv_cache_utils.py:1091] Maximum concurrency for {length} tokens per request: {concurrency}x
+"""
+
+
+def test_kv_cache_capacity_is_read_from_the_vllm_startup_log():
+    log = _VLLM_STARTUP_LOG.format(
+        tokens="91,104", length="16,896", concurrency="5.39"
+    )
+
+    assert public_vllm_smoke.vllm_kv_cache_capacity_from_log(
+        log, max_model_len=16_896, max_num_seqs=4
+    ) == {
+        "gpu_kv_cache_tokens": 91_104,
+        "max_concurrency": 5.39,
+        "max_model_len": 16_896,
+        "max_num_seqs": 4,
+        "source": "vllm_startup_log",
+    }
+    with pytest.raises(RuntimeError, match="holds 5.39 requests of 16896 tokens"):
+        public_vllm_smoke.vllm_kv_cache_capacity_from_log(
+            log, max_model_len=16_896, max_num_seqs=6
+        )
+    rounded_up = _VLLM_STARTUP_LOG.format(
+        tokens="67,583", length="16,896", concurrency="4.00"
+    )
+    with pytest.raises(RuntimeError, match="fewer than max_num_seqs=4"):
+        public_vllm_smoke.vllm_kv_cache_capacity_from_log(
+            rounded_up, max_model_len=16_896, max_num_seqs=4
+        )
+    with pytest.raises(RuntimeError, match="different max_model_len"):
+        public_vllm_smoke.vllm_kv_cache_capacity_from_log(
+            log, max_model_len=33_280, max_num_seqs=4
+        )
+    with pytest.raises(RuntimeError, match="does not report its KV cache"):
+        public_vllm_smoke.vllm_kv_cache_capacity_from_log(
+            "INFO Starting vLLM API server", max_model_len=16_896, max_num_seqs=4
+        )
+
+
+_VLLM_METRICS = """\
+# HELP vllm:num_preemptions_total Cumulative number of preemption from the engine.
+# TYPE vllm:num_preemptions_total counter
+vllm:num_preemptions_total{{engine="0",model_name="qwen3"}} {first}
+vllm:num_preemptions_total{{engine="1",model_name="qwen3"}} {second}
+vllm:num_preemptions_created{{engine="0",model_name="qwen3"}} 1.7631e+09
+"""
+
+
+def test_vllm_preemptions_are_read_from_the_metrics_endpoint(monkeypatch, tmp_path):
+    parse = public_vllm_smoke.vllm_preemptions_from_metrics
+    assert parse(_VLLM_METRICS.format(first="0.0", second="0.0")) == 0
+    assert parse(_VLLM_METRICS.format(first="2.0", second="1.0")) == 3
+    assert parse("# TYPE vllm:num_requests_running gauge\n") is None
+
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+    )
+    served = {"payload": _VLLM_METRICS.format(first="0.0", second="0.0")}
+    seen_urls = []
+
+    def urlopen(url, *, timeout):
+        seen_urls.append(url)
+        if isinstance(served["payload"], Exception):
+            raise served["payload"]
+        return _FakeResponse(payload=served["payload"].encode("utf-8"))
+
+    monkeypatch.setattr(public_vllm_smoke.urllib.request, "urlopen", urlopen)
+
+    assert public_vllm_smoke.verify_vllm_no_preemptions(config) == {
+        "metric": "vllm:num_preemptions_total",
+        "metric_exposed": True,
+        "preemptions": 0,
+        "unavailable_reason": None,
+    }
+    assert seen_urls == ["http://127.0.0.1:8123/metrics"]
+    served["payload"] = _VLLM_METRICS.format(first="1.0", second="0.0")
+    with pytest.raises(RuntimeError, match="preempted 1 requests"):
+        public_vllm_smoke.verify_vllm_no_preemptions(config)
+    served["payload"] = "# no vllm metrics\n"
+    assert public_vllm_smoke.verify_vllm_no_preemptions(config)[
+        "unavailable_reason"
+    ] == ("http://127.0.0.1:8123/metrics does not export the counter")
+    served["payload"] = urllib.error.URLError("connection refused")
+    unavailable = public_vllm_smoke.verify_vllm_no_preemptions(config)
+    assert unavailable["metric_exposed"] is False
+    assert unavailable["preemptions"] is None
+    assert "connection refused" in unavailable["unavailable_reason"]
 
 
 def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(

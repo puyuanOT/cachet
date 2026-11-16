@@ -213,6 +213,16 @@ SERVER_PORT = 8000
 BASELINE_PREFIX_CACHE_SALT = "cachet-baseline-prefill"
 CACHE_PREFIX_CACHE_SALT = "cachet-kv-cache"
 PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT = "cachet-payload-cache-prime"
+VLLM_MAX_CONCURRENCY_LOG_RE = re.compile(
+    r"Maximum concurrency for ([0-9][0-9,]*) tokens per request: "
+    r"([0-9]+(?:\.[0-9]+)?)x"
+)
+VLLM_GPU_KV_CACHE_SIZE_LOG_RE = re.compile(r"GPU KV cache size: ([0-9][0-9,]*) tokens")
+VLLM_PREEMPTIONS_METRIC = "vllm:num_preemptions_total"
+VLLM_PREEMPTIONS_METRIC_RE = re.compile(
+    r"^vllm:num_preemptions(?:_total)?(?:\{[^}\n]*\})?[ \t]+([0-9][0-9.eE+-]*)[ \t]*$",
+    re.MULTILINE,
+)
 PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
@@ -287,6 +297,10 @@ __all__ = [
     "verify_vllm_runtime_lock_installation",
     "materialize_virtualenv_bootstrap",
     "verify_vllm_runtime_patch_closure",
+    "verify_vllm_kv_cache_capacity",
+    "verify_vllm_no_preemptions",
+    "vllm_kv_cache_capacity_from_log",
+    "vllm_preemptions_from_metrics",
     "build_vllm_server_args",
     "document_kv_transfer_config_for_smoke",
     "build_benchmark_runner_args",
@@ -720,6 +734,7 @@ class VLLMSmokeBenchmarkConfig:
     native_runtime_v2: VLLMNativeRuntimeBundleV2 | None = None
     representative_handoff_source: RepresentativeHandoffSourceV1 | None = None
     representative_supplement_provenance: RepresentativeSupplementProvenanceV1 | None = None
+    require_kv_cache_concurrency: bool = False
 
     def __post_init__(self) -> None:
         supplement = self.representative_supplement_provenance
@@ -776,6 +791,15 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("max_tokens must be positive")
         if type(self.force_max_tokens) is not bool:
             raise ValueError("force_max_tokens must be a boolean")
+        if type(self.require_kv_cache_concurrency) is not bool:
+            raise ValueError("require_kv_cache_concurrency must be a boolean")
+        if (
+            self.require_kv_cache_concurrency
+            and self.kv_connector_mode == LMCACHE_KV_CONNECTOR_MODE
+        ):
+            raise ValueError(
+                "require_kv_cache_concurrency is not supported for the LMCache runner"
+            )
         if (
             isinstance(self.temperature, bool)
             or not isinstance(self.temperature, (int, float))
@@ -1979,9 +2003,15 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
             timeout_seconds=config.server_start_timeout_seconds,
         )
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
+        if config.require_kv_cache_concurrency:
+            metadata["vllm_kv_cache_capacity"] = verify_vllm_kv_cache_capacity(config)
+            write_json(config.metadata_path, metadata)
         prewarm_cache_prefixes(config, dataset_paths)
         prime_payload_cache(config, dataset_paths)
         run_benchmark_runner(config, dataset_paths)
+        if config.require_kv_cache_concurrency:
+            metadata["vllm_preemptions"] = verify_vllm_no_preemptions(config)
+            write_json(config.metadata_path, metadata)
         attest_payload_cache_measurements(config)
         if is_multi:
             # Hybrid handoff: measure per-turn TTFT (turn-1 docs->Cachet, follow-ups->LMCache).
@@ -6566,6 +6596,110 @@ def fetch_served_model_ids(models_url: str) -> set[str]:
         item["id"]
         for item in payload["data"]
         if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+
+
+def vllm_kv_cache_capacity_from_log(
+    log_text: str,
+    *,
+    max_model_len: int,
+    max_num_seqs: int,
+) -> dict[str, object]:
+    """Prove the started KV cache holds ``max_num_seqs`` full-length requests.
+
+    vLLM rounds the reported concurrency to two decimals, so the logged KV
+    cache token count is checked as well; a 3.996x cache cannot pass for 4.
+    """
+
+    reports = [
+        (int(tokens.replace(",", "")), float(value))
+        for tokens, value in VLLM_MAX_CONCURRENCY_LOG_RE.findall(log_text)
+    ]
+    if not reports:
+        raise RuntimeError("vLLM startup log does not report its KV cache concurrency")
+    if any(tokens != max_model_len for tokens, _value in reports):
+        raise RuntimeError(
+            "vLLM reported KV cache concurrency for a different max_model_len"
+        )
+    kv_cache_tokens = [
+        int(tokens.replace(",", ""))
+        for tokens in VLLM_GPU_KV_CACHE_SIZE_LOG_RE.findall(log_text)
+    ]
+    max_concurrency = min(value for _tokens, value in reports)
+    gpu_kv_cache_tokens = min(kv_cache_tokens) if kv_cache_tokens else None
+    if max_concurrency < max_num_seqs or (
+        gpu_kv_cache_tokens is not None
+        and gpu_kv_cache_tokens < max_num_seqs * max_model_len
+    ):
+        raise RuntimeError(
+            f"vLLM KV cache holds {max_concurrency:.2f} requests of "
+            f"{max_model_len} tokens, fewer than max_num_seqs={max_num_seqs}; "
+            "the timed run would queue or preempt requests"
+        )
+    return {
+        "gpu_kv_cache_tokens": gpu_kv_cache_tokens,
+        "max_concurrency": max_concurrency,
+        "max_model_len": max_model_len,
+        "max_num_seqs": max_num_seqs,
+        "source": "vllm_startup_log",
+    }
+
+
+def verify_vllm_kv_cache_capacity(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
+    return vllm_kv_cache_capacity_from_log(
+        config.server_log_path.read_text(encoding="utf-8", errors="replace"),
+        max_model_len=config.max_model_len,
+        max_num_seqs=config.max_num_seqs,
+    )
+
+
+def vllm_preemptions_from_metrics(metrics_text: str) -> int | None:
+    """Sum vLLM's preemption counter over its label sets; None if not exported."""
+
+    values = [
+        float(value) for value in VLLM_PREEMPTIONS_METRIC_RE.findall(metrics_text)
+    ]
+    if not values:
+        return None
+    total = math.fsum(values)
+    if not math.isfinite(total) or total < 0 or total != int(total):
+        raise RuntimeError("vLLM preemption counter is not a non-negative count")
+    return int(total)
+
+
+def verify_vllm_no_preemptions(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
+    """Fail if vLLM preempted any request; record explicitly when it cannot tell."""
+
+    metrics_url = f"{config.server_base_url}/metrics"
+    try:
+        with urllib.request.urlopen(metrics_url, timeout=30) as response:
+            preemptions = vllm_preemptions_from_metrics(
+                response.read().decode("utf-8", errors="replace")
+            )
+    except (OSError, urllib.error.URLError) as exc:
+        return {
+            "metric": VLLM_PREEMPTIONS_METRIC,
+            "metric_exposed": False,
+            "preemptions": None,
+            "unavailable_reason": f"{type(exc).__name__}: {exc}",
+        }
+    if preemptions is None:
+        return {
+            "metric": VLLM_PREEMPTIONS_METRIC,
+            "metric_exposed": False,
+            "preemptions": None,
+            "unavailable_reason": f"{metrics_url} does not export the counter",
+        }
+    if preemptions:
+        raise RuntimeError(
+            f"vLLM preempted {preemptions} requests during the timed run; its KV "
+            "cache could not hold max_num_seqs requests at once"
+        )
+    return {
+        "metric": VLLM_PREEMPTIONS_METRIC,
+        "metric_exposed": True,
+        "preemptions": 0,
+        "unavailable_reason": None,
     }
 
 
