@@ -9,6 +9,12 @@ This directory is the public benchmark surface for Cachet.
 > the method or runner is unsupported. `N/A` is never a zero.
 <!-- cachet:vllm-0271-publication-table:status:end -->
 
+<!-- cachet:vllm-0271-publication-table:campaign-disclosures:begin -->
+> Campaign ledger disclosures (budget extensions, capacity retries, abandoned
+> attempts, recovered ledger balance, and latency launch-plan provenance) are
+> rendered here from the sealed campaign report when it is published.
+<!-- cachet:vllm-0271-publication-table:campaign-disclosures:end -->
+
 Superseded serving-engine evidence and its numeric tables were removed instead
 of being mixed with the reset. A result may replace a pending cell only after
 its exact source, wheel, runtime lock, inputs, hardware qualification,

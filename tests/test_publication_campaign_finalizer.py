@@ -4234,6 +4234,23 @@ def test_vllm_0300_finalization_round_trips_a_real_campaign_ledger(
         replayed.report_record
     ) == report_bytes
 
+    disclosures = campaign_tables.render_vllm_0271_publication_table_regions(
+        loaded.report_record,
+        loaded.gate_record,
+    )["campaign_disclosures"]
+    for row in (
+        "| Cluster-hour budget | Raised from 1,024 h to 2,024 h after 1 "
+        "reservation, 0 receipts, and 1 terminal actual |",
+        "| GPU qualification capacity retries | 1 attempt, 0.25 h |",
+        "| Full-score capacity retries | 1 attempt, 0.25 h | Phases relaunched "
+        "after a Databricks capacity failure; the 21 full-score ledger "
+        "attempts after the latency prefix cover the 20 phases,",
+        "| Abandoned full-score attempts | 2 attempts, 0.75 h; 0 closed "
+        "consumer phases |",
+        "| Latency recovered balance | 2 seeds, 1.50 h |",
+    ):
+        assert row in disclosures
+
 
 def test_vllm_0300_loader_replay_needs_the_finalizing_process_and_ledger(
     tmp_path: Path,

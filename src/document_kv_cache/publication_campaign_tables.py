@@ -17,12 +17,20 @@ from document_kv_cache.publication_campaign import (
     PUBLICATION_CAMPAIGN_ENGINE_VERSION,
 )
 from document_kv_cache.publication_campaign_finalizer import (
+    PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE,
+    PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE,
     validate_vllm_0271_publication_report_pair,
 )
 from document_kv_cache.gpu_qualification import (
     GPU_QUALIFICATION_A10G_GPU_MEMORY_UTILIZATION,
     GPU_QUALIFICATION_A10G_MIN_PEAK_HEADROOM_BYTES,
     GPU_QUALIFICATION_MIN_PEAK_HEADROOM_BYTES,
+)
+from document_kv_cache.publication_latency_execution import (
+    PUBLICATION_LATENCY_LEDGER_BINDINGS,
+    PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING,
+    PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING,
+    PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING,
 )
 
 
@@ -118,6 +126,51 @@ _SCORER_KEYS: Final[frozenset[str]] = frozenset(
         "publication_approved",
         "scorer_id",
         "scorer_version",
+    }
+)
+_REPORT_LEDGER_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "final_accounted_cluster_hours",
+        "final_active_reserved_cluster_hours",
+        "final_active_reserved_task_count",
+        "final_remaining_cluster_hours",
+        "full_score_terminal_prefix",
+        "latency_terminal_prefix",
+        "ledger_id",
+        "ledger_path_sha256",
+        "required_unreserved_headroom_cluster_hours",
+    }
+)
+_VLLM_0300_REPORT_LEDGER_KEYS: Final[frozenset[str]] = _REPORT_LEDGER_KEYS | frozenset(
+    {
+        "cap_raises",
+        "full_score_abandoned_attempts",
+        "full_score_capacity_retries",
+        "latency_recovered_balance",
+        "qualification_capacity_retries",
+    }
+)
+_CAP_RAISE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "from_cap_cluster_hours",
+        "reservation_count",
+        "submission_receipt_count",
+        "terminal_actual_count",
+        "to_cap_cluster_hours",
+    }
+)
+_ATTEMPT_HOURS_KEYS: Final[frozenset[str]] = frozenset(
+    {"attempt_count", "cluster_hours"}
+)
+_ABANDONED_ATTEMPT_KEYS: Final[frozenset[str]] = _ATTEMPT_HOURS_KEYS | frozenset(
+    {"closed_consumer_phase_count"}
+)
+_LATENCY_PROVENANCE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "execution_plan_count",
+        "ledger_binding_counts",
+        "plan_set_sha256",
+        "superseded_attempt_count",
     }
 )
 _SHA256_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}\Z")
@@ -244,6 +297,7 @@ _NIAH_ROWS: Final[tuple[tuple[str, str, str], ...]] = tuple(
 
 PUBLICATION_TABLE_SECTION_ORDER: Final[tuple[str, ...]] = (
     "status",
+    "campaign_disclosures",
     "core_latency",
     "latency_estimands",
     "dataset_scores",
@@ -314,6 +368,7 @@ def render_vllm_0271_publication_table_regions(
 
     rendered = {
         "status": _render_status(coverage),
+        "campaign_disclosures": _render_campaign_disclosures(report, coverage),
         "core_latency": _render_core_latency(cells),
         "latency_estimands": _render_latency_estimands(estimates),
         "dataset_scores": _render_dataset_scores(datasets),
@@ -1156,6 +1211,307 @@ def _render_status(coverage: Mapping[str, Any]) -> str:
         f"> Coverage: {latency_jobs} latency jobs; {scored} distinct full-score "
         f"examples; {checked} checked cache requests."
     )
+
+
+def _render_campaign_disclosures(
+    report: Mapping[str, Any],
+    coverage: Mapping[str, Any],
+) -> str:
+    ledger = _mapping_field(report, "ledger", "publication report")
+    record_type = report.get("record_type")
+    if record_type == PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE:
+        _require_exact_keys(
+            ledger,
+            _VLLM_0300_REPORT_LEDGER_KEYS,
+            "publication ledger projection",
+        )
+        rows = _multi_plan_disclosure_rows(report, ledger, coverage)
+    elif record_type == PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE:
+        _require_exact_keys(
+            ledger,
+            _REPORT_LEDGER_KEYS,
+            "publication ledger projection",
+        )
+        rows = _single_plan_disclosure_rows(report, ledger, coverage)
+    else:
+        raise ValueError("publication report record type drift")
+    return (
+        "> **Campaign ledger disclosures.** Rendered from the sealed report's "
+        "Databricks cluster-hour ledger projection and latency source fields. "
+        "They change no metric on this page; they record the campaign's "
+        "budget, retried and abandoned work, and how latency jobs are bound to "
+        "the ledger.\n\n"
+        + _markdown_table(
+            ("Disclosure", "Report value", "Meaning"),
+            ("---", "---", "---"),
+            rows,
+        )
+    )
+
+
+def _multi_plan_disclosure_rows(
+    report: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    coverage: Mapping[str, Any],
+) -> list[tuple[str, str, str]]:
+    label = "publication ledger projection"
+    cap_raises: list[str] = []
+    for index, raw_raise in enumerate(_list_field(ledger, "cap_raises", label)):
+        raise_label = f"publication ledger cap raise {index}"
+        cap_raise = _mapping_value(raw_raise, raise_label)
+        _require_exact_keys(cap_raise, _CAP_RAISE_KEYS, raise_label)
+        from_cap = _number_field(cap_raise, "from_cap_cluster_hours", raise_label)
+        to_cap = _number_field(cap_raise, "to_cap_cluster_hours", raise_label)
+        reservations = _int_field(cap_raise, "reservation_count", raise_label)
+        receipts = _int_field(cap_raise, "submission_receipt_count", raise_label)
+        terminals = _int_field(cap_raise, "terminal_actual_count", raise_label)
+        cap_raises.append(
+            f"Raised from {_cluster_hours(from_cap, 0)} to "
+            f"{_cluster_hours(to_cap, 0)} after "
+            f"{_counted(reservations, 'reservation')}, "
+            f"{_counted(receipts, 'receipt')}, and "
+            f"{_counted(terminals, 'terminal actual')}"
+        )
+    final_cap = _number_field(
+        _mapping_field(ledger, "full_score_terminal_prefix", label),
+        "cap_cluster_hours",
+        "full-score terminal prefix",
+    )
+    qualification_retries, qualification_hours = _attempt_hours(
+        ledger, "qualification_capacity_retries", _ATTEMPT_HOURS_KEYS
+    )
+    full_score_retries, full_score_retry_hours = _attempt_hours(
+        ledger, "full_score_capacity_retries", _ATTEMPT_HOURS_KEYS
+    )
+    abandoned, abandoned_hours = _attempt_hours(
+        ledger, "full_score_abandoned_attempts", _ABANDONED_ATTEMPT_KEYS
+    )
+    closed_consumers = _int_field(
+        _mapping_field(ledger, "full_score_abandoned_attempts", label),
+        "closed_consumer_phase_count",
+        "full-score abandoned attempts",
+    )
+    recovered_seeds, recovered_hours = _attempt_hours(
+        ledger, "latency_recovered_balance", _ATTEMPT_HOURS_KEYS
+    )
+    phases = _int_field(coverage, "full_score_phase_count", "coverage")
+    full_score_attempts = _full_score_attempts_after_latency(ledger)
+    if full_score_attempts != phases + full_score_retries:
+        raise ValueError("publication disclosure full-score attempt count drift")
+
+    provenance = _mapping_field(report, "latency_provenance", "publication report")
+    _require_exact_keys(
+        provenance,
+        _LATENCY_PROVENANCE_KEYS,
+        "publication latency provenance",
+    )
+    binding_counts = _mapping_field(
+        provenance,
+        "ledger_binding_counts",
+        "publication latency provenance",
+    )
+    _require_exact_keys(
+        binding_counts,
+        frozenset(PUBLICATION_LATENCY_LEDGER_BINDINGS),
+        "publication latency ledger binding counts",
+    )
+    bound = {
+        binding: _int_field(binding_counts, binding, "latency ledger binding counts")
+        for binding in PUBLICATION_LATENCY_LEDGER_BINDINGS
+    }
+    latency_jobs = _int_field(coverage, "latency_job_count", "coverage")
+    if sum(bound.values()) != latency_jobs:
+        raise ValueError("publication disclosure latency binding count drift")
+    plan_count = _int_field(
+        provenance, "execution_plan_count", "publication latency provenance"
+    )
+    superseded = _int_field(
+        provenance, "superseded_attempt_count", "publication latency provenance"
+    )
+    plan_set_sha256 = _sha256_field(
+        provenance, "plan_set_sha256", "publication latency provenance"
+    )
+    return [
+        (
+            "Cluster-hour budget",
+            "; ".join(cap_raises)
+            if cap_raises
+            else f"{_cluster_hours(final_cap, 0)} cap, never raised",
+            "Budget extensions recorded in the campaign ledger; every ledger "
+            "prefix before a raise keeps its earlier cap",
+        ),
+        _ledger_accounting_row(ledger, final_cap),
+        (
+            "GPU qualification capacity retries",
+            f"{_counted(qualification_retries, 'attempt')}, "
+            f"{_cluster_hours(qualification_hours)}",
+            "Qualification jobs relaunched after a Databricks capacity failure",
+        ),
+        (
+            "Full-score capacity retries",
+            f"{_counted(full_score_retries, 'attempt')}, "
+            f"{_cluster_hours(full_score_retry_hours)}",
+            f"Phases relaunched after a Databricks capacity failure; the "
+            f"{_counted(full_score_attempts, 'full-score ledger attempt')} "
+            f"after the latency prefix cover the {_counted(phases, 'phase')}, "
+            "and only each phase's "
+            "final attempt is scored",
+        ),
+        (
+            "Abandoned full-score attempts",
+            f"{_counted(abandoned, 'attempt')}, "
+            f"{_cluster_hours(abandoned_hours)}; "
+            f"{_counted(closed_consumers, 'closed consumer phase')}",
+            "Earlier full-score chains the campaign restarted over before the "
+            "latency prefix; the waves their consumer phases scored are not "
+            "used in this report",
+        ),
+        (
+            "Latency recovered balance",
+            f"{_counted(recovered_seeds, 'seed')}, "
+            f"{_cluster_hours(recovered_hours)}",
+            "Terminal-only ledger seeds restoring hours spent before the "
+            "ledger was recreated",
+        ),
+        (
+            "Latency jobs with their own ledger receipt",
+            f"{bound[PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING]:,} of "
+            f"{latency_jobs:,}",
+            "Receipt recorded when the job was submitted",
+        ),
+        (
+            "Latency jobs with a recovered receipt",
+            f"{bound[PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING]:,} of "
+            f"{latency_jobs:,}",
+            "Finished before the ledger was recreated; receipt re-recorded by "
+            "run ID under a timeout-only stand-in payload",
+        ),
+        (
+            "Latency jobs bound only by the recovered balance",
+            f"{bound[PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING]:,} of "
+            f"{latency_jobs:,}",
+            "Finished before the ledger was recreated and have no ledger "
+            "record; accepted only because the recovered-balance seeds cover "
+            "the spent hours",
+        ),
+        (
+            "Latency launch plans",
+            f"{_counted(plan_count, 'execution plan')}; "
+            f"{_counted(superseded, 'superseded attempt')}",
+            "Jobs are joined across the plans they ran under (capacity retries "
+            "and reopened cells); superseded attempts are not used. Plan-set "
+            f"SHA-256 `{plan_set_sha256}`",
+        ),
+    ]
+
+
+def _single_plan_disclosure_rows(
+    report: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    coverage: Mapping[str, Any],
+) -> list[tuple[str, str, str]]:
+    final_cap = _number_field(
+        _mapping_field(
+            ledger,
+            "full_score_terminal_prefix",
+            "publication ledger projection",
+        ),
+        "cap_cluster_hours",
+        "full-score terminal prefix",
+    )
+    phases = _int_field(coverage, "full_score_phase_count", "coverage")
+    full_score_attempts = _full_score_attempts_after_latency(ledger)
+    if full_score_attempts != phases:
+        raise ValueError("publication disclosure full-score attempt count drift")
+    plan_sha256 = _sha256_field(
+        _mapping_field(
+            _mapping_field(report, "source_bindings", "publication report"),
+            "latency_execution_plan",
+            "publication source bindings",
+        ),
+        "closed_record_sha256",
+        "latency execution plan binding",
+    )
+    return [
+        (
+            "Cluster-hour budget",
+            f"{_cluster_hours(final_cap, 0)} cap",
+            "The 0.27.1 report schema requires the original cap at both "
+            "report ledger prefixes",
+        ),
+        _ledger_accounting_row(ledger, final_cap),
+        (
+            "Full-score ledger attempts",
+            f"{full_score_attempts:,} after the latency prefix for "
+            f"{_counted(phases, 'phase')}",
+            "The 0.27.1 report schema admits no capacity retry",
+        ),
+        (
+            "Latency launch plans",
+            "1 execution plan",
+            f"Execution plan SHA-256 `{plan_sha256}`",
+        ),
+        (
+            "Qualification retries, abandoned chains, recovered balance",
+            "Not recorded",
+            "The 0.27.1 report schema has no fields for them",
+        ),
+    ]
+
+
+def _ledger_accounting_row(
+    ledger: Mapping[str, Any],
+    final_cap: float,
+) -> tuple[str, str, str]:
+    label = "publication ledger projection"
+    accounted = _number_field(ledger, "final_accounted_cluster_hours", label)
+    remaining = _number_field(ledger, "final_remaining_cluster_hours", label)
+    active_tasks = _int_field(ledger, "final_active_reserved_task_count", label)
+    headroom = _number_field(
+        ledger, "required_unreserved_headroom_cluster_hours", label
+    )
+    return (
+        "Final ledger accounting",
+        f"{_cluster_hours(accounted)} accounted; {_cluster_hours(remaining)} "
+        f"remaining of a {_cluster_hours(final_cap, 0)} cap; "
+        f"{_counted(active_tasks, 'active reserved task')}",
+        "The ledger closed with nothing reserved and at least "
+        f"{_cluster_hours(headroom, 0)} unreserved",
+    )
+
+
+def _attempt_hours(
+    ledger: Mapping[str, Any],
+    field: str,
+    keys: frozenset[str],
+) -> tuple[int, float]:
+    value = _mapping_field(ledger, field, "publication ledger projection")
+    _require_exact_keys(value, keys, f"publication ledger {field}")
+    return (
+        _int_field(value, "attempt_count", field),
+        _number_field(value, "cluster_hours", field),
+    )
+
+
+def _full_score_attempts_after_latency(ledger: Mapping[str, Any]) -> int:
+    label = "publication ledger projection"
+    return _int_field(
+        _mapping_field(ledger, "full_score_terminal_prefix", label),
+        "reservation_count",
+        "full-score terminal prefix",
+    ) - _int_field(
+        _mapping_field(ledger, "latency_terminal_prefix", label),
+        "reservation_count",
+        "latency terminal prefix",
+    )
+
+
+def _counted(count: int, noun: str) -> str:
+    return f"{count:,} {noun}" + ("" if count == 1 else "s")
+
+
+def _cluster_hours(value: float, digits: int = 2) -> str:
+    return f"{_finite_number(value, 'cluster hours'):,.{digits}f} h"
 
 
 def _render_core_latency(cells: Mapping[str, Mapping[str, Any]]) -> str:
