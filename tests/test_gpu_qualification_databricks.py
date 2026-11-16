@@ -2371,6 +2371,98 @@ def test_exclusive_evidence_write_fails_closed_when_directory_fsync_fails(
     assert not output.exists()
 
 
+class _HardStop(BaseException):
+    """A controller kill: on disk, nothing after it happened."""
+
+
+def test_exclusive_evidence_write_never_exposes_a_torn_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = tmp_path / "evidence"
+    output = root / "evidence.json"
+    temporary = root / ".evidence.json.partial"
+    record = {"closed_record_sha256": "a" * 64, "note": "Databricks didn\u2019t"}
+    content = (canonical_gpu_qualification_json(record) + "\n").encode("utf-8")
+    survivors: dict[str, bytes] = {}
+
+    def stop_before_link(*_args: Any, **_kwargs: Any) -> None:
+        survivors.update({path.name: path.read_bytes() for path in root.iterdir()})
+        raise _HardStop
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "link", stop_before_link)
+        with pytest.raises(_HardStop):
+            qualification_job._write_canonical_exclusive(record, output)
+
+    assert survivors == {temporary.name: content}
+    assert not output.exists()
+    temporary.write_bytes(content)
+    with pytest.raises(ValueError, match="interrupted canonical write left"):
+        qualification_job._write_canonical_exclusive(record, output)
+    assert not output.exists()
+    assert temporary.read_bytes() == content
+
+    qualification_job._discard_interrupted_canonical_writes(root, ["evidence.json"])
+    assert not list(root.iterdir())
+    qualification_job._write_canonical_exclusive(record, output)
+    assert [path.name for path in root.iterdir()] == ["evidence.json"]
+    assert output.read_bytes() == content
+
+    with pytest.raises(FileExistsError, match="canonical output already exists"):
+        qualification_job._write_canonical_exclusive(
+            {"closed_record_sha256": "b" * 64}, output
+        )
+    assert [path.name for path in root.iterdir()] == ["evidence.json"]
+    assert output.read_bytes() == content
+
+
+def test_discarding_interrupted_writes_rejects_a_non_file_temporary(tmp_path: Path):
+    temporary = tmp_path / "evidence" / ".evidence.json.partial"
+    temporary.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="evidence.json"):
+        qualification_job._discard_interrupted_canonical_writes(
+            temporary.parent, ["evidence.json"]
+        )
+
+    assert temporary.is_dir()
+
+
+def test_control_plane_status_digest_uses_the_ledger_encoding_on_both_sides():
+    ascii_run = {
+        "run_id": 7,
+        "state": {"life_cycle_state": "TERMINATED", "state_message": "ok"},
+        "tasks": [{"run_id": 8, "task_key": "task"}],
+    }
+    non_ascii_run = {
+        **ascii_run,
+        "state": {**ascii_run["state"], "state_message": "couldn\u2019t place"},
+    }
+    ledger_encoding = hashlib.sha256(
+        json.dumps(
+            non_ascii_run, allow_nan=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert resource_ledger.databricks_control_plane_status_sha256(ascii_run) == (
+        qualification_job._canonical_json_sha256(ascii_run)
+    )
+    assert resource_ledger.databricks_control_plane_status_sha256(
+        non_ascii_run
+    ) == ledger_encoding
+    assert ledger_encoding != qualification_job._canonical_json_sha256(non_ascii_run)
+    assert (
+        qualification_job.databricks_control_plane_status_sha256
+        is resource_ledger.databricks_control_plane_status_sha256
+    )
+    with pytest.raises(TypeError, match="run_record must be a mapping"):
+        resource_ledger.databricks_control_plane_status_sha256([])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="canonical JSON values"):
+        resource_ledger.databricks_control_plane_status_sha256(
+            {"run_id": float("nan")}
+        )
+
+
 def test_collected_identity_closure_rejects_reused_cluster_or_task_run_id():
     contracts = (
         {
@@ -6307,7 +6399,11 @@ def test_launch_capability_cannot_be_constructed_by_record_only_callers():
         )
 
 
+@pytest.mark.parametrize(
+    "state_message", (None, "Run succeeded; Databricks didn\u2019t retry it.")
+)
 def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
+    state_message: str | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -6386,6 +6482,8 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
                 }
             ],
         }
+        if state_message is not None:
+            runs[str(run_id)]["state"]["state_message"] = state_message
         result = {
             "closed_record_sha256": "",
             "cloud_cluster_id": f"cluster-{run_id}",
@@ -6501,11 +6599,19 @@ def test_collector_closes_all_fourteen_direct_terminal_runs_and_ledger_events(
         for item in ledger.terminal_actuals
         if item.attempt_id in qualification_attempt_ids
     )
+    actual_status_sha256 = {
+        item.run_id: item.control_plane_status_sha256
+        for item in ledger.terminal_actuals
+        if item.attempt_id in qualification_attempt_ids
+    }
     for receipt_path in terminal_root.glob("*.json"):
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         assert receipt["ledger_id"] == CAMPAIGN_LEDGER_ID
         assert receipt["ledger_actual_cluster_duration_seconds"] == 5.0
         assert len(receipt["ledger_terminal_actual_sha256"]) == 64
+        assert receipt["control_plane_status_sha256"] == (
+            actual_status_sha256[receipt["cloud_run_id"]]
+        )
 
 
 def test_collector_reconciles_a_never_started_failure_before_rejecting_campaign(
@@ -8675,6 +8781,11 @@ def test_executor_independently_validates_and_exclusively_seals_result(
         "publication_backend_changed": False,
         "trust_remote_code": False,
     }
+
+    def no_fuse_hard_links(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError("Databricks Volumes cannot hard-link")
+
+    monkeypatch.setattr(os, "link", no_fuse_hard_links)
 
     record, output = _execute(tmp_path, monkeypatch, measurements=measurements)
 

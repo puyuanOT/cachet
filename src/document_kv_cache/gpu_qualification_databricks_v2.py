@@ -33,6 +33,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksLedgerPrefix,
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
+    databricks_control_plane_status_sha256,
     databricks_ledger_cap_after_prefix,
     databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
@@ -1092,7 +1093,7 @@ def execute_gpu_qualification_job_v2(
         )
         raise
     databricks_v1._remove_success_work_dir(local_work_dir)
-    databricks_v1._write_canonical_exclusive(record, output_path)
+    databricks_v1._write_canonical_exclusive_in_place(record, output_path)
     return record
 
 
@@ -1677,7 +1678,7 @@ def _reserve_round_v2(
             ):
                 raise ValueError("v2 reservation changed a payload")
 
-    receipt_root = databricks_v1._create_fresh_controller_evidence_root(spec.root)
+    receipt_root = _fresh_round_root_v2(spec.root)
     lease_path = receipt_root / _V2_PHASE_LEASE_FILENAME
     databricks_v1._write_canonical_exclusive(spec.lease, lease_path)
     try:
@@ -1707,6 +1708,68 @@ def _reserve_round_v2(
     marker_path = receipt_root / _V2_BATCH_MARKER_FILENAME
     databricks_v1._write_canonical_exclusive(marker, marker_path)
     return authorization, marker
+
+
+def _round_evidence_names_v2(contracts: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    return frozenset(
+        {
+            _V2_PHASE_LEASE_FILENAME,
+            _V2_BATCH_MARKER_FILENAME,
+            *(f"{contract['job_id']}.json" for contract in contracts),
+            *(f"{contract['job_id']}.post-intent-v2" for contract in contracts),
+        }
+    )
+
+
+def _round_root_unstarted_v2(root: Path) -> bool:
+    """Return true for a round root a hard stop left before its lease linked."""
+
+    if root.is_symlink() or not root.is_dir():
+        return False
+    lease_temporary = databricks_v1._canonical_write_temporary(
+        root / _V2_PHASE_LEASE_FILENAME
+    )
+    return all(
+        entry == lease_temporary and entry.is_file() and not entry.is_symlink()
+        for entry in root.iterdir()
+    )
+
+
+def _fresh_round_root_v2(root: Path) -> Path:
+    if _round_root_unstarted_v2(root):
+        existing = databricks_v1._validated_existing_controller_evidence_root(
+            root, "v2 round root"
+        )
+        databricks_v1._discard_interrupted_canonical_writes(
+            existing, (_V2_PHASE_LEASE_FILENAME,)
+        )
+        databricks_v1._fsync_directory(existing.parent)
+        return existing
+    return databricks_v1._create_fresh_controller_evidence_root(root)
+
+
+def _discard_unwritten_post_intents_v2(
+    root: Path,
+    *,
+    contracts: Sequence[Mapping[str, Any]],
+    ledger: DatabricksClusterHourLedger,
+) -> None:
+    """Drop zero-length intents: an intent that never got its bytes preceded no POST."""
+
+    receipted = {item.attempt_id for item in ledger.submission_receipts}
+    discarded = False
+    for contract in contracts:
+        intent_path = root / f"{contract['job_id']}.post-intent-v2"
+        if (
+            intent_path.is_file()
+            and not intent_path.is_symlink()
+            and intent_path.stat().st_size == 0
+            and contract["reservation_attempt_id"] not in receipted
+        ):
+            intent_path.unlink()
+            discarded = True
+    if discarded:
+        databricks_v1._fsync_directory(root)
 
 
 def _submit_fresh_round_v2(
@@ -2337,12 +2400,29 @@ def _replay_batch_marker_v2(
         spec.root,
         "v2 submit_receipt_root",
     )
-    lease = databricks_v1._read_canonical_json_object_file(
-        root / _V2_PHASE_LEASE_FILENAME,
-        "v2 qualification phase lease",
-    )
     contracts = spec.contracts
     phase_predecessor = spec.predecessor
+    databricks_v1._discard_interrupted_canonical_writes(
+        root, sorted(_round_evidence_names_v2(contracts))
+    )
+    lease_path = root / _V2_PHASE_LEASE_FILENAME
+    if not any(root.iterdir()):
+        # A hard stop between creating the root and linking its lease is the
+        # lease-only state before the lease became durable.
+        _require_v2_ledger_predecessor(
+            read_databricks_cluster_hour_ledger_json(ledger_path),
+            plan=plan,
+            ledger_path=ledger_path,
+            expected_predecessor=phase_predecessor,
+            contracts=contracts,
+            label="v2 empty round root recovery",
+        )
+        databricks_v1._fsync_directory(root.parent)
+        databricks_v1._write_canonical_exclusive(spec.lease, lease_path)
+    lease = databricks_v1._read_canonical_json_object_file(
+        lease_path,
+        "v2 qualification phase lease",
+    )
     if canonical_gpu_qualification_json(lease) != canonical_gpu_qualification_json(
         spec.lease
     ):
@@ -2404,6 +2484,7 @@ def _replay_batch_marker_v2(
         lease_record=lease,
         batch_authorization=authorization,
     )
+    _discard_unwritten_post_intents_v2(root, contracts=contracts, ledger=live)
     marker = _validated_resume_evidence_prefix_v2(
         root=root,
         plan=plan,
@@ -2736,6 +2817,99 @@ def _terminal_actual_v2(
     return matches[0]
 
 
+def _validate_capacity_failure_run_v2(
+    run: Mapping[str, Any],
+    *,
+    planned_job: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    submit_receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind a failed attempt's runs/get identity without requiring it started.
+
+    A never-started task may report missing or zero times, exactly as the
+    ledger reconciles them to zero seconds; the ledger terminal this record is
+    digest-bound to stays the only timing authority.
+    """
+
+    cloud_run_id = databricks_v1._databricks_run_id(
+        run.get("run_id"), "runs/get run_id"
+    )
+    if cloud_run_id != submit_receipt["cloud_run_id"]:
+        raise ValueError("runs/get run_id differs from the submit receipt")
+    payload = databricks_v1._required_mapping(contract.get("payload"), "payload")
+    if run.get("run_name") != payload.get("run_name"):
+        raise ValueError("runs/get run_name differs from the immutable submit payload")
+    if run.get("run_type") not in (None, "SUBMIT_RUN"):
+        raise ValueError("qualification run is not a one-time submit run")
+    if run.get("repair_history") not in (None, []):
+        raise ValueError("qualification run has repair history")
+    if run.get("original_attempt_run_id") not in (None, 0, "0"):
+        raise ValueError("qualification run is not attempt zero")
+    state = databricks_v1._required_mapping(run.get("state"), "runs/get state")
+    if state.get("life_cycle_state") not in _V2_TERMINAL_LIFE_CYCLE_STATES:
+        raise ValueError("qualification runs/get response is not terminal")
+    tasks = run.get("tasks")
+    if (
+        not isinstance(tasks, list)
+        or len(tasks) != 1
+        or not isinstance(tasks[0], Mapping)
+    ):
+        raise ValueError("qualification runs/get must contain exactly one task")
+    task = tasks[0]
+    if task.get("task_key") != contract["task_key"]:
+        raise ValueError("runs/get task_key differs")
+    if task.get("attempt_number") not in (None, 0):
+        raise ValueError("runs/get task was retried")
+    task_state = databricks_v1._required_mapping(
+        task.get("state"), "runs/get task state"
+    )
+    if task_state.get("life_cycle_state") not in _V2_TERMINAL_LIFE_CYCLE_STATES:
+        raise ValueError("qualification task is not terminal")
+    run_succeeded = (
+        state.get("life_cycle_state") == "TERMINATED"
+        and state.get("result_state") == "SUCCESS"
+    )
+    task_succeeded = (
+        task_state.get("life_cycle_state") == "TERMINATED"
+        and task_state.get("result_state") == "SUCCESS"
+    )
+    start_time = task.get("start_time")
+    end_time = task.get("end_time")
+    never_started = (start_time is None and end_time is None) or (
+        type(start_time) is int
+        and start_time == 0
+        and type(end_time) is int
+        and end_time == 0
+    )
+    if not (
+        (never_started and not run_succeeded and not task_succeeded)
+        or (
+            type(start_time) is int
+            and type(end_time) is int
+            and 0 <= start_time < end_time
+        )
+    ):
+        raise ValueError(
+            "failed qualification task requires increasing millisecond times, "
+            "or zero/missing times for a never-started task"
+        )
+    databricks_v1._databricks_run_id(task.get("run_id"), "qualification task run_id")
+    cluster_instance = databricks_v1._required_mapping(
+        task.get("cluster_instance"), "task.cluster_instance"
+    )
+    cluster_id = databricks_v1._non_empty_string(
+        cluster_instance.get("cluster_id"), "task cluster_id"
+    )
+    databricks_v1._require_submitted_launch_cluster(
+        task, payload=payload, planned_job=planned_job
+    )
+    return {
+        "cloud_cluster_id": cluster_id,
+        "cloud_run_id": cloud_run_id,
+        "succeeded": run_succeeded and task_succeeded,
+    }
+
+
 def _capacity_failure_entry_v2(
     *,
     run: Mapping[str, Any],
@@ -2748,7 +2922,7 @@ def _capacity_failure_entry_v2(
     """Prove one failed attempt never reached its driver, from direct runs/get."""
 
     job_id = str(contract["job_id"])
-    run_identity = databricks_v1._validate_control_plane_run(
+    run_identity = _validate_capacity_failure_run_v2(
         run,
         planned_job=planned_job,
         contract=contract,
@@ -2760,7 +2934,7 @@ def _capacity_failure_entry_v2(
         or actual.run_id != run_identity["cloud_run_id"]
         or actual.submit_payload_sha256 != contract["submit_payload_sha256"]
         or actual.control_plane_status_sha256
-        != databricks_v1._canonical_json_sha256(run)
+        != databricks_control_plane_status_sha256(run)
     ):
         raise RuntimeError("v2 failed attempt differs from direct runs/get")
     if run_identity["succeeded"] is True or actual.terminal_state == "succeeded":
@@ -2941,7 +3115,8 @@ def _qualification_round_chain_v2(
     only once round ``r - 1`` closed.  Its lease is re-derived from that
     closed round's ledger suffix and the direct runs/get records it binds, so
     a round is replayable only when every failure it retries was a
-    never-started capacity failure.
+    never-started capacity failure.  A retry root a hard stop left before its
+    lease linked is not yet a round; the next retry pass reuses it.
     """
 
     if not isinstance(phase_predecessor, DatabricksLedgerPrefix):
@@ -2961,7 +3136,9 @@ def _qualification_round_chain_v2(
     closed: list[_ReplayedRoundV2] = []
     while True:
         next_root = _capacity_retry_root_v2(root, spec.retry_index + 1)
-        if not (next_root.exists() or next_root.is_symlink()):
+        if not (
+            next_root.exists() or next_root.is_symlink()
+        ) or _round_root_unstarted_v2(next_root):
             return tuple(closed), spec
         ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
         replayed = _replay_round_v2(
@@ -3325,7 +3502,7 @@ def collect_gpu_qualification_evidence_v2(
             or actual.run_id != run_identity["cloud_run_id"]
             or actual.submit_payload_sha256 != contract["submit_payload_sha256"]
             or actual.control_plane_status_sha256
-            != databricks_v1._canonical_json_sha256(run)
+            != databricks_control_plane_status_sha256(run)
         ):
             raise RuntimeError("v2 terminal actual differs from direct runs/get")
         if (
@@ -3482,10 +3659,12 @@ def replay_gpu_qualification_launch_authorization_v2(
         ledger=ledger,
         closed=True,
     )
+    # Later phases append to the ledger once this range closes; collection
+    # alone requires the complete live prefix.
     terminal_prefix = require_databricks_batch_terminal_closure(
         ledger,
         final_round.authorization,
-        require_complete_current_prefix=True,
+        require_complete_current_prefix=False,
     )
     rounds = (*closed_rounds, final_round)
     attempts = _final_attempts_v2(contracts, rounds)

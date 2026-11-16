@@ -79,6 +79,7 @@ __all__ = [
     "DatabricksReservationValidator",
     "DatabricksBatchReservationValidator",
     "canonical_databricks_submit_payload_snapshot",
+    "databricks_control_plane_status_sha256",
     "databricks_submit_payload_reservation",
     "databricks_cluster_hour_ledger_to_record",
     "databricks_cluster_hour_ledger_from_record",
@@ -1801,9 +1802,7 @@ def record_databricks_verified_run_terminal_actual_json(
     are retained in the append-only terminal event.
     """
 
-    if not isinstance(run_record, Mapping):
-        raise TypeError("run_record must be a mapping")
-    status_bytes = _canonical_json_bytes(run_record, "run_record")
+    control_plane_status_sha256 = databricks_control_plane_status_sha256(run_record)
     run_id = _validated_databricks_run_id(run_record.get("run_id"), "run_record.run_id")
     state = run_record.get("state")
     if not isinstance(state, Mapping):
@@ -1905,7 +1904,7 @@ def record_databricks_verified_run_terminal_actual_json(
             verification_source="direct_databricks_runs_get",
             run_id=run_id,
             submit_payload_sha256=receipt.submit_payload_sha256,
-            control_plane_status_sha256=sha256(status_bytes).hexdigest(),
+            control_plane_status_sha256=control_plane_status_sha256,
         )
         existing = next(
             (item for item in ledger.terminal_actuals if item.attempt_id == attempt_id),
@@ -2197,6 +2196,18 @@ def canonical_databricks_submit_payload_snapshot(
     if not isinstance(snapshot, dict):  # pragma: no cover - Mapping encodes as object.
         raise ValueError("submit_payload must encode as a JSON object")
     return snapshot, encoded
+
+
+def databricks_control_plane_status_sha256(run_record: Mapping[str, Any]) -> str:
+    """Digest one direct ``jobs/runs/get`` record exactly as its terminal binds it.
+
+    Non-ASCII text is ``\\u``-escaped, so every comparator must use this rather
+    than a UTF-8 canonical-JSON digest.
+    """
+
+    if not isinstance(run_record, Mapping):
+        raise TypeError("run_record must be a mapping")
+    return sha256(_canonical_json_bytes(run_record, "run_record")).hexdigest()
 
 
 def _canonical_json_bytes(value: Mapping[str, Any], field_name: str) -> bytes:

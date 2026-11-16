@@ -25,7 +25,7 @@ import stat
 import subprocess
 import urllib.request
 import zlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -53,6 +53,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksRunAttemptReservationRequest,
     canonical_databricks_submit_payload_snapshot,
     databricks_cluster_hour_ledger_to_record,
+    databricks_control_plane_status_sha256,
     databricks_ledger_cap_after_prefix,
     databricks_ledger_prefix_at_counts,
     databricks_ledger_prefix_from_record,
@@ -4427,7 +4428,7 @@ def collect_gpu_qualification_evidence(
             contract=contract,
             submit_receipt=submit_receipt,
         )
-        control_plane_status_sha256 = _canonical_json_sha256(run)
+        control_plane_status_sha256 = databricks_control_plane_status_sha256(run)
         if (
             actual.verification_source != "direct_databricks_runs_get"
             or actual.run_id != run_identity["cloud_run_id"]
@@ -4947,25 +4948,9 @@ def _validate_control_plane_run(
     cluster_id = _non_empty_string(
         cluster_instance.get("cluster_id"), "task cluster_id"
     )
-    submitted_task = _required_mapping(payload["tasks"][0], "submitted task")
-    submitted_cluster = _required_mapping(
-        submitted_task.get("new_cluster"), "submitted cluster"
+    observed_cluster = _require_submitted_launch_cluster(
+        task, payload=payload, planned_job=planned_job
     )
-    observed_cluster = _control_plane_launch_cluster(task)
-    for field_name in (
-        "node_type_id",
-        "driver_node_type_id",
-        "spark_version",
-        "data_security_mode",
-        "single_user_name",
-        "num_workers",
-    ):
-        if observed_cluster.get(field_name) != submitted_cluster.get(field_name):
-            raise ValueError(f"runs/get cluster {field_name} differs")
-    expected_node_type = submitted_cluster["node_type_id"]
-    if planned_job.get("hardware_id") == GPU_QUALIFICATION_GENERATION_HARDWARE_ID:
-        if expected_node_type != GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE:
-            raise ValueError("L40S control-plane node type differs")
     succeeded = (
         life_cycle_state == "TERMINATED"
         and result_state == "SUCCESS"
@@ -4989,6 +4974,34 @@ def _validate_control_plane_run(
         "task_run_id": task_run_id_value,
         "task_start_time_ms": task_start,
     }
+
+
+def _require_submitted_launch_cluster(
+    task: Mapping[str, Any],
+    *,
+    payload: Mapping[str, Any],
+    planned_job: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    submitted_task = _required_mapping(payload["tasks"][0], "submitted task")
+    submitted_cluster = _required_mapping(
+        submitted_task.get("new_cluster"), "submitted cluster"
+    )
+    observed_cluster = _control_plane_launch_cluster(task)
+    for field_name in (
+        "node_type_id",
+        "driver_node_type_id",
+        "spark_version",
+        "data_security_mode",
+        "single_user_name",
+        "num_workers",
+    ):
+        if observed_cluster.get(field_name) != submitted_cluster.get(field_name):
+            raise ValueError(f"runs/get cluster {field_name} differs")
+    expected_node_type = submitted_cluster["node_type_id"]
+    if planned_job.get("hardware_id") == GPU_QUALIFICATION_GENERATION_HARDWARE_ID:
+        if expected_node_type != GPU_QUALIFICATION_GENERATION_DATABRICKS_NODE_TYPE:
+            raise ValueError("L40S control-plane node type differs")
+    return observed_cluster
 
 
 def _failed_attempt_reconciliation_entry(
@@ -5070,7 +5083,7 @@ def _failed_attempt_reconciliation_entry(
     return {
         "actual_cluster_duration_seconds": duration_seconds,
         "attempt_id": contract["reservation_attempt_id"],
-        "control_plane_status_sha256": _canonical_json_sha256(run),
+        "control_plane_status_sha256": databricks_control_plane_status_sha256(run),
         "file_sha256": _required_sha256(
             evidence_file_sha256, "evidence_file_sha256"
         ),
@@ -5468,12 +5481,6 @@ def _terminal_receipt_record(
     phase_batch_record_sha256: str,
 ) -> dict[str, Any]:
     result_bytes = (canonical_gpu_qualification_json(result) + "\n").encode("utf-8")
-    control_plane_bytes = json.dumps(
-        run,
-        allow_nan=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
     ledger_terminal_record = {
         "actual_cluster_duration_seconds": (
             ledger_terminal_actual.actual_cluster_duration_seconds
@@ -5494,7 +5501,7 @@ def _terminal_receipt_record(
         "cloud_cluster_id": run_identity["cloud_cluster_id"],
         "cloud_run_id": run_identity["cloud_run_id"],
         "collected_at_utc": collected_at_utc,
-        "control_plane_status_sha256": sha256(control_plane_bytes).hexdigest(),
+        "control_plane_status_sha256": databricks_control_plane_status_sha256(run),
         "driver_node_type_id": run_identity["driver_node_type_id"],
         "end_time_ms": run_identity["end_time_ms"],
         "job_id": contract["job_id"],
@@ -5800,7 +5807,7 @@ def execute_gpu_qualification_job(
         # cleanup itself fails.  Make read-only runtime directories removable,
         # complete cleanup, and only then seal the durable result.
         _remove_success_work_dir(local_work_dir)
-        _write_canonical_exclusive(record, output_path)
+        _write_canonical_exclusive_in_place(record, output_path)
         return record
     except BaseException:
         # Failed attempts retain node-local diagnostics and never publish a
@@ -6915,6 +6922,59 @@ def _file_sha256(path: Path) -> str:
 
 
 def _write_canonical_exclusive(record: Mapping[str, Any], path: Path) -> None:
+    """Publish one controller record whole, or leave ``path`` absent.
+
+    The bytes become durable under a sibling temporary that is hard-linked into
+    place, so a hard stop can leave only that temporary, never a torn record.
+    """
+
+    _require_no_symlink_ancestors(
+        path, label="canonical output path", include_leaf=True
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _require_no_symlink_ancestors(
+        path, label="canonical output path", include_leaf=True
+    )
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"canonical output already exists: {path}")
+    content = (canonical_gpu_qualification_json(record) + "\n").encode("utf-8")
+    temporary = _canonical_write_temporary(path)
+    try:
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640
+        )
+    except FileExistsError as exc:
+        raise ValueError(
+            f"an interrupted canonical write left {temporary}"
+        ) from exc
+    linked = False
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        linked = True
+        temporary.unlink()
+        _fsync_directory(path.parent)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        if linked:
+            path.unlink(missing_ok=True)
+        if path.parent.is_dir() and not path.parent.is_symlink():
+            _fsync_directory(path.parent)
+        raise
+
+
+def _write_canonical_exclusive_in_place(
+    record: Mapping[str, Any], path: Path
+) -> None:
+    """Create one canonical cluster result where hard links are unavailable.
+
+    Databricks Volumes and DBFS FUSE mounts cannot link a temporary into place;
+    their readers require canonical bytes, so a torn result fails closed.
+    """
+
     _require_no_symlink_ancestors(
         path, label="canonical output path", include_leaf=True
     )
@@ -6935,6 +6995,35 @@ def _write_canonical_exclusive(record: Mapping[str, Any], path: Path) -> None:
         if path.parent.is_dir() and not path.parent.is_symlink():
             _fsync_directory(path.parent)
         raise
+
+
+def _canonical_write_temporary(path: Path) -> Path:
+    return path.with_name(f".{path.name}.partial")
+
+
+def _discard_interrupted_canonical_writes(
+    root: Path, names: Iterable[str]
+) -> None:
+    """Remove temporaries a hard stop left before linking them into ``root``.
+
+    A temporary is never authority: its target is either absent or the same
+    fully written inode.
+    """
+
+    discarded = False
+    for name in names:
+        temporary = _canonical_write_temporary(root / name)
+        if temporary.is_symlink() or (
+            temporary.exists() and not temporary.is_file()
+        ):
+            raise ValueError(
+                f"interrupted canonical write is not a regular file: {temporary}"
+            )
+        if temporary.is_file():
+            temporary.unlink()
+            discarded = True
+    if discarded:
+        _fsync_directory(root)
 
 
 def _fsync_directory(path: Path) -> None:
