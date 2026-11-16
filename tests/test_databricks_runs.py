@@ -60,6 +60,7 @@ from document_kv_cache.databricks_runs import (
     read_databricks_run_submit_payload,
     require_databricks_current_user_name,
     recover_pre_reserved_databricks_run,
+    recover_reserved_databricks_run,
     resume_pre_reserved_databricks_run,
     reserve_and_submit_databricks_run,
     reserve_and_submit_databricks_run_json,
@@ -4449,6 +4450,242 @@ def test_manual_close_racing_claim_publication_prevents_the_post(
     ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
     assert ledger.submission_receipts == ()
     assert ledger.closed_attempt_ids == frozenset({"idempotent-attempt"})
+
+
+def _reserved_idempotency_case(tmp_path, *, attempt_id="idempotent-attempt"):
+    ledger_path = tmp_path / "reserved-ledger.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="reserved-ledger",
+    )
+    payload = bind_databricks_run_idempotency_token(
+        _bounded_submit_payload(),
+        attempt_id=attempt_id,
+    )
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example.cloud.databricks.com",
+        "secret-token",
+    )
+    return config, ledger_path, payload
+
+
+def _reserve_and_submit_idempotent(config, ledger_path, payload, service):
+    return reserve_and_submit_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        workload_id="idempotency-recovery-test",
+        opener=service,
+    )
+
+
+def _recover_reserved_idempotent(config, ledger_path, payload, service):
+    return recover_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        opener=service,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fail_mode", "error_type", "expected_run_id"),
+    [
+        ("accepted_timeout", TimeoutError, "701"),
+        ("preaccept_failure", ConnectionError, "702"),
+    ],
+)
+def test_reserved_submit_recovery_reposts_identical_token_bound_bytes(
+    tmp_path, fail_mode, error_type, expected_run_id
+):
+    config, ledger_path, payload = _reserved_idempotency_case(tmp_path)
+    service = _IdempotentSubmitService(fail_mode=fail_mode)
+    with pytest.raises(error_type):
+        _reserve_and_submit_idempotent(config, ledger_path, payload, service)
+    assert read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts == ()
+
+    recovered = _recover_reserved_idempotent(config, ledger_path, payload, service)
+    repeated = _recover_reserved_idempotent(config, ledger_path, payload, service)
+
+    assert recovered == repeated == {"run_id": expected_run_id}
+    assert service.calls == 2
+    assert len(service.runs_by_token) == 1
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert [item.run_id for item in ledger.submission_receipts] == [expected_run_id]
+    assert not _idempotency_claim_path(ledger_path).exists()
+
+
+def test_reserved_submit_recovery_binds_the_run_after_a_lost_receipt_write(
+    tmp_path, monkeypatch
+):
+    config, ledger_path, payload = _reserved_idempotency_case(tmp_path)
+    service = _IdempotentSubmitService(fail_mode=None)
+    original_record = public_databricks_runs.record_databricks_run_submission_receipt_json
+    failures = []
+
+    def lose_first_receipt(*args, **kwargs):
+        if not failures:
+            failures.append(kwargs["attempt_id"])
+            raise OSError("receipt write lost")
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "record_databricks_run_submission_receipt_json",
+        lose_first_receipt,
+    )
+    with pytest.raises(OSError, match="receipt write lost"):
+        _reserve_and_submit_idempotent(config, ledger_path, payload, service)
+
+    recovered = _recover_reserved_idempotent(config, ledger_path, payload, service)
+
+    assert recovered == {"run_id": "702"}
+    assert service.calls == 2
+    assert len(service.runs_by_token) == 1
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert [item.run_id for item in ledger.submission_receipts] == ["702"]
+
+
+def test_reserved_submit_recovery_refuses_payloads_without_a_safe_retry(tmp_path):
+    config, ledger_path, payload = _reserved_idempotency_case(tmp_path)
+    error = urllib.error.HTTPError(
+        "https://dbc.example.cloud.databricks.com/api/2.1/jobs/runs/submit",
+        503,
+        "unavailable",
+        {},
+        _BytesFile(b'{"message":"temporarily unavailable"}'),
+    )
+    token_free_opener = _RecordingHTTPErrorOpener(error)
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        reserve_and_submit_databricks_run(
+            config,
+            _bounded_submit_payload(),
+            ledger_path=ledger_path,
+            attempt_id="token-free-attempt",
+            workload_id="idempotency-recovery-test",
+            opener=token_free_opener,
+        )
+    with pytest.raises(ValueError, match="no safe retry.*lacks idempotency_token"):
+        recover_reserved_databricks_run(
+            config,
+            _bounded_submit_payload(),
+            ledger_path=ledger_path,
+            attempt_id="token-free-attempt",
+            opener=token_free_opener,
+        )
+    assert len(token_free_opener.requests) == 1
+
+    service = _IdempotentSubmitService(fail_mode="accepted_timeout")
+    with pytest.raises(TimeoutError):
+        _reserve_and_submit_idempotent(config, ledger_path, payload, service)
+    drifted = dict(payload)
+    drifted["run_name"] = "changed-wire-bytes"
+    with pytest.raises(ValueError, match="no safe retry.*idempotency token drift"):
+        _recover_reserved_idempotent(config, ledger_path, drifted, service)
+    rebound = bind_databricks_run_idempotency_token(
+        {key: value for key, value in drifted.items() if key != "idempotency_token"},
+        attempt_id="idempotent-attempt",
+    )
+    with pytest.raises(ValueError, match="does not match the submit payload"):
+        _recover_reserved_idempotent(config, ledger_path, rebound, service)
+    assert service.calls == 1
+    assert read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts == ()
+
+
+def test_reserved_submit_recovery_refuses_claimed_batch_members(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode="accepted_timeout")
+    with pytest.raises(TimeoutError):
+        submit_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+
+    with pytest.raises(ValueError, match="atomic batch POST claim"):
+        _recover_reserved_idempotent(config, ledger_path, payload, service)
+    assert service.calls == 1
+    assert read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts == ()
+
+
+def test_concurrent_reserved_submit_recoveries_post_once(tmp_path):
+    config, ledger_path, payload = _reserved_idempotency_case(tmp_path)
+    service = _IdempotentSubmitService(fail_mode="accepted_timeout")
+    with pytest.raises(TimeoutError):
+        _reserve_and_submit_idempotent(config, ledger_path, payload, service)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: _recover_reserved_idempotent(
+                    config, ledger_path, payload, service
+                ),
+                range(2),
+            )
+        )
+
+    assert results == [{"run_id": "701"}, {"run_id": "701"}]
+    assert service.calls == 2
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts) == 1
+
+
+def test_recover_reserved_submit_cli_reads_the_payload_once(
+    tmp_path, monkeypatch, capsys
+):
+    payload_path = tmp_path / "submit.json"
+    ledger_path = tmp_path / "cluster-hours.json"
+    payload = bind_databricks_run_idempotency_token(
+        _bounded_submit_payload(),
+        attempt_id="attempt-001",
+    )
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    captured = {}
+
+    def fake_recover(config, recovered_payload, **kwargs):
+        captured.update(
+            {
+                "host": config.normalized_host,
+                "payload": recovered_payload,
+                **kwargs,
+            }
+        )
+        return {"run_id": "321"}
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "recover_reserved_databricks_run",
+        fake_recover,
+    )
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example/")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+
+    exit_code = public_databricks_runs.main(
+        [
+            "recover-reserved-submit",
+            "--payload-json",
+            str(payload_path),
+            "--ledger-json",
+            str(ledger_path),
+            "--attempt-id",
+            "attempt-001",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured == {
+        "host": "https://dbc.example",
+        "payload": payload,
+        "ledger_path": str(ledger_path),
+        "attempt_id": "attempt-001",
+    }
+    assert json.loads(capsys.readouterr().out)["response"] == {"run_id": "321"}
 
 
 def _idempotency_claim_path(ledger_path, *, attempt_id="idempotent-attempt"):

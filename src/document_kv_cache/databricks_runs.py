@@ -30,6 +30,7 @@ from document_kv_cache._hardware_targets import (
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.databricks_resource_ledger import (
     DatabricksBatchReservationAuthorization,
+    DatabricksClusterHourLedger,
     DatabricksClusterHourReservation,
     DatabricksReservationValidator,
     canonical_databricks_submit_payload_snapshot,
@@ -75,6 +76,7 @@ __all__ = [
     "require_databricks_run_idempotency_token",
     "submit_databricks_run",
     "reserve_and_submit_databricks_run",
+    "recover_reserved_databricks_run",
     "submit_pre_reserved_databricks_run",
     "recover_pre_reserved_databricks_run",
     "resume_pre_reserved_databricks_run",
@@ -732,6 +734,13 @@ def reserve_and_submit_databricks_run(
     Reservation is durably written immediately before the POST.  The wire body
     is the same canonical byte snapshot whose digest is stored in the ledger.
     Submission failures deliberately do not reconcile or remove the reservation.
+
+    If the POST may have been accepted but its response or the receipt write
+    was lost, a payload carrying the package-derived idempotency token is
+    recovered with ``recover_reserved_databricks_run``.  A token-free payload
+    has no safe retry: a second POST could create a second billed run, so its
+    reservation stays active until an operator finds the run in Databricks and
+    binds its receipt, or proves that no run was created.
     """
 
     resolved_opener = (
@@ -784,6 +793,104 @@ def reserve_and_submit_databricks_run(
         submit_response=response,
     )
     return response
+
+
+def recover_reserved_databricks_run(
+    config: DatabricksWorkspaceConfig,
+    payload: Mapping[str, Any],
+    *,
+    ledger_path: str | Path,
+    attempt_id: str,
+    opener: DatabricksURLOpener | None = None,
+) -> dict[str, Any]:
+    """Recover an ambiguous ``reserve_and_submit_databricks_run`` POST.
+
+    Databricks returns the run already created for an idempotency token, so
+    re-POSTing the identical token-bound canonical bytes creates at most one
+    cloud run.  Recoveries are serialized by the per-attempt advisory lock and
+    return an existing receipt without another POST.  Members of an atomic
+    batch must be resumed with ``resume_pre_reserved_databricks_run``; an
+    attempt holding a batch POST claim is refused here.
+    """
+
+    resolved_opener = (
+        cast(DatabricksURLOpener, _databricks_no_redirect_urlopen)
+        if opener is None
+        else opener
+    )
+    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(payload)
+    payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
+    try:
+        require_databricks_run_idempotency_token(snapshot, attempt_id=attempt_id)
+    except ValueError as exc:
+        raise ValueError(
+            "reserved runs/submit POST has no safe retry without its "
+            f"package-derived idempotency token: {exc}"
+        ) from exc
+    _validate_reserved_attempt(
+        ledger_path,
+        attempt_id=attempt_id,
+        payload_sha256=payload_sha256,
+    )
+    claim_path = _pre_reserved_post_claim_path(ledger_path, attempt_id=attempt_id)
+    _require_or_create_pre_reserved_post_claim_root(claim_path)
+    with _exclusive_pre_reserved_recovery_lock(claim_path):
+        if claim_path.exists() or claim_path.is_symlink():
+            raise ValueError(
+                "reserved attempt has an atomic batch POST claim; resume it "
+                "with resume_pre_reserved_databricks_run"
+            )
+        ledger = _validate_reserved_attempt(
+            ledger_path,
+            attempt_id=attempt_id,
+            payload_sha256=payload_sha256,
+        )
+        receipt = next(
+            (
+                item
+                for item in ledger.submission_receipts
+                if item.attempt_id == attempt_id
+            ),
+            None,
+        )
+        if receipt is not None:
+            return {"run_id": receipt.run_id}
+        response = _databricks_api_json(
+            config,
+            "POST",
+            "/api/2.1/jobs/runs/submit",
+            payload_json_bytes=canonical_payload,
+            opener=resolved_opener,
+        )
+        updated = record_databricks_run_submission_receipt_json(
+            ledger_path,
+            attempt_id=attempt_id,
+            submit_response=response,
+        )
+        receipt = next(
+            item
+            for item in updated.submission_receipts
+            if item.attempt_id == attempt_id
+        )
+        return {"run_id": receipt.run_id}
+
+
+def _validate_reserved_attempt(
+    ledger_path: str | Path,
+    *,
+    attempt_id: str,
+    payload_sha256: str,
+) -> DatabricksClusterHourLedger:
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    reservation = next(
+        (item for item in ledger.reservations if item.attempt_id == attempt_id),
+        None,
+    )
+    if reservation is None or reservation.submit_payload_sha256 != payload_sha256:
+        raise ValueError("reserved attempt does not match the submit payload")
+    if attempt_id in ledger.closed_attempt_ids:
+        raise ValueError("reserved attempt is already terminal")
+    return ledger
 
 
 def submit_pre_reserved_databricks_run(
@@ -5336,6 +5443,16 @@ def main(argv: list[str] | None = None) -> int:
             "representative canary manifest."
         ),
     )
+    recover_reserved_parser = subparsers.add_parser(
+        "recover-reserved-submit",
+        help=(
+            "Re-POST the identical idempotency-token-bound payload of a "
+            "reserve-and-submit attempt whose response or receipt was lost."
+        ),
+    )
+    recover_reserved_parser.add_argument("--payload-json", required=True)
+    recover_reserved_parser.add_argument("--ledger-json", required=True)
+    recover_reserved_parser.add_argument("--attempt-id", required=True)
 
     subparsers.add_parser(
         "auth-check",
@@ -5511,6 +5628,13 @@ def main(argv: list[str] | None = None) -> int:
                     attempt_id=args.attempt_id,
                     workload_id=args.workload_id,
                     reservation_validator=reservation_validator,
+                )
+            elif args.command == "recover-reserved-submit":
+                response = recover_reserved_databricks_run(
+                    config,
+                    read_databricks_run_submit_payload(args.payload_json),
+                    ledger_path=args.ledger_json,
+                    attempt_id=args.attempt_id,
                 )
             elif args.command == "auth-check":
                 result = _success_record(args.command)
