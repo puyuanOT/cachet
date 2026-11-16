@@ -2113,6 +2113,7 @@ def _seed_terminal_cluster_hours(ledger_path: Path, hours: float) -> None:
             attempt_id=attempt_id,
             terminal_state="succeeded",
             actual_cluster_duration_seconds=actual_hours * 3600.0,
+            attest_never_posted=True,
         )
         remaining -= actual_hours
         index += 1

@@ -34,6 +34,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksReservationValidator,
     canonical_databricks_submit_payload_snapshot,
     databricks_ledger_path_sha256,
+    databricks_pre_reserved_post_claim_path,
     record_databricks_run_submission_receipt_json,
     read_databricks_cluster_hour_ledger_json,
     require_databricks_batch_reservation_authorization,
@@ -851,6 +852,15 @@ def submit_pre_reserved_databricks_run(
             submit_payload_sha256=payload_sha256,
             idempotency_token=idempotency_token,
         )
+        # A manual close checks for the claim under the ledger lock, so the
+        # member must still be open once the claim is visible.
+        _validate_pre_reserved_batch_member(
+            ledger_path,
+            attempt_id=attempt_id,
+            payload_sha256=payload_sha256,
+            batch_authorization=batch_authorization,
+            allow_existing_receipt=False,
+        )
         response = _databricks_api_json(
             config,
             "POST",
@@ -1024,6 +1034,13 @@ def resume_pre_reserved_databricks_run(
                 batch_authorization=batch_authorization,
                 submit_payload_sha256=payload_sha256,
                 idempotency_token=idempotency_token,
+            )
+            _validate_pre_reserved_batch_member(
+                ledger_path,
+                attempt_id=attempt_id,
+                payload_sha256=payload_sha256,
+                batch_authorization=batch_authorization,
+                allow_existing_receipt=True,
             )
         if receipt is not None:
             return {"run_id": receipt.run_id}
@@ -1444,10 +1461,7 @@ def _pre_reserved_post_claim_path(
     *,
     attempt_id: str,
 ) -> Path:
-    path = Path(ledger_path).expanduser().absolute()
-    claim_root = path.with_name(f"{path.name}.post-claims")
-    claim_name = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest() + ".json"
-    return claim_root / claim_name
+    return databricks_pre_reserved_post_claim_path(ledger_path, attempt_id=attempt_id)
 
 
 def _require_pre_reserved_post_claim(

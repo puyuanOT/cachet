@@ -79,6 +79,7 @@ from document_kv_cache.databricks_resource_ledger import (
     create_databricks_cluster_hour_ledger_json,
     databricks_ledger_prefix,
     read_databricks_cluster_hour_ledger_json,
+    record_databricks_run_terminal_actual_json,
     reserve_databricks_run_attempt_batch_authorized_json,
 )
 
@@ -4365,6 +4366,89 @@ def test_concurrent_pre_reserved_recovery_posts_once_and_returns_one_run(tmp_pat
     assert results == [{"run_id": "701"}, {"run_id": "701"}]
     assert service.calls == 2
     assert len(read_databricks_cluster_hour_ledger_json(ledger_path).submission_receipts) == 1
+
+
+def test_ambiguous_pre_reserved_post_cannot_be_closed_manually(tmp_path):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode="accepted_timeout")
+    with pytest.raises(TimeoutError):
+        submit_pre_reserved_databricks_run(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    assert _idempotency_claim_path(ledger_path).is_file()
+
+    with pytest.raises(ValueError, match="durable runs/submit POST claim"):
+        record_databricks_run_terminal_actual_json(
+            ledger_path,
+            attempt_id="idempotent-attempt",
+            terminal_state="failed",
+            actual_cluster_duration_seconds=0,
+            attest_never_posted=True,
+        )
+    assert read_databricks_cluster_hour_ledger_json(ledger_path).terminal_actuals == ()
+
+    recovered = recover_pre_reserved_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id="idempotent-attempt",
+        batch_authorization=authorization,
+        opener=service,
+    )
+    assert recovered == {"run_id": "701"}
+
+
+@pytest.mark.parametrize("entrypoint", ["submit", "resume"])
+def test_manual_close_racing_claim_publication_prevents_the_post(
+    tmp_path, monkeypatch, entrypoint
+):
+    config, ledger_path, payload, authorization = _pre_reserved_idempotency_case(
+        tmp_path
+    )
+    service = _IdempotentSubmitService(fail_mode=None)
+    original_write = public_databricks_runs._write_pre_reserved_post_claim
+
+    def close_then_publish(*args, **kwargs):
+        record_databricks_run_terminal_actual_json(
+            ledger_path,
+            attempt_id="idempotent-attempt",
+            terminal_state="failed",
+            actual_cluster_duration_seconds=0,
+            attest_never_posted=True,
+        )
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_write_pre_reserved_post_claim",
+        close_then_publish,
+    )
+    function = (
+        submit_pre_reserved_databricks_run
+        if entrypoint == "submit"
+        else resume_pre_reserved_databricks_run
+    )
+
+    with pytest.raises(ValueError, match="already terminal"):
+        function(
+            config,
+            payload,
+            ledger_path=ledger_path,
+            attempt_id="idempotent-attempt",
+            batch_authorization=authorization,
+            opener=service,
+        )
+    assert service.calls == 0
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert ledger.submission_receipts == ()
+    assert ledger.closed_attempt_ids == frozenset({"idempotent-attempt"})
 
 
 def _idempotency_claim_path(ledger_path, *, attempt_id="idempotent-attempt"):

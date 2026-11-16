@@ -211,6 +211,7 @@ def _copy_retained_live_ledger(
         attempt_id=attempt_id,
         terminal_state="succeeded",
         actual_cluster_duration_seconds=0.0,
+        attest_never_posted=True,
     )
     assert successor.active_reserved_task_count == 0
     assert successor.active_reserved_cluster_hours == 0.0

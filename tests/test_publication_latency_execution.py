@@ -5193,6 +5193,7 @@ def _multi_plan_case(
                 attempt_id=attempt_id,
                 terminal_state=legacy_state,
                 actual_cluster_duration_seconds=1800.0,
+                attest_never_posted=True,
             )
 
     if seed_recovered_balance:

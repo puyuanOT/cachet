@@ -86,6 +86,7 @@ __all__ = [
     "databricks_ledger_prefix_at_counts",
     "databricks_ledger_prefix_from_record",
     "databricks_ledger_path_sha256",
+    "databricks_pre_reserved_post_claim_path",
     "databricks_ledger_cap_after_prefix",
     "databricks_ledger_state_at_prefix",
     "require_databricks_ledger_prefix",
@@ -1935,7 +1936,22 @@ def record_databricks_run_terminal_actual_json(
     attempt_id: str,
     terminal_state: str,
     actual_cluster_duration_seconds: float,
+    attest_never_posted: bool = False,
 ) -> DatabricksClusterHourLedger:
+    """Close a reservation from an unverified operator-supplied duration.
+
+    The caller must attest that no ``runs/submit`` POST was ever sent for the
+    attempt.  A receipt or a durable POST claim proves otherwise, so both are
+    refused: closing such an attempt would orphan a possibly live run that
+    recovery and ``runs/get`` reconciliation could then never re-bind.
+    """
+
+    if attest_never_posted is not True:
+        raise ValueError(
+            "manual terminal reconciliation requires attest_never_posted=True; "
+            "an attempt that may have been POSTed must be recovered and "
+            "reconciled from runs/get"
+        )
     path = Path(ledger_path)
     actual = DatabricksClusterHourTerminalActual(
         attempt_id=attempt_id,
@@ -1948,9 +1964,31 @@ def record_databricks_run_terminal_actual_json(
             raise ValueError(
                 "receipt-bound attempts require direct runs/get terminal reconciliation"
             )
+        claim_path = databricks_pre_reserved_post_claim_path(
+            path, attempt_id=attempt_id
+        )
+        if claim_path.exists() or claim_path.is_symlink():
+            raise ValueError(
+                f"attempt {attempt_id!r} has a durable runs/submit POST claim and "
+                "may have created a live run; recover it instead of closing it "
+                "manually"
+            )
         updated = ledger.record_terminal_actual(actual)
         _atomic_write_ledger(path, updated)
         return updated
+
+
+def databricks_pre_reserved_post_claim_path(
+    ledger_path: str | Path,
+    *,
+    attempt_id: str,
+) -> Path:
+    """Return where the durable POST claim for one ledger attempt is published."""
+
+    path = Path(ledger_path).expanduser().absolute()
+    claim_root = path.with_name(f"{path.name}.post-claims")
+    claim_name = sha256(attempt_id.encode("utf-8")).hexdigest() + ".json"
+    return claim_root / claim_name
 
 
 def _reservation_from_record(
@@ -2377,6 +2415,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         required=True,
     )
+    terminal_parser.add_argument(
+        "--attest-never-posted",
+        action="store_true",
+        help=(
+            "attest that no runs/submit POST was ever sent for this attempt; "
+            "required for manual terminal reconciliation"
+        ),
+    )
 
     show_parser = subparsers.add_parser("show")
     show_parser.add_argument("--ledger-json", required=True)
@@ -2410,6 +2456,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 attempt_id=args.attempt_id,
                 terminal_state=args.terminal_state,
                 actual_cluster_duration_seconds=(args.actual_cluster_duration_seconds),
+                attest_never_posted=args.attest_never_posted,
             )
         else:
             ledger = read_databricks_cluster_hour_ledger_json(args.ledger_json)

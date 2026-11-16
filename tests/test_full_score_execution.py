@@ -3378,6 +3378,7 @@ def test_phase_reservations_require_active_zero_and_exact_one_shot_success(campa
         attempt_id=first_attempt,
         terminal_state="failed",
         actual_cluster_duration_seconds=60.0,
+        attest_never_posted=True,
     )
     successful_attempt = "wave-000-producer-success-002"
     retry_payload = full_score.build_databricks_full_score_run_submit_payload(
@@ -4628,6 +4629,7 @@ def _chain_ledger(campaign, label, attempts):
                 attempt_id=attempt_id,
                 terminal_state=terminal_state,
                 actual_cluster_duration_seconds=60.0,
+                attest_never_posted=True,
             )
     return read_databricks_cluster_hour_ledger_json(ledger_path)
 
@@ -6455,6 +6457,7 @@ def test_remote_cas_threads_wave0_into_wave1_render_reserve_and_replay(
         attempt_id="remote-wave-boundary-history",
         terminal_state="succeeded",
         actual_cluster_duration_seconds=1_000.0,
+        attest_never_posted=True,
     )
     predecessor_prefix = databricks_ledger_prefix(historical_ledger)
     predecessor_authorization = object()
@@ -7432,6 +7435,7 @@ def test_governed_p90_gate_binds_files_payload_ledger_and_is_one_shot(
         attempt_id="historical-attempt",
         terminal_state="succeeded",
         actual_cluster_duration_seconds=1_000.0,
+        attest_never_posted=True,
     )
     assert historical_ledger.active_reserved_cluster_hours == 0
     predecessor_prefix = databricks_ledger_prefix(historical_ledger)

@@ -78,5 +78,6 @@ def write_opening_ledger(
             attempt_id=attempt_id,
             terminal_state="succeeded",
             actual_cluster_duration_seconds=60.0,
+            attest_never_posted=True,
         )
     return ledger
