@@ -6117,14 +6117,37 @@ def test_plan_coherence_table_discloses_pairs_joined_across_launches(
     }
 
 
+def _auxiliary_rerun_digest(*parts):
+    return execution._canonical_sha256(["auxiliary-rerun-fixture", *parts])
+
+
 def _auxiliary_rerun_case(monkeypatch):
+    job_ids = [
+        f"block-{block:02d}-{kind}"
+        for block in range(1, 6)
+        for kind in execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
+    ]
+    volume = "dbfs:/Volumes/catalog/schema/volume/campaign"
+    bundles = {
+        bundle: {
+            "closed_record_sha256": _auxiliary_rerun_digest(bundle, "record"),
+            "sha256": _auxiliary_rerun_digest(bundle),
+            "uri": f"{volume}/m/hb/{_auxiliary_rerun_digest(bundle)[:16]}.json",
+        }
+        for bundle in ("q8", "bf16")
+    }
     plan = {
-        "job_ids": [
-            f"block-{block:02d}-{kind}"
-            for block in range(1, 6)
-            for kind in execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
-        ],
+        "campaign_id": "vllm-0271-publication-v1",
+        "handoff_sources": {
+            job_id: {
+                "binding": bundles["bf16" if job_id.endswith("precision-bf16") else "q8"],
+                "source_kind": "bound_handoff_bundle",
+            }
+            for job_id in job_ids
+        },
+        "job_ids": job_ids,
         "package_wheel_sha256": "a" * 64,
+        "source_revision": "7" * 40,
         "source_tree_sha256": "b" * 64,
     }
     plan_sha256 = execution._canonical_sha256(plan)
@@ -6142,15 +6165,22 @@ def _auxiliary_rerun_case(monkeypatch):
         block = int(job_id[6:8])
         kind = job_id[9:]
         job_kind, setting_id, family, reference = settings[kind]
+        storage = kind.startswith("storage-")
+        workload = "storage" if storage else "main"
         cell = {
+            "cell_id": job_id,
             "comparison_family": family,
             "deployment_block": block,
+            "examples_per_dataset": 2 if storage else 32,
             "input_tokens": 16_384,
+            "job_id": job_id,
             "job_kind": job_kind,
             "method_id": "vanilla_prefill",
             "reference_core_cell_id": (
                 None if reference is None else f"block-{block:02d}-{reference}"
             ),
+            "repeats_per_example": 32 if storage else 2,
+            "request_count": 256,
             "request_parallelism": 4,
             "setting_id": setting_id,
             "zone_id": f"us-west-2{'abcd'[index % 4]}",
@@ -6161,15 +6191,61 @@ def _auxiliary_rerun_case(monkeypatch):
             single_user_name="bench@example.com",
             bf16_gpu_memory_utilization=execution.PUBLICATION_LATENCY_BF16_GPU_MEMORY_UTILIZATION,
         )
+        output = f"{volume}/latency-v0300/{plan_sha256}/{job_id}"
         jobs.append(
             {
-                "artifact_files": [{"role": "package_wheel", "sha256": "a" * 64}],
+                "artifact_files": [
+                    {"role": "runner", "sha256": "9" * 64, "uri": f"{volume}/inputs/runner.py"},
+                    {"role": "package_wheel", "sha256": "a" * 64, "uri": f"{volume}/inputs/cachet.whl"},
+                ],
+                "cache_telemetry_policy": execution._cache_policy(cell),
+                "campaign_id": plan["campaign_id"],
                 "cell": cell,
                 "closed_record_sha256": f"{index:064x}",
                 "execution_plan_sha256": plan_sha256,
+                "handoff": {
+                    **deepcopy(plan["handoff_sources"][job_id]),
+                    "stage_kind": "uc_mounted" if kind == "storage-uc" else "local_nvme",
+                    "stage_uri": (
+                        f"/Volumes/catalog/schema/volume/stages/{plan_sha256}/{job_id}"
+                        if kind == "storage-uc"
+                        else f"/local_disk0/cachet-publication-latency/{plan_sha256[:16]}/{job_id}/handoff"
+                    ),
+                },
+                "input_files": [
+                    {
+                        "dataset": dataset,
+                        "role": f"{'storage_input' if storage else 'input'}_16384_{dataset}",
+                        "sha256": _auxiliary_rerun_digest(workload, dataset),
+                        "uri": f"{volume}/m/{workload}-16384-{dataset}.jsonl",
+                    }
+                    for dataset in SUPPORTED_V1_DATASETS
+                ],
                 "job_id": job_id,
+                "output": {
+                    "directory_uri": output,
+                    "result_uri": f"{output}/publication-latency-job-result.json",
+                },
+                "qualification_artifact_pins": {
+                    "cachet_source_tree_sha256": "b" * 64,
+                    "input_bundle_sha256": "f" * 64,
+                    "package_wheel_sha256": "a" * 64,
+                    "runner_sha256": "9" * 64,
+                },
+                "request_order": {
+                    "closed_record_sha256": _auxiliary_rerun_digest(workload, block, "record"),
+                    "deployment_block": block,
+                    "file_sha256": _auxiliary_rerun_digest(workload, block, "file"),
+                    "input_bundle_sha256": "f" * 64,
+                    "requests_sha256": _auxiliary_rerun_digest(workload, block, "requests"),
+                    "schedule_uri": f"{volume}/m/{workload}-schedule-block-{block:02d}.json",
+                    "seed_sha256": _auxiliary_rerun_digest(workload, block, "seed"),
+                    "workload_id": workload,
+                },
                 "runtime": runtime,
+                "source_revision": plan["source_revision"],
                 "source_tree_sha256": "b" * 64,
+                "sources_sha256": "8" * 64,
             }
         )
         results.append(
@@ -6192,7 +6268,6 @@ def _auxiliary_rerun_case(monkeypatch):
                 "result_state": "SUCCESS",
             }
         )
-        storage = kind.startswith("storage-")
         base_ttft = 4.0 if storage else 6.0
         ttft = base_ttft / ttft_speed.get(kind, 1.0)
         parsed[job_id] = SimpleNamespace(
@@ -6323,7 +6398,18 @@ def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monke
         for kind in execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
     ]
     assert len(record["coherence"]) == 20
-    assert all(row["execution_plan_equal"] and row["runtime_equal"] for row in record["coherence"])
+    assert all(
+        row[key]
+        for row in record["coherence"]
+        for key in (
+            "execution_plan_equal",
+            "runtime_equal",
+            "input_files_equal",
+            "request_schedule_equal",
+            "handoff_equal",
+            "cache_policy_equal",
+        )
+    )
     assert [job["job_id"] for job in record["jobs"]] == plan["job_ids"]
     assert record["jobs"][0]["attempts"] == [
         {
@@ -6358,6 +6444,11 @@ def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monke
         "| RAM vs Disk | 16k, concurrency 4, L4 | 1.0000 | [0.9000, 1.1000] | 2.0000 |"
         in region
     )
+    assert (
+        "Every compared pair runs the same input files and request schedule and "
+        "differs only in the treatment's design"
+    ) in region
+    assert "ran on a later attempt" not in region
     assert "| hardware-a10g | `g5.8xlarge` | 0.85 | 6.0000 | 7.0000 | 20.0000 | 1280 | 1280 | 0 |" in region
     assert "| precision-bf16 | `g6.8xlarge` | 0.8 | 6.0000 |" in region
     assert "| storage-disk | `g6.8xlarge` | 0.9 | 6.0000 |" in region
@@ -6504,6 +6595,120 @@ def test_auxiliary_rerun_rejects_incoherent_or_incomplete_runs(monkeypatch, tamp
 
     with pytest.raises(ValueError, match=match):
         _aggregate_auxiliary_rerun(plan, jobs, results, attempts)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "match"),
+    (
+        ("handoff_binding", "'block-03-storage-ram' serves a handoff its plan does not bind"),
+        ("bf16_serves_q8", "'block-03-precision-bf16' serves a handoff its plan does not bind"),
+        ("plan_handoff_missing", "plan must bind a handoff to every job"),
+        ("ram_on_uc_stage", "'block-03-storage-ram' handoff stage drift"),
+        ("uc_on_local_stage", "'block-03-storage-uc' handoff stage drift"),
+        ("campaign", "'block-03-storage-ram' campaign drift"),
+        ("source_revision", "'block-03-storage-ram' source revision drift"),
+        ("sources", "'block-03-storage-ram' differs from 'block-01-16k-c4-vanilla' in its sources_sha256"),
+        ("pins", "differs from 'block-01-16k-c4-vanilla' in its qualification_artifact_pins"),
+        ("runner", "differs from 'block-01-16k-c4-vanilla' in its artifact_files"),
+        ("principal", "differs from 'block-01-16k-c4-vanilla' in its runtime"),
+        ("cell_setting", "'block-03-storage-ram' cell drift"),
+        ("control", "control for 'block-03-storage-uc' must be 'block-03-storage-disk'"),
+        ("pair_inputs", "pairs 'block-03-storage-disk' with 'block-03-storage-ram' across a different input files"),
+        ("pair_schedule", "pairs 'block-03-16k-c4-vanilla' with 'block-03-precision-bf16' across a different request schedule"),
+        ("pair_block_schedule", "pairs 'block-03-16k-c4-vanilla' with 'block-03-hardware-a10g' across a different request schedule"),
+        ("pair_workload", "pairs 'block-03-16k-c4-vanilla' with 'block-03-hardware-a10g' across a different request schedule"),
+        ("pair_handoff", "pairs 'block-03-16k-c4-vanilla' with 'block-03-hardware-a10g' across a different handoff"),
+        ("pair_cache_policy", "pairs 'block-03-16k-c4-vanilla' with 'block-03-hardware-a10g' across a different cache telemetry policy"),
+    ),
+)
+def test_auxiliary_rerun_rejects_pairs_that_differ_beyond_their_design(
+    monkeypatch, tamper, match
+):
+    plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
+    by_id = {job["job_id"]: job for job in jobs}
+    ram, uc = by_id["block-03-storage-ram"], by_id["block-03-storage-uc"]
+    bf16, a10g = by_id["block-03-precision-bf16"], by_id["block-03-hardware-a10g"]
+    if tamper == "handoff_binding":
+        ram["handoff"]["binding"]["sha256"] = "1" * 64
+    elif tamper == "bf16_serves_q8":
+        bf16["handoff"]["binding"] = deepcopy(ram["handoff"]["binding"])
+    elif tamper == "plan_handoff_missing":
+        del plan["handoff_sources"]["block-05-hardware-a10g"]
+    elif tamper == "ram_on_uc_stage":
+        ram["handoff"]["stage_kind"] = "uc_mounted"
+    elif tamper == "uc_on_local_stage":
+        uc["handoff"]["stage_kind"] = "local_nvme"
+    elif tamper == "campaign":
+        ram["campaign_id"] = "vllm-0300-other"
+    elif tamper == "source_revision":
+        ram["source_revision"] = "6" * 40
+    elif tamper == "sources":
+        ram["sources_sha256"] = "1" * 64
+    elif tamper == "pins":
+        a10g["qualification_artifact_pins"]["runner_sha256"] = "1" * 64
+    elif tamper == "runner":
+        a10g["artifact_files"][0]["sha256"] = "1" * 64
+    elif tamper == "principal":
+        a10g["runtime"]["single_user_name"] = "other@example.com"
+    elif tamper == "cell_setting":
+        ram["cell"]["setting_id"] = "storage-uc"
+    elif tamper == "control":
+        uc["cell"]["reference_core_cell_id"] = "block-03-16k-c4-vanilla"
+    elif tamper == "pair_inputs":
+        ram["input_files"][0]["sha256"] = "1" * 64
+    elif tamper == "pair_schedule":
+        bf16["request_order"]["requests_sha256"] = "1" * 64
+    elif tamper == "pair_block_schedule":
+        a10g["request_order"] = deepcopy(by_id["block-02-hardware-a10g"]["request_order"])
+        a10g["request_order"]["deployment_block"] = 3
+    elif tamper == "pair_workload":
+        a10g["cell"]["examples_per_dataset"] = 2
+    elif tamper == "pair_handoff":
+        a10g["handoff"]["binding"]["sha256"] = "1" * 64
+        plan["handoff_sources"]["block-03-hardware-a10g"] = _handoff_source(a10g)
+        _rebind_auxiliary_rerun_plan(plan, jobs, results, attempts)
+    else:
+        a10g["cache_telemetry_policy"] = dict(
+            a10g["cache_telemetry_policy"], host_cache_state="prewarmed_payload_cache"
+        )
+
+    with pytest.raises(ValueError, match=match):
+        _aggregate_auxiliary_rerun(plan, jobs, results, attempts)
+
+
+def test_auxiliary_rerun_pairs_may_differ_in_their_design_fields(monkeypatch):
+    plan, jobs, results, attempts = _auxiliary_rerun_case(monkeypatch)
+    by_id = {job["job_id"]: job for job in jobs}
+
+    record = _aggregate_auxiliary_rerun(plan, jobs, results, attempts)
+
+    vanilla, bf16 = by_id["block-01-16k-c4-vanilla"], by_id["block-01-precision-bf16"]
+    disk, uc = by_id["block-01-storage-disk"], by_id["block-01-storage-uc"]
+    assert vanilla["handoff"]["binding"] != bf16["handoff"]["binding"]
+    assert disk["handoff"]["stage_kind"] != uc["handoff"]["stage_kind"]
+    assert disk["cache_telemetry_policy"] != uc["cache_telemetry_policy"]
+    assert vanilla["input_files"] != disk["input_files"]
+    assert vanilla["request_order"] != disk["request_order"]
+    assert {
+        (row["control_job_id"], row["treatment_job_id"])
+        for row in record["coherence"]
+        if row["treatment_job_id"].startswith("block-01-")
+    } == {
+        ("block-01-16k-c4-vanilla", "block-01-precision-bf16"),
+        ("block-01-storage-disk", "block-01-storage-ram"),
+        ("block-01-storage-disk", "block-01-storage-uc"),
+        ("block-01-16k-c4-vanilla", "block-01-hardware-a10g"),
+    }
+
+
+def _handoff_source(job):
+    return {key: deepcopy(job["handoff"][key]) for key in ("binding", "source_kind")}
+
+
+def _rebind_auxiliary_rerun_plan(plan, jobs, results, attempts):
+    digest = execution._canonical_sha256(plan)
+    for item in (*jobs, *results, *attempts):
+        item["execution_plan_sha256"] = digest
 
 
 def _evidence(attempts, job_id, attempt):

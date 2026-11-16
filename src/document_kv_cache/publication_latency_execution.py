@@ -8890,6 +8890,141 @@ def _require_auxiliary_rerun_runtime_policy(job_id: str, job: Mapping[str, Any])
         )
 
 
+def _auxiliary_rerun_control_kind(setting_id: str) -> str:
+    return "storage-disk" if setting_id in {"storage-ram", "storage-uc"} else "16k-c4-vanilla"
+
+
+def _auxiliary_rerun_handoff_source(job: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the stage-free handoff identity the re-run plan binds per job."""
+
+    return {
+        key: value
+        for key, value in _mapping(job, "handoff").items()
+        if key not in {"stage_kind", "stage_uri"}
+    }
+
+
+_AUXILIARY_RERUN_RUNTIME_DESIGN_FIELDS: Final = frozenset().union(
+    *_LATENCY_COMPARISON_DESIGN_RUNTIME_FIELDS.values()
+)
+
+
+def _auxiliary_rerun_shared_identity(job: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the job-record fields every auxiliary re-run job carries identically."""
+
+    cell = _mapping(job, "cell")
+    runtime = _mapping(job, "runtime")
+    return {
+        "artifact_files": job.get("artifact_files"),
+        "campaign_id": job.get("campaign_id"),
+        "cell": {
+            key: cell.get(key)
+            for key in ("input_tokens", "method_id", "request_count", "request_parallelism")
+        },
+        "input_bundle_sha256": _mapping(job, "request_order").get("input_bundle_sha256"),
+        "qualification_artifact_pins": job.get("qualification_artifact_pins"),
+        "runtime": {
+            key: value
+            for key, value in runtime.items()
+            if key not in _AUXILIARY_RERUN_RUNTIME_DESIGN_FIELDS
+        },
+        "source_revision": job.get("source_revision"),
+        "source_tree_sha256": job.get("source_tree_sha256"),
+        "sources_sha256": job.get("sources_sha256"),
+    }
+
+
+def _require_auxiliary_rerun_job_design(
+    job_id: str,
+    job: Mapping[str, Any],
+    *,
+    block: int,
+    kind: str,
+) -> None:
+    cell = _mapping(job, "cell")
+    setting_id = None if kind == "16k-c4-vanilla" else kind
+    if (
+        cell.get("deployment_block") != block
+        or cell.get("setting_id") != setting_id
+        or cell.get("job_kind") != ("core" if setting_id is None else "auxiliary")
+    ):
+        raise ValueError(f"auxiliary re-run job {job_id!r} cell drift")
+    if _mapping(job, "handoff").get("stage_kind") != (
+        "uc_mounted" if setting_id == "storage-uc" else "local_nvme"
+    ):
+        raise ValueError(f"auxiliary re-run job {job_id!r} handoff stage drift")
+
+
+# Job-record fields a treatment varies by design beyond its runtime design
+# fields, zone, cell identity and per-job output and stage paths.
+_AUXILIARY_RERUN_PAIR_DESIGN_FIELDS: Final = MappingProxyType(
+    {
+        "storage-ram": frozenset({"cache_telemetry_policy"}),
+        "storage-uc": frozenset({"cache_telemetry_policy", "handoff_stage_kind"}),
+        "precision-bf16": frozenset({"handoff_source"}),
+        "hardware-a10g": frozenset(),
+    }
+)
+# Each check ignores the fields the treatment varies by design.
+_AUXILIARY_RERUN_PAIR_FIELDS: Final = (
+    ("input_files_equal", "input files"),
+    ("request_schedule_equal", "request schedule"),
+    ("handoff_equal", "handoff"),
+    ("cache_policy_equal", "cache telemetry policy"),
+)
+_AUXILIARY_RERUN_WORKLOAD_CELL_FIELDS: Final = (
+    "deployment_block",
+    "examples_per_dataset",
+    "input_tokens",
+    "method_id",
+    "repeats_per_example",
+    "request_count",
+    "request_parallelism",
+)
+
+
+def _auxiliary_rerun_pair_coherence(
+    control: Mapping[str, Any],
+    treatment: Mapping[str, Any],
+    *,
+    setting_id: str,
+) -> dict[str, bool]:
+    design = _AUXILIARY_RERUN_PAIR_DESIGN_FIELDS[setting_id]
+
+    def schedule(job: Mapping[str, Any]) -> dict[str, Any]:
+        cell = _mapping(job, "cell")
+        return {
+            "cell": {key: cell.get(key) for key in _AUXILIARY_RERUN_WORKLOAD_CELL_FIELDS},
+            "request_order": job.get("request_order"),
+        }
+
+    def handoff(job: Mapping[str, Any]) -> dict[str, Any]:
+        source = _auxiliary_rerun_handoff_source(job)
+        return {
+            "source": None if "handoff_source" in design else source,
+            "source_kind": source.get("source_kind"),
+            "stage_kind": (
+                None
+                if "handoff_stage_kind" in design
+                else _mapping(job, "handoff").get("stage_kind")
+            ),
+        }
+
+    return {
+        "input_files_equal": _json_type_exact_equal(
+            control.get("input_files"), treatment.get("input_files")
+        ),
+        "request_schedule_equal": _json_type_exact_equal(
+            schedule(control), schedule(treatment)
+        ),
+        "handoff_equal": _json_type_exact_equal(handoff(control), handoff(treatment)),
+        "cache_policy_equal": "cache_telemetry_policy" in design
+        or _json_type_exact_equal(
+            control.get("cache_telemetry_policy"), treatment.get("cache_telemetry_policy")
+        ),
+    }
+
+
 def _require_unique_auxiliary_rerun_runs(
     chains: Sequence[Sequence[Mapping[str, Any]]],
 ) -> None:
@@ -8909,9 +9044,11 @@ def aggregate_publication_latency_auxiliary_rerun(
 
     The re-run repeats every block's Vanilla 16k c4 reference together with its
     Disk/RAM/UC trio, BF16 and A10G cells under one execution plan, package
-    wheel and source tree, so every compared pair differs only in its design
-    fields. Estimation reuses the campaign's paired crossed bootstrap and makes
-    no claim about the core Baseline/Vanilla grid.
+    wheel, source tree and campaign sources, each serving the handoff the plan
+    binds to it, so every compared pair runs the same inputs and request
+    schedule and differs only in its design fields. Estimation reuses the
+    campaign's paired crossed bootstrap and makes no claim about the core
+    Baseline/Vanilla grid.
 
     ``attempt_records`` lists every submitted attempt of every job: ``job_id``,
     ``attempt``, ``execution_plan_sha256``, ``cloud_run_id``, the terminal
@@ -8935,6 +9072,11 @@ def aggregate_publication_latency_auxiliary_rerun(
     ]
     if plan.get("job_ids") != expected_ids:
         raise ValueError("auxiliary re-run plan must list every block's six cells")
+    handoff_sources = _mapping(plan, "handoff_sources")
+    if set(handoff_sources) != set(expected_ids):
+        raise ValueError("auxiliary re-run plan must bind a handoff to every job")
+    plan_campaign_id = _required_string(plan, "campaign_id")
+    plan_source_revision = _required_string(plan, "source_revision")
     jobs_by_id: dict[str, dict[str, Any]] = {}
     for job in job_records:
         validate_publication_latency_job_record(job)
@@ -9006,7 +9148,35 @@ def aggregate_publication_latency_auxiliary_rerun(
             raise ValueError(f"auxiliary re-run job {job_id!r} wheel drift")
         if job.get("source_tree_sha256") != plan.get("source_tree_sha256"):
             raise ValueError(f"auxiliary re-run job {job_id!r} source tree drift")
+        if job.get("campaign_id") != plan_campaign_id:
+            raise ValueError(f"auxiliary re-run job {job_id!r} campaign drift")
+        if job.get("source_revision") != plan_source_revision:
+            raise ValueError(f"auxiliary re-run job {job_id!r} source revision drift")
+        if not _json_type_exact_equal(
+            _auxiliary_rerun_handoff_source(job), handoff_sources[job_id]
+        ):
+            raise ValueError(
+                f"auxiliary re-run job {job_id!r} serves a handoff its plan does not bind"
+            )
         _require_auxiliary_rerun_runtime_policy(job_id, job)
+    shared_identity = _auxiliary_rerun_shared_identity(jobs_by_id[expected_ids[0]])
+    for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1):
+        for kind in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS:
+            job_id = f"block-{block:02d}-{kind}"
+            _require_auxiliary_rerun_job_design(
+                job_id, jobs_by_id[job_id], block=block, kind=kind
+            )
+            identity = _auxiliary_rerun_shared_identity(jobs_by_id[job_id])
+            identity_drift = [
+                key
+                for key in shared_identity
+                if not _json_type_exact_equal(identity[key], shared_identity[key])
+            ]
+            if identity_drift:
+                raise ValueError(
+                    f"auxiliary re-run job {job_id!r} differs from "
+                    f"{expected_ids[0]!r} in its {', '.join(identity_drift)}"
+                )
     plan_jobs = {
         job_id: {**job, "execution_plan_sha256": plan_sha256}
         for job_id, job in jobs_by_id.items()
@@ -9027,15 +9197,29 @@ def aggregate_publication_latency_auxiliary_rerun(
             if cell.get("setting_id") != setting_id:
                 continue
             block = _required_int(cell, "deployment_block")
-            control_id = _required_string(cell, "reference_core_cell_id")
-            if control_id not in cells:
-                raise ValueError(f"auxiliary re-run control for {job_id!r} is missing")
-            pair = _latency_pair_coherence(
-                plan_jobs[control_id],
-                plan_jobs[job_id],
-                comparison_family=family,
-            )
-            drift = [label for key, label in _LATENCY_COHERENCE_FIELDS if not pair[key]]
+            control_id = f"block-{block:02d}-{_auxiliary_rerun_control_kind(setting_id)}"
+            if (
+                cell.get("reference_core_cell_id") != control_id
+                or cell.get("comparison_family") != family
+            ):
+                raise ValueError(
+                    f"auxiliary re-run control for {job_id!r} must be {control_id!r}"
+                )
+            pair = {
+                **_latency_pair_coherence(
+                    plan_jobs[control_id],
+                    plan_jobs[job_id],
+                    comparison_family=family,
+                ),
+                **_auxiliary_rerun_pair_coherence(
+                    jobs_by_id[control_id], jobs_by_id[job_id], setting_id=setting_id
+                ),
+            }
+            drift = [
+                label
+                for key, label in (*_LATENCY_COHERENCE_FIELDS, *_AUXILIARY_RERUN_PAIR_FIELDS)
+                if not pair[key]
+            ]
             if drift:
                 raise ValueError(
                     f"auxiliary re-run pairs {control_id!r} with {job_id!r} "
@@ -9113,11 +9297,7 @@ def aggregate_publication_latency_auxiliary_rerun(
                 "confidence_interval_95": [lower, upper],
                 "geometric_mean_speedup": point,
             }
-        control_kind = (
-            "storage-disk"
-            if spec["setting_id"] in {"storage-ram", "storage-uc"}
-            else "16k-c4-vanilla"
-        )
+        control_kind = _auxiliary_rerun_control_kind(spec["setting_id"])
         estimates.append(
             {
                 **projection[spec["estimand_id"]],
@@ -9256,10 +9436,16 @@ def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any
         ]
     ):
         raise ValueError("auxiliary re-run result digest drift")
+    if set(_mapping(plan, "handoff_sources")) != set(job_ids):
+        raise ValueError("auxiliary re-run plan must bind a handoff to every job")
     coherence = _mapping_sequence(record, "coherence")
     if len(coherence) != PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS * len(
         PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
-    ) or not all(row.get(key) is True for row in coherence for key, _ in _LATENCY_COHERENCE_FIELDS):
+    ) or not all(
+        row.get(key) is True
+        for row in coherence
+        for key, _ in (*_LATENCY_COHERENCE_FIELDS, *_AUXILIARY_RERUN_PAIR_FIELDS)
+    ):
         raise ValueError("auxiliary re-run comparison pairs are not plan-coherent")
     estimates = _mapping_sequence(record, "estimates")
     if [item.get("setting_id") for item in estimates] != [
@@ -9325,9 +9511,15 @@ def render_publication_latency_auxiliary_rerun_region(
     lines = [
         "",
         f"Re-run `closed_record_sha256`: `{record['closed_record_sha256']}`; execution "
-        f"plan `{record['plan_sha256']}`. All {len(record['jobs'])} jobs share one package "
-        "wheel and source tree, and every compared pair differs only in its design "
-        f"fields.{retry_note}",
+        f"plan `{record['plan_sha256']}`. All {len(record['jobs'])} jobs share one "
+        "campaign, source revision and tree, package wheel, runtime artifact closure, "
+        "qualification pins and campaign sources, each runs its cell's frozen runtime, "
+        "and each serves the handoff its plan binds to it. Every compared pair runs the "
+        "same input files and request schedule and differs only in the treatment's "
+        "design (the RAM payload cache and the Unity Catalog handoff stage, each with "
+        "its cache telemetry policy; the BF16 handoff bundle, KV dtype and GPU memory "
+        "utilization; the A10G node and GPU memory utilization), its zone, and its "
+        f"per-job output and stage paths.{retry_note}",
         "",
         "| Treatment vs reference | Setting | TTFT speedup, campaign | TTFT 95% CI, campaign "
         "| TTFT speedup, re-run | TTFT 95% CI, re-run | TTC speedup, campaign "
