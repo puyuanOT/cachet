@@ -6,6 +6,10 @@ from typing import Any
 import pytest
 
 from document_kv_cache import publication_campaign_tables as campaign_tables
+from document_kv_cache.publication_campaign_finalizer import (
+    PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE,
+    PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE,
+)
 
 
 _CACHE_KEYS = (
@@ -366,6 +370,109 @@ def _coverage() -> dict[str, Any]:
     }
 
 
+def _ledger_prefix(
+    *,
+    cap: float,
+    reservations: int,
+    receipts: int,
+) -> dict[str, Any]:
+    return {
+        "cap_cluster_hours": cap,
+        "ledger_id": "synthetic-publication-ledger",
+        "prefix_sha256": "4" * 64,
+        "reservation_count": reservations,
+        "submission_receipt_count": receipts,
+        "terminal_actual_count": reservations,
+    }
+
+
+def _ledger() -> dict[str, Any]:
+    return {
+        "cap_raises": [
+            {
+                "from_cap_cluster_hours": 1024.0,
+                "reservation_count": 166,
+                "submission_receipt_count": 119,
+                "terminal_actual_count": 166,
+                "to_cap_cluster_hours": 2024.0,
+            }
+        ],
+        "final_accounted_cluster_hours": 1345.6381069444442,
+        "final_active_reserved_cluster_hours": 0.0,
+        "final_active_reserved_task_count": 0,
+        "final_remaining_cluster_hours": 678.3618930555558,
+        "full_score_abandoned_attempts": {
+            "attempt_count": 74,
+            "closed_consumer_phase_count": 11,
+            "cluster_hours": 368.23190277777775,
+        },
+        "full_score_capacity_retries": {
+            "attempt_count": 37,
+            "cluster_hours": 132.50953805555557,
+        },
+        "full_score_terminal_prefix": _ledger_prefix(
+            cap=2024.0, reservations=607, receipts=557
+        ),
+        "latency_recovered_balance": {
+            "attempt_count": 47,
+            "cluster_hours": 554.9915155555556,
+        },
+        "latency_terminal_prefix": _ledger_prefix(
+            cap=2024.0, reservations=550, receipts=500
+        ),
+        "ledger_id": "synthetic-publication-ledger",
+        "ledger_path_sha256": "5" * 64,
+        "qualification_capacity_retries": {
+            "attempt_count": 0,
+            "cluster_hours": 0.0,
+        },
+        "required_unreserved_headroom_cluster_hours": 124.0,
+    }
+
+
+def _latency_provenance() -> dict[str, Any]:
+    return {
+        "execution_plan_count": 34,
+        "ledger_binding_counts": {
+            "ledger_receipt": 70,
+            "recovered_balance": 41,
+            "recovered_receipt": 4,
+        },
+        "plan_set_sha256": "6" * 64,
+        "superseded_attempt_count": 54,
+    }
+
+
+def _single_plan_report() -> dict[str, Any]:
+    report = _report()
+    report["record_type"] = PUBLICATION_CAMPAIGN_REPORT_RECORD_TYPE
+    del report["latency_provenance"]
+    for field in (
+        "cap_raises",
+        "full_score_abandoned_attempts",
+        "full_score_capacity_retries",
+        "latency_recovered_balance",
+        "qualification_capacity_retries",
+    ):
+        del report["ledger"][field]
+    report["ledger"]["latency_terminal_prefix"] = _ledger_prefix(
+        cap=1024.0, reservations=300, receipts=250
+    )
+    report["ledger"]["full_score_terminal_prefix"] = _ledger_prefix(
+        cap=1024.0, reservations=320, receipts=270
+    )
+    report["ledger"]["final_accounted_cluster_hours"] = 899.75
+    report["ledger"]["final_remaining_cluster_hours"] = 124.25
+    report["source_bindings"] = {
+        "latency_execution_plan": {
+            "closed_record_sha256": "7" * 64,
+            "record_type": "cachet.publication_latency_execution_plan.v2",
+            "schema_version": 2,
+        }
+    }
+    return report
+
+
 def _report() -> dict[str, Any]:
     scorer_contracts = []
     for dataset, metrics in _METRICS.items():
@@ -393,6 +500,8 @@ def _report() -> dict[str, Any]:
             "descriptive_cells": _descriptive_cells(),
             "estimates": _estimands(),
         },
+        "latency_provenance": _latency_provenance(),
+        "ledger": _ledger(),
         "policy": "publication",
         "quality": {
             "aggregation_unit": "per_example_once_never_shard_means",
@@ -401,6 +510,7 @@ def _report() -> dict[str, Any]:
             "niah_grid": _niah_grid(),
             "protocol": _protocol(),
         },
+        "record_type": PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE,
         "scorer_contracts": scorer_contracts,
     }
 
@@ -490,14 +600,193 @@ def test_marker_pairs_are_unique_and_frozen() -> None:
         for marker in campaign_tables.PUBLICATION_TABLE_REGION_MARKERS[section]
     ]
 
-    assert len(markers) == 20
-    assert len(set(markers)) == 20
+    assert len(markers) == 22
+    assert len(set(markers)) == 22
     assert markers[0] == (
         "<!-- cachet:vllm-0271-publication-table:status:begin -->"
+    )
+    assert markers[2] == (
+        "<!-- cachet:vllm-0271-publication-table:campaign-disclosures:begin -->"
     )
     assert markers[-1] == (
         "<!-- cachet:vllm-0271-publication-table:resource-cache:end -->"
     )
+
+
+def test_status_separates_counted_and_cold_attested_requests() -> None:
+    report = _report()
+    report["coverage"]["cold_attested_request_count"] = 16_640
+
+    regions = campaign_tables.render_vllm_0271_publication_table_regions(
+        report,
+        {"synthetic": True},
+    )
+
+    assert regions["status"] == (
+        "> **Status: vLLM 0.30.0 campaign published.** The sanitized campaign "
+        "report and its report-bound publication gate passed. The gate is an "
+        "integrity gate: it checks evidence bindings and fixed coverage "
+        "counts, sets no quality or latency threshold, and latency results "
+        "are estimation-only.\n"
+        ">\n"
+        "> Coverage: 115 latency jobs; 83,653 distinct full-score examples; "
+        "101,573 Vanilla KV cache requests counted by the gate (17,920 latency "
+        "and 83,653 full-score), of which 16,640 latency requests are "
+        "cold-read attested.\n"
+        ">\n"
+        "> Only latency requests carry cold-read attestations. The design "
+        "requires 15,360 to 16,640 of the 17,920: the 1,280 RAM-storage "
+        "requests are served from the in-memory payload cache and never read "
+        "cold, and the 1,280 Unity Catalog requests load through the mounted "
+        "path and need not attest one."
+    )
+    assert "checked cache requests" not in regions["status"]
+    assert (
+        "| vLLM 0.30.0 | Governed campaign published | Report-bound integrity "
+        "gate passed (no quality threshold) |"
+    ) in regions["platform"]
+
+
+def test_campaign_disclosures_render_every_0300_ledger_fact() -> None:
+    regions = campaign_tables.render_vllm_0271_publication_table_regions(
+        _report(),
+        {"synthetic": True},
+    )
+
+    assert regions["campaign_disclosures"] == (
+        "> **Campaign ledger disclosures.** Rendered from the sealed report's "
+        "Databricks cluster-hour ledger projection and latency source fields. "
+        "They change no metric on this page; they record the campaign's "
+        "budget, retried and abandoned work, and how latency jobs are bound to "
+        "the ledger.\n"
+        "\n"
+        "| Disclosure | Report value | Meaning |\n"
+        "| --- | --- | --- |\n"
+        "| Cluster-hour budget | Raised from 1,024 h to 2,024 h after 166 "
+        "reservations, 119 receipts, and 166 terminal actuals | Budget "
+        "extensions recorded in the campaign ledger; every ledger prefix "
+        "before a raise keeps its earlier cap |\n"
+        "| Final ledger accounting | 1,345.64 h accounted; 678.36 h remaining "
+        "of a 2,024 h cap; 0 active reserved tasks | The ledger closed with "
+        "nothing reserved and at least 124 h unreserved |\n"
+        "| GPU qualification capacity retries | 0 attempts, 0.00 h | "
+        "Qualification jobs relaunched after a Databricks capacity failure |\n"
+        "| Full-score capacity retries | 37 attempts, 132.51 h | Phases "
+        "relaunched after a Databricks capacity failure; the 57 full-score "
+        "ledger attempts after the latency prefix cover the 20 phases, and "
+        "only each phase's final attempt is scored |\n"
+        "| Abandoned full-score attempts | 74 attempts, 368.23 h; 11 closed "
+        "consumer phases | Earlier full-score chains the campaign restarted "
+        "over before the latency prefix; the waves their consumer phases "
+        "scored are not used in this report |\n"
+        "| Latency recovered balance | 47 seeds, 554.99 h | Terminal-only "
+        "ledger seeds restoring hours spent before the ledger was recreated |\n"
+        "| Latency jobs with their own ledger receipt | 70 of 115 | Receipt "
+        "recorded when the job was submitted |\n"
+        "| Latency jobs with a recovered receipt | 4 of 115 | Finished before "
+        "the ledger was recreated; receipt re-recorded by run ID under a "
+        "timeout-only stand-in payload |\n"
+        "| Latency jobs bound only by the recovered balance | 41 of 115 | "
+        "Finished before the ledger was recreated and have no ledger record; "
+        "accepted only because the recovered-balance seeds cover the spent "
+        "hours |\n"
+        "| Latency launch plans | 34 execution plans; 54 superseded attempts | "
+        "Jobs are joined across the plans they ran under (capacity retries "
+        "and reopened cells); superseded attempts are not used. Plan-set "
+        f"SHA-256 `{'6' * 64}` |"
+    )
+
+
+def test_campaign_disclosures_render_an_unraised_cap_and_single_plan_report() -> None:
+    unraised = _report()
+    unraised["ledger"]["cap_raises"] = []
+    for field in ("latency_terminal_prefix", "full_score_terminal_prefix"):
+        unraised["ledger"][field]["cap_cluster_hours"] = 1024.0
+    unraised_region = campaign_tables.render_vllm_0271_publication_table_regions(
+        unraised,
+        {"synthetic": True},
+    )["campaign_disclosures"]
+    assert "| Cluster-hour budget | 1,024 h cap, never raised |" in unraised_region
+
+    single_plan = campaign_tables.render_vllm_0271_publication_table_regions(
+        _single_plan_report(),
+        {"synthetic": True},
+    )["campaign_disclosures"]
+    rows = single_plan.splitlines()[4:]
+    assert rows == [
+        "| Cluster-hour budget | 1,024 h cap | The 0.27.1 report schema "
+        "requires the original cap at both report ledger prefixes |",
+        "| Final ledger accounting | 899.75 h accounted; 124.25 h remaining of "
+        "a 1,024 h cap; 0 active reserved tasks | The ledger closed with "
+        "nothing reserved and at least 124 h unreserved |",
+        "| Full-score ledger attempts | 20 after the latency prefix for 20 "
+        "phases | The 0.27.1 report schema admits no capacity retry |",
+        "| Latency launch plans | 1 execution plan | Execution plan SHA-256 "
+        f"`{'7' * 64}` |",
+        "| Qualification retries, abandoned chains, recovered balance | Not "
+        "recorded | The 0.27.1 report schema has no fields for them |",
+    ]
+
+
+def _tamper_disclosure_record_type(report: dict[str, Any]) -> None:
+    report["record_type"] = "cachet.vllm_0300_publication_report.v2"
+
+
+def _tamper_disclosure_ledger_schema(report: dict[str, Any]) -> None:
+    report["ledger"]["unexpected"] = 0
+
+
+def _tamper_disclosure_cap_raise_schema(report: dict[str, Any]) -> None:
+    del report["ledger"]["cap_raises"][0]["terminal_actual_count"]
+
+
+def _tamper_disclosure_retry_schema(report: dict[str, Any]) -> None:
+    report["ledger"]["full_score_capacity_retries"]["closed_consumer_phase_count"] = 0
+
+
+def _tamper_disclosure_provenance_schema(report: dict[str, Any]) -> None:
+    report["latency_provenance"]["ledger_binding_counts"]["unbound"] = 0
+
+
+def _tamper_disclosure_binding_sum(report: dict[str, Any]) -> None:
+    report["latency_provenance"]["ledger_binding_counts"]["ledger_receipt"] -= 1
+
+
+def _tamper_disclosure_retry_count(report: dict[str, Any]) -> None:
+    report["ledger"]["full_score_capacity_retries"]["attempt_count"] += 1
+
+
+def _tamper_disclosure_single_plan_attempts(report: dict[str, Any]) -> None:
+    report.clear()
+    report.update(_single_plan_report())
+    report["ledger"]["full_score_terminal_prefix"]["reservation_count"] += 1
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (_tamper_disclosure_record_type, "record type drift"),
+        (_tamper_disclosure_ledger_schema, "ledger projection schema drift"),
+        (_tamper_disclosure_cap_raise_schema, "cap raise 0 schema drift"),
+        (_tamper_disclosure_retry_schema, "capacity_retries schema drift"),
+        (_tamper_disclosure_provenance_schema, "binding counts schema drift"),
+        (_tamper_disclosure_binding_sum, "latency binding count drift"),
+        (_tamper_disclosure_retry_count, "full-score attempt count drift"),
+        (_tamper_disclosure_single_plan_attempts, "full-score attempt count drift"),
+    ],
+)
+def test_campaign_disclosures_reject_schema_and_count_drift(
+    mutate: Any,
+    message: str,
+) -> None:
+    report = _report()
+    mutate(report)
+
+    with pytest.raises(ValueError, match=message):
+        campaign_tables.render_vllm_0271_publication_table_regions(
+            report,
+            {"synthetic": True},
+        )
 
 
 def test_cachet_facade_exports_the_canonical_renderer() -> None:

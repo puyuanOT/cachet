@@ -1371,6 +1371,7 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
 
     pending_region_sha256 = {
         "status": "ceb545987a0a9a6b14e8617c5af605b265cd55c1c45474e056eaa4793685eb3f",
+        "campaign_disclosures": "5cc153bbc33d7018b32524f875b632d45992d3c66b387a346429103d9d97224f",
         "core_latency": "e4012c18c6aa023d93919610f68c02385cfa76dbcd29ee608a23edbb791a23b8",
         "latency_estimands": "341201526f4b28bc76ba5d1ddcf66df3240bfe2feedbcae56d081cf33add257d",
         "dataset_scores": "4a6a9d3b30ef909e83ec9dea540b138f4e78795a98b5ef2e4361a27dee6483d2",

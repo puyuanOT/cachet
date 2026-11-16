@@ -176,7 +176,13 @@ and the report last as the pair's commit file; only an exact immutable
 gate-only interruption may be resumed. The authority-replaying loader accepts
 the sealed files directly or secure-umask Git checkout copies (`0600`, `0640`,
 or `0644`, including read-only variants), but never uses checkout mode as a
-substitute for canonical-byte and source replay.
+substitute for canonical-byte and source replay. That replay needs the
+authority objects of the finalizing process and the unchanged campaign ledger,
+so it runs only at finalization time. Afterwards only the offline pair
+validator runs; it checks internal consistency and pinned source digests, not
+the campaign evidence. The vLLM 0.30.0 campaign's source of truth is the tag
+`vllm-0300-publication-ffb1f1d`; see
+[`docs/evidence-policy.md`](../../docs/evidence-policy.md).
 
 For the frozen campaign, do not transcribe report values into Markdown by
 hand. Generate the named table regions from the exact report/gate pair and

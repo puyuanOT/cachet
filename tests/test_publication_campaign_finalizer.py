@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import stat
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,9 +15,12 @@ import pytest
 from qualification_ledger_fixture import write_opening_ledger
 
 import document_kv_cache.databricks_resource_ledger as ledger_api
+import document_kv_cache.full_score_execution as full_score
 import document_kv_cache.gpu_qualification_databricks as gpu_qualification_databricks
+import document_kv_cache.publication_campaign as campaign_api
 import document_kv_cache.publication_campaign_finalizer as campaign_finalizer
 import document_kv_cache.publication_campaign_tables as campaign_tables
+import document_kv_cache.publication_latency_execution as publication_latency
 from document_kv_cache.benchmark_gates import (
     BENCHMARK_PUBLICATION_GATE_RECORD_TYPE,
 )
@@ -1119,6 +1123,27 @@ def test_json_type_exact_equality_rejects_python_numeric_coercions() -> None:
     assert not campaign_finalizer._json_type_exact_equal(
         {"example_count": 1},
         {"example_count": 1.0},
+    )
+
+
+def test_json_type_exact_equality_rejects_non_json_values_explicitly() -> None:
+    proxy = MappingProxyType({"example_count": 1})
+
+    for left, right in (
+        ({"nested": proxy}, {"nested": {"example_count": 1}}),
+        (proxy, proxy),
+        ({"rows": (object(),)}, {"rows": [None]}),
+    ):
+        with pytest.raises(TypeError, match="requires plain JSON values"):
+            campaign_finalizer._json_type_exact_equal(left, right)
+    assert campaign_finalizer._json_type_exact_equal(
+        dict(proxy),
+        {"example_count": 1},
+    )
+    assert not campaign_finalizer._json_type_exact_equal(math.nan, math.nan)
+    assert not campaign_finalizer._json_type_exact_equal(
+        {"cluster_hours": math.inf},
+        {"cluster_hours": math.inf},
     )
 
 
@@ -3651,3 +3676,624 @@ def test_vllm_0300_qualification_retries_require_a_live_prefix_before_latency(
                 latency_prefix=observed_latency,
                 ledger_path=observed_path,
             )
+
+
+_E2E_RUN_STATES = {
+    "failed": {"life_cycle_state": "TERMINATED", "result_state": "FAILED"},
+    "internal_error": {
+        "life_cycle_state": "INTERNAL_ERROR",
+        "result_state": "FAILED",
+    },
+    "succeeded": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+}
+_E2E_WORKSPACE_HOST_SHA256 = _digest("https://dbc.example")
+_E2E_USER_NAME_SHA256 = _digest("researcher@example.com")
+
+
+class _FrozenInventoryStandIn:
+    """Stands in for the 83,653-example inventory the campaign froze."""
+
+
+def _e2e_submit_payload(attempt_id: str, task_count: int) -> dict[str, Any]:
+    return {
+        "run_name": f"e2e-{_digest(attempt_id)[:16]}",
+        "timeout_seconds": 3600,
+        "tasks": [
+            {
+                "task_key": f"task-{index:02d}",
+                "timeout_seconds": 3600,
+                "max_retries": 0,
+                "new_cluster": {"num_workers": 0, "node_type_id": "g6.8xlarge"},
+                "spark_python_task": {
+                    "python_file": "dbfs:/unit-fixtures/e2e.py",
+                },
+            }
+            for index in range(task_count)
+        ],
+    }
+
+
+def _append_receipted_attempt(
+    ledger_path: Path,
+    *,
+    attempt_id: str,
+    workload_id: str,
+    terminal_state: str,
+    task_count: int = 1,
+    task_seconds: int = 600,
+) -> None:
+    """Reserve, receipt-bind, and reconcile one run through the ledger API."""
+
+    run_id = 90_000 + len(
+        ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path).reservations
+    )
+    ledger_api.reserve_databricks_run_attempt_json(
+        ledger_path,
+        _e2e_submit_payload(attempt_id, task_count),
+        attempt_id=attempt_id,
+        workload_id=workload_id,
+    )
+    ledger_api.record_databricks_run_submission_receipt_json(
+        ledger_path,
+        attempt_id=attempt_id,
+        submit_response={"run_id": run_id},
+    )
+    state = _E2E_RUN_STATES[terminal_state]
+    ledger_api.record_databricks_verified_run_terminal_actual_json(
+        ledger_path,
+        attempt_id=attempt_id,
+        run_record={
+            "run_id": run_id,
+            "state": state,
+            "tasks": [
+                {
+                    "end_time": 1_000 + 1_000 * task_seconds,
+                    "run_id": run_id * 100 + index,
+                    "start_time": 1_000,
+                    "state": state,
+                    "task_key": f"task-{index:02d}",
+                }
+                for index in range(task_count)
+            ],
+        },
+    )
+
+
+def _append_recovered_balance_seed(
+    ledger_path: Path,
+    *,
+    index: int,
+    seconds: float,
+) -> None:
+    attempt_id = (
+        f"{publication_latency.PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX}"
+        f"seed-{index:03d}"
+    )
+    ledger_api.reserve_databricks_run_attempt_json(
+        ledger_path,
+        _e2e_submit_payload(attempt_id, 1),
+        attempt_id=attempt_id,
+        workload_id=attempt_id,
+    )
+    ledger_api.record_databricks_run_terminal_actual_json(
+        ledger_path,
+        attempt_id=attempt_id,
+        terminal_state="succeeded",
+        actual_cluster_duration_seconds=seconds,
+    )
+
+
+def _end_to_end_campaign_case(tmp_path: Path) -> SimpleNamespace:
+    """Build a real campaign ledger and the authorities issued over it.
+
+    The history follows the completed 0.30.0 campaign: a budget raise, a GPU
+    qualification with one capacity retry, recovered-balance seeds, an
+    abandoned wave-zero chain the full score restarted over, the latency
+    prefix, and twenty full-score phases with one capacity retry.  Each
+    authority is issued exactly as its live collector issues it.
+    """
+
+    ledger_path = tmp_path / "campaign-ledger.json"
+    write_opening_ledger(
+        ledger_path,
+        ledger_id=campaign_api.PUBLICATION_CAMPAIGN_LEDGER_ID,
+    )
+    ledger_api.raise_databricks_cluster_hour_ledger_cap_json(
+        ledger_path,
+        expected_current_cap_cluster_hours=1024.0,
+        new_cap_cluster_hours=2024.0,
+    )
+
+    def current_prefix() -> ledger_api.DatabricksLedgerPrefix:
+        return ledger_api.databricks_ledger_prefix(
+            ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path)
+        )
+
+    qualification_opening = current_prefix()
+    for attempt_id, workload_id, terminal_state in _qualification_attempts(
+        {"job-a": 1, "job-b": 0}
+    ):
+        _append_receipted_attempt(
+            ledger_path,
+            attempt_id=attempt_id,
+            workload_id=workload_id,
+            terminal_state=terminal_state,
+            task_seconds=900,
+        )
+    qualification_terminal = current_prefix()
+    _append_recovered_balance_seed(ledger_path, index=0, seconds=1_800.0)
+    _append_recovered_balance_seed(ledger_path, index=1, seconds=3_600.0)
+    execution_sha256 = campaign_finalizer.FULL_SCORE_PUBLICATION_EXECUTION_PLAN_SHA256
+    for phase, terminal_state, task_seconds in (
+        ("producer", "succeeded", 900),
+        ("consumer", "failed", 450),
+    ):
+        _append_receipted_attempt(
+            ledger_path,
+            attempt_id=f"publication-full-score/abandoned/wave-000-{phase}",
+            workload_id=f"full-score:{execution_sha256}:wave-000:{phase}",
+            terminal_state=terminal_state,
+            task_count=2,
+            task_seconds=task_seconds,
+        )
+    for index in range(2):
+        _append_receipted_attempt(
+            ledger_path,
+            attempt_id=f"publication-latency/{'e' * 20}/latency-job-{index:03d}",
+            workload_id=f"latency-job-{index:03d}",
+            terminal_state="succeeded",
+        )
+    latency_prefix = current_prefix()
+    final_predecessor = latency_prefix
+    for wave_index in range(campaign_finalizer.PUBLICATION_CAMPAIGN_FULL_SCORE_WAVES):
+        for phase in ("producer", "consumer"):
+            workload_id = f"full-score:{execution_sha256}:wave-{wave_index:03d}:{phase}"
+            attempt_id = f"publication-full-score/wave-{wave_index:03d}-{phase}"
+            if (wave_index, phase) == (3, "producer"):
+                _append_receipted_attempt(
+                    ledger_path,
+                    attempt_id=f"{attempt_id}-capacity-failed",
+                    workload_id=workload_id,
+                    terminal_state="internal_error",
+                    task_count=2,
+                    task_seconds=450,
+                )
+            final_predecessor = current_prefix()
+            _append_receipted_attempt(
+                ledger_path,
+                attempt_id=attempt_id,
+                workload_id=workload_id,
+                terminal_state="succeeded",
+                task_count=2,
+            )
+    live = ledger_api.read_databricks_cluster_hour_ledger_json(ledger_path)
+    final_prefix = ledger_api.databricks_ledger_prefix(live)
+    ledger_path_sha256 = ledger_api.databricks_ledger_path_sha256(ledger_path)
+
+    qualification = (
+        gpu_qualification_databricks._issue_gpu_qualification_launch_authorization(
+            selection=GPUQualificationSelection(
+                attention_backend="TRITON_ATTN",
+                gpu_memory_utilization=0.70,
+                generation_hardware_id="aws-g6e-l40s",
+                generation_databricks_node_type_id="g6e.8xlarge",
+                generation_artifacts_sha256=_digest("generation-artifacts"),
+                generation_prefix_tokens_per_second=40.0,
+                plan_sha256=_QUALIFICATION_PLAN_SHA256,
+            ),
+            plan_sha256=_QUALIFICATION_PLAN_SHA256,
+            evidence_closed_record_sha256=_digest("qualification-evidence"),
+            evidence_file_sha256=_digest("qualification-evidence-file"),
+            ledger_id=live.ledger_id,
+            ledger_path_sha256=ledger_path_sha256,
+            predecessor_prefix=qualification_opening,
+            producer_batch_prefix=qualification_opening,
+            ledger_prefix=qualification_terminal,
+            causal_closure_sha256=_digest("qualification-causal-closure"),
+        )
+    )
+
+    inputs = _synthetic_vllm_0300_report_inputs()
+    seeds = [
+        item
+        for item in live.terminal_actuals
+        if item.attempt_id.startswith(
+            publication_latency.PUBLICATION_LATENCY_RECOVERED_BALANCE_ATTEMPT_PREFIX
+        )
+    ]
+    collection = deepcopy(inputs["latency_collection_record"])
+    collection["campaign_id"] = campaign_api.PUBLICATION_CAMPAIGN_ID
+    collection["ledger"] = {
+        "ledger_id": live.ledger_id,
+        "ledger_path_sha256": ledger_path_sha256,
+        "ledger_prefix": latency_prefix.to_record(),
+        "recovered_balance": {
+            "attempt_count": len(seeds),
+            "cluster_hours": math.fsum(item.actual_cluster_hours for item in seeds),
+        },
+        "superseded_attempts": collection["ledger"]["superseded_attempts"],
+        "terminal_actuals_sha256": _digest("latency-terminal-actuals"),
+    }
+    _reclose(collection)
+    latency_authorization = (
+        publication_latency.PublicationLatencyMultiPlanCollectionAuthorization(
+            collection=collection,
+            ledger_path_sha256=ledger_path_sha256,
+            ledger_prefix=latency_prefix,
+            workspace_host_sha256=_E2E_WORKSPACE_HOST_SHA256,
+            user_name_sha256=_E2E_USER_NAME_SHA256,
+            _issuer=publication_latency._MULTI_PLAN_COLLECTION_AUTHORIZATION_ISSUER,
+        )
+    )
+
+    terminal_record_sha256 = _digest("final-consumer-terminal-record")
+    batch_prefix = ledger_api.databricks_ledger_prefix_at_counts(
+        live,
+        reservation_count=final_predecessor.reservation_count + 1,
+        submission_receipt_count=final_predecessor.submission_receipt_count,
+        terminal_actual_count=final_predecessor.terminal_actual_count,
+    )
+    final_consumer = full_score.FullScorePhaseAuthorization(
+        execution_plan_sha256=execution_sha256,
+        wave_index=campaign_finalizer.PUBLICATION_CAMPAIGN_FULL_SCORE_WAVES - 1,
+        phase="consumer",
+        ledger_path_sha256=ledger_path_sha256,
+        predecessor_prefix=final_predecessor,
+        ledger_prefix=final_prefix,
+        phase_lease_root=tmp_path / "phase-leases",
+        terminal_record_sha256=terminal_record_sha256,
+        causal_closure_sha256=full_score._canonical_sha256(
+            {
+                "batch_prefix": batch_prefix.to_record(),
+                "ledger_path_sha256": ledger_path_sha256,
+                "terminal_prefix": final_prefix.to_record(),
+                "terminal_record_sha256": terminal_record_sha256,
+            }
+        ),
+        workspace_host_sha256=_E2E_WORKSPACE_HOST_SHA256,
+        user_name_sha256=_E2E_USER_NAME_SHA256,
+        _issuer=full_score._FULL_SCORE_PHASE_AUTHORIZATION_ISSUER,
+    )
+
+    campaign_plan = campaign_api.publication_campaign_plan_to_record(
+        campaign_api.build_publication_campaign_plan(
+            campaign_api.PUBLICATION_CAMPAIGN_ID,
+            campaign_ledger_id=campaign_api.PUBLICATION_CAMPAIGN_LEDGER_ID,
+            campaign_ledger_path_sha256=(
+                campaign_api.PUBLICATION_CAMPAIGN_LEDGER_PATH_SHA256
+            ),
+            campaign_ledger_prefix=(
+                campaign_api.PUBLICATION_CAMPAIGN_OPENING_LEDGER_PREFIX
+            ),
+            campaign_opening_terminal_gpu_hours=(
+                campaign_api.PUBLICATION_CAMPAIGN_OPENING_TERMINAL_GPU_HOURS
+            ),
+        )
+    )
+    execution_plan = deepcopy(inputs["full_score_execution_plan_record"])
+    execution_plan["waves"] = [
+        {"wave_index": index}
+        for index in range(campaign_finalizer.PUBLICATION_CAMPAIGN_FULL_SCORE_WAVES)
+    ]
+    return SimpleNamespace(
+        aggregate_base=inputs["full_score_aggregate_record"],
+        campaign_plan=campaign_plan,
+        execution_plan=execution_plan,
+        final_consumer=final_consumer,
+        final_prefix=final_prefix,
+        inventory=_FrozenInventoryStandIn(),
+        inventory_record=inputs["inventory_record"],
+        latency_authorization=latency_authorization,
+        latency_prefix=latency_prefix,
+        ledger_path=ledger_path,
+        qualification=qualification,
+        shard_plan=inputs["full_score_shard_plan_record"],
+        tmp_path=tmp_path,
+    )
+
+
+def _stub_evidence_that_needs_live_databricks(
+    monkeypatch: pytest.MonkeyPatch,
+    case: SimpleNamespace,
+) -> None:
+    """Replace only the evidence readers that need the live campaign's data.
+
+    The multi-plan collection's 115 job records, result records, and terminal
+    receipts are recovered from Databricks ``runs/get`` and remote result
+    trees, and latency estimation reads every request those trees hold.  The
+    full-score branch reads the frozen 83,653-example inventory and 160 shards
+    of remote evidence.  The stand-in aggregator still replays the final
+    consumer authority against the real ledger, as the real aggregator does.
+    """
+
+    def validate_collection(
+        record: Any,
+        *,
+        campaign_plan_record: Any,
+    ) -> None:
+        assert campaign_plan_record is case.campaign_plan
+        assert record["closed_record_sha256"] == (
+            case.latency_authorization.collection_sha256
+        )
+
+    for module in (campaign_finalizer, publication_latency):
+        monkeypatch.setattr(
+            module,
+            "validate_publication_latency_multi_plan_collection_record",
+            validate_collection,
+        )
+    monkeypatch.setattr(
+        publication_latency,
+        "_publication_latency_estimation",
+        lambda **_kwargs: (
+            _synthetic_latency_descriptive_cells(),
+            _synthetic_latency_estimates(),
+        ),
+    )
+    monkeypatch.setattr(
+        campaign_finalizer, "FullScoreInventory", _FrozenInventoryStandIn
+    )
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "full_score_inventory_to_record",
+        lambda inventory: (
+            deepcopy(case.inventory_record)
+            if inventory is case.inventory
+            else pytest.fail("unexpected full-score inventory")
+        ),
+    )
+    for validator_name in (
+        "validate_full_score_inventory_record",
+        "validate_full_score_shard_plan",
+        "validate_full_score_aggregate_record",
+    ):
+        monkeypatch.setattr(
+            campaign_finalizer,
+            validator_name,
+            lambda *_args, **_kwargs: None,
+        )
+
+    def aggregate_full_score(
+        inventory: Any,
+        shard_plan: Any,
+        evidence_records: Any,
+        *,
+        authorization_scope: str,
+        execution_plan: Any,
+        final_consumer_authorization: Any,
+        ledger_path: Any,
+        remote_consumer_authorizations: Any,
+        compact_artifact_resolver: Any,
+    ) -> dict[str, Any]:
+        assert inventory is case.inventory
+        assert shard_plan is case.shard_plan
+        assert evidence_records == ()
+        assert authorization_scope == (
+            campaign_finalizer.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+        )
+        lineage = full_score._require_full_score_final_consumer_aggregation_authorization(
+            execution_plan,
+            final_consumer_authorization,
+            ledger_path=ledger_path,
+        )
+        record = deepcopy(case.aggregate_base)
+        record["execution_plan_sha256"] = execution_plan["closed_record_sha256"]
+        record["publication_lineage"] = {
+            **lineage,
+            "evidence": [],
+            "remote_consumer_authorizations": [],
+        }
+        _reclose(record)
+        return record
+
+    monkeypatch.setattr(
+        campaign_finalizer,
+        "aggregate_full_score_shard_evidence",
+        aggregate_full_score,
+    )
+
+
+def _end_to_end_authorities(case: SimpleNamespace) -> dict[str, Any]:
+    """Return the in-process inputs the collector hands the finalizer."""
+
+    return {
+        "campaign_plan_record": case.campaign_plan,
+        "latency_collection_authorization": case.latency_authorization,
+        "latency_summary_record": (
+            publication_latency.aggregate_publication_latency_multi_plan_campaign(
+                case.latency_authorization,
+                campaign_plan_record=case.campaign_plan,
+            )
+        ),
+        "qualification_launch_authorization": case.qualification,
+        "full_score_inventory": case.inventory,
+        "full_score_shard_plan_record": case.shard_plan,
+        "full_score_execution_plan_record": case.execution_plan,
+        "full_score_aggregate_record": (
+            campaign_finalizer.aggregate_full_score_shard_evidence(
+                case.inventory,
+                case.shard_plan,
+                (),
+                authorization_scope=(
+                    campaign_finalizer.FULL_SCORE_PUBLICATION_AUTHORIZATION_SCOPE
+                ),
+                execution_plan=case.execution_plan,
+                final_consumer_authorization=case.final_consumer,
+                ledger_path=case.ledger_path,
+                remote_consumer_authorizations=(),
+                compact_artifact_resolver=None,
+            )
+        ),
+        "final_consumer_authorization": case.final_consumer,
+        "remote_consumer_authorizations": (),
+        "compact_artifact_resolver": lambda _uri: pytest.fail(
+            "the stand-in aggregator reads no compact artifact"
+        ),
+        "ledger_path": case.ledger_path,
+    }
+
+
+def test_vllm_0300_finalization_round_trips_a_real_campaign_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _end_to_end_campaign_case(tmp_path)
+    _stub_evidence_that_needs_live_databricks(monkeypatch, case)
+    authorities = _end_to_end_authorities(case)
+
+    finalization = campaign_finalizer.finalize_vllm_0300_publication_campaign(
+        **authorities
+    )
+
+    live = ledger_api.read_databricks_cluster_hour_ledger_json(case.ledger_path)
+    report = dict(finalization.report_record)
+    assert report["record_type"] == (
+        campaign_finalizer.PUBLICATION_CAMPAIGN_VLLM_0300_REPORT_RECORD_TYPE
+    )
+    assert campaign_finalizer._json_type_exact_equal(
+        report["ledger"],
+        {
+            "cap_raises": [
+                {
+                    "from_cap_cluster_hours": 1024.0,
+                    "reservation_count": 1,
+                    "submission_receipt_count": 0,
+                    "terminal_actual_count": 1,
+                    "to_cap_cluster_hours": 2024.0,
+                }
+            ],
+            "final_accounted_cluster_hours": live.accounted_cluster_hours,
+            "final_active_reserved_cluster_hours": 0.0,
+            "final_active_reserved_task_count": 0,
+            "final_remaining_cluster_hours": live.remaining_cluster_hours,
+            "full_score_abandoned_attempts": {
+                "attempt_count": 2,
+                "closed_consumer_phase_count": 0,
+                "cluster_hours": 0.75,
+            },
+            "full_score_capacity_retries": {
+                "attempt_count": 1,
+                "cluster_hours": 0.25,
+            },
+            "full_score_terminal_prefix": case.final_prefix.to_record(),
+            "latency_recovered_balance": {
+                "attempt_count": 2,
+                "cluster_hours": 1.5,
+            },
+            "latency_terminal_prefix": case.latency_prefix.to_record(),
+            "ledger_id": campaign_api.PUBLICATION_CAMPAIGN_LEDGER_ID,
+            "ledger_path_sha256": ledger_api.databricks_ledger_path_sha256(
+                case.ledger_path
+            ),
+            "qualification_capacity_retries": {
+                "attempt_count": 1,
+                "cluster_hours": 0.25,
+            },
+            "required_unreserved_headroom_cluster_hours": 124.0,
+        },
+    )
+    assert type(live.accounted_cluster_hours) is float
+    assert case.final_prefix.reservation_count == (
+        case.latency_prefix.reservation_count
+        + campaign_finalizer.PUBLICATION_CAMPAIGN_FULL_SCORE_PHASES
+        + 1
+    )
+    assert report["source_bindings"]["campaign"]["closed_record_sha256"] == (
+        case.campaign_plan["closed_record_sha256"]
+    )
+    assert report["source_bindings"]["latency_collection"][
+        "closed_record_sha256"
+    ] == case.latency_authorization.collection_sha256
+
+    publication_dir = tmp_path / "publication"
+    publication_dir.mkdir()
+    report_path, gate_path = (
+        campaign_finalizer.write_vllm_0300_publication_finalization(
+            finalization, publication_dir
+        )
+    )
+    report_bytes = campaign_finalizer._canonical_pretty_json_bytes(report)
+    assert report_path.read_bytes() == report_bytes
+    assert gate_path.read_bytes() == campaign_finalizer._canonical_pretty_json_bytes(
+        finalization.gate_record
+    )
+
+    loaded = campaign_finalizer.load_vllm_0300_publication_finalization(
+        publication_dir,
+        **authorities,
+    )
+
+    assert campaign_finalizer._canonical_pretty_json_bytes(
+        loaded.report_record
+    ) == report_bytes
+    assert dict(loaded.gate_record) == dict(finalization.gate_record)
+    replayed = campaign_finalizer.finalize_vllm_0300_publication_campaign(
+        **authorities
+    )
+    assert campaign_finalizer._canonical_pretty_json_bytes(
+        replayed.report_record
+    ) == report_bytes
+
+    disclosures = campaign_tables.render_vllm_0271_publication_table_regions(
+        loaded.report_record,
+        loaded.gate_record,
+    )["campaign_disclosures"]
+    for row in (
+        "| Cluster-hour budget | Raised from 1,024 h to 2,024 h after 1 "
+        "reservation, 0 receipts, and 1 terminal actual |",
+        "| GPU qualification capacity retries | 1 attempt, 0.25 h |",
+        "| Full-score capacity retries | 1 attempt, 0.25 h | Phases relaunched "
+        "after a Databricks capacity failure; the 21 full-score ledger "
+        "attempts after the latency prefix cover the 20 phases,",
+        "| Abandoned full-score attempts | 2 attempts, 0.75 h; 0 closed "
+        "consumer phases |",
+        "| Latency recovered balance | 2 seeds, 1.50 h |",
+    ):
+        assert row in disclosures
+
+
+def test_vllm_0300_loader_replay_needs_the_finalizing_process_and_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _end_to_end_campaign_case(tmp_path)
+    _stub_evidence_that_needs_live_databricks(monkeypatch, case)
+    authorities = _end_to_end_authorities(case)
+    publication_dir = tmp_path / "publication"
+    publication_dir.mkdir()
+    campaign_finalizer.write_vllm_0300_publication_finalization(
+        campaign_finalizer.finalize_vllm_0300_publication_campaign(**authorities),
+        publication_dir,
+    )
+    written = sorted(
+        (path.name, path.read_bytes()) for path in publication_dir.iterdir()
+    )
+
+    with pytest.raises(TypeError, match="wrong authority type"):
+        campaign_finalizer.load_vllm_0300_publication_finalization(
+            publication_dir,
+            **{**authorities, "latency_collection_authorization": None},
+        )
+
+    copied_ledger = tmp_path / "copied-campaign-ledger.json"
+    copied_ledger.write_bytes(case.ledger_path.read_bytes())
+    with pytest.raises(ValueError, match="ledger path binding drift"):
+        campaign_finalizer.load_vllm_0300_publication_finalization(
+            publication_dir,
+            **{**authorities, "ledger_path": copied_ledger},
+        )
+
+    _append_receipted_attempt(
+        case.ledger_path,
+        attempt_id="post-campaign-maintenance",
+        workload_id="post-campaign-maintenance",
+        terminal_state="succeeded",
+    )
+    with pytest.raises(ValueError, match="not the complete current ledger prefix"):
+        campaign_finalizer.load_vllm_0300_publication_finalization(
+            publication_dir,
+            **authorities,
+        )
+    assert sorted(
+        (path.name, path.read_bytes()) for path in publication_dir.iterdir()
+    ) == written

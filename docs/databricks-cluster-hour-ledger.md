@@ -630,7 +630,11 @@ The raise requires zero active reservations. Its effects are as follows:
 Record the raise before the remaining latency cells. The finalizer requires the
 full-score ledger suffix to be exactly the twenty phase reservations after the
 final latency collection prefix, so every non-full-score event, including
-qualification regeneration, must land before that collection.
+qualification regeneration, must land before that collection. A 0.30.0 report
+also admits disclosed capacity retries inside that suffix. Finalization and its
+replay need the final consumer to end at the complete current prefix of the
+ledger file at its original path, so finalize before appending anything else or
+moving the ledger.
 
 The vLLM 0.30.0 qualification of source revision `00153c1` is retained as
 non-authorizing evidence. Its plan is
