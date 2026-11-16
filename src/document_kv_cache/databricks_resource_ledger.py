@@ -2174,16 +2174,13 @@ def _canonical_json_bytes(value: Mapping[str, Any], field_name: str) -> bytes:
 
 
 def _ledger_terminal_state(life_cycle_state: Any, result_state: Any) -> str:
-    if life_cycle_state not in {
-        "TERMINATED",
-        "SKIPPED",
-        "INTERNAL_ERROR",
-        "BLOCKED",
-    }:
+    # BLOCKED (waiting on an upstream dependency) and WAITING_FOR_RETRY can
+    # still start a cluster, so neither may close a reservation.
+    if life_cycle_state not in {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}:
         raise ValueError("runs/get response is not terminal")
     if life_cycle_state == "SKIPPED":
         return "skipped"
-    if life_cycle_state in {"INTERNAL_ERROR", "BLOCKED"}:
+    if life_cycle_state == "INTERNAL_ERROR":
         return "internal_error"
     mapping = {
         "SUCCESS": "succeeded",

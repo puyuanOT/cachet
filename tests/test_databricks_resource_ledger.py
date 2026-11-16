@@ -1621,6 +1621,35 @@ def test_verified_terminal_rejects_wrong_run_nonterminal_and_task_count(tmp_path
         )
 
 
+@pytest.mark.parametrize("life_cycle_state", ["BLOCKED", "WAITING_FOR_RETRY"])
+@pytest.mark.parametrize("level", ["run", "task"])
+def test_verified_terminal_treats_blocked_and_retry_wait_as_nonterminal(
+    tmp_path, level, life_cycle_state
+):
+    ledger_path = tmp_path / "cluster-hours.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="publication-qualification",
+    )
+    _reserve_and_receipt(
+        ledger_path, attempt_id="gpuq-attempt-001", run_id=101, timeout_seconds=14400
+    )
+    before = read_databricks_cluster_hour_ledger_json(ledger_path)
+    waiting = _terminal_run()
+    waiting["state"]["result_state"] = "FAILED"
+    waiting["tasks"][0]["state"]["result_state"] = "FAILED"
+    target = waiting if level == "run" else waiting["tasks"][0]
+    target["state"] = {"life_cycle_state": life_cycle_state}
+
+    with pytest.raises(ValueError, match="not terminal"):
+        record_databricks_verified_run_terminal_actual_json(
+            ledger_path,
+            attempt_id="gpuq-attempt-001",
+            run_record=waiting,
+        )
+    assert read_databricks_cluster_hour_ledger_json(ledger_path) == before
+
+
 def test_verified_multi_task_terminal_sums_task_billing_intervals(tmp_path):
     ledger_path = tmp_path / "cluster-hours.json"
     create_databricks_cluster_hour_ledger_json(

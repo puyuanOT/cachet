@@ -4907,7 +4907,7 @@ def _validate_control_plane_run(
     state = _required_mapping(run.get("state"), "runs/get state")
     life_cycle_state = state.get("life_cycle_state")
     result_state = state.get("result_state")
-    if life_cycle_state not in {"TERMINATED", "SKIPPED", "INTERNAL_ERROR", "BLOCKED"}:
+    if life_cycle_state not in {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}:
         raise ValueError("qualification runs/get response is not terminal")
     start_time = _nonnegative_int(run.get("start_time"), "run.start_time")
     end_time = _positive_int(run.get("end_time"), "run.end_time")
@@ -4932,7 +4932,6 @@ def _validate_control_plane_run(
         "TERMINATED",
         "SKIPPED",
         "INTERNAL_ERROR",
-        "BLOCKED",
     }:
         raise ValueError("qualification task is not terminal")
     task_start = _nonnegative_int(task.get("start_time"), "task.start_time")
@@ -5264,7 +5263,7 @@ def _failed_attempt_terminal_actual(
     terminal_state: str
     if life_cycle_state == "SKIPPED":
         terminal_state = "skipped"
-    elif life_cycle_state in {"INTERNAL_ERROR", "BLOCKED"}:
+    elif life_cycle_state == "INTERNAL_ERROR":
         terminal_state = "internal_error"
     else:
         terminal_states = {
