@@ -38,7 +38,6 @@ from document_kv_cache.serving_env import (
     VLLM_WHEEL_SHA256,
     VLLM_WHEEL_URL,
     VIRTUALENV_BOOTSTRAP_URL,
-    vllm_runtime_lock_path,
 )
 from document_kv_cache.runtime_artifact_closure import (
     FLASHINFER_RUNTIME_WHEEL_SHA256,

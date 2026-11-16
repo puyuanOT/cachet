@@ -31,7 +31,6 @@ import document_kv_cache.full_score_remote_control as full_score_remote
 import document_kv_cache.gpu_qualification_v2 as gpu_qualification_v2
 import document_kv_cache.publication_latency_execution as publication_latency
 import document_kv_cache.runtime_artifact_closure as runtime_artifact_closure
-import document_kv_cache.flashinfer_wheel_repack as flashinfer_wheel_repack
 from document_kv_cache.artifact_identity import RuntimeIdentity, TokenContract
 from document_kv_cache.benchmark_handoffs import (
     BenchmarkHandoffEntry,
