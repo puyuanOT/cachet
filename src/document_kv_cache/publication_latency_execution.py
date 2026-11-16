@@ -213,6 +213,9 @@ from document_kv_cache.runtime_artifact_closure import (
     VLLM_RUNTIME_BASE_LOCK_SHA256,
 )
 from document_kv_cache.vllm_smoke import (
+    LATENCY_WARMUP_PREFIX_CACHE_SALT,
+    LATENCY_WARMUP_RECORD_TYPE,
+    LATENCY_WARMUP_REQUEST_ID_PREFIX,
     VLLMNativeRuntimeBundleV2,
     VLLMSmokeBenchmarkConfig,
     run_vllm_smoke_benchmark,
@@ -299,6 +302,10 @@ PUBLICATION_LATENCY_RAM_PAYLOAD_CACHE_BYTES: Final = 16 * 1024**3
 PUBLICATION_LATENCY_RAM_PRIME_TARGETS: Final = 8
 # Must match the request IDs minted by vllm_smoke.prime_payload_cache.
 PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX: Final = "cachet-payload-prime:"
+# One untimed request per dataset per job, sent in waves of the cell's request
+# parallelism (at most 4), so every arm warms prefill, decode and its connector
+# path the same way before the first timed request.
+PUBLICATION_LATENCY_WARMUP_REQUESTS: Final = 4
 PUBLICATION_LATENCY_Q8_DTYPE: Final = "fp8_e5m2"
 PUBLICATION_LATENCY_BF16_DTYPE: Final = "bfloat16"
 # Eager vLLM 0.30.0 at the L4 0.9 default over-allocates the BF16 KV cache and
@@ -11377,6 +11384,7 @@ def publication_latency_vllm_config(
         ),
         prewarm_payload_cache=cell.get("setting_id") == "storage-ram",
         require_kv_cache_concurrency=True,
+        latency_warmup_requests=PUBLICATION_LATENCY_WARMUP_REQUESTS,
         hardware_target=_required_string(runtime, "hardware_target"),
         dataset_specs=input_specs,
         allow_dataset_subset=False,
@@ -11528,6 +11536,7 @@ def seal_publication_latency_job_result(
         config.connector_telemetry_copy_path,
         job_record=job_record,
         benchmark_record=benchmark,
+        warmup_request_count=PUBLICATION_LATENCY_WARMUP_REQUESTS,
     )
     if _mapping(job_record, "cell").get("setting_id") == "storage-ram":
         cache_summary.update(
@@ -11988,6 +11997,7 @@ def _validate_publication_latency_runtime_metadata(
         if metadata.get(field_name) != value:
             raise ValueError(f"vLLM metadata {field_name} drift")
     _validate_publication_latency_kv_capacity_metadata(metadata, runtime=runtime)
+    _validate_publication_latency_warmup_metadata(metadata, job_record=job_record)
     if (
         metadata.get("strict_runtime_closure") is not True
         or metadata.get("vllm_runtime_lock_verification_scope") != "final-runtime"
@@ -12092,11 +12102,67 @@ def _validate_publication_latency_kv_capacity_metadata(
         raise ValueError("vLLM metadata preemption evidence drift")
 
 
+def _validate_publication_latency_warmup_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    job_record: Mapping[str, Any],
+) -> None:
+    runtime = _mapping(job_record, "runtime")
+    method_id = _required_string(_mapping(job_record, "cell"), "method_id")
+    uses_handoff = method_id == "vanilla_prefill"
+    count = PUBLICATION_LATENCY_WARMUP_REQUESTS
+    max_tokens = _required_int(runtime, "max_output_tokens")
+    force_max_tokens = runtime.get("force_max_tokens") is True
+    warmup = _mapping(metadata, "latency_warmup")
+    expected = {
+        "record_type": LATENCY_WARMUP_RECORD_TYPE,
+        "schema_version": 1,
+        "ok": True,
+        "timed": False,
+        "benchmark_id": _required_string(job_record, "job_id"),
+        "requests_per_arm": count,
+        "request_parallelism": _required_int(runtime, "request_parallelism"),
+        "max_tokens": max_tokens,
+        "force_max_tokens": force_max_tokens,
+        "prompt_text_mode": "logical",
+        "prefix_cache_namespace": LATENCY_WARMUP_PREFIX_CACHE_SALT,
+        "arms": [
+            {
+                "arm_id": (
+                    PUBLICATION_LATENCY_VANILLA_ARM_ID
+                    if uses_handoff
+                    else BASELINE_PREFILL_ARM
+                ),
+                "connector_load_count": count if uses_handoff else 0,
+                "request_count": count,
+                "uses_cachet_handoff": uses_handoff,
+            }
+        ],
+        "issues": [],
+    }
+    for field_name, value in expected.items():
+        if not _json_type_exact_equal(warmup.get(field_name), value):
+            raise ValueError(f"latency warmup metadata {field_name} drift")
+    rows = _mapping_sequence(warmup, "rows")
+    if (
+        len(rows) != count
+        or any(
+            row.get("ok") is not True
+            or type(row.get("completion_tokens")) is not int
+            or (force_max_tokens and row.get("completion_tokens") != max_tokens)
+            for row in rows
+        )
+        or len({row.get("cache_salt_sha256") for row in rows}) != count
+    ):
+        raise ValueError("latency warmup metadata does not prove every request")
+
+
 def _publication_latency_cache_telemetry_summary(
     path: Path,
     *,
     job_record: Mapping[str, Any],
     benchmark_record: Mapping[str, Any],
+    warmup_request_count: int = 0,
 ) -> dict[str, Any]:
     method_id = _required_string(_mapping(job_record, "cell"), "method_id")
     if method_id == "baseline_prefill":
@@ -12152,6 +12218,26 @@ def _publication_latency_cache_telemetry_summary(
                 PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX
             )
         ]
+    # Untimed warmup loads share the telemetry file; the warmup record in the
+    # job metadata proves them, so only their exact count is checked here.
+    warmup_ids = [
+        item.get("benchmark_request_id")
+        for item in loads
+        if str(item.get("benchmark_request_id")).startswith(
+            LATENCY_WARMUP_REQUEST_ID_PREFIX
+        )
+    ]
+    if len(warmup_ids) != warmup_request_count or len(set(warmup_ids)) != len(
+        warmup_ids
+    ):
+        raise ValueError("latency warmup connector telemetry count drift")
+    loads = [
+        item
+        for item in loads
+        if not str(item.get("benchmark_request_id")).startswith(
+            LATENCY_WARMUP_REQUEST_ID_PREFIX
+        )
+    ]
     benchmark = benchmark_run_result_from_record(
         benchmark_record,
         evidence_policy=PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY,

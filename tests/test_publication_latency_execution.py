@@ -1826,6 +1826,11 @@ def test_one_arm_latency_configs_emit_component_evidence(monkeypatch, method_id)
     config = execution.publication_latency_vllm_config(job)
 
     assert config.benchmark_evidence_policy == "smoke"
+    assert (
+        config.latency_warmup_requests
+        == execution.PUBLICATION_LATENCY_WARMUP_REQUESTS
+        == 4
+    )
     runner_args = vllm_smoke.build_benchmark_runner_args(
         config,
         vllm_smoke.parse_dataset_specs(config.dataset_specs),
@@ -4830,6 +4835,198 @@ def test_payload_cache_prime_request_id_prefix_matches_vllm_smoke():
         f'request_id = f"{execution.PUBLICATION_LATENCY_RAM_PRIME_REQUEST_ID_PREFIX}'
         '{phase}:{identity_digest}"'
     ) in source
+
+
+@pytest.mark.parametrize(
+    "host_cache_state", ["cold_eviction_required", "prewarmed_payload_cache"]
+)
+def test_cache_telemetry_excludes_exactly_the_untimed_warmup_loads(
+    monkeypatch, host_cache_state
+):
+    request_ids = [
+        f"block-01-request-{index:03d}"
+        for index in range(execution.PUBLICATION_CAMPAIGN_REQUESTS_PER_CELL)
+    ]
+    benchmark = SimpleNamespace(
+        measurements=tuple(
+            SimpleNamespace(
+                metadata={
+                    execution.PUBLICATION_LATENCY_REQUEST_ID_METADATA_KEY: request_id
+                }
+            )
+            for request_id in request_ids
+        )
+    )
+    monkeypatch.setattr(
+        execution,
+        "benchmark_run_result_from_record",
+        lambda *_args, **_kwargs: benchmark,
+    )
+    monkeypatch.setattr(execution, "_file_sha256", lambda _path: "a" * 64)
+    ram = host_cache_state == "prewarmed_payload_cache"
+
+    def summarize(records: list[dict], warmup_request_count: int) -> dict:
+        monkeypatch.setattr(
+            execution,
+            "_read_jsonl_file",
+            lambda *_args, **_kwargs: records,
+        )
+        return execution._publication_latency_cache_telemetry_summary(
+            Path("connector-telemetry.jsonl"),
+            job_record={
+                "cache_telemetry_policy": {"host_cache_state": host_cache_state},
+                "cell": {"method_id": "vanilla_prefill"},
+                "runtime": {"runtime_kv_dtype": "bfloat16"},
+            },
+            benchmark_record={},
+            warmup_request_count=warmup_request_count,
+        )
+
+    def loads(ids: list[str]) -> list[dict]:
+        return [
+            _realistic_local_path_connector_load(
+                request_id, cold_read_attested=not ram, payload_cache_hit=ram
+            )
+            for request_id in ids
+        ]
+
+    prime = _ram_payload_cache_prime_loads() if ram else []
+    warmup = loads(
+        [
+            f"{vllm_smoke.LATENCY_WARMUP_REQUEST_ID_PREFIX}{index:064x}"
+            for index in range(execution.PUBLICATION_LATENCY_WARMUP_REQUESTS)
+        ]
+    )
+    measured = loads(request_ids)
+    count = execution.PUBLICATION_LATENCY_WARMUP_REQUESTS
+
+    assert summarize(prime + warmup + measured, count) == summarize(
+        prime + measured, 0
+    )
+    assert summarize(prime + warmup + measured, count)["load_count"] == len(
+        request_ids
+    )
+    for forged, expected_count in (
+        (prime + warmup[1:] + measured, count),
+        (prime + warmup[:-1] + warmup[:1] + measured, count),
+        (prime + warmup + measured, 0),
+        (prime + measured, count),
+    ):
+        with pytest.raises(ValueError, match="latency warmup connector telemetry"):
+            summarize(forged, expected_count)
+
+
+def _publication_latency_warmup_record(monkeypatch, method_id):
+    monkeypatch.setattr(
+        execution, "validate_publication_latency_job_record", lambda _record: None
+    )
+    job = _native_v2_job_record(method_id=method_id)
+    config = execution.publication_latency_vllm_config(job)
+    examples = [
+        SimpleNamespace(
+            dataset=dataset,
+            example_id=f"{dataset}-{index}",
+            arm_kv_transfer_params={},
+            kv_transfer_params={"document_kv.handoff_json": "{}"},
+        )
+        for dataset in SUPPORTED_V1_DATASETS
+        for index in range(2)
+    ]
+    telemetry = []
+
+    def fake_stream(url, body, *, timeout_seconds):
+        params = body.get("kv_transfer_params")
+        if params is not None:
+            telemetry.append(
+                {
+                    "benchmark_request_id": params[
+                        vllm_smoke.DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM
+                    ],
+                    "success": True,
+                }
+            )
+        return 0.1, "x", {"prompt_tokens": 1, "completion_tokens": body["max_tokens"]}
+
+    monkeypatch.setattr(
+        vllm_smoke,
+        "load_v1_jsonl_suite",
+        lambda **_kwargs: SimpleNamespace(examples=examples),
+    )
+    monkeypatch.setattr(
+        vllm_smoke,
+        "_payload_cache_prime_prompt_text",
+        lambda example: f"prompt for {example.example_id}",
+    )
+    monkeypatch.setattr(vllm_smoke, "_stream_completion_ttft", fake_stream)
+    monkeypatch.setattr(vllm_smoke, "_read_jsonl_records", lambda _path: telemetry)
+    return job, vllm_smoke.run_latency_warmup(config, {})
+
+
+def _tamper_warmup_row_decode(warmup):
+    warmup["rows"][0]["completion_tokens"] -= 1
+
+
+def _tamper_warmup_reused_salt(warmup):
+    warmup["rows"][1]["cache_salt_sha256"] = warmup["rows"][0]["cache_salt_sha256"]
+
+
+@pytest.mark.parametrize("method_id", ["baseline_prefill", "vanilla_prefill"])
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        (None, None),
+        (lambda warmup: warmup.__setitem__("ok", False), "metadata ok drift"),
+        (lambda warmup: warmup.__setitem__("timed", True), "metadata timed drift"),
+        (
+            lambda warmup: warmup.__setitem__("request_parallelism", 4),
+            "metadata request_parallelism drift",
+        ),
+        (
+            lambda warmup: warmup["arms"][0].__setitem__("connector_load_count", 3),
+            "metadata arms drift",
+        ),
+        (lambda warmup: warmup["rows"].pop(), "does not prove every request"),
+        (_tamper_warmup_row_decode, "does not prove every request"),
+        (_tamper_warmup_reused_salt, "does not prove every request"),
+    ),
+)
+def test_latency_warmup_metadata_must_prove_every_untimed_request(
+    monkeypatch, method_id, tamper, message
+):
+    job, warmup = _publication_latency_warmup_record(monkeypatch, method_id)
+    assert warmup["ok"] is True, warmup["issues"]
+    assert warmup["arms"] == [
+        {
+            "arm_id": (
+                execution.PUBLICATION_LATENCY_VANILLA_ARM_ID
+                if method_id == "vanilla_prefill"
+                else "baseline_prefill"
+            ),
+            "connector_load_count": (
+                execution.PUBLICATION_LATENCY_WARMUP_REQUESTS
+                if method_id == "vanilla_prefill"
+                else 0
+            ),
+            "request_count": execution.PUBLICATION_LATENCY_WARMUP_REQUESTS,
+            "uses_cachet_handoff": method_id == "vanilla_prefill",
+        }
+    ]
+    assert sorted(row["dataset"] for row in warmup["rows"]) == sorted(
+        SUPPORTED_V1_DATASETS
+    )
+    if tamper is not None:
+        tamper(warmup)
+    metadata = {"latency_warmup": warmup}
+
+    if message is None:
+        execution._validate_publication_latency_warmup_metadata(
+            metadata, job_record=job
+        )
+    else:
+        with pytest.raises(ValueError, match=message):
+            execution._validate_publication_latency_warmup_metadata(
+                metadata, job_record=job
+            )
 
 
 def test_mounted_path_load_count_requires_verified_uc_backend_reads(monkeypatch):

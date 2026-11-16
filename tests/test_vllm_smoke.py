@@ -243,6 +243,7 @@ def test_publication_options_are_appended_to_preserve_positional_config_api():
             "representative_handoff_source",
             "representative_supplement_provenance",
             "require_kv_cache_concurrency",
+            "latency_warmup_requests",
         ]
 
     assert field_names == [*legacy_fields, *publication_fields]
@@ -4223,6 +4224,180 @@ def test_prime_payload_cache_preserves_full_logical_prompt_token_contract(
     assert all(not body["prompt"].endswith("\n\nCache warmup.") for body in calls)
 
 
+def _latency_warmup_config(tmp_path, **overrides):
+    dataset_paths = prepared_dataset_paths(tmp_path)
+    values = {
+        "benchmark_id": "warmup-1",
+        "output_dir": tmp_path / "out",
+        "local_root": tmp_path / "local",
+        "dataset_specs": tuple(
+            f"{dataset}={path}" for dataset, path in dataset_paths.items()
+        ),
+        "benchmark_arms": ("baseline_prefill", CACHE_REUSE_ARM),
+        "max_tokens": 8,
+        "force_max_tokens": True,
+        "generation_seed": 17,
+        "request_parallelism": 2,
+        "latency_warmup_requests": 4,
+        "timeout_seconds": 12.5,
+    }
+    values.update(overrides)
+    return VLLMSmokeBenchmarkConfig(**values), dataset_paths
+
+
+def _fake_latency_warmup_server(config, *, skip_load=None, short_decode=None):
+    import threading
+
+    bodies = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(config.request_parallelism, timeout=10)
+
+    def fake_stream(url, body, *, timeout_seconds):
+        assert url == f"{config.server_base_url}/v1/completions"
+        assert timeout_seconds == config.timeout_seconds
+        barrier.wait()
+        with lock:
+            index = len(bodies)
+            bodies.append(body)
+            params = body.get("kv_transfer_params")
+            if params is not None and index != skip_load:
+                config.connector_telemetry_path.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                with config.connector_telemetry_path.open(
+                    "a", encoding="utf-8"
+                ) as handle:
+                    record = {
+                        "benchmark_request_id": params[
+                            DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM
+                        ],
+                        "event": "load_request",
+                        "success": True,
+                    }
+                    handle.write(json.dumps(record) + "\n")
+        completion_tokens = 3 if index == short_decode else config.max_tokens
+        return 0.01, "x", {"prompt_tokens": 12, "completion_tokens": completion_tokens}
+
+    return bodies, fake_stream
+
+
+def test_latency_warmup_runs_every_arm_through_uniquely_salted_untimed_requests(
+    tmp_path, monkeypatch
+):
+    config, dataset_paths = _latency_warmup_config(tmp_path)
+    bodies, fake_stream = _fake_latency_warmup_server(config)
+    monkeypatch.setattr(public_vllm_smoke, "_stream_completion_ttft", fake_stream)
+
+    record = public_vllm_smoke.run_latency_warmup(config, dataset_paths)
+
+    assert record["ok"] is True, record["issues"]
+    assert {key: value for key, value in record.items() if key != "rows"} == {
+        "record_type": "document_kv.vllm_latency_warmup.v1",
+        "schema_version": 1,
+        "ok": True,
+        "timed": False,
+        "benchmark_id": "warmup-1",
+        "requests_per_arm": 4,
+        "request_parallelism": 2,
+        "max_tokens": 8,
+        "force_max_tokens": True,
+        "prompt_text_mode": "logical",
+        "prefix_cache_namespace": public_vllm_smoke.LATENCY_WARMUP_PREFIX_CACHE_SALT,
+        "arms": [
+            {
+                "arm_id": "baseline_prefill",
+                "connector_load_count": 0,
+                "request_count": 4,
+                "uses_cachet_handoff": False,
+            },
+            {
+                "arm_id": CACHE_REUSE_ARM,
+                "connector_load_count": 4,
+                "request_count": 4,
+                "uses_cachet_handoff": True,
+            },
+        ],
+        "issues": [],
+    }
+    assert len(bodies) == 8
+    assert len({body["cache_salt"] for body in bodies}) == 8
+    assert len({body["request_id"] for body in bodies}) == 8
+    assert all(
+        body["cache_salt"].startswith(
+            f"{public_vllm_smoke.LATENCY_WARMUP_PREFIX_CACHE_SALT}:"
+        )
+        and body["request_id"].startswith(
+            public_vllm_smoke.LATENCY_WARMUP_REQUEST_ID_PREFIX
+        )
+        and body["add_special_tokens"] is False
+        and body["max_tokens"] == 8
+        and body["ignore_eos"] is True
+        and body["seed"] == 17
+        for body in bodies
+    )
+    assert CACHE_PREFIX_CACHE_SALT not in {body["cache_salt"] for body in bodies}
+    full_prompts = {
+        public_vllm_smoke.build_prompt_parts(example).prefill_prompt
+        for example in public_vllm_smoke.load_v1_jsonl_suite(
+            suite_id="warmup-prompts",
+            paths=dataset_paths,
+            model_id=SERVED_MODEL_NAME,
+            hardware_target=config.hardware_target,
+        ).examples
+    }
+    assert {body["prompt"] for body in bodies} <= full_prompts
+    baseline = [row for row in record["rows"] if row["arm_id"] == "baseline_prefill"]
+    cached = [row for row in record["rows"] if row["arm_id"] == CACHE_REUSE_ARM]
+    assert sorted(row["dataset"] for row in baseline) == sorted(SMOKE_DATASETS)
+    assert sorted(row["dataset"] for row in cached) == sorted(SMOKE_DATASETS)
+    assert all(row["ok"] is True and row["completion_tokens"] == 8 for row in cached)
+    assert all("kv_transfer_params" not in body for body in bodies[:4])
+    for body in bodies[4:]:
+        params = body["kv_transfer_params"]
+        assert params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] == body["request_id"]
+        assert params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] == "logical"
+        assert DOCUMENT_KV_HANDOFF_JSON_PARAM in params
+    assert public_vllm_smoke.run_latency_warmup(
+        replace(config, latency_warmup_requests=0), dataset_paths
+    ) is None
+
+
+def test_latency_warmup_reports_missing_connector_loads_and_short_decodes(
+    tmp_path, monkeypatch
+):
+    config, dataset_paths = _latency_warmup_config(tmp_path)
+    _bodies, fake_stream = _fake_latency_warmup_server(
+        config, skip_load=5, short_decode=1
+    )
+    monkeypatch.setattr(public_vllm_smoke, "_stream_completion_ttft", fake_stream)
+
+    record = public_vllm_smoke.run_latency_warmup(config, dataset_paths)
+
+    assert record["ok"] is False
+    assert record["arms"][1]["connector_load_count"] == 3
+    assert any("did not decode the timed output length" in i for i in record["issues"])
+    assert any(
+        "expected one successful connector load per request, observed 3" in issue
+        for issue in record["issues"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"latency_warmup_requests": -1}, "non-negative integer"),
+        ({"latency_warmup_requests": True}, "non-negative integer"),
+        ({"benchmark_arms": ()}, "explicit benchmark arms"),
+        ({"cache_runtime_prompt": True}, "logical prompts"),
+    ),
+)
+def test_latency_warmup_config_requires_explicit_arms_and_logical_prompts(
+    tmp_path, overrides, message
+):
+    with pytest.raises(ValueError, match=message):
+        _latency_warmup_config(tmp_path, **overrides)
+
+
 def test_parse_args_wires_payload_cache_priming(tmp_path):
     specs = tuple(
         f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
@@ -6192,6 +6367,56 @@ def test_run_vllm_smoke_benchmark_gates_kv_capacity_around_timed_requests(
     assert metadata["vllm_preemptions"] == preemptions
     with pytest.raises(ValueError, match="not supported for the LMCache runner"):
         replace(config, kv_connector_mode="lmcache")
+
+
+@pytest.mark.parametrize("warmup_ok", [True, False])
+def test_run_vllm_smoke_benchmark_warms_up_after_priming_and_before_timing(
+    monkeypatch, tmp_path, warmup_ok
+):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+    )
+    calls, _fake_server, dataset_paths = _patch_smoke_orchestration(
+        monkeypatch, tmp_path, config
+    )
+    warmup = {
+        "record_type": public_vllm_smoke.LATENCY_WARMUP_RECORD_TYPE,
+        "ok": warmup_ok,
+        "issues": [] if warmup_ok else ["warmup 0 for vanilla failed: URLError"],
+    }
+    for name in ("prewarm_cache_prefixes", "prime_payload_cache"):
+        monkeypatch.setattr(
+            public_vllm_smoke,
+            name,
+            lambda cfg, paths, name=name: calls.append((name, paths)),
+        )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "run_latency_warmup",
+        lambda cfg, paths: calls.append(("warmup", paths)) or warmup,
+    )
+
+    if warmup_ok:
+        run_vllm_smoke_benchmark(config)
+    else:
+        with pytest.raises(RuntimeError, match="latency warmup failed: warmup 0"):
+            run_vllm_smoke_benchmark(config)
+
+    names = [call[0] for call in calls]
+    assert names[names.index("wait_for_server") : names.index("terminate")] == [
+        "wait_for_server",
+        "copy",
+        "prewarm_cache_prefixes",
+        "prime_payload_cache",
+        "warmup",
+        *(["run"] if warmup_ok else []),
+    ]
+    assert ("warmup", dataset_paths) in calls
+    metadata = json.loads(config.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["latency_warmup"] == warmup
 
 
 _VLLM_STARTUP_LOG = """\
