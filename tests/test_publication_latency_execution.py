@@ -6209,11 +6209,24 @@ def _auxiliary_rerun_case(monkeypatch):
         "benchmark_run_result_from_record",
         lambda record, **_kwargs: parsed[record["job_id"]],
     )
-    monkeypatch.setattr(
-        execution,
-        "_descriptive_cell_record",
-        lambda *, cell_id, job_ids, **_kwargs: {"cell_id": cell_id, "job_ids": job_ids},
-    )
+    def descriptive_cell(*, cell_id, job_ids, **_kwargs):
+        cell = {
+            "cache_telemetry": {
+                "cold_read_attested_count": 1280,
+                "load_count": 1280,
+                "payload_cache_hit_count": 0,
+            },
+            "cell_id": cell_id,
+            "cell_sha256": "",
+            "job_ids": list(job_ids),
+            "p50_time_to_completion_seconds": 20.0,
+            "p50_ttft_seconds": 6.0,
+            "p95_ttft_seconds": 7.0,
+        }
+        cell["cell_sha256"] = execution._descriptive_cell_sha256(cell)
+        return cell
+
+    monkeypatch.setattr(execution, "_descriptive_cell_record", descriptive_cell)
     monkeypatch.setattr(execution, "PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS", 200)
     return plan, jobs, results
 
@@ -6268,6 +6281,43 @@ def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monke
     assert len(record["coherence"]) == 20
     assert all(row["execution_plan_equal"] and row["runtime_equal"] for row in record["coherence"])
     assert [job["job_id"] for job in record["jobs"]] == plan["job_ids"]
+
+    committed = json.loads(json.dumps(record, indent=2, sort_keys=True))
+    execution.validate_publication_latency_auxiliary_rerun_record(committed)
+    campaign_report = {
+        "latency": {
+            "estimates": [
+                {
+                    "estimand_id": item["estimand_id"],
+                    "metrics": {
+                        name: {"confidence_interval_95": [0.9, 1.1], "geometric_mean_speedup": 1.0}
+                        for name in ("ttft", "time_to_completion")
+                    },
+                }
+                for item in record["estimates"]
+            ]
+        }
+    }
+    region = execution.render_publication_latency_auxiliary_rerun_region(
+        committed, campaign_report
+    )
+    assert (
+        "| RAM vs Disk | 16k, concurrency 4, L4 | 1.0000 | [0.9000, 1.1000] | 2.0000 |"
+        in region
+    )
+    assert "| hardware-a10g | `g5.8xlarge` | 0.9 | 6.0000 | 7.0000 | 20.0000 | 1280 | 1280 | 0 |" in region
+    begin, end = execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_README_MARKERS
+    readme = f"{begin}{region}{end}"
+    execution.validate_publication_latency_auxiliary_rerun_region(
+        readme, committed, campaign_report
+    )
+    with pytest.raises(ValueError, match="differs from the sealed record"):
+        execution.validate_publication_latency_auxiliary_rerun_region(
+            readme.replace("2.0000", "2.1000"), committed, campaign_report
+        )
+    committed["estimates"][0]["metrics"]["ttft"]["geometric_mean_speedup"] = 9.0
+    with pytest.raises(ValueError, match="closure is invalid"):
+        execution.validate_publication_latency_auxiliary_rerun_record(committed)
 
 
 @pytest.mark.parametrize(

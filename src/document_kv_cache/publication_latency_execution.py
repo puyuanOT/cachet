@@ -8960,7 +8960,170 @@ def aggregate_publication_latency_auxiliary_rerun(
         "schema_version": 1,
     }
     record["closed_record_sha256"] = _closed_record_sha256(record)
+    validate_publication_latency_auxiliary_rerun_record(record)
     return record
+
+
+_AUXILIARY_RERUN_RECORD_KEYS: Final = frozenset(
+    {
+        "analysis",
+        "closed_record_sha256",
+        "coherence",
+        "descriptive_cells",
+        "estimates",
+        "jobs",
+        "plan",
+        "plan_sha256",
+        "record_type",
+        "results_sha256",
+        "schema_version",
+    }
+)
+_AUXILIARY_RERUN_LABELS: Final = MappingProxyType(
+    {
+        "precision-bf16": ("BF16 payload/runtime KV vs Q8", "16k, concurrency 4, L4/NVMe"),
+        "storage-ram": ("RAM vs Disk", "16k, concurrency 4, L4"),
+        "storage-uc": ("Unity Catalog vs Disk", "16k, concurrency 4, L4"),
+        "hardware-a10g": ("A10G vs L4", "16k, concurrency 4, local NVMe"),
+    }
+)
+PUBLICATION_LATENCY_AUXILIARY_RERUN_README_MARKERS: Final = (
+    "<!-- cachet:vllm-0300-auxiliary-latency-rerun:begin -->",
+    "<!-- cachet:vllm-0300-auxiliary-latency-rerun:end -->",
+)
+
+
+def validate_publication_latency_auxiliary_rerun_record(record: Mapping[str, Any]) -> None:
+    """Fail unless ``record`` is a closed, plan-coherent auxiliary re-run summary."""
+
+    _require_exact_keys(record, _AUXILIARY_RERUN_RECORD_KEYS, "auxiliary re-run record")
+    if record.get("record_type") != PUBLICATION_LATENCY_AUXILIARY_RERUN_RECORD_TYPE:
+        raise ValueError("auxiliary re-run record_type is invalid")
+    if record.get("schema_version") != 1:
+        raise ValueError("auxiliary re-run schema_version is invalid")
+    if record.get("closed_record_sha256") != _closed_record_sha256(record):
+        raise ValueError("auxiliary re-run closure is invalid")
+    plan = _mapping(record, "plan")
+    if record.get("plan_sha256") != _canonical_sha256(plan):
+        raise ValueError("auxiliary re-run plan digest drift")
+    job_ids = [_required_string(job, "job_id") for job in _mapping_sequence(record, "jobs")]
+    if job_ids != plan.get("job_ids") or len(job_ids) != (
+        PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS * len(PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS)
+    ):
+        raise ValueError("auxiliary re-run jobs do not match the plan")
+    if record.get("results_sha256") != _canonical_sha256(
+        [
+            [job["job_id"], _required_sha256(job, "result_sha256")]
+            for job in _mapping_sequence(record, "jobs")
+        ]
+    ):
+        raise ValueError("auxiliary re-run result digest drift")
+    coherence = _mapping_sequence(record, "coherence")
+    if len(coherence) != PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS * len(
+        PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
+    ) or not all(row.get(key) is True for row in coherence for key, _ in _LATENCY_COHERENCE_FIELDS):
+        raise ValueError("auxiliary re-run comparison pairs are not plan-coherent")
+    estimates = _mapping_sequence(record, "estimates")
+    if [item.get("setting_id") for item in estimates] != [
+        setting_id for setting_id, _family, _description in PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS
+    ]:
+        raise ValueError("auxiliary re-run must estimate the four auxiliary contrasts")
+    for item in estimates:
+        for metric_name in ("ttft", "time_to_completion"):
+            metric = _mapping(_mapping(item, "metrics"), metric_name)
+            point = _finite_positive_number(metric.get("geometric_mean_speedup"), metric_name)
+            lower, upper = metric.get("confidence_interval_95") or (None, None)
+            lower = _finite_positive_number(lower, metric_name)
+            upper = _finite_positive_number(upper, metric_name)
+            if not lower * (1 - 1e-12) <= point <= upper * (1 + 1e-12):
+                raise ValueError("auxiliary re-run interval does not bracket its estimate")
+    cells = _mapping_sequence(record, "descriptive_cells")
+    if [cell.get("cell_id") for cell in cells] != [
+        f"auxiliary-rerun-{kind}" for kind in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
+    ] or any(cell.get("cell_sha256") != _descriptive_cell_sha256(cell) for cell in cells):
+        raise ValueError("auxiliary re-run descriptive cells drift")
+
+
+def _speedup_cell(metric: Mapping[str, Any]) -> tuple[str, str]:
+    lower, upper = metric["confidence_interval_95"]
+    return (
+        f"{metric['geometric_mean_speedup']:.4f}",
+        f"[{lower:.4f}, {upper:.4f}]",
+    )
+
+
+def render_publication_latency_auxiliary_rerun_region(
+    record: Mapping[str, Any],
+    campaign_report: Mapping[str, Any],
+) -> str:
+    """Render the re-run estimates beside the sealed campaign's, plus re-run cells."""
+
+    validate_publication_latency_auxiliary_rerun_record(record)
+    campaign = {
+        item.get("estimand_id"): item
+        for item in _mapping_sequence(_mapping(campaign_report, "latency"), "estimates")
+    }
+    lines = [
+        "",
+        f"Re-run `closed_record_sha256`: `{record['closed_record_sha256']}`; execution "
+        f"plan `{record['plan_sha256']}`. All {len(record['jobs'])} jobs share one package "
+        "wheel and source tree, and every compared pair differs only in its design fields.",
+        "",
+        "| Treatment vs reference | Setting | TTFT speedup, campaign | TTFT 95% CI, campaign "
+        "| TTFT speedup, re-run | TTFT 95% CI, re-run | TTC speedup, campaign "
+        "| TTC 95% CI, campaign | TTC speedup, re-run | TTC 95% CI, re-run |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for item in record["estimates"]:
+        label, setting = _AUXILIARY_RERUN_LABELS[item["setting_id"]]
+        sealed = campaign.get(item["estimand_id"])
+        if sealed is None:
+            raise ValueError("campaign report lacks an auxiliary estimand")
+        cells = []
+        for metric_name in ("ttft", "time_to_completion"):
+            cells += [
+                *_speedup_cell(sealed["metrics"][metric_name]),
+                *_speedup_cell(item["metrics"][metric_name]),
+            ]
+        lines.append(f"| {label} | {setting} | " + " | ".join(cells) + " |")
+    by_kind: dict[str, Mapping[str, Any]] = {}
+    for job in record["jobs"]:
+        by_kind.setdefault(job["job_id"][len("block-00-"):], job)
+    lines += [
+        "",
+        "| Re-run cell | Node | GPU memory utilization | P50 TTFT (s) | P95 TTFT (s) "
+        "| P50 TTC (s) | Connector loads | Cold-read attestations | Payload-cache hits |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for cell, kind in zip(
+        record["descriptive_cells"], PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS, strict=True
+    ):
+        job = by_kind[kind]
+        telemetry = cell["cache_telemetry"]
+        lines.append(
+            f"| {kind} | `{job['node_type_id']}` | {job['gpu_memory_utilization']} "
+            f"| {cell['p50_ttft_seconds']:.4f} | {cell['p95_ttft_seconds']:.4f} "
+            f"| {cell['p50_time_to_completion_seconds']:.4f} | {telemetry['load_count']} "
+            f"| {telemetry['cold_read_attested_count']} | {telemetry['payload_cache_hit_count']} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def validate_publication_latency_auxiliary_rerun_region(
+    readme: str,
+    record: Mapping[str, Any],
+    campaign_report: Mapping[str, Any],
+) -> None:
+    begin, end = PUBLICATION_LATENCY_AUXILIARY_RERUN_README_MARKERS
+    if readme.count(begin) != 1 or readme.count(end) != 1:
+        raise ValueError("README must contain one auxiliary re-run region")
+    start = readme.index(begin) + len(begin)
+    stop = readme.index(end)
+    if stop < start or readme[start:stop] != render_publication_latency_auxiliary_rerun_region(
+        record, campaign_report
+    ):
+        raise ValueError("README auxiliary re-run region differs from the sealed record")
 
 
 def _latency_collection_causal_closure_sha256(
@@ -14387,6 +14550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS",
+    "PUBLICATION_LATENCY_AUXILIARY_RERUN_README_MARKERS",
     "PUBLICATION_LATENCY_AUXILIARY_RERUN_RECORD_TYPE",
     "PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE",
     "PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY",
@@ -14435,6 +14599,9 @@ __all__ = [
     "PublicationLatencyWaveAuthorization",
     "PublicationLatencyWaveSubmissionAuthorization",
     "aggregate_publication_latency_auxiliary_rerun",
+    "render_publication_latency_auxiliary_rerun_region",
+    "validate_publication_latency_auxiliary_rerun_record",
+    "validate_publication_latency_auxiliary_rerun_region",
     "aggregate_publication_latency_campaign",
     "aggregate_publication_latency_multi_plan_campaign",
     "build_databricks_publication_latency_run_submit_payload",
