@@ -1,5 +1,6 @@
 # Storage Benchmark Index
 
+The campaign was designed and frozen for vLLM 0.27.1 and ran on vLLM 0.30.0.
 The vLLM 0.27.1 campaign defines the implemented Vanilla KV storage comparison
 as a separate matched Disk/RAM/Unity Catalog trio in each of five deployment
 blocks. Every cell uses the same capacity-safe 16k schedule: two
@@ -13,9 +14,10 @@ requests (again without measured residency), and exact bytes while retaining
 the honest `backend cache unproven` label. The combined hybrid policy remains
 unsupported.
 
-The campaign ran on vLLM 0.30.0. Its RAM cell was primed while Disk and Unity
-Catalog ran no warmup, so the trio was re-run with a uniform untimed warmup and
-measured cold reads; see the
+The campaign's RAM cell was primed while Disk and Unity Catalog ran no warmup,
+so the trio was re-run with a uniform untimed warmup and cold reads measured
+against the local page cache (the Unity Catalog backend cache remains
+unproven); see the
 [Auxiliary Latency Re-run](../README.md#auxiliary-latency-re-run).
 
 No prior storage number is carried forward. See the [benchmark root](../) for

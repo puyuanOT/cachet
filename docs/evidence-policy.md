@@ -85,7 +85,8 @@ Missing, duplicated, tampered, locally scoped, interleaved-ledger, active-ledger
 or below-headroom inputs fail closed and remain provisional.
 The public pair additionally pins the frozen campaign, inventory, shard-plan,
 and execution-plan digests, requires 15,360–16,640 cold-read attestations, and
-accepts only the authorized 1,024-hour ledger cap.
+accepts only the authorized 1,024-hour ledger cap, raised once by the approved
+1,000-hour extension to 2,024 hours for the vLLM 0.30.0 report.
 Each file is published from complete immutable temporary bytes; the gate is
 published first and the report last as the pair's commit file. An exact
 read-only gate-only interruption is retryable, while a report without its gate

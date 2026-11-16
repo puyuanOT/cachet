@@ -295,15 +295,17 @@ exact match falls from 0.462 to 0.187 and MuSiQue from 0.182 to 0.008, with
 intervals far below −0.02. Vanilla prefills each document on its own, so no
 document attends to another, and these are the two datasets whose answers
 bridge facts across documents (HotpotQA examples carry up to 10 documents and
-MuSiQue up to 20). The failures differ by dataset. Counting as an abstention
-any extracted answer that declines ("Unknown", "None", "I do not know") or
-says the documents do not provide, mention, or specify the answer, about
-4,200 of HotpotQA's 6,017 Vanilla misses (70%) are wrong answers, about 1,500
-(25%) abstain, and 321 have no extractable answer. On MuSiQue, Vanilla mostly
-declines: of its 2,397 misses, about 1,400 (58%) abstain, 423 (18%) have no
-extractable answer, and about 580 (24%) are wrong answers; full prefill
-abstains on about a third of its own misses. The split is approximate,
-because some answers deny the question's premise rather than decline. Only
+MuSiQue up to 20). The failures differ by dataset. An extracted answer counts
+as an abstention when it begins with "unknown", "none", "do not know",
+"cannot", "it is not possible", "not enough", "insufficient", "there is no",
+or "no information", or says the documents do not provide, mention, specify,
+state, contain, or include the answer. By that rule, 4,177 of HotpotQA's 6,017
+Vanilla misses (69%) are wrong answers, 1,519 (25%) abstain, and 321 (5%) have
+no extractable answer. On MuSiQue, Vanilla mostly declines: of its 2,397
+misses, 1,420 (59%) abstain, 423 (18%) have no extractable answer, and 554
+(23%) are wrong answers; full prefill abstains on 729 (37%) of its own 1,976
+misses. The split is approximate, because some answers deny the question's
+premise ("not applicable", "there is a mistake") rather than decline. Only
 9.8% of Vanilla's MuSiQue outputs meet the strict whole-output format, against
 98.6% with full prefill, and they run about five times longer.
 
@@ -374,7 +376,8 @@ review after the report was sealed:
 
 - the latency collection joined jobs from 34 launch plans, so an auxiliary
   cell and the core reference it is divided by could come from different
-  plans (19 of the 45 core pairs also mixed plans; restricting the core
+  plans (an audit of the raw job records, which are not published, found
+  that 19 of the 45 core pairs also mixed plans and that restricting the core
   estimands to same-plan pairs moves them by at most 0.05×);
 - no arm ran a warmup except RAM, whose 16 priming requests also warmed the
   serving process, so RAM started warm while Disk and Unity Catalog started
@@ -389,8 +392,9 @@ cache-salted warmup requests before timing. The RAM arm still sends its 16
 payload-cache priming requests first, because a populated payload cache is the
 treatment it measures; after the shared warmup, every arm starts timing with a
 warm serving process. Cold reads are attested only when
-`mincore` reports zero resident pages after eviction, and the BF16 runtime
-records the 0.8 setting it runs at. The estimands use the campaign's paired
+`mincore` reports zero resident pages after eviction; this measures the local
+page cache only, so the Unity Catalog backend cache remains unproven. The BF16
+runtime records the 0.8 setting it runs at. The estimands use the campaign's paired
 crossed bootstrap, with each contrast divided by its own re-run control. The
 sealed record is
 [`appendix/vllm-0300-auxiliary-latency-rerun/auxiliary-latency-rerun.json`](appendix/vllm-0300-auxiliary-latency-rerun/).
@@ -399,9 +403,10 @@ Files went missing from the campaign volume while the re-run was being
 prepared. Sixteen latency input files were rebuilt and matched their recorded
 SHA-256 digests byte for byte. The restored 16k Q8 handoff bundle could not be
 rebuilt that way, so every Q8 cell in the re-run serves a 16k Q8 bundle
-regenerated on L4. This is the same path the campaign used for its 8k and 32k
-Q8 bundles and its 16k BF16 bundle: the same 128 files with the same payload
-sizes, but not byte-identical payloads. A first launch of the re-run, stopped
+regenerated on L4. This is the same regeneration path that produced the
+campaign's L4-regenerated bundles (served to all fifteen 8k jobs, six 32k jobs,
+and two BF16 jobs): the same 128 files with the same payload sizes, but not
+byte-identical payloads. A first launch of the re-run, stopped
 when the bundle loss surfaced, is superseded and none of its results are used.
 
 <!-- cachet:vllm-0300-auxiliary-latency-rerun:begin -->
