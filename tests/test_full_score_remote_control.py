@@ -1345,6 +1345,66 @@ def test_compact_cas_resolve_rechecks_symlink_ancestors(tmp_path):
         cas.resolve(uri)
 
 
+def test_compact_cas_is_scoped_to_exactly_one_full_score_chain(tmp_path):
+    cas = remote.FullScoreCompactArtifactCAS(tmp_path / "cas")
+    uri = "dbfs:/Volumes/catalog/schema/volume/result.json"
+    cas.bind_bytes(uri, b"record")
+    opening = DatabricksLedgerPrefix(
+        ledger_id="publication-full-score",
+        cap_cluster_hours=1024.0,
+        reservation_count=7,
+        submission_receipt_count=7,
+        terminal_actual_count=7,
+        prefix_sha256=_digest("opening"),
+    )
+    restarted = replace(
+        opening,
+        reservation_count=9,
+        submission_receipt_count=9,
+        terminal_actual_count=9,
+        prefix_sha256=_digest("restarted-opening"),
+    )
+    scope = {
+        "execution_plan_sha256": _digest("execution"),
+        "ledger_path_sha256": _digest("ledger-path"),
+        "opening_prefix": opening,
+    }
+
+    cas.bind_chain_scope(**scope)
+    scope_path = cas.root / "chain-scope.json"
+    scope_bytes = scope_path.read_bytes()
+    assert json.loads(scope_bytes) == {
+        "execution_plan_sha256": _digest("execution"),
+        "ledger_path_sha256": _digest("ledger-path"),
+        "opening_prefix": opening.to_record(),
+        "record_type": remote.FULL_SCORE_REMOTE_CAS_CHAIN_SCOPE_RECORD_TYPE,
+    }
+    remote.FullScoreCompactArtifactCAS(cas.root).bind_chain_scope(**scope)
+    assert [path.name for path in (cas.root / "bindings").iterdir()] == [
+        f"{remote._canonical_sha256(uri)}.json"
+    ]
+    assert cas.resolve(uri).read_bytes() == b"record"
+    for drift in (
+        {"opening_prefix": restarted},
+        {"execution_plan_sha256": _digest("other-execution")},
+        {"ledger_path_sha256": _digest("other-ledger-path")},
+    ):
+        with pytest.raises(ValueError, match="scoped to another full-score chain"):
+            cas.bind_chain_scope(**{**scope, **drift})
+    assert scope_path.read_bytes() == scope_bytes
+
+    fresh = remote.FullScoreCompactArtifactCAS(tmp_path / "restarted-cas")
+    fresh.bind_chain_scope(**{**scope, "opening_prefix": restarted})
+    scope_path.unlink()
+    scope_path.symlink_to(fresh.root / "chain-scope.json")
+    with pytest.raises(ValueError, match="chain scope must be a regular file"):
+        cas.resolve(uri)
+    scope_path.unlink()
+    scope_path.write_bytes(b"x" * (remote.FULL_SCORE_REMOTE_CAS_BINDING_MAX_BYTES + 1))
+    with pytest.raises(ValueError, match="chain scope violates its metadata cap"):
+        cas.resolve(uri)
+
+
 def test_publication_cas_admission_bound_covers_all_paired_scores_and_metadata():
     assert remote.FULL_SCORE_REMOTE_EVIDENCE_PAIR_OUTPUT_MAX_BYTES == 1_024
     assert remote.FULL_SCORE_REMOTE_EVIDENCE_PAIR_MAX_BYTES == 13_312
@@ -1357,7 +1417,10 @@ def test_publication_cas_admission_bound_covers_all_paired_scores_and_metadata()
         evidence_and_coordinator_bytes + (1_980 - 2 * 160 - 4 * 10) * 16 * 1024 * 1024
     )
     assert remote.FULL_SCORE_REMOTE_CAS_MAX_BYTES == 28_722_594_816
-    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == 28_730_704_896
+    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == (
+        28_722_594_816 + (1_980 + 1) * 4 * 1024
+    )
+    assert remote.FULL_SCORE_REMOTE_CAS_MIRROR_MAX_BYTES == 28_730_708_992
 
 
 def test_controller_recovers_lost_submit_response_with_same_token(
@@ -1916,6 +1979,431 @@ def test_failed_coordinator_cannot_issue_remote_authority(tmp_path, monkeypatch)
         )
 
 
+def _attempt_uri(action, filename, ordinal, *, wave_index=0):
+    if ordinal:
+        filename = f"attempt-{ordinal:02d}/{filename}"
+    return _remote_control_uri(action, filename, wave_index=wave_index)
+
+
+def _attempt_request_kwargs(case, ordinal):
+    action = case.request["action"]
+    return {
+        "action": action,
+        "wave_index": case.request["wave_index"],
+        "inventory_uri": case.request["sources"]["inventory"]["uri"],
+        "inventory_record": case.inventory,
+        "shard_plan_uri": case.request["sources"]["shard_plan"]["uri"],
+        "shard_plan": case.shard_plan,
+        "execution_plan_uri": case.request["sources"]["execution_plan"]["uri"],
+        "execution_plan": case.execution,
+        "worker_payloads": case.payloads,
+        "durable_output_root": case.request["durable_output_root"],
+        "result_uri": _attempt_uri(action, "result.json", ordinal),
+        "attestation_uri": _attempt_uri(action, "attestation.json", ordinal),
+        "coordinator_config": case.coordinator_config,
+        "phase_authorization": case.phase,
+        "phase_terminal_record": case.phase_terminal,
+    }
+
+
+def _failed_run(payload, run_id):
+    run = _successful_run(payload, run_id)
+    run["state"]["result_state"] = "FAILED"
+    run["tasks"][0]["state"]["result_state"] = "FAILED"
+    return run
+
+
+def _bind_failed_attempt(monkeypatch, request, run, *, names=("request.json",)):
+    control_directory = request["attestation_uri"].rsplit("/", 1)[0]
+    calls = []
+
+    def runs_get(_workspace, run_id):
+        calls.append(("runs/get", run_id))
+        return copy.deepcopy(run)
+
+    def listing(_workspace, uri, *, max_entries):
+        calls.append(("list", uri, max_entries))
+        assert uri == control_directory
+        return tuple(
+            {
+                "file_size": 1,
+                "is_directory": False,
+                "last_modified": 0,
+                "name": name,
+                "path": f"{control_directory.removeprefix('dbfs:')}/{name}",
+            }
+            for name in names
+        )
+
+    monkeypatch.setattr(remote, "get_databricks_run", runs_get)
+    monkeypatch.setattr(remote, "list_databricks_volume_directory", listing)
+    return calls
+
+
+def test_remote_attempt_zero_keeps_the_original_identity_uris_root_and_token(
+    tmp_path,
+):
+    case = _request_case(phase_lease_root=tmp_path / "phase-leases")
+    legacy_attempt_id = (
+        "vllm-0271-publication-v1:full-score-remote:producer_ready:wave:000"
+    )
+    payload = remote.render_full_score_remote_coordinator_submit_payload(
+        _coordinator_config(),
+        _request_uri(case),
+        case.request,
+    )
+    phase = _phase_authorization(_digest("execution"), phase_lease_root=tmp_path)
+
+    assert case.request["attempt_id"] == legacy_attempt_id
+    assert case.request["result_uri"] == _remote_control_uri(
+        "producer_ready", "result.json"
+    )
+    assert case.request["attestation_uri"] == _remote_control_uri(
+        "producer_ready", "attestation.json"
+    )
+    assert payload["tasks"][0]["spark_python_task"]["parameters"][7] == (
+        _remote_control_uri("producer_ready", "request.json")
+    )
+    assert payload == remote.bind_databricks_run_idempotency_token(
+        {key: value for key, value in payload.items() if key != "idempotency_token"},
+        attempt_id=legacy_attempt_id,
+    )
+    assert remote._full_score_remote_controller_lease_root(
+        phase, action="producer_ready", wave_index=0
+    ) == tmp_path / (
+        "remote-producer_ready-wave-000-"
+        "af871afa60603d6c3ab39f568bf031fe1498a770b40d36d29b7a101d48abc5a5"
+    )
+    assert remote._full_score_remote_controller_lease_root(
+        phase, action="producer_ready", wave_index=0, attempt_ordinal=1
+    ) == tmp_path / (
+        "remote-producer_ready-wave-000-"
+        "af871afa60603d6c3ab39f568bf031fe1498a770b40d36d29b7a101d48abc5a5-attempt-01"
+    )
+
+
+def test_failed_unattested_coordinator_retries_under_a_fresh_attempt_identity(
+    tmp_path, monkeypatch
+):
+    workspace = DatabricksWorkspaceConfig("https://dbc.example", "secret")
+    case = _request_case(phase_lease_root=tmp_path / "phase-leases")
+    first_submit = remote.render_full_score_remote_coordinator_submit_payload(
+        _coordinator_config(),
+        _request_uri(case),
+        case.request,
+    )
+    first_root = _persist_submission(
+        tmp_path,
+        monkeypatch,
+        case=case,
+        submit_payload=first_submit,
+        run_id=701,
+    )
+    calls = _bind_failed_attempt(
+        monkeypatch,
+        case.request,
+        _failed_run(first_submit, 701),
+        names=("request.json", "result.json"),
+    )
+
+    retry = remote.retire_failed_full_score_remote_coordinator_attempt(
+        workspace,
+        controller_root=first_root,
+        request_authorization=case.request,
+    )
+
+    assert retry.next_attempt_ordinal == 1
+    assert retry.retired_attempt_id == case.request["attempt_id"]
+    assert retry.retired_request_sha256 == case.request["closed_record_sha256"]
+    assert retry.retired_run_id == "701"
+    assert [call[0] for call in calls] == ["runs/get", "list"]
+    failed_attempt = json.loads((first_root / "failed-attempt.json").read_bytes())
+    assert failed_attempt["control_directory_entries"] == [
+        "request.json",
+        "result.json",
+    ]
+    assert failed_attempt["closed_record_sha256"] == retry.failed_attempt_record_sha256
+    with pytest.raises(ValueError, match="retired as failed"):
+        remote.collect_full_score_remote_coordinator(
+            workspace,
+            controller_root=first_root,
+            cas=remote.FullScoreCompactArtifactCAS(tmp_path / "cas"),
+            request_authorization=case.request,
+        )
+    calls.clear()
+    assert (
+        remote.retire_failed_full_score_remote_coordinator_attempt(
+            workspace,
+            controller_root=first_root,
+            request_authorization=case.request,
+        )
+        == retry
+    )
+    assert calls == []
+
+    with pytest.raises(ValueError, match="result URI is not canonical"):
+        remote.build_full_score_remote_coordinator_request(
+            **_attempt_request_kwargs(case, 0),
+            retry_authorization=retry,
+        )
+    with pytest.raises(ValueError, match="result URI is not canonical"):
+        remote.build_full_score_remote_coordinator_request(
+            **_attempt_request_kwargs(case, 1)
+        )
+    second = remote.build_full_score_remote_coordinator_request(
+        **_attempt_request_kwargs(case, 1),
+        retry_authorization=retry,
+    )
+    assert set(second) == set(case.request)
+    assert second["attempt_id"] == f"{case.request['attempt_id']}:attempt:01"
+    assert second["result_uri"] == _attempt_uri("producer_ready", "result.json", 1)
+    assert second["attestation_uri"] == _attempt_uri(
+        "producer_ready", "attestation.json", 1
+    )
+    assert second.controller_lease_root == first_root.with_name(
+        f"{first_root.name}-attempt-01"
+    )
+    second_request_uri = _attempt_uri("producer_ready", "request.json", 1)
+    with pytest.raises(ValueError, match="request URI is not canonical"):
+        remote.render_full_score_remote_coordinator_submit_payload(
+            _coordinator_config(),
+            _request_uri(case),
+            second,
+        )
+    second_submit = remote.render_full_score_remote_coordinator_submit_payload(
+        _coordinator_config(),
+        second_request_uri,
+        second,
+    )
+    assert second_submit["idempotency_token"] != first_submit["idempotency_token"]
+    assert second_submit == remote.bind_databricks_run_idempotency_token(
+        {
+            key: value
+            for key, value in second_submit.items()
+            if key != "idempotency_token"
+        },
+        attempt_id=second["attempt_id"],
+    )
+    second_case = SimpleNamespace(**{**vars(case), "request": second})
+    second_root = _persist_submission(
+        tmp_path,
+        monkeypatch,
+        case=second_case,
+        submit_payload=second_submit,
+        run_id=801,
+    )
+    assert second_root == second.controller_lease_root
+    result, attestation = _result_and_attestation(second_case)
+    downloads = {
+        second["result_uri"]: remote._pretty_json_bytes(result),
+        second["attestation_uri"]: remote._pretty_json_bytes(attestation),
+        **second_case.producer_artifacts,
+    }
+    monkeypatch.setattr(
+        remote,
+        "get_databricks_run",
+        lambda _workspace, run_id: _successful_run(second_submit, 801),
+    )
+    monkeypatch.setattr(
+        remote,
+        "download_databricks_volume_file_bytes",
+        lambda _workspace, uri, *, max_bytes: downloads[uri],
+    )
+    monkeypatch.setattr(
+        remote,
+        "list_databricks_volume_directory",
+        lambda _workspace, uri, *, max_entries: tuple(
+            {
+                "is_directory": True,
+                "name": shard_id,
+                "path": uri.removeprefix("dbfs:") + "/" + shard_id + "/",
+            }
+            for shard_id in case.shard_ids
+        ),
+    )
+
+    authority = remote.collect_full_score_remote_coordinator(
+        workspace,
+        controller_root=second_root,
+        cas=remote.FullScoreCompactArtifactCAS(tmp_path / "cas"),
+        request_authorization=second,
+    )
+
+    assert authority.coordinator_run_id == "801"
+    assert authority.request_sha256 == second["closed_record_sha256"]
+    assert authority.result_uri == second["result_uri"]
+    assert authority.attestation_uri == second["attestation_uri"]
+    with pytest.raises(ValueError, match="observed a successful run"):
+        remote.retire_failed_full_score_remote_coordinator_attempt(
+            workspace,
+            controller_root=second_root,
+            request_authorization=second,
+        )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "succeeded",
+        "running",
+        "task_running",
+        "repaired",
+        "foreign_run",
+        "attested",
+        "request_unlisted",
+        "collected",
+    ],
+)
+def test_coordinator_retry_requires_a_terminal_failed_unattested_predecessor(
+    tmp_path, monkeypatch, scenario
+):
+    case = _request_case(phase_lease_root=tmp_path / "phase-leases")
+    submit = remote.render_full_score_remote_coordinator_submit_payload(
+        _coordinator_config(),
+        _request_uri(case),
+        case.request,
+    )
+    root = _persist_submission(
+        tmp_path,
+        monkeypatch,
+        case=case,
+        submit_payload=submit,
+    )
+    run = _failed_run(submit, 701)
+    names = ("request.json",)
+    expected = {
+        "succeeded": "not terminally failed",
+        "running": "not terminally failed",
+        "task_running": "task is not terminal",
+        "repaired": "repaired runs cannot be retired",
+        "foreign_run": "runs/get response identity drift",
+        "attested": "wrote an attestation",
+        "request_unlisted": "does not list its request",
+        "collected": "observed a successful run",
+    }[scenario]
+    if scenario == "succeeded":
+        run = _successful_run(submit, 701)
+    elif scenario == "running":
+        run["state"] = {"life_cycle_state": "RUNNING"}
+    elif scenario == "task_running":
+        run["tasks"][0]["state"] = {"life_cycle_state": "RUNNING"}
+    elif scenario == "repaired":
+        run["repair_history"] = [{"id": 1}]
+    elif scenario == "foreign_run":
+        run["run_id"] = 999
+    elif scenario == "attested":
+        names = ("attestation.json", "request.json", "result.json")
+    elif scenario == "request_unlisted":
+        names = ("result.json",)
+    elif scenario == "collected":
+        (root / "runs-get-receipt.json").write_bytes(b"{}\n")
+    _bind_failed_attempt(monkeypatch, case.request, run, names=names)
+
+    with pytest.raises(ValueError, match=expected):
+        remote.retire_failed_full_score_remote_coordinator_attempt(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret"),
+            controller_root=root,
+            request_authorization=case.request,
+        )
+    assert not (root / "failed-attempt.json").exists()
+
+
+def test_coordinator_retry_authority_is_issuer_only_phase_bound_and_bounded(
+    tmp_path, monkeypatch
+):
+    workspace = DatabricksWorkspaceConfig("https://dbc.example", "secret")
+    lease_root = tmp_path / "phase-leases"
+    case = _request_case(phase_lease_root=lease_root)
+    with pytest.raises(TypeError, match="requires failed-attempt retirement"):
+        remote.FullScoreRemoteCoordinatorRetryAuthorization(
+            request=case.request.to_record(),
+            controller_lease_root=case.request.controller_lease_root,
+            failed_attempt_record={},
+            workspace_host_sha256=_digest("https://dbc.example"),
+            user_name_sha256=_digest("researcher@example.com"),
+            _issuer=object(),
+        )
+    with pytest.raises(TypeError, match="retirement authority"):
+        remote.build_full_score_remote_coordinator_request(
+            **_attempt_request_kwargs(case, 1),
+            retry_authorization={"next_attempt_ordinal": 1},
+        )
+
+    request = case.request
+    retries = []
+    for ordinal in range(remote.FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS):
+        if ordinal:
+            request = remote.build_full_score_remote_coordinator_request(
+                **_attempt_request_kwargs(case, ordinal),
+                retry_authorization=retries[-1],
+            )
+        submit = remote.render_full_score_remote_coordinator_submit_payload(
+            _coordinator_config(),
+            _attempt_uri("producer_ready", "request.json", ordinal),
+            request,
+        )
+        root = _persist_submission(
+            tmp_path,
+            monkeypatch,
+            case=SimpleNamespace(**{**vars(case), "request": request}),
+            submit_payload=submit,
+            run_id=701 + 100 * ordinal,
+        )
+        _bind_failed_attempt(monkeypatch, request, _failed_run(submit, 701 + 100 * ordinal))
+        if ordinal + 1 == remote.FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS:
+            with pytest.raises(ValueError, match="exhausted its bounded attempts"):
+                remote.retire_failed_full_score_remote_coordinator_attempt(
+                    workspace,
+                    controller_root=root,
+                    request_authorization=request,
+                )
+            assert not (root / "failed-attempt.json").exists()
+        else:
+            retries.append(
+                remote.retire_failed_full_score_remote_coordinator_attempt(
+                    workspace,
+                    controller_root=root,
+                    request_authorization=request,
+                )
+            )
+
+    assert [retry.next_attempt_ordinal for retry in retries] == list(
+        range(1, remote.FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS)
+    )
+    with pytest.raises(ValueError, match="result URI is not canonical"):
+        remote.build_full_score_remote_coordinator_request(
+            **_attempt_request_kwargs(case, 2),
+            retry_authorization=retries[0],
+        )
+    restarted = _phase_authorization(
+        case.execution["closed_record_sha256"],
+        terminal_record_sha256=_digest("restarted-chain-phase-terminal"),
+        phase_lease_root=lease_root,
+    )
+    with pytest.raises(ValueError, match="retry authority binding drift"):
+        remote.build_full_score_remote_coordinator_request(
+            **{**_attempt_request_kwargs(case, 1), "phase_authorization": restarted},
+            retry_authorization=retries[0],
+        )
+    consumer = _request_case(action="consumer_evidence", phase_lease_root=lease_root)
+    with pytest.raises(ValueError, match="retry authority binding drift"):
+        remote.build_full_score_remote_coordinator_request(
+            **_attempt_request_kwargs(consumer, 1),
+            retry_authorization=retries[0],
+        )
+    beyond_bound = _close(
+        {
+            **request.to_record(),
+            "attempt_id": (
+                f"{case.request['attempt_id']}:attempt:"
+                f"{remote.FULL_SCORE_REMOTE_COORDINATOR_MAX_ATTEMPTS:02d}"
+            ),
+        }
+    )
+    with pytest.raises(ValueError, match="attempt_id drift"):
+        remote.validate_full_score_remote_coordinator_request(beyond_bound)
+
+
 def test_remote_run_requires_unrepaired_attempt_zero_and_bound_task_cluster_ids():
     case = _request_case()
     submit = remote.render_full_score_remote_coordinator_submit_payload(
@@ -2340,3 +2828,172 @@ def test_consumer_authority_requires_exact_ten_wave_160_shard_coverage():
             authorizations,
             execution_plan=execution,
         )
+
+
+def _ten_wave_consumer_evidence_authorities(durable_root):
+    waves = [
+        {"shard_ids": [f"shard-{wave * 16 + offset:03d}" for offset in range(16)]}
+        for wave in range(10)
+    ]
+    execution = _closed_record("publication-execution", waves=waves)
+    authorizations = []
+    for wave_index, wave in enumerate(waves):
+        result = _close(
+            {
+                "authorization_scope": "publication",
+                "closed_record_sha256": "",
+                "deletion_attestation_sha256": [
+                    _digest(f"deletion-{shard_id}") for shard_id in wave["shard_ids"]
+                ],
+                "execution_plan_sha256": execution["closed_record_sha256"],
+                "next_wave_authorized": True,
+                "record_type": remote.full_score.FULL_SCORE_WAVE_COMPLETION_RECORD_TYPE,
+                "schema_version": 1,
+                "shard_ids": wave["shard_ids"],
+                "wave_index": wave_index,
+            }
+        )
+        bindings = [
+            {
+                "deletion_file_sha256": _digest(f"deletion-file-{shard_id}"),
+                "deletion_record_sha256": _digest(f"deletion-{shard_id}"),
+                "deletion_uri": remote._consumer_evidence_artifact_uri(
+                    durable_root,
+                    wave_index=wave_index,
+                    shard_id=shard_id,
+                    filename="deletion-attestation.json",
+                ),
+                "evidence_file_sha256": _digest(f"evidence-file-{shard_id}"),
+                "evidence_record_sha256": _digest(f"evidence-{shard_id}"),
+                "evidence_uri": remote._consumer_evidence_artifact_uri(
+                    durable_root,
+                    wave_index=wave_index,
+                    shard_id=shard_id,
+                    filename="evidence.json",
+                ),
+                "shard_id": shard_id,
+            }
+            for shard_id in wave["shard_ids"]
+        ]
+        authorizations.append(
+            remote.FullScoreRemoteTreeAuthorization(
+                action="consumer_evidence",
+                execution_plan_sha256=execution["closed_record_sha256"],
+                wave_index=wave_index,
+                durable_output_root=durable_root,
+                request_sha256=_digest(f"request-{wave_index}"),
+                result_uri=f"{durable_root}/control/result-{wave_index}.json",
+                result_file_sha256=_digest(f"result-file-{wave_index}"),
+                result_record_sha256=result["closed_record_sha256"],
+                result_record=result,
+                attestation_uri=f"{durable_root}/control/attestation-{wave_index}.json",
+                attestation_file_sha256=_digest(f"attestation-file-{wave_index}"),
+                attestation_record_sha256=_digest(f"attestation-record-{wave_index}"),
+                coordinator_run_id=str(700 + wave_index),
+                coordinator_run_record_sha256=_digest(f"run-{wave_index}"),
+                controller_authorization_record_sha256=_digest(
+                    f"authorization-{wave_index}"
+                ),
+                runs_get_receipt_record_sha256=_digest(f"receipt-{wave_index}"),
+                phase_terminal_record_sha256=_digest(f"terminal-{wave_index}"),
+                evidence_bindings=bindings,
+                workspace_host_sha256=_digest("https://dbc.example"),
+                user_name_sha256=_digest("researcher@example.com"),
+                _issuer=remote._REMOTE_AUTHORIZATION_ISSUER,
+            )
+        )
+    return execution, authorizations
+
+
+def test_remote_live_p90_admission_consumes_exactly_the_completed_waves(
+    tmp_path,
+    monkeypatch,
+):
+    durable_root = "dbfs:/Volumes/catalog/schema/volume/durable"
+    execution, authorizations = _ten_wave_consumer_evidence_authorities(durable_root)
+    workspace = DatabricksWorkspaceConfig("https://dbc.example", "secret")
+    predecessor = object()
+    monkeypatch.setattr(
+        remote.full_score,
+        "_full_score_predecessor_workspace_identity",
+        lambda value: (
+            _digest("https://dbc.example"),
+            _digest("researcher@example.com"),
+        )
+        if value is predecessor
+        else pytest.fail("unexpected predecessor"),
+    )
+    monkeypatch.setattr(
+        remote,
+        "download_databricks_volume_file_bytes",
+        lambda _workspace, uri, *, max_bytes: json.dumps({"uri": uri}).encode(),
+    )
+    downloaded_waves = []
+    monkeypatch.setattr(
+        remote,
+        "_download_remote_consumer_evidence_bindings",
+        lambda _io, authorization, *, execution_plan: downloaded_waves.append(
+            authorization.wave_index
+        ),
+    )
+    admitted = []
+
+    def write_admission(path, execution_plan, **kwargs):
+        by_wave = remote.full_score._remote_consumer_authorizations_by_wave(
+            kwargs["remote_consumer_authorizations"],
+            execution_plan=execution_plan,
+        )
+        assert set(by_wave) == set(range(kwargs["next_wave_index"]))
+        admitted.append((path, kwargs["next_wave_index"], tuple(by_wave)))
+        return {"admitted": True}
+
+    monkeypatch.setattr(
+        remote.full_score,
+        "write_governed_full_score_live_p90_budget_admission",
+        write_admission,
+    )
+
+    def admit(next_wave_index, wave_authorizations, **extra):
+        downloaded_waves.clear()
+        return remote.write_governed_full_score_remote_live_p90_budget_admission(
+            workspace,
+            cas=remote.FullScoreCompactArtifactCAS(tmp_path / "cas"),
+            path=f"{durable_root}/control/p90-wave-{next_wave_index:03d}.json",
+            execution_plan=execution,
+            completed_block_paths=[f"{durable_root}/control/block-000.json"],
+            remote_consumer_authorizations=wave_authorizations,
+            single_user_name="researcher@example.com",
+            predecessor_authorization=predecessor,
+            **({"next_wave_index": next_wave_index} | extra),
+        )
+
+    for next_wave_index in (1, 4, 9):
+        completed = authorizations[:next_wave_index]
+        assert admit(next_wave_index, list(reversed(completed))) == {"admitted": True}
+        assert admitted[-1] == (
+            f"{durable_root}/control/p90-wave-{next_wave_index:03d}.json",
+            next_wave_index,
+            tuple(range(next_wave_index)),
+        )
+        assert downloaded_waves == list(range(next_wave_index))
+    admitted_count = len(admitted)
+    for next_wave_index, wave_authorizations, error in (
+        (9, authorizations, "every completed-wave remote authority"),
+        (4, authorizations[:3], "every completed-wave remote authority"),
+        (4, [*authorizations[:4], authorizations[3]], "every completed-wave"),
+        (4, authorizations[1:5], "every completed-wave remote authority"),
+        (0, [], "must name a nonzero planned wave"),
+        (10, authorizations, "must name a nonzero planned wave"),
+        (True, authorizations[:1], "must name a nonzero planned wave"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            admit(next_wave_index, wave_authorizations)
+    with pytest.raises(TypeError, match="publication workflow requires"):
+        admit(2, [authorizations[0], object()])
+    other_execution, relocated = _ten_wave_consumer_evidence_authorities(
+        "dbfs:/Volumes/catalog/schema/volume/other"
+    )
+    assert other_execution == execution
+    with pytest.raises(ValueError, match="different durable roots"):
+        admit(2, [authorizations[0], relocated[1]])
+    assert len(admitted) == admitted_count
