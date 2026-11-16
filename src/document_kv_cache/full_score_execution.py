@@ -281,6 +281,29 @@ FULL_SCORE_CAPACITY_TERMINATION_REASONS = DATABRICKS_CAPACITY_TERMINATION_REASON
 _DATABRICKS_NONTERMINAL_LIFE_CYCLE_STATES = frozenset(
     {"PENDING", "QUEUED", "RUNNING", "TERMINATING", "WAITING_FOR_RETRY"}
 )
+# A stored runs/get snapshot replaces the fresh response only when the two
+# agree on every field read from it by the ledger's verified terminal actual,
+# the capacity-failure classifier, and the phase terminal and capacity-failure
+# builders; a field any of them starts reading must be added here.
+_FULL_SCORE_ADOPTED_RUN_FIELDS = ("repair_history", "run_id", "run_name")
+_FULL_SCORE_ADOPTED_RUN_STATE_FIELDS = ("life_cycle_state", "result_state")
+_FULL_SCORE_ADOPTED_TASK_FIELDS = (
+    "attempt_number",
+    "cluster_spec",
+    "end_time",
+    "execution_duration",
+    "new_cluster",
+    "run_id",
+    "spark_python_task",
+    "start_time",
+    "task_key",
+)
+_FULL_SCORE_ADOPTED_TASK_STATE_FIELDS = (
+    "life_cycle_state",
+    "result_state",
+    "state_message",
+)
+_FULL_SCORE_ADOPTED_TASK_CLUSTER_FIELDS = ("cluster_id", "spark_context_id")
 # The chains abandoned past wave zero, each bound attempt by attempt by the
 # ledger prefixes that open and close it.  Each stopped only on an outside
 # failure its qualified revision could neither retry nor survive: the 215d83c
@@ -5399,14 +5422,21 @@ def _full_score_superseding_control_plane_run_path(value: str) -> str:
     return f"{stem}.terminal.json"
 
 
+def _present_fields(value: Mapping[str, Any], names: Sequence[str]) -> dict[str, Any]:
+    return {name: value[name] for name in names if name in value}
+
+
 def _full_score_run_record_terminal_identity(
     run_record: Mapping[str, Any],
     field_name: str,
-) -> tuple[str, str, tuple[tuple[str, str, str], ...]] | None:
-    """Return a runs/get response's ledger-visible terminal identity.
+) -> tuple[str, str] | None:
+    """Return a terminal runs/get response's run ID and consumed-field digest.
 
-    ``None`` means the response is provably non-terminal; any other
-    non-terminal or unsupported shape raises.
+    The digest covers every ``_FULL_SCORE_ADOPTED_*`` field, type-exact and
+    with absent distinct from null, over the tasks in runs/get order because
+    the ledger sums task seconds in that order.  ``None`` means the response
+    is provably non-terminal; any other non-terminal or unsupported shape
+    raises.
     """
 
     run_id = _required_run_id(run_record.get("run_id"), f"{field_name} run_id")
@@ -5414,27 +5444,36 @@ def _full_score_run_record_terminal_identity(
     life_cycle_state = state.get("life_cycle_state")
     if life_cycle_state in _DATABRICKS_NONTERMINAL_LIFE_CYCLE_STATES:
         return None
-    terminal_state = _ledger_terminal_state(
-        life_cycle_state, state.get("result_state")
-    )
+    _ledger_terminal_state(life_cycle_state, state.get("result_state"))
     tasks = run_record.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         raise ValueError(f"{field_name} has no tasks")
-    task_identity: list[tuple[str, str, str]] = []
+    projected_tasks: list[dict[str, Any]] = []
     for raw_task in tasks:
         task = _json_mapping(raw_task, f"{field_name} task")
         task_state = _required_mapping(task, "state")
-        task_identity.append(
-            (
-                _required_string(task, "task_key"),
-                _required_run_id(task.get("run_id"), f"{field_name} task run_id"),
-                _ledger_terminal_state(
-                    task_state.get("life_cycle_state"),
-                    task_state.get("result_state"),
-                ),
-            )
+        _required_string(task, "task_key")
+        _required_run_id(task.get("run_id"), f"{field_name} task run_id")
+        _ledger_terminal_state(
+            task_state.get("life_cycle_state"),
+            task_state.get("result_state"),
         )
-    return run_id, terminal_state, tuple(sorted(task_identity))
+        projected = _present_fields(task, _FULL_SCORE_ADOPTED_TASK_FIELDS)
+        projected["state"] = _present_fields(
+            task_state, _FULL_SCORE_ADOPTED_TASK_STATE_FIELDS
+        )
+        if "cluster_instance" in task:
+            cluster = task["cluster_instance"]
+            projected["cluster_instance"] = (
+                _present_fields(cluster, _FULL_SCORE_ADOPTED_TASK_CLUSTER_FIELDS)
+                if isinstance(cluster, Mapping)
+                else cluster
+            )
+        projected_tasks.append(projected)
+    projection = _present_fields(run_record, _FULL_SCORE_ADOPTED_RUN_FIELDS)
+    projection["state"] = _present_fields(state, _FULL_SCORE_ADOPTED_RUN_STATE_FIELDS)
+    projection["tasks"] = projected_tasks
+    return run_id, _ledger_mapping_sha256(projection)
 
 
 def _stored_governed_compact_bytes(
@@ -5462,8 +5501,9 @@ def _publish_full_score_phase_terminal_control_plane_run(
 ) -> tuple[str, dict[str, Any]]:
     """Persist one terminal runs/get response, never a non-terminal snapshot.
 
-    A stored terminal snapshot of the same run is adopted when it agrees with
-    the fresh response on every ledger-visible terminal field.  A stored
+    A stored terminal snapshot of the same run is adopted only when it agrees
+    with the fresh response on every field collection bills, classifies, or
+    admits it by (see ``_FULL_SCORE_ADOPTED_RUN_FIELDS``).  A stored
     provably non-terminal snapshot of the same run is left in place, and the
     fresh terminal response is published once at its superseding path.
     """

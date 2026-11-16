@@ -5968,12 +5968,135 @@ def test_terminal_collection_adopts_a_stored_terminal_snapshot(
     fresh = copy.deepcopy(stored)
     fresh["state"]["state_message"] = "cluster released after termination"
     fresh["run_page_url"] = "https://example.invalid/run/81001?o=1"
+    fresh["end_time"] = 3_500
+    fresh["tasks"][0]["setup_duration"] = 400
 
     record, _authorization = _collect_with_runs_get(campaign, reserved, fresh)
     assert reserved["run_path"].read_bytes() == stored_bytes
     assert not _superseding_run_path(reserved["run_path"]).exists()
     assert record["control_plane"]["path"] == str(reserved["run_path"])
     assert record["control_plane"]["file_sha256"] == sha256(stored_bytes).hexdigest()
+    ledger = read_databricks_cluster_hour_ledger_json(reserved["ledger_path"])
+    assert [item.control_plane_status_sha256 for item in ledger.terminal_actuals] == [
+        full_score._ledger_mapping_sha256(stored)
+    ]
+
+
+def _shorten_first_task(record):
+    record["tasks"][0]["end_time"] = record["tasks"][0]["start_time"] + 16
+
+
+def _reorder_tasks(record):
+    record["tasks"].reverse()
+
+
+_STORED_SNAPSHOT_DRIFTS = {
+    "shortened-end-time": _shorten_first_task,
+    "start-time": lambda record: record["tasks"][1].update(start_time=1_200),
+    "cluster-id": lambda record: record["tasks"][0]["cluster_instance"].update(
+        cluster_id="cluster-from-another-launch"
+    ),
+    "spark-context-id": lambda record: record["tasks"][0]["cluster_instance"].update(
+        spark_context_id="spark-81001-0"
+    ),
+    "execution-duration": lambda record: record["tasks"][0].update(
+        execution_duration=0
+    ),
+    "attempt-number": lambda record: record["tasks"][0].update(attempt_number=0),
+    "task-state-message": lambda record: record["tasks"][0]["state"].update(
+        state_message="Task ended after a driver restart."
+    ),
+    "repair-history": lambda record: record.update(
+        repair_history=[{"type": "ORIGINAL"}]
+    ),
+    "task-order": _reorder_tasks,
+}
+
+
+@pytest.mark.parametrize("label", sorted(_STORED_SNAPSHOT_DRIFTS))
+def test_terminal_collection_refuses_a_stored_snapshot_with_drifted_consumed_fields(
+    campaign,
+    label,
+):
+    reserved = _reserve_wave_zero_producer(
+        campaign,
+        label=f"collector-drift-{label}",
+    )
+    fresh = _terminal_run_record(reserved["submit_payload"], run_id=81_001)
+    stored = copy.deepcopy(fresh)
+    _STORED_SNAPSHOT_DRIFTS[label](stored)
+    assert stored != fresh
+    stored_bytes = full_score._canonical_pretty_json_bytes(stored)
+    reserved["run_path"].write_bytes(stored_bytes)
+    ledger_before = reserved["ledger_path"].read_bytes()
+
+    with pytest.raises(ValueError, match="evidence path binding drift"):
+        _collect_with_runs_get(campaign, reserved, fresh)
+    assert reserved["run_path"].read_bytes() == stored_bytes
+    assert not _superseding_run_path(reserved["run_path"]).exists()
+    assert not reserved["terminal_path"].exists()
+    assert reserved["ledger_path"].read_bytes() == ledger_before
+
+
+@pytest.mark.parametrize("fresh_reason", [None, "INIT_SCRIPT_FAILURE"])
+def test_capacity_collection_adopts_a_stored_capacity_snapshot_only_on_agreement(
+    campaign,
+    fresh_reason,
+):
+    label = f"capacity-adopt-{fresh_reason}"
+    reserved = _reserve_wave_zero_producer(campaign, label=label)
+    stored = _capacity_failed_run_record(
+        reserved["submit_payload"],
+        run_id=81_001,
+        failed_indices={3},
+    )
+    if fresh_reason is None:
+        fresh = copy.deepcopy(stored)
+        fresh["run_page_url"] = "https://example.invalid/run/81001?o=1"
+        fresh["state"]["state_message"] = "Run failed; clusters released."
+    else:
+        fresh = _capacity_failed_run_record(
+            reserved["submit_payload"],
+            run_id=81_001,
+            failed_indices={3},
+            reason=fresh_reason,
+        )
+        classify = runs_api.databricks_task_capacity_failure_reason
+        assert classify(stored["tasks"][3]) == (
+            "AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE"
+        )
+        assert classify(fresh["tasks"][3]) is None
+    run_path = campaign["tmp_path"] / f"{label}-runs-get.json"
+    stored_bytes = full_score._canonical_pretty_json_bytes(stored)
+    run_path.write_bytes(stored_bytes)
+    failure_path = campaign["tmp_path"] / f"{label}-capacity-failure.json"
+    ledger_before = reserved["ledger_path"].read_bytes()
+
+    def collect():
+        return _collect_capacity_outcome(
+            campaign,
+            reserved,
+            submission=reserved["submission_authorization"],
+            submit_path=reserved["submit_path"],
+            run=fresh,
+            label=label,
+        )
+
+    if fresh_reason is not None:
+        with pytest.raises(ValueError, match="evidence path binding drift"):
+            collect()
+        assert reserved["ledger_path"].read_bytes() == ledger_before
+        assert not failure_path.exists()
+        assert not _superseding_run_path(run_path).exists()
+        assert run_path.read_bytes() == stored_bytes
+        return
+    failure, retry = collect()
+    assert type(retry) is full_score.FullScorePhaseCapacityRetryAuthorization
+    assert failure["control_plane"]["path"] == str(run_path)
+    assert failure["control_plane"]["file_sha256"] == sha256(stored_bytes).hexdigest()
+    assert [
+        item["termination_reason"] for item in failure["capacity_failed_tasks"]
+    ] == ["AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE"]
     ledger = read_databricks_cluster_hour_ledger_json(reserved["ledger_path"])
     assert [item.control_plane_status_sha256 for item in ledger.terminal_actuals] == [
         full_score._ledger_mapping_sha256(stored)
