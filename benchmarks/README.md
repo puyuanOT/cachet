@@ -370,6 +370,15 @@ crossed bootstrap, with each contrast divided by its own re-run control. The
 sealed record is
 [`appendix/vllm-0300-auxiliary-latency-rerun/auxiliary-latency-rerun.json`](appendix/vllm-0300-auxiliary-latency-rerun/).
 
+Files went missing from the campaign volume while the re-run was being
+prepared. Sixteen latency input files were rebuilt and matched their recorded
+SHA-256 digests byte for byte. The restored 16k Q8 handoff bundle could not be
+rebuilt that way, so every Q8 cell in the re-run serves a 16k Q8 bundle
+regenerated on L4. This is the same path the campaign used for its 8k and 32k
+Q8 bundles and its 16k BF16 bundle: the same 128 files with the same payload
+sizes, but not byte-identical payloads. A first launch of the re-run, stopped
+when the bundle loss surfaced, is superseded and none of its results are used.
+
 <!-- cachet:vllm-0300-auxiliary-latency-rerun:begin -->
 <!-- cachet:vllm-0300-auxiliary-latency-rerun:end -->
 
