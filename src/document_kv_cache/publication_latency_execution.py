@@ -253,6 +253,17 @@ PUBLICATION_LATENCY_MULTI_PLAN_SUMMARY_RECORD_TYPE: Final = (
     "cachet.publication_latency_multi_plan_summary.v1"
 )
 PUBLICATION_LATENCY_MULTI_PLAN_SCHEMA_VERSION: Final = 1
+PUBLICATION_LATENCY_AUXILIARY_RERUN_RECORD_TYPE: Final = (
+    "cachet.publication_latency_auxiliary_rerun.v1"
+)
+PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS: Final = (
+    "16k-c4-vanilla",
+    "storage-disk",
+    "storage-ram",
+    "storage-uc",
+    "precision-bf16",
+    "hardware-a10g",
+)
 PUBLICATION_LATENCY_LEDGER_RECEIPT_BINDING: Final = "ledger_receipt"
 PUBLICATION_LATENCY_RECOVERED_RECEIPT_BINDING: Final = "recovered_receipt"
 PUBLICATION_LATENCY_RECOVERED_BALANCE_BINDING: Final = "recovered_balance"
@@ -8744,6 +8755,214 @@ def publication_latency_plan_coherence_table(
     return rows
 
 
+def aggregate_publication_latency_auxiliary_rerun(
+    plan_record: Mapping[str, Any],
+    job_records: Sequence[Mapping[str, Any]],
+    result_records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Estimate the four auxiliary contrasts from one plan-coherent re-run.
+
+    The re-run repeats every block's Vanilla 16k c4 reference together with its
+    Disk/RAM/UC trio, BF16 and A10G cells under one execution plan, package
+    wheel and source tree, so every compared pair differs only in its design
+    fields. Estimation reuses the campaign's paired crossed bootstrap and makes
+    no claim about the core Baseline/Vanilla grid.
+    """
+
+    plan = json.loads(_canonical_json(dict(plan_record)))
+    if not isinstance(plan, dict):  # pragma: no cover - mapping above.
+        raise TypeError("auxiliary re-run plan must be an object")
+    plan_sha256 = _canonical_sha256(plan)
+    expected_ids = [
+        f"block-{block:02d}-{kind}"
+        for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+        for kind in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
+    ]
+    if plan.get("job_ids") != expected_ids:
+        raise ValueError("auxiliary re-run plan must list every block's six cells")
+    jobs_by_id: dict[str, dict[str, Any]] = {}
+    for job in job_records:
+        validate_publication_latency_job_record(job)
+        job_id = _required_string(job, "job_id")
+        if job_id in jobs_by_id:
+            raise ValueError(f"auxiliary re-run job {job_id!r} is duplicated")
+        jobs_by_id[job_id] = json.loads(_canonical_json(dict(job)))
+    if sorted(jobs_by_id) != sorted(expected_ids):
+        raise ValueError("auxiliary re-run jobs do not match the plan")
+    results_by_id: dict[str, dict[str, Any]] = {}
+    for result in result_records:
+        job_id = _required_string(result, "job_id")
+        if job_id not in jobs_by_id or job_id in results_by_id:
+            raise ValueError(f"auxiliary re-run result {job_id!r} is unexpected")
+        validate_publication_latency_job_result_record(
+            result,
+            expected_job_record=jobs_by_id[job_id],
+        )
+        results_by_id[job_id] = json.loads(_canonical_json(dict(result)))
+    if set(results_by_id) != set(jobs_by_id):
+        raise ValueError("auxiliary re-run needs one sealed result for every job")
+    for job_id, job in jobs_by_id.items():
+        if _required_sha256(job, "execution_plan_sha256") != plan_sha256:
+            raise ValueError(f"auxiliary re-run job {job_id!r} is outside the plan")
+        if _latency_package_wheel_sha256(job) != plan.get("package_wheel_sha256"):
+            raise ValueError(f"auxiliary re-run job {job_id!r} wheel drift")
+        if job.get("source_tree_sha256") != plan.get("source_tree_sha256"):
+            raise ValueError(f"auxiliary re-run job {job_id!r} source tree drift")
+
+    cells = {job_id: _mapping(job, "cell") for job_id, job in jobs_by_id.items()}
+    completed_at = {
+        job_id: datetime.fromisoformat(_required_string(result, "completed_at"))
+        for job_id, result in results_by_id.items()
+    }
+    coherence: list[dict[str, Any]] = []
+    specs: list[dict[str, Any]] = []
+    for setting_id, family, _description in PUBLICATION_CAMPAIGN_AUXILIARY_SETTINGS:
+        control_by_block: dict[int, str] = {}
+        treatment_by_block: dict[int, str] = {}
+        for job_id in expected_ids:
+            cell = cells[job_id]
+            if cell.get("setting_id") != setting_id:
+                continue
+            block = _required_int(cell, "deployment_block")
+            control_id = _required_string(cell, "reference_core_cell_id")
+            if control_id not in cells:
+                raise ValueError(f"auxiliary re-run control for {job_id!r} is missing")
+            pair = _latency_pair_coherence(
+                jobs_by_id[control_id],
+                jobs_by_id[job_id],
+                comparison_family=family,
+            )
+            drift = [label for key, label in _LATENCY_COHERENCE_FIELDS if not pair[key]]
+            if drift:
+                raise ValueError(
+                    f"auxiliary re-run pairs {control_id!r} with {job_id!r} "
+                    f"across a different {', '.join(drift)}"
+                )
+            control_by_block[block] = control_id
+            treatment_by_block[block] = job_id
+            coherence.append(
+                {
+                    "comparison_family": family,
+                    "control_job_id": control_id,
+                    "treatment_job_id": job_id,
+                    **pair,
+                    "completion_gap_seconds": abs(
+                        (completed_at[job_id] - completed_at[control_id]).total_seconds()
+                    ),
+                }
+            )
+        specs.append(
+            {
+                "comparison_family": family,
+                "control_jobs": control_by_block,
+                "estimand_id": f"auxiliary-{setting_id}",
+                "setting_id": setting_id,
+                "treatment_jobs": treatment_by_block,
+            }
+        )
+
+    results_sha256 = _canonical_sha256(
+        [
+            [job_id, _required_sha256(results_by_id[job_id], "closed_record_sha256")]
+            for job_id in expected_ids
+        ]
+    )
+    descriptors = dict(cells)
+    descriptive_cells = [
+        _descriptive_cell_record(
+            cell_id=f"auxiliary-rerun-{kind}",
+            cell_kind="auxiliary_pooled_five_blocks",
+            descriptors=descriptors,
+            result_by_job=results_by_id,
+            job_ids=[
+                f"block-{block:02d}-{kind}"
+                for block in range(1, PUBLICATION_CAMPAIGN_DEPLOYMENT_BLOCKS + 1)
+            ],
+        )
+        for kind in PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
+    ]
+    projection = {
+        _required_string(item, "estimand_id"): item
+        for item in _publication_latency_estimand_projection_design()
+    }
+    estimates: list[dict[str, Any]] = []
+    for spec in specs:
+        paired_logs = _paired_log_ratios_by_block(spec, result_by_job=results_by_id)
+        metric_records: dict[str, Any] = {}
+        for metric_name in ("ttft_seconds", "time_to_completion_seconds"):
+            seed = int(
+                _canonical_sha256(
+                    {
+                        "domain": "cachet.publication_latency.auxiliary_rerun.bootstrap.v1",
+                        "estimand_id": spec["estimand_id"],
+                        "metric": metric_name,
+                        "results_sha256": results_sha256,
+                    }
+                )[:16],
+                16,
+            )
+            point, lower, upper = _paired_crossed_bootstrap(
+                paired_logs[metric_name],
+                draws=PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS,
+                seed=seed,
+            )
+            metric_records[metric_name.removesuffix("_seconds")] = {
+                "confidence_interval_95": [lower, upper],
+                "geometric_mean_speedup": point,
+            }
+        control_kind = (
+            "storage-disk"
+            if spec["setting_id"] in {"storage-ram", "storage-uc"}
+            else "16k-c4-vanilla"
+        )
+        estimates.append(
+            {
+                **projection[spec["estimand_id"]],
+                "control_cell_id": f"auxiliary-rerun-{control_kind}",
+                "metrics": metric_records,
+                "treatment_cell_id": f"auxiliary-rerun-{spec['setting_id']}",
+            }
+        )
+
+    record: dict[str, Any] = {
+        "analysis": _publication_latency_summary_analysis(),
+        "closed_record_sha256": "",
+        "coherence": coherence,
+        "descriptive_cells": descriptive_cells,
+        "estimates": estimates,
+        "jobs": [
+            {
+                "cloud_run_id": _mapping(results_by_id[job_id], "task_identity").get(
+                    "cloud_run_id"
+                ),
+                "completed_at": _required_string(results_by_id[job_id], "completed_at"),
+                "gpu_memory_utilization": _mapping(
+                    jobs_by_id[job_id], "runtime"
+                ).get("gpu_memory_utilization"),
+                "job_id": job_id,
+                "job_record_sha256": _required_sha256(
+                    jobs_by_id[job_id], "closed_record_sha256"
+                ),
+                "node_type_id": _mapping(jobs_by_id[job_id], "runtime").get(
+                    "node_type_id"
+                ),
+                "result_sha256": _required_sha256(
+                    results_by_id[job_id], "closed_record_sha256"
+                ),
+                "zone_id": _mapping(jobs_by_id[job_id], "runtime").get("zone_id"),
+            }
+            for job_id in expected_ids
+        ],
+        "plan": plan,
+        "plan_sha256": plan_sha256,
+        "record_type": PUBLICATION_LATENCY_AUXILIARY_RERUN_RECORD_TYPE,
+        "results_sha256": results_sha256,
+        "schema_version": 1,
+    }
+    record["closed_record_sha256"] = _closed_record_sha256(record)
+    return record
+
+
 def _latency_collection_causal_closure_sha256(
     *,
     collection_sha256: str,
@@ -14167,6 +14386,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS",
+    "PUBLICATION_LATENCY_AUXILIARY_RERUN_RECORD_TYPE",
     "PUBLICATION_LATENCY_COLLECTION_RECORD_TYPE",
     "PUBLICATION_LATENCY_COMPONENT_EVIDENCE_POLICY",
     "PUBLICATION_LATENCY_DATABRICKS_AVAILABILITY",
@@ -14213,6 +14434,7 @@ __all__ = [
     "PublicationLatencySourceClosureSubmissionAuthorization",
     "PublicationLatencyWaveAuthorization",
     "PublicationLatencyWaveSubmissionAuthorization",
+    "aggregate_publication_latency_auxiliary_rerun",
     "aggregate_publication_latency_campaign",
     "aggregate_publication_latency_multi_plan_campaign",
     "build_databricks_publication_latency_run_submit_payload",

@@ -6117,6 +6117,187 @@ def test_plan_coherence_table_discloses_pairs_joined_across_launches(
     }
 
 
+def _auxiliary_rerun_case(monkeypatch):
+    plan = {
+        "job_ids": [
+            f"block-{block:02d}-{kind}"
+            for block in range(1, 6)
+            for kind in execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
+        ],
+        "package_wheel_sha256": "a" * 64,
+        "source_tree_sha256": "b" * 64,
+    }
+    plan_sha256 = execution._canonical_sha256(plan)
+    settings = {
+        "16k-c4-vanilla": ("core", None, None, None),
+        "storage-disk": ("auxiliary", "storage-disk", "storage", "16k-c4-vanilla"),
+        "storage-ram": ("auxiliary", "storage-ram", "storage", "storage-disk"),
+        "storage-uc": ("auxiliary", "storage-uc", "storage", "storage-disk"),
+        "precision-bf16": ("auxiliary", "precision-bf16", "precision", "16k-c4-vanilla"),
+        "hardware-a10g": ("auxiliary", "hardware-a10g", "hardware", "16k-c4-vanilla"),
+    }
+    ttft_speed = {"storage-ram": 2.0, "storage-uc": 0.5, "precision-bf16": 0.8, "hardware-a10g": 1.25}
+    jobs, results, parsed = [], [], {}
+    for index, job_id in enumerate(plan["job_ids"]):
+        block = int(job_id[6:8])
+        kind = job_id[9:]
+        job_kind, setting_id, family, reference = settings[kind]
+        runtime = {
+            "gpu_memory_utilization": 0.8 if kind == "precision-bf16" else 0.9,
+            "hardware_target": "a10g" if kind == "hardware-a10g" else "l4",
+            "node_type_id": "g5.8xlarge" if kind == "hardware-a10g" else "g6.8xlarge",
+            "request_parallelism": 4,
+            "runtime_kv_dtype": "bfloat16" if kind == "precision-bf16" else "fp8_e5m2",
+            "zone_id": f"us-west-2{'abcd'[index % 4]}",
+        }
+        jobs.append(
+            {
+                "artifact_files": [{"role": "package_wheel", "sha256": "a" * 64}],
+                "cell": {
+                    "comparison_family": family,
+                    "deployment_block": block,
+                    "input_tokens": 16_384,
+                    "job_kind": job_kind,
+                    "method_id": "vanilla_prefill",
+                    "reference_core_cell_id": (
+                        None if reference is None else f"block-{block:02d}-{reference}"
+                    ),
+                    "request_parallelism": 4,
+                    "setting_id": setting_id,
+                },
+                "closed_record_sha256": f"{index:064x}",
+                "execution_plan_sha256": plan_sha256,
+                "job_id": job_id,
+                "runtime": runtime,
+                "source_tree_sha256": "b" * 64,
+            }
+        )
+        results.append(
+            {
+                "benchmark_record": {"job_id": job_id},
+                "closed_record_sha256": f"{index + 100:064x}",
+                "completed_at": f"2026-11-16T0{block}:00:00+00:00",
+                "job_id": job_id,
+                "task_identity": {"cloud_run_id": str(1000 + index)},
+            }
+        )
+        storage = kind.startswith("storage-")
+        base_ttft = 4.0 if storage else 6.0
+        ttft = base_ttft / ttft_speed.get(kind, 1.0)
+        parsed[job_id] = SimpleNamespace(
+            measurements=[
+                SimpleNamespace(
+                    dataset=dataset,
+                    example_id=str(example),
+                    repeat_index=repeat,
+                    ttft_seconds=ttft * (1.0 + 0.01 * example),
+                    time_to_completion_seconds=20.0,
+                )
+                for dataset in SUPPORTED_V1_DATASETS
+                for example in range(2 if storage else 32)
+                for repeat in range(32 if storage else 2)
+            ]
+        )
+    monkeypatch.setattr(execution, "validate_publication_latency_job_record", lambda _job: None)
+    monkeypatch.setattr(
+        execution,
+        "validate_publication_latency_job_result_record",
+        lambda _result, *, expected_job_record: None,
+    )
+    monkeypatch.setattr(
+        execution,
+        "benchmark_run_result_from_record",
+        lambda record, **_kwargs: parsed[record["job_id"]],
+    )
+    monkeypatch.setattr(
+        execution,
+        "_descriptive_cell_record",
+        lambda *, cell_id, job_ids, **_kwargs: {"cell_id": cell_id, "job_ids": job_ids},
+    )
+    monkeypatch.setattr(execution, "PUBLICATION_CAMPAIGN_BOOTSTRAP_DRAWS", 200)
+    return plan, jobs, results
+
+
+def test_auxiliary_rerun_estimates_each_contrast_against_its_rerun_control(monkeypatch):
+    plan, jobs, results = _auxiliary_rerun_case(monkeypatch)
+
+    record = execution.aggregate_publication_latency_auxiliary_rerun(plan, jobs, results)
+
+    assert record["record_type"] == execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_RECORD_TYPE
+    assert record["closed_record_sha256"] == execution._closed_record_sha256(record)
+    assert record["plan_sha256"] == execution._canonical_sha256(plan)
+    speedups = {
+        item["setting_id"]: (
+            item["control_cell_id"],
+            item["treatment_cell_id"],
+            item["metrics"]["ttft"]["geometric_mean_speedup"],
+            item["metrics"]["time_to_completion"]["geometric_mean_speedup"],
+        )
+        for item in record["estimates"]
+    }
+    assert speedups == {
+        "precision-bf16": (
+            "auxiliary-rerun-16k-c4-vanilla",
+            "auxiliary-rerun-precision-bf16",
+            pytest.approx(0.8),
+            pytest.approx(1.0),
+        ),
+        "storage-ram": (
+            "auxiliary-rerun-storage-disk",
+            "auxiliary-rerun-storage-ram",
+            pytest.approx(2.0),
+            pytest.approx(1.0),
+        ),
+        "storage-uc": (
+            "auxiliary-rerun-storage-disk",
+            "auxiliary-rerun-storage-uc",
+            pytest.approx(0.5),
+            pytest.approx(1.0),
+        ),
+        "hardware-a10g": (
+            "auxiliary-rerun-16k-c4-vanilla",
+            "auxiliary-rerun-hardware-a10g",
+            pytest.approx(1.25),
+            pytest.approx(1.0),
+        ),
+    }
+    assert [cell["cell_id"] for cell in record["descriptive_cells"]] == [
+        f"auxiliary-rerun-{kind}"
+        for kind in execution.PUBLICATION_LATENCY_AUXILIARY_RERUN_KINDS
+    ]
+    assert len(record["coherence"]) == 20
+    assert all(row["execution_plan_equal"] and row["runtime_equal"] for row in record["coherence"])
+    assert [job["job_id"] for job in record["jobs"]] == plan["job_ids"]
+
+
+@pytest.mark.parametrize(
+    ("tamper", "match"),
+    (
+        ("wheel", "wheel drift"),
+        ("plan", "outside the plan"),
+        ("runtime", "across a different runtime"),
+        ("missing_result", "one sealed result for every job"),
+        ("plan_jobs", "every block's six cells"),
+    ),
+)
+def test_auxiliary_rerun_rejects_incoherent_or_incomplete_runs(monkeypatch, tamper, match):
+    plan, jobs, results = _auxiliary_rerun_case(monkeypatch)
+    target = next(job for job in jobs if job["job_id"] == "block-03-storage-ram")
+    if tamper == "wheel":
+        target["artifact_files"] = [{"role": "package_wheel", "sha256": "c" * 64}]
+    elif tamper == "plan":
+        target["execution_plan_sha256"] = "d" * 64
+    elif tamper == "runtime":
+        target["runtime"]["gpu_memory_utilization"] = 0.85
+    elif tamper == "missing_result":
+        results = [item for item in results if item["job_id"] != "block-03-storage-ram"]
+    else:
+        plan["job_ids"] = plan["job_ids"][:-1]
+
+    with pytest.raises(ValueError, match=match):
+        execution.aggregate_publication_latency_auxiliary_rerun(plan, jobs, results)
+
+
 def test_frozen_design_comparison_pairs_cover_every_estimand():
     campaign = publication_campaign_plan_to_record(
         build_publication_campaign_plan(
