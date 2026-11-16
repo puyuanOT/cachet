@@ -104,6 +104,7 @@ from document_kv_cache.databricks_resource_ledger import (
     DatabricksRunSubmissionReceipt,
     MAX_DATABRICKS_ACTIVE_RESERVED_CLUSTER_HOURS,
     MAX_DATABRICKS_AGGREGATE_CLUSTER_HOURS,
+    _ledger_terminal_state,
     canonical_databricks_submit_payload_snapshot,
     databricks_cluster_hour_ledger_from_record,
     databricks_cluster_hour_ledger_to_record,
@@ -276,6 +277,9 @@ FULL_SCORE_PHASE_CAPACITY_FAILURE_SCHEMA_VERSION = 1
 # Every capacity-failed attempt is a separately ledgered single-attempt run.
 FULL_SCORE_PHASE_MAX_ATTEMPTS = 16
 FULL_SCORE_CAPACITY_TERMINATION_REASONS = DATABRICKS_CAPACITY_TERMINATION_REASONS
+_DATABRICKS_NONTERMINAL_LIFE_CYCLE_STATES = frozenset(
+    {"PENDING", "QUEUED", "RUNNING", "TERMINATING", "WAITING_FOR_RETRY"}
+)
 # The chains abandoned past wave zero, each bound attempt by attempt by the
 # ledger prefixes that open and close it.  Each stopped only on an outside
 # failure its qualified revision could neither retry nor survive: the 215d83c
@@ -5094,18 +5098,21 @@ def collect_governed_full_score_phase_attempt(
         raise ValueError("phase collection requires a durable terminal record path")
     if (compact_artifact_publisher is None) != (compact_artifact_resolver is None):
         raise TypeError("phase collection compact I/O requires publisher and CAS")
-    live_path, path_sha256, receipt = _record_full_score_phase_attempt_terminal_actual(
-        workspace,
-        execution_plan=execution_plan,
-        inventory=inventory,
-        shard_plan=shard_plan,
-        ledger_path=ledger_path,
-        submission_authorization=submission_authorization,
-        submit_payload_path=submit_payload_path,
-        control_plane_run_path=control_plane_run_path,
-        compact_artifact_resolver=compact_artifact_resolver,
-        compact_artifact_publisher=compact_artifact_publisher,
-        opener=opener,
+    live_path, path_sha256, receipt, run_path = (
+        _record_full_score_phase_attempt_terminal_actual(
+            workspace,
+            execution_plan=execution_plan,
+            inventory=inventory,
+            shard_plan=shard_plan,
+            ledger_path=ledger_path,
+            submission_authorization=submission_authorization,
+            submit_payload_path=submit_payload_path,
+            control_plane_run_path=control_plane_run_path,
+            reserved_evidence_paths=(submit_payload_path, terminal_record_path),
+            compact_artifact_resolver=compact_artifact_resolver,
+            compact_artifact_publisher=compact_artifact_publisher,
+            opener=opener,
+        )
     )
     return _close_full_score_phase_terminal_collection(
         execution_plan=execution_plan,
@@ -5116,7 +5123,7 @@ def collect_governed_full_score_phase_attempt(
         receipt=receipt,
         submission_authorization=submission_authorization,
         submit_payload_path=submit_payload_path,
-        control_plane_run_path=control_plane_run_path,
+        control_plane_run_path=run_path,
         terminal_record_path=terminal_record_path,
         compact_artifact_resolver=compact_artifact_resolver,
         compact_artifact_publisher=compact_artifact_publisher,
@@ -5156,18 +5163,25 @@ def collect_governed_full_score_phase_attempt_outcome(
         )
     if (compact_artifact_publisher is None) != (compact_artifact_resolver is None):
         raise TypeError("phase collection compact I/O requires publisher and CAS")
-    live_path, path_sha256, receipt = _record_full_score_phase_attempt_terminal_actual(
-        workspace,
-        execution_plan=execution_plan,
-        inventory=inventory,
-        shard_plan=shard_plan,
-        ledger_path=ledger_path,
-        submission_authorization=submission_authorization,
-        submit_payload_path=submit_payload_path,
-        control_plane_run_path=control_plane_run_path,
-        compact_artifact_resolver=compact_artifact_resolver,
-        compact_artifact_publisher=compact_artifact_publisher,
-        opener=opener,
+    live_path, path_sha256, receipt, run_path = (
+        _record_full_score_phase_attempt_terminal_actual(
+            workspace,
+            execution_plan=execution_plan,
+            inventory=inventory,
+            shard_plan=shard_plan,
+            ledger_path=ledger_path,
+            submission_authorization=submission_authorization,
+            submit_payload_path=submit_payload_path,
+            control_plane_run_path=control_plane_run_path,
+            reserved_evidence_paths=(
+                submit_payload_path,
+                terminal_record_path,
+                capacity_failure_record_path,
+            ),
+            compact_artifact_resolver=compact_artifact_resolver,
+            compact_artifact_publisher=compact_artifact_publisher,
+            opener=opener,
+        )
     )
     recorded = read_databricks_cluster_hour_ledger_json(live_path)
     actual = next(
@@ -5185,7 +5199,7 @@ def collect_governed_full_score_phase_attempt_outcome(
             receipt=receipt,
             submission_authorization=submission_authorization,
             submit_payload_path=submit_payload_path,
-            control_plane_run_path=control_plane_run_path,
+            control_plane_run_path=run_path,
             terminal_record_path=terminal_record_path,
             compact_artifact_resolver=compact_artifact_resolver,
             compact_artifact_publisher=compact_artifact_publisher,
@@ -5198,7 +5212,7 @@ def collect_governed_full_score_phase_attempt_outcome(
         phase=submission_authorization.phase,
         attempt_id=submission_authorization.attempt_id,
         submit_payload_path=submit_payload_path,
-        control_plane_run_path=control_plane_run_path,
+        control_plane_run_path=run_path,
         ledger_path=live_path,
         submission_authorization=submission_authorization,
         compact_artifact_resolver=compact_artifact_resolver,
@@ -5262,11 +5276,15 @@ def _record_full_score_phase_attempt_terminal_actual(
     submission_authorization: FullScorePhaseSubmissionAuthorization,
     submit_payload_path: str | Path,
     control_plane_run_path: str | Path,
+    reserved_evidence_paths: Sequence[str | Path],
     compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
     compact_artifact_publisher: FullScoreCompactArtifactPublisher | None,
     opener: DatabricksURLOpener | None,
-) -> tuple[Path, str, DatabricksRunSubmissionReceipt]:
-    """Fetch runs/get once and append its verified terminal actual."""
+) -> tuple[Path, str, DatabricksRunSubmissionReceipt, str]:
+    """Fetch runs/get once and append its verified terminal actual.
+
+    Returns the control-plane path the terminal actual was reconciled from.
+    """
 
     submit_file = _governed_compact_file(
         submit_payload_path,
@@ -5339,16 +5357,20 @@ def _record_full_score_phase_attempt_terminal_actual(
     resolved_opener = (
         cast(DatabricksURLOpener, urllib.request.urlopen) if opener is None else opener
     )
-    run_record = get_databricks_run(
+    fresh_run_record = get_databricks_run(
         workspace,
         receipt.run_id,
         opener=resolved_opener,
     )
-    _publish_governed_compact_file(
-        control_plane_run_path,
-        "phase control-plane evidence path",
-        _canonical_pretty_json_bytes(run_record),
-        compact_artifact_publisher,
+    effective_control_plane_path, run_record = (
+        _publish_full_score_phase_terminal_control_plane_run(
+            control_plane_run_path,
+            fresh_run_record,
+            run_id=receipt.run_id,
+            reserved_paths=reserved_evidence_paths,
+            compact_artifact_resolver=compact_artifact_resolver,
+            compact_artifact_publisher=compact_artifact_publisher,
+        )
     )
     if before_prefix.terminal_actual_count == batch_prefix.terminal_actual_count:
         try:
@@ -5368,7 +5390,128 @@ def _record_full_score_phase_attempt_terminal_actual(
                 != batch_prefix.terminal_actual_count + 1
             ):
                 raise
-    return live_path, path_sha256, receipt
+    return live_path, path_sha256, receipt, effective_control_plane_path
+
+
+def _full_score_superseding_control_plane_run_path(value: str) -> str:
+    stem = value.removesuffix(".json")
+    return f"{stem}.terminal.json"
+
+
+def _full_score_run_record_terminal_identity(
+    run_record: Mapping[str, Any],
+    field_name: str,
+) -> tuple[str, str, tuple[tuple[str, str, str], ...]] | None:
+    """Return a runs/get response's ledger-visible terminal identity.
+
+    ``None`` means the response is provably non-terminal; any other
+    non-terminal or unsupported shape raises.
+    """
+
+    run_id = _required_run_id(run_record.get("run_id"), f"{field_name} run_id")
+    state = _required_mapping(run_record, "state")
+    life_cycle_state = state.get("life_cycle_state")
+    if life_cycle_state in _DATABRICKS_NONTERMINAL_LIFE_CYCLE_STATES:
+        return None
+    terminal_state = _ledger_terminal_state(
+        life_cycle_state, state.get("result_state")
+    )
+    tasks = run_record.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError(f"{field_name} has no tasks")
+    task_identity: list[tuple[str, str, str]] = []
+    for raw_task in tasks:
+        task = _json_mapping(raw_task, f"{field_name} task")
+        task_state = _required_mapping(task, "state")
+        task_identity.append(
+            (
+                _required_string(task, "task_key"),
+                _required_run_id(task.get("run_id"), f"{field_name} task run_id"),
+                _ledger_terminal_state(
+                    task_state.get("life_cycle_state"),
+                    task_state.get("result_state"),
+                ),
+            )
+        )
+    return run_id, terminal_state, tuple(sorted(task_identity))
+
+
+def _stored_governed_compact_bytes(
+    value: str | Path,
+    field_name: str,
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+) -> bytes | None:
+    # An unresolvable path falls through to the write-once publisher, which
+    # still refuses to replace any bytes that do exist.
+    try:
+        path = _governed_compact_file(value, field_name, compact_artifact_resolver)
+    except (LookupError, OSError, ValueError):
+        return None
+    return path.read_bytes()
+
+
+def _publish_full_score_phase_terminal_control_plane_run(
+    control_plane_run_path: str | Path,
+    fresh_run_record: Mapping[str, Any],
+    *,
+    run_id: str,
+    reserved_paths: Sequence[str | Path],
+    compact_artifact_resolver: FullScoreCompactArtifactResolver | None,
+    compact_artifact_publisher: FullScoreCompactArtifactPublisher | None,
+) -> tuple[str, dict[str, Any]]:
+    """Persist one terminal runs/get response, never a non-terminal snapshot.
+
+    A stored terminal snapshot of the same run is adopted when it agrees with
+    the fresh response on every ledger-visible terminal field.  A stored
+    provably non-terminal snapshot of the same run is left in place, and the
+    fresh terminal response is published once at its superseding path.
+    """
+
+    fresh = _json_mapping(fresh_run_record, "phase runs/get response")
+    fresh_identity = _full_score_run_record_terminal_identity(
+        fresh, "phase runs/get response"
+    )
+    if fresh_identity is None:
+        raise ValueError("runs/get response is not terminal")
+    if fresh_identity[0] != run_id:
+        raise ValueError("runs/get run_id does not match the submission receipt")
+    fresh_bytes = _canonical_pretty_json_bytes(fresh)
+    path = _require_shared_dbfs_path(
+        str(control_plane_run_path), "phase control-plane evidence path"
+    )
+    superseding = _full_score_superseding_control_plane_run_path(path)
+    if superseding in {str(item) for item in reserved_paths}:
+        raise ValueError("phase superseding control-plane path collides")
+    for candidate, allow_nonterminal in ((path, True), (superseding, False)):
+        stored = _stored_governed_compact_bytes(
+            candidate,
+            "phase control-plane evidence path",
+            compact_artifact_resolver,
+        )
+        if stored is None or stored == fresh_bytes:
+            _publish_governed_compact_file(
+                candidate,
+                "phase control-plane evidence path",
+                fresh_bytes,
+                compact_artifact_publisher,
+            )
+            return candidate, fresh
+        stored_record = _json_object(stored, "stored phase runs/get snapshot")
+        stored_identity = _full_score_run_record_terminal_identity(
+            stored_record, "stored phase runs/get snapshot"
+        )
+        if stored_identity == fresh_identity:
+            return candidate, stored_record
+        if not (
+            allow_nonterminal
+            and stored_identity is None
+            and _required_run_id(
+                stored_record.get("run_id"), "stored phase runs/get snapshot run_id"
+            )
+            == run_id
+        ):
+            raise ValueError("phase control-plane evidence path binding drift")
+    raise AssertionError("unreachable")
 
 
 def _close_full_score_phase_terminal_collection(
