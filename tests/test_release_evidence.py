@@ -972,6 +972,33 @@ def test_evaluate_release_evidence_rejects_incorrect_measurement_quality_labels(
     assert any("biography:document_kv_cache answer_found must match output_text" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_checks_scored_labels_against_quality_scores():
+    v1_record = _v1_record(ok=True)
+    scored = {
+        **v1_record["measurements"][0],
+        "output_text": "<final_answer>Ada Lovelace</final_answer>",
+        "quality_scores": {"exact_match": 1.0},
+    }
+    v1_record["measurements"][0] = scored
+
+    def label_issues(record):
+        evidence = evaluate_release_evidence(
+            record,
+            _storage_record(ok=True),
+            engine_probe_records=(
+                _probe_record(ServingBackend.VLLM),
+                _probe_record(ServingBackend.SGLANG),
+            ),
+        )
+        return [issue for issue in evidence.issues if "biography:baseline_prefill exact_match" in issue]
+
+    assert label_issues(v1_record) == []
+    v1_record["measurements"][0] = {**scored, "quality_scores": {"exact_match": 0.0}}
+    assert label_issues(v1_record) == [
+        "v1 benchmark measurement biography:baseline_prefill exact_match must match quality_scores.exact_match"
+    ]
+
+
 def test_evaluate_release_evidence_rejects_malformed_measurement_trace_fields():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {

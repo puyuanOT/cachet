@@ -1781,14 +1781,24 @@ def _validate_v1_measurement_quality_labels(
     if not isinstance(output_text, str) or not isinstance(expected_answer, str) or not expected_answer:
         return
     label = f"v1 benchmark measurement {dataset}:{arm_id}"
-    if type(exact_match) is bool:
-        expected_exact_match = _benchmark_exact_match(output_text, expected_answer)
-        if exact_match != expected_exact_match:
-            issues.append(f"{label} exact_match must match output_text and expected_answer")
-    if type(answer_found) is bool:
-        expected_answer_found = _benchmark_answer_found(output_text, expected_answer)
-        if answer_found != expected_answer_found:
-            issues.append(f"{label} answer_found must match output_text and expected_answer")
+    quality_scores = measurement.get("quality_scores")
+    scores = quality_scores if isinstance(quality_scores, Mapping) else {}
+    # Registered scorers score the parsed final answer and record the label in
+    # quality_scores; only unscored legacy measurements use the raw output text.
+    for field_name, value, raw_label in (
+        ("exact_match", exact_match, _benchmark_exact_match),
+        ("answer_found", answer_found, _benchmark_answer_found),
+    ):
+        if type(value) is not bool:
+            continue
+        score = scores.get(field_name)
+        if score is None:
+            if value != raw_label(output_text, expected_answer):
+                issues.append(f"{label} {field_name} must match output_text and expected_answer")
+        elif not _is_non_negative_number(score):
+            issues.append(f"{label} quality_scores.{field_name} must be a non-negative finite number")
+        elif value != (score >= 0.5):
+            issues.append(f"{label} {field_name} must match quality_scores.{field_name}")
 
 
 def _validate_v1_measurement_token_context(
