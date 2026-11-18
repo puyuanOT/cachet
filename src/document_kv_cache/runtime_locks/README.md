@@ -1,95 +1,17 @@
-# Publication runtime locks
+# Serving runtime locks
 
 This directory contains the reviewed, hash-pinned Python dependency closure for
-the publication runtime. The vLLM wheel itself is deliberately excluded from
-the lock: it is built separately from the official vLLM 0.30.0 CUDA 12.9 wheel,
-patched for the Cachet E5M2 contract, and installed by exact URI and SHA-256.
+the vLLM serving runtime. The vLLM wheel itself is deliberately excluded from
+the lock: it is installed by exact URI, either the official vLLM 0.30.0 CUDA
+12.9 wheel or a wheel patched for the Cachet E5M2 contract by
+`document_kv_cache.vllm_wheel_repack`.
 
 `vllm-0.30.0-cu129-py311-manylinux_2_35.lock` targets the Databricks Runtime
 CPython 3.11.11 interpreter on x86_64 Linux with glibc 2.35.
 
-`publication-latency-semantic-py311-macos-arm64.lock` is the complete
-27-distribution controller-side environment used to rebuild and validate the
-frozen latency handoff plan. It targets CPython 3.11.16 on
-`aarch64-apple-darwin`. Its direct input and closed output are pinned as:
-
-- `publication-latency-semantic-py311-macos-arm64.in`:
-  `779938c5750a46931bb1a92eaadf09f83b12629542bb99a5ed2f100ec2a12034`
-- `publication-latency-semantic-py311-macos-arm64.lock`:
-  `8e26c54c74af9af63c5425e97581f3f9d1ecee00b28c7f151a607f673c14ccbb`
-
-Replay consumes those checked-in lock bytes unchanged. The authority creates a
-fresh private environment and installs the lock offline with
-`--require-hashes`, `--only-binary :all:`, and `--no-deps`; it never resolves
-an unhashed requirement or builds an sdist.
-
-## Semantic-lock regeneration
-
-The reviewed compiler identity is `uv 0.11.6 (65950801c 2026-04-09
-aarch64-apple-darwin)`, executable SHA-256
-`94151d6624054c3973829c82eb718db1afc55ef9fcee499cdd94bfb852fb99f9`.
-The reviewed interpreter is
-`/opt/homebrew/opt/python@3.11/bin/python3.11`, CPython 3.11.16. With no UV
-index environment overrides, this is the complete normative command from the
-repository root:
-
-```sh
-/Users/pliu/.local/bin/uv pip compile \
-  src/document_kv_cache/runtime_locks/publication-latency-semantic-py311-macos-arm64.in \
-  --output-file src/document_kv_cache/runtime_locks/publication-latency-semantic-py311-macos-arm64.lock \
-  --python /opt/homebrew/opt/python@3.11/bin/python3.11 \
-  --python-version 3.11.16 \
-  --python-platform aarch64-apple-darwin \
-  --only-binary :all: \
-  --generate-hashes \
-  --no-annotate \
-  --no-header \
-  --no-sources \
-  --default-index https://pypi.org/simple \
-  --index-strategy first-index \
-  --no-python-downloads \
-  --no-config \
-  --system-certs
-```
-
-That command was independently replayed byte-for-byte to the pinned lock SHA
-above. Regeneration creates only a candidate: any changed input or output
-requires review of the complete version-and-hash closure, updated lock-byte and
-installed-site closure pins in `publication_freeze.py`, and a fresh semantic
-rebuild before source authority may issue.
-
-## Linux x86_64 controller host
-
-The same checked-in semantic lock bytes are also the reviewed closure for an
-x86_64 Linux controller: every pinned distribution has a pure-Python or
-manylinux x86_64 wheel among its locked hashes, and the offline
-`--require-hashes` install consumes the lock unchanged. `publication_freeze.py`
-selects the controller identity from `platform.system()` and
-`platform.machine()`; an unreviewed host keeps the macOS identity and fails
-closed. The Linux host pins:
-
-- interpreter `/opt/python-build-standalone/cpython-3.11.16+20260929/bin/python3.11`,
-  extracted from python-build-standalone
-  `cpython-3.11.16+20260929-x86_64-unknown-linux-gnu-install_only.tar.gz`
-  (archive SHA-256
-  `fbbfd0f2253996486455f44a28c09ac7e2df534b8a4835408d17c99d185b80ec`),
-  executable SHA-256
-  `473a001c58b509434303302c27165d137bcb16d9f37ca5a8e2f63e457682cbfd`;
-- `~/.local/bin/uv` from the uv 0.11.6 `uv-x86_64-unknown-linux-gnu.tar.gz`
-  release asset (archive SHA-256
-  `0c6bab77a67a445dc849ed5e8ee8d3cb333b6e2eba863643ce1e228075f27943`),
-  executable SHA-256
-  `c9f7ca00a5e1c4f2a6dd96db91097bec5b76a53a483818e8ee746e9c7440547a`, whose
-  `--version` output is exactly `uv 0.11.6 (x86_64-unknown-linux-gnu)`;
-- an installed private site of 4,756 files with closure digest
-  `e184b14818283ec0a46bb3b574da004636694104cd4530e7c2679594f081685b`;
-- subprocess `HOME=/var/empty` (an empty root-owned `0755` directory),
-  `TMPDIR=/var/tmp`, and `PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`.
-
-The repository `.venv` holds `ruff==0.15.21` and `mypy==2.2.0` with the CPU
-PyTorch wheel, and the interpreter itself holds the `test` extra, `build`, the
-CPU PyTorch wheel, and `pyarrow`, so the frozen unit-test check runs the full
-suite without skips.
+The controller-side semantic lock, which was never co-installed into the Linux
+serving runtime, and the publication runners that consumed these locks during
+the vLLM 0.30.0 campaign are preserved at the `vllm-0300-campaign-archive` tag.
 
 ## vLLM qualification lock
 
@@ -99,12 +21,9 @@ verify that its SHA-256 is
 `8b6f8618fff84070d44b35a2d6a54d5fc5831ecd8c375b5cbe9d847aeb3fae5d`, the
 digest pinned by `document_kv_cache.serving_env`. Its exact four-line index
 header is the sole runtime index authority: PyPI, the CUDA 12.9 PyTorch index,
-and the two reviewed FlashInfer indexes. Package installation removes inherited
-`PIP_*` options and disables every pip configuration file before invoking pip.
-The standalone smoke path, engine-probe runner, generic Databricks bootstrap,
-qualification bootstrap/sentinel worker, latency job/handoff/source-closure
-runners, and full-score runner apply the same scrubbed environment to
-virtualenv creation and every install, check, and provenance-verifier
+and the two reviewed FlashInfer indexes. The engine-probe runner removes inherited
+`PIP_*` options and disables every pip configuration file before creating its
+virtualenv and before every install, check, and provenance-verifier
 subprocess.
 
 `uv --torch-backend cu129` selects and hash-locks the CUDA 12.9 PyTorch wheels,
@@ -121,10 +40,7 @@ The generated comment at the top of the lock records the original compiler
 invocation; its abbreviated Python version and implicit index strategy are
 provenance, not the normative regeneration recipe.
 
-The Cachet wheel pins `packaging==26.3` to match this serving closure. The
-separate `publication-latency-semantic-py311-macos-arm64.in` and `.lock` remain
-at `packaging==26.2`: that controller-only tokenizer/semantic validation tool is
-an isolated build input and is never co-installed into the Linux serving runtime.
+The Cachet wheel pins `packaging==26.3` to match this serving closure.
 
 Regeneration creates a new candidate vLLM lock. From the repository root, install
 the reviewed compiler with `python -m pip install uv==0.11.6`, then run:

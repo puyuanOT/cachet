@@ -26,10 +26,10 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the `aws-g6-l4` target. The benchmark index records the frozen vLLM 0.27.1 campaign contract, but all result cells remain pending. | Qualify the final source, wheel, runtime, and inputs; complete all five independent deployment blocks; then publish a new strict bundle. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the `aws-g6-l4` target. The benchmark index records the frozen vLLM 0.27.1 campaign contract and the published vLLM 0.30.0 results it produced. | Qualify the final source, wheel, runtime, and inputs; complete all five independent deployment blocks; then publish a new strict bundle. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
-| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. The public tables are a vLLM 0.27.1-campaign-pending skeleton: implemented cells are pending and unsupported methods remain explicit `N/A`. | Complete the Baseline/Vanilla 8k/16k/32k by concurrency 1/2/4 factorial across five independent deployment blocks, all implemented ablations, and corrected full-dataset scoring before publishing numbers. |
-| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. No prior run is accepted as evidence for the frozen vLLM 0.27.1 campaign. | Keep all four datasets in the strict release bundle and complete the corrected full-dataset evaluation without padding or truncating the score population. |
+| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. The public tables are rendered from the sealed vLLM 0.30.0 campaign records: implemented cells carry published values and unsupported methods remain explicit `N/A`. | Complete the Baseline/Vanilla 8k/16k/32k by concurrency 1/2/4 factorial across five independent deployment blocks, all implemented ablations, and corrected full-dataset scoring before publishing numbers. |
+| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. No pre-reset run is accepted as evidence for the frozen vLLM 0.27.1 campaign design. | Keep all four datasets in the strict release bundle and complete the corrected full-dataset evaluation without padding or truncating the score population. |
 | Compare against standard no-cache prefill | Implemented | Benchmark summaries require a `baseline_prefill` arm and cache-arm comparisons with logical/runtime prompt accounting. | Target release evidence must include finite baseline and cache measurements. |
 
 ## Architecture And Extensibility
@@ -71,8 +71,13 @@ plan execution sidecar, Databricks run-status sidecars for benchmark, storage,
 and vLLM/SGLang engine-probe runs, tested package wheel, PR evidence sidecar,
 dependency freshness sidecar, V1 requirements matrix, GitHub governance
 sidecar, repository hygiene sidecar, and native probe factory diagnostics
-sidecar. During the 0.27.1 refresh these remain required gates, not historical
-evidence that may populate the reset result tables.
+sidecar. These remain required gates, not historical evidence that may
+populate the result tables.
+
+The vLLM 0.30.0 campaign completed the campaign gates below; its machinery and
+full validators are preserved at the `vllm-0300-campaign-archive` tag, and
+`benchmarks/verify_sealed_records.py` checks the sealed records it published.
+Any future campaign must meet them again:
 
 - Freeze the exact vLLM 0.27.1 source, rebuilt wheels, runtime closure,
   benchmark inputs, and GPU qualification records before allocating campaign

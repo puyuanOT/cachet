@@ -31,10 +31,8 @@ release-operation material.
   freshness evidence.
 - `native-engine-integration.md` shows how Cachet handoff artifacts and
   launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.
-- `representative-hotpotqa-inputs.md` documents tokenizer-only preparation of
-  exact 8k/16k/32k HotpotQA inputs for representative canaries and cold-loader
-  ablations.
-- `../benchmarks/README.md` is the human-facing research-style benchmark page;
-  it now contains the explicit vLLM 0.27.1 campaign-pending tables. Superseded
-  benchmark result folders were removed, and `../benchmarks/appendix/` remains
-  empty of results until sanitized evidence passes the publication gate.
+- `../benchmarks/README.md` is the human-facing research-style benchmark page
+  for the published vLLM 0.30.0 campaign. Its sealed records live under
+  `../benchmarks/appendix/`, and `../benchmarks/verify_sealed_records.py`
+  checks their integrity; full re-validation runs at the
+  `vllm-0300-campaign-archive` tag.

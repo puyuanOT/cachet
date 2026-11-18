@@ -118,8 +118,9 @@ dataset payloads, or local `databricks-runs/` output.
 
 ## Evidence
 
-The current campaign-pending tables live in `benchmarks/README.md`. Publish a
-new sanitized appendix only after the vLLM 0.27.1 campaign passes its evidence
-and publication gates. Refresh the benchmark tables, strict release bundle, and
+The published vLLM 0.30.0 campaign tables live in `benchmarks/README.md`, with
+their sealed records under `benchmarks/appendix/`. Publish a new sanitized
+appendix only after a campaign passes its evidence and publication gates.
+Refresh the benchmark tables, strict release bundle, and
 `docs/v1-requirements-matrix.md` whenever benchmark code, runtime pins,
 connector contracts, launch-config fields, or package wheel identity change.

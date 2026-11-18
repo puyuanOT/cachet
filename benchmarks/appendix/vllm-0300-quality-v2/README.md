@@ -19,7 +19,8 @@ the attempt and output file digests of every chunk.
 
 The inputs derive from the campaign's pinned full-score natural datasets
 (`_FULL_SCORE_PUBLICATION_SOURCE_RECORDS` in
-`src/document_kv_cache/full_score_execution.py`):
+`src/document_kv_cache/full_score_execution.py` at the
+`vllm-0300-campaign-archive` tag):
 
 | Dataset | Rule | Examples | Input JSONL SHA-256 |
 | --- | --- | ---: | --- |

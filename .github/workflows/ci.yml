@@ -65,18 +65,13 @@ jobs:
           src/document_kv_cache/benchmark_statistics.py
           src/document_kv_cache/benchmark_gates.py
           src/document_kv_cache/openai_compatible.py
-          src/document_kv_cache/_representative_hotpotqa.py
           src/document_kv_cache/dataset_prep.py
-          src/document_kv_cache/canary_orchestration.py
-          src/document_kv_cache/databricks_resource_ledger.py
           src/document_kv_cache/databricks_job.py
           src/document_kv_cache/databricks_storage_benchmark_job.py
           src/document_kv_cache/benchmark_plan_executor.py
           src/document_kv_cache/method_scaffold.py
           src/document_kv_cache/method_conformance.py
           src/document_kv_cache/reference_method.py
-          src/document_kv_cache/publication_campaign_finalizer.py
-          src/document_kv_cache/publication_campaign_tables.py
 
       - name: Type-check method and benchmark contracts
         run: >-
@@ -92,18 +87,13 @@ jobs:
           src/document_kv_cache/benchmark_statistics.py
           src/document_kv_cache/benchmark_gates.py
           src/document_kv_cache/openai_compatible.py
-          src/document_kv_cache/_representative_hotpotqa.py
           src/document_kv_cache/dataset_prep.py
-          src/document_kv_cache/canary_orchestration.py
-          src/document_kv_cache/databricks_resource_ledger.py
           src/document_kv_cache/databricks_job.py
           src/document_kv_cache/databricks_storage_benchmark_job.py
           src/document_kv_cache/benchmark_plan_executor.py
           src/document_kv_cache/method_scaffold.py
           src/document_kv_cache/method_conformance.py
           src/document_kv_cache/reference_method.py
-          src/document_kv_cache/publication_campaign_finalizer.py
-          src/document_kv_cache/publication_campaign_tables.py
 
       - name: Verify console script entry points
         run: |

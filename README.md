@@ -136,7 +136,6 @@ including the toy generator and local materialization step.
 | Production serving | [`docs/production.md`](docs/production.md) |
 | vLLM/SGLang adapter maintainers | [`docs/native-engine-integration.md`](docs/native-engine-integration.md) |
 | Benchmarks | [`benchmarks/README.md`](benchmarks/) |
-| Databricks canary budget | [`docs/databricks-cluster-hour-ledger.md`](docs/databricks-cluster-hour-ledger.md) |
 | Repository map | [`docs/repo-map.md`](docs/repo-map.md) |
 | Maintainer operations | [`docs/release-ops/README.md`](docs/release-ops/README.md) |
 
@@ -178,6 +177,13 @@ multi-hop question answering over several documents (HotpotQA and MuSiQue).
 It matches full prefill on single-document needle retrieval, which tests that
 cached KV survives transfer rather than cross-document reuse. You do not need
 cloud infrastructure to try the local quickstart.
+
+The sealed result records ship with the repository, and
+`python benchmarks/verify_sealed_records.py` checks their integrity. The
+campaign machinery that produced them (GPU qualification, handoff generation,
+latency and full-score execution, and the finalizer) is not part of the
+package; it is preserved at the `vllm-0300-campaign-archive` tag, where the
+records can be fully re-validated.
 
 ## Contributing
 

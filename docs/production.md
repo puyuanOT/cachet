@@ -91,22 +91,6 @@ storage on first access, then promoted into the local-disk tier after it becomes
 popular. Local-disk files are evicted with LRU once `local_max_bytes` is full.
 CPU RAM remains the fastest byte cache and is governed by `cpu_max_bytes`.
 
-## Runtime Verification
-
-Run the runtime KV offload probe before enabling these paths in production:
-
-```bash
-cachet-runtime-kv-offload-probe \
-  --work-dir /local_disk0/cachet-runtime-kv-offload-probe \
-  --output-json /local_disk0/cachet-runtime-kv-offload-probe/probe.json
-```
-
-The probe validates the vLLM offload config shape, SGLang HiCache launch args,
-and Cachet document-KV promotion/eviction behavior from cold storage, CPU RAM,
-and local disk. On an environment where the serving runtime is installed, add
-`--require-vllm-offloading-import` or `--require-sglang-package` to make the
-probe fail closed when the platform support is missing.
-
 ## Databricks
 
 Databricks is one supported production and benchmark environment, not a
@@ -114,10 +98,7 @@ requirement for using Cachet. Use it when you need managed GPU jobs, Unity
 Catalog Volumes, or reproducible benchmark runs on the target hardware.
 
 Databricks job templates live under [`../databricks/`](../databricks/). The
-public quickstart does not require them. The ad hoc runner in
-[`../databricks/runtime-kv-offload-probe/`](../databricks/runtime-kv-offload-probe/)
-executes the runtime verification probe from an installed wheel on a managed
-cluster.
+public quickstart does not require them.
 
 ## Stable User Commands
 

@@ -155,9 +155,7 @@ def test_vllm_runtime_lock_readme_separates_replay_from_regeneration():
     assert "--python-platform x86_64-manylinux_2_35" in readme
     assert "--index-strategy first-index" in readme
     assert "Cachet wheel pins `packaging==26.3`" in readme
-    assert "publication-latency-semantic-py311-macos-arm64.in" in readme
-    assert "`packaging==26.2`" in readme
-    assert "never co-installed into the Linux serving runtime" in readme
+    assert "vllm-0300-campaign-archive" in readme
 
 
 def test_vllm_runtime_lock_platform_is_exact():

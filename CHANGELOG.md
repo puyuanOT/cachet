@@ -2,21 +2,31 @@
 
 ## Unreleased
 
-- vLLM 0.30.0 (CUDA 12.9) serving runtime with pinned, hash-locked runtime
-  lock files shipped in the wheel.
+- vLLM 0.30.0 (CUDA 12.9) serving profile, with the pinned hash-locked vLLM
+  runtime lock shipped in the wheel, and `vllm_wheel_repack` for building the
+  E5M2-patched vLLM wheel.
 - Registered method framework: method lifecycles, artifact, token, and layout
-  contracts, N-way evaluation arms, paired statistics, and a method scaffold
-  and conformance checker.
+  contracts, N-way evaluation arms, paired statistics, benchmark gates and
+  metrics, Quality v2 scoring, runtime telemetry, and a method scaffold and
+  conformance checker (`cachet-method-scaffold`, `cachet-method-conformance`).
 - Vanilla v2: per-document pre-RoPE keys with absolute-position injection, and
   a single-pass segmented vLLM cold loader.
-- Governed Databricks publication pipeline: resource ledger, GPU
-  qualification, latency, full-score, and finalizer stages, plus a source
-  freeze.
-- New `cachet.*` facades and `cachet-*` console scripts, each with a
-  `document-kv-*` twin.
+- Decode throughput is now aggregated as total completion tokens over total
+  post-TTFT decode time; the method `vanilla` is renamed `vanilla_prefill`, and
+  connector actions take an explicit reuse plan.
+- The packaged vLLM and SGLang Databricks smoke runners install the official
+  vLLM `0.30.0+cu129` wheel from the CUDA 12.9 indexes and emit handoffs that
+  carry the registered artifact and token contracts. They have not yet been
+  re-run on GPU against this profile.
 - `packaging` pinned to 26.3.
-- Benchmark records: the vLLM 0.30.0 campaign report, the quality v2 report,
-  and the plan-coherent auxiliary latency re-run.
+- Benchmark records: the vLLM 0.30.0 campaign report and gate, the Quality v2
+  report, and the plan-coherent auxiliary latency re-run, plus
+  `benchmarks/verify_sealed_records.py`, a dependency-free integrity check of
+  those records and the README regions rendered from them.
+- The campaign machinery that produced the records (resource ledger, GPU
+  qualification, latency, full-score, and finalizer stages, source freeze,
+  LMCache/hybrid launchers, and the full offline validators) is not part of
+  the package; it is preserved at the `vllm-0300-campaign-archive` tag.
 - Removed the superseded `benchmarks/current/` summary, the earlier result
   folders under `benchmarks/{databricks,native-engine,sglang,storage,vllm}/`
   (their index READMEs remain), and six PR-evidence folders for superseded

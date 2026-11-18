@@ -17,13 +17,15 @@ native GPU KV blocks.
 | What is the current target? | Qwen3 4B Instruct on AWS g6/L4 Databricks, `g6.8xlarge` |
 | Where are the latest results? | [`benchmarks/README.md`](../../benchmarks/) |
 
-The public benchmark surface is reset for the vLLM 0.27.1 publication campaign.
-No pre-reset latency, resource, ablation, or score number is carried forward.
-The tables in [`benchmarks/README.md`](../../benchmarks/) are explicit
-campaign-pending/N/A skeletons until exact source, wheel, runtime, input,
-hardware, Databricks, result, and publication-gate records are committed.
-Unsupported methods and the Q8 pre-RoPE SGLang serving path remain explicit
-`N/A` rather than being inferred from integration probes.
+The public benchmark surface publishes the vLLM 0.30.0 campaign (designed and
+frozen for vLLM 0.27.1). No pre-reset latency, resource, ablation, or score
+number is carried forward. The tables in
+[`benchmarks/README.md`](../../benchmarks/) are rendered from the sealed records
+under `benchmarks/appendix/`, which `benchmarks/verify_sealed_records.py`
+checks; the campaign machinery and full validators are preserved at the
+`vllm-0300-campaign-archive` tag. Unsupported methods and the Q8 pre-RoPE
+SGLang serving path remain explicit `N/A` rather than being inferred from
+integration probes.
 
 Most readers should use these entry points first:
 
@@ -119,9 +121,8 @@ and release evidence in one repository. The human entry points are:
   `benchmarks/`, `docs/release-ops/evidence/`, `docs/release-ops/pr-evidence/`, release bundles, and ignored
   `databricks-runs/` scratch output.
 - [`benchmarks/README.md`](../../benchmarks/) is the research-style benchmark
-  answer and the authoritative vLLM 0.27.1 campaign-pending table surface.
-  `benchmarks/appendix/` contains no result evidence until the reset passes its
-  publication gate.
+  answer for the published vLLM 0.30.0 campaign; `benchmarks/appendix/` holds
+  its sealed report, gate, Quality v2 report, and auxiliary latency re-run.
 - [`src/cachet/README.md`](../../src/cachet/) describes the Cachet-branded public
   facade; [`src/document_kv_cache/README.md`](../../src/document_kv_cache/) describes
   the implementation package and migration boundary.
@@ -647,9 +648,9 @@ the same AWS g6/L4 policy:
 ```
 
 The vLLM target deliberately omits an inline `pip_packages` list. The
-release-safe preset derives the prepatched vLLM `0.27.1+cu129` wheel and full
-hash-locked runtime closure from `document_kv_cache.serving_env`; a caller must
-not replace that closure with an unpinned package spec.
+release-safe preset derives the pinned official vLLM `0.30.0+cu129` wheel and
+full hash-locked runtime closure from `document_kv_cache.serving_env`; a caller
+must not replace that closure with an unpinned package spec.
 
 When the target uses Cachet's built-in reserved factory path, add
 `native_probe_delegate_factory` to that backend's target record. The Databricks
@@ -926,11 +927,11 @@ runs. It defines a common schema for comparing the no-cache prefill baseline
 with document KV-cache reuse:
 
 Curated, human-readable benchmark reports are tracked in
-[`benchmarks/README.md`](../../benchmarks/README.md). It currently contains the
-vLLM 0.27.1 campaign design and explicit pending/N/A tables, not numeric
-results. Add a stable appendix folder only after sanitized evidence passes the
-publication gate; `docs/release-ops/pr-evidence/` remains reserved for
-machine-readable PR validation and release-audit sidecars.
+[`benchmarks/README.md`](../../benchmarks/README.md). It contains the vLLM
+0.27.1 campaign design and the published vLLM 0.30.0 results rendered from the
+sealed appendix records. Add a stable appendix folder only after sanitized
+evidence passes the publication gate; `docs/release-ops/pr-evidence/` remains
+reserved for machine-readable PR validation and release-audit sidecars.
 
 Provider-backed SGLang probes remain integration checks. They do not populate a
 latency or score table, and the Q8 pre-RoPE SGLang serving path is explicitly
@@ -2052,8 +2053,12 @@ This package uses Poetry metadata with exact direct dependency pins: Python
 extras because their current dependency graphs conflict in one resolver; use
 the vendored adapter code from the Cachet wheel and install exactly one serving
 runtime in an isolated environment. The Databricks vLLM smoke helper creates
-one such isolated local-NVMe environment from the prepatched vLLM
-`0.27.1+cu129` wheel and its reviewed hash-locked runtime closure.
+one such isolated local-NVMe environment from the pinned official vLLM
+`0.30.0+cu129` wheel and the serving profile's exact pins, installed from the
+CUDA 12.9 package indexes. The E5M2-patched wheel and hash-locked runtime
+closure used by the campaign runners are built by `vllm_wheel_repack.py`; the
+runners that install them are preserved at the `vllm-0300-campaign-archive`
+tag.
 `document_kv_cache.serving_env` records the exact helper profiles for vLLM and
 SGLang so future smoke/probe jobs share the same install boundary.
 The committed `poetry.lock` records the resolver output for the base package,
@@ -2088,16 +2093,12 @@ users keep inline type annotations after installation.
 
 ## Remaining V1 Work
 
-- Freeze the vLLM 0.27.1 source snapshot, rebuild the final Cachet and patched
-  vLLM wheels, and close their exact runtime, input, and qualification records
-  before submitting production jobs.
-- Run the complete five-block Baseline/Vanilla latency factorial at 8k/16k/32k
-  and concurrency 1/2/4, refresh every implemented ablation, and complete the
-  paired full-dataset score pass. Do not publish partial or pre-reset numbers.
-- Build a new strict release bundle exclusively from the reset campaign's
-  source-bound artifacts, Databricks attestations, results, and passing
-  publication gate. Native engine block managers remain owned by vLLM and
-  SGLang rather than Cachet.
+- Re-run the packaged Databricks vLLM and SGLang smoke runners on GPU against
+  the vLLM 0.30.0 serving profile; the published campaign used the archived
+  campaign runners instead.
+- Build a new strict release bundle exclusively from source-bound artifacts,
+  Databricks attestations, results, and a passing publication gate. Native
+  engine block managers remain owned by vLLM and SGLang rather than Cachet.
 - Keep GitHub governance release-ready before each public release. Current
   governance evidence is green: the repository is public, `allow_auto_merge`
   reports enabled, merged head branches are deleted automatically, `main`

@@ -44,9 +44,10 @@ complete it:
 ## Frozen Campaign Configuration
 
 The closed design is implemented by
-[`document_kv_cache.publication_campaign`](../src/document_kv_cache/publication_campaign.py).
-The source snapshot and generated campaign record must be frozen before any
-production job is submitted.
+[`document_kv_cache.publication_campaign`](https://github.com/puyuanOT/cachet/blob/vllm-0300-campaign-archive/src/document_kv_cache/publication_campaign.py)
+at the `vllm-0300-campaign-archive` tag, which preserves the campaign machinery
+that is not part of the package. The source snapshot and generated campaign
+record must be frozen before any production job is submitted.
 
 | Field | Frozen value |
 | --- | --- |
@@ -532,8 +533,14 @@ The quality v2 report and the auxiliary latency re-run record are sealed
 separately, each with its own `closed_record_sha256`, in
 `appendix/vllm-0300-quality-v2/` and
 `appendix/vllm-0300-auxiliary-latency-rerun/`. They do not alter the campaign
-report or gate. Their README regions above are rendered from those records and
-checked byte-for-byte by the governance tests.
+report or gate. Their README regions above are rendered from those records.
+
+[`verify_sealed_records.py`](verify_sealed_records.py) is a standard-library
+checker: it recomputes each record's `closed_record_sha256`, checks the pinned
+record and rendered-appendix bytes, confirms that the gate binds the report,
+and compares every governed README region byte-for-byte with its sealed
+rendering. The renderers and the full record validators run at the
+`vllm-0300-campaign-archive` tag.
 
 ## Directory Layout
 

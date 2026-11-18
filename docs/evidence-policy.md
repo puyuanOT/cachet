@@ -120,6 +120,11 @@ Databricks evidence, or that the ledger prefixes match any ledger file, so an
 internally consistent resealed report passes. The gate is an integrity gate
 with no quality or latency threshold, and latency results are
 estimation-only. The publication-table renderer runs only this offline check.
+That validator, the renderer, and the finalizer live at the
+`vllm-0300-campaign-archive` tag. The packaged repository runs only
+[`../benchmarks/verify_sealed_records.py`](../benchmarks/verify_sealed_records.py),
+which checks integrity: record self-digests, pinned record and appendix bytes,
+the gate-to-report binding, and every governed README region.
 
 The source of truth for the vLLM 0.30.0 campaign is the tagged commit
 `vllm-0300-publication-ffb1f1d`. Its published report was finalized by that
@@ -187,28 +192,13 @@ hydration occur inside or outside the measured online request boundary.
 
 ## Representative Canary Submission Contract
 
-Representative smoke jobs are a narrow, versioned subset of ordinary canary
-experiments. The `--representative-canary` label and a registered
-`--representative-workload-profile` must be supplied together; neither a
-canonical arm nor `--benchmark-evidence-policy canary` implicitly applies the
-representative label. Generic pinned canaries therefore remain usable for
-other hardware and exploratory matrices.
-
-The registered vLLM profiles are `vllm-8k-64-v1` and
-`vllm-16k-256-v1`. They bind the logical input target and forced output budget
-to 8,192/64 and 16,384/256 tokens respectively, with three repeats, request
-parallelism one, prepared multi-document input, per-request prefix-cache salts,
-and disabled prewarm, runtime-prompt, and process payload caches. The SGLang
-profile `sglang-4k-32-v1` binds a 4,096-token context, 32 output tokens, two
-repeats, the `triton` attention backend, the `pytorch` sampling backend, and
-deterministic inference.
-
-Each representative vLLM method arm runs in a separate Databricks task; the
-three results are aggregated only after the isolated jobs finish. Representative
-jobs use only the exact `g6.8xlarge` or `g5.8xlarge` node for the declared
-hardware target, keep handoff roots under `/local_disk0`, set
-`DOCUMENT_KV_EVICT_PAGE_CACHE=1`, use immutable model/tokenizer revisions, and
-submit with a four-hour hard timeout and zero task retries.
+Representative canary submission (the `--representative-canary` label,
+registered workload profiles such as `vllm-8k-64-v1`, `vllm-16k-256-v1`, and
+`sglang-4k-32-v1`, isolated per-arm Databricks tasks, and the coupled
+cluster-hour ledger reservation) was campaign machinery. It is preserved with
+the Databricks runners that implement it at the `vllm-0300-campaign-archive`
+tag. The packaged `cachet-vllm-smoke` and `cachet-sglang-smoke` runners keep
+their earlier interface and do not accept those options.
 
 ## Folder Boundaries
 
