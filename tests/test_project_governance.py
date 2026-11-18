@@ -1318,6 +1318,13 @@ def test_sealed_record_checker_rejects_tampered_records_and_regions(tmp_path):
         "README region cachet:vllm-0300-quality-v2 differs from its sealed rendering"
     ]
 
+    readme_path.unlink()
+    (benchmark_copy / checker.PUBLICATION_GATE).unlink()
+    assert checker.verify(benchmark_copy) == [
+        f"{checker.PUBLICATION_GATE} cannot be read: No such file or directory",
+        "README.md cannot be read: No such file or directory",
+    ]
+
 
 def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     from document_kv_cache.quality_v2 import (

@@ -167,8 +167,23 @@ def verify(benchmark_root: Path = BENCHMARK_ROOT) -> list[str]:
 
     issues: list[str] = []
     records: dict[str, dict[str, Any]] = {}
+    contents: dict[str, bytes | None] = {}
+
+    def read(relative_path: str) -> bytes | None:
+        if relative_path not in contents:
+            try:
+                contents[relative_path] = (benchmark_root / relative_path).read_bytes()
+            except OSError as exc:
+                issues.append(
+                    f"{relative_path} cannot be read: {exc.strerror or type(exc).__name__}"
+                )
+                contents[relative_path] = None
+        return contents[relative_path]
+
     for relative_path, (rule, file_sha256) in SEALED_RECORDS.items():
-        raw = (benchmark_root / relative_path).read_bytes()
+        raw = read(relative_path)
+        if raw is None:
+            continue
         if hashlib.sha256(raw).hexdigest() != file_sha256:
             issues.append(f"{relative_path} bytes differ from the sealed record")
         try:
@@ -180,24 +195,26 @@ def verify(benchmark_root: Path = BENCHMARK_ROOT) -> list[str]:
             issues.append(f"{relative_path} closed_record_sha256 does not recompute")
         records[relative_path] = record
     for relative_path, file_sha256 in PINNED_FILES.items():
-        raw = (benchmark_root / relative_path).read_bytes()
-        if hashlib.sha256(raw).hexdigest() != file_sha256:
+        raw = read(relative_path)
+        if raw is not None and hashlib.sha256(raw).hexdigest() != file_sha256:
             issues.append(f"{relative_path} bytes differ from the sealed rendering")
+    gate_raw = read(PUBLICATION_GATE)
     try:
-        gate = load_canonical_record(
-            (benchmark_root / PUBLICATION_GATE).read_bytes(), PUBLICATION_GATE
-        )
+        gate = None if gate_raw is None else load_canonical_record(gate_raw, PUBLICATION_GATE)
     except ValueError as exc:
         issues.append(str(exc))
-    else:
+        gate = None
+    if gate is not None:
         report = records.get(CAMPAIGN_REPORT)
         if report is not None and gate.get("benchmark_payload_digest") != report.get(
             "closed_record_sha256"
         ):
             issues.append("publication gate does not bind the campaign report digest")
-    readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
+    readme_raw = read("README.md")
+    if readme_raw is None:
+        return issues
     try:
-        observed = governed_region_sha256(readme)
+        observed = governed_region_sha256(readme_raw.decode("utf-8"))
     except ValueError as exc:
         issues.append(str(exc))
     else:
