@@ -1,0 +1,18 @@
+{
+  "benchmark_payload_digest": "3359c81af22e3769e5628c7c8fb17a627cdbcf3ed4cf39e9900aa2cd1a3d53f7",
+  "checked_cache_arms": [
+    "vanilla_prefill"
+  ],
+  "checked_cache_requests": 101573,
+  "checked_distinct_examples": 83653,
+  "cold_attested_requests": 16640,
+  "issues": [],
+  "measurement_scopes": [
+    "latency",
+    "quality",
+    "resource"
+  ],
+  "ok": true,
+  "policy": "publication",
+  "record_type": "document_kv.benchmark_publication_gate.v1"
+}

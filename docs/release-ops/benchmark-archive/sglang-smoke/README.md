@@ -6,7 +6,7 @@ the current public benchmark result surface.
 
 Use [`../../../../benchmarks/sglang/README.md`](../../../../benchmarks/sglang/README.md)
 for current SGLang benchmark status and
-[`../../../../benchmarks/current/README.md`](../../../../benchmarks/current/README.md)
+[`../../../../benchmarks/README.md`](../../../../benchmarks/README.md)
 for the concise performance summary.
 
 Archived folders keep compact sanitized records only. Raw run payloads, logs,

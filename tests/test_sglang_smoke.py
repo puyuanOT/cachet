@@ -3677,3 +3677,43 @@ def test_probe_sglang_import_requires_request_metadata_bridge(monkeypatch, tmp_p
     record = json.loads(output_path.read_text(encoding="utf-8"))
     assert record["ok"] is False
     assert record["error_type"] == "SGLangRequestMetadataBridgeUnavailable"
+
+
+def test_sglang_live_benchmark_prompt_parts_wrap_qwen3_chat_completion_prompts(tmp_path):
+    from document_kv_cache.benchmarks import BenchmarkExample, build_prompt_parts
+
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(
+            SourceDocument.from_text(
+                document_id="doc-1", text="Ada Lovelace wrote notes."
+            ),
+        ),
+        query="Who wrote the notes?",
+    )
+    plain = build_prompt_parts(example)
+
+    def config(**overrides):
+        return SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            live_check_prompt_format="qwen3_chat",
+            **overrides,
+        )
+
+    wrapped = public_sglang_smoke._sglang_live_benchmark_prompt_parts(
+        config(live_check_request_mode="completion"), example
+    )
+    assert wrapped.system_prompt.startswith("<|im_start|>system\n")
+    assert wrapped.system_prompt.endswith(plain.system_prompt)
+    assert wrapped.document_context == plain.document_context
+    assert wrapped.user_prompt.endswith("<|im_start|>assistant\n")
+
+    assert (
+        public_sglang_smoke._sglang_live_benchmark_prompt_parts(
+            config(live_check_request_mode="chat"), example
+        )
+        == plain
+    )

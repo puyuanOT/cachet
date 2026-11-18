@@ -72,6 +72,7 @@ from document_kv_cache.live_server import (
     LiveServerCheckConfig,
     LiveServerCheckResult,
     _live_check_chat_messages,
+    _live_check_prompt_parts,
     _live_check_request_prompt_format,
     build_live_server_check_request,
     live_check_kv_transfer_params,

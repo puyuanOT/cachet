@@ -6,10 +6,9 @@ launch-config sidecars; vLLM and SGLang still own scheduling, allocation,
 decode, routing, and cleanup.
 
 Use this guide when wiring the current provider-backed vLLM or SGLang paths into
-a deployment. For benchmark evidence, start with the standalone folders under
-`benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and
-`benchmarks/native-engine/`; `benchmarks/databricks/` mirrors the Databricks
-status and release-source records for audit.
+a deployment. For benchmark status, start with the research-style tables in
+`benchmarks/`; the public numeric cells remain empty until the vLLM 0.27.1
+campaign passes its publication gate.
 
 ## Launch Configs
 
@@ -119,14 +118,8 @@ dataset payloads, or local `databricks-runs/` output.
 
 ## Evidence
 
-The current provider-backed evidence is tracked in:
-
-- `benchmarks/vllm/qwen3-4b-g6-l4-vanilla-kv/`
-- `benchmarks/vllm/qwen3-4b-g5-a10g-vanilla-kv/`
-- `benchmarks/storage/g6-l4-reader-throughput/`
-- `benchmarks/native-engine/g6-l4-vllm-sglang-vanilla-kv/`
-
-Refresh those standalone folders, the matching `benchmarks/databricks/` mirrors,
-the strict release bundle, and `docs/v1-requirements-matrix.md` whenever
-benchmark code, runtime pins, connector contracts, launch-config fields, or
-package wheel identity change.
+The current campaign-pending tables live in `benchmarks/README.md`. Publish a
+new sanitized appendix only after the vLLM 0.27.1 campaign passes its evidence
+and publication gates. Refresh the benchmark tables, strict release bundle, and
+`docs/v1-requirements-matrix.md` whenever benchmark code, runtime pins,
+connector contracts, launch-config fields, or package wheel identity change.

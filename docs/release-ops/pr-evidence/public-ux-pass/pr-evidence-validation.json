@@ -14,7 +14,7 @@
       "scope": [
         "README.md; docs/getting-started.md; docs/concepts.md; docs/production.md; examples/quickstart_local.py; src/cachet/quickstart_local.py",
         "CONTRIBUTING.md; .github/ISSUE_TEMPLATE; ROADMAP.md; CHANGELOG.md; RELEASE_NOTES.md; docs/release-ops",
-        "benchmarks/current; benchmarks/sglang/archive; docs/release-ops/evidence; docs/release-ops/pr-evidence; tests/test_project_governance.py"
+        "benchmarks/README.md; benchmarks/sglang/archive; docs/release-ops/evidence; docs/release-ops/pr-evidence; tests/test_project_governance.py"
       ],
       "verification": [
         "PYTHONPATH=src python -m cachet.quickstart_local -> generated chunks: 4; materialized bytes: 340; engine handle: document-kv://req-local",
@@ -31,7 +31,7 @@
       "what_changed": [
         "Rewrote the root README into a short public Cachet landing page with install, audience fit, architecture flow, no-cloud quickstart, stable API surface, and next-step links.",
         "Added beginner docs, concepts glossary, production guidance, issue templates, roadmap, changelog, release notes, and external-friendly contributing guidance.",
-        "Moved maintainer evidence and historical root README material under docs/release-ops while keeping human benchmark summaries under benchmarks/current and archiving failed SGLang run folders.",
+        "Moved maintainer evidence and historical root README material under docs/release-ops while keeping human benchmark summaries under benchmarks/README.md and archiving failed SGLang run folders.",
         "Added a packaged python -m cachet.quickstart_local local example and source-checkout wrapper so installed-wheel users have a real runnable quickstart.",
         "Documented stable user commands separately from maintainer-only benchmark, Databricks, probe, smoke, release, governance, and compatibility CLI aliases."
       ],

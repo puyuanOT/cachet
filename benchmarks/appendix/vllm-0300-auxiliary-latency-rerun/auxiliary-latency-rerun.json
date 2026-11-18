@@ -1,0 +1,2460 @@
+{
+  "analysis": {
+    "bootstrap": "paired_crossed_deployment_block_and_example",
+    "bootstrap_draws": 20000,
+    "confidence_intervals": "pointwise_95_percent",
+    "decision_mode": "estimation_only",
+    "descriptive_quantiles": "empirical_nearest_rank",
+    "null_hypothesis_rejections": false,
+    "post_hoc_significance_claims": false,
+    "storage_workload": "2_examples_per_dataset_x_32_repeats"
+  },
+  "closed_record_sha256": "18a51fc96e21af35960e6532fb2b0533d89279f22912b9bb5a9c04ce842af201",
+  "coherence": [
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "precision",
+      "completion_gap_seconds": 1748.631508,
+      "control_job_id": "block-01-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-01-precision-bf16",
+      "zone_equal": false
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "precision",
+      "completion_gap_seconds": 2087.412011,
+      "control_job_id": "block-02-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-02-precision-bf16",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "precision",
+      "completion_gap_seconds": 6059.731251,
+      "control_job_id": "block-03-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-03-precision-bf16",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "precision",
+      "completion_gap_seconds": 1919.691757,
+      "control_job_id": "block-04-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-04-precision-bf16",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "precision",
+      "completion_gap_seconds": 4223.419657,
+      "control_job_id": "block-05-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-05-precision-bf16",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 160.515522,
+      "control_job_id": "block-01-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-01-storage-ram",
+      "zone_equal": false
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 193.938348,
+      "control_job_id": "block-02-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-02-storage-ram",
+      "zone_equal": false
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 158.252358,
+      "control_job_id": "block-03-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-03-storage-ram",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 146.464993,
+      "control_job_id": "block-04-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-04-storage-ram",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 38.801932,
+      "control_job_id": "block-05-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-05-storage-ram",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 1276.73376,
+      "control_job_id": "block-01-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-01-storage-uc",
+      "zone_equal": false
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 1240.384368,
+      "control_job_id": "block-02-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-02-storage-uc",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 1272.48182,
+      "control_job_id": "block-03-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-03-storage-uc",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 1417.208912,
+      "control_job_id": "block-04-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-04-storage-uc",
+      "zone_equal": false
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "storage",
+      "completion_gap_seconds": 2320.174468,
+      "control_job_id": "block-05-storage-disk",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-05-storage-uc",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "hardware",
+      "completion_gap_seconds": 50.51483,
+      "control_job_id": "block-01-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-01-hardware-a10g",
+      "zone_equal": false
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "hardware",
+      "completion_gap_seconds": 189.55187,
+      "control_job_id": "block-02-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-02-hardware-a10g",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "hardware",
+      "completion_gap_seconds": 4310.596056,
+      "control_job_id": "block-03-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-03-hardware-a10g",
+      "zone_equal": false
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "hardware",
+      "completion_gap_seconds": 2434.533138,
+      "control_job_id": "block-04-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-04-hardware-a10g",
+      "zone_equal": true
+    },
+    {
+      "cache_policy_equal": true,
+      "comparison_family": "hardware",
+      "completion_gap_seconds": 1927.962912,
+      "control_job_id": "block-05-16k-c4-vanilla",
+      "execution_plan_equal": true,
+      "handoff_equal": true,
+      "input_files_equal": true,
+      "package_wheel_equal": true,
+      "request_schedule_equal": true,
+      "runtime_equal": true,
+      "source_tree_equal": true,
+      "treatment_job_id": "block-05-hardware-a10g",
+      "zone_equal": false
+    }
+  ],
+  "descriptive_cells": [
+    {
+      "cache_telemetry": {
+        "backend_bytes_read": 1542240092160,
+        "cold_read_attested_count": 1280,
+        "eviction_requested_count": 1280,
+        "eviction_succeeded_count": 1280,
+        "expected_backend_bytes_read": 1542240092160,
+        "load_count": 1280,
+        "mounted_path_load_count": 0,
+        "payload_cache_hit_count": 0,
+        "payload_cache_miss_count": 0,
+        "storage_materialization_count": 0
+      },
+      "cell_id": "auxiliary-rerun-16k-c4-vanilla",
+      "cell_kind": "auxiliary_pooled_five_blocks",
+      "cell_sha256": "7b41934cce27c0cd4be0b3c8bd9dedd6f67289e1d7b548b78da4e40422e7b54b",
+      "comparison_family": null,
+      "configured_closed_loop_concurrency": 4,
+      "gpu_utilization_sample_count": 8501,
+      "input_tokens": 16384,
+      "mean_gpu_utilization_percent": 80.49041289260087,
+      "method_id": "vanilla_prefill",
+      "observation_count": 1280,
+      "p50_decode_tokens_per_second": 12.930737009838777,
+      "p50_time_to_completion_seconds": 26.415885319000154,
+      "p50_ttft_seconds": 6.4916436540002,
+      "p95_time_to_completion_seconds": 27.23517674300001,
+      "p95_ttft_seconds": 7.549402885999825,
+      "peak_gpu_process_memory_bytes": 0,
+      "peak_gpu_utilization_percent": 100.0,
+      "peak_host_memory_used_bytes": 31938240512,
+      "peak_process_tree_rss_bytes": 5392117760,
+      "physical_blocks": [
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 1,
+          "gpu_utilization_sample_count": 1740,
+          "job_id": "block-01-16k-c4-vanilla",
+          "mean_gpu_utilization_percent": 77.92183908045978,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.999131827287318,
+          "p50_time_to_completion_seconds": 27.200038955999844,
+          "p50_ttft_seconds": 7.502280857000187,
+          "p95_time_to_completion_seconds": 27.301178185000026,
+          "p95_ttft_seconds": 7.620418565999898,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 28868329472,
+          "peak_process_tree_rss_bytes": 5392117760
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 2,
+          "gpu_utilization_sample_count": 1682,
+          "job_id": "block-02-16k-c4-vanilla",
+          "mean_gpu_utilization_percent": 81.0065398335315,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.945133366611865,
+          "p50_time_to_completion_seconds": 26.294738048,
+          "p50_ttft_seconds": 6.518620364000071,
+          "p95_time_to_completion_seconds": 26.357475912000154,
+          "p95_ttft_seconds": 6.693852872000207,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30838403072,
+          "peak_process_tree_rss_bytes": 5375528960
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 3,
+          "gpu_utilization_sample_count": 1683,
+          "job_id": "block-03-16k-c4-vanilla",
+          "mean_gpu_utilization_percent": 81.29530600118835,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.926730095370083,
+          "p50_time_to_completion_seconds": 26.26839677099997,
+          "p50_ttft_seconds": 6.470877359999577,
+          "p95_time_to_completion_seconds": 26.52326204400015,
+          "p95_ttft_seconds": 6.604009874999974,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 31938240512,
+          "peak_process_tree_rss_bytes": 5345247232
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 4,
+          "gpu_utilization_sample_count": 1688,
+          "job_id": "block-04-16k-c4-vanilla",
+          "mean_gpu_utilization_percent": 80.94431279620854,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.853844334238117,
+          "p50_time_to_completion_seconds": 26.376579487000072,
+          "p50_ttft_seconds": 6.460491094999725,
+          "p95_time_to_completion_seconds": 26.559727442000167,
+          "p95_ttft_seconds": 6.536817838999923,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30442569728,
+          "peak_process_tree_rss_bytes": 5352898560
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 5,
+          "gpu_utilization_sample_count": 1708,
+          "job_id": "block-05-16k-c4-vanilla",
+          "mean_gpu_utilization_percent": 81.35714285714286,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.586998513945664,
+          "p50_time_to_completion_seconds": 26.751669367999966,
+          "p50_ttft_seconds": 6.446360743999776,
+          "p95_time_to_completion_seconds": 26.868414713999755,
+          "p95_ttft_seconds": 6.628552114000286,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30255644672,
+          "peak_process_tree_rss_bytes": 5373186048
+        }
+      ],
+      "quantile_method": "empirical_nearest_rank",
+      "request_parallelism": 4,
+      "setting_id": null
+    },
+    {
+      "cache_telemetry": {
+        "backend_bytes_read": 1541988679680,
+        "cold_read_attested_count": 1280,
+        "eviction_requested_count": 1280,
+        "eviction_succeeded_count": 1280,
+        "expected_backend_bytes_read": 1541988679680,
+        "load_count": 1280,
+        "mounted_path_load_count": 0,
+        "payload_cache_hit_count": 0,
+        "payload_cache_miss_count": 0,
+        "storage_materialization_count": 0
+      },
+      "cell_id": "auxiliary-rerun-storage-disk",
+      "cell_kind": "auxiliary_pooled_five_blocks",
+      "cell_sha256": "edf60dc5f8370ab69228f0873b1ee0fab57c5e368db5a1c4c3286aeeb23fd286",
+      "comparison_family": "storage",
+      "configured_closed_loop_concurrency": 4,
+      "gpu_utilization_sample_count": 8597,
+      "input_tokens": 16384,
+      "mean_gpu_utilization_percent": 79.80330347795743,
+      "method_id": "vanilla_prefill",
+      "observation_count": 1280,
+      "p50_decode_tokens_per_second": 12.848819360269664,
+      "p50_time_to_completion_seconds": 26.857534449000013,
+      "p50_ttft_seconds": 6.877556000000368,
+      "p95_time_to_completion_seconds": 27.255435355999907,
+      "p95_ttft_seconds": 7.2199336670000775,
+      "peak_gpu_process_memory_bytes": 0,
+      "peak_gpu_utilization_percent": 100.0,
+      "peak_host_memory_used_bytes": 32001236992,
+      "peak_process_tree_rss_bytes": 5369409536,
+      "physical_blocks": [
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 1,
+          "gpu_utilization_sample_count": 1720,
+          "job_id": "block-01-storage-disk",
+          "mean_gpu_utilization_percent": 80.72093023255815,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.730332642919002,
+          "p50_time_to_completion_seconds": 26.937333198000033,
+          "p50_ttft_seconds": 6.846022991999689,
+          "p95_time_to_completion_seconds": 27.1066814159999,
+          "p95_ttft_seconds": 6.928561664999961,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 31625748480,
+          "peak_process_tree_rss_bytes": 5354311680
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 2,
+          "gpu_utilization_sample_count": 1734,
+          "job_id": "block-02-storage-disk",
+          "mean_gpu_utilization_percent": 79.2883506343714,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.804185688301564,
+          "p50_time_to_completion_seconds": 27.128161014999932,
+          "p50_ttft_seconds": 7.149211107000156,
+          "p95_time_to_completion_seconds": 27.37615425399963,
+          "p95_ttft_seconds": 7.3185822079999525,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 29988917248,
+          "peak_process_tree_rss_bytes": 5369409536
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 3,
+          "gpu_utilization_sample_count": 1725,
+          "job_id": "block-03-storage-disk",
+          "mean_gpu_utilization_percent": 79.21913043478261,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.892182320188844,
+          "p50_time_to_completion_seconds": 26.968884458000048,
+          "p50_ttft_seconds": 7.099452595999992,
+          "p95_time_to_completion_seconds": 27.138760127000296,
+          "p95_ttft_seconds": 7.246918005000225,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30080225280,
+          "peak_process_tree_rss_bytes": 5352599552
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 4,
+          "gpu_utilization_sample_count": 1710,
+          "job_id": "block-04-storage-disk",
+          "mean_gpu_utilization_percent": 79.84736842105264,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.827394570590853,
+          "p50_time_to_completion_seconds": 26.771623198999805,
+          "p50_ttft_seconds": 6.816602311999304,
+          "p95_time_to_completion_seconds": 26.909551935999843,
+          "p95_ttft_seconds": 6.875372700000298,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 32001236992,
+          "peak_process_tree_rss_bytes": 5353807872
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 5,
+          "gpu_utilization_sample_count": 1708,
+          "job_id": "block-05-storage-disk",
+          "mean_gpu_utilization_percent": 79.94789227166277,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.866214195174667,
+          "p50_time_to_completion_seconds": 26.724871984999936,
+          "p50_ttft_seconds": 6.827709128000151,
+          "p95_time_to_completion_seconds": 26.806075568000324,
+          "p95_ttft_seconds": 6.897615673000018,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30318903296,
+          "peak_process_tree_rss_bytes": 5358235648
+        }
+      ],
+      "quantile_method": "empirical_nearest_rank",
+      "request_parallelism": 4,
+      "setting_id": "storage-disk"
+    },
+    {
+      "cache_telemetry": {
+        "backend_bytes_read": 0,
+        "cold_read_attested_count": 0,
+        "eviction_requested_count": 0,
+        "eviction_succeeded_count": 0,
+        "expected_backend_bytes_read": 0,
+        "load_count": 1280,
+        "mounted_path_load_count": 0,
+        "payload_cache_hit_count": 1280,
+        "payload_cache_miss_count": 0,
+        "storage_materialization_count": 0
+      },
+      "cell_id": "auxiliary-rerun-storage-ram",
+      "cell_kind": "auxiliary_pooled_five_blocks",
+      "cell_sha256": "482d87be5ff4335189658d5b4ab5a90ccfaaeed88da8cddcd250a2781fab81cf",
+      "comparison_family": "storage",
+      "configured_closed_loop_concurrency": 4,
+      "gpu_utilization_sample_count": 7703,
+      "input_tokens": 16384,
+      "mean_gpu_utilization_percent": 88.01415033103986,
+      "method_id": "vanilla_prefill",
+      "observation_count": 1280,
+      "p50_decode_tokens_per_second": 12.817040969878626,
+      "p50_time_to_completion_seconds": 24.058430627000234,
+      "p50_ttft_seconds": 4.10389824899994,
+      "p95_time_to_completion_seconds": 24.315416250999988,
+      "p95_ttft_seconds": 4.136750777999623,
+      "peak_gpu_process_memory_bytes": 0,
+      "peak_gpu_utilization_percent": 100.0,
+      "peak_host_memory_used_bytes": 42495762432,
+      "peak_process_tree_rss_bytes": 13789720576,
+      "physical_blocks": [
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 0,
+            "cold_read_attested_count": 0,
+            "eviction_requested_count": 0,
+            "eviction_succeeded_count": 0,
+            "expected_backend_bytes_read": 0,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 256,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 1,
+          "gpu_utilization_sample_count": 1533,
+          "job_id": "block-01-storage-ram",
+          "mean_gpu_utilization_percent": 84.9412915851272,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.872722569312378,
+          "p50_time_to_completion_seconds": 23.986179803999676,
+          "p50_ttft_seconds": 4.1041749180003535,
+          "p95_time_to_completion_seconds": 24.045108611999694,
+          "p95_ttft_seconds": 4.132465273999969,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 39310405632,
+          "peak_process_tree_rss_bytes": 13746536448
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 0,
+            "cold_read_attested_count": 0,
+            "eviction_requested_count": 0,
+            "eviction_succeeded_count": 0,
+            "expected_backend_bytes_read": 0,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 256,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 2,
+          "gpu_utilization_sample_count": 1548,
+          "job_id": "block-02-storage-ram",
+          "mean_gpu_utilization_percent": 88.74806201550388,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.728376157705135,
+          "p50_time_to_completion_seconds": 24.210608728999887,
+          "p50_ttft_seconds": 4.107919493999816,
+          "p95_time_to_completion_seconds": 24.335810220999974,
+          "p95_ttft_seconds": 4.137249048000285,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 38691389440,
+          "peak_process_tree_rss_bytes": 13783568384
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 0,
+            "cold_read_attested_count": 0,
+            "eviction_requested_count": 0,
+            "eviction_succeeded_count": 0,
+            "expected_backend_bytes_read": 0,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 256,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 3,
+          "gpu_utilization_sample_count": 1542,
+          "job_id": "block-03-storage-ram",
+          "mean_gpu_utilization_percent": 88.74513618677042,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.75418096963619,
+          "p50_time_to_completion_seconds": 24.181363109999893,
+          "p50_ttft_seconds": 4.104805157000101,
+          "p95_time_to_completion_seconds": 24.227811212000233,
+          "p95_ttft_seconds": 4.132924902000013,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 41126334464,
+          "peak_process_tree_rss_bytes": 13786533888
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 0,
+            "cold_read_attested_count": 0,
+            "eviction_requested_count": 0,
+            "eviction_succeeded_count": 0,
+            "expected_backend_bytes_read": 0,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 256,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 4,
+          "gpu_utilization_sample_count": 1545,
+          "job_id": "block-04-storage-ram",
+          "mean_gpu_utilization_percent": 89.01812297734628,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.746017285623712,
+          "p50_time_to_completion_seconds": 24.189815963,
+          "p50_ttft_seconds": 4.107964679000361,
+          "p95_time_to_completion_seconds": 24.332005887000378,
+          "p95_ttft_seconds": 4.146641613000611,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 42495762432,
+          "peak_process_tree_rss_bytes": 13789720576
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 0,
+            "cold_read_attested_count": 0,
+            "eviction_requested_count": 0,
+            "eviction_succeeded_count": 0,
+            "expected_backend_bytes_read": 0,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 256,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 5,
+          "gpu_utilization_sample_count": 1535,
+          "job_id": "block-05-storage-ram",
+          "mean_gpu_utilization_percent": 88.59804560260586,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.849722726815951,
+          "p50_time_to_completion_seconds": 24.01506528999971,
+          "p50_ttft_seconds": 4.098287054999673,
+          "p95_time_to_completion_seconds": 24.09315846399977,
+          "p95_ttft_seconds": 4.1112322730000415,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 41792233472,
+          "peak_process_tree_rss_bytes": 13753487360
+        }
+      ],
+      "quantile_method": "empirical_nearest_rank",
+      "request_parallelism": 4,
+      "setting_id": "storage-ram"
+    },
+    {
+      "cache_telemetry": {
+        "backend_bytes_read": 1541988679680,
+        "cold_read_attested_count": 1280,
+        "eviction_requested_count": 1280,
+        "eviction_succeeded_count": 1280,
+        "expected_backend_bytes_read": 1541988679680,
+        "load_count": 1280,
+        "mounted_path_load_count": 1280,
+        "payload_cache_hit_count": 0,
+        "payload_cache_miss_count": 0,
+        "storage_materialization_count": 0
+      },
+      "cell_id": "auxiliary-rerun-storage-uc",
+      "cell_kind": "auxiliary_pooled_five_blocks",
+      "cell_sha256": "d40762b9ba104f0e9ee14a63cfa03ae742cd4d2b14850d3b7f62919e17b15202",
+      "comparison_family": "storage",
+      "configured_closed_loop_concurrency": 4,
+      "gpu_utilization_sample_count": 10014,
+      "input_tokens": 16384,
+      "mean_gpu_utilization_percent": 67.69372877970841,
+      "method_id": "vanilla_prefill",
+      "observation_count": 1280,
+      "p50_decode_tokens_per_second": 12.955599230345186,
+      "p50_time_to_completion_seconds": 31.241789895999318,
+      "p50_ttft_seconds": 11.436801930000001,
+      "p95_time_to_completion_seconds": 32.239973130999715,
+      "p95_ttft_seconds": 12.404029568999249,
+      "peak_gpu_process_memory_bytes": 0,
+      "peak_gpu_utilization_percent": 100.0,
+      "peak_host_memory_used_bytes": 34001883136,
+      "peak_process_tree_rss_bytes": 5397438464,
+      "physical_blocks": [
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 256,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 1,
+          "gpu_utilization_sample_count": 1987,
+          "job_id": "block-01-storage-uc",
+          "mean_gpu_utilization_percent": 67.70055359838953,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 13.023193766006782,
+          "p50_time_to_completion_seconds": 30.97673015500004,
+          "p50_ttft_seconds": 11.31210620300044,
+          "p95_time_to_completion_seconds": 31.70301634400039,
+          "p95_ttft_seconds": 12.047735952999574,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 34001883136,
+          "peak_process_tree_rss_bytes": 5397438464
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 256,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 2,
+          "gpu_utilization_sample_count": 2004,
+          "job_id": "block-02-storage-uc",
+          "mean_gpu_utilization_percent": 68.1437125748503,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.909013400596505,
+          "p50_time_to_completion_seconds": 31.20846551700015,
+          "p50_ttft_seconds": 11.339797083999656,
+          "p95_time_to_completion_seconds": 32.19503462100056,
+          "p95_ttft_seconds": 12.375390542999412,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 31152685056,
+          "peak_process_tree_rss_bytes": 5318864896
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 256,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 3,
+          "gpu_utilization_sample_count": 1997,
+          "job_id": "block-03-storage-uc",
+          "mean_gpu_utilization_percent": 67.85578367551327,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.943540676163106,
+          "p50_time_to_completion_seconds": 31.16225674999987,
+          "p50_ttft_seconds": 11.355940009999358,
+          "p95_time_to_completion_seconds": 32.239973130999715,
+          "p95_ttft_seconds": 12.374943222000184,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30819807232,
+          "peak_process_tree_rss_bytes": 5370777600
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 256,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 4,
+          "gpu_utilization_sample_count": 2014,
+          "job_id": "block-04-storage-uc",
+          "mean_gpu_utilization_percent": 67.50546176762661,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.955327658698717,
+          "p50_time_to_completion_seconds": 31.35530628899869,
+          "p50_ttft_seconds": 11.607069507000233,
+          "p95_time_to_completion_seconds": 32.44424192099905,
+          "p95_ttft_seconds": 12.705397089001053,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 32148979712,
+          "peak_process_tree_rss_bytes": 5359824896
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308397735936,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308397735936,
+            "load_count": 256,
+            "mounted_path_load_count": 256,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 5,
+          "gpu_utilization_sample_count": 2012,
+          "job_id": "block-05-storage-uc",
+          "mean_gpu_utilization_percent": 67.26640159045725,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 12.929375341000645,
+          "p50_time_to_completion_seconds": 31.3834321989998,
+          "p50_ttft_seconds": 11.582245360999877,
+          "p95_time_to_completion_seconds": 31.97295788500014,
+          "p95_ttft_seconds": 12.267612923000343,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 31232905216,
+          "peak_process_tree_rss_bytes": 5350907904
+        }
+      ],
+      "quantile_method": "empirical_nearest_rank",
+      "request_parallelism": 4,
+      "setting_id": "storage-uc"
+    },
+    {
+      "cache_telemetry": {
+        "backend_bytes_read": 3084480184320,
+        "cold_read_attested_count": 1280,
+        "eviction_requested_count": 1280,
+        "eviction_succeeded_count": 1280,
+        "expected_backend_bytes_read": 3084480184320,
+        "load_count": 1280,
+        "mounted_path_load_count": 0,
+        "payload_cache_hit_count": 0,
+        "payload_cache_miss_count": 0,
+        "storage_materialization_count": 0
+      },
+      "cell_id": "auxiliary-rerun-precision-bf16",
+      "cell_kind": "auxiliary_pooled_five_blocks",
+      "cell_sha256": "0f24fad95ac98476bc96bf12fde5653bbf3c7a38c2bd4c7d9e46430720a9e89a",
+      "comparison_family": "precision",
+      "configured_closed_loop_concurrency": 4,
+      "gpu_utilization_sample_count": 11573,
+      "input_tokens": 16384,
+      "mean_gpu_utilization_percent": 71.55154238313315,
+      "method_id": "vanilla_prefill",
+      "observation_count": 1280,
+      "p50_decode_tokens_per_second": 10.681648791768868,
+      "p50_time_to_completion_seconds": 36.14426904999982,
+      "p50_ttft_seconds": 12.134321669000201,
+      "p95_time_to_completion_seconds": 36.5015246160001,
+      "p95_ttft_seconds": 12.3122063109995,
+      "peak_gpu_process_memory_bytes": 0,
+      "peak_gpu_utilization_percent": 100.0,
+      "peak_host_memory_used_bytes": 32416993280,
+      "peak_process_tree_rss_bytes": 6589882368,
+      "physical_blocks": [
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 616896036864,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 616896036864,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 1,
+          "gpu_utilization_sample_count": 2325,
+          "job_id": "block-01-precision-bf16",
+          "mean_gpu_utilization_percent": 71.2658064516129,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 10.524837354491636,
+          "p50_time_to_completion_seconds": 36.37134273099946,
+          "p50_ttft_seconds": 12.056930214000204,
+          "p95_time_to_completion_seconds": 36.6031345880001,
+          "p95_ttft_seconds": 12.262897696999971,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 29415972864,
+          "peak_process_tree_rss_bytes": 6589882368
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 616896036864,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 616896036864,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 2,
+          "gpu_utilization_sample_count": 2310,
+          "job_id": "block-02-precision-bf16",
+          "mean_gpu_utilization_percent": 72.06969696969696,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 10.703415004218165,
+          "p50_time_to_completion_seconds": 36.091555261000394,
+          "p50_ttft_seconds": 12.149516106000192,
+          "p95_time_to_completion_seconds": 36.33340218600006,
+          "p95_ttft_seconds": 12.273870922000242,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 29729026048,
+          "peak_process_tree_rss_bytes": 6551646208
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 616896036864,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 616896036864,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 3,
+          "gpu_utilization_sample_count": 2303,
+          "job_id": "block-03-precision-bf16",
+          "mean_gpu_utilization_percent": 72.2679114198871,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 10.712204587140254,
+          "p50_time_to_completion_seconds": 35.95488041600038,
+          "p50_ttft_seconds": 12.057823971999824,
+          "p95_time_to_completion_seconds": 36.08171836800011,
+          "p95_ttft_seconds": 12.281868680000116,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30780817408,
+          "peak_process_tree_rss_bytes": 6538280960
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 616896036864,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 616896036864,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 4,
+          "gpu_utilization_sample_count": 2312,
+          "job_id": "block-04-precision-bf16",
+          "mean_gpu_utilization_percent": 70.97967128027682,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 10.687392290133674,
+          "p50_time_to_completion_seconds": 36.11206055900038,
+          "p50_ttft_seconds": 12.151662262000173,
+          "p95_time_to_completion_seconds": 36.27316243800033,
+          "p95_ttft_seconds": 12.282315724,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 32416993280,
+          "peak_process_tree_rss_bytes": 6535147520
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 616896036864,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 616896036864,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 5,
+          "gpu_utilization_sample_count": 2323,
+          "job_id": "block-05-precision-bf16",
+          "mean_gpu_utilization_percent": 71.18123116659493,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 10.608669063173878,
+          "p50_time_to_completion_seconds": 36.32419423800002,
+          "p50_ttft_seconds": 12.195105792000504,
+          "p95_time_to_completion_seconds": 36.4773223229995,
+          "p95_ttft_seconds": 12.480705321000642,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 29629308928,
+          "peak_process_tree_rss_bytes": 6563753984
+        }
+      ],
+      "quantile_method": "empirical_nearest_rank",
+      "request_parallelism": 4,
+      "setting_id": "precision-bf16"
+    },
+    {
+      "cache_telemetry": {
+        "backend_bytes_read": 1542240092160,
+        "cold_read_attested_count": 1280,
+        "eviction_requested_count": 1280,
+        "eviction_succeeded_count": 1280,
+        "expected_backend_bytes_read": 1542240092160,
+        "load_count": 1280,
+        "mounted_path_load_count": 0,
+        "payload_cache_hit_count": 0,
+        "payload_cache_miss_count": 0,
+        "storage_materialization_count": 0
+      },
+      "cell_id": "auxiliary-rerun-hardware-a10g",
+      "cell_kind": "auxiliary_pooled_five_blocks",
+      "cell_sha256": "3df614e174be8751bce2152c92ff381038db98814f57f62a4f8e78a5b7f57cf3",
+      "comparison_family": "hardware",
+      "configured_closed_loop_concurrency": 4,
+      "gpu_utilization_sample_count": 7968,
+      "input_tokens": 16384,
+      "mean_gpu_utilization_percent": 58.0972640562249,
+      "method_id": "vanilla_prefill",
+      "observation_count": 1280,
+      "p50_decode_tokens_per_second": 14.31088646898182,
+      "p50_time_to_completion_seconds": 24.90177297900027,
+      "p50_ttft_seconds": 7.000416879000113,
+      "p95_time_to_completion_seconds": 25.36895798500018,
+      "p95_ttft_seconds": 7.197096666000107,
+      "peak_gpu_process_memory_bytes": 0,
+      "peak_gpu_utilization_percent": 100.0,
+      "peak_host_memory_used_bytes": 32087326720,
+      "peak_process_tree_rss_bytes": 5388783616,
+      "physical_blocks": [
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 1,
+          "gpu_utilization_sample_count": 1603,
+          "job_id": "block-01-hardware-a10g",
+          "mean_gpu_utilization_percent": 57.82096069868996,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 14.19116912329135,
+          "p50_time_to_completion_seconds": 25.048062986000332,
+          "p50_ttft_seconds": 7.0021134730000085,
+          "p95_time_to_completion_seconds": 25.495092441999986,
+          "p95_ttft_seconds": 7.1970349970001735,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 32087326720,
+          "peak_process_tree_rss_bytes": 5388783616
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 2,
+          "gpu_utilization_sample_count": 1591,
+          "job_id": "block-02-hardware-a10g",
+          "mean_gpu_utilization_percent": 58.05091137649277,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 14.3740713114312,
+          "p50_time_to_completion_seconds": 24.83713967099993,
+          "p50_ttft_seconds": 7.000969365999936,
+          "p95_time_to_completion_seconds": 25.22094706100006,
+          "p95_ttft_seconds": 7.256456552000145,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 31027675136,
+          "peak_process_tree_rss_bytes": 5266006016
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 3,
+          "gpu_utilization_sample_count": 1591,
+          "job_id": "block-03-hardware-a10g",
+          "mean_gpu_utilization_percent": 58.145191703331236,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 14.350407267829189,
+          "p50_time_to_completion_seconds": 24.85865512700002,
+          "p50_ttft_seconds": 7.009396691999882,
+          "p95_time_to_completion_seconds": 25.30005117300061,
+          "p95_ttft_seconds": 7.276191445999757,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30445338624,
+          "peak_process_tree_rss_bytes": 5383000064
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 4,
+          "gpu_utilization_sample_count": 1601,
+          "job_id": "block-04-hardware-a10g",
+          "mean_gpu_utilization_percent": 57.97126795752654,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 14.195846719938267,
+          "p50_time_to_completion_seconds": 25.039037007999468,
+          "p50_ttft_seconds": 6.992964139999913,
+          "p95_time_to_completion_seconds": 25.369291754999722,
+          "p95_ttft_seconds": 7.160977006999929,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 31559974912,
+          "peak_process_tree_rss_bytes": 5385039872
+        },
+        {
+          "cache_telemetry": {
+            "backend_bytes_read": 308448018432,
+            "cold_read_attested_count": 256,
+            "eviction_requested_count": 256,
+            "eviction_succeeded_count": 256,
+            "expected_backend_bytes_read": 308448018432,
+            "load_count": 256,
+            "mounted_path_load_count": 0,
+            "payload_cache_hit_count": 0,
+            "payload_cache_miss_count": 0,
+            "storage_materialization_count": 0
+          },
+          "configured_closed_loop_concurrency": 4,
+          "deployment_block": 5,
+          "gpu_utilization_sample_count": 1582,
+          "job_id": "block-05-hardware-a10g",
+          "mean_gpu_utilization_percent": 58.5031605562579,
+          "observation_count": 256,
+          "p50_decode_tokens_per_second": 14.485277642977742,
+          "p50_time_to_completion_seconds": 24.674306376000004,
+          "p50_ttft_seconds": 6.998418767000203,
+          "p95_time_to_completion_seconds": 25.207693341999857,
+          "p95_ttft_seconds": 7.247335801999725,
+          "peak_gpu_process_memory_bytes": 0,
+          "peak_gpu_utilization_percent": 100.0,
+          "peak_host_memory_used_bytes": 30102282240,
+          "peak_process_tree_rss_bytes": 5385506816
+        }
+      ],
+      "quantile_method": "empirical_nearest_rank",
+      "request_parallelism": 4,
+      "setting_id": "hardware-a10g"
+    }
+  ],
+  "estimates": [
+    {
+      "comparison_family": "precision",
+      "control_cell_id": "auxiliary-rerun-16k-c4-vanilla",
+      "deployment_block_count": 5,
+      "estimand_id": "auxiliary-precision-bf16",
+      "example_count_per_block": 128,
+      "input_tokens": 16384,
+      "metrics": {
+        "time_to_completion": {
+          "confidence_interval_95": [
+            0.7295288325830027,
+            0.7417900568317494
+          ],
+          "geometric_mean_speedup": 0.7345636732492984
+        },
+        "ttft": {
+          "confidence_interval_95": [
+            0.5306571867976603,
+            0.5841632632536475
+          ],
+          "geometric_mean_speedup": 0.5494913484129385
+        }
+      },
+      "paired_request_count": 1280,
+      "request_parallelism": 4,
+      "setting_id": "precision-bf16",
+      "speedup_direction": "control_latency_divided_by_treatment_latency",
+      "treatment_cell_id": "auxiliary-rerun-precision-bf16"
+    },
+    {
+      "comparison_family": "storage",
+      "control_cell_id": "auxiliary-rerun-storage-disk",
+      "deployment_block_count": 5,
+      "estimand_id": "auxiliary-storage-ram",
+      "example_count_per_block": 8,
+      "input_tokens": 16384,
+      "metrics": {
+        "time_to_completion": {
+          "confidence_interval_95": [
+            1.1111756802550643,
+            1.120571326258235
+          ],
+          "geometric_mean_speedup": 1.1161634506970368
+        },
+        "ttft": {
+          "confidence_interval_95": [
+            1.66611345223247,
+            1.7275057333321089
+          ],
+          "geometric_mean_speedup": 1.6957830232042046
+        }
+      },
+      "paired_request_count": 1280,
+      "request_parallelism": 4,
+      "setting_id": "storage-ram",
+      "speedup_direction": "control_latency_divided_by_treatment_latency",
+      "treatment_cell_id": "auxiliary-rerun-storage-ram"
+    },
+    {
+      "comparison_family": "storage",
+      "control_cell_id": "auxiliary-rerun-storage-disk",
+      "deployment_block_count": 5,
+      "estimand_id": "auxiliary-storage-uc",
+      "example_count_per_block": 8,
+      "input_tokens": 16384,
+      "metrics": {
+        "time_to_completion": {
+          "confidence_interval_95": [
+            0.8520378832143305,
+            0.8653132746211865
+          ],
+          "geometric_mean_speedup": 0.8587101120528046
+        },
+        "ttft": {
+          "confidence_interval_95": [
+            0.5876896190627282,
+            0.6182895087649272
+          ],
+          "geometric_mean_speedup": 0.6027127477445972
+        }
+      },
+      "paired_request_count": 1280,
+      "request_parallelism": 4,
+      "setting_id": "storage-uc",
+      "speedup_direction": "control_latency_divided_by_treatment_latency",
+      "treatment_cell_id": "auxiliary-rerun-storage-uc"
+    },
+    {
+      "comparison_family": "hardware",
+      "control_cell_id": "auxiliary-rerun-16k-c4-vanilla",
+      "deployment_block_count": 5,
+      "estimand_id": "auxiliary-hardware-a10g",
+      "example_count_per_block": 128,
+      "input_tokens": 16384,
+      "metrics": {
+        "time_to_completion": {
+          "confidence_interval_95": [
+            1.056386503545044,
+            1.0786084875880695
+          ],
+          "geometric_mean_speedup": 1.067044249473102
+        },
+        "ttft": {
+          "confidence_interval_95": [
+            0.9209162997016905,
+            1.00872447983923
+          ],
+          "geometric_mean_speedup": 0.9507928963441019
+        }
+      },
+      "paired_request_count": 1280,
+      "request_parallelism": 4,
+      "setting_id": "hardware-a10g",
+      "speedup_direction": "control_latency_divided_by_treatment_latency",
+      "treatment_cell_id": "auxiliary-rerun-hardware-a10g"
+    }
+  ],
+  "jobs": [
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "1048001316694704",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "1048001316694704",
+      "completed_at": "2026-11-16T06:01:02.858930+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-01-16k-c4-vanilla",
+      "job_record_sha256": "89bd5b275a4c6e31ec414621c43478212102fbb494995f55c0b814a4d799a196",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "ead7798253beb2e5185fb82ce49b50bd89a25afa12e2859cc9976d9232f47cfa",
+      "zone_id": "us-west-2c"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "544885444325786",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "544885444325786",
+      "completed_at": "2026-11-16T05:58:27.574673+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-01-storage-disk",
+      "job_record_sha256": "3dcdedb21c55f9fd187258740d9004f2f1b96d2f7e2e6a9f6e4c0266ce6e44bb",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "42f1ac549ae7c0a0ffc3271f414a6da0c3a83d5fcc754baae932ea5cc88abc10",
+      "zone_id": "us-west-2d"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "629482225821354",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "629482225821354",
+      "completed_at": "2026-11-16T05:55:47.059151+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-01-storage-ram",
+      "job_record_sha256": "7cb10682de05dcdb31445f47c099f95e3e75e67c80bd281687b40419a823cfbc",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "6b3b595570b369457539a88efdb7fffc4e0f2fc62e7b7c3df7ae1a9655fd37da",
+      "zone_id": "us-west-2a"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "277336979081795",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "277336979081795",
+      "completed_at": "2026-11-16T06:19:44.308433+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-01-storage-uc",
+      "job_record_sha256": "4f69c4623b7fe24c5d4d2cb61a5a7ff6c39bf07c3971f06d5efed8a544a86949",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "f7b6f340d55312388dfa42d914dae49f7e7e624481e4df2504d9b87e0bf22692",
+      "zone_id": "us-west-2a"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "1104638222312236",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "1104638222312236",
+      "completed_at": "2026-11-16T06:30:11.490438+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.8,
+      "job_id": "block-01-precision-bf16",
+      "job_record_sha256": "125613d1db8eff8124a54245cbd6d5f3020adc081c1599724c41690a790977e1",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "f980a7bc98ef7f9dd09614cdf196b1c2a5ca982b9bfdc6ea8215f99f52226360",
+      "zone_id": "us-west-2d"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "571047342255400",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "571047342255400",
+      "completed_at": "2026-11-16T06:01:53.373760+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.85,
+      "job_id": "block-01-hardware-a10g",
+      "job_record_sha256": "df84f16a6b88c7fb63f7b5549314353815be3e7ed41f0533cd0d24518cfbcfdb",
+      "node_type_id": "g5.8xlarge",
+      "result_sha256": "73017ebe770f448f6ea4393a0640561140ae8a7f83cf0f2da3aa973503ab2102",
+      "zone_id": "us-west-2a"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "6120903554268",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "6120903554268",
+      "completed_at": "2026-11-16T05:58:00.771515+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-02-16k-c4-vanilla",
+      "job_record_sha256": "409d3d302efcb9273b5ebbe894ca6b11913577f3d8a7d5556e409c360f52c3e7",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "086688c93ed0270ae77325ec507b6df01ec7472352589a6350a18cfc656b6157",
+      "zone_id": "us-west-2c"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "895731790002506",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "895731790002506",
+      "completed_at": "2026-11-16T05:59:14.746564+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-02-storage-disk",
+      "job_record_sha256": "96184408d2caf1ed7aeb5eb1745fcd132b51b48b5e42e0525f9bcfac8eb999fd",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "34aaa0fe5d0fe73baf96a1123c8503c9994b5a406c13e323620249a637dee4d4",
+      "zone_id": "us-west-2a"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "8317176013248",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "8317176013248",
+      "completed_at": "2026-11-16T05:56:00.808216+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-02-storage-ram",
+      "job_record_sha256": "0de8d6f916af2fa672ed9cf0afc478b98de0997adaf46763faa7dd52bdc14a0d",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "23e30d6c3f37e102a009cc32142c249d96a9b86193786968e914c01675b46cda",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "512951059575691",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "512951059575691",
+      "completed_at": "2026-11-16T06:19:55.130932+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-02-storage-uc",
+      "job_record_sha256": "5881bc136d501d26ca9581f66ce3cefd23109a5b53e3817dfa88aebbca2fd298",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "e8e969344a7c3dac21f4e60dfcf947593881838fa851da029ad662201e464bec",
+      "zone_id": "us-west-2a"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "243848447276081",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "243848447276081",
+      "completed_at": "2026-11-16T06:32:48.183526+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.8,
+      "job_id": "block-02-precision-bf16",
+      "job_record_sha256": "609d8f78aa518fdf3ce8c54b8dc2341d80ea6bf0e49e0f21d7c02467488e50af",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "9c8653d135131143d072bda5c881705530807f8078863508c0a96e78d92ca46b",
+      "zone_id": "us-west-2c"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "698519350546437",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "698519350546437",
+      "completed_at": "2026-11-16T06:01:10.323385+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.85,
+      "job_id": "block-02-hardware-a10g",
+      "job_record_sha256": "48c45ebffb9214a95b9a4894a2d79e630dff9a1c3b6c8c4e1254554849b13dd4",
+      "node_type_id": "g5.8xlarge",
+      "result_sha256": "3b4ca3f5f586ef0c473de7446ccb3edf9ae5207c384f926f53c70705b2010e49",
+      "zone_id": "us-west-2c"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "179020149877703",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "179020149877703",
+      "completed_at": "2026-11-16T05:57:51.780703+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-03-16k-c4-vanilla",
+      "job_record_sha256": "d42ea7de898df2fe109eaa988b19f7394b81ea3140c76f6d3fd8b7c5562e18b0",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "676e126b1329c3628d49a972a021bf8696840b200f12ea7b53930040e568f26a",
+      "zone_id": "us-west-2d"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "264868432798599",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "264868432798599",
+      "completed_at": "2026-11-16T05:58:56.467637+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-03-storage-disk",
+      "job_record_sha256": "6688f63c9664be59786b7b05294c939e12a738fd11c7e16f80b7ee2c5c09ab81",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "e4a79e1051554f35f5fc57bbd8d90eaf3e25ec3c492de079c8c2c5e2fd3d9c64",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "75948889642984",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "75948889642984",
+      "completed_at": "2026-11-16T05:56:18.215279+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-03-storage-ram",
+      "job_record_sha256": "7ba1a806df13e9a0ad5e51ea14410aa440cc2fd782b8040807793803272564e7",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "125cc7596ab826897777d566b5af93fd3416c143f11102f00e418b858f0380df",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "926805555407275",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "926805555407275",
+      "completed_at": "2026-11-16T06:20:08.949457+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-03-storage-uc",
+      "job_record_sha256": "7a2233b7304e2b51f4d7a4408c75b62497d7b3f15477564148698d9cbfac8f2d",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "968c061ffcdd60da2d12909dbd7cba8fc41878e64f0abaf0996c7b9fdc09b02b",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "389155806276133",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "389155806276133",
+      "completed_at": "2026-11-16T07:38:51.511954+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.8,
+      "job_id": "block-03-precision-bf16",
+      "job_record_sha256": "4983f6da1354a33bcd4d5f96dd87d22f65957144d034e078482ceba689397d8c",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "6860a7b7c2f47d2da9f2dcf02fd3ce17a9cbf0317133b14b6b97fe25e311a502",
+      "zone_id": "us-west-2d"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "197822635770171",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "197822635770171",
+      "completed_at": "2026-11-16T07:09:42.376759+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.85,
+      "job_id": "block-03-hardware-a10g",
+      "job_record_sha256": "8eff6cbaa6b77664086a2460e3a103be40b6b313e9edf0c28950882253e447d8",
+      "node_type_id": "g5.8xlarge",
+      "result_sha256": "81438f719ffc6fac0e9263a45c38a6c343496142b71cf74ecce938867a38db2d",
+      "zone_id": "us-west-2c"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "395711491889427",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "395711491889427",
+      "completed_at": "2026-11-16T07:06:59.755443+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-04-16k-c4-vanilla",
+      "job_record_sha256": "64bd66163fd43cae2e5dc2543bb7076903e032d660a7cfc72e0678993066e01f",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "ab8d4920689ea0eaaf017729e5a7d4f005b8117a80b67ce85fcf3207ba2477f4",
+      "zone_id": "us-west-2c"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "752695555745822",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "752695555745822",
+      "completed_at": "2026-11-16T07:06:25.635939+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-04-storage-disk",
+      "job_record_sha256": "97a64d4feecc34845c8cfd274fa6c3ac469b7a45298fb053c810c5f1ae7b8564",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "8c9667ee67928b49c30b065175d961598a5c4f08c2a1476f7d51c1b0fdc02c7d",
+      "zone_id": "us-west-2d"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "629961762475551",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "629961762475551",
+      "completed_at": "2026-11-16T07:03:59.170946+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-04-storage-ram",
+      "job_record_sha256": "9a0b21980ce7bd3679b77106121d0dc023ac0a9a086a8b68c92486f091a49be3",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "290197c49d634daf5d0c7d25bb866e2acd0715217a3170fb6ba95bcdd5b9da75",
+      "zone_id": "us-west-2d"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "21304546425248",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "21304546425248",
+      "completed_at": "2026-11-16T07:30:02.844851+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-04-storage-uc",
+      "job_record_sha256": "66d69905af5bf98193be80d9fd4d0947dcafd6156e2301d8dfd817d195cc351b",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "4aa6f7e3e6e0f1777fb431394953ff13e8c738d430e82b0b1b6f77b119a5f13f",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "701883280699531",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "701883280699531",
+      "completed_at": "2026-11-16T07:38:59.447200+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.8,
+      "job_id": "block-04-precision-bf16",
+      "job_record_sha256": "21270f2598505ec3822a083b96c11f73ee02152e8a60918bd53e2913814c9b9e",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "aca6b1058a9c8da97e199907d05ecb82e354381fe6fa4cf9dac4ec590e81b689",
+      "zone_id": "us-west-2c"
+    },
+    {
+      "attempt": 2,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "725576648511248",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": false,
+          "result_state": "FAILED"
+        },
+        {
+          "attempt": 2,
+          "cloud_run_id": "918511258215916",
+          "execution_plan_sha256": "161670362e5d16e22d1a21936534ea3467e283098a15e4692e3b1cb76f0087bd",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "918511258215916",
+      "completed_at": "2026-11-16T07:47:34.288581+00:00",
+      "execution_plan_sha256": "161670362e5d16e22d1a21936534ea3467e283098a15e4692e3b1cb76f0087bd",
+      "gpu_memory_utilization": 0.85,
+      "job_id": "block-04-hardware-a10g",
+      "job_record_sha256": "cc2ad9e66fc7aa3b4930e0d36c8019a615c634c9bbf3cffc5fb68dfb449b9ce4",
+      "node_type_id": "g5.8xlarge",
+      "result_sha256": "001515099f47a5a71ac7c0181c1061b5662e601304551a6fe98e191743093541",
+      "zone_id": "us-west-2c"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "78210919954877",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "78210919954877",
+      "completed_at": "2026-11-16T07:10:57.262717+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-05-16k-c4-vanilla",
+      "job_record_sha256": "aa0de0cb006b492400d6ba3c406f79774ba384f696bac255b0bc352adc81b30d",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "faf10c5daa6be0675fd4fcffbc4a479060f2561e8d3c8ba629ec0837b0a6637f",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "869283473213765",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "869283473213765",
+      "completed_at": "2026-11-16T07:12:08.466505+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-05-storage-disk",
+      "job_record_sha256": "47809250c0cec5f2ea10d7fe89ad663049556d922dac788a56f9615fb088b826",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "c34cf4a150a9a0d7c60be7096f41712deeae1cdb7ed9ab83368017303a1ae7ff",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "471198730570059",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "471198730570059",
+      "completed_at": "2026-11-16T07:12:47.268437+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-05-storage-ram",
+      "job_record_sha256": "5ba03a745f4acbeb59931f93c216c90242cea78aafe120c608d5de4974d28867",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "c1023e8cde7e9a03b2622d01751fd13f76001bc16e2190cc0951d54c4203d596",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "722502068027665",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "722502068027665",
+      "completed_at": "2026-11-16T07:50:48.640973+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.9,
+      "job_id": "block-05-storage-uc",
+      "job_record_sha256": "70ce911a9b6561fe4336b32e4e8a55d49c1da3adebe6742498c8ba4eecce936a",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "5c65da4a871ebd4a106004bb01dff13cb429caac7e4067d41096e49db2d5c8fc",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "178149977448900",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "178149977448900",
+      "completed_at": "2026-11-16T08:21:20.682374+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.8,
+      "job_id": "block-05-precision-bf16",
+      "job_record_sha256": "98cff2fddd7e745efd960d9ea69b7d626fe7a85710ec164b41bfdfd0bc557019",
+      "node_type_id": "g6.8xlarge",
+      "result_sha256": "30f9087ca9f57c1bb613b611e0cf94a2ca774550bf784c4b32b2468067a771b2",
+      "zone_id": "us-west-2b"
+    },
+    {
+      "attempt": 1,
+      "attempts": [
+        {
+          "attempt": 1,
+          "cloud_run_id": "410448138762130",
+          "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+          "result_present": true,
+          "result_state": "SUCCESS"
+        }
+      ],
+      "cloud_run_id": "410448138762130",
+      "completed_at": "2026-11-16T07:43:05.225629+00:00",
+      "execution_plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+      "gpu_memory_utilization": 0.85,
+      "job_id": "block-05-hardware-a10g",
+      "job_record_sha256": "80f897de76ebc53bb60cd4cc465617ab993d7ed2a34e4998300d1d458a5aed62",
+      "node_type_id": "g5.8xlarge",
+      "result_sha256": "87845cb8c19bd20c121afbce2f1c485e22eaf73c105b308f81716e82a0f128b1",
+      "zone_id": "us-west-2c"
+    }
+  ],
+  "plan": {
+    "campaign_id": "vllm-0271-publication-v1",
+    "domain": "auxiliary-latency-rerun",
+    "handoff_sources": {
+      "block-01-16k-c4-vanilla": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-01-hardware-a10g": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-01-precision-bf16": {
+        "binding": {
+          "closed_record_sha256": "18d1474c0993d24bab29944e998d0f61ce74b9cba2351292f284be44b5f13fc0",
+          "sha256": "a2ef7dd932284f6bb871d4565cee197bd9111c0fe92eb4f3fc241c76eac5d351",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/a2ef7dd932284f6b.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-01-storage-disk": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-01-storage-ram": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-01-storage-uc": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-02-16k-c4-vanilla": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-02-hardware-a10g": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-02-precision-bf16": {
+        "binding": {
+          "closed_record_sha256": "18d1474c0993d24bab29944e998d0f61ce74b9cba2351292f284be44b5f13fc0",
+          "sha256": "a2ef7dd932284f6bb871d4565cee197bd9111c0fe92eb4f3fc241c76eac5d351",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/a2ef7dd932284f6b.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-02-storage-disk": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-02-storage-ram": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-02-storage-uc": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-03-16k-c4-vanilla": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-03-hardware-a10g": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-03-precision-bf16": {
+        "binding": {
+          "closed_record_sha256": "18d1474c0993d24bab29944e998d0f61ce74b9cba2351292f284be44b5f13fc0",
+          "sha256": "a2ef7dd932284f6bb871d4565cee197bd9111c0fe92eb4f3fc241c76eac5d351",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/a2ef7dd932284f6b.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-03-storage-disk": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-03-storage-ram": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-03-storage-uc": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-04-16k-c4-vanilla": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-04-hardware-a10g": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-04-precision-bf16": {
+        "binding": {
+          "closed_record_sha256": "18d1474c0993d24bab29944e998d0f61ce74b9cba2351292f284be44b5f13fc0",
+          "sha256": "a2ef7dd932284f6bb871d4565cee197bd9111c0fe92eb4f3fc241c76eac5d351",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/a2ef7dd932284f6b.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-04-storage-disk": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-04-storage-ram": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-04-storage-uc": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-05-16k-c4-vanilla": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-05-hardware-a10g": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-05-precision-bf16": {
+        "binding": {
+          "closed_record_sha256": "18d1474c0993d24bab29944e998d0f61ce74b9cba2351292f284be44b5f13fc0",
+          "sha256": "a2ef7dd932284f6bb871d4565cee197bd9111c0fe92eb4f3fc241c76eac5d351",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/a2ef7dd932284f6b.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-05-storage-disk": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-05-storage-ram": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      },
+      "block-05-storage-uc": {
+        "binding": {
+          "closed_record_sha256": "2900af765ef00a0549c641fd3d4503ec279a97441764287bc867c9025618706b",
+          "sha256": "c2994ab3ef8826804b72a85357da7112d022e62f9d04faccc39c221efd7dea91",
+          "uri": "dbfs:/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/vllm_0271_publication_v2/m/hb/c2994ab3ef882680.json"
+        },
+        "source_kind": "bound_handoff_bundle"
+      }
+    },
+    "job_ids": [
+      "block-01-16k-c4-vanilla",
+      "block-01-storage-disk",
+      "block-01-storage-ram",
+      "block-01-storage-uc",
+      "block-01-precision-bf16",
+      "block-01-hardware-a10g",
+      "block-02-16k-c4-vanilla",
+      "block-02-storage-disk",
+      "block-02-storage-ram",
+      "block-02-storage-uc",
+      "block-02-precision-bf16",
+      "block-02-hardware-a10g",
+      "block-03-16k-c4-vanilla",
+      "block-03-storage-disk",
+      "block-03-storage-ram",
+      "block-03-storage-uc",
+      "block-03-precision-bf16",
+      "block-03-hardware-a10g",
+      "block-04-16k-c4-vanilla",
+      "block-04-storage-disk",
+      "block-04-storage-ram",
+      "block-04-storage-uc",
+      "block-04-precision-bf16",
+      "block-04-hardware-a10g",
+      "block-05-16k-c4-vanilla",
+      "block-05-storage-disk",
+      "block-05-storage-ram",
+      "block-05-storage-uc",
+      "block-05-precision-bf16",
+      "block-05-hardware-a10g"
+    ],
+    "package_wheel_sha256": "ae600d509bbea27fd30d2a6e11649a466fae54dd01eaba24169ec0486beb99d2",
+    "predecessor_execution_plan_sha256": "2c83e547020ec8fed008fad4ec78f6ceb71b704f87ce73b9ee2f60ba5f943620",
+    "predecessor_package_wheel_sha256": "3deaad26336a1f888d174397bf96fdf0648f6b250cb88622370fe33c0f861d96",
+    "reason": "plan-coherent re-run of every auxiliary latency cell with its core Vanilla 16k c4 reference: uniform untimed warmup on every arm, attested cold reads, truthful bf16 memory setting; the restored 16k Q8 bundle was removed from the volume, so every Q8 cell serves the L4-regenerated 16k Q8 bundle",
+    "source_revision": "7f065efe300a040c72b4e916b88c1447c0a45aa6",
+    "source_tree_sha256": "72807e220b99046021e9e673e1be655a8feb5a2902dfe819c244092dab16f9b8"
+  },
+  "plan_sha256": "219c45b80decdc37b8c66f41379d0430d85bc5825c6809badb67e68ee0c1153a",
+  "record_type": "cachet.publication_latency_auxiliary_rerun.v1",
+  "results_sha256": "8e3768a70e5e3684f82746b3350841bcdd71e299a83d1092c83bd317bc33c6dc",
+  "schema_version": 1
+}
