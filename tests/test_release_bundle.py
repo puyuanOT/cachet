@@ -4278,7 +4278,7 @@ def _launch_config_record(backend: ServingBackend):
         return {
             "kv_connector": "DocumentKVConnector",
             "kv_connector_module_path": "document_kv_vllm.document_kv_connector",
-            "kv_role": "kv_both",
+            "kv_role": "kv_consumer",
             "kv_connector_extra_config": extra,
         }
     if backend is ServingBackend.SGLANG:
