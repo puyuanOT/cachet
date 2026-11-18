@@ -28,3 +28,13 @@ external KV blocks, so suffix-only cache prompts are not used by this smoke. The
 generated metadata records the dataset paths, sizing values, Cachet package
 install spec, and vLLM `KVTransferConfig`, which separates long-context
 benchmark evidence from the built-in smoke examples.
+
+For a host-RAM-resident Cachet measurement, pass a positive
+`--payload-cache-max-bytes` together with `--benchmark-prewarm-payload-cache`.
+The runner populates every prepared payload, repeats the full priming set to
+prove it fits in the provider cache, and then fails unless every measured load
+reports a payload-cache hit, zero storage bytes read, and zero cache misses.
+Priming uses request IDs and `cache_salt` values that are disjoint from the
+per-request measurement namespace, so its GPU blocks cannot satisfy a measured
+prefix lookup. The audit artifacts are `prewarm-payload-cache.json` and
+`payload-cache-attestation.json`.

@@ -47,9 +47,12 @@ from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
     NUMPY_CONSTRAINT,
+    OPENCV_PYTHON_HEADLESS_CONSTRAINT,
     PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT,
     TOKENIZERS_CONSTRAINT,
     TRANSFORMERS_CONSTRAINT,
+    VLLM_INSTALL_REQUIREMENTS,
+    VLLM_PACKAGE_INDEX_URLS,
     VLLM_SERVING_ENVIRONMENT_PROFILE,
     VLLM_VERSION,
 )
@@ -74,7 +77,7 @@ SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
-VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
+VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = OPENCV_PYTHON_HEADLESS_CONSTRAINT
 VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
 
 __all__ = [
@@ -97,6 +100,7 @@ __all__ = [
     "build_vllm_native_provider_probe_record",
     "cuda_wheel_env_paths",
     "dependency_constraints",
+    "dependency_index_args",
     "dependency_override_constraints",
     "document_kv_package_install_spec",
     "install_document_kv_package",
@@ -132,6 +136,7 @@ class VLLMPreparedHandoffGenerationConfig:
     dtype: str = "bfloat16"
     align_bytes: int = 4096
     timeout_seconds: float = 1800.0
+    require_artifact_contract: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
@@ -144,6 +149,8 @@ class VLLMPreparedHandoffGenerationConfig:
             raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
         if self.timeout_seconds <= 0:
             raise ValueError("benchmark_handoff_timeout_seconds must be positive")
+        if type(self.require_artifact_contract) is not bool:
+            raise ValueError("benchmark_handoff_require_artifact_contract must be a boolean")
         object.__setattr__(self, "output_dir", Path(self.output_dir))
 
     def to_metadata(self) -> dict[str, object]:
@@ -153,6 +160,7 @@ class VLLMPreparedHandoffGenerationConfig:
             "dtype": self.dtype,
             "align_bytes": self.align_bytes,
             "timeout_seconds": self.timeout_seconds,
+            "require_artifact_contract": self.require_artifact_contract,
         }
 
 
@@ -426,8 +434,19 @@ def dependency_constraints() -> list[str]:
     return list(VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints)
 
 
+def dependency_index_args() -> list[str]:
+    """Return the official indexes needed by the pinned CUDA 12.9 closure."""
+
+    return [
+        argument
+        for index_url in VLLM_PACKAGE_INDEX_URLS
+        for argument in ("--extra-index-url", index_url)
+    ]
+
+
 def dependency_override_constraints() -> list[str]:
-    return [VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT]
+    # OpenCV is pinned inside the serving profile; no post-install replacement is needed.
+    return []
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -733,6 +752,7 @@ generation = VLLMPreparedHandoffGenerationConfig(
     dtype=generation_payload["dtype"],
     align_bytes=int(generation_payload["align_bytes"]),
     timeout_seconds=float(generation_payload["timeout_seconds"]),
+    require_artifact_contract=bool(generation_payload.get("require_artifact_contract", True)),
 )
 config = VLLMSmokeBenchmarkConfig(
     benchmark_id=payload["benchmark_id"],
@@ -831,6 +851,7 @@ def _generate_prepared_benchmark_handoff_inputs(
             backend="vllm",
             manifest_json=manifest_json,
             align_bytes=generation.align_bytes,
+            require_artifact_contract=generation.require_artifact_contract,
         )
         enriched_rows = enrich_benchmark_jsonl_with_handoffs(
             input_jsonl,
@@ -1033,20 +1054,23 @@ def install_vllm(python_executable: Path) -> None:
             "-m",
             "pip",
             "install",
-            *dependency_constraints(),
+            *dependency_index_args(),
+            *VLLM_INSTALL_REQUIREMENTS,
         ]
     )
-    run(
-        [
-            str(python_executable),
-            "-m",
-            "pip",
-            "install",
-            "--force-reinstall",
-            "--no-deps",
-            *dependency_override_constraints(),
-        ]
-    )
+    overrides = dependency_override_constraints()
+    if overrides:
+        run(
+            [
+                str(python_executable),
+                "-m",
+                "pip",
+                "install",
+                "--force-reinstall",
+                "--no-deps",
+                *overrides,
+            ]
+        )
 
 
 def install_document_kv_package(python_executable: Path, install_spec: str) -> None:
@@ -1556,6 +1580,14 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     )
     parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
     parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
+    parser.add_argument(
+        "--benchmark-handoff-allow-legacy-artifact-contract",
+        action="store_true",
+        help=(
+            "Legacy/debug opt-out: allow handoff generation without the registered "
+            "method's complete artifact contract."
+        ),
+    )
     args = parser.parse_args(argv)
     output_dir = Path(_cluster_file_path(args.output_dir))
     handoff_generation = _handoff_generation_config_from_args(args, output_dir=output_dir)
@@ -1599,6 +1631,7 @@ def _handoff_generation_config_from_args(
         output_dir=Path(_cluster_file_path(output)),
         dtype=args.benchmark_handoff_dtype,
         align_bytes=args.benchmark_handoff_align_bytes,
+        require_artifact_contract=not args.benchmark_handoff_allow_legacy_artifact_contract,
     )
 
 

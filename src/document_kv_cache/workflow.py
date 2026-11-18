@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from document_kv_cache.artifact_identity import (
+    ArtifactIdentity,
+    UNRESOLVED_IDENTITY,
+    method_config_digest,
+)
 from document_kv_cache.cache import ChunkCache
 from document_kv_cache.engine import (
     EngineReadyRequest,
@@ -15,7 +21,11 @@ from document_kv_cache.engine import (
     _normalize_gpu_byte_multiplier,
     build_engine_ready_request,
 )
-from document_kv_cache.engine_protocol import KVStorageLayout, kv_storage_layout_from_value
+from document_kv_cache.engine_protocol import (
+    KVStorageLayout,
+    kv_payload_axis_order_from_value,
+    kv_storage_layout_from_value,
+)
 from document_kv_cache.kvpack import PackChunk, write_kvpack, write_kvpack_bytes
 from document_kv_cache.manifest import ManifestStore
 from document_kv_cache.materializer import KVMaterializer, MaterializedKV, SegmentedMaterializedKV
@@ -26,7 +36,9 @@ from document_kv_cache.models import (
     DocumentChunkType,
     DocumentKVRequest,
 )
+from document_kv_cache.methods import MethodRegistry, MethodSpec, default_method_registry
 from document_kv_cache.planner import CachePlanner
+from document_kv_cache.reuse_contract import ArtifactEncoding, PositionHandling, ReusePlan
 from document_kv_cache.service import DocumentKVService
 from document_kv_cache.storage import (
     DiskRangeReader,
@@ -149,22 +161,149 @@ class SourceDocument:
 
 @dataclass(frozen=True, slots=True)
 class CacheBuildConfig:
+    """Identity used to generate persisted method artifacts.
+
+    ``dtype`` is the persisted artifact element dtype. ``runtime_kv_dtype`` is
+    the dtype after any provider decoder has produced engine-ready KV; it
+    defaults to ``dtype`` for raw-KV compatibility. Physical stored byte counts
+    come from generated :class:`PackChunk` payloads rather than from the runtime
+    layout geometry.
+    """
+
     model_id: str
     lora_id: str
     prompt_template_version: str
     dtype: str
     layout_version: str
-    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL
+    # A build config has no runtime layout from which to infer positional
+    # semantics.  Keep the omission-safe default aligned with the default
+    # (post-RoPE) generator; Vanilla/pre-RoPE generation must opt in through
+    # its registered method path.
+    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.FULL_PREFIX_PREFILL
     storage_layout: KVStorageLayout | str = KVStorageLayout.SEPARATE_KEY_VALUE
+    payload_axis_order: str = "token_major"
+    method_version: str | None = None
+    method_config_digest: str = field(default_factory=lambda: method_config_digest({}))
+    model_revision: str = UNRESOLVED_IDENTITY
+    tokenizer_id: str | None = None
+    tokenizer_revision: str = UNRESOLVED_IDENTITY
+    generator_family: str = "transformers"
+    generator_version: str = UNRESOLVED_IDENTITY
+    tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+    artifact_format_id: str = "raw_kv"
+    artifact_format_version: str = "1"
+    runtime_kv_dtype: str | None = None
 
     def __post_init__(self) -> None:
-        for field_name in ("model_id", "lora_id", "prompt_template_version", "dtype", "layout_version"):
+        cache_method = _cache_generation_method(self.cache_method)
+        object.__setattr__(self, "cache_method", cache_method)
+        method_version = self.method_version
+        if method_version is None:
+            try:
+                method_version = default_method_registry().get(
+                    cache_method,
+                ).artifact_version
+            except KeyError:
+                # Application-defined methods remain usable without registering a
+                # process-global MethodSpec. Their historical default is v1, while
+                # callers can always stamp an explicit custom version.
+                method_version = "1"
+        object.__setattr__(self, "method_version", method_version)
+        for field_name in (
+            "model_id",
+            "lora_id",
+            "prompt_template_version",
+            "dtype",
+            "layout_version",
+            "method_version",
+            "model_revision",
+            "tokenizer_revision",
+            "generator_family",
+            "generator_version",
+            "artifact_format_id",
+            "artifact_format_version",
+        ):
             object.__setattr__(self, field_name, _non_empty_string(field_name, getattr(self, field_name)))
-        object.__setattr__(self, "cache_method", _cache_generation_method(self.cache_method))
+        tokenizer_id = self.model_id if self.tokenizer_id is None else self.tokenizer_id
+        object.__setattr__(self, "tokenizer_id", _non_empty_string("tokenizer_id", tokenizer_id))
+        runtime_kv_dtype = self.dtype if self.runtime_kv_dtype is None else self.runtime_kv_dtype
+        object.__setattr__(
+            self,
+            "runtime_kv_dtype",
+            _non_empty_string("runtime_kv_dtype", runtime_kv_dtype),
+        )
+        _sha256_digest("method_config_digest", self.method_config_digest)
+        for field_name in ("tensor_parallel_size", "pipeline_parallel_size"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer")
         object.__setattr__(
             self,
             "storage_layout",
             kv_storage_layout_from_value(self.storage_layout, field_name="storage_layout"),
+        )
+        object.__setattr__(
+            self,
+            "payload_axis_order",
+            kv_payload_axis_order_from_value(self.payload_axis_order, field_name="payload_axis_order").value,
+        )
+
+    def artifact_identity_for(self, layout: KVLayout) -> ArtifactIdentity:
+        """Build the exact stored-artifact and runtime-layout identity.
+
+        ``dtype`` describes the persisted artifact elements.  The supplied
+        :class:`KVLayout` describes the decoded KV presented to the serving
+        runtime, so its dtype is compared with ``runtime_kv_dtype`` instead of
+        assuming that persisted and runtime representations are identical.
+        """
+
+        if not isinstance(layout, KVLayout):
+            raise TypeError("layout must be a KVLayout")
+        layout.validate()
+        expected = {
+            "model_id": self.model_id,
+            "lora_id": self.lora_id,
+            "layout_version": self.layout_version,
+            "runtime_kv_dtype": self.runtime_kv_dtype,
+            "payload_axis_order": self.payload_axis_order,
+        }
+        actual = {
+            "model_id": layout.model_id,
+            "lora_id": layout.lora_id,
+            "layout_version": layout.layout_version,
+            "runtime_kv_dtype": layout.dtype,
+            "payload_axis_order": layout.payload_axis_order.value,
+        }
+        mismatches = [name for name, value in expected.items() if actual[name] != value]
+        if mismatches:
+            raise ValueError(
+                "layout does not match CacheBuildConfig identity: " + ", ".join(mismatches)
+            )
+        return ArtifactIdentity(
+            method_id=_cache_method_value(self.cache_method),
+            method_version=self.method_version,
+            method_config_digest=self.method_config_digest,
+            model_id=self.model_id,
+            model_revision=self.model_revision,
+            tokenizer_id=self.tokenizer_id,
+            tokenizer_revision=self.tokenizer_revision,
+            lora_id=self.lora_id,
+            prompt_template_version=self.prompt_template_version,
+            layout_version=self.layout_version,
+            kv_dtype=self.dtype,
+            block_size=layout.block_size,
+            payload_axis_order=self.payload_axis_order,
+            key_position_encoding=layout.key_position_encoding.value,
+            rope_theta=layout.rope_theta,
+            rope_rotary_dim=layout.rope_rotary_dim,
+            tensor_parallel_size=self.tensor_parallel_size,
+            pipeline_parallel_size=self.pipeline_parallel_size,
+            generator_family=self.generator_family,
+            generator_version=self.generator_version,
+            artifact_format_id=self.artifact_format_id,
+            artifact_format_version=self.artifact_format_version,
+            runtime_kv_dtype=self.runtime_kv_dtype,
         )
 
 
@@ -234,7 +373,12 @@ class CacheGenerationResult:
     chunk_count: int
     total_bytes: int
     training_artifacts: TrainingArtifacts | None = None
-    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL
+    # Results constructed without refs/identity cannot infer a pre-RoPE
+    # contract.  Default to the post-RoPE full-prefix method and require
+    # Vanilla callers to name it (normal workflow generation always does).
+    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.FULL_PREFIX_PREFILL
+    artifact_identity: ArtifactIdentity | None = None
+    reuse_plan: ReusePlan | None = None
 
     def __post_init__(self) -> None:
         refs = _chunk_ref_tuple(self.refs)
@@ -256,12 +400,48 @@ class CacheGenerationResult:
         object.__setattr__(self, "refs", refs)
         object.__setattr__(self, "document_ids", document_ids)
         object.__setattr__(self, "cache_method", _cache_generation_method(self.cache_method))
+        ref_identities = {ref.key.artifact_identity for ref in refs}
+        if len(ref_identities) > 1:
+            raise ValueError("refs must share one artifact_identity")
+        inferred_identity = next(iter(ref_identities), None)
+        if self.artifact_identity is not None and not isinstance(
+            self.artifact_identity,
+            ArtifactIdentity,
+        ):
+            raise TypeError("artifact_identity must be an ArtifactIdentity or None")
+        if self.artifact_identity is not None and self.artifact_identity != inferred_identity:
+            raise ValueError("artifact_identity must match refs")
+        artifact_identity = self.artifact_identity or inferred_identity
+        if artifact_identity is not None:
+            if artifact_identity.method_id != _cache_method_value(self.cache_method):
+                raise ValueError("artifact_identity.method_id must match cache_method")
+        object.__setattr__(self, "artifact_identity", artifact_identity)
+        if self.reuse_plan is not None:
+            if not isinstance(self.reuse_plan, ReusePlan):
+                raise TypeError("reuse_plan must be a ReusePlan or None")
+            if self.reuse_plan.method_id != _cache_method_value(self.cache_method):
+                raise ValueError("reuse_plan.method_id must match cache_method")
+            if artifact_identity is not None:
+                artifact_format = self.reuse_plan.artifact_format
+                if (
+                    artifact_identity.artifact_format_id != artifact_format.format_id
+                    or artifact_identity.artifact_format_version != artifact_format.version
+                ):
+                    raise ValueError(
+                        "reuse_plan artifact format must match artifact_identity"
+                    )
 
     @property
     def adapter_ids(self) -> tuple[str, ...]:
         if self.training_artifacts is None:
             return ()
         return self.training_artifacts.adapter_ids
+
+    @property
+    def artifact_id(self) -> str | None:
+        if self.artifact_identity is None:
+            return None
+        return self.artifact_identity.artifact_id
 
 
 class DocumentKVWorkflow:
@@ -275,6 +455,7 @@ class DocumentKVWorkflow:
         shard_path_resolver: Callable[[str], Path] | None = None,
         memory_writer: MemoryRangeReader | None = None,
         memory_writers: Sequence[MemoryRangeReader] = (),
+        method_registry: MethodRegistry | None = None,
     ) -> None:
         self.manifest = manifest
         self.planner = planner or CachePlanner(manifest)
@@ -291,6 +472,11 @@ class DocumentKVWorkflow:
             )
         )
         self.memory_writer = self.memory_writers[0] if self.memory_writers else None
+        self.method_registry = (
+            default_method_registry() if method_registry is None else method_registry
+        )
+        if not isinstance(self.method_registry, MethodRegistry):
+            raise TypeError("method_registry must be a MethodRegistry")
 
     @classmethod
     def with_storage(
@@ -305,6 +491,7 @@ class DocumentKVWorkflow:
         memory_blobs: Mapping[str, bytes] | None = None,
         planner: CachePlanner | None = None,
         service: DocumentKVService | None = None,
+        method_registry: MethodRegistry | None = None,
     ) -> "DocumentKVWorkflow":
         """Build a workflow with the standard memory/disk/UC reader stack."""
         shard_path_resolver = _storage_shard_path_resolver(
@@ -338,6 +525,7 @@ class DocumentKVWorkflow:
                 service=service,
                 service_memory_reader=service_memory_reader,
             ),
+            method_registry=method_registry,
         )
 
     def generate_cache(
@@ -349,21 +537,86 @@ class DocumentKVWorkflow:
         shard_uri: str | Path,
         trainer: TrainingAdapter | None = None,
         align_bytes: int = 4096,
+        require_registered_method: bool = True,
     ) -> CacheGenerationResult:
         documents_tuple = _source_documents_tuple(documents)
+        method = self._validate_method_generator(
+            config,
+            generator,
+            require_registered_method=require_registered_method,
+        )
         training_artifacts = trainer.fit(documents_tuple, config) if trainer is not None else None
-        cache_method = _effective_cache_method(config, trainer)
-        pack_chunks = tuple(self._iter_pack_chunks(documents_tuple, generator, config, training_artifacts))
+        cache_method = config.cache_method
+        pack_chunks = self._iter_pack_chunks(
+            documents_tuple,
+            generator,
+            config,
+            training_artifacts,
+            require_artifact_contract=require_registered_method,
+            registered_method=method if require_registered_method else None,
+        )
         refs = self._write_pack_chunks(shard_uri, pack_chunks, align_bytes=align_bytes)
         self.manifest.put_many(refs)
         return CacheGenerationResult(
             refs=refs,
             document_ids=tuple(document.document_id for document in documents_tuple),
-            chunk_count=len(pack_chunks),
+            chunk_count=len(refs),
             total_bytes=sum(ref.byte_length for ref in refs),
             training_artifacts=training_artifacts,
             cache_method=cache_method,
+            artifact_identity=_artifact_identity_for_refs(refs),
+            reuse_plan=None if method is None else method.reuse_plan(),
         )
+
+    def _validate_method_generator(
+        self,
+        config: CacheBuildConfig,
+        generator: KVChunkGenerator,
+        *,
+        require_registered_method: bool,
+    ) -> MethodSpec | None:
+        try:
+            spec = self.method_registry.get(
+                config.cache_method,
+                require_implemented=require_registered_method,
+            )
+        except KeyError:
+            if require_registered_method:
+                raise
+            return None
+        if not require_registered_method and not spec.implemented:
+            # Explicit legacy generation may preserve an experimental label, but
+            # an unimplemented MethodSpec must never mint an executable ReusePlan.
+            return None
+        if require_registered_method and config.method_version != spec.artifact_version:
+            raise ValueError(
+                f"CacheBuildConfig method_version {config.method_version!r} does not match "
+                f"registered {spec.method_id!r} artifact_version {spec.artifact_version!r}"
+            )
+        if require_registered_method:
+            configured_format = (config.artifact_format_id, config.artifact_format_version)
+            registered_format = (
+                spec.artifact_format.format_id,
+                spec.artifact_format.version,
+            )
+            if configured_format != registered_format:
+                raise ValueError(
+                    f"CacheBuildConfig artifact format {configured_format!r} does not match "
+                    f"registered {spec.method_id!r} format {registered_format!r}"
+                )
+            if (
+                spec.artifact_format.encoding == ArtifactEncoding.RAW_KV
+                and config.dtype != config.runtime_kv_dtype
+            ):
+                raise ValueError(
+                    "raw-KV generation requires persisted dtype to match "
+                    "runtime_kv_dtype"
+                )
+        spec.validate_generator(
+            generator,
+            require_implemented=require_registered_method,
+        )
+        return spec
 
     def prepare(self, request: DocumentKVRequest, *, segmented: bool = False) -> MaterializedKV | SegmentedMaterializedKV:
         planner, materializer = self._preparation_dependencies()
@@ -382,25 +635,87 @@ class DocumentKVWorkflow:
         layout: KVLayout,
         handle_uri: str | None = None,
         metadata: Mapping[str, str] | None = None,
-        cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+        cache_method: CacheGenerationMethod | str | None = None,
         adapter_ids: tuple[str, ...] = (),
         training_artifacts: TrainingArtifacts | None = None,
         segmented: bool = False,
         kv_gpu_bytes_per_payload_byte: float | None = None,
+        require_registered_method: bool = True,
     ) -> EngineReadyRequest:
         gpu_byte_multiplier = self._engine_gpu_byte_multiplier(kv_gpu_bytes_per_payload_byte)
         engine_adapter_ids = _engine_adapter_ids(adapter_ids, training_artifacts)
         planner, materializer = self._preparation_dependencies()
         plan = planner.build_plan(request)
         materialized = materializer.materialize_segmented(plan) if segmented else materializer.materialize(plan)
+        artifact_method_ids = {
+            identity.method_id
+            for segment in materialized.plan.segments
+            if (identity := segment.ref.key.artifact_identity) is not None
+        }
+        artifact_identities = {
+            identity
+            for segment in materialized.plan.segments
+            if (identity := segment.ref.key.artifact_identity) is not None
+        }
+        if len(artifact_method_ids) > 1:
+            raise ValueError(
+                "materialized KV segments contain multiple cache methods"
+            )
+        resolved_cache_method: CacheGenerationMethod | str = (
+            next(iter(artifact_method_ids))
+            if cache_method is None and artifact_method_ids
+            else (
+                CacheGenerationMethod.VANILLA_PREFILL
+                if layout.pre_rope
+                else CacheGenerationMethod.FULL_PREFIX_PREFILL
+            )
+            if cache_method is None
+            else cache_method
+        )
+        try:
+            method = self.method_registry.get(
+                resolved_cache_method,
+                require_implemented=require_registered_method,
+            )
+        except KeyError:
+            if require_registered_method:
+                raise
+            method = None
+        reuse_plan = None
+        if method is not None:
+            if artifact_method_ids and method.method_id not in artifact_method_ids:
+                raise ValueError(
+                    "cache_method does not match materialized artifact identity"
+                )
+            reuse_plan = method.reuse_plan()
+            reuse_plan.validate_runtime_layout(layout)
+            for identity in artifact_identities:
+                if identity.method_version != method.artifact_version:
+                    raise ValueError(
+                        "materialized artifact method_version does not match the "
+                        "registered method contract"
+                    )
+                if (
+                    identity.artifact_format_id
+                    != reuse_plan.artifact_format.format_id
+                    or identity.artifact_format_version
+                    != reuse_plan.artifact_format.version
+                ):
+                    raise ValueError(
+                        "materialized artifact format does not match the registered "
+                        "reuse plan"
+                    )
         return build_engine_ready_request(
             materialized,
             layout=layout,
             handle_uri=handle_uri,
             metadata=metadata,
-            cache_method=cache_method,
+            cache_method=resolved_cache_method,
             adapter_ids=engine_adapter_ids,
             kv_gpu_bytes_per_payload_byte=gpu_byte_multiplier,
+            reuse_plan=reuse_plan,
+            allow_legacy_reuse_plan=not require_registered_method,
+            method_registry=self.method_registry,
         )
 
     def prepare_and_submit_to_engine(
@@ -411,11 +726,12 @@ class DocumentKVWorkflow:
         layout: KVLayout,
         handle_uri: str | None = None,
         metadata: Mapping[str, str] | None = None,
-        cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+        cache_method: CacheGenerationMethod | str | None = None,
         adapter_ids: tuple[str, ...] = (),
         training_artifacts: TrainingArtifacts | None = None,
         segmented: bool = False,
         kv_gpu_bytes_per_payload_byte: float | None = None,
+        require_registered_method: bool = True,
     ) -> EngineReadyRequest:
         ready = self.prepare_for_engine(
             request,
@@ -427,6 +743,7 @@ class DocumentKVWorkflow:
             training_artifacts=training_artifacts,
             segmented=segmented,
             kv_gpu_bytes_per_payload_byte=kv_gpu_bytes_per_payload_byte,
+            require_registered_method=require_registered_method,
         )
         connector.submit(ready)
         return ready
@@ -456,6 +773,9 @@ class DocumentKVWorkflow:
         generator: KVChunkGenerator,
         config: CacheBuildConfig,
         training_artifacts: TrainingArtifacts | None,
+        *,
+        require_artifact_contract: bool,
+        registered_method: MethodSpec | None,
     ) -> Iterable[PackChunk]:
         for document in documents:
             for chunk in document.chunks:
@@ -465,13 +785,20 @@ class DocumentKVWorkflow:
                     config=config,
                     training_artifacts=training_artifacts,
                 )
-                self._validate_pack_chunk(document, chunk, config, pack_chunk)
+                self._validate_pack_chunk(
+                    document,
+                    chunk,
+                    config,
+                    pack_chunk,
+                    require_artifact_contract=require_artifact_contract,
+                    registered_method=registered_method,
+                )
                 yield pack_chunk
 
     def _write_pack_chunks(
         self,
         shard_uri: str | Path,
-        pack_chunks: Sequence[PackChunk],
+        pack_chunks: Iterable[PackChunk],
         *,
         align_bytes: int,
     ) -> tuple[ChunkRef, ...]:
@@ -500,6 +827,9 @@ class DocumentKVWorkflow:
         chunk: SourceChunk,
         config: CacheBuildConfig,
         pack_chunk: PackChunk,
+        *,
+        require_artifact_contract: bool,
+        registered_method: MethodSpec | None,
     ) -> None:
         key = pack_chunk.key
         expected = {
@@ -528,12 +858,74 @@ class DocumentKVWorkflow:
         if mismatches:
             details = ", ".join(f"{name}: expected {expected[name]!r}, got {actual[name]!r}" for name in mismatches)
             raise ValueError(f"Generated chunk does not match source/config ({details})")
-
-
-def _effective_cache_method(config: CacheBuildConfig, trainer: TrainingAdapter | None) -> CacheGenerationMethod | str:
-    if trainer is not None and config.cache_method == CacheGenerationMethod.VANILLA_PREFILL:
-        return CacheGenerationMethod.ADAPTER_TRAINED
-    return config.cache_method
+        if require_artifact_contract:
+            missing = [
+                name
+                for name, value in (
+                    ("content_hash", key.content_hash),
+                    ("artifact_identity", key.artifact_identity),
+                    ("token_contract", key.token_contract),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    "Registered method generation requires: " + ", ".join(missing)
+                )
+        if key.content_hash:
+            payload_digest = hashlib.sha256(pack_chunk.payload).hexdigest()
+            if key.content_hash != payload_digest:
+                raise ValueError("Generated chunk content_hash does not match payload bytes")
+        if key.token_contract is not None and key.token_contract.token_count != pack_chunk.token_count:
+            raise ValueError("Generated chunk token contract count does not match token_count")
+        if key.artifact_identity is not None:
+            identity = key.artifact_identity
+            identity_expected = {
+                "method_id": _cache_method_value(config.cache_method),
+                "method_version": config.method_version,
+                "method_config_digest": config.method_config_digest,
+                "model_revision": config.model_revision,
+                "tokenizer_id": config.tokenizer_id,
+                "tokenizer_revision": config.tokenizer_revision,
+                "generator_family": config.generator_family,
+                "generator_version": config.generator_version,
+                "tensor_parallel_size": config.tensor_parallel_size,
+                "pipeline_parallel_size": config.pipeline_parallel_size,
+                "kv_dtype": config.dtype,
+                "layout_version": config.layout_version,
+                "payload_axis_order": config.payload_axis_order,
+                "artifact_format_id": config.artifact_format_id,
+                "artifact_format_version": config.artifact_format_version,
+                "runtime_kv_dtype": config.runtime_kv_dtype,
+            }
+            identity_mismatches = [
+                name
+                for name, value in identity_expected.items()
+                if getattr(identity, name) != value
+            ]
+            if identity_mismatches:
+                raise ValueError(
+                    "Generated chunk artifact identity does not match config: "
+                    + ", ".join(identity_mismatches)
+                )
+            if registered_method is not None:
+                position_handling = registered_method.position_handling
+                if position_handling == PositionHandling.REROPE_AT_INJECTION:
+                    expected_key_position_encoding = "pre_rope"
+                elif position_handling == PositionHandling.STORED_POST_ROPE:
+                    expected_key_position_encoding = "stored_post_rope"
+                else:
+                    raise ValueError(
+                        "Registered Cachet artifact generation cannot use "
+                        f"position handling {position_handling!r}"
+                    )
+                if identity.key_position_encoding != expected_key_position_encoding:
+                    raise ValueError(
+                        "Generated chunk artifact identity position encoding does "
+                        f"not match registered method {registered_method.method_id!r}: "
+                        f"expected {expected_key_position_encoding!r}, got "
+                        f"{identity.key_position_encoding!r}"
+                    )
 
 
 def _engine_adapter_ids(
@@ -585,6 +977,15 @@ def _document_ids_for_refs(refs: Sequence[ChunkRef]) -> tuple[str, ...]:
         seen.add(document_id)
         document_ids.append(document_id)
     return tuple(document_ids)
+
+
+def _artifact_identity_for_refs(
+    refs: Sequence[ChunkRef],
+) -> ArtifactIdentity | None:
+    identities = {ref.key.artifact_identity for ref in refs}
+    if len(identities) > 1:
+        raise ValueError("refs must share one artifact_identity")
+    return next(iter(identities), None)
 
 
 def _source_documents_tuple(documents: Sequence[SourceDocument]) -> tuple[SourceDocument, ...]:
@@ -738,6 +1139,16 @@ def _dedupe_memory_writers(writers: Sequence[MemoryRangeReader]) -> tuple[Memory
 def _non_empty_string(name: str, value: object) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _sha256_digest(name: str, value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{name} must be a lowercase SHA-256 hex digest")
     return value
 
 

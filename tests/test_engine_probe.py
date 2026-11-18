@@ -1,8 +1,8 @@
 import json
 import os
-import pickle
 import subprocess
 import sys
+from dataclasses import replace
 from textwrap import dedent, indent
 
 import pytest
@@ -128,6 +128,43 @@ def write_handoff_and_payload(tmp_path, *, segmented: bool = True) -> tuple[obje
         payload_uri=f"disk:{payload_path}",
     )
     return handoff_path, payload_path
+
+
+def test_handoff_bundle_rejects_planned_method_before_writing(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    assert adapter_request.reuse_plan is not None
+    forged_plan = replace(adapter_request.reuse_plan, method_id="kv_packet")
+    forged_ready = replace(
+        adapter_request.ready_request,
+        handle=replace(
+            adapter_request.ready_request.handle,
+            cache_method="kv_packet",
+        ),
+        reuse_plan=forged_plan,
+    )
+    forged_request = replace(
+        adapter_request,
+        ready_request=forged_ready,
+        reuse_plan=forged_plan,
+        metadata={
+            **adapter_request.metadata,
+            "document_kv.cache_method": "kv_packet",
+            "document_kv.reuse_capability_id": forged_plan.capability_id,
+        },
+    )
+    handoff_path = tmp_path / "planned.handoff.json"
+    payload_path = tmp_path / "planned.kv"
+
+    with pytest.raises(ValueError, match="not a runnable registered Cachet method"):
+        write_engine_adapter_handoff_bundle(
+            forged_request,
+            handoff_path,
+            payload_uri=f"disk:{payload_path}",
+        )
+
+    assert not handoff_path.exists()
+    assert not payload_path.exists()
 
 
 def write_probe_factory_module(

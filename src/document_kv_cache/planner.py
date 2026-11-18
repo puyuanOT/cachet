@@ -43,6 +43,7 @@ class CachePlanner:
                     document_id="_task",
                     chunk_type=chunk_types.task_prefix,
                     chunk_id=request.task_prefix_id,
+                    artifact_identity=request.artifact_identity,
                 )
             )
 
@@ -56,6 +57,7 @@ class CachePlanner:
                         document_id=document_id,
                         chunk_type=chunk_types.static,
                         chunk_id=str(static_chunk_id),
+                        artifact_identity=request.artifact_identity,
                     )
                 )
             for chunk_id in chunk_ids:
@@ -67,6 +69,7 @@ class CachePlanner:
                         document_id=document_id,
                         chunk_type=chunk_types.content,
                         chunk_id=str(chunk_id),
+                        artifact_identity=request.artifact_identity,
                     )
                 )
 

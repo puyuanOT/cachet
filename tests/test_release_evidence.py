@@ -44,6 +44,7 @@ from document_kv_cache.release_evidence import (
     release_evidence_to_record,
     sglang_live_v1_benchmark_issues,
 )
+from document_kv_cache.methods import method_spec
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
@@ -2536,7 +2537,7 @@ def _v1_report_row_record(dataset: str, arm: str):
         "time_to_completion": {"count": 1, "mean": 2.0, "p50": 2.0, "p95": 2.0},
         "exact_match_rate": 1.0,
         "answer_found_rate": 1.0,
-        "output_tokens_per_second": 8.0,
+        "output_tokens_per_second": 16.0,
     }
 
 
@@ -2684,7 +2685,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
             bind=EngineKVBindAction(
                 request_id=request_id,
                 handle_uri=f"engine://{backend.value}/{request_id}",
-                cache_method="vanilla",
+                cache_method="full_prefix_prefill",
                 adapter_ids=("base",),
                 metadata={
                     "engine.backend": backend.value,
@@ -2692,6 +2693,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
                 },
             ),
             release=EngineKVReleaseAction(request_id=request_id),
+            reuse_plan=method_spec("full_prefix_prefill").reuse_plan(),
         )
     )
 

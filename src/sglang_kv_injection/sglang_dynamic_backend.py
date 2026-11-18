@@ -15,12 +15,24 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from document_kv_cache.engine_adapters import (
+    EngineAdapterSpec,
     EngineKVInjectionPlan,
     ServingBackend,
     build_engine_kv_injection_plan,
     read_engine_adapter_request_json,
+    sglang_adapter_spec,
+)
+from document_kv_cache.methods import MethodRegistry, default_method_registry
+from document_kv_cache.reuse_contract import (
+    RuntimeOperationHandlerRegistry,
+    apply_runtime_operation_handlers,
 )
 from document_kv_cache.engine_probe import read_engine_adapter_payload
+from document_kv_cache.engine_protocol import (
+    KVKeyPositionEncoding,
+    KVPayloadAxisOrder,
+    KVStorageLayout,
+)
 from document_kv_cache.benchmarks import DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM
 from sglang_kv_injection.sglang_request_metadata_bridge import (
     DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY,
@@ -155,13 +167,39 @@ class DocumentKVHiCachePageProvider:
 
     document_kv_hicache_provider = True
 
-    def __init__(self, *, store_uri: str | None = None, storage_identity: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        store_uri: str | None = None,
+        storage_identity: str | None = None,
+        adapter_spec: EngineAdapterSpec | None = None,
+        operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+        method_registry: MethodRegistry | None = None,
+    ) -> None:
         store_uri = _optional_config_string(
             store_uri,
             field_name=DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
         )
         self.store_uri = store_uri
         self.storage_identity = storage_identity
+        self.adapter_spec = adapter_spec or sglang_adapter_spec()
+        if not isinstance(self.adapter_spec, EngineAdapterSpec):
+            raise TypeError("adapter_spec must be an EngineAdapterSpec")
+        if self.adapter_spec.backend != ServingBackend.SGLANG:
+            raise ValueError("SGLang HiCache requires an sglang adapter spec")
+        self.operation_handlers = (
+            RuntimeOperationHandlerRegistry()
+            if operation_handlers is None
+            else operation_handlers
+        )
+        if not isinstance(
+            self.operation_handlers,
+            RuntimeOperationHandlerRegistry,
+        ):
+            raise TypeError(
+                "operation_handlers must be a RuntimeOperationHandlerRegistry"
+            )
+        self.method_registry = _method_registry(method_registry)
         self.root = None if _is_memory_page_store_uri(store_uri) else _page_store_root(store_uri)
         self._memory_pages: dict[str, bytes] = {}
         self.hits = 0
@@ -424,6 +462,8 @@ class DocumentKVHiCachePageProvider:
         pages = _sglang_hicache_payload_pages(
             plan,
             read_engine_adapter_payload(payload_uri, expected_bytes=plan.total_bytes),
+            operation_handlers=self.operation_handlers,
+            runtime_context=request_context,
         )
         if not pages:
             _log_sglang_handoff_hydration(
@@ -454,13 +494,21 @@ class DocumentKVHiCachePageProvider:
         self,
         request_context: DocumentKVHiCacheRequestContext,
     ) -> tuple[EngineKVInjectionPlan, str] | None:
-        handoff_record = _handoff_record_from_request_context(request_context)
+        handoff_record = _handoff_record_from_request_context(
+            request_context,
+            adapter_spec=self.adapter_spec,
+            operation_handlers=self.operation_handlers,
+            method_registry=self.method_registry,
+        )
         if handoff_record is None:
             return None
         plan = build_engine_kv_injection_plan(
             handoff_record,
             expected_backend=ServingBackend.SGLANG,
             require_external_payload_uri=request_context.payload_uri is None,
+            adapter_spec=self.adapter_spec,
+            operation_handlers=self.operation_handlers,
+            method_registry=self.method_registry,
         )
         _validate_handoff_request_context(request_context, plan)
         payload_uri = request_context.payload_uri or plan.payload_source_uri
@@ -782,6 +830,9 @@ def build_document_kv_hicache_provider(
     *,
     extra_config: Mapping[str, Any] | None = None,
     storage_identity: str | None = None,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> DocumentKVHiCachePageProvider:
     """Build Cachet's built-in SGLang HiCache page provider."""
 
@@ -793,7 +844,13 @@ def build_document_kv_hicache_provider(
         extra_config.get(DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY),
         field_name=DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
     )
-    return DocumentKVHiCachePageProvider(store_uri=store_uri, storage_identity=storage_identity)
+    return DocumentKVHiCachePageProvider(
+        store_uri=store_uri,
+        storage_identity=storage_identity,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
+    )
 
 
 def document_kv_request_context_from_extra_info(extra_info: object | None) -> DocumentKVHiCacheRequestContext | None:
@@ -821,6 +878,10 @@ def document_kv_request_context_from_extra_info(extra_info: object | None) -> Do
 
 def _handoff_record_from_request_context(
     request_context: DocumentKVHiCacheRequestContext,
+    *,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> Mapping[str, Any] | None:
     handoff_record = request_context.handoff_record
     handoff_json = request_context.handoff_json
@@ -838,6 +899,9 @@ def _handoff_record_from_request_context(
         handoff_json,
         expected_backend=ServingBackend.SGLANG,
         require_external_payload_uri=request_context.payload_uri is None,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
     )
 
 
@@ -1018,7 +1082,26 @@ def _runtime_hicache_keys(keys: list[object]) -> tuple[str, ...] | None:
 def _sglang_hicache_payload_pages(
     plan: EngineKVInjectionPlan,
     payload: bytes,
+    *,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    runtime_context: object | None = None,
 ) -> tuple[bytes, ...]:
+    operation_result = apply_runtime_operation_handlers(
+        plan.reuse_plan,
+        payload,
+        layout=plan.layout,
+        total_tokens=plan.total_tokens,
+        handler_registry=(
+            RuntimeOperationHandlerRegistry()
+            if operation_handlers is None
+            else operation_handlers
+        ),
+        metadata=plan.metadata,
+        runtime_context=runtime_context,
+    )
+    assert operation_result.payload is not None
+    payload = operation_result.payload
+    payload = _reposition_hicache_payload(plan, payload)
     page_tokens = plan.layout.block_size
     page_bytes = page_tokens * plan.layout.bytes_per_token
     full_page_count = _sglang_hicache_full_page_count(plan)
@@ -1026,6 +1109,122 @@ def _sglang_hicache_payload_pages(
         payload[index * page_bytes : (index + 1) * page_bytes]
         for index in range(full_page_count)
     )
+
+
+def _reposition_hicache_payload(
+    plan: EngineKVInjectionPlan,
+    payload: bytes,
+) -> bytes:
+    """Apply absolute RoPE before HiCache page hydration."""
+
+    layout = plan.layout
+    encoding = KVKeyPositionEncoding(
+        getattr(
+            getattr(layout, "key_position_encoding", None),
+            "value",
+            getattr(layout, "key_position_encoding", "stored_post_rope"),
+        )
+    )
+    if layout.payload_axis_order != KVPayloadAxisOrder.TOKEN_MAJOR:
+        raise ValueError(
+            "SGLang HiCache hydration requires token-major payloads"
+        )
+    if layout.storage_layout not in {
+        KVStorageLayout.SEPARATE_KEY_VALUE,
+        KVStorageLayout.SHARED_KEY_VALUE,
+    }:
+        raise ValueError(
+            "SGLang HiCache hydration does not support interleaved K/V storage"
+        )
+    if encoding == KVKeyPositionEncoding.STORED_POST_ROPE:
+        return payload
+    if layout.storage_layout != KVStorageLayout.SEPARATE_KEY_VALUE:
+        raise ValueError(
+            "SGLang RoPE repositioning requires separate K/V storage"
+        )
+    if (
+        layout.num_kv_heads is None
+        or layout.head_size is None
+        or layout.kv_stride_bytes is None
+    ):
+        raise ValueError(
+            "SGLang RoPE repositioning requires complete KV geometry"
+        )
+    torch = importlib.import_module("torch")
+    from document_kv_cache.rope import apply_rope_to_keys
+
+    dtype = _sglang_rope_torch_dtype(torch, layout.dtype)
+    dtype_width = torch.tensor([], dtype=dtype).element_size()
+    if layout.kv_stride_bytes % dtype_width:
+        raise ValueError("KV stride is not aligned to the payload dtype")
+    stride_scalars = layout.kv_stride_bytes // dtype_width
+    expected_scalars = (
+        plan.total_tokens
+        * layout.num_layers
+        * 2
+        * layout.num_kv_heads
+        * stride_scalars
+    )
+    values = torch.frombuffer(
+        bytearray(payload),
+        dtype=dtype,
+        count=expected_scalars,
+    ).reshape(
+        plan.total_tokens,
+        layout.num_layers,
+        2,
+        layout.num_kv_heads,
+        stride_scalars,
+    )
+    rotary_dim = layout.rope_rotary_dim or layout.head_size
+    if rotary_dim > layout.head_size:
+        raise ValueError("rope_rotary_dim cannot exceed head_size")
+    for segment in plan.segments:
+        start = segment.token_start
+        end = segment.token_end
+        positions = torch.arange(start, end)
+        for layer_index in range(layout.num_layers):
+            keys = values[
+                start:end,
+                layer_index,
+                0,
+                :,
+                : layout.head_size,
+            ]
+            values[
+                start:end,
+                layer_index,
+                0,
+                :,
+                : layout.head_size,
+            ] = apply_rope_to_keys(
+                keys,
+                positions,
+                rope_theta=layout.rope_theta,
+                rotary_dim=rotary_dim,
+            )
+    output = values.contiguous().view(torch.uint8)
+    storage = output.untyped_storage()
+    if output.storage_offset() != 0 or output.numel() != storage.nbytes():
+        raise RuntimeError("repositioned SGLang payload does not own contiguous storage")
+    return bytes(storage)
+
+
+def _sglang_rope_torch_dtype(torch: Any, dtype: str) -> Any:
+    try:
+        return {
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+        }[dtype.lower()]
+    except KeyError as exc:
+        raise ValueError(
+            "SGLang RoPE repositioning supports float16, bfloat16, "
+            "or float32 raw KV payloads"
+        ) from exc
 
 
 def _sglang_hicache_full_page_count(plan: EngineKVInjectionPlan) -> int:
@@ -1191,6 +1390,14 @@ def _identity_int(value: object, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _method_registry(registry: MethodRegistry | None) -> MethodRegistry:
+    if registry is None:
+        return default_method_registry()
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("method_registry must be a MethodRegistry or None")
+    return registry
 
 
 def _optional_config_string(value: object, *, field_name: str) -> str | None:

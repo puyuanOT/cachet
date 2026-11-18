@@ -21,6 +21,7 @@ __all__ = [
     "validate_v1_hardware_target",
     "validate_aws_single_node_gpu_type",
     "validate_aws_single_node_gpu_type_for_hardware_target",
+    "validate_v1_vllm_kv_cache_dtype_for_hardware_target",
 ]
 
 
@@ -77,6 +78,7 @@ HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = {
     profile.hardware_target: profile.databricks_node_type_prefixes
     for profile in V1_HARDWARE_TARGET_PROFILES
 }
+_AWS_G5_A10G_UNSUPPORTED_VLLM_FP8_KV_DTYPES = frozenset({"fp8", "fp8_e4m3"})
 _HARDWARE_TARGET_PROFILE_BY_ID = {
     profile.hardware_target: profile
     for profile in V1_HARDWARE_TARGET_PROFILES
@@ -87,6 +89,26 @@ def validate_v1_hardware_target(hardware_target: str) -> None:
     if hardware_target not in SUPPORTED_V1_HARDWARE_TARGETS:
         raise ValueError(
             f"Unsupported V1 hardware target {hardware_target!r}; expected one of {SUPPORTED_V1_HARDWARE_TARGETS}"
+        )
+
+
+def validate_v1_vllm_kv_cache_dtype_for_hardware_target(
+    *,
+    hardware_target: str,
+    kv_cache_dtype: str | None,
+) -> None:
+    validate_v1_hardware_target(hardware_target)
+    if kv_cache_dtype is None:
+        return
+    normalized = kv_cache_dtype.strip().lower()
+    if (
+        hardware_target == V1_AWS_G5_A10G_HARDWARE_TARGET_PROFILE.hardware_target
+        and normalized in _AWS_G5_A10G_UNSUPPORTED_VLLM_FP8_KV_DTYPES
+    ):
+        raise ValueError(
+            "kv_cache_dtype='fp8'/'fp8_e4m3' maps to an FP8 E4M3 format that "
+            "does not start on the AWS g5/A10G vLLM path; use 'fp8_e5m2' for "
+            "Q8 document KV on this hardware target"
         )
 
 

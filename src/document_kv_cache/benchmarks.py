@@ -1,18 +1,32 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+import string
+import unicodedata
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from html import escape
-from typing import Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
+
+if TYPE_CHECKING:
+    from document_kv_cache.methods import MethodRegistry
 
 from document_kv_cache._hardware_targets import (
     DEFAULT_HARDWARE_TARGET,
     SUPPORTED_V1_HARDWARE_TARGETS,
     validate_v1_hardware_target as _validate_v1_hardware_target,
+)
+from document_kv_cache.benchmark_metrics import (
+    aggregate_decode_tokens_per_second,
+    latency_speedup,
+    quality_delta,
+    request_decode_tokens_per_second,
 )
 from document_kv_cache.models import DocumentKVRequest
 from document_kv_cache.workflow import SourceDocument
@@ -21,18 +35,107 @@ from document_kv_cache.workflow import SourceDocument
 SUPPORTED_V1_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
 DEFAULT_V1_LORA_ID = "base"
-DEFAULT_V1_PROMPT_TEMPLATE_VERSION = "v1-benchmark"
+DEFAULT_V1_PROMPT_TEMPLATE_VERSION = "v2-final-answer"
 BENCHMARK_CACHE_PREFIX_CHUNK_ID = "cache_prefix"
 BENCHMARK_CACHE_ARTIFACT_PREFIX = "cachet"
 BASELINE_PREFILL_ARM = "baseline_prefill"
 CACHE_REUSE_ARM = "document_kv_cache"
 DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
+DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM = "document_kv.benchmark_request_id"
 DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
+DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM = "document_kv.runtime_prefix_text"
 DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
-FINAL_ANSWER_CUE = "Answer:"
+DOCUMENT_KV_CACHE_METHOD_PARAM = "document_kv.cache_method"
+DOCUMENT_KV_ARTIFACT_ID_PARAM = "document_kv.artifact_id"
+FINAL_ANSWER_CUE = "<final_answer>answer</final_answer>"
+FINAL_ANSWER_PARSER_ID = "cachet.single_final_answer"
+FINAL_ANSWER_PARSER_VERSION = "1"
+FINAL_ANSWER_PARSER_PLUGIN_PATH = (
+    "document_kv_cache.benchmarks:extract_single_final_answer"
+)
+FINAL_ANSWER_PARSER_STATUSES = (
+    "ok",
+    "missing_block",
+    "multiple_or_malformed_blocks",
+    "extraneous_text",
+    "nested_block",
+    "empty_answer",
+)
+FINAL_ANSWER_PARSER_CONTRACT = (
+    "utf8-trim;case-sensitive-lowercase-tags;whole-output-match;"
+    "exactly-one-nonempty-final_answer-block;no-nested-answer-tags;"
+    "statuses="
+    + ",".join(FINAL_ANSWER_PARSER_STATUSES)
+)
+FINAL_ANSWER_PARSER_DIGEST = sha256(
+    FINAL_ANSWER_PARSER_CONTRACT.encode("utf-8")
+).hexdigest()
+FINAL_ANSWER_METADATA_PREFIX = "cachet.score.final_answer_parser"
+FINAL_ANSWER_EXTRACTED_METADATA_KEY = "cachet.score.extracted_answer"
+FINAL_ANSWER_NO_EXTRACTION_VALUE = "<no-valid-answer>"
+FINAL_ANSWER_PARSER_ID_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.id"
+FINAL_ANSWER_PARSER_VERSION_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.version"
+FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.plugin_path"
+FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.digest"
+FINAL_ANSWER_PARSER_VALID_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.valid"
+FINAL_ANSWER_PARSER_STATUS_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.status"
+DEFAULT_V1_PROMPT_PLUGIN_PATH = "document_kv_cache.benchmarks:_default_prompt_parts"
+BIOGRAPHY_TITLE_NORMALIZER_ID = "nfkc_casefold_ws_terminal_punctuation_v2"
+BIOGRAPHY_SCORER_VERSION = (
+    f"biography_entity_identification_v2+{BIOGRAPHY_TITLE_NORMALIZER_ID}+"
+    f"final_answer_v1@"
+    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+)
+HOTPOTQA_SCORER_VERSION = (
+    f"hotpot_evaluate_v1@3635853403a8+final_answer_v1@"
+    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+)
+MUSIQUE_OFFICIAL_COMMIT = "922ac98f19a201998dbdae6d7f2887a5258dbdeb"
+MUSIQUE_ANSWER_SCORER_SHA256 = (
+    "10368f619b4d5ef5d83748c05a96c0afd332a14ab5c010740c98d58dfaefe974"
+)
+MUSIQUE_SCORER_VERSION = (
+    f"evaluate_v1.0@{MUSIQUE_OFFICIAL_COMMIT}+answer.py@"
+    f"{MUSIQUE_ANSWER_SCORER_SHA256[:12]}+final_answer_v1@"
+    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+)
+NIAH_SCORER_VERSION = (
+    f"cachet_niah_grid_v1+final_answer_v1@{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+)
+NIAH_CELL_IDS = tuple(
+    f"niah-{context_tokens // 1024}k-depth-{round(position * 100):02d}"
+    for context_tokens in (8192, 16384, 32768)
+    for position in (0.1, 0.5, 0.9)
+)
+# Controls whether the system/task guidance prompt is placed at the start of the
+# cached document prefix (baked into the cached KV) or after the documents so it is
+# recomputed online. "end" moves the guidance out of the cached KV, so it is prefilled
+# online with full attention over the injected document KV.
+CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV = "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION"
+SYSTEM_PROMPT_POSITIONS = ("start", "end")
+DEFAULT_SYSTEM_PROMPT_POSITION = "start"
+BENCHMARK_ARM_IMPLEMENTATION_KINDS = ("baseline", "cachet", "upstream", "external")
+
+
+class _FrozenList(list[Any]):
+    def _immutable(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("evaluation JSON values are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable  # type: ignore[assignment]
+    __imul__ = _immutable  # type: ignore[assignment]
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
 
 __all__ = [
     "SUPPORTED_V1_DATASETS",
@@ -46,17 +149,54 @@ __all__ = [
     "BASELINE_PREFILL_ARM",
     "CACHE_REUSE_ARM",
     "DOCUMENT_KV_REQUEST_ID_PARAM",
+    "DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM",
     "DOCUMENT_KV_HANDOFF_JSON_PARAM",
     "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
+    "DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM",
     "DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM",
+    "DOCUMENT_KV_CACHE_METHOD_PARAM",
+    "DOCUMENT_KV_ARTIFACT_ID_PARAM",
+    "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV",
+    "SYSTEM_PROMPT_POSITIONS",
+    "DEFAULT_SYSTEM_PROMPT_POSITION",
+    "BENCHMARK_ARM_IMPLEMENTATION_KINDS",
+    "resolve_system_prompt_position",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
     "FINAL_ANSWER_CUE",
+    "FINAL_ANSWER_PARSER_ID",
+    "FINAL_ANSWER_PARSER_VERSION",
+    "FINAL_ANSWER_PARSER_PLUGIN_PATH",
+    "FINAL_ANSWER_PARSER_STATUSES",
+    "FINAL_ANSWER_PARSER_CONTRACT",
+    "FINAL_ANSWER_PARSER_DIGEST",
+    "FINAL_ANSWER_EXTRACTED_METADATA_KEY",
+    "FINAL_ANSWER_NO_EXTRACTION_VALUE",
+    "FINAL_ANSWER_PARSER_ID_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_VERSION_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_VALID_METADATA_KEY",
+    "FINAL_ANSWER_PARSER_STATUS_METADATA_KEY",
+    "BIOGRAPHY_SCORER_VERSION",
+    "BIOGRAPHY_TITLE_NORMALIZER_ID",
+    "HOTPOTQA_SCORER_VERSION",
+    "MUSIQUE_OFFICIAL_COMMIT",
+    "MUSIQUE_ANSWER_SCORER_SHA256",
+    "MUSIQUE_SCORER_VERSION",
+    "NIAH_SCORER_VERSION",
+    "NIAH_CELL_IDS",
     "BenchmarkExample",
     "BenchmarkSuite",
     "BenchmarkArm",
+    "BenchmarkOfflineCosts",
+    "DatasetScorer",
+    "DatasetMetricSpec",
+    "DatasetScoreContext",
+    "FinalAnswerExtraction",
+    "DatasetScorerRegistry",
     "InferenceMeasurement",
     "LatencySummary",
     "BenchmarkReportRow",
@@ -64,6 +204,19 @@ __all__ = [
     "V1BenchmarkEvidence",
     "baseline_prefill_arm",
     "document_kv_cache_arm",
+    "external_benchmark_arm",
+    "method_benchmark_arm",
+    "require_runnable_cachet_benchmark_arm",
+    "default_dataset_scorer_registry",
+    "diagnostic_answer_scores",
+    "extract_single_final_answer",
+    "final_answer_measurement_metadata",
+    "biography_entity_identification_scores",
+    "normalize_biography_title",
+    "hotpotqa_official_answer_scores",
+    "musique_official_answer_scores",
+    "niah_exact_value_scores",
+    "niah_cell_identity",
     "v1_dataset_specs",
     "dataset_spec",
     "build_prompt_parts",
@@ -84,6 +237,659 @@ __all__ = [
     "validate_v1_hardware_target",
     "validate_v1_dataset",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetScoreContext:
+    dataset: str
+    example_id: str
+    output_text: str
+    references: tuple[str, ...]
+    metadata: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.dataset, "dataset")
+        _validate_non_empty_str(self.example_id, "example_id")
+        if not isinstance(self.output_text, str):
+            raise TypeError("output_text must be a string")
+        references = tuple(self.references)
+        if any(not isinstance(reference, str) or not reference for reference in references):
+            raise ValueError("references must contain non-empty strings")
+        object.__setattr__(self, "references", references)
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(_dict_from_str_mapping(self.metadata, "metadata")),
+        )
+
+
+ScoreFunction = Callable[[DatasetScoreContext], Mapping[str, float]]
+PromptFunction = Callable[["BenchmarkExample"], "BenchmarkPromptParts"]
+AnswerParserFunction = Callable[[str], "FinalAnswerExtraction"]
+
+
+@dataclass(frozen=True, slots=True)
+class FinalAnswerExtraction:
+    """Auditable result of the publication answer-output parser."""
+
+    raw_output: str
+    extracted_answer: str
+    valid: bool
+    status: str
+    parser_id: str = FINAL_ANSWER_PARSER_ID
+    parser_version: str = FINAL_ANSWER_PARSER_VERSION
+    parser_plugin_path: str = FINAL_ANSWER_PARSER_PLUGIN_PATH
+    parser_digest: str = FINAL_ANSWER_PARSER_DIGEST
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.raw_output, str):
+            raise TypeError("raw_output must be a string")
+        if not isinstance(self.extracted_answer, str):
+            raise TypeError("extracted_answer must be a string")
+        if type(self.valid) is not bool:
+            raise TypeError("valid must be a boolean")
+        for field_name in (
+            "status",
+            "parser_id",
+            "parser_version",
+            "parser_plugin_path",
+            "parser_digest",
+        ):
+            _validate_non_empty_str(getattr(self, field_name), field_name)
+        if self.status not in FINAL_ANSWER_PARSER_STATUSES:
+            raise ValueError("status is outside the frozen final-answer parser states")
+        if self.valid != (self.status == "ok"):
+            raise ValueError("parser validity must be true exactly for status='ok'")
+        if self.valid and (self.status != "ok" or not self.extracted_answer):
+            raise ValueError("valid extraction requires status='ok' and a non-empty answer")
+        if not self.valid and self.extracted_answer:
+            raise ValueError("invalid extraction must not expose an extracted answer")
+        if len(self.parser_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.parser_digest
+        ):
+            raise ValueError("parser_digest must be a lowercase SHA-256 digest")
+
+
+def extract_single_final_answer(output_text: str) -> FinalAnswerExtraction:
+    """Parse exactly one whole-output ``<final_answer>`` block.
+
+    The tag spelling is intentionally case-sensitive. Any prose outside the block,
+    empty content, nested answer tags, duplicate blocks, or malformed tags is an
+    invalid answer and therefore receives zero for every registered metric.
+    """
+
+    if not isinstance(output_text, str):
+        raise TypeError("output_text must be a string")
+    open_tag = "<final_answer>"
+    close_tag = "</final_answer>"
+    open_count = output_text.count(open_tag)
+    close_count = output_text.count(close_tag)
+    if open_count == 0 and close_count == 0:
+        return FinalAnswerExtraction(output_text, "", False, "missing_block")
+    if open_count != 1 or close_count != 1:
+        return FinalAnswerExtraction(output_text, "", False, "multiple_or_malformed_blocks")
+    stripped = output_text.strip()
+    if not stripped.startswith(open_tag) or not stripped.endswith(close_tag):
+        return FinalAnswerExtraction(output_text, "", False, "extraneous_text")
+    answer = stripped[len(open_tag) : -len(close_tag)].strip()
+    if "<final_answer" in answer or "</final_answer" in answer:
+        return FinalAnswerExtraction(output_text, "", False, "nested_block")
+    if not answer:
+        return FinalAnswerExtraction(output_text, "", False, "empty_answer")
+    return FinalAnswerExtraction(output_text, answer, True, "ok")
+
+
+def final_answer_measurement_metadata(
+    extraction: FinalAnswerExtraction,
+) -> Mapping[str, str]:
+    if not isinstance(extraction, FinalAnswerExtraction):
+        raise TypeError("extraction must be a FinalAnswerExtraction")
+    return MappingProxyType(
+        {
+            FINAL_ANSWER_EXTRACTED_METADATA_KEY: (
+                extraction.extracted_answer
+                if extraction.valid
+                else FINAL_ANSWER_NO_EXTRACTION_VALUE
+            ),
+            FINAL_ANSWER_PARSER_ID_METADATA_KEY: extraction.parser_id,
+            FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: extraction.parser_version,
+            FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: extraction.parser_plugin_path,
+            FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: extraction.parser_digest,
+            FINAL_ANSWER_PARSER_VALID_METADATA_KEY: str(extraction.valid).lower(),
+            FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: extraction.status,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetMetricSpec:
+    """Comparison semantics for one versioned dataset metric."""
+
+    metric_name: str
+    direction: Literal["higher_is_better", "lower_is_better"] = "higher_is_better"
+    max_regression: float = 0.02
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.metric_name, "metric_name")
+        if self.direction not in {"higher_is_better", "lower_is_better"}:
+            raise ValueError(
+                "direction must be higher_is_better or lower_is_better"
+            )
+        if (
+            isinstance(self.max_regression, bool)
+            or not isinstance(self.max_regression, (int, float))
+            or not math.isfinite(float(self.max_regression))
+            or self.max_regression < 0
+        ):
+            raise ValueError("max_regression must be a non-negative finite number")
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetScorer:
+    """Versioned scorer used for one or more benchmark datasets."""
+
+    scorer_id: str
+    version: str
+    metric_names: tuple[str, ...]
+    score_function: ScoreFunction = field(repr=False, compare=False)
+    publication_approved: bool = False
+    plugin_path: str = ""
+    metric_specs: tuple[DatasetMetricSpec, ...] = ()
+    prompt_function: PromptFunction | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    prompt_plugin_path: str = ""
+    prompt_template_version: str = ""
+    answer_parser_function: AnswerParserFunction | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    answer_parser_id: str = ""
+    answer_parser_version: str = ""
+    answer_parser_plugin_path: str = ""
+    answer_parser_digest: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.scorer_id, "scorer_id")
+        _validate_non_empty_str(self.version, "version")
+        names = tuple(self.metric_names)
+        if not names or any(not isinstance(name, str) or not name for name in names):
+            raise ValueError("metric_names must contain non-empty strings")
+        if len(set(names)) != len(names):
+            raise ValueError("metric_names must not contain duplicates")
+        if not callable(self.score_function):
+            raise TypeError("score_function must be callable")
+        if type(self.publication_approved) is not bool:
+            raise ValueError("publication_approved must be a boolean")
+        if not isinstance(self.plugin_path, str):
+            raise TypeError("plugin_path must be a string")
+        specs = tuple(self.metric_specs) or tuple(
+            DatasetMetricSpec(metric_name=name) for name in names
+        )
+        if any(not isinstance(spec, DatasetMetricSpec) for spec in specs):
+            raise TypeError("metric_specs entries must be DatasetMetricSpec")
+        if tuple(spec.metric_name for spec in specs) != names:
+            raise ValueError(
+                "metric_specs must declare each metric_name once and in the same order"
+            )
+        if self.prompt_function is not None and not callable(self.prompt_function):
+            raise TypeError("prompt_function must be callable when provided")
+        for field_name in ("prompt_plugin_path", "prompt_template_version"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if self.prompt_function is not None:
+            _validate_non_empty_str(self.prompt_plugin_path, "prompt_plugin_path")
+            _validate_non_empty_str(
+                self.prompt_template_version,
+                "prompt_template_version",
+            )
+        parser_function = self.answer_parser_function
+        if self.publication_approved and parser_function is None:
+            parser_function = extract_single_final_answer
+            object.__setattr__(self, "answer_parser_function", parser_function)
+        if parser_function is not None:
+            if not callable(parser_function):
+                raise TypeError("answer_parser_function must be callable when provided")
+            parser_defaults = {
+                "answer_parser_id": FINAL_ANSWER_PARSER_ID,
+                "answer_parser_version": FINAL_ANSWER_PARSER_VERSION,
+                "answer_parser_plugin_path": FINAL_ANSWER_PARSER_PLUGIN_PATH,
+                "answer_parser_digest": FINAL_ANSWER_PARSER_DIGEST,
+            }
+            for field_name, default in parser_defaults.items():
+                if not getattr(self, field_name):
+                    object.__setattr__(self, field_name, default)
+                _validate_non_empty_str(getattr(self, field_name), field_name)
+            if len(self.answer_parser_digest) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in self.answer_parser_digest
+            ):
+                raise ValueError(
+                    "answer_parser_digest must be a lowercase SHA-256 digest"
+                )
+        elif any(
+            getattr(self, field_name)
+            for field_name in (
+                "answer_parser_id",
+                "answer_parser_version",
+                "answer_parser_plugin_path",
+                "answer_parser_digest",
+            )
+        ):
+            raise ValueError(
+                "answer parser identity requires answer_parser_function"
+            )
+        if self.publication_approved:
+            _validate_non_empty_str(self.plugin_path, "plugin_path")
+            if self.prompt_function is None:
+                if not self.prompt_plugin_path:
+                    object.__setattr__(
+                        self,
+                        "prompt_plugin_path",
+                        DEFAULT_V1_PROMPT_PLUGIN_PATH,
+                    )
+                if not self.prompt_template_version:
+                    object.__setattr__(
+                        self,
+                        "prompt_template_version",
+                        DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+                    )
+            _validate_non_empty_str(self.prompt_plugin_path, "prompt_plugin_path")
+            _validate_non_empty_str(
+                self.prompt_template_version,
+                "prompt_template_version",
+            )
+        object.__setattr__(self, "metric_names", names)
+        object.__setattr__(self, "metric_specs", specs)
+
+    @property
+    def identity(self) -> str:
+        return f"{self.scorer_id}@{self.version}"
+
+    def score(self, context: DatasetScoreContext) -> Mapping[str, float]:
+        if not isinstance(context, DatasetScoreContext):
+            raise TypeError("context must be DatasetScoreContext")
+        raw = self.score_function(context)
+        if not isinstance(raw, Mapping):
+            raise TypeError("score_function must return a mapping")
+        if not raw:
+            return MappingProxyType({})
+        scores: dict[str, float] = {}
+        for metric_name in self.metric_names:
+            value = raw.get(metric_name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValueError(
+                    f"scorer {self.identity} must return finite numeric metric {metric_name!r}"
+                )
+            scores[metric_name] = float(value)
+        unexpected = set(raw).difference(self.metric_names)
+        if unexpected:
+            raise ValueError(
+                f"scorer {self.identity} returned undeclared metrics: {sorted(unexpected)}"
+            )
+        return MappingProxyType(scores)
+
+    def prompt_parts(self, example: "BenchmarkExample") -> "BenchmarkPromptParts":
+        if self.prompt_function is None:
+            return _default_prompt_parts(example)
+        prompt_parts = self.prompt_function(example)
+        if not isinstance(prompt_parts, BenchmarkPromptParts):
+            raise TypeError("prompt_function must return BenchmarkPromptParts")
+        return prompt_parts
+
+    def parse_answer(self, raw_output: str) -> FinalAnswerExtraction | None:
+        if self.answer_parser_function is None:
+            return None
+        extraction = self.answer_parser_function(raw_output)
+        if not isinstance(extraction, FinalAnswerExtraction):
+            raise TypeError(
+                "answer_parser_function must return FinalAnswerExtraction"
+            )
+        expected_identity = (
+            self.answer_parser_id,
+            self.answer_parser_version,
+            self.answer_parser_plugin_path,
+            self.answer_parser_digest,
+        )
+        observed_identity = (
+            extraction.parser_id,
+            extraction.parser_version,
+            extraction.parser_plugin_path,
+            extraction.parser_digest,
+        )
+        if observed_identity != expected_identity:
+            raise ValueError(
+                "answer parser result identity does not match the scorer contract"
+            )
+        return extraction
+
+    def zero_scores(self) -> Mapping[str, float]:
+        return MappingProxyType({metric_name: 0.0 for metric_name in self.metric_names})
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetScorerRegistry:
+    """Immutable dataset-to-scorer registry."""
+
+    entries: tuple[tuple[str, DatasetScorer], ...] = ()
+
+    def __post_init__(self) -> None:
+        normalized = tuple(self.entries)
+        datasets: list[str] = []
+        for dataset, scorer in normalized:
+            _validate_non_empty_str(dataset, "dataset")
+            if not isinstance(scorer, DatasetScorer):
+                raise TypeError("scorer registry values must be DatasetScorer")
+            datasets.append(dataset)
+        if len(set(datasets)) != len(datasets):
+            raise ValueError("scorer registry must not contain duplicate datasets")
+        object.__setattr__(self, "entries", normalized)
+
+    def register(self, dataset: str, scorer: DatasetScorer) -> "DatasetScorerRegistry":
+        _validate_non_empty_str(dataset, "dataset")
+        if not isinstance(scorer, DatasetScorer):
+            raise TypeError("scorer must be a DatasetScorer")
+        return DatasetScorerRegistry(
+            tuple((key, value) for key, value in self.entries if key != dataset)
+            + ((dataset, scorer),)
+        )
+
+    def get(self, dataset: str) -> DatasetScorer:
+        _validate_non_empty_str(dataset, "dataset")
+        for candidate, scorer in self.entries:
+            if candidate == dataset:
+                return scorer
+        raise KeyError(f"No scorer is registered for dataset {dataset!r}")
+
+    def identities(self, datasets: Sequence[str]) -> tuple[tuple[str, str, bool], ...]:
+        return tuple(
+            (
+                dataset,
+                self.get(dataset).identity,
+                self.get(dataset).publication_approved,
+            )
+            for dataset in datasets
+        )
+
+
+def diagnostic_answer_scores(context: DatasetScoreContext) -> Mapping[str, float]:
+    """Common answer diagnostics; not a substitute for an official dataset metric."""
+
+    if not context.references:
+        return {}
+    expected_answer = context.references[0]
+    return {
+        "exact_match": float(exact_match(context.output_text, expected_answer)),
+        "answer_found": float(answer_found(context.output_text, expected_answer)),
+    }
+
+
+def default_dataset_scorer_registry() -> DatasetScorerRegistry:
+    shared: dict[str, Any] = {
+        "publication_approved": True,
+        "prompt_function": _default_prompt_parts,
+        "prompt_plugin_path": DEFAULT_V1_PROMPT_PLUGIN_PATH,
+        "prompt_template_version": DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        "answer_parser_function": extract_single_final_answer,
+        "answer_parser_id": FINAL_ANSWER_PARSER_ID,
+        "answer_parser_version": FINAL_ANSWER_PARSER_VERSION,
+        "answer_parser_plugin_path": FINAL_ANSWER_PARSER_PLUGIN_PATH,
+        "answer_parser_digest": FINAL_ANSWER_PARSER_DIGEST,
+    }
+    biography = DatasetScorer(
+        scorer_id="cachet.biography_entity_identification",
+        version=BIOGRAPHY_SCORER_VERSION,
+        metric_names=("exact_match",),
+        metric_specs=(DatasetMetricSpec("exact_match", max_regression=1.0),),
+        score_function=biography_entity_identification_scores,
+        plugin_path=(
+            "document_kv_cache.benchmarks:biography_entity_identification_scores"
+        ),
+        **shared,
+    )
+    hotpotqa = DatasetScorer(
+        scorer_id="hotpotqa.official_answer",
+        version=HOTPOTQA_SCORER_VERSION,
+        metric_names=("exact_match", "f1"),
+        metric_specs=(
+            DatasetMetricSpec("exact_match", max_regression=1.0),
+            DatasetMetricSpec("f1", max_regression=1.0),
+        ),
+        score_function=hotpotqa_official_answer_scores,
+        plugin_path=(
+            "document_kv_cache.benchmarks:hotpotqa_official_answer_scores"
+        ),
+        **shared,
+    )
+    musique = DatasetScorer(
+        scorer_id="musique.official_answer",
+        version=MUSIQUE_SCORER_VERSION,
+        metric_names=("answer_em", "answer_f1"),
+        metric_specs=(
+            DatasetMetricSpec("answer_em", max_regression=1.0),
+            DatasetMetricSpec("answer_f1", max_regression=1.0),
+        ),
+        score_function=musique_official_answer_scores,
+        plugin_path="document_kv_cache.benchmarks:musique_official_answer_scores",
+        **shared,
+    )
+    niah = DatasetScorer(
+        scorer_id="cachet.niah_exact_value",
+        version=NIAH_SCORER_VERSION,
+        metric_names=("accuracy",),
+        metric_specs=(DatasetMetricSpec("accuracy", max_regression=1.0),),
+        score_function=niah_exact_value_scores,
+        plugin_path="document_kv_cache.benchmarks:niah_exact_value_scores",
+        **shared,
+    )
+    return DatasetScorerRegistry(
+        (
+            ("biography", biography),
+            ("hotpotqa", hotpotqa),
+            ("musique", musique),
+            ("niah", niah),
+        )
+    )
+
+
+def biography_entity_identification_scores(
+    context: DatasetScoreContext,
+) -> Mapping[str, float]:
+    """Normalized-title exact match for Cachet's versioned biography task."""
+
+    if not isinstance(context, DatasetScoreContext):
+        raise TypeError("context must be a DatasetScoreContext")
+    if not context.references:
+        return MappingProxyType({"exact_match": 0.0})
+    prediction = normalize_biography_title(context.output_text)
+    exact = any(
+        prediction == normalize_biography_title(reference)
+        for reference in context.references
+    )
+    return MappingProxyType({"exact_match": float(exact)})
+
+
+def normalize_biography_title(value: str) -> str:
+    """Normalize an entity title without erasing name-significant punctuation.
+
+    Unlike SQuAD-style QA normalization, this contract preserves articles,
+    apostrophes, and internal hyphens. It applies Unicode NFKC, case-folding,
+    whitespace collapse, and removes only surrounding terminal punctuation.
+    """
+
+    if not isinstance(value, str):
+        raise TypeError("value must be a string")
+    normalized = " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+    start = 0
+    end = len(normalized)
+    while start < end and (
+        normalized[start].isspace()
+        or unicodedata.category(normalized[start]).startswith("P")
+    ):
+        start += 1
+    while end > start and (
+        normalized[end - 1].isspace()
+        or unicodedata.category(normalized[end - 1]).startswith("P")
+    ):
+        end -= 1
+    trimmed = normalized[start:end].strip()
+    # WikiBio includes punctuation-only entity names such as ``!!!``. Erasing
+    # those would make the task impossible and conflate unrelated predictions.
+    return trimmed or normalized
+
+
+def hotpotqa_official_answer_scores(
+    context: DatasetScoreContext,
+) -> Mapping[str, float]:
+    """Return the official HotpotQA answer EM/F1 metrics for one prediction.
+
+    This is an answer-only port of ``hotpot_evaluate_v1.py`` pinned by the
+    scorer version above. Cachet does not claim the script's supporting-fact or
+    joint metrics because its generation contract does not collect supporting
+    fact predictions.
+    """
+
+    if not isinstance(context, DatasetScoreContext):
+        raise TypeError("context must be a DatasetScoreContext")
+    if not context.references:
+        return MappingProxyType({"exact_match": 0.0, "f1": 0.0})
+    prediction = _hotpotqa_normalize_answer(context.output_text)
+    ground_truth = _hotpotqa_normalize_answer(context.references[0])
+    exact = float(prediction == ground_truth)
+    if (
+        prediction in {"yes", "no", "noanswer"}
+        or ground_truth in {"yes", "no", "noanswer"}
+    ) and prediction != ground_truth:
+        return MappingProxyType({"exact_match": exact, "f1": 0.0})
+    prediction_tokens = prediction.split()
+    ground_truth_tokens = ground_truth.split()
+    common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+    shared = sum(common.values())
+    if shared == 0 or not prediction_tokens or not ground_truth_tokens:
+        f1 = 0.0
+    else:
+        precision = shared / len(prediction_tokens)
+        recall = shared / len(ground_truth_tokens)
+        f1 = 2 * precision * recall / (precision + recall)
+    return MappingProxyType({"exact_match": exact, "f1": f1})
+
+
+def musique_official_answer_scores(
+    context: DatasetScoreContext,
+) -> Mapping[str, float]:
+    """Port MuSiQue v1.0 answer EM/F1, maximizing over answer aliases.
+
+    This is the answer-only part of ``metrics.answer.AnswerMetric`` at
+    ``MUSIQUE_OFFICIAL_COMMIT``. Cachet does not collect predicted support
+    indices or answerability groups, so it does not claim those official metrics.
+    """
+
+    if not isinstance(context, DatasetScoreContext):
+        raise TypeError("context must be a DatasetScoreContext")
+    if not context.references:
+        return MappingProxyType({"answer_em": 0.0, "answer_f1": 0.0})
+    exact_scores = tuple(
+        _musique_compute_exact(reference, context.output_text)
+        for reference in context.references
+    )
+    f1_scores = tuple(
+        _musique_compute_f1(reference, context.output_text)
+        for reference in context.references
+    )
+    return MappingProxyType(
+        {
+            "answer_em": float(max(exact_scores)),
+            "answer_f1": float(max(f1_scores)),
+        }
+    )
+
+
+def _musique_normalize_answer(value: str) -> str:
+    lowered = value.lower()
+    without_punctuation = "".join(
+        character for character in lowered if character not in set(string.punctuation)
+    )
+    without_articles = re.sub(r"\b(a|an|the)\b", " ", without_punctuation)
+    return " ".join(without_articles.split())
+
+
+def _musique_compute_exact(gold: str, prediction: str) -> int:
+    return int(_musique_normalize_answer(gold) == _musique_normalize_answer(prediction))
+
+
+def _musique_compute_f1(gold: str, prediction: str) -> float:
+    gold_tokens = _musique_normalize_answer(gold).split() if gold else []
+    prediction_tokens = (
+        _musique_normalize_answer(prediction).split() if prediction else []
+    )
+    common = Counter(gold_tokens) & Counter(prediction_tokens)
+    shared = sum(common.values())
+    if not gold_tokens or not prediction_tokens:
+        return float(gold_tokens == prediction_tokens)
+    if shared == 0:
+        return 0.0
+    precision = shared / len(prediction_tokens)
+    recall = shared / len(gold_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def niah_cell_identity(context_token_target: int, needle_position: float) -> str:
+    if type(context_token_target) is not int or context_token_target not in {
+        8192,
+        16384,
+        32768,
+    }:
+        raise ValueError("context_token_target must be one of 8192, 16384, or 32768")
+    if isinstance(needle_position, bool) or not isinstance(
+        needle_position, (int, float)
+    ):
+        raise TypeError("needle_position must be numeric")
+    matched = next(
+        (
+            candidate
+            for candidate in (0.1, 0.5, 0.9)
+            if math.isclose(float(needle_position), candidate, abs_tol=1e-12)
+        ),
+        None,
+    )
+    if matched is None:
+        raise ValueError("needle_position must be one of 0.1, 0.5, or 0.9")
+    return f"niah-{context_token_target // 1024}k-depth-{round(matched * 100):02d}"
+
+
+def niah_exact_value_scores(
+    context: DatasetScoreContext,
+) -> Mapping[str, float]:
+    """Case-sensitive exact requested-value accuracy for the frozen NIAH grid."""
+
+    if not isinstance(context, DatasetScoreContext):
+        raise TypeError("context must be a DatasetScoreContext")
+    cell_id = context.metadata.get("niah_cell_id")
+    if cell_id is not None and cell_id not in NIAH_CELL_IDS:
+        raise ValueError(
+            "niah_cell_id metadata must identify a recognized publication grid cell"
+        )
+    if not context.references:
+        return MappingProxyType({"accuracy": 0.0})
+    prediction = context.output_text.strip()
+    expected = context.references[0].strip()
+    return MappingProxyType({"accuracy": float(prediction == expected)})
+
+
+def _hotpotqa_normalize_answer(value: str) -> str:
+    lowered = value.lower()
+    without_punctuation = "".join(
+        character for character in lowered if character not in string.punctuation
+    )
+    without_articles = re.sub(r"\b(a|an|the)\b", " ", without_punctuation)
+    return " ".join(without_articles.split())
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,20 +914,49 @@ class BenchmarkPromptParts:
     system_prompt: str
     document_context: str
     user_prompt: str
+    system_prompt_position: str = DEFAULT_SYSTEM_PROMPT_POSITION
+
+    def __post_init__(self) -> None:
+        if self.system_prompt_position not in SYSTEM_PROMPT_POSITIONS:
+            raise ValueError(
+                f"system_prompt_position must be one of {SYSTEM_PROMPT_POSITIONS}; "
+                f"got {self.system_prompt_position!r}"
+            )
+
+    @property
+    def _ordered_sections(self) -> tuple[str, str, str]:
+        # "end" places the guidance after the documents so it is not part of the cached
+        # prefix and is recomputed online; "start" keeps it as the leading cached section.
+        if self.system_prompt_position == "end":
+            return (self.document_context, self.system_prompt, self.user_prompt)
+        return (self.system_prompt, self.document_context, self.user_prompt)
 
     @property
     def prefill_prompt(self) -> str:
-        return _join_sections(self.system_prompt, self.document_context, self.user_prompt)
+        return _join_sections(*self._ordered_sections)
 
     @property
     def cache_prefix_text(self) -> str:
-        return _join_sections(self.system_prompt, self.document_context)
+        if self.system_prompt_position == "end":
+            prefix = self.document_context
+            has_suffix = bool(self.system_prompt or self.user_prompt)
+        else:
+            prefix = _join_sections(self.system_prompt, self.document_context)
+            has_suffix = bool(self.user_prompt)
+        # Own the existing section separator on the cached side of the split.
+        # Keeping ``\n\n`` with the preceding section makes tokenizers that merge
+        # a closing delimiter with the following newlines produce the same leading
+        # token sequence for the standalone cached prefix and the full prompt.
+        return f"{prefix}\n\n" if prefix and has_suffix else prefix
 
     @property
     def cache_suffix_text(self) -> str:
-        if not self.cache_prefix_text:
-            return self.user_prompt
-        return f"\n\n{self.user_prompt}"
+        prefix = self.cache_prefix_text
+        if not prefix:
+            return self.prefill_prompt
+        # cache_prefix_text is always a leading substring of prefill_prompt, so the
+        # online suffix is exactly the remainder (keeps prefix + suffix == prefill).
+        return self.prefill_prompt[len(prefix) :]
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,15 +966,32 @@ class BenchmarkExample:
     documents: tuple[SourceDocument, ...]
     query: str
     expected_answer: str | None = None
+    references: tuple[str, ...] = ()
     metadata: Mapping[str, str] = field(default_factory=dict)
     kv_transfer_params: Mapping[str, Any] = field(default_factory=dict)
+    arm_kv_transfer_params: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.example_id, "example_id")
-        validate_v1_dataset(self.dataset)
+        _validate_non_empty_str(self.dataset, "dataset")
         _validate_non_empty_str(self.query, "query")
         if self.expected_answer is not None:
             _validate_non_empty_str(self.expected_answer, "expected_answer")
+        references = tuple(self.references)
+        if any(not isinstance(reference, str) or not reference for reference in references):
+            raise ValueError("references must contain non-empty strings")
+        if self.expected_answer is not None:
+            if references and references[0] != self.expected_answer:
+                raise ValueError(
+                    "expected_answer must equal the first reference when both are provided"
+                )
+            if not references:
+                references = (self.expected_answer,)
+        elif references:
+            object.__setattr__(self, "expected_answer", references[0])
+        object.__setattr__(self, "references", references)
         documents = _tuple_from_sequence(self.documents, "documents")
         if not documents:
             raise ValueError("documents must include at least one SourceDocument")
@@ -147,10 +999,34 @@ class BenchmarkExample:
             if not isinstance(document, SourceDocument):
                 raise TypeError(f"documents[{index}] must be a SourceDocument")
         object.__setattr__(self, "documents", documents)
-        object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(_dict_from_str_mapping(self.metadata, "metadata")),
+        )
         kv_transfer_params = _dict_from_json_object_mapping(self.kv_transfer_params, "kv_transfer_params")
         _validate_kv_transfer_params(kv_transfer_params)
-        object.__setattr__(self, "kv_transfer_params", kv_transfer_params)
+        object.__setattr__(
+            self,
+            "kv_transfer_params",
+            _deep_freeze_mapping(kv_transfer_params),
+        )
+        if not isinstance(self.arm_kv_transfer_params, Mapping):
+            raise TypeError("arm_kv_transfer_params must be a mapping")
+        arm_params: dict[str, Mapping[str, Any]] = {}
+        for arm_id, raw_params in self.arm_kv_transfer_params.items():
+            _validate_non_empty_str(arm_id, "arm_kv_transfer_params arm id")
+            params = _dict_from_json_object_mapping(
+                raw_params,
+                f"arm_kv_transfer_params.{arm_id}",
+            )
+            _validate_kv_transfer_params(params)
+            arm_params[arm_id] = _deep_freeze_mapping(params)
+        object.__setattr__(
+            self,
+            "arm_kv_transfer_params",
+            MappingProxyType(arm_params),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +1041,6 @@ class BenchmarkSuite:
         _validate_non_empty_str(self.suite_id, "suite_id")
         _validate_non_empty_str(self.model_id, "model_id")
         _validate_non_empty_str(self.hardware_target, "hardware_target")
-        validate_v1_hardware_target(self.hardware_target)
         examples = _tuple_from_sequence(self.examples, "examples")
         if not examples:
             raise ValueError("examples must include at least one BenchmarkExample")
@@ -178,12 +1053,12 @@ class BenchmarkSuite:
             raise ValueError(f"examples contain duplicate dataset/example ids: {duplicate_ids}")
         datasets = _tuple_from_sequence(self.datasets, "datasets")
         if not datasets:
-            raise ValueError("datasets must include at least one V1 dataset")
+            raise ValueError("datasets must include at least one dataset")
         for dataset in datasets:
-            validate_v1_dataset(dataset)
+            _validate_non_empty_str(dataset, "dataset")
         duplicate_datasets = _duplicate_labels(datasets)
         if duplicate_datasets:
-            raise ValueError(f"datasets contain duplicate V1 dataset ids: {', '.join(duplicate_datasets)}")
+            raise ValueError(f"datasets contain duplicate dataset ids: {', '.join(duplicate_datasets)}")
         object.__setattr__(self, "examples", examples)
         object.__setattr__(self, "datasets", datasets)
         example_datasets = {example.dataset for example in examples}
@@ -193,10 +1068,120 @@ class BenchmarkSuite:
 
 
 @dataclass(frozen=True, slots=True)
+class BenchmarkOfflineCosts:
+    """Method preparation costs kept outside the online serving boundary."""
+
+    training_seconds: float | None = None
+    artifact_generation_seconds: float | None = None
+    checkpoint_load_seconds: float | None = None
+    artifact_bytes: int | None = None
+    peak_memory_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "training_seconds",
+            "artifact_generation_seconds",
+            "checkpoint_load_seconds",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                _validate_non_negative_finite_number(value, field_name)
+        for field_name in ("artifact_bytes", "peak_memory_bytes"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _validate_non_negative_int(value, field_name)
+
+
+@dataclass(frozen=True, slots=True)
 class BenchmarkArm:
     arm_id: str
     uses_cache: bool
     description: str
+    cache_method: str = ""
+    connector_mode: str = ""
+    variant_id: str = ""
+    implementation_kind: Literal["baseline", "cachet", "upstream", "external"] | str = ""
+    method_version: str = ""
+    method_config_digest: str = ""
+    physical_transform_id: str = "identity"
+    physical_transform_version: str = "1"
+    physical_transform_config_digest: str = ""
+    scorer_plugin_path: str = ""
+    offline_costs: BenchmarkOfflineCosts = field(default_factory=BenchmarkOfflineCosts)
+    source_revision: str = ""
+    checkpoint_identity: str = ""
+    setting_overrides: Mapping[str, Any] = field(default_factory=dict)
+    runtime_environment_overrides: Mapping[str, Any] = field(default_factory=dict)
+    requires_cachet_handoff: bool | None = None
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.arm_id, "arm_id")
+        if type(self.uses_cache) is not bool:
+            raise ValueError("uses_cache must be a boolean")
+        _validate_non_empty_str(self.description, "description")
+        for field_name in (
+            "cache_method",
+            "connector_mode",
+            "variant_id",
+            "method_version",
+            "method_config_digest",
+            "physical_transform_id",
+            "physical_transform_version",
+            "physical_transform_config_digest",
+            "scorer_plugin_path",
+            "source_revision",
+            "checkpoint_identity",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str):
+                raise TypeError(f"{field_name} must be a string")
+        implementation_kind = self.implementation_kind or (
+            "cachet" if self.uses_cache else "baseline"
+        )
+        if implementation_kind not in BENCHMARK_ARM_IMPLEMENTATION_KINDS:
+            raise ValueError(
+                "implementation_kind must be one of "
+                f"{BENCHMARK_ARM_IMPLEMENTATION_KINDS}"
+            )
+        object.__setattr__(self, "implementation_kind", implementation_kind)
+        requires_cachet_handoff = self.requires_cachet_handoff
+        if requires_cachet_handoff is None:
+            requires_cachet_handoff = self.uses_cache and implementation_kind == "cachet"
+        if type(requires_cachet_handoff) is not bool:
+            raise ValueError("requires_cachet_handoff must be a boolean")
+        if requires_cachet_handoff and not self.uses_cache:
+            raise ValueError("requires_cachet_handoff requires uses_cache")
+        object.__setattr__(self, "requires_cachet_handoff", requires_cachet_handoff)
+        if not self.uses_cache and self.cache_method:
+            raise ValueError("non-cache benchmark arms must not declare cache_method")
+        if not self.physical_transform_id:
+            raise ValueError("physical_transform_id must be non-empty")
+        if not self.physical_transform_version:
+            raise ValueError("physical_transform_version must be non-empty")
+        for field_name in ("method_config_digest", "physical_transform_config_digest"):
+            value = getattr(self, field_name)
+            if value and (len(value) != 64 or any(char not in "0123456789abcdef" for char in value)):
+                raise ValueError(f"{field_name} must be a lowercase SHA-256 digest when provided")
+        if not isinstance(self.offline_costs, BenchmarkOfflineCosts):
+            raise TypeError("offline_costs must be BenchmarkOfflineCosts")
+        setting_overrides = _dict_from_json_object_mapping(
+            self.setting_overrides,
+            "setting_overrides",
+        )
+        object.__setattr__(
+            self,
+            "setting_overrides",
+            _deep_freeze_mapping(setting_overrides),
+        )
+        runtime_environment_overrides = _dict_from_json_object_mapping(
+            self.runtime_environment_overrides,
+            "runtime_environment_overrides",
+        )
+        object.__setattr__(
+            self,
+            "runtime_environment_overrides",
+            _deep_freeze_mapping(runtime_environment_overrides),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,10 +1197,19 @@ class InferenceMeasurement:
     expected_answer: str | None = None
     error: str | None = None
     metadata: Mapping[str, str] = field(default_factory=dict)
+    cache_method: str = ""
+    artifact_id: str = ""
+    variant_id: str = ""
+    request_id: str = ""
+    repeat_index: int = 1
+    scorer_id: str = ""
+    scorer_version: str = ""
+    quality_scores: Mapping[str, float] = field(default_factory=dict)
+    references: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.example_id, "example_id")
-        validate_v1_dataset(self.dataset)
+        _validate_non_empty_str(self.dataset, "dataset")
         _validate_non_empty_str(self.arm_id, "arm_id")
         _validate_non_negative_int(self.prompt_tokens, "prompt_tokens")
         _validate_non_negative_int(self.completion_tokens, "completion_tokens")
@@ -226,9 +1220,50 @@ class InferenceMeasurement:
         _validate_str(self.output_text, "output_text")
         if self.expected_answer is not None:
             _validate_non_empty_str(self.expected_answer, "expected_answer")
+        references = tuple(self.references)
+        if any(not isinstance(reference, str) or not reference for reference in references):
+            raise ValueError("references must contain non-empty strings")
+        if self.expected_answer is not None:
+            if references and references[0] != self.expected_answer:
+                raise ValueError(
+                    "expected_answer must equal the first reference when both are provided"
+                )
+            if not references:
+                references = (self.expected_answer,)
+        elif references:
+            object.__setattr__(self, "expected_answer", references[0])
+        object.__setattr__(self, "references", references)
         if self.error is not None:
             _validate_non_empty_str(self.error, "error")
-        object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(_dict_from_str_mapping(self.metadata, "metadata")),
+        )
+        for field_name in ("cache_method", "artifact_id", "variant_id"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if not isinstance(self.request_id, str):
+            raise TypeError("request_id must be a string")
+        if type(self.repeat_index) is not int or self.repeat_index <= 0:
+            raise ValueError("repeat_index must be a positive integer")
+        for field_name in ("scorer_id", "scorer_version"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        quality_scores: dict[str, float] = {}
+        if not isinstance(self.quality_scores, Mapping):
+            raise TypeError("quality_scores must be a mapping")
+        for metric_name, value in self.quality_scores.items():
+            if not isinstance(metric_name, str) or not metric_name:
+                raise ValueError("quality_scores keys must be non-empty strings")
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValueError(f"quality_scores.{metric_name} must be finite numeric")
+            quality_scores[metric_name] = float(value)
+        object.__setattr__(self, "quality_scores", MappingProxyType(quality_scores))
 
     @property
     def ok(self) -> bool:
@@ -236,12 +1271,18 @@ class InferenceMeasurement:
 
     @property
     def exact_match(self) -> bool | None:
+        explicit = self.quality_scores.get("exact_match")
+        if explicit is not None:
+            return explicit >= 0.5
         if self.expected_answer is None or not self.ok:
             return None
         return exact_match(self.output_text, self.expected_answer)
 
     @property
     def answer_found(self) -> bool | None:
+        explicit = self.quality_scores.get("answer_found")
+        if explicit is not None:
+            return explicit >= 0.5
         if self.expected_answer is None or not self.ok:
             return None
         return answer_found(self.output_text, self.expected_answer)
@@ -268,6 +1309,27 @@ class BenchmarkReportRow:
     exact_match_rate: float | None
     answer_found_rate: float | None
     output_tokens_per_second: float | None
+    cache_method: str = ""
+    artifact_id: str = ""
+    variant_id: str = ""
+    unique_examples: int = 0
+    quality_score_means: Mapping[str, float] = field(default_factory=dict)
+    request_decode_tokens_per_second: LatencySummary = field(
+        default_factory=lambda: LatencySummary(count=0, mean=None, p50=None, p95=None)
+    )
+    aggregate_output_tokens_per_second: float | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "quality_score_means",
+            MappingProxyType(dict(self.quality_score_means)),
+        )
+        if self.aggregate_output_tokens_per_second is not None:
+            _validate_non_negative_finite_number(
+                self.aggregate_output_tokens_per_second,
+                "aggregate_output_tokens_per_second",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +1341,17 @@ class BenchmarkComparison:
     time_to_completion_speedup: float | None
     exact_match_delta: float | None
     answer_found_delta: float | None
+    cache_method: str = ""
+    artifact_id: str = ""
+    variant_id: str = ""
+    quality_score_deltas: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "quality_score_deltas",
+            MappingProxyType(dict(self.quality_score_deltas)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +1423,8 @@ def baseline_prefill_arm() -> BenchmarkArm:
         arm_id=BASELINE_PREFILL_ARM,
         uses_cache=False,
         description="Standard inference prefill that recomputes all document tokens.",
+        implementation_kind="baseline",
+        physical_transform_id="identity",
     )
 
 
@@ -358,7 +1433,159 @@ def document_kv_cache_arm() -> BenchmarkArm:
         arm_id=CACHE_REUSE_ARM,
         uses_cache=True,
         description="Inference path that reuses precomputed document KV cache.",
+        connector_mode="cachet",
+        implementation_kind="cachet",
+        physical_transform_id="cachet.prefix_reuse",
     )
+
+
+def external_benchmark_arm(
+    arm_id: str,
+    *,
+    description: str,
+    implementation_kind: Literal["upstream", "external"] = "upstream",
+    uses_cache: bool = True,
+    method: str = "",
+    method_version: str = "",
+    method_config_digest: str = "",
+    variant_id: str = "default",
+    physical_transform_id: str,
+    physical_transform_version: str,
+    physical_transform_config_digest: str,
+    offline_costs: BenchmarkOfflineCosts | None = None,
+    source_revision: str,
+    checkpoint_identity: str,
+    setting_overrides: Mapping[str, Any] | None = None,
+) -> BenchmarkArm:
+    """Describe an author/upstream or other externally executed comparison arm."""
+
+    return BenchmarkArm(
+        arm_id=arm_id,
+        uses_cache=uses_cache,
+        description=description,
+        cache_method=method if uses_cache else "",
+        variant_id=variant_id,
+        implementation_kind=implementation_kind,
+        method_version=method_version,
+        method_config_digest=method_config_digest,
+        physical_transform_id=physical_transform_id,
+        physical_transform_version=physical_transform_version,
+        physical_transform_config_digest=physical_transform_config_digest,
+        offline_costs=offline_costs or BenchmarkOfflineCosts(),
+        source_revision=source_revision,
+        checkpoint_identity=checkpoint_identity,
+        setting_overrides=setting_overrides or {},
+    )
+
+
+def method_benchmark_arm(
+    method: str,
+    *,
+    arm_id: str | None = None,
+    variant_id: str = "default",
+    registry: Any | None = None,
+    method_config_digest: str = "",
+    physical_transform_id: str | None = None,
+    physical_transform_version: str = "1",
+    physical_transform_config_digest: str = "",
+    offline_costs: BenchmarkOfflineCosts | None = None,
+    setting_overrides: Mapping[str, Any] | None = None,
+) -> BenchmarkArm:
+    """Create a cache arm directly from the executable method registry."""
+
+    from document_kv_cache.methods import (
+        CACHET_ARTIFACT_EXECUTION,
+        MethodRegistry,
+        default_method_registry,
+    )
+
+    resolved_registry = default_method_registry() if registry is None else registry
+    if not isinstance(resolved_registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    spec = resolved_registry.get(method, require_implemented=True)
+    if not method_config_digest:
+        from document_kv_cache.artifact_identity import (
+            method_config_digest as digest_method_config,
+        )
+
+        method_config_digest = digest_method_config({})
+    return BenchmarkArm(
+        arm_id=arm_id or f"{CACHE_REUSE_ARM}:{spec.method_id}",
+        uses_cache=True,
+        description=spec.description,
+        cache_method=spec.method_id,
+        connector_mode=spec.connector_mode,
+        variant_id=variant_id,
+        implementation_kind="cachet",
+        method_version=spec.artifact_version,
+        method_config_digest=method_config_digest,
+        physical_transform_id=(
+            physical_transform_id or f"cachet.{spec.method_id}.runtime_input"
+        ),
+        physical_transform_version=physical_transform_version,
+        physical_transform_config_digest=physical_transform_config_digest,
+        offline_costs=offline_costs or BenchmarkOfflineCosts(),
+        setting_overrides=setting_overrides or {},
+        requires_cachet_handoff=(
+            spec.execution_kind == CACHET_ARTIFACT_EXECUTION
+        ),
+    )
+
+
+def require_runnable_cachet_benchmark_arm(
+    arm: BenchmarkArm,
+    *,
+    registry: MethodRegistry | None = None,
+    allow_unidentified_smoke: bool = False,
+) -> None:
+    """Fail before a Cachet-labeled arm can claim an unregistered method."""
+
+    from document_kv_cache.methods import (
+        CACHET_ARTIFACT_EXECUTION,
+        MethodRegistry,
+        default_method_registry,
+    )
+
+    if not isinstance(arm, BenchmarkArm):
+        raise TypeError("arm must be a BenchmarkArm")
+    if arm.implementation_kind != "cachet":
+        return
+    resolved_registry = default_method_registry() if registry is None else registry
+    if not isinstance(resolved_registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry or None")
+    if not arm.uses_cache:
+        raise ValueError("Cachet benchmark arms must use cache")
+    if not arm.cache_method:
+        if allow_unidentified_smoke:
+            return
+        raise ValueError("Cachet benchmark arms must declare cache_method")
+    try:
+        method = resolved_registry.get(arm.cache_method, require_implemented=True)
+    except (KeyError, NotImplementedError) as exc:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} must name a registered runnable "
+            "Cachet method"
+        ) from exc
+    if arm.method_version != method.artifact_version:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} method_version must match "
+            f"{method.artifact_version!r}"
+        )
+    if arm.connector_mode != method.connector_mode:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} connector_mode must match "
+            f"{method.connector_mode!r}"
+        )
+    if not arm.method_config_digest:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} must declare method_config_digest"
+        )
+    expected_handoff = method.execution_kind == CACHET_ARTIFACT_EXECUTION
+    if arm.requires_cachet_handoff is not expected_handoff:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} requires_cachet_handoff must be "
+            f"{str(expected_handoff).lower()} for the registered execution kind"
+        )
 
 
 def v1_dataset_specs() -> tuple[BenchmarkDatasetSpec, ...]:
@@ -370,25 +1597,69 @@ def dataset_spec(dataset: str) -> BenchmarkDatasetSpec:
     return _V1_DATASET_SPECS[dataset]
 
 
-def build_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
+def resolve_system_prompt_position() -> str:
+    """Resolve the system-prompt placement from the environment (default ``start``)."""
+
+    value = os.environ.get(
+        CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV, DEFAULT_SYSTEM_PROMPT_POSITION
+    ).strip().lower()
+    if value not in SYSTEM_PROMPT_POSITIONS:
+        raise ValueError(
+            f"{CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV} must be one of "
+            f"{SYSTEM_PROMPT_POSITIONS}; got {value!r}"
+        )
+    return value
+
+
+def build_prompt_parts(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> BenchmarkPromptParts:
+    if scorer is not None:
+        if not isinstance(scorer, DatasetScorer):
+            raise TypeError("scorer must be DatasetScorer when provided")
+        return scorer.prompt_parts(example)
+    return _default_prompt_parts(example)
+
+
+def _default_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
+    if example.dataset not in SUPPORTED_V1_DATASETS:
+        raise ValueError(
+            f"Dataset {example.dataset!r} requires a registered scorer with a "
+            "versioned prompt_function"
+        )
     spec = dataset_spec(example.dataset)
     return BenchmarkPromptParts(
         system_prompt=_system_prompt(spec),
         document_context=format_document_context(example.documents),
         user_prompt=_user_prompt(example, spec),
+        system_prompt_position=resolve_system_prompt_position(),
     )
 
 
-def build_prefill_prompt(example: BenchmarkExample) -> str:
-    return build_prompt_parts(example).prefill_prompt
+def build_prefill_prompt(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> str:
+    return build_prompt_parts(example, scorer=scorer).prefill_prompt
 
 
-def build_cache_prefix_text(example: BenchmarkExample) -> str:
-    return build_prompt_parts(example).cache_prefix_text
+def build_cache_prefix_text(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> str:
+    return build_prompt_parts(example, scorer=scorer).cache_prefix_text
 
 
-def build_cache_suffix_text(example: BenchmarkExample) -> str:
-    return build_prompt_parts(example).cache_suffix_text
+def build_cache_suffix_text(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> str:
+    return build_prompt_parts(example, scorer=scorer).cache_suffix_text
 
 
 def benchmark_cache_artifact_stem(
@@ -420,26 +1691,89 @@ def benchmark_cache_document_id(
     return benchmark_cache_artifact_stem(example, prefix=prefix)
 
 
+def _cache_prefix_chunk_id(index: int) -> str:
+    return f"{BENCHMARK_CACHE_PREFIX_CHUNK_ID}-{index}"
+
+
+def benchmark_cache_prefix_segments(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """Tile the exact cache-prefix text into one contiguous ``(chunk_id, text)`` per document.
+
+    The concatenation of the returned texts equals ``build_cache_prefix_text(example)``
+    byte-for-byte. Tokenizer-backed vLLM handoff generation additionally requires the
+    independently tokenized segments to compose to an exact leading token prefix of the
+    logical prompt before an artifact can be written. The leading system prompt +
+    "Documents:" header rides on the first document's segment. Falls back to a single
+    segment when there is one document or the per-document offsets cannot be located.
+    """
+
+    benchmark_example = _benchmark_example(example)
+    prefix = build_cache_prefix_text(benchmark_example, scorer=scorer)
+    documents = benchmark_example.documents
+    if len(documents) <= 1:
+        return ((BENCHMARK_CACHE_PREFIX_CHUNK_ID, prefix),)
+    starts: list[int] = []
+    cursor = 0
+    for document in documents:
+        formatted = _format_document(document)
+        index = prefix.find(formatted, cursor)
+        if index < 0:
+            return ((BENCHMARK_CACHE_PREFIX_CHUNK_ID, prefix),)
+        starts.append(index)
+        cursor = index + len(formatted)
+    bounds = [0, *starts[1:], len(prefix)]
+    return tuple(
+        (_cache_prefix_chunk_id(i), prefix[bounds[i] : bounds[i + 1]])
+        for i in range(len(documents))
+    )
+
+
 def benchmark_cache_source_document(
     example: BenchmarkExample,
     *,
     document_id: str | None = None,
     chunk_id: str = BENCHMARK_CACHE_PREFIX_CHUNK_ID,
     prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+    segment_per_document: bool = False,
+    scorer: DatasetScorer | None = None,
 ) -> SourceDocument:
-    """Represent the exact V1 benchmark cache prefix as a Cachet source document."""
+    """Represent the exact V1 benchmark cache prefix as a Cachet source document.
+
+    With ``segment_per_document`` the prefix is split into one KV chunk per document
+    (tiling the exact prefix text), so the handoff assembles N independently-prefilled
+    document segments instead of one monolithic prefix chunk.
+    """
 
     benchmark_example = _benchmark_example(example)
     resolved_document_id = document_id or benchmark_cache_document_id(benchmark_example, prefix=prefix)
+    document_metadata = {
+        "cachet.benchmark.dataset": benchmark_example.dataset,
+        "cachet.benchmark.example_id": benchmark_example.example_id,
+        "cachet.benchmark.role": "cache_prefix",
+    }
+    if segment_per_document:
+        segments = benchmark_cache_prefix_segments(
+            benchmark_example,
+            scorer=scorer,
+        )
+        if len(segments) > 1:
+            return SourceDocument.from_texts(
+                document_id=resolved_document_id,
+                chunks={segment_chunk_id: text for segment_chunk_id, text in segments},
+                metadata=document_metadata,
+                chunk_metadata={
+                    segment_chunk_id: {"cachet.benchmark.prompt_part": f"document_segment_{index}"}
+                    for index, (segment_chunk_id, _text) in enumerate(segments)
+                },
+            )
     return SourceDocument.from_text(
         document_id=resolved_document_id,
-        text=build_cache_prefix_text(benchmark_example),
+        text=build_cache_prefix_text(benchmark_example, scorer=scorer),
         chunk_id=chunk_id,
-        metadata={
-            "cachet.benchmark.dataset": benchmark_example.dataset,
-            "cachet.benchmark.example_id": benchmark_example.example_id,
-            "cachet.benchmark.role": "cache_prefix",
-        },
+        metadata=document_metadata,
         chunk_metadata={
             "cachet.benchmark.prompt_part": "system_prompt_and_document_context",
         },
@@ -457,12 +1791,35 @@ def benchmark_cache_request(
     document_id: str | None = None,
     chunk_id: str = BENCHMARK_CACHE_PREFIX_CHUNK_ID,
     prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+    segment_per_document: bool = False,
+    scorer: DatasetScorer | None = None,
 ) -> DocumentKVRequest:
-    """Build the Cachet request that materializes this example's cached prefix."""
+    """Build the Cachet request that materializes this example's cached prefix.
+
+    With ``segment_per_document`` the request selects the N per-document prefix chunks
+    (in order) so ``CachePlanner`` emits an N-segment contiguous plan. Chunk ids must
+    match :func:`benchmark_cache_source_document`.
+    """
 
     benchmark_example = _benchmark_example(example)
     resolved_document_id = document_id or benchmark_cache_document_id(benchmark_example, prefix=prefix)
     resolved_request_id = request_id or benchmark_cache_artifact_stem(benchmark_example, prefix=prefix)
+    if segment_per_document:
+        segments = benchmark_cache_prefix_segments(
+            benchmark_example,
+            scorer=scorer,
+        )
+        if len(segments) > 1:
+            return DocumentKVRequest.for_document_chunks(
+                request_id=resolved_request_id,
+                task_id=task_id or f"v1-benchmark-{benchmark_example.dataset}",
+                model_id=model_id,
+                lora_id=lora_id,
+                prompt_template_version=prompt_template_version,
+                document_id=resolved_document_id,
+                chunk_ids=tuple(segment_chunk_id for segment_chunk_id, _text in segments),
+                include_static=False,
+            )
     return DocumentKVRequest.for_text_document(
         request_id=resolved_request_id,
         task_id=task_id or f"v1-benchmark-{benchmark_example.dataset}",
@@ -507,13 +1864,25 @@ def compare_to_baseline(
                 dataset=dataset,
                 baseline_arm_id=baseline_arm_id,
                 cache_arm_id=cache_arm_id,
-                ttft_speedup=_speedup(baseline.ttft.p50, cache.ttft.p50),
-                time_to_completion_speedup=_speedup(
+                ttft_speedup=latency_speedup(baseline.ttft.p50, cache.ttft.p50),
+                time_to_completion_speedup=latency_speedup(
                     baseline.time_to_completion.p50,
                     cache.time_to_completion.p50,
                 ),
-                exact_match_delta=_delta(cache.exact_match_rate, baseline.exact_match_rate),
-                answer_found_delta=_delta(cache.answer_found_rate, baseline.answer_found_rate),
+                exact_match_delta=quality_delta(cache.exact_match_rate, baseline.exact_match_rate),
+                answer_found_delta=quality_delta(cache.answer_found_rate, baseline.answer_found_rate),
+                cache_method=cache.cache_method,
+                artifact_id=cache.artifact_id,
+                variant_id=cache.variant_id,
+                quality_score_deltas={
+                    metric_name: cache.quality_score_means[metric_name]
+                    - baseline.quality_score_means[metric_name]
+                    for metric_name in sorted(
+                        set(baseline.quality_score_means).intersection(
+                            cache.quality_score_means
+                        )
+                    )
+                },
             )
         )
     return tuple(comparisons)
@@ -647,7 +2016,13 @@ def _validate_str(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a string")
 
 
-def _tuple_from_sequence(value: Sequence[object], field_name: str) -> tuple[object, ...]:
+_SequenceItem = TypeVar("_SequenceItem")
+
+
+def _tuple_from_sequence(
+    value: Sequence[_SequenceItem],
+    field_name: str,
+) -> tuple[_SequenceItem, ...]:
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise TypeError(f"{field_name} must be a sequence")
     return tuple(value)
@@ -693,6 +2068,23 @@ def _json_compatible_value(value: Any, field_name: str) -> Any:
     raise ValueError(f"{field_name} must be JSON-compatible")
 
 
+def _deep_freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType(
+        {key: _deep_freeze_value(item) for key, item in value.items()}
+    )
+
+
+def _deep_freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _deep_freeze_mapping(value)
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray, memoryview),
+    ):
+        return _FrozenList(_deep_freeze_value(item) for item in value)
+    return value
+
+
 def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
     if not kv_transfer_params:
         return
@@ -727,6 +2119,13 @@ def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
         kv_transfer_params.get(DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM),
         field_name=f"kv_transfer_params.{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM}",
     )
+    runtime_prefix_text = kv_transfer_params.get(DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM)
+    if runtime_prefix_text is not None and not isinstance(runtime_prefix_text, str):
+        raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM} must be a string")
+    for parameter in (DOCUMENT_KV_CACHE_METHOD_PARAM, DOCUMENT_KV_ARTIFACT_ID_PARAM):
+        value = kv_transfer_params.get(parameter)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError(f"kv_transfer_params.{parameter} must be a non-empty string")
     if handoff_record is not None:
         if not isinstance(handoff_record, Mapping):
             raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object")
@@ -735,6 +2134,22 @@ def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
             request_id=request_id,
             payload_uri_override=payload_uri,
         )
+        handle = handoff_record.get("handle")
+        if isinstance(handle, Mapping):
+            cache_method = kv_transfer_params.get(DOCUMENT_KV_CACHE_METHOD_PARAM)
+            if cache_method is not None and cache_method != handle.get("cache_method"):
+                raise ValueError(
+                    f"kv_transfer_params.{DOCUMENT_KV_CACHE_METHOD_PARAM} must match handoff handle"
+                )
+            artifact_id = kv_transfer_params.get(DOCUMENT_KV_ARTIFACT_ID_PARAM)
+            artifact_identity = handle.get("artifact_identity")
+            if artifact_id is not None and isinstance(artifact_identity, Mapping):
+                from document_kv_cache.artifact_identity import ArtifactIdentity
+
+                if artifact_id != ArtifactIdentity.from_record(artifact_identity).artifact_id:
+                    raise ValueError(
+                        f"kv_transfer_params.{DOCUMENT_KV_ARTIFACT_ID_PARAM} must match handoff handle"
+                    )
 
 
 def _validate_runtime_payload_uri(value: object, *, field_name: str) -> None:
@@ -805,9 +2220,12 @@ def _validate_non_negative_finite_number(value: float, field_name: str) -> None:
 _V1_DATASET_SPECS: Mapping[str, BenchmarkDatasetSpec] = {
     "biography": BenchmarkDatasetSpec(
         dataset="biography",
-        display_name="Biography",
-        task_instruction="Answer biography questions using only the supplied document context.",
-        answer_instruction="Return the shortest answer that fully resolves the question.",
+        display_name="Biography Entity Identification",
+        task_instruction=(
+            "Identify the entity described by the supplied biography context. "
+            "Document identifiers and titles are intentionally opaque."
+        ),
+        answer_instruction="Return only the normalized entity title as the answer value.",
     ),
     "hotpotqa": BenchmarkDatasetSpec(
         dataset="hotpotqa",
@@ -835,6 +2253,10 @@ def _system_prompt(spec: BenchmarkDatasetSpec) -> str:
         f"Benchmark: {spec.display_name}",
         spec.task_instruction,
         "Use only the supplied document context. If the answer is absent, say you do not know.",
+        (
+            "Your entire response must contain exactly one non-empty block of the "
+            "form <final_answer>answer</final_answer>, with no text outside it."
+        ),
     )
 
 
@@ -842,13 +2264,24 @@ def _user_prompt(example: BenchmarkExample, spec: BenchmarkDatasetSpec) -> str:
     return _join_sections(
         f"Question: {example.query}",
         spec.answer_instruction,
-        FINAL_ANSWER_CUE,
+        f"Required response form: {FINAL_ANSWER_CUE}",
     )
 
 
 def _format_document(document: SourceDocument) -> str:
     title = document.metadata.get("title") or document.metadata.get("name") or document.document_id
-    chunks = tuple(_format_chunk(chunk.chunk_id, chunk.chunk_type.value, chunk.text) for chunk in document.chunks)
+    chunks = tuple(
+        _format_chunk(
+            chunk.chunk_id,
+            (
+                chunk.chunk_type.value
+                if hasattr(chunk.chunk_type, "value")
+                else chunk.chunk_type
+            ),
+            chunk.text,
+        )
+        for chunk in document.chunks
+    )
     return _join_sections(
         f'[document id="{_attribute_text(document.document_id)}" title="{_attribute_text(title)}"]',
         *chunks,
@@ -873,8 +2306,27 @@ def _summarize_group(dataset: str, arm_id: str, group: Sequence[InferenceMeasure
     completion_tokens = [measurement.completion_tokens for measurement in ok]
     ttft_values = [measurement.ttft_seconds for measurement in ok]
     ttc_values = [measurement.time_to_completion_seconds for measurement in ok]
-    total_completion_tokens = sum(completion_tokens)
-    total_ttc = sum(ttc_values)
+    request_decode_rates = [
+        rate
+        for measurement in ok
+        if (
+            rate := request_decode_tokens_per_second(
+                measurement.completion_tokens,
+                measurement.ttft_seconds,
+                measurement.time_to_completion_seconds,
+            )
+        )
+        is not None
+    ]
+    cache_methods = {measurement.cache_method for measurement in group}
+    artifact_ids = {measurement.artifact_id for measurement in group}
+    variant_ids = {measurement.variant_id for measurement in group}
+    if len(cache_methods) != 1:
+        raise ValueError(f"Benchmark arm {arm_id!r} mixes cache methods: {sorted(cache_methods)}")
+    if len(artifact_ids) != 1:
+        raise ValueError(f"Benchmark arm {arm_id!r} mixes artifact identities: {sorted(artifact_ids)}")
+    if len(variant_ids) != 1:
+        raise ValueError(f"Benchmark arm {arm_id!r} mixes variant identities: {sorted(variant_ids)}")
     return BenchmarkReportRow(
         dataset=dataset,
         arm_id=arm_id,
@@ -884,9 +2336,24 @@ def _summarize_group(dataset: str, arm_id: str, group: Sequence[InferenceMeasure
         completion_tokens_mean=_mean(completion_tokens),
         ttft=_latency_summary(ttft_values),
         time_to_completion=_latency_summary(ttc_values),
-        exact_match_rate=_rate(measurement.exact_match for measurement in ok),
-        answer_found_rate=_rate(measurement.answer_found for measurement in ok),
-        output_tokens_per_second=(total_completion_tokens / total_ttc) if total_ttc > 0 else None,
+        exact_match_rate=_unique_example_rate(ok, "exact_match"),
+        answer_found_rate=_unique_example_rate(ok, "answer_found"),
+        output_tokens_per_second=aggregate_decode_tokens_per_second(
+            (
+                (
+                    measurement.completion_tokens,
+                    measurement.ttft_seconds,
+                    measurement.time_to_completion_seconds,
+                )
+                for measurement in ok
+            )
+        ),
+        cache_method=next(iter(cache_methods)),
+        artifact_id=next(iter(artifact_ids)),
+        variant_id=next(iter(variant_ids)),
+        unique_examples=len({measurement.example_id for measurement in ok}),
+        quality_score_means=_unique_example_quality_means(ok),
+        request_decode_tokens_per_second=_latency_summary(request_decode_rates),
     )
 
 
@@ -925,18 +2392,40 @@ def _rate(values: Iterable[bool | None]) -> float | None:
     return sum(1 for value in present if value) / len(present)
 
 
-def _speedup(baseline_seconds: float | None, candidate_seconds: float | None) -> float | None:
-    if baseline_seconds is None or candidate_seconds is None:
+def _unique_example_rate(
+    measurements: Sequence[InferenceMeasurement],
+    property_name: Literal["exact_match", "answer_found"],
+) -> float | None:
+    by_example: dict[str, list[bool]] = {}
+    for measurement in measurements:
+        value = getattr(measurement, property_name)
+        if value is not None:
+            by_example.setdefault(measurement.example_id, []).append(value)
+    if not by_example:
         return None
-    if baseline_seconds <= 0 or candidate_seconds <= 0:
-        return None
-    return baseline_seconds / candidate_seconds
+    # Repeats estimate one example's success probability; examples remain the
+    # independent quality units and therefore receive equal weight.
+    return statistics.fmean(
+        statistics.fmean(float(value) for value in values)
+        for values in by_example.values()
+    )
 
 
-def _delta(left: float | None, right: float | None) -> float | None:
-    if left is None or right is None:
-        return None
-    return left - right
+def _unique_example_quality_means(
+    measurements: Sequence[InferenceMeasurement],
+) -> Mapping[str, float]:
+    metric_examples: dict[str, dict[str, list[float]]] = {}
+    for measurement in measurements:
+        for metric_name, value in measurement.quality_scores.items():
+            metric_examples.setdefault(metric_name, {}).setdefault(
+                measurement.example_id, []
+            ).append(value)
+    return {
+        metric_name: statistics.fmean(
+            statistics.fmean(values) for values in example_values.values()
+        )
+        for metric_name, example_values in sorted(metric_examples.items())
+    }
 
 
 def _comparison_has_missing_metrics(comparison: BenchmarkComparison) -> bool:

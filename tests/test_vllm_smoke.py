@@ -11,7 +11,11 @@ import weakref
 import pytest
 
 import document_kv_cache.vllm_smoke as public_vllm_smoke
-from document_kv_cache.serving_env import VLLM_SERVING_ENVIRONMENT_PROFILE
+from document_kv_cache.serving_env import (
+    VLLM_INSTALL_REQUIREMENTS,
+    VLLM_PACKAGE_INDEX_URLS,
+    VLLM_SERVING_ENVIRONMENT_PROFILE,
+)
 from document_kv_cache.vllm_smoke import (
     BASELINE_PREFIX_CACHE_SALT,
     CACHE_PREFIX_CACHE_SALT,
@@ -39,6 +43,7 @@ from document_kv_cache.vllm_smoke import (
     cuda_wheel_env_paths,
     dataset_args,
     dependency_constraints,
+    dependency_index_args,
     dependency_override_constraints,
     document_kv_transfer_config_for_smoke,
     document_kv_package_install_spec,
@@ -172,11 +177,17 @@ class TrackedOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
 def test_dependency_constraints_match_pinned_g5_vllm_stack():
     assert dependency_constraints() == list(VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints)
     assert all("==" in constraint for constraint in dependency_constraints())
-    assert dependency_override_constraints() == [VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT]
-    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT == "opencv-python-headless==4.12.0.88"
-    assert VLLM_VERSION == "0.23.0"
+    assert dependency_index_args() == [
+        argument
+        for index_url in VLLM_PACKAGE_INDEX_URLS
+        for argument in ("--extra-index-url", index_url)
+    ]
+    assert dependency_override_constraints() == []
+    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT in dependency_constraints()
+    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT == "opencv-python-headless==4.13.0.92"
+    assert VLLM_VERSION == "0.30.0"
     assert TRANSFORMERS_CONSTRAINT == "transformers==5.12.1"
-    assert HUGGINGFACE_HUB_CONSTRAINT == "huggingface-hub==1.20.1"
+    assert HUGGINGFACE_HUB_CONSTRAINT == "huggingface-hub==1.32.0"
     assert TOKENIZERS_CONSTRAINT == "tokenizers==0.22.2"
     assert NUMPY_CONSTRAINT == "numpy==2.3.5"
     numpy_version = tuple(int(part) for part in NUMPY_CONSTRAINT.split("==", maxsplit=1)[1].split("."))
@@ -249,7 +260,7 @@ def test_install_document_kv_package_uses_no_deps(monkeypatch, tmp_path):
     ]
 
 
-def test_install_vllm_applies_fips_opencv_override_after_vllm_stack(monkeypatch, tmp_path):
+def test_install_vllm_installs_the_pinned_cu129_stack_from_its_indexes(monkeypatch, tmp_path):
     calls = []
     python = tmp_path / "venv" / "bin" / "python"
     monkeypatch.setattr(public_vllm_smoke, "run", lambda argv: calls.append(argv))
@@ -258,17 +269,16 @@ def test_install_vllm_applies_fips_opencv_override_after_vllm_stack(monkeypatch,
 
     assert calls == [
         [str(python), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"],
-        [str(python), "-m", "pip", "install", *dependency_constraints()],
         [
             str(python),
             "-m",
             "pip",
             "install",
-            "--force-reinstall",
-            "--no-deps",
-            *dependency_override_constraints(),
+            *dependency_index_args(),
+            *VLLM_INSTALL_REQUIREMENTS,
         ],
     ]
+    assert VLLM_INSTALL_REQUIREMENTS[1:] == tuple(dependency_constraints()[1:])
 
 
 def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
@@ -655,6 +665,7 @@ def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tm
             output_dir=tmp_path / "generated-handoffs",
             dtype="bfloat16",
             align_bytes=1,
+            require_artifact_contract=False,
         ),
     )
 
@@ -704,6 +715,7 @@ def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(
             output_dir=tmp_path / "generated-handoffs",
             dtype="bfloat16",
             align_bytes=1,
+            require_artifact_contract=False,
         ),
     )
 

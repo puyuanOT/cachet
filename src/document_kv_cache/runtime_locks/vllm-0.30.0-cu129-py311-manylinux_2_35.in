@@ -1,0 +1,39 @@
+# Resolution-only source for the vLLM 0.30.0 CUDA 12.9 qualification lock.
+# Runtime installation uses the generated hash lock plus the separately
+# reviewed, content-addressed E5M2-patched vLLM wheel. Triton stays 3.7.1
+# with the torch 2.13.0+cu129 pin. FlashInfer, Cutlass, QuACK, humming,
+# Hugging Face Hub, and instanttensor follow the 0.30.0 wheel requirements.
+vllm @ https://github.com/vllm-project/vllm/releases/download/v0.30.0/vllm-0.30.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl#sha256=e98cb69659bfcfc849cf11ce0781a7161d40b02b51a6c3636924a5909f2aabcc
+pip==26.2.1
+setuptools==80.9.0
+wheel==0.48.0
+torch==2.13.0+cu129
+torchaudio==2.11.0+cu129
+torchvision==0.28.0+cu129
+triton==3.7.1
+numba==0.65.0
+torchcodec==0.16.0+cu129
+PyNvVideoCodec==2.0.4
+flashinfer-python==0.6.18.post1
+flashinfer-cubin==0.6.18.post1
+flashinfer-jit-cache==0.6.18.post1+cu129
+apache-tvm-ffi==0.1.11
+tilelang==0.1.12
+nvidia-cudnn-frontend==1.27.0
+nvtx==0.2.15
+fastsafetensors==0.3.3
+instanttensor>=0.1.9
+nvidia-cutlass-dsl==4.7.1
+quack-kernels==0.6.5
+tokenspeed-mla==0.1.8
+humming-kernels[cu12]==0.1.12
+transformers==5.12.1
+huggingface-hub>=1.31.0
+tokenizers==0.22.2
+numpy==2.3.5
+fastapi[standard]==0.136.0
+prometheus-fastapi-instrumentator==8.0.0
+bitsandbytes==0.49.2
+vllm-bnb-plugin==0.0.3
+accelerate==1.14.0
+opencv-python-headless==4.13.0.92

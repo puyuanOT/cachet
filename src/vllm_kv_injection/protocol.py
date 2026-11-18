@@ -18,6 +18,7 @@ class KVSegment(DocumentKVSegment):
             "byte_start",
             "byte_length",
             "content_hash",
+            "token_contract",
         )
         legacy_fields = (
             "chunk_id",
@@ -50,6 +51,7 @@ class KVSegment(DocumentKVSegment):
                 kwargs["document_id"] = "__legacy__"
                 kwargs["chunk_type"] = "legacy_chunk"
         kwargs.setdefault("content_hash", "")
+        kwargs.setdefault("token_contract", None)
         missing = [field for field in fields if field not in kwargs]
         if missing:
             raise TypeError(f"Missing KVSegment fields: {', '.join(missing)}")

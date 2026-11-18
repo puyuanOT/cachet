@@ -146,7 +146,14 @@ def local_path(uri: str, *, root: str | Path | None = None) -> Path:
     if uri.startswith("file:"):
         return _file_uri_path(uri[len("file:") :], root=root)
     if uri.startswith("dbfs:/"):
-        return _join_confined(Path("/dbfs"), uri[len("dbfs:/") :], label="dbfs")
+        relative_path = uri[len("dbfs:/") :]
+        if relative_path == "Volumes" or relative_path.startswith("Volumes/"):
+            # UC Volumes use the /Volumes POSIX mount even in dbfs: URI form.
+            return _validate_absolute_uc_path(
+                _join_confined(Path("/"), relative_path, label="dbfs"),
+                label="dbfs UC Volume",
+            )
+        return _join_confined(Path("/dbfs"), relative_path, label="dbfs")
     if uri.startswith("uc-volume:"):
         return unity_catalog_volume_path(uri, root=root)
     path = Path(uri)
