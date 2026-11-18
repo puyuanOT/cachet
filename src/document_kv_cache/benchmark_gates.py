@@ -767,6 +767,7 @@ def evaluate_benchmark_publication_gate(
 
     cold_attested = 0
     if resolved.require_cold_attestation and cold_latency_claim:
+        attested_request_ids: set[str] = set()
         for measurement in cache_measurements:
             label = measurement.request_id or (
                 f"{measurement.dataset}:{measurement.example_id}:repeat-{measurement.repeat_index}"
@@ -774,6 +775,10 @@ def evaluate_benchmark_publication_gate(
             if not measurement.request_id:
                 issues.append(f"{label} is missing request_id required for cache-state attestation")
                 continue
+            if measurement.request_id in attested_request_ids:
+                issues.append(f"cache request {measurement.request_id} is shared by multiple cache measurements")
+                continue
+            attested_request_ids.add(measurement.request_id)
             observed_attestation = attestations_by_request.get(measurement.request_id)
             if observed_attestation is None:
                 issues.append(f"cache request {measurement.request_id} has no cache-state attestation")

@@ -1063,6 +1063,34 @@ def test_vllm_telemetry_parser_joins_explicit_benchmark_request_id_without_runti
     assert legacy_attestation.request_id == "cmpl-cache-request-1-0-deadbeef"
 
 
+def test_publication_gate_rejects_cache_measurements_sharing_one_attested_request_id():
+    identity = artifact_identity()
+    base = benchmark_result(identity)
+    baseline, cache = base.measurements
+    result = replace(
+        base,
+        measurements=(
+            baseline,
+            cache,
+            replace(baseline, request_id="baseline-request-2", repeat_index=2),
+            replace(
+                cache,
+                repeat_index=2,
+                metadata={**cache.metadata, "prefix_cache_salt": "cache-request-2"},
+            ),
+        ),
+    )
+
+    gate = evaluate_benchmark_publication_gate(
+        result,
+        cache_state_attestations=(cold_attestation(identity),),
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert gate.cold_attested_requests == 1
+    assert "cache request cache-request-1 is shared by multiple cache measurements" in gate.issues
+
+
 def test_vllm_telemetry_correlation_survives_sanitized_publication_serialization() -> None:
     identity = artifact_identity()
     telemetry = {
