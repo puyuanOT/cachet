@@ -571,7 +571,7 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     readme_text = (REPO_ROOT / "databricks" / "README.md").read_text(encoding="utf-8")
     root_readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     maintainer_reference_text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+        REPO_ROOT / "docs" / "release-ops" / "maintainer" / "databricks.md"
     ).read_text(encoding="utf-8")
     assert packaged_bundle_text == bundle_text
 

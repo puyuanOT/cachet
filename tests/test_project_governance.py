@@ -23,6 +23,8 @@ from document_kv_cache.legacy_compatibility import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MAINTAINER_REFERENCE = REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+MAINTAINER_TOPICS_DIR = REPO_ROOT / "docs" / "release-ops" / "maintainer"
 LEGACY_PACKAGE_NAME = "restaurant_kv_serving"
 LEGACY_PACKAGE_PREFIX = f"{LEGACY_PACKAGE_NAME}."
 DYNAMIC_LEGACY_IMPORT_CALLS = {
@@ -474,9 +476,7 @@ def test_legacy_source_package_directory_is_removed():
 
 def test_legacy_compatibility_removal_gate_is_documented():
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    maintainer_reference = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    maintainer_reference = MAINTAINER_REFERENCE.read_text(encoding="utf-8")
     matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(
         encoding="utf-8"
     )
@@ -910,9 +910,7 @@ def test_readme_minimal_api_uses_cachet_public_imports():
 def test_maintainer_reference_engine_adapter_handoff_example_uses_public_payload_reader():
     import document_kv_cache
 
-    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
-        encoding="utf-8"
-    )
+    text = (MAINTAINER_TOPICS_DIR / "serving-engines.md").read_text(encoding="utf-8")
     example = _first_python_fence_after(text, "For engine-specific integration code")
     tree = ast.parse(example)
     document_imports = {
@@ -935,9 +933,7 @@ def test_maintainer_reference_engine_adapter_handoff_example_uses_public_payload
 
 
 def test_maintainer_reference_benchmark_plan_examples_include_release_actions_sidecars():
-    root_text = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    root_text = (MAINTAINER_TOPICS_DIR / "benchmarks.md").read_text(encoding="utf-8")
     compact_root_text = " ".join(root_text.split())
     root_example = _first_bash_fence_after(
         root_text, "To run the V1 benchmark contract"
@@ -974,9 +970,7 @@ def test_maintainer_reference_benchmark_plan_examples_include_release_actions_si
 def test_maintainer_reference_model_profile_example_uses_portable_definition_artifact():
     import document_kv_cache
 
-    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
-        encoding="utf-8"
-    )
+    text = (MAINTAINER_TOPICS_DIR / "core-library.md").read_text(encoding="utf-8")
     example = _first_python_fence_after(text, "Future Qwen3.5, MiniMax")
     tree = ast.parse(example)
     document_imports = {
@@ -1056,9 +1050,7 @@ def test_readme_avoids_workspace_local_script_references():
 
 
 def test_maintainer_reference_manifest_schema_mentions_storage_layout():
-    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
-        encoding="utf-8"
-    )
+    text = (MAINTAINER_TOPICS_DIR / "core-library.md").read_text(encoding="utf-8")
     logical_model = _markdown_section(text, "Logical Model")
     manifest_start = logical_model.index("Manifest table:")
     fence_start = logical_model.rindex("```text", 0, manifest_start)
@@ -1069,9 +1061,7 @@ def test_maintainer_reference_manifest_schema_mentions_storage_layout():
 
 
 def test_maintainer_reference_remaining_work_keeps_serving_boundary_explicit():
-    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
-        encoding="utf-8"
-    )
+    text = MAINTAINER_REFERENCE.read_text(encoding="utf-8")
     remaining_work = _markdown_section(text, "Remaining V1 Work")
 
     assert "connector action descriptors" in remaining_work
@@ -1081,9 +1071,7 @@ def test_maintainer_reference_remaining_work_keeps_serving_boundary_explicit():
 
 
 def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
-    maintainer_reference = (
-        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
-    ).read_text(encoding="utf-8")
+    maintainer_reference = MAINTAINER_REFERENCE.read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(
         encoding="utf-8"
@@ -1501,11 +1489,14 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
 
 
 def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
-    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
+    text = (MAINTAINER_TOPICS_DIR / "release-and-governance.md").read_text(
         encoding="utf-8"
     )
     compact_text = " ".join(text.split())
-    remaining_v1_work = _markdown_section(text, "Remaining V1 Work")
+    remaining_v1_work = _markdown_section(
+        MAINTAINER_REFERENCE.read_text(encoding="utf-8"), "Remaining V1 Work"
+    )
+    maintainer_doc_paths = [MAINTAINER_REFERENCE, *sorted(MAINTAINER_TOPICS_DIR.glob("*.md"))]
     compact_remaining_v1_work = " ".join(remaining_v1_work.split())
     stale_release_blockers = (
         "no-governance",
@@ -1558,22 +1549,23 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert (
         "`legacy_migration_evidence` release-bundle role" in compact_remaining_v1_work
     )
-    for stale_blocker in stale_release_blockers:
-        assert stale_blocker not in text
+    assert len(maintainer_doc_paths) > 1
+    for path in maintainer_doc_paths:
+        maintainer_doc = path.read_text(encoding="utf-8")
+        for stale_blocker in stale_release_blockers:
+            assert stale_blocker not in maintainer_doc, path.name
 
 
 def test_maintainer_reference_native_probe_diagnostics_include_serving_environment_profile():
-    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
-        encoding="utf-8"
-    )
+    text = (MAINTAINER_TOPICS_DIR / "serving-engines.md").read_text(encoding="utf-8")
     serving_handoff = _markdown_section(text, "Serving Engine Handoff")
     compact_serving_handoff = " ".join(serving_handoff.split())
 
     assert "builtin_native_probe_factories_to_record()" in serving_handoff
     assert "ServingEngineConnector" in serving_handoff
     assert "prepare_and_submit_to_engine(" in serving_handoff
-    assert "document-kv-serving-env" in serving_handoff
-    assert "document-kv-native-probe-factories" in serving_handoff
+    assert "cachet-serving-env" in serving_handoff
+    assert "cachet-native-probe-factories" in serving_handoff
     assert "fail closed" in compact_serving_handoff
     assert "pinned isolated serving-environment profile" in compact_serving_handoff
     assert (
@@ -1585,9 +1577,7 @@ def test_maintainer_reference_native_probe_diagnostics_include_serving_environme
 
 
 def test_maintainer_reference_workflow_api_shows_single_text_document_helper():
-    text = (REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md").read_text(
-        encoding="utf-8"
-    )
+    text = (MAINTAINER_TOPICS_DIR / "core-library.md").read_text(encoding="utf-8")
     storage_backends = _markdown_section(text, "Storage Backends")
     workflow_api = _markdown_section(text, "Workflow API")
 
