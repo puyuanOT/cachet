@@ -26,13 +26,18 @@ from document_kv_cache.benchmark_handoffs import (
 )
 from document_kv_cache.benchmark_runner import load_v1_jsonl_suite
 from document_kv_cache.benchmarks import (
+    CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
+    DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     SUPPORTED_V1_HARDWARE_TARGETS,
+    BenchmarkArm,
+    baseline_prefill_arm,
     build_prompt_parts,
+    method_benchmark_arm,
     validate_v1_hardware_target,
 )
 from document_kv_cache.engine_adapters import (
@@ -610,6 +615,78 @@ def prepared_benchmark_handoff_coverage_record(
     }
 
 
+def prepared_benchmark_cache_arm(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> BenchmarkArm | None:
+    """Return the registered cache arm that prepared handoffs declare, if any.
+
+    Handoffs from registered-method generation declare their cache method, which
+    the legacy unidentified ``document_kv_cache`` arm cannot consume.
+    """
+
+    if not config.uses_prepared_datasets:
+        return None
+    suite = load_v1_jsonl_suite(
+        suite_id=config.benchmark_id,
+        paths=dataset_paths,
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+    )
+    methods = {example.kv_transfer_params.get(DOCUMENT_KV_CACHE_METHOD_PARAM) for example in suite.examples}
+    if methods == {None}:
+        return None
+    if len(methods) != 1 or None in methods:
+        raise ValueError(
+            "Prepared vLLM benchmark handoffs must all declare the same cache method; "
+            f"found {sorted(str(method) for method in methods)}"
+        )
+    method = methods.pop()
+    digests = {_prepared_handoff_method_config_digest(example.kv_transfer_params) for example in suite.examples}
+    if len(digests) != 1 or "" in digests:
+        raise ValueError(
+            "Prepared vLLM benchmark handoffs must all carry one artifact_identity "
+            f"method_config_digest for {method!r}; found {sorted(digests)}"
+        )
+    return method_benchmark_arm(method, arm_id=CACHE_REUSE_ARM, method_config_digest=digests.pop())
+
+
+def _prepared_handoff_method_config_digest(params: Mapping[str, Any]) -> str:
+    record = params.get(DOCUMENT_KV_HANDOFF_RECORD_PARAM)
+    if record is None:
+        record = json.loads(Path(_cluster_file_path(str(params[DOCUMENT_KV_HANDOFF_JSON_PARAM]))).read_text(encoding="utf-8"))
+    handle = record.get("handle") if isinstance(record, Mapping) else None
+    identity = handle.get("artifact_identity") if isinstance(handle, Mapping) else None
+    digest = identity.get("method_config_digest") if isinstance(identity, Mapping) else None
+    return digest if isinstance(digest, str) else ""
+
+
+def benchmark_arm_spec(arm: BenchmarkArm) -> dict[str, object]:
+    """Serialize an arm to the ``benchmark_runner --arm-spec-json`` record."""
+
+    spec: dict[str, object] = {
+        "arm_id": arm.arm_id,
+        "uses_cache": arm.uses_cache,
+        "description": arm.description,
+        "requires_cachet_handoff": arm.requires_cachet_handoff,
+    }
+    for field_name in (
+        "cache_method",
+        "connector_mode",
+        "variant_id",
+        "implementation_kind",
+        "method_version",
+        "method_config_digest",
+        "physical_transform_id",
+        "physical_transform_version",
+        "physical_transform_config_digest",
+    ):
+        value = getattr(arm, field_name)
+        if value:
+            spec[field_name] = value
+    return spec
+
+
 def _prepared_handoff_reference_issue(example: object) -> dict[str, object] | None:
     params = getattr(example, "kv_transfer_params", {})
     if not isinstance(params, Mapping):
@@ -988,8 +1065,9 @@ print(json.dumps({"rows": rows, "over_budget": over_budget}, sort_keys=True), fl
 
 
 def run_benchmark_runner(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+    cache_arm = prepared_benchmark_cache_arm(config, dataset_paths)
     try:
-        run(build_benchmark_runner_args(config, dataset_paths))
+        run(build_benchmark_runner_args(config, dataset_paths, cache_arm=cache_arm))
     except subprocess.CalledProcessError as exc:
         summary = benchmark_failure_summary(config.benchmark_output_path)
         raise RuntimeError(
@@ -1367,7 +1445,10 @@ def fetch_served_model_ids(models_url: str) -> set[str]:
 
 
 def build_benchmark_runner_args(
-    config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    *,
+    cache_arm: BenchmarkArm | None = None,
 ) -> list[str]:
     args = [
         sys.executable,
@@ -1404,6 +1485,9 @@ def build_benchmark_runner_args(
                 PREPARED_PREFIX_CACHE_SALT_MODE,
             ]
         )
+    if cache_arm is not None:
+        for arm in (baseline_prefill_arm(), cache_arm):
+            args.extend(["--arm-spec-json", json.dumps(benchmark_arm_spec(arm), sort_keys=True)])
     args.extend(dataset_args(dataset_paths))
     return args
 

@@ -1,5 +1,6 @@
 from pathlib import Path
 import gc
+import hashlib
 import json
 import os
 import subprocess
@@ -52,6 +53,7 @@ from document_kv_cache.vllm_smoke import (
     parse_args,
     parse_dataset_specs,
     prepare_generated_benchmark_handoffs,
+    prepared_benchmark_cache_arm,
     prepared_benchmark_handoff_coverage_record,
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
@@ -59,11 +61,20 @@ from document_kv_cache.vllm_smoke import (
     smoke_dataset_records,
     validate_prepared_benchmark_handoffs,
 )
+import document_kv_cache.benchmark_runner as benchmark_runner_module
+from document_kv_cache._benchmark_cli import main as benchmark_cli_main
+from document_kv_cache._benchmark_cli import parse_benchmark_arm_specs
+from document_kv_cache.artifact_identity import TokenContract, method_config_digest
+from document_kv_cache.benchmark_runner import BenchmarkGeneration
 from document_kv_cache.benchmarks import (
+    BASELINE_PREFILL_ARM,
+    CACHE_REUSE_ARM,
+    DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    baseline_prefill_arm,
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
@@ -160,6 +171,45 @@ class OneTokenBenchmarkKVGenerator:
                 chunk_id=chunk.chunk_id,
             ),
             payload=b"\0" * layout.bytes_per_token,
+            token_count=1,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+class ContractOneTokenBenchmarkKVGenerator:
+    method_config = {"probe": "contract-one-token"}
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        layout = layout_for_model(
+            config.model_id,
+            dtype=config.dtype,
+            lora_id=config.lora_id,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+        payload = b"\0" * layout.bytes_per_token
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout),
+                token_contract=TokenContract.from_token_ids(
+                    (1,),
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
+            ),
+            payload=payload,
             token_count=1,
             dtype=config.dtype,
             layout_version=config.layout_version,
@@ -685,6 +735,80 @@ def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tm
     payload_uri = enriched["kv_transfer_params"][DOCUMENT_KV_PAYLOAD_URI_PARAM]
     assert handoff_json.exists()
     assert payload_uri.startswith(str(tmp_path / "generated-handoffs" / "biography"))
+
+
+def test_benchmark_runner_args_use_registered_cache_arm_declared_by_generated_handoffs(tmp_path, monkeypatch, capsys):
+    module = ModuleType("cachet_test_vllm_contract_handoff_generator")
+    module.build_generator = ContractOneTokenBenchmarkKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-generated-arms",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items()),
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory=f"{module.__name__}:build_generator",
+            output_dir=tmp_path / "generated-handoffs",
+            dtype="bfloat16",
+            align_bytes=1,
+            require_artifact_contract=True,
+        ),
+    )
+    generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
+    enriched = json.loads(generated_paths["biography"].read_text(encoding="utf-8"))
+    assert enriched["kv_transfer_params"][DOCUMENT_KV_CACHE_METHOD_PARAM] == "full_prefix_prefill"
+
+    cache_arm = prepared_benchmark_cache_arm(config, generated_paths)
+
+    assert cache_arm is not None
+    assert cache_arm.arm_id == CACHE_REUSE_ARM
+    assert cache_arm.cache_method == "full_prefix_prefill"
+    assert cache_arm.method_config_digest == method_config_digest(ContractOneTokenBenchmarkKVGenerator.method_config)
+    args = build_benchmark_runner_args(config, generated_paths, cache_arm=cache_arm)
+    arm_specs = [json.loads(args[index + 1]) for index, arg in enumerate(args) if arg == "--arm-spec-json"]
+    assert parse_benchmark_arm_specs(arm_specs)[0] == (baseline_prefill_arm(), cache_arm)
+
+    real_run = benchmark_runner_module.run_openai_compatible_v1_benchmark
+    monkeypatch.setattr(
+        benchmark_runner_module,
+        "run_openai_compatible_v1_benchmark",
+        lambda benchmark_config: real_run(benchmark_config, engine_factory=lambda _arm, _config: _AnswerEngine()),
+    )
+    capsys.readouterr()
+    legacy_args = build_benchmark_runner_args(config, generated_paths)
+    assert legacy_args[1:3] == args[1:3] == ["-m", "document_kv_cache.benchmark_runner"]
+    assert benchmark_cli_main(legacy_args[3:]) == 1
+    assert "legacy KV params declare cache method 'full_prefix_prefill'" in capsys.readouterr().out
+
+    assert benchmark_cli_main(args[3:]) == 0
+    record = json.loads(config.benchmark_output_path.read_text(encoding="utf-8"))
+    measured_arms = {measurement["arm_id"] for measurement in record["measurements"]}
+    assert measured_arms == {BASELINE_PREFILL_ARM, CACHE_REUSE_ARM}
+
+
+def test_prepared_benchmark_cache_arm_keeps_legacy_arms_for_undeclared_handoffs(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-legacy-arms",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items()),
+    )
+
+    assert prepared_benchmark_cache_arm(config, dataset_paths) is None
+    assert "--arm-spec-json" not in build_benchmark_runner_args(config, dataset_paths)
+
+
+class _AnswerEngine:
+    def generate(self, request):
+        return BenchmarkGeneration(
+            output_text="Ada Lovelace",
+            prompt_tokens=len(request.prompt_text.split()),
+            completion_tokens=2,
+            ttft_seconds=1.0,
+            time_to_completion_seconds=2.0,
+        )
 
 
 def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(tmp_path, monkeypatch):
