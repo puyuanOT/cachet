@@ -2315,6 +2315,9 @@ def _validate_reserved_record_metadata(
 
 
 def _layout_from_record(layout: Mapping[str, Any]) -> KVLayout:
+    pre_rope = layout.get("pre_rope", False)
+    if not isinstance(pre_rope, bool):
+        raise TypeError("pre_rope must be a boolean")
     kv_layout = KVLayout(
         model_id=_required_str(layout, "model_id"),
         lora_id=_required_str(layout, "lora_id"),
@@ -2336,13 +2339,13 @@ def _layout_from_record(layout: Mapping[str, Any]) -> KVLayout:
             layout.get("payload_axis_order", "token_major"),
             field_name="layout.payload_axis_order",
         ),
-        pre_rope=bool(layout.get("pre_rope", False)),
+        pre_rope=pre_rope,
         rope_theta=layout.get("rope_theta"),
         rope_rotary_dim=_optional_positive_int(layout, "rope_rotary_dim"),
         key_position_encoding=kv_key_position_encoding_from_value(
             layout.get(
                 "key_position_encoding",
-                "pre_rope" if layout.get("pre_rope", False) else "stored_post_rope",
+                "pre_rope" if pre_rope else "stored_post_rope",
             ),
             field_name="layout.key_position_encoding",
         ),

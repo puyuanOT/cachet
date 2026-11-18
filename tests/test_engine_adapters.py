@@ -138,6 +138,14 @@ def test_layout_record_round_trips_payload_axis_order():
     assert _layout_from_record(legacy_record).payload_axis_order is KVPayloadAxisOrder.TOKEN_MAJOR
 
 
+def test_layout_record_rejects_non_boolean_pre_rope():
+    record = _layout_to_record(layout())
+    assert _layout_from_record({**record, "pre_rope": False}).pre_rope is False
+
+    with pytest.raises(TypeError, match="pre_rope must be a boolean"):
+        _layout_from_record({**record, "pre_rope": "false"})
+
+
 def segment_binding(
     *,
     token_start: int = 0,
