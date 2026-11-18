@@ -46,8 +46,10 @@ from document_kv_cache.engine_adapters import (
     validate_engine_adapter_request_record,
 )
 from document_kv_cache.engine_probe import _validate_local_payload_uri
+from document_kv_cache.artifact_identity import method_config_digest as compute_method_config_digest
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
@@ -330,6 +332,8 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     dataset_paths = benchmark_dataset_paths(config)
     dataset_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
     validate_prepared_benchmark_handoffs(config, dataset_paths)
+    cache_arm = prepared_benchmark_cache_arm(config, dataset_paths)
+    metadata["benchmark_cache_arm"] = None if cache_arm is None else benchmark_arm_spec(cache_arm)
     validate_prompt_token_budget(config, dataset_paths)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
@@ -344,7 +348,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     try:
         wait_for_server(server, config.server_log_path, config, timeout_seconds=config.server_start_timeout_seconds)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
-        run_benchmark_runner(config, dataset_paths)
+        run_benchmark_runner(config, dataset_paths, cache_arm)
     finally:
         terminate_process(server)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
@@ -643,18 +647,31 @@ def prepared_benchmark_cache_arm(
         )
     method = methods.pop()
     digests = {_prepared_handoff_method_config_digest(example.kv_transfer_params) for example in suite.examples}
+    if digests == {""}:
+        # Handoffs generated without the artifact contract carry no identity;
+        # this run's generation record still names the generator's config digest.
+        digests = {_generated_handoff_method_config_digest(config)}
     if len(digests) != 1 or "" in digests:
         raise ValueError(
             "Prepared vLLM benchmark handoffs must all carry one artifact_identity "
-            f"method_config_digest for {method!r}; found {sorted(digests)}"
+            f"method_config_digest for {method!r}, or come from this run's handoff "
+            f"generation; found {sorted(digests)}"
         )
     return method_benchmark_arm(method, arm_id=CACHE_REUSE_ARM, method_config_digest=digests.pop())
+
+
+def _generated_handoff_method_config_digest(config: VLLMSmokeBenchmarkConfig) -> str:
+    if config.handoff_generation is None or not config.prepared_handoff_generation_path.exists():
+        return ""
+    record = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
+    digest = record.get("method_config_digest") if isinstance(record, Mapping) else None
+    return digest if isinstance(digest, str) else ""
 
 
 def _prepared_handoff_method_config_digest(params: Mapping[str, Any]) -> str:
     record = params.get(DOCUMENT_KV_HANDOFF_RECORD_PARAM)
     if record is None:
-        record = json.loads(Path(_cluster_file_path(str(params[DOCUMENT_KV_HANDOFF_JSON_PARAM]))).read_text(encoding="utf-8"))
+        record = json.loads(local_path(str(params[DOCUMENT_KV_HANDOFF_JSON_PARAM])).read_text(encoding="utf-8"))
     handle = record.get("handle") if isinstance(record, Mapping) else None
     identity = handle.get("artifact_identity") if isinstance(handle, Mapping) else None
     digest = identity.get("method_config_digest") if isinstance(identity, Mapping) else None
@@ -954,6 +971,7 @@ def _generate_prepared_benchmark_handoff_inputs(
         "dataset_source": "prepared",
         "benchmark_id": config.benchmark_id,
         "generator_factory": generation.generator_factory,
+        "method_config_digest": compute_method_config_digest(getattr(generator, "method_config", {})),
         "output_dir": str(generation.output_dir),
         "dtype": generation.dtype,
         "align_bytes": generation.align_bytes,
@@ -1064,8 +1082,11 @@ print(json.dumps({"rows": rows, "over_budget": over_budget}, sort_keys=True), fl
     return record
 
 
-def run_benchmark_runner(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
-    cache_arm = prepared_benchmark_cache_arm(config, dataset_paths)
+def run_benchmark_runner(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    cache_arm: BenchmarkArm | None,
+) -> None:
     try:
         run(build_benchmark_runner_args(config, dataset_paths, cache_arm=cache_arm))
     except subprocess.CalledProcessError as exc:

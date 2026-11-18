@@ -217,6 +217,10 @@ class ContractOneTokenBenchmarkKVGenerator:
         )
 
 
+class ConfiguredOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
+    method_config = {"probe": "legacy-one-token"}
+
+
 class TrackedOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
     last_ref = None
 
@@ -652,6 +656,7 @@ def test_run_benchmark_runner_reraises_with_failure_summary(monkeypatch, tmp_pat
         public_vllm_smoke.run_benchmark_runner(
             config,
             {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS},
+            None,
         )
 
 
@@ -737,9 +742,18 @@ def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tm
     assert payload_uri.startswith(str(tmp_path / "generated-handoffs" / "biography"))
 
 
-def test_benchmark_runner_args_use_registered_cache_arm_declared_by_generated_handoffs(tmp_path, monkeypatch, capsys):
-    module = ModuleType("cachet_test_vllm_contract_handoff_generator")
-    module.build_generator = ContractOneTokenBenchmarkKVGenerator
+@pytest.mark.parametrize(
+    ("generator_class", "require_artifact_contract"),
+    [
+        (ContractOneTokenBenchmarkKVGenerator, True),
+        (ConfiguredOneTokenBenchmarkKVGenerator, False),
+    ],
+)
+def test_benchmark_runner_args_use_registered_cache_arm_declared_by_generated_handoffs(
+    tmp_path, monkeypatch, capsys, generator_class, require_artifact_contract
+):
+    module = ModuleType("cachet_test_vllm_declared_handoff_generator")
+    module.build_generator = generator_class
     monkeypatch.setitem(sys.modules, module.__name__, module)
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
     config = VLLMSmokeBenchmarkConfig(
@@ -752,19 +766,30 @@ def test_benchmark_runner_args_use_registered_cache_arm_declared_by_generated_ha
             output_dir=tmp_path / "generated-handoffs",
             dtype="bfloat16",
             align_bytes=1,
-            require_artifact_contract=True,
+            require_artifact_contract=require_artifact_contract,
         ),
     )
     generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
     enriched = json.loads(generated_paths["biography"].read_text(encoding="utf-8"))
     assert enriched["kv_transfer_params"][DOCUMENT_KV_CACHE_METHOD_PARAM] == "full_prefix_prefill"
+    handoff = json.loads(Path(enriched["kv_transfer_params"][DOCUMENT_KV_HANDOFF_JSON_PARAM]).read_text(encoding="utf-8"))
+    assert (handoff["handle"].get("artifact_identity") is not None) is require_artifact_contract
 
     cache_arm = prepared_benchmark_cache_arm(config, generated_paths)
 
     assert cache_arm is not None
     assert cache_arm.arm_id == CACHE_REUSE_ARM
     assert cache_arm.cache_method == "full_prefix_prefill"
-    assert cache_arm.method_config_digest == method_config_digest(ContractOneTokenBenchmarkKVGenerator.method_config)
+    assert cache_arm.method_config_digest == method_config_digest(generator_class.method_config)
+    if not require_artifact_contract:
+        prepared_only = VLLMSmokeBenchmarkConfig(
+            benchmark_id="prepared-without-identity",
+            output_dir=tmp_path / "out-prepared",
+            local_root=tmp_path / "local-prepared",
+            dataset_specs=tuple(f"{dataset}={path}" for dataset, path in generated_paths.items()),
+        )
+        with pytest.raises(ValueError, match="must all carry one artifact_identity method_config_digest"):
+            prepared_benchmark_cache_arm(prepared_only, generated_paths)
     args = build_benchmark_runner_args(config, generated_paths, cache_arm=cache_arm)
     arm_specs = [json.loads(args[index + 1]) for index, arg in enumerate(args) if arg == "--arm-spec-json"]
     assert parse_benchmark_arm_specs(arm_specs)[0] == (baseline_prefill_arm(), cache_arm)
@@ -1521,6 +1546,11 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(
         public_vllm_smoke,
+        "prepared_benchmark_cache_arm",
+        lambda cfg, paths: calls.append(("prepared_benchmark_cache_arm", cfg.benchmark_id, paths)),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
         "validate_prompt_token_budget",
         lambda cfg, paths: calls.append(("validate_prompt_token_budget", cfg.benchmark_id, paths)),
     )
@@ -1559,6 +1589,7 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
             str(tmp_path / "local" / "hf-cache"),
         ),
         ("write_smoke_datasets", config.local_dir),
+        ("prepared_benchmark_cache_arm", "smoke-1", dataset_paths),
         ("validate_prompt_token_budget", "smoke-1", dataset_paths),
         ("start_vllm_server", "http://127.0.0.1:8123", config.venv_python, config.server_log_path),
         ("wait_for_server", fake_server, config.server_log_path, "http://127.0.0.1:8123", 480.0),
