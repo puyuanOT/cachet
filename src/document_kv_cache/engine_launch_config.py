@@ -46,6 +46,7 @@ _SGLANG_DYNAMIC_HICACHE_BACKEND = "dynamic"
 _VLLM_DOCUMENT_KV_CONNECTOR = "DocumentKVConnector"
 _VLLM_OFFLOADING_CONNECTOR = "OffloadingConnector"
 _VLLM_ALLOWED_KV_ROLES = frozenset({"kv_both", "kv_producer", "kv_consumer"})
+_VLLM_DOCUMENT_KV_ROLE = "kv_consumer"
 _VLLM_OFFLOADING_EVICTION_POLICIES = frozenset({"lru", "arc"})
 _SGLANG_DOCUMENT_KV_BACKEND_NAME = "document_kv"
 _SGLANG_DOCUMENT_KV_CLASS_NAME = "DocumentKVHiCacheBackend"
@@ -143,7 +144,7 @@ class EngineLaunchConfigEvidence:
 def build_vllm_launch_config(
     *,
     module_path: str = DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH,
-    kv_role: str = "kv_both",
+    kv_role: str = _VLLM_DOCUMENT_KV_ROLE,
     record_type: str = DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
     schema_version: int = DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
     kv_injection_method: str = DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
@@ -545,10 +546,10 @@ def _validate_vllm_launch_config(record: Mapping[str, Any]) -> tuple[str, ...]:
             expected_leaves=_VLLM_DOCUMENT_KV_MODULE_LEAVES,
         )
     )
-    if record.get("kv_role") not in _VLLM_ALLOWED_KV_ROLES:
+    if record.get("kv_role") != _VLLM_DOCUMENT_KV_ROLE:
         issues.append(
-            "vLLM launch config kv_role must be one of "
-            f"{sorted(_VLLM_ALLOWED_KV_ROLES)!r}"
+            "vLLM launch config kv_role must be "
+            f"{_VLLM_DOCUMENT_KV_ROLE!r}; Cachet's document KV connector is load-only"
         )
     extra_config = record.get("kv_connector_extra_config")
     if not isinstance(extra_config, Mapping):
@@ -903,7 +904,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _add_vllm_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("build-vllm", help="Build a vLLM transfer config sidecar.")
     parser.add_argument("--module-path", default=DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH)
-    parser.add_argument("--kv-role", default="kv_both", choices=sorted(_VLLM_ALLOWED_KV_ROLES))
+    parser.add_argument("--kv-role", default=_VLLM_DOCUMENT_KV_ROLE, choices=[_VLLM_DOCUMENT_KV_ROLE])
     parser.add_argument(
         "--provider-factory",
         default=DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,

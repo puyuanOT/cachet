@@ -65,7 +65,7 @@ def _vllm_launch_config(**extra_overrides: object) -> dict[str, object]:
     return {
         "kv_connector": "DocumentKVConnector",
         "kv_connector_module_path": "company_vllm_patch.document_kv_connector",
-        "kv_role": "kv_both",
+        "kv_role": "kv_consumer",
         "kv_connector_extra_config": extra,
     }
 
@@ -112,7 +112,7 @@ def test_build_vllm_launch_config_emits_valid_release_shape():
     assert record == {
         "kv_connector": "DocumentKVConnector",
         "kv_connector_module_path": "vllm_kv_injection.vllm_dynamic_connector",
-        "kv_role": "kv_both",
+        "kv_role": "kv_consumer",
         "kv_connector_extra_config": {
             "deployment": "qa",
             "max_model_len": 32768,
@@ -320,7 +320,9 @@ def test_validate_engine_launch_config_record_rejects_wrong_backend():
             "other.module",
             "vLLM launch config kv_connector_module_path must end with one of",
         ),
-        ("kv_role", "other_role", "vLLM launch config kv_role must be one of"),
+        ("kv_role", "other_role", "vLLM launch config kv_role must be 'kv_consumer'"),
+        ("kv_role", "kv_both", "document KV connector is load-only"),
+        ("kv_role", "kv_producer", "document KV connector is load-only"),
     ],
 )
 def test_validate_engine_launch_config_record_rejects_wrong_vllm_adapter_identity(
