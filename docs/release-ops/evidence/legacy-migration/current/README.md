@@ -18,9 +18,9 @@ Files:
   evidence record.
 
 This is not the benchmark report directory. Human-readable benchmark status
-lives under `benchmarks/`, starting with `benchmarks/README.md`. The appendix is
-intentionally empty until the frozen vLLM 0.27.1 campaign produces new
-qualified evidence; older incompatible result mirrors are not retained.
+lives under `benchmarks/`, starting with `benchmarks/README.md`. The appendix
+holds only the sealed vLLM 0.30.0 campaign results; older incompatible result
+mirrors are not retained.
 
 Regenerate from the repository root with:
 

@@ -604,7 +604,7 @@ def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
         assert (REPO_ROOT / release_evidence["evidence_uri"]).is_file()
     assert "This is not the benchmark report directory" in readme
     assert "`benchmarks/README.md`" in readme
-    assert "appendix is intentionally empty" in " ".join(readme.split())
+    assert "older incompatible result mirrors are not retained" in " ".join(readme.split())
     assert "document_kv.legacy_compatibility_migration.v1" in readme
     assert "generated from `legacy-migration-scan-config.json`" in readme
 
@@ -1169,7 +1169,7 @@ def test_native_engine_integration_doc_examples_are_validated():
         "aws-g5-a10g",
         "g5.8xlarge",
         "payload-summary",
-        "public numeric cells remain empty until the vLLM 0.27.1",
+        "rendered from the published vLLM 0.30.0 campaign report",
         "compatibility evidence only",
         "commit tokens",
     ):

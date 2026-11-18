@@ -15,10 +15,8 @@ The `test` job runs independently on Python 3.11 and 3.12. Each matrix job:
 4. installs the package with test extras and installs the CPU-only PyTorch
    2.12.1 contract dependency from the PyTorch CPU index;
 5. runs focused Ruff and strict mypy checks over the method, artifact,
-   benchmark manifest/runner/statistics, publication-gate, representative-input
-   preparation, canary,
-   Databricks resource-guard, scaffold, conformance, and reference-method
-   contracts listed in the workflow;
+   benchmark manifest/runner/statistics, publication-gate, scaffold,
+   conformance, and reference-method contracts listed in the workflow;
 6. verifies that every `[project.scripts]` console entry point is installed and
    responds to `--help`, then runs the full pytest suite;
 7. builds a clean PEP 517 wheel and validates its metadata and entry points;

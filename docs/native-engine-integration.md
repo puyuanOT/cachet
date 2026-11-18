@@ -7,8 +7,8 @@ decode, routing, and cleanup.
 
 Use this guide when wiring the current provider-backed vLLM or SGLang paths into
 a deployment. For benchmark status, start with the research-style tables in
-`benchmarks/`; the public numeric cells remain empty until the vLLM 0.27.1
-campaign passes its publication gate.
+`benchmarks/`, rendered from the published vLLM 0.30.0 campaign report and its
+passing publication gate.
 
 ## Launch Configs
 
