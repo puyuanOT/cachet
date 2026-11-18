@@ -151,6 +151,7 @@ document-kv-engine-probe-databricks-job \
   --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json \
   --vllm-runtime-preflight-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-runtime-preflight.json \
   --vllm-runtime-preflight-layer-names-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json \
+  --native-probe-factories-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-native-probe-factories.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
@@ -170,8 +171,9 @@ than the official one: build it with
 `python -m document_kv_cache.vllm_wheel_repack <official-wheel> <output-dir>`
 and set `DOCUMENT_KV_VLLM_PATCHED_WHEEL_URI` and
 `DOCUMENT_KV_VLLM_PATCHED_WHEEL_SHA256` to the wheel it emits.
-In release-safe mode it also requires a vLLM runtime preflight output path and
-layer-name JSON source, writes the strict preflight record before the native
+In release-safe mode it also requires `--native-probe-factories-output-json`, a
+vLLM runtime preflight output path, and a layer-name JSON source, writes the
+strict preflight record before the native
 probe starts, and stops without running the probe if validation fails. It
 rejects debug fallback flags and extra wheels so the provider-backed adapter
 modules come only from the Cachet wheel.
