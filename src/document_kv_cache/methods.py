@@ -57,6 +57,7 @@ __all__ = [
     "LMCACHE_CONNECTOR_MODE",
     "CACHET_ARTIFACT_EXECUTION",
     "ENGINE_NATIVE_EXECUTION",
+    "validate_registered_reuse_plan",
 ]
 
 METHOD_LIFECYCLE_RECORD_TYPE = "document_kv.method_lifecycle.v1"

@@ -494,43 +494,6 @@ def _clustered_bootstrap_interval(
     )
 
 
-def _bootstrap_interval(
-    pairs: Sequence[tuple[float, float]],
-    estimator: Callable[[Sequence[tuple[float, float]]], float | None],
-    *,
-    confidence_level: float,
-    bootstrap_samples: int,
-    seed: int,
-) -> ConfidenceInterval | None:
-    if not pairs:
-        return None
-    estimate = estimator(pairs)
-    if estimate is None:
-        return None
-    generator = random.Random(seed)
-    sample_count = len(pairs)
-    estimates: list[float] = []
-    for _ in range(bootstrap_samples):
-        sample = [pairs[generator.randrange(sample_count)] for _ in range(sample_count)]
-        value = estimator(sample)
-        if value is not None:
-            estimates.append(value)
-    if not estimates:
-        return None
-    estimates.sort()
-    alpha = 1.0 - confidence_level
-    lower = min(estimate, _percentile(estimates, alpha / 2.0))
-    upper = max(estimate, _percentile(estimates, 1.0 - alpha / 2.0))
-    return ConfidenceInterval(
-        estimate=estimate,
-        lower=lower,
-        upper=upper,
-        confidence_level=confidence_level,
-        bootstrap_samples=bootstrap_samples,
-        paired_samples=sample_count,
-    )
-
-
 def _speedup_estimator(pairs: Sequence[tuple[float, float]]) -> float | None:
     if any(baseline <= 0 or candidate <= 0 for baseline, candidate in pairs):
         return None

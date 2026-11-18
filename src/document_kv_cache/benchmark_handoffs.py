@@ -679,7 +679,7 @@ def generate_benchmark_handoff_bundles(
         uc_volume_root=uc_volume_root,
     )
     runtime_metadata: list[tuple[tuple[str, ...], str]] = []
-    for target, source_document in zip(
+    for _target, source_document in zip(
         bundle_targets,
         source_documents,
         strict=True,
