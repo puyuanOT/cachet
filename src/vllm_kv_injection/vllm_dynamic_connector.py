@@ -27,6 +27,14 @@ __all__ = [
 
 _VLLM_RUNTIME_IMPORT_ERROR: Exception | None = None
 
+
+@dataclass
+class _StubTransferResults:
+    finished_sending: set[str] = field(default_factory=set)
+    finished_recving: set[str] = field(default_factory=set)
+    failed_recving: set[str] = field(default_factory=set)
+
+
 try:  # pragma: no cover - exercised in live vLLM environments.
     from vllm.distributed.kv_transfer.kv_connector.v1.base import (  # type: ignore[import-not-found]
         KVConnectorBase_V1 as _KVConnectorBaseV1,
@@ -114,12 +122,6 @@ try:  # pragma: no cover - exercised in live vLLM environments.
 except Exception as exc:  # pragma: no cover - local lightweight or broken-runtime path.
     if _VLLM_RUNTIME_IMPORT_ERROR is None:
         _VLLM_RUNTIME_IMPORT_ERROR = exc
-
-    @dataclass
-    class _StubTransferResults:
-        finished_sending: set[str] = field(default_factory=set)
-        finished_recving: set[str] = field(default_factory=set)
-        failed_recving: set[str] = field(default_factory=set)
 
     @dataclass
     class _KVConnectorStats:
