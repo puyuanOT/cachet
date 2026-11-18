@@ -164,9 +164,9 @@ return as a production dependency.
   preflight required before provider-backed native SGLang probes.
 - `sglang_smoke.py` owns the self-contained Qwen3/SGLang Databricks live smoke
   that starts a pinned SGLang server, validates the dynamic HiCache provider,
-  and runs the supported baseline OpenAI-compatible live check. It fails closed
-  for handoff-backed cache-arm runs until the live SGLang runtime forwards
-  request metadata and SGLang page-key proof into HiCache `extra_info`.
+  and runs the baseline OpenAI-compatible live check followed by a
+  handoff-backed cache request whose prefix loads from HiCache storage.
+  `--baseline-only` skips the cache request for server bring-up.
 - `storage.py` provides Memory, Disk, Unity Catalog Volume, and routed range
   readers.
 - `storage_benchmark.py` measures storage-reader latency and throughput.
