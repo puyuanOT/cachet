@@ -1538,7 +1538,7 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "enable GitHub auto-merge" in compact_text
     assert "delete head branches after merge" in compact_text
     assert (
-        "Re-run the packaged Databricks vLLM and SGLang smoke runners on GPU"
+        "Re-run the packaged SGLang smoke runner on L4 (`aws-g6-l4`)"
         in compact_remaining_v1_work
     )
     assert "new strict release bundle exclusively from source-bound artifacts" in (

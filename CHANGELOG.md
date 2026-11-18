@@ -16,8 +16,9 @@
   connector actions take an explicit reuse plan.
 - The packaged vLLM and SGLang Databricks smoke runners install the official
   vLLM `0.30.0+cu129` wheel from the CUDA 12.9 indexes and emit handoffs that
-  carry the registered artifact and token contracts. They have not yet been
-  re-run on GPU against this profile.
+  carry the registered artifact and token contracts. The vLLM runner passes
+  the registered cache arm that those handoffs declare. On 2026-11-18 the
+  vLLM runner passed on L4 and A10G and the SGLang runner passed on A10G.
 - `packaging` pinned to 26.3.
 - Benchmark records: the vLLM 0.30.0 campaign report and gate, the Quality v2
   report, and the plan-coherent auxiliary latency re-run, plus
