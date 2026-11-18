@@ -1,4 +1,4 @@
-"""Deterministically repack the official vLLM 0.27.1 cu129 wheel.
+"""Deterministically repack the official vLLM 0.30.0 or 0.27.1 cu129 wheel.
 
 The benchmark runtime must never mutate installed ``site-packages``.  This
 module verifies the official release asset, applies Cachet's three approved
@@ -645,14 +645,26 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+_REPACKERS_BY_VERSION = {
+    "0.30.0": lambda source_wheel, output_dir: repack_vllm_0300_cu129_wheel(source_wheel, output_dir),
+    "0.27.1": lambda source_wheel, output_dir: repack_vllm_0271_cu129_wheel(source_wheel, output_dir),
+}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build the content-addressed Cachet vLLM 0.27.1 cu129 wheel."
+        description="Build the content-addressed Cachet E5M2-patched vLLM cu129 wheel."
     )
     parser.add_argument("source_wheel", help="Downloaded official cu129 release wheel")
     parser.add_argument("output_dir", help="Directory for the patched wheel and manifest")
+    parser.add_argument(
+        "--vllm-version",
+        choices=tuple(_REPACKERS_BY_VERSION),
+        default="0.30.0",
+        help="Official vLLM release the source wheel must be (default: 0.30.0).",
+    )
     args = parser.parse_args(argv)
-    result = repack_vllm_0271_cu129_wheel(args.source_wheel, args.output_dir)
+    result = _REPACKERS_BY_VERSION[args.vllm_version](args.source_wheel, args.output_dir)
     print(
         json.dumps(
             {

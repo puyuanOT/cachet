@@ -8,9 +8,11 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
 
+import document_kv_cache.vllm_wheel_repack as wheel_repack
 from document_kv_cache.vllm_wheel_repack import (
     VLLM_PATCHED_WHEEL_MANIFEST_RECORD_TYPE,
     VLLM_PATCHED_WHEEL_MANIFEST_SCHEMA_VERSION,
+    PatchedVLLMWheel,
     repack_vllm_0271_cu129_wheel,
 )
 
@@ -173,3 +175,29 @@ def test_repack_rejects_pristine_member_hash_mismatch(tmp_path):
             expected_source_wheel_sha256=_file_digest(source_wheel),
             patch_closure=tuple(closure),
         )
+
+
+def test_main_repacks_the_requested_vllm_release(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    def recording_repacker(version):
+        def repack(source_wheel, output_dir):
+            calls.append((version, source_wheel, output_dir))
+            return PatchedVLLMWheel(
+                wheel_path=Path(output_dir) / "patched.whl",
+                manifest_path=Path(output_dir) / "manifest.json",
+                wheel_sha256="a" * 64,
+                wheel_size=1,
+                source_wheel_sha256="b" * 64,
+            )
+
+        return repack
+
+    monkeypatch.setattr(wheel_repack, "repack_vllm_0300_cu129_wheel", recording_repacker("0.30.0"))
+    monkeypatch.setattr(wheel_repack, "repack_vllm_0271_cu129_wheel", recording_repacker("0.27.1"))
+
+    assert wheel_repack.main(["source.whl", str(tmp_path)]) == 0
+    assert wheel_repack.main(["source.whl", str(tmp_path), "--vllm-version", "0.27.1"]) == 0
+
+    assert calls == [("0.30.0", "source.whl", str(tmp_path)), ("0.27.1", "source.whl", str(tmp_path))]
+    assert json.loads(capsys.readouterr().out.splitlines()[0])["wheel_sha256"] == "a" * 64
