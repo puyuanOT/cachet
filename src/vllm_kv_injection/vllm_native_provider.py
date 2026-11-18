@@ -2931,21 +2931,38 @@ def _rope_cos_sin_for_load(
     )
 
 
+_FP8_VIEW_DTYPE_NAMES = {
+    "fp8": "float8_e4m3fn",
+    "fp8_e4m3": "float8_e4m3fn",
+    "fp8_e4m3fn": "float8_e4m3fn",
+    "float8": "float8_e4m3fn",
+    "float8_e4m3": "float8_e4m3fn",
+    "float8_e4m3fn": "float8_e4m3fn",
+    "fp8_e5m2": "float8_e5m2",
+    "float8_e5m2": "float8_e5m2",
+}
+
+
 def _fp8_view_dtype(payload_dtype: object) -> object | None:
     """Return the torch fp8 dtype for an fp8 payload dtype string, else ``None``.
 
     fp8 KV is stored as raw uint8 bytes, so re-roping must bitcast to the real fp8
-    dtype (not integer-convert the bytes) before decoding to float.
+    dtype (not integer-convert the bytes) before decoding to float. Bare ``fp8``
+    is E4M3, matching vLLM's ``kv_cache_dtype`` and the Transformers generator.
     """
     torch = _torch()
     if not isinstance(payload_dtype, str):
         return None
     normalized = payload_dtype.lower()
-    if normalized in ("fp8", "fp8_e5m2", "float8_e5m2"):
-        return getattr(torch, "float8_e5m2", None)
-    if normalized in ("fp8_e4m3", "fp8_e4m3fn", "float8_e4m3"):
-        return getattr(torch, "float8_e4m3fn", None)
-    return None
+    torch_name = _FP8_VIEW_DTYPE_NAMES.get(normalized)
+    if torch_name is None:
+        if normalized.startswith(("fp8", "float8")):
+            raise ValueError(f"unsupported fp8 payload dtype {payload_dtype!r} for RoPE repositioning")
+        return None
+    fp8_dtype = getattr(torch, torch_name, None)
+    if fp8_dtype is None:
+        raise ValueError(f"Torch runtime does not support {torch_name} for RoPE repositioning")
+    return fp8_dtype
 
 
 def _rerope_src_layer_keys(

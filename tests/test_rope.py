@@ -142,33 +142,50 @@ def test_provider_rerope_src_layer_ropes_keys_leaves_values():
         _rerope_src_layer_keys(torch.randn(T, H, D), cos=cos, sin=sin, rope_theta=THETA, rotary_dim=D)
 
 
-def test_provider_rerope_fp8_keys_stored_as_uint8():
+@pytest.mark.parametrize(
+    ("payload_dtype", "torch_dtype_name"),
+    [("fp8_e5m2", "float8_e5m2"), ("fp8", "float8_e4m3fn"), ("fp8_e4m3", "float8_e4m3fn")],
+)
+def test_provider_rerope_fp8_keys_stored_as_uint8(payload_dtype, torch_dtype_name):
     # fp8 KV is stored as raw uint8 bytes; the re-rope must bitcast uint8<->fp8 around
     # the rotation (not integer-convert the bytes). This reproduces the injection path
-    # and would fail with the naive uint8.to(float32) bug.
-    if not hasattr(torch, "float8_e5m2"):
-        pytest.skip("float8_e5m2 unsupported")
+    # and would fail with the naive uint8.to(float32) bug or a mismatched fp8 format.
+    fp8_dtype = getattr(torch, torch_dtype_name, None)
+    if fp8_dtype is None:
+        pytest.skip(f"{torch_dtype_name} unsupported")
     from vllm_kv_injection.vllm_native_provider import _rerope_src_layer_keys
 
     T, H, D = 6, 8, 128
-    k_fp8 = torch.randn(T, H, D).to(torch.float8_e5m2)
-    v_fp8 = torch.randn(T, H, D).to(torch.float8_e5m2)
+    k_fp8 = torch.randn(T, H, D).to(fp8_dtype)
+    v_fp8 = torch.randn(T, H, D).to(fp8_dtype)
     src_layer = torch.stack((k_fp8.view(torch.uint8), v_fp8.view(torch.uint8)), dim=1)  # [T,2,H,D] uint8
     positions = torch.arange(4000, 4000 + T)
     cos, sin = rope_cos_sin(positions, head_dim=D, rope_theta=THETA, rotary_dim=D)
     out = _rerope_src_layer_keys(
-        src_layer, cos=cos, sin=sin, rope_theta=THETA, rotary_dim=D, payload_dtype="fp8_e5m2"
+        src_layer, cos=cos, sin=sin, rope_theta=THETA, rotary_dim=D, payload_dtype=payload_dtype
     )
     assert out.dtype == torch.uint8 and out.shape == src_layer.shape
     assert torch.equal(out[:, 1], v_fp8.view(torch.uint8))  # V bytes untouched
     # Decoded roped K must equal the reference rope of the decoded fp8 keys (fp8-coarse).
-    out_k = out[:, 0].view(torch.float8_e5m2).to(torch.float32)
+    out_k = out[:, 0].view(fp8_dtype).to(torch.float32)
     ref_k = (
         apply_rope_to_keys(k_fp8.to(torch.float32), positions, rope_theta=THETA)
-        .to(torch.float8_e5m2)
+        .to(fp8_dtype)
         .to(torch.float32)
     )
     assert torch.allclose(out_k, ref_k, atol=1e-1)
+
+
+def test_provider_rerope_rejects_unknown_fp8_payload_dtype():
+    from vllm_kv_injection.vllm_native_provider import _rerope_src_layer_keys
+
+    T, H, D = 2, 1, 8
+    src_layer = torch.zeros(T, 2, H, D, dtype=torch.uint8)
+    cos, sin = rope_cos_sin(torch.arange(T), head_dim=D, rope_theta=THETA, rotary_dim=D)
+    with pytest.raises(ValueError, match="unsupported fp8 payload dtype 'fp8_e3m4'"):
+        _rerope_src_layer_keys(
+            src_layer, cos=cos, sin=sin, rope_theta=THETA, rotary_dim=D, payload_dtype="fp8_e3m4"
+        )
 
 
 def test_provider_rope_cos_sin_for_load_uses_absolute_positions():
