@@ -1,9 +1,11 @@
 import ast
 from hashlib import sha256
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -401,10 +403,7 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
         if path.stem != "__init__" and not path.stem.startswith("_")
     }
     public_modules = sorted(document_kv_cache._PUBLIC_SUBMODULES)
-    internal_modules = sorted(document_kv_cache._INTERNAL_SUBMODULES)
-    compatibility_only_modules = sorted(
-        package_modules - set(public_modules) - set(internal_modules)
-    )
+    compatibility_only_modules = sorted(package_modules - set(public_modules))
     pyproject = tomllib.loads(
         (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
@@ -419,21 +418,15 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
 
     assert public_modules
     assert set(public_modules) <= package_modules
-    assert internal_modules == [
-        "gpu_qualification_sentinels", "representative_runtime_qualification",
-    ]
-    assert set(internal_modules) <= package_modules
-    assert set(public_modules).isdisjoint(internal_modules)
     assert compatibility_only_modules == ["scheduler"]
     assert document_scripts
     assert cachet_scripts
     for module_name in public_modules:
         assert f"`{module_name}.py`" in text
-    for module_name in internal_modules:
-        assert f"`{module_name}.py`" in text
     for module_name in compatibility_only_modules:
         assert f"`{module_name}.py`" in text
-    assert "Internal Modules" in text
+    assert "Archived Campaign Modules" in text
+    assert "`vllm-0300-campaign-archive`" in text
     assert "Compatibility-Only Modules" in text
     for script_name in document_scripts:
         assert f"`{script_name}`" in text
@@ -451,15 +444,6 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "merged-branch cleanup" in text
     assert "wrappers over implementation modules in `restaurant_kv_serving`" not in text
     assert "real wrapper modules" not in text
-    assert (
-        "`generation_throughput_with_writes` sentinel and v1 evidence validator "
-        "remain unchanged so historical records cannot be reinterpreted"
-        in compact_text
-    )
-    assert "same-hardware fresh-load byte reproducibility" in compact_text
-    assert "logical/token/layout/size equivalence" in compact_text
-    assert "73,728 raw bytes per cache-prefix token" in compact_text
-    assert "L40S is the sole publication handoff generator" in compact_text
     assert "byte-identical segmented generation artifacts across SM89 GPUs" not in (
         compact_text
     )
@@ -1136,7 +1120,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "MiniMax",
         "GPT-5.5 review",
         "Refactor skill",
-        "vLLM 0.27.1-campaign-pending skeleton",
+        "rendered from the sealed vLLM 0.30.0 campaign records",
+        "vllm-0300-campaign-archive",
         "five independent deployment blocks",
         "corrected full-dataset score evaluation",
     ):
@@ -1295,25 +1280,52 @@ def test_release_ops_doc_classifies_installed_cli_surface():
     assert "Prefer `cachet-*` in new documentation" in release_ops
 
 
+def _sealed_record_checker():
+    spec = importlib.util.spec_from_file_location(
+        "verify_sealed_records",
+        REPO_ROOT / "benchmarks" / "verify_sealed_records.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_sealed_record_checker_rejects_tampered_records_and_regions(tmp_path):
+    checker = _sealed_record_checker()
+    benchmark_copy = tmp_path / "benchmarks"
+    shutil.copytree(REPO_ROOT / "benchmarks", benchmark_copy)
+    assert checker.verify(benchmark_copy) == []
+
+    rerun_path = benchmark_copy / checker.AUXILIARY_RERUN
+    rerun = json.loads(rerun_path.read_text(encoding="utf-8"))
+    rerun["schema_version"] = 2
+    rerun_path.write_text(
+        json.dumps(rerun, allow_nan=False, ensure_ascii=False, indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    issues = checker.verify(benchmark_copy)
+    assert f"{checker.AUXILIARY_RERUN} bytes differ from the sealed record" in issues
+    assert f"{checker.AUXILIARY_RERUN} closed_record_sha256 does not recompute" in issues
+
+    shutil.copy2(REPO_ROOT / "benchmarks" / checker.AUXILIARY_RERUN, rerun_path)
+    readme_path = benchmark_copy / "README.md"
+    readme = readme_path.read_text(encoding="utf-8")
+    begin = "<!-- cachet:vllm-0300-quality-v2:begin -->"
+    readme_path.write_text(readme.replace(begin, begin + "\nedited", 1), encoding="utf-8")
+    assert checker.verify(benchmark_copy) == [
+        "README region cachet:vllm-0300-quality-v2 differs from its sealed rendering"
+    ]
+
+
 def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
-    from document_kv_cache.publication_campaign_finalizer import (
-        validate_vllm_0271_publication_report_pair,
-    )
-    from document_kv_cache.publication_campaign_tables import (
-        PUBLICATION_TABLE_REGION_MARKERS,
-        PUBLICATION_TABLE_SECTION_ORDER,
-        render_vllm_0271_publication_appendix_readme,
-        validate_vllm_0271_publication_table_regions,
-    )
-    from document_kv_cache.publication_latency_execution import (
-        validate_publication_latency_auxiliary_rerun_record,
-        validate_publication_latency_auxiliary_rerun_region,
-    )
     from document_kv_cache.quality_v2 import (
         validate_quality_v2_readme_region,
         validate_quality_v2_report_record,
     )
 
+    checker = _sealed_record_checker()
     benchmark_root = REPO_ROOT / "benchmarks"
 
     def benchmark_tree_snapshot() -> tuple[tuple[str, str], ...]:
@@ -1322,6 +1334,8 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         entry_types: list[tuple[str, str]] = []
         for path in entries:
             relative_path = str(path.relative_to(benchmark_root))
+            if "__pycache__" in path.parts:
+                continue
             mode = path.lstat().st_mode
             assert not stat.S_ISLNK(mode), relative_path
             if stat.S_ISREG(mode):
@@ -1336,7 +1350,6 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         return tuple(sorted(entry_types))
 
     initial_tree = benchmark_tree_snapshot()
-    initial_entry_types = dict(initial_tree)
     byte_snapshots: dict[Path, bytes] = {}
 
     def stable_read_bytes(path: Path) -> bytes:
@@ -1354,240 +1367,58 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         return value
 
     root_readme = strict_markdown(benchmark_root / "README.md")
-    appendix_readme = strict_markdown(benchmark_root / "appendix" / "README.md")
-    campaign_dir = benchmark_root / "appendix" / "vllm-0271-publication-v1"
-    campaign_readme_path = campaign_dir / "README.md"
-    report_path = campaign_dir / "campaign-report.json"
-    gate_path = campaign_dir / "benchmark-publication-gate.json"
-    final_paths = (campaign_readme_path, report_path, gate_path)
-    final_presence = tuple(
-        str(path.relative_to(benchmark_root)) in initial_entry_types
-        for path in final_paths
-    )
-    assert not any(final_presence) or all(final_presence), (
-        "the vLLM 0.27.1 publication folder must be wholly absent or contain "
-        "its complete README/report/gate triplet"
-    )
-    if all(final_presence):
-        assert initial_entry_types.get(
-            str(campaign_dir.relative_to(benchmark_root))
-        ) == "directory"
-        for path in final_paths:
-            assert initial_entry_types.get(
-                str(path.relative_to(benchmark_root))
-            ) == "file"
-
-    pending_region_sha256 = {
-        "status": "ceb545987a0a9a6b14e8617c5af605b265cd55c1c45474e056eaa4793685eb3f",
-        "campaign_disclosures": "5cc153bbc33d7018b32524f875b632d45992d3c66b387a346429103d9d97224f",
-        "core_latency": "e4012c18c6aa023d93919610f68c02385cfa76dbcd29ee608a23edbb791a23b8",
-        "latency_estimands": "341201526f4b28bc76ba5d1ddcf66df3240bfe2feedbcae56d081cf33add257d",
-        "dataset_scores": "4a6a9d3b30ef909e83ec9dea540b138f4e78795a98b5ef2e4361a27dee6483d2",
-        "niah_grid": "eb1fa55d0a856564926e9ea8c8254d7c0b931da8cdd28e09dd3d37f550fe60fe",
-        "precision": "d18bc5be5f573458b9800650fda6c721c43ef34c71d186c7b0aa2bf007c2ca2d",
-        "storage": "842216b24e5e49f7367f9df0715cf6f6c3d5b34a8ef64e06ddf4146993abfd8b",
-        "hardware": "eb992ebe448c2d5e3f00b875940173097a24ef79d25bb3522013950f20145190",
-        "platform": "97a00d7d436f66dfb7cb5397198aad028caa4350a32a17f55d3523cad15cdc12",
-        "resource_cache": "2bee80d43cbb3e3da6341a95299291ea976a9d546d4cf27239b134a0863af210",
-    }
-    observed_region_sha256: dict[str, str] = {}
-
-    previous_marker_end = -1
-    for section in PUBLICATION_TABLE_SECTION_ORDER:
-        begin, end = PUBLICATION_TABLE_REGION_MARKERS[section]
-        assert root_readme.count(begin) == 1
-        assert root_readme.count(end) == 1
-        begin_at = root_readme.index(begin)
-        end_at = root_readme.index(end)
-        assert previous_marker_end < begin_at < end_at
-        content_at = begin_at + len(begin)
-        observed_region_sha256[section] = sha256(
-            root_readme[content_at:end_at].encode("utf-8")
-        ).hexdigest()
-        previous_marker_end = end_at + len(end)
-
-    main_table = _markdown_section(root_readme, "Main Latency And Resource Table")
-    estimand_table = _markdown_section(root_readme, "Paired Latency Estimands")
-    score_table = _markdown_section(root_readme, "Benchmark Dataset Score Table")
+    strict_markdown(benchmark_root / "appendix" / "README.md")
     compact_root_readme = " ".join(root_readme.split())
 
+    assert checker.verify(benchmark_root) == []
+    assert checker.ARCHIVE_TAG == "vllm-0300-campaign-archive"
+
+    report = json.loads(
+        stable_read_bytes(benchmark_root / checker.CAMPAIGN_REPORT).decode("utf-8")
+    )
+    assert f"Status: vLLM {report['engine_version']} campaign published" in root_readme
+    benchmark_markdown = "\n".join(
+        strict_markdown(benchmark_root / relative_path)
+        for relative_path, entry_type in initial_tree
+        if entry_type == "file" and relative_path.endswith(".md")
+    )
+    assert "N/A (0.27.1 campaign pending)" not in benchmark_markdown
+    assert "N/A (0.27.1 full evaluation pending)" not in benchmark_markdown
+    assert "| Dataset | Governed metric | n |" in root_readme
+    for unsupported in (
+        "KV&nbsp;Packet",
+        "CacheBlend",
+        "InfoFlow&nbsp;KV",
+        "LMCache",
+        "Multi connector",
+        "LongBench v2",
+        "RULER",
+        "Packed Q4",
+        "Hybrid RAM/disk/Unity Catalog",
+        "SGLang",
+    ):
+        assert unsupported in root_readme
     assert "L40S was the designed sole handoff generator" in compact_root_readme
     assert "served an L4-regenerated bundle" in compact_root_readme
     assert "same-hardware fresh-load byte reproducibility" in compact_root_readme
     assert "cross-hardware logical/token/layout/size equivalence" in compact_root_readme
 
-    base_files = {
-        "README.md",
-        "_template/README.md",
-        "appendix/README.md",
-        "databricks/README.md",
-        "native-engine/README.md",
-        "sglang/README.md",
-        "storage/README.md",
-        "vllm/README.md",
-    }
-    base_directories = {
-        "_template",
-        "appendix",
-        "databricks",
-        "native-engine",
-        "sglang",
-        "storage",
-        "vllm",
-    }
-    if not any(final_presence):
-        assert observed_region_sha256 == pending_region_sha256
-        assert "Status: vLLM 0.27.1 campaign pending" in root_readme
-        assert "No latency, resource, ablation, or" in root_readme
-        assert "Deployment blocks | 5 matched fresh-cluster blocks" in root_readme
-        assert "Closed-loop request concurrency | 1, 2, and 4" in root_readme
-        assert main_table.count("| Baseline |") == 9
-        assert main_table.count("| Vanilla&nbsp;KV |") == 9
-        assert main_table.count("N/A (0.27.1 campaign pending)") == 162
-        assert "P50 decode tok/s" in main_table
-        assert "Peak GPU process memory" in main_table
-        assert estimand_table.count("| Vanilla KV vs Baseline |") == 9
-        assert estimand_table.count("N/A (0.27.1 campaign pending)") == 52
-        for auxiliary in (
-            "BF16 payload/runtime KV vs Q8",
-            "RAM vs Disk",
-            "Unity Catalog vs Disk",
-            "A10G vs L4",
-        ):
-            assert auxiliary in estimand_table
-        for context in ("8k", "16k", "32k"):
-            for concurrency in (1, 2, 4):
-                assert f"| Baseline | {context} | {concurrency} |" in main_table
-                assert (
-                    f"| Vanilla&nbsp;KV | {context} | {concurrency} |"
-                    in main_table
-                )
-
-        assert score_table.count("N/A (0.27.1 full evaluation pending)") == 81
-        assert "Baseline parser-status counts" in score_table
-        assert "Vanilla parser-status counts" in score_table
-        for parser_status in (
-            "ok",
-            "missing_block",
-            "multiple_or_malformed_blocks",
-            "extraneous_text",
-            "nested_block",
-            "empty_answer",
-        ):
-            assert f"`{parser_status}`" in score_table
-        assert "including explicit zeros for unobserved" in score_table
-        assert "Vanilla − Baseline" in score_table
-        assert score_table.count("| 8k |") == 3
-        assert score_table.count("| 16k |") == 3
-        assert score_table.count("| 32k |") == 3
-        assert "| Context | Needle position | n |" in score_table
-        assert "N/A (runner not implemented)" in score_table
-        assert "All 23 governed descriptive cells" in root_readme
-        assert "absence means that no campaign result is" in appendix_readme
-        assert "Superseded result folders are not retained" in appendix_readme
-        expected_files = base_files
-    else:
-
-        def canonical_json_record(path: Path) -> dict[str, object]:
-            def reject_duplicate_keys(
-                pairs: list[tuple[str, object]],
-            ) -> dict[str, object]:
-                value: dict[str, object] = {}
-                for key, item in pairs:
-                    assert key not in value
-                    value[key] = item
-                return value
-
-            raw = stable_read_bytes(path)
-            record = json.loads(
-                raw.decode("utf-8"),
-                object_pairs_hook=reject_duplicate_keys,
-            )
-            assert isinstance(record, dict)
-            canonical = (
-                json.dumps(
-                    record,
-                    allow_nan=False,
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n"
-            ).encode("utf-8")
-            assert raw == canonical
-            return record
-
-        report = canonical_json_record(report_path)
-        gate = canonical_json_record(gate_path)
-        validate_vllm_0271_publication_report_pair(report, gate)
-        validate_vllm_0271_publication_table_regions(root_readme, report, gate)
-        expected_campaign_readme = render_vllm_0271_publication_appendix_readme(
-            report,
-            gate,
-        )
-        expected_campaign_readme_bytes = expected_campaign_readme.encode("utf-8")
-        assert (
-            stable_read_bytes(campaign_readme_path)
-            == expected_campaign_readme_bytes
-        )
-        assert (
-            f"Status: vLLM {report['engine_version']} campaign published" in root_readme
-        )
-        benchmark_markdown = "\n".join(
-            strict_markdown(benchmark_root / relative_path)
-            for relative_path, entry_type in initial_tree
-            if entry_type == "file" and relative_path.endswith(".md")
-        )
-        assert "N/A (0.27.1 campaign pending)" not in benchmark_markdown
-        assert "N/A (0.27.1 full evaluation pending)" not in benchmark_markdown
-        assert "| Dataset | Governed metric | n |" in root_readme
-        for unsupported in (
-            "KV&nbsp;Packet",
-            "CacheBlend",
-            "InfoFlow&nbsp;KV",
-            "LMCache",
-            "Multi connector",
-            "LongBench v2",
-            "RULER",
-            "Packed Q4",
-            "Hybrid RAM/disk/Unity Catalog",
-            "SGLang",
-        ):
-            assert unsupported in root_readme
-        expected_files = base_files | {
-            "appendix/vllm-0271-publication-v1/README.md",
-            "appendix/vllm-0271-publication-v1/benchmark-publication-gate.json",
-            "appendix/vllm-0271-publication-v1/campaign-report.json",
-        }
-        base_directories = base_directories | {
-            "appendix/vllm-0271-publication-v1"
-        }
-        quality_dir = benchmark_root / "appendix" / "vllm-0300-quality-v2"
-        quality_report = canonical_json_record(quality_dir / "quality-v2-report.json")
-        validate_quality_v2_report_record(quality_report)
-        validate_quality_v2_readme_region(root_readme, quality_report)
-        assert quality_report["closed_record_sha256"] in strict_markdown(
-            quality_dir / "README.md"
-        )
-        rerun_dir = benchmark_root / "appendix" / "vllm-0300-auxiliary-latency-rerun"
-        rerun_record = canonical_json_record(rerun_dir / "auxiliary-latency-rerun.json")
-        validate_publication_latency_auxiliary_rerun_record(rerun_record)
-        validate_publication_latency_auxiliary_rerun_region(
-            root_readme, rerun_record, report
-        )
-        assert rerun_record["closed_record_sha256"] in strict_markdown(
-            rerun_dir / "README.md"
-        )
-        expected_files = expected_files | {
-            "appendix/vllm-0300-quality-v2/README.md",
-            "appendix/vllm-0300-quality-v2/quality-v2-report.json",
-            "appendix/vllm-0300-auxiliary-latency-rerun/README.md",
-            "appendix/vllm-0300-auxiliary-latency-rerun/auxiliary-latency-rerun.json",
-        }
-        base_directories = base_directories | {
-            "appendix/vllm-0300-quality-v2",
-            "appendix/vllm-0300-auxiliary-latency-rerun",
-        }
+    quality_dir = benchmark_root / "appendix" / "vllm-0300-quality-v2"
+    quality_report = json.loads(
+        stable_read_bytes(benchmark_root / checker.QUALITY_V2_REPORT).decode("utf-8")
+    )
+    validate_quality_v2_report_record(quality_report)
+    validate_quality_v2_readme_region(root_readme, quality_report)
+    assert quality_report["closed_record_sha256"] in strict_markdown(
+        quality_dir / "README.md"
+    )
+    rerun_dir = benchmark_root / "appendix" / "vllm-0300-auxiliary-latency-rerun"
+    rerun_record = json.loads(
+        stable_read_bytes(benchmark_root / checker.AUXILIARY_RERUN).decode("utf-8")
+    )
+    assert rerun_record["closed_record_sha256"] in strict_markdown(
+        rerun_dir / "README.md"
+    )
 
     unsupported_method_section = _markdown_section(
         root_readme,
@@ -1599,680 +1430,50 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     assert "71.390128 reconciled GPU-hours" in root_readme
     assert "exact 236/98/236 post-migration append-only prefix" in root_readme
     assert "zero active reservations" in root_readme
-    actual_files = {
+
+    expected_files = {
+        "README.md",
+        "_template/README.md",
+        "appendix/README.md",
+        "appendix/vllm-0271-publication-v1/README.md",
+        "appendix/vllm-0271-publication-v1/benchmark-publication-gate.json",
+        "appendix/vllm-0271-publication-v1/campaign-report.json",
+        "appendix/vllm-0300-quality-v2/README.md",
+        "appendix/vllm-0300-quality-v2/quality-v2-report.json",
+        "appendix/vllm-0300-auxiliary-latency-rerun/README.md",
+        "appendix/vllm-0300-auxiliary-latency-rerun/auxiliary-latency-rerun.json",
+        "databricks/README.md",
+        "native-engine/README.md",
+        "sglang/README.md",
+        "storage/README.md",
+        "verify_sealed_records.py",
+        "vllm/README.md",
+    }
+    expected_directories = {
+        "_template",
+        "appendix",
+        "appendix/vllm-0271-publication-v1",
+        "appendix/vllm-0300-quality-v2",
+        "appendix/vllm-0300-auxiliary-latency-rerun",
+        "databricks",
+        "native-engine",
+        "sglang",
+        "storage",
+        "vllm",
+    }
+    assert {
         relative_path
         for relative_path, entry_type in initial_tree
         if entry_type == "file"
-    }
-    assert actual_files == expected_files
-    actual_directories = {
+    } == expected_files
+    assert {
         relative_path
         for relative_path, entry_type in initial_tree
         if entry_type == "directory"
-    }
-    assert actual_directories == base_directories
+    } == expected_directories
     for path, expected_bytes in byte_snapshots.items():
         assert path.read_bytes() == expected_bytes
-    final_tree = benchmark_tree_snapshot()
-    assert final_tree == initial_tree
-
-    ledger_doc = (REPO_ROOT / "docs" / "databricks-cluster-hour-ledger.md").read_text(
-        encoding="utf-8"
-    )
-    compact_ledger_doc = " ".join(ledger_doc.split())
-    assert (
-        "live-P90 projection applies to each producer and consumer phase of "
-        "every nonzero-indexed full-score wave (waves 1–9); both wave-zero "
-        "phases use hard cap/headroom admission"
-    ) in compact_ledger_doc
-    assert (
-        "retained opening is now the exact 236-reservation, 98-receipt, "
-        "236-terminal prefix"
-    ) in compact_ledger_doc
-    assert "preserves the earlier 124/0/124 history" in compact_ledger_doc
-    assert (
-        "intermediate 138/0/138, 152/14/152, 166/28/166, 180/42/180, "
-        "194/56/194, 208/70/208, and 222/84/222 prefixes" in compact_ledger_doc
-    )
-    assert "analysis.opening_ledger_provenance" in compact_ledger_doc
-    assert (
-        "18,292-byte observed parameters JSON versus the 10,000-byte server limit"
-    ) in compact_ledger_doc
-    assert "zero observed active runs" in compact_ledger_doc
-    assert (
-        "Seven runs failed and the other seven were canceled after those failures"
-    ) in compact_ledger_doc
-    assert (
-        "All 14 runs were created and all 14 tasks failed with `INTERNAL_ERROR` "
-        "before package installation"
-    ) in compact_ledger_doc
-    assert (
-        "Its 4,585.718 terminal cluster-seconds add 1.273810555556 GPU-hours"
-    ) in compact_ledger_doc
-    assert (
-        "d6f7619f6a70311fac571b31bedc7974e756a1679218cf63b76a7e7ceb91ebec"
-        in compact_ledger_doc
-    )
-    assert (
-        "04cfe3a16200f011710317d829b7c52c0e4ca12f95fd8d277c949e7d6856d5b0"
-        in compact_ledger_doc
-    )
-    assert (
-        "RuntimeError: Databricks cluster identity is unavailable; expected "
-        "DATABRICKS_CLUSTER_ID or DB_CLUSTER_ID"
-    ) in compact_ledger_doc
-    assert (
-        "fbb1fd4250b3fc62b58778047b12fe3775e6cffbc8641b38a00c721a9d4c768d"
-        in compact_ledger_doc
-    )
-    assert (
-        "06c527102283bb379ecb26a345e76467d7e1614771d9a3c8313e9ebe6d941cf9"
-        in compact_ledger_doc
-    )
-    assert (
-        "376114c27f35725bab5418969d28a77d4a3600dba44d049b597512142856d86f"
-        in compact_ledger_doc
-    )
-    assert (
-        "f76cce3b68417f8d14a5e030d9eacaef3e61d17f123a2a2b5d38be5428a89b94"
-        in compact_ledger_doc
-    )
-    assert (
-        "Its 4,564.259 terminal cluster-seconds add 1.267849722222 GPU-hours"
-        in compact_ledger_doc
-    )
-    assert (
-        "f991036176d59df70f0e339be4eb4a67a7c03a51536f62bf440df1ac72fd0e33"
-        in compact_ledger_doc
-    )
-    assert (
-        "pip requirements-file index precedence omitted the PyTorch CU129 "
-        "index and prevented hash-locked torch resolution"
-    ) in compact_ledger_doc
-    assert (
-        "exactly the five logged keys `error`, `error_trace`, `logs`, "
-        "`logs_truncated`, and `metadata`"
-    ) in compact_ledger_doc
-    assert (
-        "7544cab6366fc1813af8d04da00a8a1f76f1098e3b06c738d8ff8ddd392ae235"
-        in compact_ledger_doc
-    )
-    assert (
-        "5016ed50001b77b77f329e858c01b1a65c5e927f1c55eec7fbc01208d8f25886"
-        in compact_ledger_doc
-    )
-    assert "exactly 29 regular files and 1,564,133 bytes" in compact_ledger_doc
-    assert (
-        "2ee650e0e05ea059bd9f552d6975149c05cbda6dc8d3a715a73594913f078b29"
-        in compact_ledger_doc
-    )
-    assert (
-        "e0f56f1250c4ce213d1a8ba0384ccdad1a1b38fb964c1b6bfcf5729006150455"
-        in compact_ledger_doc
-    )
-    assert (
-        "Its 7,754.755 terminal cluster-seconds add 2.154098611111 GPU-hours"
-        in compact_ledger_doc
-    )
-    assert (
-        "predicted terminal prefix and final offline-reconciled prefix are "
-        "both the exact 194/56/194 prefix"
-    ) in compact_ledger_doc
-    assert (
-        "381ed88dfca75a17cf11b09b7e3dedb435328e518e8f1f0f0d9591be27796f26"
-        in compact_ledger_doc
-    )
-    assert (
-        "1ac7ee076d2a5aa3b12bfd18d3cb6f8843aa9f8f7b8e07686c519869985a6916"
-        in compact_ledger_doc
-    )
-    assert (
-        "be4cb0e80e17c99d9c4bd8abb89b24efb6e1202072fb734c739d322812218c9c"
-        in compact_ledger_doc
-    )
-    assert (
-        "c63521b29233addc1c5ab4435dfa0d639135765bce7a54298c0b0b1200741651"
-        in compact_ledger_doc
-    )
-    assert (
-        "ca93baeda09f3df050b0dad3b8f3091c0f74235c426bd66555b67bd4b6eeafbc"
-        in compact_ledger_doc
-    )
-    assert (
-        "All fourteen hash-locked qualification runtimes installed and "
-        "verified, then failed before sentinel worker launch because the "
-        "site-packages read-only freezer rejected a nonexistent Debian local "
-        "dist-packages scheme path reported by `site.getsitepackages()`"
-    ) in compact_ledger_doc
-    assert (
-        "8937fb907ae789c647754b2bbe9dbc4d9e167b67b8e437613260373b658c0da3"
-        in compact_ledger_doc
-    )
-    assert (
-        "2c555ea534fc3d41d3bc998fcaff8f07aedf42e1872200e39f9ed46796081607"
-        in compact_ledger_doc
-    )
-    assert "exactly 29 regular files and 1,945,499 bytes" in compact_ledger_doc
-    assert (
-        "a685849f6446063bdd5b220cd3ac5218c6e49a1e2d8487acac36316537b35eb7"
-        in compact_ledger_doc
-    )
-    assert (
-        "2996e67b6c6305544c11231266500dcb9c53aa2bbc701fa6d6e626299c2ab06e"
-        in compact_ledger_doc
-    )
-    assert (
-        "Its 11,498.35 terminal cluster-seconds add 3.193986111111 GPU-hours"
-        in compact_ledger_doc
-    )
-    assert (
-        "predicted terminal prefix and final offline-reconciled prefix are "
-        "both the exact 208/70/208 prefix"
-    ) in compact_ledger_doc
-    assert (
-        "a71cee32c1ae056d7db7c72c70fa72bcf5622d8a3ae6d72590c4435bb9db4af9"
-        in compact_ledger_doc
-    )
-    assert (
-        "fd0b6774928f77166657c8d35652e4d557f6708552d88c7c6725fc42d7723e87"
-        in compact_ledger_doc
-    )
-    assert (
-        "c0bede45ea211798c9a5eb31010a91074ded70e370f8ea4fcbeb59b3b9f95598"
-        in compact_ledger_doc
-    )
-    assert (
-        "fe59e32c44ab50f91bae5114a587268d44ebb9acfba74500aedb66158e2541b7"
-        in compact_ledger_doc
-    )
-    assert (
-        "all fourteen hash-locked qualification runtimes installed and "
-        "verified; the two packed-page-roundtrip workers returned measurements "
-        "before post-success runtime observation rejected the virtualenv-created "
-        "runtime/bin/python symlink, while the other twelve sentinel-worker "
-        "subprocesses exited nonzero and the reviewed launcher did not surface "
-        "their captured child stdout/stderr, so their underlying worker causes "
-        "remain unknown"
-    ) in compact_ledger_doc
-    assert (
-        "3662915979987aef1fe4bcf9e0e62f06c67992ee73da679e44f6b6a261e634f5"
-        in compact_ledger_doc
-    )
-    assert (
-        "3f1ddd73298cd46347cf57b84d6cf22f7d6e98802b50ded9457d7a999563786b"
-        in compact_ledger_doc
-    )
-    assert "exactly 29 regular files and 1,828,218 bytes" in compact_ledger_doc
-    assert (
-        "bb6636f3b9bdf5afae0b7d1beb97f5f3192017ba5b04abb651f2a389889aa57f"
-        in compact_ledger_doc
-    )
-    assert (
-        "6c4cca0ec4fbcf4ccb434573f965eeb8022909ce5bdd6afdf31d61085807fa9b"
-        in compact_ledger_doc
-    )
-    assert (
-        "53fd4b076a642101790d21ebbc03b1eb7e609428c2ccd7eafb8cbad5a9a3a112"
-        in compact_ledger_doc
-    )
-    assert (
-        "Its 12,410.279 terminal cluster-seconds add 3.447299722222222 GPU-hours"
-        in compact_ledger_doc
-    )
-    assert (
-        "predicted terminal prefix and final offline-reconciled prefix are "
-        "both the exact 222/84/222 prefix"
-    ) in compact_ledger_doc
-    assert (
-        "22ac65492fa0871f528552cfcae0bd6332b1429cd9fc2e92c373c5e534202d4a"
-        in compact_ledger_doc
-    )
-    assert (
-        "38677fff866e0a7268398c4b616b4be968df3a8191381db74ebd8fcb71af50ef"
-        in compact_ledger_doc
-    )
-    assert (
-        "c805c303a92dba3fdd0390699c757974c1f738ebc4c553bb651618cb27bf8056"
-        in compact_ledger_doc
-    )
-    assert (
-        "1f1682a99e69ad691dfab68a85cc9555eff4daea437d5095d93410af2430c490"
-        in compact_ledger_doc
-    )
-    assert (
-        "reconciled opening balance is therefore 67.930336 GPU-hours"
-    ) in compact_ledger_doc
-    assert (
-        "The immutable campaign-opening snapshot records 71.390128 GPU-hours, "
-        "zero active reservations, and 952.609872 hours remaining"
-    ) in compact_ledger_doc
-    assert (
-        "historical plan authority, not a claim about the live ledger"
-        in compact_ledger_doc
-    )
-    assert "extends that same ordered ledger to 265/127/265" in compact_ledger_doc
-    assert "extends it again to 279/141/279" in compact_ledger_doc
-    assert (
-        "not permission to reuse a stale controller freeze" in compact_ledger_doc
-    )
-    assert (
-        "later native-v2 14-job batch is retained as a cross-hardware raw-byte "
-        "identity gate failure" in compact_ledger_doc
-    )
-    assert (
-        "Terminal job success did not constitute global qualification success"
-        in compact_ledger_doc
-    )
-    assert (
-        "ValueError: L4 and L40S generation artifacts are not byte-identical"
-        in compact_ledger_doc
-    )
-    assert "Zero of twelve corresponding raw artifact SHA-256 values matched" in (
-        compact_ledger_doc
-    )
-    assert "this batch remains `FAILED`" in compact_ledger_doc
-    assert (
-        "diagnostic, non-authorizing evidence; they neither repair that failed "
-        "batch nor grant publication qualification" in compact_ledger_doc
-    )
-    assert "L40S run `506950471100618` reproduced all twelve" in compact_ledger_doc
-    assert "L4 run `71783401971590` likewise reproduced all twelve" in (
-        compact_ledger_doc
-    )
-    assert "exact 430/292/430 prefix" in compact_ledger_doc
-    assert "116.12134277777776 terminal GPU-hours" in compact_ledger_doc
-    assert "5bc44ed1fdde3b6ae13e0e0f4d9429714475dc47fb9d163f70b2236635591822" in (
-        compact_ledger_doc
-    )
-    assert "Thirteen attempt-zero jobs succeeded" in compact_ledger_doc
-    assert "L40S run `965422570602790`" in compact_ledger_doc
-    assert "could not provision `g6e.4xlarge` capacity" in compact_ledger_doc
-    assert "exact 446/308/446 prefix" in compact_ledger_doc
-    assert "120.3651655555555 terminal GPU-hours" in compact_ledger_doc
-    assert "this batch `FAILED`" in compact_ledger_doc
-    assert "uses automatic zone placement for L40S qualification" in (
-        compact_ledger_doc
-    )
-    assert "fresh automatic-zone successor qualification subsequently passed" in (
-        compact_ledger_doc
-    )
-    assert "All fourteen planned attempt-zero jobs succeeded" in compact_ledger_doc
-    assert "exact 460/322/460 prefix" in compact_ledger_doc
-    assert "123.94509916666661 terminal GPU-hours" in compact_ledger_doc
-    assert "historical qualification evidence for those exact source inputs" in (
-        compact_ledger_doc
-    )
-    assert "does not authorize a patched source tree or corrected runner" in (
-        compact_ledger_doc
-    )
-    assert (
-        "first sixteen-job latency-handoff wave is retained only as failed, "
-        "non-authorizing evidence" in compact_ledger_doc
-    )
-    assert "_sha256(__file__)" in compact_ledger_doc
-    assert "every task was `TERMINATED`/`FAILED`" in compact_ledger_doc
-    assert "every parent was `INTERNAL_ERROR`/`FAILED`" in compact_ledger_doc
-    assert "with no repair attempt" in compact_ledger_doc
-    assert "ledger-summed 2.7055291666666665 GPU-hours" in compact_ledger_doc
-    assert "exact 476/338/476 prefix" in compact_ledger_doc
-    assert (
-        "at 126.65062833333326 terminal GPU-hours, with zero active reservations "
-        "and 897.3493716666667 hours remaining" in compact_ledger_doc
-    )
-    assert "publication-q8/404d0ed6ae2f169d1777/worker-{00..15}" in (
-        compact_ledger_doc
-    )
-    assert "must not be repaired, resumed, relabeled, or reused" in compact_ledger_doc
-    assert "corrected runner uses a fresh source closure" in compact_ledger_doc
-    assert (
-        "source-revision `aa5247c` exact14 successor qualification then passed"
-        in compact_ledger_doc
-    )
-    assert "All fourteen planned attempt-zero jobs succeeded" in compact_ledger_doc
-    assert "13,095.136 terminal cluster-seconds" in compact_ledger_doc
-    assert "3.6375377777777773 GPU-hours" in compact_ledger_doc
-    assert "exact 490/352/490 prefix" in compact_ledger_doc
-    assert "130.28816611111108 terminal GPU-hours" in compact_ledger_doc
-    assert "893.7118338888889 hours remaining" in compact_ledger_doc
-    assert (
-        "following sixteen-job Q8-v2 latency-handoff wave is retained only as "
-        "failed or canceled, non-authorizing evidence" in compact_ledger_doc
-    )
-    assert (
-        "publication-q8-v2/404d0ed6ae2f-c903c3fa7dd4-f70a94086f59/"
-        "worker-{00..15}" in compact_ledger_doc
-    )
-    assert "standalone runner's stdlib `venv` bootstrap failed in `ensurepip`" in (
-        compact_ledger_doc
-    )
-    assert "Six parent runs reached `INTERNAL_ERROR`/`FAILED`" in compact_ledger_doc
-    assert "reached `TERMINATED`/`CANCELED`" in compact_ledger_doc
-    assert "receives zero publication credit" in compact_ledger_doc
-    assert "11,156.620 terminal cluster-seconds" in compact_ledger_doc
-    assert "3.099061111111111 GPU-hours" in compact_ledger_doc
-    assert "exact 506/368/506 prefix" in compact_ledger_doc
-    assert "133.38722722222224 terminal GPU-hours" in compact_ledger_doc
-    assert "890.6127727777778 hours remaining" in compact_ledger_doc
-    assert "remain preserved and are not resumable" in compact_ledger_doc
-    assert "pinned `virtualenv` fallback" in compact_ledger_doc
-    assert "a new source closure, and a fresh exact14 qualification" in (
-        compact_ledger_doc
-    )
-    assert "vLLM 0.30.0 qualification of source revision `00153c1`" in (
-        compact_ledger_doc
-    )
-    assert "L40S run `795564550394694` never executed" in compact_ledger_doc
-    assert "exact 267/220/267 prefix" in compact_ledger_doc
-    assert "719.1179608333333 terminal GPU-hours" in compact_ledger_doc
-    assert "this plan cannot be launched again" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `46499e7`" in (
-        compact_ledger_doc
-    )
-    assert "L40S run `212968320589471` never executed" in compact_ledger_doc
-    assert "exact 322/275/322 prefix" in compact_ledger_doc
-    assert "809.8296277777773 terminal GPU-hours" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `88c7a2e`" in (
-        compact_ledger_doc
-    )
-    assert "L40S generation-throughput run `371889181014954`" in (
-        compact_ledger_doc
-    )
-    assert "exact 336/289/336 prefix" in compact_ledger_doc
-    assert "814.6162972222218 terminal GPU-hours" in compact_ledger_doc
-    assert "`{attempt}-capacity-retry-NN` ledger attempts" in compact_ledger_doc
-    assert "as does a job reaching 16 attempts" in compact_ledger_doc
-    assert "`ledger.qualification_capacity_retries`" in compact_ledger_doc
-    assert (
-        "A fresh qualification launch requires zero active campaign runs in the "
-        "workspace."
-    ) in compact_ledger_doc
-    assert (
-        "refuses while any of them carries that prefix or has no name"
-    ) in compact_ledger_doc
-    assert (
-        "follows that token once and requires the page it names to be empty and "
-        "final"
-    ) in compact_ledger_doc
-    assert "The latest abandoned attempt may be a succeeded producer" in (
-        compact_ledger_doc
-    )
-    assert "`ledger.full_score_abandoned_attempts`" in compact_ledger_doc
-    assert "twenty-six wave-zero attempts from eight abandoned chains" in (
-        compact_ledger_doc
-    )
-    assert "148.0647525 GPU-hours" in compact_ledger_doc
-    assert (
-        "no chain abandoned under this rule closed a consumer phase or "
-        "authorized a score"
-    ) in compact_ledger_doc
-    assert (
-        "`AWS_INSUFFICIENT_INSTANCE_CAPACITY_FAILURE`, `CLUSTER_OPERATION_TIMEOUT`, "
-        "`AWS_REQUEST_LIMIT_EXCEEDED`, or `CLOUD_PROVIDER_LAUNCH_FAILURE`"
-    ) in compact_ledger_doc
-    assert "that wait must name the same cluster" in compact_ledger_doc
-    assert "are the only exceptions to the wave-zero rule" in compact_ledger_doc
-    assert "446/396/446 to 468/418/468 for `215d83c`" in compact_ledger_doc
-    assert "482/432/482 to 507/457/507 for `5f07618`" in compact_ledger_doc
-    assert (
-        "loses the exemption only for the chain whose prefixes no longer match"
-    ) in compact_ledger_doc
-    assert "`closed_consumer_phase_count`" in compact_ledger_doc
-    assert "seventy-four abandoned attempts from eleven chains" in compact_ledger_doc
-    assert "368.23190277777775 GPU-hours" in compact_ledger_doc
-    assert "eleven closed consumer phases" in compact_ledger_doc
-    assert "bound to the closed phase it verifies" in compact_ledger_doc
-    assert "marks even `SystemExit(0)` as `FAILED`" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `8323fc7`" in (
-        compact_ledger_doc
-    )
-    assert "exact 351/304/351 prefix" in compact_ledger_doc
-    assert "818.6004038888888 terminal GPU-hours" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `0e45b07`" in (
-        compact_ledger_doc
-    )
-    assert "exact 365/318/365 prefix" in compact_ledger_doc
-    assert "Ready-closure run `805880152638655`" in compact_ledger_doc
-    assert "exact 367/320/367 prefix" in compact_ledger_doc
-    assert "833.199095 terminal GPU-hours" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `5efe2a5`" in (
-        compact_ledger_doc
-    )
-    assert "Databricks holds no run for any of them" in compact_ledger_doc
-    assert "rebuilt offline from the direct `runs/get` record" in compact_ledger_doc
-    assert "receipt-less `legacy_manual` path" in compact_ledger_doc
-    assert "exact 381/331/381 prefix" in compact_ledger_doc
-    assert "836.545991111111 terminal GPU-hours" in compact_ledger_doc
-    assert "destroyed the only copy of the patched vLLM 0.30.0 wheel" in (
-        compact_ledger_doc
-    )
-    assert "pins this file as the recovered manifest" in compact_ledger_doc
-    assert "accepts either exact file identity" in compact_ledger_doc
-    assert "still reproduces the sealed closure" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `02ca22f`" in (
-        compact_ledger_doc
-    )
-    assert "consumer run `946423203173294`" in compact_ledger_doc
-    assert "`Unsupported connector type: DocumentKVConnector`" in compact_ledger_doc
-    assert "expands it only at server launch" in compact_ledger_doc
-    assert "exact 398/348/398 prefix" in compact_ledger_doc
-    assert "853.0619266666665 terminal GPU-hours" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `e2e0a58`" in (
-        compact_ledger_doc
-    )
-    assert "consumer run `304739615275375`" in compact_ledger_doc
-    assert "`baseline_prefill measurement prompt-delivery protocol drift`" in (
-        compact_ledger_doc
-    )
-    assert "inject every whole block of it" in compact_ledger_doc
-    assert "exact 414/364/414 prefix" in compact_ledger_doc
-    assert "871.3643747222221 terminal GPU-hours" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `12d22d9`" in (
-        compact_ledger_doc
-    )
-    assert "Consumer run `160479608912772`" in compact_ledger_doc
-    assert "`durable evidence copy checksum mismatch`" in compact_ledger_doc
-    assert "preserves a point-in-time copy of the server log" in compact_ledger_doc
-    assert "re-reads only its own shards' ready records" in compact_ledger_doc
-    assert "exact 432/382/432 prefix" in compact_ledger_doc
-    assert "893.4019491666666 terminal GPU-hours" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `215d83c`" in (
-        compact_ledger_doc
-    )
-    assert "In attempt 2, run `37620315851874`" in compact_ledger_doc
-    assert "throttling `ec2:RunInstances`" in compact_ledger_doc
-    assert "refused its capacity-failure record" in compact_ledger_doc
-    assert "exact 446/396/446 prefix" in compact_ledger_doc
-    assert "exact 468/418/468 prefix" in compact_ledger_doc
-    assert "976.5455919444444 terminal GPU-hours" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `5f07618`" in (
-        compact_ledger_doc
-    )
-    assert "exact 482/432/482 prefix" in compact_ledger_doc
-    assert "980.1354536111111 terminal GPU-hours" in compact_ledger_doc
-    assert "restored byte-for-byte from the content-addressed latency cache" in (
-        compact_ledger_doc
-    )
-    assert "wave-eight consumer's only attempt, run `1111755166713548`" in (
-        compact_ledger_doc
-    )
-    assert "pip retries HTTP 500, 502, and 503 but not 504" in compact_ledger_doc
-    assert "139.17883722222223 GPU-hours in twenty-five attempts" in (
-        compact_ledger_doc
-    )
-    assert "exact 507/457/507 prefix" in compact_ledger_doc
-    assert "1119.3142908333334 terminal GPU-hours" in compact_ledger_doc
-    assert "904.6857091666666 hours remaining" in compact_ledger_doc
-    assert "vLLM 0.30.0 qualification of source revision `2ab3ff6` failed" in (
-        compact_ledger_doc
-    )
-    for run_id in ("355629181986220", "829413181485539", "511004107376201"):
-        assert f"run `{run_id}`" in compact_ledger_doc
-    assert "exhausted its own retries of HTTP 502 responses" in compact_ledger_doc
-    assert "2.944535277777778 GPU-hours" in compact_ledger_doc
-    assert "exact 521/471/521 prefix" in compact_ledger_doc
-    assert "1122.2588261111111 terminal GPU-hours" in compact_ledger_doc
-    assert "901.7411738888889 hours remaining" in compact_ledger_doc
-    assert "gives every qualification sentinel the same retries" in (
-        compact_ledger_doc
-    )
-    assert "vLLM 0.30.0 qualification of source revision `631848d` succeeded" in (
-        compact_ledger_doc
-    )
-    assert "exact 535/485/535 prefix" in compact_ledger_doc
-    assert "1125.5864088888889 terminal GPU-hours" in compact_ledger_doc
-    assert "88 files of twelve block-two jobs" in compact_ledger_doc
-    assert "first attempt, run `730512942658019`" in compact_ledger_doc
-    assert "`full-score runner SHA-256 does not match`" in compact_ledger_doc
-    assert "1.845232222222222 GPU-hours" in compact_ledger_doc
-    assert "exact 536/486/536 prefix" in compact_ledger_doc
-    assert "1127.431641111111 terminal GPU-hours" in compact_ledger_doc
-    assert "896.568358888889 hours remaining" in compact_ledger_doc
-    assert "admits it as abandoned without a pin" in compact_ledger_doc
-    assert "not sit in a directory named by its `runner_sha256`" in (
-        compact_ledger_doc
-    )
-    for digest in (
-        "f008c08ffac9267ef94f0db0ec3015e081de71141d97ff23cdf58adf95caa28e",
-        "2ec2568f227fe65f3166a8e25735d333f6afb8d1045524a9b3e7c4715eba118a",
-        "a12a67cfd82156cb54f8305196cd8d622170efaf10125cd23a6d56730de51a06",
-        "e2f8b682dddf5885f1c03355c2513a6fcfc485491f4ec4066d80a0e1fd69a703",
-        "404d0ed6ae2f169d1777034c81a057e2af131d805ecd9672900bfc7221871246",
-        "4fc227971ac165d639f5ba29d17e96df1e27aacb4ceff3e4412b417fbf7fdcdd",
-        "39fda42764dbe599d6f869d7bac0ea91034762438e636f3d1e7f90656baee1ce",
-        "b62b66105cc9d048e4c94c88927f23c724f01c876ef9283c34a0d94a5afa7f46",
-        "a9ba97f78ce2c3afc4df575f538bf13929ba8986916dabc315df627da79bcbc9",
-        "ddaadeb6655d86beca7a0c74087f56c270df640e29c53bcc51f9540ce938ca3e",
-        "c903c3fa7dd4d1bc0869e3f3917266255dd451d7b1bc518e115ea41a33445118",
-        "8a1421f8874efb93c0ed3c37998b4fb37c53c391214a4bf39d9be85eebc0bf6f",
-        "85c2b949bf5d8f68cde9cc32f223963522496abd2da98be384abfb4e08f81d0c",
-        "f70a94086f59d062c0fa368326efecd2769219c5e989675652d5b5e5a0aa76ce",
-        "337e79f440c47649c3d2f7b8c4a0a3716de92bf163549f58fca9c2eea2af660b",
-        "ab6f347d876ae63280e794ba346a91016d43d3274865e198c94a7bbc9317eacc",
-        "e09e88a98b8e0510a2e6e6c8df162cd298356e903e236db1431331212471804c",
-        "9fd351c732aa9a2643fc2a23f462354c59594ab530a3cdc0b89adfd74241631d",
-        "1c188abed702bab1018ed60e46ccdafc64d0a515aa8fb319b1fdce39413d43cc",
-        "c0bf9c6562beb3183ec105acb18e3953ea139ccc5f28ad2f0168e5d292d1b04e",
-        "f6c2a779ece0b6f6519ba0815d1871e471cfe321552667cc4386f7fafc13929c",
-        "40c8e4e2307904224709079026ec5f30c4379e94231732feca367f92316670e6",
-        "7ee0bf3a6affc5f91ca2ef6ea42ed76240ea67de97fb15996c6e193c4061b7ce",
-        "911c413e7385634c9995aba6095c03d45e6f05fd10ddba1321ec51a01720906f",
-        "b0accf1f9df24891fee6b25f9d73511205ce6f89fcc76473fc855d37248ea1e8",
-        "15c9f4a90e2afe44435f22ffcef7d1f4b3c6d99d04b246a3257c87b1b499aad0",
-        "26af46e31f92451d61c184a1a4e28aa7fe34904d68d75bd42d3222f6b7e5bc79",
-        "509fcedfff91b4776432a9b3e78b30131375da54505d7918ec8e743f97cdd045",
-        "b0a95e863de2b87af5a45cccfcf6bf1a05fc1a18273170330c370e817ec1349c",
-        "6d6a15abf651525bd163250967d77d88fb5f90f2821627ddd9e6dfbfb0b031e2",
-        "b3cab611b21088663d9eb312f43d9be4d5bd264fc03d4e783915137d0b8e2c14",
-        "cc545c39839327b97105ef3a14b7f8191308babc456865019c9ef9e8dcc91cb6",
-        "508782899e93c7f016fbb23d8ccc38c0d2859c88ea46244d4ddbcc5b35d6c1e8",
-        "43090efae61bee7b7709275ca06d6ae5d58b67a21a2ed831f0279b3074caa415",
-        "738d42f6b1406e8688b72c991328b5e02783226febf87cc153e5a0f1a35b1af0",
-        "131cab785827bc402c681d67c4b6593469ab8fa221ff74fff20fa0ec5b71f31d",
-        "b7e388f11591499a444d2dbc0c1f0444f833a9016cba759cfe92a557694eeb2e",
-        "13734d080e9b21770e09df4ab266fd24840f98a51dd5b2faec171ea8e26e5fbc",
-        "e063b3931d0914243ddc58b0dbd22ff637943c806f1ea1fa4b4adef627a5decb",
-        "182dfdf99155894418e11104f3c78e1936f2ee4bb0a6798bfb4aacc9463f6935",
-        "d221964df11a1951ad84590129fad4e36ce4d913566f18d6de2efd2476e1427f",
-        "aca6e81d08d2fb68b1362840d6d793dae55ee4476e569dbb79ff8e2c0d510ba2",
-        "ccccb195690f4cddc1b80a4d937da8322afa77eb56a1f642c2ad0c6cda918cd0",
-        "94852279e97a3221c2a50c6d956268f0e5bca77bf83f739ea0ffdf58a37eedcd",
-        "8d2902856daff1ee0b1080deb6c36c0d7cc369c26df67a3498b07416ed1ffbc6",
-        "193c095deeb1636a4cf5f873ed6b07bedf0f466c91e3df34417b357e9f125c03",
-        "07efe2f8245ff6c16001cfa1cc940f4f82eaec9a75fa24b9e0bacf7643659247",
-        "10bf77702ce827d38d3a4dd7ec950033da4525a71135dbf0d1297d01e02024d8",
-        "1da3889bdb18f010b198af49947ef4006d3bd58cb9ff08fe7e8775050590a77c",
-        "a6ffeca415e119c3d201b69e8c50f8859d3bb0caf82ee46c421d440fbc34f937",
-        "2782fa40f60854e4241593edbde2e8aa83142a5025381d16c1100d8d84fc7339",
-        "b1eb28847740aeca38e1719730fa7eaa62b0b18e5732b8b00829a10db12069c8",
-        "5791245e4109f4c224faaa04a197b3ab2c142d40e59c1efc0571e9df78887080",
-        "55740af7bfee17de3f767ebd4861a667c6344e8034fd30b342295f979cc46359",
-        "de274fb0fb9f7ee8667b3c268c0712048c5a1294e0467e0b5c16eb2c14ae071d",
-        "d17b0ee3ce74cb4ddd66172e711683143e7a743ad17691605f55b99f187ef3ec",
-        "57107a5887dc65145fdf27186aa60f6227b3911a0bd2c270dc0a1ec9b8ca361f",
-        "f76ef108464e94f95724264de8649bc6bcb38668310edf0b4904dfb709f55634",
-        "641193c9ddb7ca8a61ca252929787bbc25c21a5903f86341f251e7248848873c",
-        "d3ffbd0576427d78721fc2f7022d6adbfc31f66af871fc0cddd2c5d7f39f3f99",
-        "7becfb73d555149acadbe1426ff20e723d21d53d068f248687a04c5e9eb36718",
-        "fc2a7a8c879fa16e38ce31210022bd05385500cc677a399ded3b725889a7eb9c",
-        "6f672af3a953916ee803990691380faa8c4aa57605e8ea778769aa6df87a540f",
-        "ad43f93dbb2170502325a5bfb9265ac3fdba6027aac17d1a8d9afbbdc12c9f88",
-        "4ef81207e1190bf2c3b70997680503be40d09b55f55c3bef21eb6802ef76cf86",
-        "2901803b0469731738a2b76ff6b3eb88a0dd442cc766c28e88040588155839c2",
-        "0f0f9b3391868f27b8f56d689a6858fe1fef69be3eca4c2aed06b12ee8b1dced",
-        "e6cac4e1baf0a41006cf5b7d243cb2f3e3d1be41e2b61bd2a064ae336d4bf90b",
-        "4891bb70cf5da431f7faba3ad358a2f6488dab5ace16b935f3a4b431f7b99cb1",
-        "313af4ec8428178433a863d2ed3f9c6d046825d1e9ad259e67787653136029f7",
-        "ac0159bb82c045dd0ef0215f6ad5fac3d1e47e26601268a2a0fbebab462ace97",
-        "9388a32af27f2abfa3daa085174c8289423cb0836cb0d8b5383e5c314eac2aef",
-        "27a720f02491edec04cff57c903a8c0584e3cb404f721356ebd5a4bd16b6ce3c",
-        "1b3735de8d5cb6ddaa1b878858454f36a42aed5ff8fedc464cd5d2a73c7e5498",
-        "31e00d9d39d7faf590ff2998be579a1dbab19bca0935b44029fe90ad2cc1015d",
-        "e9d548a7fd793ba707024a21498f513752f6408fc805287fd7b4be99d6a6bf7e",
-        "bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
-        "04a3c11347b1e87c201972df96fba4975d1bc912ac5239581bca41f35d8716fe",
-        "d3b0219eb01a7d672ed7f5eb622b17bc910092eb63d6a69e719d0c9f7eb73978",
-        "62e1d7aa108cc48ad3f8cb1fe1dff5c18e85fbaba53e776f54a3bc9ee4b2dad7",
-        "bcccf951892d00236c2c6a86814ce0500f519515e7c366b1fb9ecdddcd35e998",
-        "55e24ba17899593c2f27d2d4c2aa82b290c2db07b52272ea02d2e3784dea6b3f",
-        "5bf4dcb073b27a11e9c92fca8b510255cec5cc3685810b72adf3f87b8e4f8d48",
-        "c7d78e3f5cf92617a6172bbc8646e427895be9c4f79492d7b5d575a7c196aa08",
-        "598c8c2220bc32e2a0aaa7cbecf2921d3950b1b9524213c15437bc201e716a2c",
-        "c82dd1492b9f963018c1aeda7e862d1512019993896d000fa584e491eb098f4c",
-        "80609de306fe59ddaf96b8d69369fe3c729f7e3190718e1f2f3a27efc616c695",
-        "af97d6ef6a8fcaaefa78839684ef144a70e3b3b24aa7e712666a592b6c89a69e",
-        "681ce919d8a7f470330696314ff15f35b7da0dc213cb3d79ca01878ed1905929",
-        "f2f52a4882009b50c62c2564e1c8757ea44641b731be113fa312da8847d22969",
-        "839d637e57b31a5d02a7fc46eccef4850e60cbebc80b322c9a2d06477d859744",
-        "2e841da1db26179adae70d7c75826da3c6a3a31e6c13f6e33d408cb62c093438",
-        "27c9a540ff05278030b43c0185b2dd099dcd87e108306fe573f2ba96ea5cc757",
-    ):
-        assert digest in compact_ledger_doc
-    full_score_source = (
-        REPO_ROOT / "src" / "document_kv_cache" / "full_score_execution.py"
-    ).read_text(encoding="utf-8")
-    for digest in (
-        "313af4ec8428178433a863d2ed3f9c6d046825d1e9ad259e67787653136029f7",
-        "bb693055942ab489bdf5e491bda0348915bcdfe01788e4203c041889636874df",
-        "bcccf951892d00236c2c6a86814ce0500f519515e7c366b1fb9ecdddcd35e998",
-        "55e24ba17899593c2f27d2d4c2aa82b290c2db07b52272ea02d2e3784dea6b3f",
-    ):
-        assert f'prefix_sha256="{digest}"' in full_score_source
-    assert (
-        "publication-q8-v2/{q8-plan[:12]}-{qualification-plan[:12]}-"
-        "{runner[:12]}/worker-{index:02d}" in compact_ledger_doc
-    )
-    assert (
-        "L40S is the sole publication handoff generator. Fresh native-v2 "
-        "eligibility requires same-hardware fresh-load byte reproducibility"
-        in compact_ledger_doc
-    )
-    assert "cross-hardware logical/token/layout/size equivalence" in (
-        compact_ledger_doc
-    )
-    assert "73,728 bytes per cache-prefix token" in compact_ledger_doc
-    assert "eligible only after the sealed L4/L40S artifact-equivalence" not in (
-        compact_ledger_doc
-    )
-    for provenance_sha256 in (
-        "694441bffc253141156f9c808666112d39bb5829d22825d1d88c93ab47a5e830",
-        "7455fa1e30356bb79ccb75a8dbe24df32f33a365141505e0270eb13c7f39b71d",
-        "81817e833e6878ff5bfd45fff2a94ffafb341d7acecc6e4f7212d268646f8f72",
-        "07b9663e42c2dd8040f689d08fabdd6d7eefaf25f8f1decedc23af683e0011c7",
-        "784a43eafec2f6d6086b4258959b308043e183f361218463be14dea3702bd62d",
-        "2d35875107c709d71e6f558d2a029afb53ee371d851e83a18fe0d194f6fc0e0c",
-        "353b8b3e77eca5347901232709a40c45a0f996be4fc6f25ed55511d38457dc85",
-        "7f8b82e271794501a86f61134f73c47519d9fa2d7f1d3d1202ee5b10e0d3653a",
-        "7e0d3fedba07a6ed0f7dd4ef23d4f0c82912626043586e54547a59016a195222",
-        "e103ca7dc7bbb630404013873a0c9a7909d6ac8f052ed5acf42050dd106930da",
-        "81d597ef57c85d109cad7f19c23da849566a39e581dd48d3113a49622dc1926b",
-        "26616b95cfe5efab2527e28eade5fad9dedb48f12e76c7eb41e5bd7f4ab081ca",
-        "51c72161bb2dff2d359ce03419a47f7415a7d1bd1659a2d6444450eba717bcdd",
-        "2ef0f0d30b40b164fd157627ed55ae881b15e28fdb9143ea35a3b599b334feb4",
-        "e78d2e5bc7b6cdc9e217f7d6cb821bbd763e8b7e290d1037d4a95b4308bbd2cf",
-        "19e8a6a6c5bbfeb8736d8fe61204262a6a367bf37a30cae0e6d7b15e5c26a9ab",
-        "116251d3ca5fce37ce5749565e1059fdf65b30ce17fd12ebc50b877835f9772b",
-    ):
-        assert provenance_sha256 in compact_ledger_doc
+    assert benchmark_tree_snapshot() == initial_tree
 
     subindex_expectations = {
         "databricks": "No Databricks benchmark result is currently published",
@@ -2336,15 +1537,11 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "squash or rebase merging enabled" in compact_text
     assert "enable GitHub auto-merge" in compact_text
     assert "delete head branches after merge" in compact_text
-    assert "Freeze the vLLM 0.27.1 source snapshot" in compact_remaining_v1_work
     assert (
-        "complete five-block Baseline/Vanilla latency factorial"
+        "Re-run the packaged Databricks vLLM and SGLang smoke runners on GPU"
         in compact_remaining_v1_work
     )
-    assert "concurrency 1/2/4" in compact_remaining_v1_work
-    assert "paired full-dataset score pass" in compact_remaining_v1_work
-    assert "Do not publish partial or pre-reset numbers" in compact_remaining_v1_work
-    assert "new strict release bundle exclusively from the reset campaign" in (
+    assert "new strict release bundle exclusively from source-bound artifacts" in (
         compact_remaining_v1_work
     )
     assert "Native engine block managers remain owned by vLLM" in (
@@ -2896,18 +2093,6 @@ def test_runtime_packaging_pin_stays_databricks_ml_compatible():
     dependency_versions = _collect_poetry_dependency_versions(pyproject)
 
     assert dependency_versions["project.dependencies.packaging"] == "==26.3"
-    semantic_input = (
-        REPO_ROOT
-        / "src/document_kv_cache/runtime_locks/"
-        "publication-latency-semantic-py311-macos-arm64.in"
-    ).read_text(encoding="utf-8")
-    semantic_lock = (
-        REPO_ROOT
-        / "src/document_kv_cache/runtime_locks/"
-        "publication-latency-semantic-py311-macos-arm64.lock"
-    ).read_text(encoding="utf-8")
-    assert semantic_input.splitlines()[0] == "packaging==26.2"
-    assert "packaging==26.2 \\" in semantic_lock
 
 
 def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver():
