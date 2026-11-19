@@ -763,6 +763,19 @@ def benchmark_experiment_manifest_from_record(
                     scorer,
                     "prompt_template_version",
                 ),
+                answer_parser_id=_record_optional_string(scorer, "answer_parser_id"),
+                answer_parser_version=_record_optional_string(
+                    scorer,
+                    "answer_parser_version",
+                ),
+                answer_parser_plugin_path=_record_optional_string(
+                    scorer,
+                    "answer_parser_plugin_path",
+                ),
+                answer_parser_digest=_record_optional_string(
+                    scorer,
+                    "answer_parser_digest",
+                ),
             )
         )
     arm_manifests: list[BenchmarkArmManifest] = []

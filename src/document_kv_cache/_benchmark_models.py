@@ -578,6 +578,24 @@ class BenchmarkScorerManifest:
     metric_specs: tuple[DatasetMetricSpec, ...]
     prompt_plugin_path: str
     prompt_template_version: str
+    # Empty means the built-in v1 final-answer parser, which keeps manifests
+    # recorded before parser identities existed byte-for-byte unchanged.
+    answer_parser_id: str = ""
+    answer_parser_version: str = ""
+    answer_parser_plugin_path: str = ""
+    answer_parser_digest: str = ""
+
+    def __post_init__(self) -> None:
+        parser_fields = (
+            "answer_parser_id",
+            "answer_parser_version",
+            "answer_parser_plugin_path",
+            "answer_parser_digest",
+        )
+        if any(getattr(self, field_name) != "" for field_name in parser_fields):
+            for field_name in parser_fields:
+                _validate_non_empty_string(getattr(self, field_name), field_name)
+            _validate_sha256_digest(self.answer_parser_digest, "answer_parser_digest")
 
 
 @dataclass(frozen=True, slots=True)

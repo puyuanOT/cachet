@@ -19,9 +19,14 @@ from document_kv_cache._benchmark_models import (
     _validate_non_empty_string,
 )
 from document_kv_cache.benchmarks import (
+    FINAL_ANSWER_PARSER_DIGEST,
+    FINAL_ANSWER_PARSER_ID,
+    FINAL_ANSWER_PARSER_PLUGIN_PATH,
+    FINAL_ANSWER_PARSER_VERSION,
     BenchmarkArm,
     BenchmarkExample,
     BenchmarkSuite,
+    DatasetScorer,
     DatasetScorerRegistry,
     InferenceMeasurement,
     build_prompt_parts,
@@ -30,6 +35,14 @@ from document_kv_cache.benchmarks import (
 
 BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE = (
     "document_kv.benchmark_experiment_manifest.v1"
+)
+_V1_ANSWER_PARSER_IDENTITY = MappingProxyType(
+    {
+        "answer_parser_id": FINAL_ANSWER_PARSER_ID,
+        "answer_parser_version": FINAL_ANSWER_PARSER_VERSION,
+        "answer_parser_plugin_path": FINAL_ANSWER_PARSER_PLUGIN_PATH,
+        "answer_parser_digest": FINAL_ANSWER_PARSER_DIGEST,
+    }
 )
 VARIES_BY_ARM = "varies_by_arm"
 RESOURCE_SOFTWARE_IDENTITY_PACKAGE_KEYS = MappingProxyType(
@@ -89,6 +102,7 @@ def _build_experiment_manifest(
             metric_specs=scorer.metric_specs,
             prompt_plugin_path=scorer.prompt_plugin_path,
             prompt_template_version=scorer.prompt_template_version,
+            **_declared_answer_parser_identity(scorer),
         )
         for dataset in suite.datasets
         for scorer in (scorer_registry.get(dataset),)
@@ -282,6 +296,18 @@ def _build_experiment_manifest(
             "shared_process_sequential" if isolate_arms else "shared_process_concurrent"
         ),
     )
+
+
+def _declared_answer_parser_identity(scorer: DatasetScorer) -> dict[str, str]:
+    identity = {
+        "answer_parser_id": scorer.answer_parser_id,
+        "answer_parser_version": scorer.answer_parser_version,
+        "answer_parser_plugin_path": scorer.answer_parser_plugin_path,
+        "answer_parser_digest": scorer.answer_parser_digest,
+    }
+    if not scorer.answer_parser_id or identity == _V1_ANSWER_PARSER_IDENTITY:
+        return {}
+    return identity
 
 
 def _build_arm_runtime_environment(
@@ -652,6 +678,18 @@ def benchmark_experiment_manifest_to_record(
                     ],
                     "prompt_plugin_path": scorer.prompt_plugin_path or None,
                     "prompt_template_version": (scorer.prompt_template_version or None),
+                    **(
+                        {
+                            "answer_parser_id": scorer.answer_parser_id,
+                            "answer_parser_version": scorer.answer_parser_version,
+                            "answer_parser_plugin_path": (
+                                scorer.answer_parser_plugin_path
+                            ),
+                            "answer_parser_digest": scorer.answer_parser_digest,
+                        }
+                        if scorer.answer_parser_id
+                        else {}
+                    ),
                 }
                 for scorer in manifest.scorer_identities
             ],

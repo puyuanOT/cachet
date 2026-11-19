@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from document_kv_cache.artifact_identity import ArtifactIdentity
+from document_kv_cache.artifact_identity import ArtifactIdentity, canonical_json_sha256
 from document_kv_cache.benchmark_gates import (
     BenchmarkPublicationGateConfig,
     CacheStateAttestation,
@@ -20,6 +20,8 @@ from document_kv_cache.benchmark_runner import (
     BenchmarkGeneration,
     BenchmarkManifestContext,
     BenchmarkRunResult,
+    benchmark_experiment_manifest_from_record,
+    benchmark_experiment_manifest_to_record,
     benchmark_record_aggregate_issues,
     benchmark_record_payload_digest,
     benchmark_run_result_from_record,
@@ -36,10 +38,14 @@ from document_kv_cache.benchmarks import (
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
     FINAL_ANSWER_NO_EXTRACTION_VALUE,
+    FINAL_ANSWER_PARSER_DIGEST,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+    FINAL_ANSWER_PARSER_ID,
     FINAL_ANSWER_PARSER_ID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_PLUGIN_PATH,
     FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
     FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_VERSION,
     FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
     NIAH_CELL_IDS,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
@@ -60,6 +66,14 @@ from document_kv_cache.benchmarks import (
     method_benchmark_arm,
     default_dataset_scorer_registry,
     diagnostic_answer_scores,
+)
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_PARSER_DIGEST,
+    QUALITY_V2_PARSER_ID,
+    QUALITY_V2_PARSER_PLUGIN_PATH,
+    QUALITY_V2_PARSER_VERSION,
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    quality_v2_scorer_registry,
 )
 from document_kv_cache.workflow import SourceDocument
 
@@ -756,6 +770,265 @@ def test_sanitized_projection_rejects_malformed_parser_metadata(
             result,
             artifact_identities={identity.artifact_id: identity},
         )
+
+
+QUALITY_V2_PARSER_IDENTITY = {
+    "answer_parser_id": QUALITY_V2_PARSER_ID,
+    "answer_parser_version": QUALITY_V2_PARSER_VERSION,
+    "answer_parser_plugin_path": QUALITY_V2_PARSER_PLUGIN_PATH,
+    "answer_parser_digest": QUALITY_V2_PARSER_DIGEST,
+}
+
+
+def _quality_v2_identity() -> ArtifactIdentity:
+    return replace(
+        artifact_identity(),
+        prompt_template_version=QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    )
+
+
+def _quality_v2_result(identity: ArtifactIdentity) -> BenchmarkRunResult:
+    return scoped_benchmark_result(
+        identity,
+        scopes=("quality",),
+        with_answers=True,
+        scorers=quality_v2_scorer_registry(),
+    )
+
+
+def test_v1_scorer_manifest_record_omits_parser_identity_and_keeps_its_digest() -> None:
+    result = scoped_benchmark_result(
+        artifact_identity(),
+        scopes=("quality",),
+        with_answers=True,
+    )
+    manifest = result.experiment_manifest
+    assert manifest is not None
+
+    record = benchmark_experiment_manifest_to_record(manifest)
+
+    assert all(scorer.answer_parser_id == "" for scorer in manifest.scorer_identities)
+    assert not any(
+        key.startswith("answer_parser_")
+        for scorer in record["logical_workload"]["scorers"]
+        for key in scorer
+    )
+    assert canonical_json_sha256(record) == (
+        "7ba97d0ebb3d0de1d712b03a043054a91ec9456b4334c472b14c7c95fc70fbe0"
+    )
+    assert benchmark_experiment_manifest_from_record(record) == manifest
+
+
+def test_declared_scorer_parser_identity_is_recorded_in_the_manifest() -> None:
+    result = _quality_v2_result(_quality_v2_identity())
+    manifest = result.experiment_manifest
+    assert manifest is not None
+
+    record = benchmark_experiment_manifest_to_record(manifest)
+    (scorer,) = manifest.scorer_identities
+    (scorer_record,) = record["logical_workload"]["scorers"]
+
+    assert {
+        field_name: getattr(scorer, field_name)
+        for field_name in QUALITY_V2_PARSER_IDENTITY
+    } == QUALITY_V2_PARSER_IDENTITY
+    assert {
+        key: value
+        for key, value in scorer_record.items()
+        if key.startswith("answer_parser_")
+    } == QUALITY_V2_PARSER_IDENTITY
+    assert benchmark_experiment_manifest_from_record(record) == manifest
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"answer_parser_id": "cachet.first_final_answer"},
+        {**QUALITY_V2_PARSER_IDENTITY, "answer_parser_version": ""},
+        {**QUALITY_V2_PARSER_IDENTITY, "answer_parser_digest": "A" * 64},
+    ],
+)
+def test_scorer_manifest_rejects_partial_or_malformed_parser_identity(
+    changes: dict[str, str],
+) -> None:
+    result = _quality_v2_result(_quality_v2_identity())
+    assert result.experiment_manifest is not None
+    (scorer,) = result.experiment_manifest.scorer_identities
+    fields = {
+        **{field_name: "" for field_name in QUALITY_V2_PARSER_IDENTITY},
+        **changes,
+    }
+
+    with pytest.raises(ValueError, match="answer_parser_"):
+        replace(scorer, **fields)
+
+
+def test_publication_gate_accepts_declared_quality_v2_parser_raw_and_sanitized() -> None:
+    identity = _quality_v2_identity()
+    result = _quality_v2_result(identity)
+
+    gate = evaluate_benchmark_evidence_gate(
+        result,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+    record = benchmark_run_result_to_evidence_record(
+        result,
+        artifact_identities={identity.artifact_id: identity},
+    )
+    sanitized_gate = evaluate_benchmark_evidence_gate(
+        benchmark_run_result_from_record(record),
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert {
+        measurement.metadata[FINAL_ANSWER_PARSER_ID_METADATA_KEY]
+        for measurement in result.measurements
+    } == {QUALITY_V2_PARSER_ID}
+    assert gate.ok, gate.issues
+    assert record["evidence_gate"]["ok"], record["evidence_gate"]["issues"]
+    assert sanitized_gate.ok, sanitized_gate.issues
+
+
+@pytest.mark.parametrize(
+    ("changes", "issue_fragment"),
+    [
+        (
+            {FINAL_ANSWER_PARSER_ID_METADATA_KEY: "cachet.single_final_answer"},
+            "missing or mixed final-answer parser identity",
+        ),
+        (
+            {FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: "0" * 64},
+            "missing or mixed final-answer parser identity",
+        ),
+        (
+            {FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: "missing_block"},
+            "invalid final-answer parser status",
+        ),
+        (
+            {FINAL_ANSWER_PARSER_VALID_METADATA_KEY: None},
+            "invalid final-answer parser status",
+        ),
+        (
+            {FINAL_ANSWER_EXTRACTED_METADATA_KEY: None},
+            "does not persist the extracted answer",
+        ),
+        (
+            {FINAL_ANSWER_EXTRACTED_METADATA_KEY: ""},
+            "extracted answer contradicts the final-answer parser status",
+        ),
+        (
+            {
+                FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: "missing_block",
+                FINAL_ANSWER_PARSER_VALID_METADATA_KEY: "false",
+            },
+            "extracted answer contradicts the final-answer parser status",
+        ),
+        (
+            {
+                FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: "missing_block",
+                FINAL_ANSWER_PARSER_VALID_METADATA_KEY: "false",
+                FINAL_ANSWER_EXTRACTED_METADATA_KEY: FINAL_ANSWER_NO_EXTRACTION_VALUE,
+            },
+            "invalid final-answer extraction must score zero for every metric",
+        ),
+    ],
+)
+def test_publication_gate_rejects_tampered_declared_parser_metadata(
+    changes: dict[str, str | None],
+    issue_fragment: str,
+) -> None:
+    identity = _quality_v2_identity()
+    original = _quality_v2_result(identity)
+    first = original.measurements[0]
+    metadata = dict(first.metadata)
+    for key, value in changes.items():
+        if value is None:
+            metadata.pop(key)
+        else:
+            metadata[key] = value
+    result = replace(
+        original,
+        measurements=(replace(first, metadata=metadata), *original.measurements[1:]),
+    )
+
+    gate = evaluate_benchmark_evidence_gate(
+        result,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not gate.ok
+    assert any(issue_fragment in issue for issue in gate.issues), gate.issues
+
+
+def test_publication_gate_reextracts_when_manifest_declares_the_v1_parser() -> None:
+    identity = artifact_identity()
+    original = scoped_benchmark_result(
+        identity,
+        scopes=("quality",),
+        with_answers=True,
+    )
+    assert original.experiment_manifest is not None
+    (scorer,) = original.experiment_manifest.scorer_identities
+    first = original.measurements[0]
+    result = replace(
+        original,
+        experiment_manifest=replace(
+            original.experiment_manifest,
+            scorer_identities=(
+                replace(
+                    scorer,
+                    answer_parser_id=FINAL_ANSWER_PARSER_ID,
+                    answer_parser_version=FINAL_ANSWER_PARSER_VERSION,
+                    answer_parser_plugin_path=FINAL_ANSWER_PARSER_PLUGIN_PATH,
+                    answer_parser_digest=FINAL_ANSWER_PARSER_DIGEST,
+                ),
+            ),
+        ),
+        measurements=(replace(first, output_text=""), *original.measurements[1:]),
+    )
+
+    gate = evaluate_benchmark_evidence_gate(
+        result,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not gate.ok
+    assert any("extraction cannot be reproduced" in issue for issue in gate.issues)
+
+
+def test_v1_scorer_manifest_rejects_measurements_from_an_undeclared_parser() -> None:
+    identity = _quality_v2_identity()
+    original = _quality_v2_result(identity)
+    assert original.experiment_manifest is not None
+    (scorer,) = original.experiment_manifest.scorer_identities
+    result = replace(
+        original,
+        experiment_manifest=replace(
+            original.experiment_manifest,
+            scorer_identities=(
+                replace(
+                    scorer,
+                    **{field_name: "" for field_name in QUALITY_V2_PARSER_IDENTITY},
+                ),
+            ),
+        ),
+    )
+
+    gate = evaluate_benchmark_evidence_gate(
+        result,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not gate.ok
+    assert any(
+        "missing or mixed final-answer parser identity" in issue
+        for issue in gate.issues
+    )
 
 
 @pytest.mark.parametrize(
@@ -1522,6 +1795,7 @@ def scoped_benchmark_result(
     *,
     scopes: tuple[str, ...],
     with_answers: bool,
+    scorers: DatasetScorerRegistry | None = None,
 ) -> BenchmarkRunResult:
     baseline_arm = baseline_prefill_arm()
     cache_arm = method_benchmark_arm(
@@ -1554,16 +1828,18 @@ def scoped_benchmark_result(
         examples=examples,
         datasets=("hotpotqa",),
     )
-    scorer = DatasetScorer(
-        scorer_id="test.hotpotqa",
-        version="1",
-        metric_names=("exact_match", "answer_found"),
-        score_function=diagnostic_answer_scores,
-        publication_approved=True,
-        plugin_path="tests.test_benchmark_gates:diagnostic_answer_scores",
-    )
-    scorers = DatasetScorerRegistry().register("hotpotqa", scorer)
+    if scorers is None:
+        scorer = DatasetScorer(
+            scorer_id="test.hotpotqa",
+            version="1",
+            metric_names=("exact_match", "answer_found"),
+            score_function=diagnostic_answer_scores,
+            publication_approved=True,
+            plugin_path="tests.test_benchmark_gates:diagnostic_answer_scores",
+        )
+        scorers = DatasetScorerRegistry().register("hotpotqa", scorer)
     context = BenchmarkManifestContext(
+        prompt_template_version=identity.prompt_template_version,
         model_revision="model-revision",
         canonical_model_id=identity.model_id,
         tokenizer_id=suite.model_id,
