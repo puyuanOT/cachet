@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from hashlib import sha256
@@ -35,6 +36,16 @@ from document_kv_cache._benchmark_models import (
 )
 from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
+    FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+    FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
+    FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+    FINAL_ANSWER_PARSER_ID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
+    FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
+    FINAL_ANSWER_PARSER_STATUSES,
+    FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
+    NIAH_CELL_IDS,
     BenchmarkArm,
     BenchmarkComparison,
     BenchmarkExample,
@@ -62,8 +73,18 @@ _SANITIZED_DIGEST_METADATA_KEYS = frozenset(
         "runtime_prompt_sha256",
         "request_payload_prompt_sha256",
         "prefix_cache_salt_sha256",
+        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+        FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
     }
 )
+_SANITIZED_IDENTIFIER_METADATA_KEYS = frozenset(
+    {
+        FINAL_ANSWER_PARSER_ID_METADATA_KEY,
+        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
+        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
+    }
+)
+_SANITIZED_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,254}")
 _SANITIZED_INTEGER_METADATA_KEYS = frozenset(
     {
         "logical_prompt_tokens",
@@ -84,6 +105,7 @@ _SANITIZED_BOOLEAN_METADATA_KEYS = frozenset(
         "kv_transfer_params_attached",
         "prefix_cache_salt_attached",
         "server_usage_prompt_tokens_present",
+        FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
     }
 )
 _SANITIZED_ENUM_METADATA_VALUES = {
@@ -91,9 +113,12 @@ _SANITIZED_ENUM_METADATA_VALUES = {
     "request_mode": frozenset({"completion", "chat"}),
     "prompt_text_mode": frozenset({"logical", "runtime"}),
     "prompt_token_source": frozenset({"logical", "runtime", "server_usage"}),
+    FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: frozenset(FINAL_ANSWER_PARSER_STATUSES),
+    "niah_cell_id": frozenset(NIAH_CELL_IDS),
 }
 SANITIZED_MEASUREMENT_METADATA_KEYS = frozenset(
     _SANITIZED_DIGEST_METADATA_KEYS
+    | _SANITIZED_IDENTIFIER_METADATA_KEYS
     | _SANITIZED_INTEGER_METADATA_KEYS
     | _SANITIZED_FLOAT_METADATA_KEYS
     | _SANITIZED_BOOLEAN_METADATA_KEYS
@@ -115,6 +140,7 @@ def benchmark_run_result_payload_to_record(
     if not isinstance(result, BenchmarkRunResult):
         raise TypeError("result must be a BenchmarkRunResult")
     _validate_resource_evidence_bindings(result)
+    sanitize_evidence = sanitize_evidence or result.evidence_sanitized
     if sanitize_evidence:
         result = _sanitized_gate_result(result)
     from document_kv_cache.benchmark_statistics import (
@@ -458,6 +484,7 @@ def benchmark_run_result_to_record(
         result,
         sanitize_evidence=sanitize_evidence,
     )
+    sanitize_evidence = sanitize_evidence or result.evidence_sanitized
     identities = {} if artifact_identities is None else dict(artifact_identities)
     if attestations or identities:
         record["gate_inputs"] = {
@@ -1143,6 +1170,7 @@ def benchmark_run_result_from_record(
         execution_windows=execution_windows,
         execution_isolation_mode=manifest.execution_isolation_mode,
         resource_evidence=resource_evidence,
+        evidence_sanitized=record.get("evidence_sanitized") is True,
     )
     _validate_resource_evidence_bindings(result)
     return result
@@ -1832,6 +1860,27 @@ def _sanitized_measurement_metadata(
                 "measurement metadata prefix_cache_salt digests do not match"
             )
         sanitized["prefix_cache_salt_sha256"] = cache_salt_digest
+    extracted_answer = metadata.get(FINAL_ANSWER_EXTRACTED_METADATA_KEY)
+    if extracted_answer is not None:
+        if not isinstance(extracted_answer, str):
+            raise ValueError(
+                f"measurement metadata {FINAL_ANSWER_EXTRACTED_METADATA_KEY} "
+                "must be a string"
+            )
+        answer_digest = sha256(extracted_answer.encode("utf-8")).hexdigest()
+        existing_digest = sanitized.get(FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY)
+        if existing_digest is not None and existing_digest != answer_digest:
+            raise ValueError(
+                "measurement metadata extracted answer digests do not match"
+            )
+        sanitized[FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY] = answer_digest
+    for key in _SANITIZED_IDENTIFIER_METADATA_KEYS:
+        value = metadata.get(key)
+        if value is None:
+            continue
+        if not _is_sanitized_identifier(value):
+            raise ValueError(f"measurement metadata {key} must be a plain identifier")
+        sanitized[key] = value
     for key in _SANITIZED_INTEGER_METADATA_KEYS:
         value = metadata.get(key)
         if value is None:
@@ -1936,6 +1985,7 @@ def _sanitized_gate_result(result: BenchmarkRunResult) -> BenchmarkRunResult:
         measurements=measurements,
         report_rows=report_rows,
         comparisons=comparisons,
+        evidence_sanitized=True,
     )
 
 
@@ -1969,6 +2019,8 @@ def sanitized_measurement_metadata_issues(value: object) -> tuple[str, ...]:
             continue
         if key in _SANITIZED_DIGEST_METADATA_KEYS and not _is_sha256_digest(item):
             issues.append(f"measurement metadata {key} must be a SHA-256 digest")
+        elif key in _SANITIZED_IDENTIFIER_METADATA_KEYS and not _is_sanitized_identifier(item):
+            issues.append(f"measurement metadata {key} must be a plain identifier")
         elif key in _SANITIZED_INTEGER_METADATA_KEYS:
             try:
                 normalized = int(item)
@@ -2001,6 +2053,13 @@ def _is_sha256_digest(value: object) -> bool:
         isinstance(value, str)
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _is_sanitized_identifier(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and _SANITIZED_IDENTIFIER_PATTERN.fullmatch(value) is not None
     )
 
 

@@ -3,6 +3,7 @@ import math
 import threading
 import time
 from dataclasses import replace
+from hashlib import sha256
 
 import pytest
 
@@ -41,11 +42,15 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+    FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
     FINAL_ANSWER_NO_EXTRACTION_VALUE,
     FINAL_ANSWER_PARSER_DIGEST,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+    FINAL_ANSWER_PARSER_ID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
     FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
     FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
     BenchmarkArm,
     BenchmarkExample,
     BenchmarkSuite,
@@ -780,8 +785,19 @@ def test_sanitized_evidence_drops_untrusted_generation_metadata():
         "runtime_prompt_sha256",
         "request_payload_prompt_sha256",
         "prefix_cache_salt_sha256",
+        FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
+        FINAL_ANSWER_PARSER_ID_METADATA_KEY,
+        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
+        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
+        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+        FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
+        FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
     }
     measurement = record["measurements"][0]
+    assert FINAL_ANSWER_EXTRACTED_METADATA_KEY not in measurement["metadata"]
+    assert measurement["metadata"][FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY] == (
+        sha256(FINAL_ANSWER_NO_EXTRACTION_VALUE.encode("utf-8")).hexdigest()
+    )
     assert measurement["output_text"] == ""
     assert measurement["expected_answer"] is None
     assert measurement["references"] == []

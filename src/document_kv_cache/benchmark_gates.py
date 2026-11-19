@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any, Literal
 
 from document_kv_cache.artifact_identity import ArtifactIdentity
@@ -18,6 +19,8 @@ from document_kv_cache.benchmark_runner import BenchmarkRunResult
 from document_kv_cache.benchmark_statistics import paired_benchmark_statistics
 from document_kv_cache.benchmarks import (
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+    FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
+    FINAL_ANSWER_NO_EXTRACTION_VALUE,
     FINAL_ANSWER_PARSER_DIGEST,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
     FINAL_ANSWER_PARSER_ID,
@@ -25,6 +28,7 @@ from document_kv_cache.benchmarks import (
     FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
     FINAL_ANSWER_PARSER_PLUGIN_PATH,
     FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
+    FINAL_ANSWER_PARSER_STATUSES,
     FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
     FINAL_ANSWER_PARSER_VERSION,
     FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
@@ -39,6 +43,9 @@ from document_kv_cache.methods import MethodRegistry, default_method_registry
 BENCHMARK_PUBLICATION_GATE_RECORD_TYPE = "document_kv.benchmark_publication_gate.v1"
 BENCHMARK_EVIDENCE_GATE_RECORD_TYPE = "document_kv.benchmark_evidence_gate.v1"
 CACHE_STATE_ATTESTATION_RECORD_TYPE = "document_kv.cache_state_attestation.v1"
+_NO_EXTRACTION_SHA256 = sha256(
+    FINAL_ANSWER_NO_EXTRACTION_VALUE.encode("utf-8")
+).hexdigest()
 
 __all__ = [
     "BENCHMARK_PUBLICATION_GATE_RECORD_TYPE",
@@ -1052,7 +1059,13 @@ def _is_sha256_digest(value: Any) -> bool:
 def _publication_score_contract_issues(
     result: BenchmarkRunResult,
 ) -> tuple[str, ...]:
-    """Fail closed when scored measurements cannot reproduce answer extraction."""
+    """Fail closed when scored measurements cannot reproduce answer extraction.
+
+    Raw results are re-extracted from ``output_text``. Sanitized results carry
+    neither the output text nor the extracted answer, so they are held to the
+    parser identity, a consistent status/validity pair, and the SHA-256 digest
+    of the extracted answer recorded when the evidence was sanitized.
+    """
 
     manifest = result.experiment_manifest
     if manifest is None:
@@ -1094,18 +1107,41 @@ def _publication_score_contract_issues(
             if metadata.get(key) != expected_value:
                 note("score measurement has missing or mixed final-answer parser identity")
                 break
-        extraction = extract_single_final_answer(measurement.output_text)
-        expected_metadata = final_answer_measurement_metadata(extraction)
-        if any(metadata.get(key) != value for key, value in expected_metadata.items()):
-            note("score measurement final-answer extraction cannot be reproduced")
         valid_value = metadata.get(FINAL_ANSWER_PARSER_VALID_METADATA_KEY)
         status_value = metadata.get(FINAL_ANSWER_PARSER_STATUS_METADATA_KEY)
-        extracted_value = metadata.get(FINAL_ANSWER_EXTRACTED_METADATA_KEY)
-        if valid_value not in {"true", "false"} or not isinstance(status_value, str):
-            note("score measurement has an invalid final-answer parser status")
-        if not isinstance(extracted_value, str):
-            note("score measurement does not persist the extracted answer")
-        if not extraction.valid and any(
+        if result.evidence_sanitized:
+            extraction_valid = valid_value == "true"
+            if (
+                valid_value not in {"true", "false"}
+                or status_value not in FINAL_ANSWER_PARSER_STATUSES
+                or extraction_valid != (status_value == "ok")
+            ):
+                note("score measurement has an invalid final-answer parser status")
+            answer_digest = metadata.get(FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY)
+            if not _is_sha256_digest(answer_digest):
+                note(
+                    "sanitized score measurement does not persist the extracted "
+                    "answer digest"
+                )
+            elif not extraction_valid and answer_digest != _NO_EXTRACTION_SHA256:
+                note(
+                    "score measurement extracted answer contradicts the "
+                    "final-answer parser status"
+                )
+        else:
+            extraction = extract_single_final_answer(measurement.output_text)
+            expected_metadata = final_answer_measurement_metadata(extraction)
+            if any(
+                metadata.get(key) != value for key, value in expected_metadata.items()
+            ):
+                note("score measurement final-answer extraction cannot be reproduced")
+            extracted_value = metadata.get(FINAL_ANSWER_EXTRACTED_METADATA_KEY)
+            if valid_value not in {"true", "false"} or not isinstance(status_value, str):
+                note("score measurement has an invalid final-answer parser status")
+            if not isinstance(extracted_value, str):
+                note("score measurement does not persist the extracted answer")
+            extraction_valid = extraction.valid
+        if not extraction_valid and any(
             float(value) != 0.0 for value in measurement.quality_scores.values()
         ):
             note("invalid final-answer extraction must score zero for every metric")

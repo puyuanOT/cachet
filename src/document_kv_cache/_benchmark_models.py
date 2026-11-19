@@ -883,8 +883,11 @@ class BenchmarkRunResult:
         "separate_process_or_job",
     ] = "shared_process_sequential"
     resource_evidence: tuple[BenchmarkResourceEvidence, ...] = ()
+    evidence_sanitized: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.evidence_sanitized) is not bool:
+            raise ValueError("evidence_sanitized must be a boolean")
         arm_ids: list[str] = []
         for evidence in self.resource_evidence:
             if not isinstance(evidence, BenchmarkResourceEvidence):

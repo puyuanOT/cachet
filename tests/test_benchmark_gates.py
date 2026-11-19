@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from hashlib import sha256
 from types import SimpleNamespace
@@ -19,6 +20,10 @@ from document_kv_cache.benchmark_runner import (
     BenchmarkGeneration,
     BenchmarkManifestContext,
     BenchmarkRunResult,
+    benchmark_record_aggregate_issues,
+    benchmark_record_payload_digest,
+    benchmark_run_result_from_record,
+    benchmark_run_result_payload_to_record,
     benchmark_run_result_to_evidence_record,
     run_benchmark_suite,
 )
@@ -29,7 +34,12 @@ from document_kv_cache.benchmark_statistics import (
 from document_kv_cache.benchmarks import (
     DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+    FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
+    FINAL_ANSWER_NO_EXTRACTION_VALUE,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
+    FINAL_ANSWER_PARSER_ID_METADATA_KEY,
+    FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
+    FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
     FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
     NIAH_CELL_IDS,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
@@ -494,6 +504,258 @@ def test_quality_publication_rejects_missing_mixed_or_tampered_answer_parser_met
     assert not gate.ok
     assert any(issue_fragment in issue for issue in gate.issues)
     assert gate.measurement_scopes == ("quality",)
+
+
+def _sanitized_quality_record(identity: ArtifactIdentity) -> dict:
+    result = scoped_benchmark_result(identity, scopes=("quality",), with_answers=True)
+    return benchmark_run_result_to_evidence_record(
+        result,
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+
+def test_scored_result_round_trips_through_sanitized_evidence_into_publication_gate() -> None:
+    identity = artifact_identity()
+    record = _sanitized_quality_record(identity)
+
+    restored = benchmark_run_result_from_record(record)
+    gate = evaluate_benchmark_evidence_gate(
+        restored,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert record["evidence_sanitized"] is True
+    assert record["evidence_gate"]["ok"], record["evidence_gate"]["issues"]
+    assert restored.evidence_sanitized
+    assert gate.ok, gate.issues
+    assert gate.measurement_scopes == ("quality",)
+    assert benchmark_run_result_payload_to_record(restored) == {
+        key: value
+        for key, value in record.items()
+        if key not in {"gate_inputs", "evidence_gate"}
+    }
+    metadata = record["measurements"][0]["metadata"]
+    assert FINAL_ANSWER_EXTRACTED_METADATA_KEY not in metadata
+    assert metadata[FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY] == sha256(b"Paris").hexdigest()
+    assert metadata[FINAL_ANSWER_PARSER_STATUS_METADATA_KEY] == "ok"
+    assert metadata[FINAL_ANSWER_PARSER_VALID_METADATA_KEY] == "true"
+    assert "Paris" not in json.dumps(record)
+
+
+@pytest.mark.parametrize(
+    ("changes", "issue_fragment"),
+    [
+        (
+            {FINAL_ANSWER_PARSER_ID_METADATA_KEY: "other.final_answer"},
+            "missing or mixed final-answer parser identity",
+        ),
+        (
+            {FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: "0" * 64},
+            "missing or mixed final-answer parser identity",
+        ),
+        (
+            {FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: "missing_block"},
+            "invalid final-answer parser status",
+        ),
+        (
+            {FINAL_ANSWER_PARSER_VALID_METADATA_KEY: None},
+            "invalid final-answer parser status",
+        ),
+        (
+            {FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY: None},
+            "does not persist the extracted answer digest",
+        ),
+        (
+            {FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY: "Paris"},
+            "does not persist the extracted answer digest",
+        ),
+        (
+            {
+                FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: "missing_block",
+                FINAL_ANSWER_PARSER_VALID_METADATA_KEY: "false",
+            },
+            "extracted answer contradicts the final-answer parser status",
+        ),
+        (
+            {
+                FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: "missing_block",
+                FINAL_ANSWER_PARSER_VALID_METADATA_KEY: "false",
+                FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY: sha256(
+                    FINAL_ANSWER_NO_EXTRACTION_VALUE.encode("utf-8")
+                ).hexdigest(),
+            },
+            "invalid final-answer extraction must score zero for every metric",
+        ),
+    ],
+)
+def test_sanitized_publication_rejects_tampered_parser_evidence(
+    changes: dict[str, str | None],
+    issue_fragment: str,
+) -> None:
+    identity = artifact_identity()
+    record = _sanitized_quality_record(identity)
+    tampered = json.loads(json.dumps(record))
+    metadata = tampered["measurements"][0]["metadata"]
+    for key, value in changes.items():
+        if value is None:
+            metadata.pop(key)
+        else:
+            metadata[key] = value
+
+    gate = evaluate_benchmark_evidence_gate(
+        benchmark_run_result_from_record(tampered),
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+        benchmark_payload_digest=benchmark_record_payload_digest(tampered),
+    )
+
+    assert not gate.ok
+    assert any(issue_fragment in issue for issue in gate.issues), gate.issues
+
+
+def test_raw_publication_still_reextracts_even_with_an_answer_digest() -> None:
+    identity = artifact_identity()
+    original = scoped_benchmark_result(
+        identity,
+        scopes=("quality",),
+        with_answers=True,
+    )
+    first = original.measurements[0]
+    metadata = dict(first.metadata)
+    metadata[FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY] = sha256(b"Paris").hexdigest()
+    result = replace(
+        original,
+        measurements=(
+            replace(first, output_text="", metadata=metadata),
+            *original.measurements[1:],
+        ),
+    )
+
+    gate = evaluate_benchmark_evidence_gate(
+        result,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not result.evidence_sanitized
+    assert not gate.ok
+    assert any("extraction cannot be reproduced" in issue for issue in gate.issues)
+
+
+def test_sanitized_record_without_parser_evidence_loads_but_fails_quality_gate() -> None:
+    identity = artifact_identity()
+    legacy = json.loads(json.dumps(_sanitized_quality_record(identity)))
+    for measurement in legacy["measurements"]:
+        measurement["metadata"] = {
+            key: value
+            for key, value in measurement["metadata"].items()
+            if not key.startswith("cachet.score.")
+        }
+
+    restored = benchmark_run_result_from_record(legacy)
+    gate = evaluate_benchmark_evidence_gate(
+        restored,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert restored.evidence_sanitized
+    assert benchmark_record_aggregate_issues(legacy) == ()
+    assert not gate.ok
+    assert any(
+        "missing or mixed final-answer parser identity" in issue
+        for issue in gate.issues
+    )
+
+
+def test_sanitized_niah_evidence_keeps_grid_cells_for_coverage_checks() -> None:
+    baseline_arm = baseline_prefill_arm()
+    examples = tuple(
+        BenchmarkExample(
+            example_id=f"niah-{index}",
+            dataset="niah",
+            documents=(
+                SourceDocument.from_text(
+                    document_id=f"niah-document-{index}",
+                    text="The requested exact value is Paris.",
+                ),
+            ),
+            query="What is the requested exact value?",
+            expected_answer="Paris",
+            metadata={"niah_cell_id": cell_id},
+        )
+        for index, cell_id in enumerate(NIAH_CELL_IDS[:-1])
+    )
+    result = run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="incomplete-niah-grid",
+            examples=examples,
+            datasets=("niah",),
+        ),
+        {baseline_arm.arm_id: _ScopedEngine()},
+        arms=(baseline_arm,),
+        scorer_registry=default_dataset_scorer_registry(),
+        manifest_context=BenchmarkManifestContext(
+            complete_dataset_split=True,
+            measurement_scopes=("quality",),
+        ),
+        evidence_policy="publication",
+    )
+
+    record = benchmark_run_result_to_evidence_record(result)
+    gate = evaluate_benchmark_evidence_gate(
+        benchmark_run_result_from_record(record),
+        policy="publication",
+    )
+
+    assert [
+        measurement["metadata"]["niah_cell_id"] for measurement in record["measurements"]
+    ] == list(NIAH_CELL_IDS[:-1])
+    assert any(
+        "complete NIAH score arm is missing required cells" in issue
+        and NIAH_CELL_IDS[-1] in issue
+        for issue in gate.issues
+    )
+    assert not any("no recognized 8k/16k/32k" in issue for issue in gate.issues)
+    assert not any("final-answer" in issue for issue in gate.issues)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        (FINAL_ANSWER_PARSER_STATUS_METADATA_KEY, "unknown_status", "must be one of"),
+        (FINAL_ANSWER_PARSER_VALID_METADATA_KEY, "yes", "must be true or false"),
+        (FINAL_ANSWER_PARSER_ID_METADATA_KEY, "a parser id", "plain identifier"),
+        (FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY, "digest", "SHA-256 digest"),
+        ("niah_cell_id", "niah-64k-depth-10", "must be one of"),
+    ],
+)
+def test_sanitized_projection_rejects_malformed_parser_metadata(
+    key: str,
+    value: str,
+    message: str,
+) -> None:
+    identity = artifact_identity()
+    original = scoped_benchmark_result(
+        identity,
+        scopes=("quality",),
+        with_answers=True,
+    )
+    first = original.measurements[0]
+    result = replace(
+        original,
+        measurements=(
+            replace(first, metadata={**first.metadata, key: value}),
+            *original.measurements[1:],
+        ),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        benchmark_run_result_to_evidence_record(
+            result,
+            artifact_identities={identity.artifact_id: identity},
+        )
 
 
 @pytest.mark.parametrize(
