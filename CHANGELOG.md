@@ -33,6 +33,15 @@
   folders under `benchmarks/{databricks,native-engine,sglang,storage,vllm}/`
   (their index READMEs remain), and six PR-evidence folders for superseded
   benchmark results under `docs/release-ops/pr-evidence/`.
+- Sanitized benchmark evidence keeps the final-answer parser identity, status,
+  and NIAH cell id, and records a SHA-256 of the extracted answer instead of
+  the answer, so scored results can pass the publication gate after
+  sanitization.
+- Scorer manifests can declare a non-v1 final-answer parser (the Quality v2
+  scorers do), and the publication gate checks measurements against the
+  declared parser. Manifests for v1 scorers are unchanged.
+- An integral `rope_theta` now yields the same artifact id as the equal float,
+  and reuse-plan and runtime-operation digests reject NaN and Infinity.
 
 ## 0.2.0
 
