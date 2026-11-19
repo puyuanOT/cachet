@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import Any
+
 import pytest
 
 from document_kv_cache.engine_protocol import (
@@ -12,6 +15,7 @@ from document_kv_cache.methods import method_spec
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.reuse_contract import (
     ArtifactEncoding,
+    ArtifactFormat,
     PayloadDecodeStage,
     PositionHandling,
     ReusePlan,
@@ -106,6 +110,57 @@ def test_reuse_plan_record_rejects_tampered_or_unknown_capabilities() -> None:
     unsupported["future_operation"] = "opaque"
     with pytest.raises(ValueError, match="unsupported keys"):
         ReusePlan.from_record(unsupported)
+
+
+class _NonFiniteArtifactFormat(ArtifactFormat):
+    def to_record(self) -> dict[str, Any]:
+        return {**ArtifactFormat.to_record(self), "scale": float("nan")}
+
+
+def test_reuse_plan_capability_id_rejects_non_finite_numbers() -> None:
+    plan = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    artifact_format = plan.artifact_format
+    tainted = replace(
+        plan,
+        artifact_format=_NonFiniteArtifactFormat(
+            format_id=artifact_format.format_id,
+            version=artifact_format.version,
+            encoding=artifact_format.encoding,
+            bits_per_element=artifact_format.bits_per_element,
+            storage_layouts=artifact_format.storage_layouts,
+            payload_axis_orders=artifact_format.payload_axis_orders,
+        ),
+    )
+
+    assert plan.capability_id == (
+        "acb62c94d96e3ab2d835859fa9eff8e291434713f9430960d9a1bc0b9582865c"
+    )
+    with pytest.raises(ValueError, match="NaN or Infinity"):
+        tainted.to_record()
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_runtime_operation_config_digest_rejects_non_finite_numbers(
+    value: float,
+) -> None:
+    with pytest.raises(ValueError, match="NaN or Infinity"):
+        runtime_operation_config_digest({"fraction": value})
+
+
+def test_runtime_operation_config_digest_keeps_finite_digests_and_type_errors() -> None:
+    circular: dict[str, Any] = {}
+    circular["self"] = circular
+
+    assert runtime_operation_config_digest(
+        {"fraction": 0.25, "count": 1, "label": "x"}
+    ) == "4e9a3a2a7bee3aa3e50bc9ca9c69fed475268c0ca68531815da479314a718a97"
+    for config in (
+        {"handler": object()},
+        circular,
+        {"handler": object(), "fraction": float("nan")},
+    ):
+        with pytest.raises(TypeError, match="JSON-serializable"):
+            runtime_operation_config_digest(config)
 
 
 def test_runtime_handler_registry_binds_exact_configuration_digest() -> None:

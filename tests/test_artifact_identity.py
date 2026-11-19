@@ -60,6 +60,40 @@ def test_artifact_identity_is_stable_and_round_trips():
     assert _artifact().artifact_id == artifact.artifact_id
 
 
+def test_integral_rope_theta_has_the_float_artifact_identity():
+    as_float = _artifact(
+        key_position_encoding="pre_rope",
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=128,
+    )
+    as_int = _artifact(
+        key_position_encoding="pre_rope",
+        rope_theta=5_000_000,
+        rope_rotary_dim=128,
+    )
+
+    assert as_float.artifact_id == (
+        "12c658e71345b91c7ea9f585cd0ec50c8f5ffa08000eae74133358935558fc33"
+    )
+    assert as_int.artifact_id == as_float.artifact_id
+    assert type(as_int.rope_theta) is float
+    assert as_int.to_record() == as_float.to_record()
+    assert (
+        ArtifactIdentity.from_record({**as_float.to_record(), "rope_theta": 5_000_000})
+        .artifact_id
+        == as_float.artifact_id
+    )
+
+
+def test_rope_theta_must_be_exactly_representable_as_a_float():
+    with pytest.raises(ValueError, match="exactly representable"):
+        _artifact(
+            key_position_encoding="pre_rope",
+            rope_theta=2**53 + 1,
+            rope_rotary_dim=128,
+        )
+
+
 def test_method_config_digest_is_key_order_independent():
     assert method_config_digest({"a": 1, "b": False}) == method_config_digest({"b": False, "a": 1})
 

@@ -174,13 +174,19 @@ def runtime_operation_config_digest(config: Mapping[str, Any]) -> str:
 
     if not isinstance(config, Mapping):
         raise TypeError("runtime operation config must be a mapping")
+    config_record = dict(config)
     try:
         canonical = json.dumps(
-            dict(config),
+            config_record,
             sort_keys=True,
             separators=(",", ":"),
+            allow_nan=False,
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
+        if _serializable_except_non_finite_floats(config_record):
+            raise ValueError(
+                "runtime operation config must not contain NaN or Infinity"
+            ) from exc
         raise TypeError(
             "runtime operation config must be JSON-serializable"
         ) from exc
@@ -556,11 +562,20 @@ class ReusePlan:
     def capability_id(self) -> str:
         """Stable identity for the executable operations required by this plan."""
 
-        canonical = json.dumps(
-            self._capability_record(),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        capability_record = self._capability_record()
+        try:
+            canonical = json.dumps(
+                capability_record,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except ValueError as exc:
+            if _serializable_except_non_finite_floats(capability_record):
+                raise ValueError(
+                    "reuse plan capability record must not contain NaN or Infinity"
+                ) from exc
+            raise
         return hashlib.sha256(canonical).hexdigest()
 
     def validate_runtime_layout(self, layout: KVLayout) -> None:
@@ -753,6 +768,14 @@ def _optional_descriptor_record(
     descriptor: RuntimeOperationDescriptor | None,
 ) -> dict[str, str] | None:
     return None if descriptor is None else descriptor.to_record()
+
+
+def _serializable_except_non_finite_floats(value: Any) -> bool:
+    try:
+        json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def _optional_descriptor(
