@@ -23,11 +23,6 @@ offline validators) is preserved at the `vllm-0300-campaign-archive` tag.
 
 ## Remaining V1 Work
 
-- Re-run the packaged SGLang smoke runner on L4 (`aws-g6-l4`). On 2026-11-18
-  the packaged vLLM runner passed against the vLLM 0.30.0 serving profile on
-  L4 and A10G (Databricks runs `597966250980954` and `473099143422393`) and
-  the SGLang runner passed on A10G (`621605817274575`); two SGLang L4 attempts
-  found no AWS capacity.
 - Build a new strict release bundle exclusively from source-bound artifacts,
   Databricks attestations, results, and a passing publication gate. Native
   engine block managers remain owned by vLLM and SGLang rather than Cachet.

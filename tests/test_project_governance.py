@@ -1514,6 +1514,10 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
         "315109189523858",
         "cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main",
         "cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main",
+        "Re-run the packaged SGLang smoke runner on L4",
+    )
+    compact_databricks_topic = " ".join(
+        (MAINTAINER_TOPICS_DIR / "databricks.md").read_text(encoding="utf-8").split()
     )
 
     assert "package name/version for wheel artifacts" in compact_text
@@ -1535,10 +1539,8 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "squash or rebase merging enabled" in compact_text
     assert "enable GitHub auto-merge" in compact_text
     assert "delete head branches after merge" in compact_text
-    assert (
-        "Re-run the packaged SGLang smoke runner on L4 (`aws-g6-l4`)"
-        in compact_remaining_v1_work
-    )
+    assert "on A10G on 2026-11-18 (`621605817274575`)" in compact_databricks_topic
+    assert "on L4 on 2026-11-19 (`274263423127999`)" in compact_databricks_topic
     assert "new strict release bundle exclusively from source-bound artifacts" in (
         compact_remaining_v1_work
     )

@@ -18,8 +18,8 @@
   `0.30.0+cu129` wheel from the CUDA 12.9 indexes, and both the vLLM and SGLang
   smoke runners emit handoffs that carry the registered artifact and token
   contracts. The vLLM runner passes the registered cache arm that those
-  handoffs declare. On 2026-11-18 the
-  vLLM runner passed on L4 and A10G and the SGLang runner passed on A10G.
+  handoffs declare. On 2026-11-18 and 2026-11-19
+  the vLLM and SGLang runners each passed on L4 and A10G.
 - `packaging` pinned to 26.3.
 - Benchmark records: the vLLM 0.30.0 campaign report and gate, the Quality v2
   report, and the plan-coherent auxiliary latency re-run, plus

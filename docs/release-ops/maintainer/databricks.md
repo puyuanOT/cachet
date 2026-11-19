@@ -105,6 +105,16 @@ Qwen3 V1 page size (`16`) unless `--sglang-hicache-page-size` is set; add
 generate handoffs and enriched JSONL inside the isolated SGLang runtime, where
 they pass the same page-size and page-key coverage gate before server start.
 
+Both packaged runners have passed against the vLLM 0.30.0 serving profile on
+both V1 hardware targets. The vLLM runner passed on L4 and A10G on 2026-11-18
+(Databricks runs `597966250980954` and `473099143422393`). The SGLang
+live-handoff runner passed on A10G on 2026-11-18 (`621605817274575`) and on L4
+on 2026-11-19 (`274263423127999`). In both SGLang runs the quality canary and
+both arms returned the expected answer, and after a cache flush the cache
+request reused 204 of its 244 prompt tokens from HiCache. `aws-g6-l4` accepts
+any `g6.` node type; the L4 run used `g6.4xlarge` because `g6.8xlarge` and
+`g6.16xlarge` had no AWS capacity that day.
+
 ## Engine-Probe Jobs
 
 For release runs, generate one two-backend target file with the benchmark
