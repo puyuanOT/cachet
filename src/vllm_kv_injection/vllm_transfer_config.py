@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.engine_adapters import (
     ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
     ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
@@ -22,12 +23,17 @@ from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
+    DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY,
+    DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY,
+    DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
 )
 
 DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE = "vllm_kv_injection.document_kv_transfer_config.v1"
 DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION = 1
 DOCUMENT_KV_TRANSFER_CONFIG_PREFIX = "document_kv."
-DOCUMENT_KV_DEFAULT_ROLE = "kv_both"
+DOCUMENT_KV_DEFAULT_ROLE = "kv_consumer"
+MULTI_CONNECTOR_DEFAULT_ROLE = "kv_both"
+MULTI_CONNECTOR_CLASS = "MultiConnector"
 
 __all__ = [
     "DOCUMENT_KV_DEFAULT_ROLE",
@@ -38,10 +44,65 @@ __all__ = [
     "DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION",
     "DOCUMENT_KV_NATIVE_PROVIDER_FACTORY",
     "DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY",
+    "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY",
+    "MULTI_CONNECTOR_CLASS",
+    "MULTI_CONNECTOR_DEFAULT_ROLE",
     "document_kv_transfer_config",
     "document_kv_transfer_config_json",
+    "multi_connector_transfer_config",
+    "multi_connector_transfer_config_json",
     "main",
 ]
+
+
+def multi_connector_transfer_config(
+    *,
+    connectors: Sequence[Mapping[str, Any]],
+    kv_role: str = MULTI_CONNECTOR_DEFAULT_ROLE,
+) -> dict[str, Any]:
+    """Return a vLLM ``MultiConnector`` config wrapping ordered child connectors.
+
+    vLLM's ``MultiConnector`` loads KV from the *first* child whose
+    ``get_num_new_matched_tokens`` advertises tokens (in list order) and saves to
+    *all* children. Placing the Cachet document connector first and LMCache second
+    yields the desired handoff: turn-1 document requests (which carry a Cachet
+    handoff) are served by Cachet, while every other request -- turn-2+ follow-ups
+    and document-free conversations -- falls through to LMCache, which also
+    captures the KV via the save-to-all path.
+    """
+
+    child_configs = list(connectors)
+    if len(child_configs) < 2:
+        raise ValueError("MultiConnector requires at least two child connectors")
+    normalized: list[dict[str, Any]] = []
+    for index, child in enumerate(child_configs):
+        if not isinstance(child, Mapping):
+            raise TypeError(f"connectors[{index}] must be a mapping")
+        _validate_non_empty_string(
+            child.get("kv_connector"), field_name=f"connectors[{index}].kv_connector"
+        )
+        normalized.append(dict(child))
+    config = {
+        "kv_connector": MULTI_CONNECTOR_CLASS,
+        "kv_role": kv_role,
+        "kv_connector_extra_config": {"connectors": normalized},
+    }
+    _validate_json_serializable(config, field_name="MultiConnector KV transfer config")
+    return config
+
+
+def multi_connector_transfer_config_json(
+    *,
+    connectors: Sequence[Mapping[str, Any]],
+    kv_role: str = MULTI_CONNECTOR_DEFAULT_ROLE,
+) -> str:
+    """Return compact JSON for a ``MultiConnector`` config for vLLM CLI launch."""
+
+    return json.dumps(
+        multi_connector_transfer_config(connectors=connectors, kv_role=kv_role),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def document_kv_transfer_config(
@@ -53,6 +114,9 @@ def document_kv_transfer_config(
     provider_factory: str | None = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     handoff_source_factory: str | None = None,
     payload_cache_max_bytes: int | None = None,
+    telemetry_jsonl: str | None = None,
+    runtime_identity: RuntimeIdentity | None = None,
+    require_runtime_handshake: bool | None = None,
 ) -> dict[str, Any]:
     """Return a vLLM ``KVTransferConfig``-shaped dictionary.
 
@@ -64,7 +128,7 @@ def document_kv_transfer_config(
 
     _validate_non_empty_string(kv_connector, field_name="kv_connector")
     _validate_non_empty_string(kv_connector_module_path, field_name="kv_connector_module_path")
-    _validate_non_empty_string(kv_role, field_name="kv_role")
+    _validate_document_kv_role(kv_role)
     config = {
         "kv_connector": kv_connector,
         "kv_connector_module_path": kv_connector_module_path,
@@ -74,6 +138,9 @@ def document_kv_transfer_config(
             provider_factory=provider_factory,
             handoff_source_factory=handoff_source_factory,
             payload_cache_max_bytes=payload_cache_max_bytes,
+            telemetry_jsonl=telemetry_jsonl,
+            runtime_identity=runtime_identity,
+            require_runtime_handshake=require_runtime_handshake,
         ),
     }
     _validate_json_serializable(config, field_name="vLLM KV transfer config")
@@ -89,6 +156,9 @@ def document_kv_transfer_config_json(
     provider_factory: str | None = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     handoff_source_factory: str | None = None,
     payload_cache_max_bytes: int | None = None,
+    telemetry_jsonl: str | None = None,
+    runtime_identity: RuntimeIdentity | None = None,
+    require_runtime_handshake: bool | None = None,
 ) -> str:
     """Return compact JSON for passing to vLLM CLI launch paths."""
 
@@ -101,6 +171,9 @@ def document_kv_transfer_config_json(
             provider_factory=provider_factory,
             handoff_source_factory=handoff_source_factory,
             payload_cache_max_bytes=payload_cache_max_bytes,
+            telemetry_jsonl=telemetry_jsonl,
+            runtime_identity=runtime_identity,
+            require_runtime_handshake=require_runtime_handshake,
         ),
         separators=(",", ":"),
         sort_keys=True,
@@ -138,6 +211,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--telemetry-jsonl",
+        help="Optional local JSONL path where the built-in vLLM provider writes per-load telemetry.",
+    )
+    parser.add_argument(
         "--extra-config",
         action="append",
         default=[],
@@ -155,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             provider_factory=args.provider_factory,
             handoff_source_factory=args.handoff_source_factory,
             payload_cache_max_bytes=args.payload_cache_max_bytes,
+            telemetry_jsonl=args.telemetry_jsonl,
         )
         payload = json.dumps(config, indent=2, sort_keys=True) + "\n"
         if args.output_json:
@@ -175,6 +253,9 @@ def _document_kv_extra_config(
     provider_factory: str | None,
     handoff_source_factory: str | None,
     payload_cache_max_bytes: int | None,
+    telemetry_jsonl: str | None,
+    runtime_identity: RuntimeIdentity | None,
+    require_runtime_handshake: bool | None,
 ) -> dict[str, Any]:
     spec = vllm_adapter_spec()
     merged: dict[str, Any] = {}
@@ -192,6 +273,23 @@ def _document_kv_extra_config(
         merged[DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY] = _non_negative_int(
             payload_cache_max_bytes,
             field_name="payload_cache_max_bytes",
+        )
+    if telemetry_jsonl is not None:
+        _validate_non_empty_string(telemetry_jsonl, field_name="telemetry_jsonl")
+        merged[DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY] = telemetry_jsonl
+    if runtime_identity is not None:
+        if not isinstance(runtime_identity, RuntimeIdentity):
+            raise TypeError("runtime_identity must be a RuntimeIdentity or None")
+        merged[DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY] = (
+            runtime_identity.to_record()
+        )
+    if require_runtime_handshake is not None:
+        if type(require_runtime_handshake) is not bool:
+            raise TypeError(
+                "require_runtime_handshake must be a boolean or None"
+            )
+        merged[DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY] = (
+            require_runtime_handshake
         )
     merged.update(
         {
@@ -240,6 +338,15 @@ def _extra_config_from_cli(values: list[str]) -> dict[str, Any]:
 def _validate_non_empty_string(value: str, *, field_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
+
+
+def _validate_document_kv_role(value: str) -> None:
+    _validate_non_empty_string(value, field_name="kv_role")
+    if value != DOCUMENT_KV_DEFAULT_ROLE:
+        raise ValueError(
+            "Cachet's document KV connector is load-only and requires "
+            f"kv_role={DOCUMENT_KV_DEFAULT_ROLE!r}"
+        )
 
 
 def _validate_module_attribute(value: str, *, field_name: str) -> None:

@@ -164,7 +164,12 @@ document-kv-engine-probe-databricks-job \
 factories should report the real engine version in their result.
 For the built-in vLLM provider-backed path, `--provider-backed-vllm-native-probe`
 also sets the Cachet probe factory, vLLM delegate factory, required connector
-metadata, expected backend, and pinned `vllm==0.23.0` runtime package.
+metadata, expected backend, and the hash-locked vLLM `0.30.0+cu129` runtime
+profile. That profile installs the reviewed E5M2-patched vLLM wheel rather
+than the official one: build it with
+`python -m document_kv_cache.vllm_wheel_repack <official-wheel> <output-dir>`
+and set `DOCUMENT_KV_VLLM_PATCHED_WHEEL_URI` and
+`DOCUMENT_KV_VLLM_PATCHED_WHEEL_SHA256` to the wheel it emits.
 In release-safe mode it also requires a vLLM runtime preflight output path and
 layer-name JSON source, writes the strict preflight record before the native
 probe starts, and stops without running the probe if validation fails. It

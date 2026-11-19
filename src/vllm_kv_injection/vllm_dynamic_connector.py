@@ -27,6 +27,14 @@ __all__ = [
 
 _VLLM_RUNTIME_IMPORT_ERROR: Exception | None = None
 
+
+@dataclass
+class _StubTransferResults:
+    finished_sending: set[str] = field(default_factory=set)
+    finished_recving: set[str] = field(default_factory=set)
+    failed_recving: set[str] = field(default_factory=set)
+
+
 try:  # pragma: no cover - exercised in live vLLM environments.
     from vllm.distributed.kv_transfer.kv_connector.v1.base import (  # type: ignore[import-not-found]
         KVConnectorBase_V1 as _KVConnectorBaseV1,
@@ -60,6 +68,10 @@ except Exception as exc:  # pragma: no cover - local lightweight or broken-runti
         def role(self) -> object | None:
             return self._role
 
+        @property
+        def requires_kv_delivery(self) -> bool:
+            return False
+
         def bind_connector_metadata(self, connector_metadata: object) -> None:
             self._connector_metadata = connector_metadata
 
@@ -68,6 +80,39 @@ except Exception as exc:  # pragma: no cover - local lightweight or broken-runti
 
         def has_connector_metadata(self) -> bool:
             return self._connector_metadata is not None
+
+        @property
+        def supports_divergent_local_hybrid_hits(self) -> bool:
+            return False
+
+        def finish_forward(self) -> None:
+            return None
+
+        def reset_capture_state(self) -> None:
+            return None
+
+        def get_transfer_results(self, finished_req_ids: set[str]) -> object:
+            finished_sending, finished_recving = self.get_finished(finished_req_ids)
+            return _StubTransferResults(
+                finished_sending=set(finished_sending or ()),
+                finished_recving=set(finished_recving or ()),
+            )
+
+        def bind_kv_cache_manager(self, kv_cache_manager: object) -> None:
+            self._kv_cache_manager = kv_cache_manager
+            self.bind_gpu_block_pool(kv_cache_manager.block_pool)
+
+        def register_finished_partial_tail(
+            self,
+            request: object,
+            block_ids: tuple[list[int], ...],
+            partial_tail_offloads: list[tuple[int, int, int]],
+        ) -> bool:
+            del request, block_ids, partial_tail_offloads
+            return False
+
+        def has_pending_block_frees(self) -> bool:
+            return False
 
 
 try:  # pragma: no cover - exercised in live vLLM environments.
@@ -263,6 +308,12 @@ class DocumentKVConnector(_KVConnectorBaseV1, _SupportsHMA):
     @property
     def prefer_cross_layer_blocks(self) -> bool:
         return bool(getattr(self.provider, "prefer_cross_layer_blocks", False))
+
+    @property
+    def requires_kv_delivery(self) -> bool:
+        """Cachet consumes persisted document KV and never delivers saved KV."""
+
+        return False
 
     def get_num_new_matched_tokens(
         self,
@@ -533,3 +584,39 @@ def _bind_provider_factory_path(provider: object, factory_path: str) -> None:
     binder = getattr(provider, "set_document_kv_provider_factory", None)
     if callable(binder):
         binder(factory_path)
+
+
+def _register_document_kv_connector_name() -> None:
+    """Register ``DocumentKVConnector`` by name in vLLM's ``KVConnectorFactory``.
+
+    vLLM instantiates this connector via ``kv_connector_module_path`` (dynamic
+    import), which does not populate the factory's name registry. Under
+    ``MultiConnector`` the metrics/stats path resolves each child *by name*
+    (``get_connector_class_by_name``), so without a name registration it raises
+    ``Connector 'DocumentKVConnector' is not registered`` once stats are logged.
+    Registering the name here (idempotent, best-effort) makes the by-name lookup
+    work while leaving the module-path instantiation path unchanged. This is a
+    no-op when vLLM is unavailable (local/test environments).
+    """
+
+    if _VLLM_RUNTIME_IMPORT_ERROR is not None:
+        return
+    try:
+        from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
+    except Exception:
+        return
+    registry = getattr(KVConnectorFactory, "_registry", None)
+    if isinstance(registry, Mapping) and DOCUMENT_KV_CONNECTOR_CLASS in registry:
+        return
+    try:
+        KVConnectorFactory.register_connector(
+            DOCUMENT_KV_CONNECTOR_CLASS,
+            DOCUMENT_KV_CONNECTOR_MODULE_PATH,
+            DOCUMENT_KV_CONNECTOR_CLASS,
+        )
+    except ValueError:
+        # Registry is process-global; another import path already registered it.
+        pass
+
+
+_register_document_kv_connector_name()

@@ -62,10 +62,12 @@ def context(backend: ServingBackend | str) -> EngineKVProbeFactoryContext:
     )
 
 
-def mark_backend_packages_installed(monkeypatch, *, version: str = "0.23.0") -> None:
+def mark_backend_packages_installed(monkeypatch) -> None:
     def fake_version(package_name: str) -> str:
-        if package_name in {"vllm", "sglang"}:
-            return version
+        if package_name == "vllm":
+            return VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version
+        if package_name == "sglang":
+            return SGLANG_SERVING_ENVIRONMENT_PROFILE.engine_version
         raise native_probe_factories.metadata.PackageNotFoundError(package_name)
 
     def fake_find_spec(package_name: str):
@@ -473,7 +475,7 @@ def test_inspect_builtin_native_probe_factory_requires_importable_backend_for_de
 ):
     def fake_version(package_name: str) -> str:
         if package_name == "vllm":
-            return "0.23.0"
+            return VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version
         raise native_probe_factories.metadata.PackageNotFoundError(package_name)
 
     monkeypatch.setattr(native_probe_factories.metadata, "version", fake_version)
@@ -489,7 +491,7 @@ def test_inspect_builtin_native_probe_factory_requires_importable_backend_for_de
 
     assert inspection.supported is False
     assert inspection.package_importable is False
-    assert inspection.package_version == "0.23.0"
+    assert inspection.package_version == VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version
     assert inspection.delegate_factory_path == delegate_path
     assert "package metadata is available but the package is not importable" in inspection.reason
     with pytest.raises(NativeProbeFactoryUnavailable, match="not importable"):
@@ -667,7 +669,8 @@ def test_native_probe_runtime_contract_records_required_backend_lifecycles():
     assert vllm_contract == vllm_kv_connector_v1_contract_to_record(
         handoff_contract=native_probe_adapter_contract_to_record()
     )
-    assert vllm_contract["record_type"] == "vllm_kv_injection.kv_connector_v1_contract.v1"
+    assert vllm_contract["record_type"] == "vllm_kv_injection.kv_connector_v1_contract.v3"
+    assert len(vllm_contract["base_source_sha256"]) == 64
     assert vllm_contract["runtime"] == "vllm-kv-connector-v1"
     assert vllm_contract["handoff_contract"] == native_probe_adapter_contract_to_record()
     assert "get_num_new_matched_tokens" in vllm_contract["required_methods"]
@@ -790,7 +793,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
     inconsistent_supported_record["factories"][0] = {
         **inconsistent_supported_record["factories"][0],
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
         "delegate_adapter_contract_valid": True,
         "supported": True,
@@ -809,7 +812,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **reserved_delegate_record["factories"][0],
         "delegate_factory_path": VLLM_NATIVE_PROBE_FACTORY,
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
         "delegate_adapter_contract_valid": True,
         "supported": True,
@@ -828,7 +831,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **dotted_reserved_delegate_record["factories"][0],
         "delegate_factory_path": "document_kv_cache.native_probe_factories.vllm_native_probe_factory",
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
         "delegate_adapter_contract_valid": True,
         "supported": True,
@@ -849,7 +852,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **alias_reserved_delegate_record["factories"][0],
         "delegate_factory_path": "cachet:vllm_native_probe_factory",
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
         "delegate_adapter_contract_valid": True,
         "supported": True,
@@ -868,7 +871,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **facade_module_reserved_delegate_record["factories"][0],
         "delegate_factory_path": "cachet.native_probe_factories:vllm_native_probe_factory",
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
         "delegate_adapter_contract_valid": True,
         "supported": True,
@@ -889,7 +892,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **legacy_delegate_record["factories"][0],
         "delegate_factory_path": "restaurant_kv_serving.native_probe_factories:vllm_native_probe_factory",
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
         "delegate_adapter_contract_valid": True,
         "supported": True,
@@ -908,7 +911,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **invalid_supported_contract_record["factories"][0],
         "delegate_factory_path": "downstream:factory",
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
         "delegate_adapter_contract_valid": False,
         "supported": True,
@@ -929,7 +932,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **missing_supported_contract_record["factories"][0],
         "delegate_factory_path": "downstream:factory",
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract_valid": True,
         "supported": True,
     }
@@ -949,7 +952,7 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **invalid_supported_runtime_contract_record["factories"][0],
         "delegate_factory_path": "downstream:factory",
         "package_importable": True,
-        "package_version": "0.23.0",
+        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
         "delegate_adapter_contract_valid": True,
         "delegate_runtime_contract": native_probe_runtime_contract_to_record("vllm"),

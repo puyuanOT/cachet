@@ -26,13 +26,18 @@ from document_kv_cache.benchmark_handoffs import (
 )
 from document_kv_cache.benchmark_runner import load_v1_jsonl_suite
 from document_kv_cache.benchmarks import (
+    CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
+    DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     SUPPORTED_V1_HARDWARE_TARGETS,
+    BenchmarkArm,
+    baseline_prefill_arm,
     build_prompt_parts,
+    method_benchmark_arm,
     validate_v1_hardware_target,
 )
 from document_kv_cache.engine_adapters import (
@@ -41,15 +46,20 @@ from document_kv_cache.engine_adapters import (
     validate_engine_adapter_request_record,
 )
 from document_kv_cache.engine_probe import _validate_local_payload_uri
+from document_kv_cache.artifact_identity import method_config_digest as compute_method_config_digest
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
     NUMPY_CONSTRAINT,
+    OPENCV_PYTHON_HEADLESS_CONSTRAINT,
     PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT,
     TOKENIZERS_CONSTRAINT,
     TRANSFORMERS_CONSTRAINT,
+    VLLM_INSTALL_REQUIREMENTS,
+    VLLM_PACKAGE_INDEX_URLS,
     VLLM_SERVING_ENVIRONMENT_PROFILE,
     VLLM_VERSION,
 )
@@ -74,7 +84,7 @@ SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
-VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
+VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = OPENCV_PYTHON_HEADLESS_CONSTRAINT
 VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
 
 __all__ = [
@@ -97,6 +107,7 @@ __all__ = [
     "build_vllm_native_provider_probe_record",
     "cuda_wheel_env_paths",
     "dependency_constraints",
+    "dependency_index_args",
     "dependency_override_constraints",
     "document_kv_package_install_spec",
     "install_document_kv_package",
@@ -132,6 +143,7 @@ class VLLMPreparedHandoffGenerationConfig:
     dtype: str = "bfloat16"
     align_bytes: int = 4096
     timeout_seconds: float = 1800.0
+    require_artifact_contract: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
@@ -144,6 +156,8 @@ class VLLMPreparedHandoffGenerationConfig:
             raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
         if self.timeout_seconds <= 0:
             raise ValueError("benchmark_handoff_timeout_seconds must be positive")
+        if type(self.require_artifact_contract) is not bool:
+            raise ValueError("benchmark_handoff_require_artifact_contract must be a boolean")
         object.__setattr__(self, "output_dir", Path(self.output_dir))
 
     def to_metadata(self) -> dict[str, object]:
@@ -153,6 +167,7 @@ class VLLMPreparedHandoffGenerationConfig:
             "dtype": self.dtype,
             "align_bytes": self.align_bytes,
             "timeout_seconds": self.timeout_seconds,
+            "require_artifact_contract": self.require_artifact_contract,
         }
 
 
@@ -317,6 +332,8 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     dataset_paths = benchmark_dataset_paths(config)
     dataset_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
     validate_prepared_benchmark_handoffs(config, dataset_paths)
+    cache_arm = prepared_benchmark_cache_arm(config, dataset_paths)
+    metadata["benchmark_cache_arm"] = None if cache_arm is None else benchmark_arm_spec(cache_arm)
     validate_prompt_token_budget(config, dataset_paths)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
@@ -331,7 +348,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     try:
         wait_for_server(server, config.server_log_path, config, timeout_seconds=config.server_start_timeout_seconds)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
-        run_benchmark_runner(config, dataset_paths)
+        run_benchmark_runner(config, dataset_paths, cache_arm)
     finally:
         terminate_process(server)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
@@ -426,8 +443,19 @@ def dependency_constraints() -> list[str]:
     return list(VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints)
 
 
+def dependency_index_args() -> list[str]:
+    """Return the official indexes needed by the pinned CUDA 12.9 closure."""
+
+    return [
+        argument
+        for index_url in VLLM_PACKAGE_INDEX_URLS
+        for argument in ("--extra-index-url", index_url)
+    ]
+
+
 def dependency_override_constraints() -> list[str]:
-    return [VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT]
+    # OpenCV is pinned inside the serving profile; no post-install replacement is needed.
+    return []
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -591,6 +619,91 @@ def prepared_benchmark_handoff_coverage_record(
     }
 
 
+def prepared_benchmark_cache_arm(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> BenchmarkArm | None:
+    """Return the registered cache arm that prepared handoffs declare, if any.
+
+    Handoffs from registered-method generation declare their cache method, which
+    the legacy unidentified ``document_kv_cache`` arm cannot consume.
+    """
+
+    if not config.uses_prepared_datasets:
+        return None
+    suite = load_v1_jsonl_suite(
+        suite_id=config.benchmark_id,
+        paths=dataset_paths,
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+    )
+    methods = {example.kv_transfer_params.get(DOCUMENT_KV_CACHE_METHOD_PARAM) for example in suite.examples}
+    if methods == {None}:
+        return None
+    if len(methods) != 1 or None in methods:
+        raise ValueError(
+            "Prepared vLLM benchmark handoffs must all declare the same cache method; "
+            f"found {sorted(str(method) for method in methods)}"
+        )
+    method = methods.pop()
+    digests = {_prepared_handoff_method_config_digest(example.kv_transfer_params) for example in suite.examples}
+    if digests == {""}:
+        # Handoffs generated without the artifact contract carry no identity;
+        # this run's generation record still names the generator's config digest.
+        digests = {_generated_handoff_method_config_digest(config)}
+    if len(digests) != 1 or "" in digests:
+        raise ValueError(
+            "Prepared vLLM benchmark handoffs must all carry one artifact_identity "
+            f"method_config_digest for {method!r}, or come from this run's handoff "
+            f"generation; found {sorted(digests)}"
+        )
+    return method_benchmark_arm(method, arm_id=CACHE_REUSE_ARM, method_config_digest=digests.pop())
+
+
+def _generated_handoff_method_config_digest(config: VLLMSmokeBenchmarkConfig) -> str:
+    if config.handoff_generation is None or not config.prepared_handoff_generation_path.exists():
+        return ""
+    record = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
+    digest = record.get("method_config_digest") if isinstance(record, Mapping) else None
+    return digest if isinstance(digest, str) else ""
+
+
+def _prepared_handoff_method_config_digest(params: Mapping[str, Any]) -> str:
+    record = params.get(DOCUMENT_KV_HANDOFF_RECORD_PARAM)
+    if record is None:
+        record = json.loads(local_path(str(params[DOCUMENT_KV_HANDOFF_JSON_PARAM])).read_text(encoding="utf-8"))
+    handle = record.get("handle") if isinstance(record, Mapping) else None
+    identity = handle.get("artifact_identity") if isinstance(handle, Mapping) else None
+    digest = identity.get("method_config_digest") if isinstance(identity, Mapping) else None
+    return digest if isinstance(digest, str) else ""
+
+
+def benchmark_arm_spec(arm: BenchmarkArm) -> dict[str, object]:
+    """Serialize an arm to the ``benchmark_runner --arm-spec-json`` record."""
+
+    spec: dict[str, object] = {
+        "arm_id": arm.arm_id,
+        "uses_cache": arm.uses_cache,
+        "description": arm.description,
+        "requires_cachet_handoff": arm.requires_cachet_handoff,
+    }
+    for field_name in (
+        "cache_method",
+        "connector_mode",
+        "variant_id",
+        "implementation_kind",
+        "method_version",
+        "method_config_digest",
+        "physical_transform_id",
+        "physical_transform_version",
+        "physical_transform_config_digest",
+    ):
+        value = getattr(arm, field_name)
+        if value:
+            spec[field_name] = value
+    return spec
+
+
 def _prepared_handoff_reference_issue(example: object) -> dict[str, object] | None:
     params = getattr(example, "kv_transfer_params", {})
     if not isinstance(params, Mapping):
@@ -733,6 +846,7 @@ generation = VLLMPreparedHandoffGenerationConfig(
     dtype=generation_payload["dtype"],
     align_bytes=int(generation_payload["align_bytes"]),
     timeout_seconds=float(generation_payload["timeout_seconds"]),
+    require_artifact_contract=bool(generation_payload.get("require_artifact_contract", True)),
 )
 config = VLLMSmokeBenchmarkConfig(
     benchmark_id=payload["benchmark_id"],
@@ -831,6 +945,7 @@ def _generate_prepared_benchmark_handoff_inputs(
             backend="vllm",
             manifest_json=manifest_json,
             align_bytes=generation.align_bytes,
+            require_artifact_contract=generation.require_artifact_contract,
         )
         enriched_rows = enrich_benchmark_jsonl_with_handoffs(
             input_jsonl,
@@ -856,6 +971,7 @@ def _generate_prepared_benchmark_handoff_inputs(
         "dataset_source": "prepared",
         "benchmark_id": config.benchmark_id,
         "generator_factory": generation.generator_factory,
+        "method_config_digest": compute_method_config_digest(getattr(generator, "method_config", {})),
         "output_dir": str(generation.output_dir),
         "dtype": generation.dtype,
         "align_bytes": generation.align_bytes,
@@ -966,9 +1082,13 @@ print(json.dumps({"rows": rows, "over_budget": over_budget}, sort_keys=True), fl
     return record
 
 
-def run_benchmark_runner(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+def run_benchmark_runner(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    cache_arm: BenchmarkArm | None,
+) -> None:
     try:
-        run(build_benchmark_runner_args(config, dataset_paths))
+        run(build_benchmark_runner_args(config, dataset_paths, cache_arm=cache_arm))
     except subprocess.CalledProcessError as exc:
         summary = benchmark_failure_summary(config.benchmark_output_path)
         raise RuntimeError(
@@ -1033,20 +1153,23 @@ def install_vllm(python_executable: Path) -> None:
             "-m",
             "pip",
             "install",
-            *dependency_constraints(),
+            *dependency_index_args(),
+            *VLLM_INSTALL_REQUIREMENTS,
         ]
     )
-    run(
-        [
-            str(python_executable),
-            "-m",
-            "pip",
-            "install",
-            "--force-reinstall",
-            "--no-deps",
-            *dependency_override_constraints(),
-        ]
-    )
+    overrides = dependency_override_constraints()
+    if overrides:
+        run(
+            [
+                str(python_executable),
+                "-m",
+                "pip",
+                "install",
+                "--force-reinstall",
+                "--no-deps",
+                *overrides,
+            ]
+        )
 
 
 def install_document_kv_package(python_executable: Path, install_spec: str) -> None:
@@ -1343,7 +1466,10 @@ def fetch_served_model_ids(models_url: str) -> set[str]:
 
 
 def build_benchmark_runner_args(
-    config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    *,
+    cache_arm: BenchmarkArm | None = None,
 ) -> list[str]:
     args = [
         sys.executable,
@@ -1380,6 +1506,9 @@ def build_benchmark_runner_args(
                 PREPARED_PREFIX_CACHE_SALT_MODE,
             ]
         )
+    if cache_arm is not None:
+        for arm in (baseline_prefill_arm(), cache_arm):
+            args.extend(["--arm-spec-json", json.dumps(benchmark_arm_spec(arm), sort_keys=True)])
     args.extend(dataset_args(dataset_paths))
     return args
 
@@ -1556,6 +1685,14 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     )
     parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
     parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
+    parser.add_argument(
+        "--benchmark-handoff-allow-legacy-artifact-contract",
+        action="store_true",
+        help=(
+            "Legacy/debug opt-out: allow handoff generation without the registered "
+            "method's complete artifact contract."
+        ),
+    )
     args = parser.parse_args(argv)
     output_dir = Path(_cluster_file_path(args.output_dir))
     handoff_generation = _handoff_generation_config_from_args(args, output_dir=output_dir)
@@ -1599,6 +1736,7 @@ def _handoff_generation_config_from_args(
         output_dir=Path(_cluster_file_path(output)),
         dtype=args.benchmark_handoff_dtype,
         align_bytes=args.benchmark_handoff_align_bytes,
+        require_artifact_contract=not args.benchmark_handoff_allow_legacy_artifact_contract,
     )
 
 

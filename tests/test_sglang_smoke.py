@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import ModuleType
 import pytest
 
 import document_kv_cache.sglang_smoke as public_sglang_smoke
+from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmark_runner import BenchmarkGeneration
 from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
@@ -314,7 +316,15 @@ class TinyTokenizer:
         assert text
         assert return_tensors == "pt"
         assert add_special_tokens is False
-        return {"input_ids": [list(self.token_ids)]}
+        # Cached benchmark prefixes own their trailing blank-line boundary. The
+        # complete logical prompt appends at least one online-query token, so the
+        # independently generated prefix remains a strict leading token prefix.
+        token_ids = (
+            self.token_ids
+            if text.endswith("\n\n")
+            else (*self.token_ids, 99)
+        )
+        return {"input_ids": [list(token_ids)]}
 
     def apply_chat_template(
         self, messages, *, tokenize, add_generation_prompt, **template_kwargs
@@ -333,34 +343,58 @@ class TinyTokenizer:
         return rendered + "<|im_start|>assistant\n"
 
 
+def _fake_layout(generator, config):
+    return generator.layout or layout_for_model(
+        config.model_id,
+        dtype=config.dtype,
+        lora_id=config.lora_id,
+        layout_version=config.layout_version,
+        storage_layout=config.storage_layout,
+    )
+
+
+def _fake_contract_chunk(*, document, chunk, config, layout, token_ids):
+    token_ids = tuple(int(token_id) for token_id in token_ids)
+    payload = b"\0" * (len(token_ids) * layout.bytes_per_token)
+    return PackChunk(
+        key=KVCacheKey.for_document(
+            model_id=config.model_id,
+            lora_id=config.lora_id,
+            prompt_template_version=config.prompt_template_version,
+            document_id=document.document_id,
+            chunk_type=chunk.chunk_type,
+            chunk_id=chunk.chunk_id,
+            content_hash=hashlib.sha256(payload).hexdigest(),
+            artifact_identity=config.artifact_identity_for(layout),
+            token_contract=TokenContract.from_token_ids(
+                token_ids,
+                tokenizer_id=config.tokenizer_id,
+                tokenizer_revision=config.tokenizer_revision,
+                add_special_tokens=False,
+                prompt_template_version=config.prompt_template_version,
+            ),
+        ),
+        payload=payload,
+        token_count=len(token_ids),
+        dtype=config.dtype,
+        layout_version=config.layout_version,
+        storage_layout=config.storage_layout,
+    )
+
+
 class TinySGLangLiveKVGenerator:
     tokenizer = TinyTokenizer()
     add_special_tokens = False
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
-            config.model_id,
-            dtype=config.dtype,
-            lora_id=config.lora_id,
-            layout_version=config.layout_version,
-            storage_layout=config.storage_layout,
-        )
-        token_count = len(self.tokenizer.token_ids)
-        return PackChunk(
-            key=KVCacheKey.for_document(
-                model_id=config.model_id,
-                lora_id=config.lora_id,
-                prompt_template_version=config.prompt_template_version,
-                document_id=document.document_id,
-                chunk_type=chunk.chunk_type,
-                chunk_id=chunk.chunk_id,
-            ),
-            payload=b"\0" * (token_count * layout.bytes_per_token),
-            token_count=token_count,
-            dtype=config.dtype,
-            layout_version=config.layout_version,
-            storage_layout=config.storage_layout,
+        return _fake_contract_chunk(
+            document=document,
+            chunk=chunk,
+            config=config,
+            layout=_fake_layout(self, config),
+            token_ids=self.tokenizer.token_ids,
         )
 
 
@@ -404,35 +438,21 @@ class PromptFormatTokenizer:
 class PromptFormatSGLangLiveKVGenerator:
     tokenizer = PromptFormatTokenizer()
     add_special_tokens = False
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
-            config.model_id,
-            dtype=config.dtype,
-            lora_id=config.lora_id,
-            layout_version=config.layout_version,
-            storage_layout=config.storage_layout,
-        )
         token_ids = self.tokenizer(
             chunk.text,
             return_tensors="pt",
             add_special_tokens=False,
         )["input_ids"][0]
-        return PackChunk(
-            key=KVCacheKey.for_document(
-                model_id=config.model_id,
-                lora_id=config.lora_id,
-                prompt_template_version=config.prompt_template_version,
-                document_id=document.document_id,
-                chunk_type=chunk.chunk_type,
-                chunk_id=chunk.chunk_id,
-            ),
-            payload=b"\0" * (len(token_ids) * layout.bytes_per_token),
-            token_count=len(token_ids),
-            dtype=config.dtype,
-            layout_version=config.layout_version,
-            storage_layout=config.storage_layout,
+        return _fake_contract_chunk(
+            document=document,
+            chunk=chunk,
+            config=config,
+            layout=_fake_layout(self, config),
+            token_ids=token_ids,
         )
 
 
@@ -462,35 +482,21 @@ class BoundaryDriftTokenizer:
 class BoundaryDriftSGLangLiveKVGenerator:
     tokenizer = BoundaryDriftTokenizer()
     add_special_tokens = False
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
-            config.model_id,
-            dtype=config.dtype,
-            lora_id=config.lora_id,
-            layout_version=config.layout_version,
-            storage_layout=config.storage_layout,
-        )
         token_ids = self.tokenizer(
             chunk.text,
             return_tensors="pt",
             add_special_tokens=False,
         )["input_ids"][0]
-        return PackChunk(
-            key=KVCacheKey.for_document(
-                model_id=config.model_id,
-                lora_id=config.lora_id,
-                prompt_template_version=config.prompt_template_version,
-                document_id=document.document_id,
-                chunk_type=chunk.chunk_type,
-                chunk_id=chunk.chunk_id,
-            ),
-            payload=b"\0" * (len(token_ids) * layout.bytes_per_token),
-            token_count=len(token_ids),
-            dtype=config.dtype,
-            layout_version=config.layout_version,
-            storage_layout=config.storage_layout,
+        return _fake_contract_chunk(
+            document=document,
+            chunk=chunk,
+            config=config,
+            layout=_fake_layout(self, config),
+            token_ids=token_ids,
         )
 
 
@@ -3671,3 +3677,43 @@ def test_probe_sglang_import_requires_request_metadata_bridge(monkeypatch, tmp_p
     record = json.loads(output_path.read_text(encoding="utf-8"))
     assert record["ok"] is False
     assert record["error_type"] == "SGLangRequestMetadataBridgeUnavailable"
+
+
+def test_sglang_live_benchmark_prompt_parts_wrap_qwen3_chat_completion_prompts(tmp_path):
+    from document_kv_cache.benchmarks import BenchmarkExample, build_prompt_parts
+
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(
+            SourceDocument.from_text(
+                document_id="doc-1", text="Ada Lovelace wrote notes."
+            ),
+        ),
+        query="Who wrote the notes?",
+    )
+    plain = build_prompt_parts(example)
+
+    def config(**overrides):
+        return SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            live_check_prompt_format="qwen3_chat",
+            **overrides,
+        )
+
+    wrapped = public_sglang_smoke._sglang_live_benchmark_prompt_parts(
+        config(live_check_request_mode="completion"), example
+    )
+    assert wrapped.system_prompt.startswith("<|im_start|>system\n")
+    assert wrapped.system_prompt.endswith(plain.system_prompt)
+    assert wrapped.document_context == plain.document_context
+    assert wrapped.user_prompt.endswith("<|im_start|>assistant\n")
+
+    assert (
+        public_sglang_smoke._sglang_live_benchmark_prompt_parts(
+            config(live_check_request_mode="chat"), example
+        )
+        == plain
+    )

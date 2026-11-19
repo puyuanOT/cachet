@@ -17,10 +17,10 @@ Files:
 - `legacy-migration-validation.json`: validation summary for the generated
   evidence record.
 
-This is not the benchmark report directory. Human-readable benchmark summaries
-and sanitized benchmark JSON live under `benchmarks/`, starting with
-`benchmarks/databricks/CURRENT.md`; the Databricks run-specific folders there
-are the durable standalone benchmark artifacts.
+This is not the benchmark report directory. Human-readable benchmark status
+lives under `benchmarks/`, starting with `benchmarks/README.md`. The appendix
+holds only the sealed vLLM 0.30.0 campaign results; older incompatible result
+mirrors are not retained.
 
 Regenerate from the repository root with:
 

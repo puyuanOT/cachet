@@ -3,9 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
+from document_kv_cache.serving_env import VLLM_PACKAGE_VERSION
 import vllm_kv_injection.vllm_runtime_contract as vllm_runtime_contract
 from vllm_kv_injection.vllm_runtime_contract import (
     VLLMInstalledKVConnectorContract,
+    VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
     VLLM_KV_CONNECTOR_V1_BASE_MODULE,
     VLLM_KV_CONNECTOR_V1_CONTRACT,
     VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE,
@@ -16,6 +18,8 @@ from vllm_kv_injection.vllm_runtime_contract import (
     VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
     VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
     VLLM_KV_CONNECTOR_V1_RUNTIME,
+    VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME,
+    VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION,
     inspect_installed_vllm_kv_connector_v1_contract,
     installed_vllm_kv_connector_v1_contract_record_issues,
     installed_vllm_kv_connector_v1_contract_to_record,
@@ -74,6 +78,7 @@ def _runtime_base_class(*, missing: set[str] | None = None, extra: set[str] | No
     for method_name in extra or set():
         attrs[method_name] = _method
     attrs["prefer_cross_layer_blocks"] = property(lambda self: False)
+    attrs["requires_kv_delivery"] = property(lambda self: False)
     attrs["role"] = property(lambda self: None)
     return type("KVConnectorBase_V1", (), attrs)
 
@@ -94,11 +99,18 @@ def test_vllm_kv_connector_v1_contract_record_documents_runtime_lifecycle():
         "record_type": VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE,
         "schema_version": VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION,
         "runtime": VLLM_KV_CONNECTOR_V1_RUNTIME,
+        "target_package_name": VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME,
+        "target_package_version": VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION,
+        "base_source_sha256": VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
         "doc_url": VLLM_KV_CONNECTOR_V1_DOC_URL,
         "required_methods": list(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS),
         "optional_methods": list(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS),
         "handoff_contract": native_probe_adapter_contract_to_record(),
     }
+    assert VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION == 3
+    assert VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE.endswith(".v3")
+    assert VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_NAME == "vllm"
+    assert VLLM_KV_CONNECTOR_V1_TARGET_PACKAGE_VERSION == VLLM_PACKAGE_VERSION
     assert "get_num_new_matched_tokens" in record["required_methods"]
     assert "start_load_kv" in record["required_methods"]
     assert "wait_for_layer_load" in record["required_methods"]
@@ -131,7 +143,12 @@ def test_inspect_installed_vllm_kv_connector_v1_contract_reports_matching_runtim
     monkeypatch.setattr(
         vllm_runtime_contract.package_metadata,
         "version",
-        lambda package_name: "0.23.0" if package_name == "vllm" else None,
+        lambda package_name: VLLM_PACKAGE_VERSION if package_name == "vllm" else None,
+    )
+    monkeypatch.setattr(
+        vllm_runtime_contract,
+        "_module_source_sha256",
+        lambda _module: VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
     )
 
     inspection = inspect_installed_vllm_kv_connector_v1_contract()
@@ -140,9 +157,16 @@ def test_inspect_installed_vllm_kv_connector_v1_contract_reports_matching_runtim
     assert inspection.ok is True
     assert record["record_type"] == VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_RECORD_TYPE
     assert record["schema_version"] == VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION
+    assert VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION == 3
+    assert VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_RECORD_TYPE.endswith(".v3")
     assert record["runtime"] == VLLM_KV_CONNECTOR_V1_RUNTIME
     assert record["base_module"] == VLLM_KV_CONNECTOR_V1_BASE_MODULE
-    assert record["package_version"] == "0.23.0"
+    assert record["base_source_sha256"] == VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256
+    assert record["expected_base_source_sha256"] == VLLM_KV_CONNECTOR_V1_BASE_SOURCE_SHA256
+    assert record["base_source_matches"] is True
+    assert record["package_version"] == VLLM_PACKAGE_VERSION
+    assert record["expected_package_version"] == VLLM_PACKAGE_VERSION
+    assert record["version_matches"] is True
     assert record["importable"] is True
     assert record["ok"] is True
     assert record["missing_required_methods"] == []
@@ -150,6 +174,7 @@ def test_inspect_installed_vllm_kv_connector_v1_contract_reports_matching_runtim
     assert record["extra_installed_properties"] == []
     assert "has_pending_push_work" in record["installed_methods"]
     assert "prefer_cross_layer_blocks" in record["installed_properties"]
+    assert "requires_kv_delivery" in record["installed_properties"]
     validate_installed_vllm_kv_connector_v1_contract_record(record)
 
 
@@ -173,9 +198,39 @@ def test_installed_vllm_kv_connector_v1_contract_reports_runtime_drift():
     record = installed_vllm_kv_connector_v1_contract_to_record(inspection)
 
     assert record["ok"] is False
+    assert record["version_matches"] is False
     assert record["missing_required_methods"] == ["start_load_kv"]
     assert record["extra_installed_methods"] == ["future_hook"]
     assert record["extra_installed_properties"] == ["future_property"]
+    validate_installed_vllm_kv_connector_v1_contract_record(record)
+
+
+def test_installed_vllm_kv_connector_v1_contract_rejects_version_drift_alone():
+    inspection = VLLMInstalledKVConnectorContract(
+        package_version="0.27.0",
+        importable=True,
+        installed_methods=tuple(
+            sorted(
+                (
+                    *VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
+                    *VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
+                )
+            )
+        ),
+        installed_properties=(
+            "prefer_cross_layer_blocks",
+            "requires_kv_delivery",
+            "role",
+        ),
+    )
+
+    record = installed_vllm_kv_connector_v1_contract_to_record(inspection)
+
+    assert record["version_matches"] is False
+    assert record["missing_required_methods"] == []
+    assert record["extra_installed_methods"] == []
+    assert record["extra_installed_properties"] == []
+    assert record["ok"] is False
     validate_installed_vllm_kv_connector_v1_contract_record(record)
 
 
@@ -195,6 +250,8 @@ def test_inspect_installed_vllm_kv_connector_v1_contract_reports_import_error(mo
     record = installed_vllm_kv_connector_v1_contract_to_record()
 
     assert record["package_version"] is None
+    assert record["expected_package_version"] == VLLM_PACKAGE_VERSION
+    assert record["version_matches"] is False
     assert record["importable"] is False
     assert record["ok"] is False
     assert record["import_error_type"] == "RuntimeError"
@@ -205,7 +262,7 @@ def test_inspect_installed_vllm_kv_connector_v1_contract_reports_import_error(mo
 def test_installed_vllm_kv_connector_v1_contract_record_rejects_shape_drift():
     record = installed_vllm_kv_connector_v1_contract_to_record(
         VLLMInstalledKVConnectorContract(
-            package_version="0.23.0",
+            package_version=VLLM_PACKAGE_VERSION,
             importable=True,
             installed_methods=VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
             installed_properties=("prefer_cross_layer_blocks",),

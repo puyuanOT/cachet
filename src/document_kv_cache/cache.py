@@ -31,6 +31,8 @@ class ChunkCacheStats:
     local_items: int
     local_bytes: int
     local_max_bytes: int | None
+    local_promotions: int = 0
+    local_evictions: int = 0
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -42,6 +44,8 @@ class ChunkCacheStats:
             "cpu_max_bytes",
             "local_items",
             "local_bytes",
+            "local_promotions",
+            "local_evictions",
         ):
             _validate_non_negative_int(field_name, getattr(self, field_name))
         if self.local_max_bytes is not None:
@@ -111,14 +115,18 @@ class ChunkCache:
         cpu_max_bytes: int,
         local_dir: str | Path | None = None,
         local_max_bytes: int | None = None,
+        local_promotion_threshold: int = 1,
     ) -> None:
         if local_max_bytes is not None:
             _validate_non_negative_int("local_max_bytes", local_max_bytes)
+        _validate_positive_int("local_promotion_threshold", local_promotion_threshold)
         self.cpu = ByteLRU(cpu_max_bytes)
         self.local_dir = Path(local_dir) if local_dir is not None else None
         self.local_max_bytes = local_max_bytes
+        self.local_promotion_threshold = local_promotion_threshold
         self._local_index: OrderedDict[Path, int] = OrderedDict()
         self._local_bytes = 0
+        self._access_counts: dict[str, int] = {}
         if self.local_dir is not None:
             self.local_dir.mkdir(parents=True, exist_ok=True)
             self._load_local_index()
@@ -126,6 +134,8 @@ class ChunkCache:
         self.cpu_hits = 0
         self.local_hits = 0
         self.cold_misses = 0
+        self.local_promotions = 0
+        self.local_evictions = 0
 
     def get_or_load(self, ref: ChunkRef, loader: Callable[[ChunkRef], bytes]) -> bytes:
         return self.get_or_load_with_tier(ref, loader).payload
@@ -135,11 +145,9 @@ class ChunkCache:
         if cached is not None:
             return cached
         key = self._cache_key(ref)
-        local_path = self._local_path(ref)
         payload = _coerce_cache_payload(loader(ref), label="loader payload")
         self.cold_misses += 1
-        if local_path is not None:
-            self._write_local(local_path, payload)
+        self._record_payload_access(ref, payload)
         self.cpu.put(key, payload)
         return ChunkCacheResult(payload=payload, tier=CacheTier.COLD_STORAGE)
 
@@ -179,6 +187,8 @@ class ChunkCache:
             local_items=len(self._local_index),
             local_bytes=self._local_bytes,
             local_max_bytes=self.local_max_bytes,
+            local_promotions=self.local_promotions,
+            local_evictions=self.local_evictions,
         )
 
     def _get_cached_result(self, ref: ChunkRef) -> ChunkCacheResult | None:
@@ -186,6 +196,7 @@ class ChunkCache:
         cached = self.cpu.get(key)
         if cached is not None:
             self.cpu_hits += 1
+            self._record_payload_access(ref, cached)
             return ChunkCacheResult(payload=cached, tier=CacheTier.CPU)
 
         local_path = self._local_path(ref)
@@ -238,13 +249,30 @@ class ChunkCache:
                 continue
             key = self._cache_key(ref)
             payload = payload_by_cache_key[key]
-            local_path = self._local_path(ref)
             self.cold_misses += 1
-            if local_path is not None:
-                self._write_local(local_path, payload)
+            self._record_payload_access(ref, payload)
             self.cpu.put(key, payload)
             results.append(ChunkCacheResult(payload=payload, tier=CacheTier.COLD_STORAGE))
         return tuple(results)
+
+    def _record_payload_access(self, ref: ChunkRef, payload: bytes) -> None:
+        key = self._cache_key(ref)
+        self._access_counts[key] = self._access_counts.get(key, 0) + 1
+        local_path = self._local_path(ref)
+        if local_path is None:
+            return
+        if self._access_counts[key] < self.local_promotion_threshold:
+            return
+        if local_path.exists():
+            if local_path in self._local_index:
+                self._record_local_access(local_path)
+                return
+            local_payload = local_path.read_bytes()
+            if self._is_valid_payload(ref, local_payload):
+                self._record_local_access(local_path)
+                return
+            self._remove_local(local_path)
+        self._write_local(local_path, payload)
 
     def _local_path(self, ref: ChunkRef) -> Path | None:
         if self.local_dir is None:
@@ -286,11 +314,16 @@ class ChunkCache:
         if self.local_max_bytes is not None and len(payload) > self.local_max_bytes:
             old_size = self._local_index.pop(path, 0)
             self._local_bytes -= old_size
-            path.unlink(missing_ok=True)
+            if path.exists():
+                path.unlink(missing_ok=True)
+                self.local_evictions += 1
             return
+        existed = path.exists()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
         self._record_local_access(path)
+        if not existed:
+            self.local_promotions += 1
         self._enforce_local_budget()
 
     def _remove_local(self, path: Path) -> None:
@@ -304,7 +337,9 @@ class ChunkCache:
         while self._local_bytes > self.local_max_bytes and self._local_index:
             path, size = self._local_index.popitem(last=False)
             self._local_bytes -= size
-            path.unlink(missing_ok=True)
+            if path.exists():
+                path.unlink(missing_ok=True)
+                self.local_evictions += 1
 
     @staticmethod
     def _is_valid_payload(ref: ChunkRef, payload: bytes) -> bool:
@@ -333,6 +368,13 @@ def _validate_non_negative_int(name: str, value: object) -> None:
         raise ValueError(f"{name} must be a non-negative integer")
     if value < 0:
         raise ValueError(f"{name} must be non-negative")
+
+
+def _validate_positive_int(name: str, value: object) -> None:
+    if type(value) is not int:
+        raise ValueError(f"{name} must be a positive integer")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
 
 
 def _validate_cache_key(key: object) -> str:

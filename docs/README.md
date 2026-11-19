@@ -9,6 +9,8 @@ release-operation material.
 - `getting-started.md` is the beginner path for installing Cachet and running a
   local no-cloud example.
 - `concepts.md` defines the KV-cache vocabulary used throughout the project.
+- `adding-a-kv-method.md` is the method-author path for scaffolding, contracts,
+  serving integration, tests, and benchmark publication gates.
 - `production.md` explains the vLLM, SGLang, and managed-cloud deployment path.
 - `release-ops/` keeps maintainer-only release machinery, audit records, and
   historical detailed references away from the first-touch user path.
@@ -29,6 +31,8 @@ release-operation material.
   freshness evidence.
 - `native-engine-integration.md` shows how Cachet handoff artifacts and
   launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.
-- `../benchmarks/current/README.md` is the human-facing current benchmark
-  index; `../benchmarks/README.md` indexes the standalone, human-readable
-  benchmark report folders and their Databricks source-artifact records.
+- `../benchmarks/README.md` is the human-facing research-style benchmark page
+  for the published vLLM 0.30.0 campaign. Its sealed records live under
+  `../benchmarks/appendix/`, and `../benchmarks/verify_sealed_records.py`
+  checks their integrity; full re-validation runs at the
+  `vllm-0300-campaign-archive` tag.

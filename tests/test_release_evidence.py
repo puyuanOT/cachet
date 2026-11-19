@@ -44,6 +44,7 @@ from document_kv_cache.release_evidence import (
     release_evidence_to_record,
     sglang_live_v1_benchmark_issues,
 )
+from document_kv_cache.methods import method_spec
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
@@ -969,6 +970,33 @@ def test_evaluate_release_evidence_rejects_incorrect_measurement_quality_labels(
     assert not evidence.ok
     assert any("biography:baseline_prefill exact_match must match output_text" in issue for issue in evidence.issues)
     assert any("biography:document_kv_cache answer_found must match output_text" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_checks_scored_labels_against_quality_scores():
+    v1_record = _v1_record(ok=True)
+    scored = {
+        **v1_record["measurements"][0],
+        "output_text": "<final_answer>Ada Lovelace</final_answer>",
+        "quality_scores": {"exact_match": 1.0},
+    }
+    v1_record["measurements"][0] = scored
+
+    def label_issues(record):
+        evidence = evaluate_release_evidence(
+            record,
+            _storage_record(ok=True),
+            engine_probe_records=(
+                _probe_record(ServingBackend.VLLM),
+                _probe_record(ServingBackend.SGLANG),
+            ),
+        )
+        return [issue for issue in evidence.issues if "biography:baseline_prefill exact_match" in issue]
+
+    assert label_issues(v1_record) == []
+    v1_record["measurements"][0] = {**scored, "quality_scores": {"exact_match": 0.0}}
+    assert label_issues(v1_record) == [
+        "v1 benchmark measurement biography:baseline_prefill exact_match must match quality_scores.exact_match"
+    ]
 
 
 def test_evaluate_release_evidence_rejects_malformed_measurement_trace_fields():
@@ -2536,7 +2564,7 @@ def _v1_report_row_record(dataset: str, arm: str):
         "time_to_completion": {"count": 1, "mean": 2.0, "p50": 2.0, "p95": 2.0},
         "exact_match_rate": 1.0,
         "answer_found_rate": 1.0,
-        "output_tokens_per_second": 8.0,
+        "output_tokens_per_second": 16.0,
     }
 
 
@@ -2684,7 +2712,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
             bind=EngineKVBindAction(
                 request_id=request_id,
                 handle_uri=f"engine://{backend.value}/{request_id}",
-                cache_method="vanilla",
+                cache_method="full_prefix_prefill",
                 adapter_ids=("base",),
                 metadata={
                     "engine.backend": backend.value,
@@ -2692,6 +2720,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
                 },
             ),
             release=EngineKVReleaseAction(request_id=request_id),
+            reuse_plan=method_spec("full_prefix_prefill").reuse_plan(),
         )
     )
 

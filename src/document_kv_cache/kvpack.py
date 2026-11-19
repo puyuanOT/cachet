@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from io import BytesIO
@@ -81,11 +83,32 @@ def _write_kvpack(
     path_resolver: Callable[[str], Path],
 ) -> list[ChunkRef]:
     _validate_align_bytes(align_bytes)
-    chunk_sequence = tuple(chunks)
     target = path_resolver(str(path))
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("wb") as handle:
-        return _write_kvpack_payload(str(path), chunk_sequence, align_bytes=align_bytes, write=handle.write)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            refs = _write_kvpack_payload(
+                str(path),
+                chunks,
+                align_bytes=align_bytes,
+                write=handle.write,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, target)
+        temporary_path = None
+        return refs
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _write_kvpack_payload(
@@ -96,10 +119,9 @@ def _write_kvpack_payload(
     write: Callable[[bytes], object],
 ) -> list[ChunkRef]:
     _validate_align_bytes(align_bytes)
-    chunk_sequence = tuple(chunks)
     refs: list[ChunkRef] = []
     offset = 0
-    for chunk in chunk_sequence:
+    for chunk in chunks:
         if align_bytes > 1:
             padding = (-offset) % align_bytes
             if padding:

@@ -72,6 +72,7 @@ from document_kv_cache.live_server import (
     LiveServerCheckConfig,
     LiveServerCheckResult,
     _live_check_chat_messages,
+    _live_check_prompt_parts,
     _live_check_request_prompt_format,
     build_live_server_check_request,
     live_check_kv_transfer_params,
@@ -1491,6 +1492,7 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
         dtype=generation.dtype,
         block_size=generation.page_size,
     )
+    _bind_live_handoff_generator_layout(generator, layout)
     generated_paths: dict[str, Path] = {}
     dataset_records: dict[str, dict[str, object]] = {}
     for dataset in SUPPORTED_V1_DATASETS:
@@ -1686,6 +1688,7 @@ def _generate_live_handoff_inputs(
         dtype=generation.dtype,
         block_size=generation.page_size,
     )
+    _bind_live_handoff_generator_layout(generator, layout)
     live_request = build_live_server_check_request(
         model_id=CACHET_MODEL_ID,
         hardware_target=config.hardware_target,
@@ -1816,6 +1819,24 @@ def _generate_live_handoff_inputs(
         "dtype": generation.dtype,
         "align_bytes": generation.align_bytes,
     }
+
+
+def _bind_live_handoff_generator_layout(generator: object, layout: object) -> None:
+    """Give layout-aware generators the exact SGLang live-page geometry."""
+
+    try:
+        generator_layout = getattr(generator, "layout")
+    except AttributeError:
+        return
+    if generator_layout is not None:
+        return
+    try:
+        setattr(generator, "layout", layout)
+    except (AttributeError, TypeError) as exc:
+        raise TypeError(
+            "SGLang live handoff generator exposes an unset layout that cannot "
+            "be bound to the runtime KV layout"
+        ) from exc
 
 
 def _live_handoff_cache_source_document(

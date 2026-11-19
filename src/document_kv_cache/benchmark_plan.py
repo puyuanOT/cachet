@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shlex
 import sys
 from collections.abc import Mapping, Sequence
@@ -11,10 +12,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID, SUPPORTED_V1_DATASETS
+from document_kv_cache.benchmarks import (
+    DEFAULT_HARDWARE_TARGET,
+    DEFAULT_V1_MODEL_ID,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    SUPPORTED_V1_DATASETS,
+)
 from document_kv_cache.benchmarks import validate_v1_dataset, validate_v1_hardware_target
 from document_kv_cache._native_probe_metadata import (
-    SGLANG_NATIVE_PROBE_DELEGATE_FACTORY,
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY,
     validate_known_native_delegate_metadata,
@@ -177,6 +182,7 @@ class ReleaseEvidencePlanConfig:
     engine_probe_jsons: tuple[str, ...] = ()
     engine_actions_jsons: tuple[str, ...] = ()
     storage_benchmark_json: str | None = None
+    benchmark_evidence_gate_json: str | None = None
 
     def __post_init__(self) -> None:
         if not self.output_json:
@@ -193,6 +199,13 @@ class ReleaseEvidencePlanConfig:
             raise ValueError("release evidence engine_actions_jsons entries must be distinct")
         if self.storage_benchmark_json is not None and not self.storage_benchmark_json:
             raise ValueError("release evidence storage_benchmark_json must be non-empty when provided")
+        if (
+            self.benchmark_evidence_gate_json is not None
+            and not self.benchmark_evidence_gate_json
+        ):
+            raise ValueError(
+                "release evidence benchmark_evidence_gate_json must be non-empty when provided"
+            )
         object.__setattr__(self, "engine_probe_jsons", tuple(self.engine_probe_jsons))
         object.__setattr__(self, "engine_actions_jsons", tuple(self.engine_actions_jsons))
 
@@ -426,6 +439,39 @@ class BenchmarkPlanConfig:
     limit_per_dataset: int | None = None
     max_tokens: int = 128
     temperature: float = 0.0
+    repeats: int = 1
+    request_parallelism: int = 1
+    warmups: int = 0
+    shuffle: bool = False
+    benchmark_seed: int | None = None
+    generation_seed: int | None = None
+    interleave_examples: bool = False
+    isolate_arms: bool = True
+    prefix_cache_salt_mode: str = "static"
+    evidence_policy: str = "smoke"
+    evidence_gate_output_json: str | None = None
+    artifact_identity_jsons: tuple[str, ...] = ()
+    cache_state_attestation_jsons: tuple[str, ...] = ()
+    benchmark_arm_specs_json: tuple[str, ...] = ()
+    benchmark_arm_spec_json_files: tuple[str, ...] = ()
+    model_revision: str = "unresolved"
+    tokenizer_id: str = "unresolved"
+    tokenizer_revision: str = "unresolved"
+    engine_id: str = "unresolved"
+    engine_version: str = "unresolved"
+    package_revisions: tuple[str, ...] = ()
+    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION
+    input_tokens_target: int | None = None
+    hardware_fingerprint: str = "unresolved"
+    runtime_id: str = "unresolved"
+    runtime_version: str = "unresolved"
+    storage_identity: str = "unresolved"
+    cache_state: str = "unresolved"
+    complete_dataset_split: bool = False
+    measurement_scopes: tuple[str, ...] = ("latency", "quality")
+    comparison_mode: str = "methods_same_setting"
+    varied_setting: str = ""
+    reference_arm_id: str = ""
     timeout_seconds: float = 120.0
     stream: bool = True
     cache_runtime_prompt: bool = False
@@ -449,6 +495,20 @@ class BenchmarkPlanConfig:
     engine_launch_config_sglang_provider_factory: str | None = (
         DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_PROVIDER_FACTORY
     )
+    canonical_model_id: str = ""
+    lora_id: str = "base"
+    serving_platform: str = "unresolved"
+    model_dtype: str = "unresolved"
+    model_quantization: str = "none"
+    runtime_kv_dtype: str = "unresolved"
+    layout_version: str = "unresolved"
+    payload_axis_order: str = "unresolved"
+    block_size: int | None = None
+    key_position_encoding: str = "unresolved"
+    rope_theta: float | None = None
+    rope_rotary_dim: int | None = None
+    tensor_parallel_size: int | None = None
+    pipeline_parallel_size: int | None = None
 
     def __post_init__(self) -> None:
         if not self.suite_id:
@@ -480,6 +540,114 @@ class BenchmarkPlanConfig:
             raise ValueError("max_tokens must be positive")
         if self.temperature < 0:
             raise ValueError("temperature must be non-negative")
+        for field_name in ("repeats", "request_parallelism"):
+            if type(getattr(self, field_name)) is not int or getattr(self, field_name) <= 0:
+                raise ValueError(f"{field_name} must be positive")
+        if type(self.warmups) is not int or self.warmups < 0:
+            raise ValueError("warmups must be a non-negative integer")
+        if self.benchmark_seed is not None and type(self.benchmark_seed) is not int:
+            raise ValueError("benchmark_seed must be an integer when provided")
+        if self.generation_seed is not None and type(self.generation_seed) is not int:
+            raise ValueError("generation_seed must be an integer when provided")
+        for field_name in ("shuffle", "interleave_examples", "isolate_arms"):
+            if type(getattr(self, field_name)) is not bool:
+                raise ValueError(f"{field_name} must be a boolean")
+        if self.prefix_cache_salt_mode not in {"static", "per_request"}:
+            raise ValueError("prefix_cache_salt_mode must be static or per_request")
+        if self.evidence_policy not in {"smoke", "canary", "publication"}:
+            raise ValueError("evidence_policy must be smoke, canary, or publication")
+        if self.evidence_gate_output_json is not None and not self.evidence_gate_output_json:
+            raise ValueError("evidence_gate_output_json must be non-empty when provided")
+        for field_name in ("artifact_identity_jsons", "cache_state_attestation_jsons"):
+            values = tuple(getattr(self, field_name))
+            if any(not value for value in values):
+                raise ValueError(f"{field_name} entries must be non-empty")
+            if len(set(values)) != len(values):
+                raise ValueError(f"{field_name} entries must be distinct")
+            object.__setattr__(self, field_name, values)
+        object.__setattr__(self, "benchmark_arm_specs_json", tuple(self.benchmark_arm_specs_json))
+        object.__setattr__(
+            self,
+            "benchmark_arm_spec_json_files",
+            tuple(self.benchmark_arm_spec_json_files),
+        )
+        _validate_benchmark_arm_specs_json(self.benchmark_arm_specs_json)
+        if any(not path for path in self.benchmark_arm_spec_json_files):
+            raise ValueError("benchmark_arm_spec_json_files entries must be non-empty")
+        for field_name in (
+            "model_revision",
+            "tokenizer_id",
+            "tokenizer_revision",
+            "lora_id",
+            "engine_id",
+            "engine_version",
+            "serving_platform",
+            "model_dtype",
+            "model_quantization",
+            "runtime_kv_dtype",
+            "layout_version",
+            "payload_axis_order",
+            "key_position_encoding",
+            "prompt_template_version",
+            "hardware_fingerprint",
+            "runtime_id",
+            "runtime_version",
+            "storage_identity",
+            "cache_state",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field_name} must be non-empty")
+        if not isinstance(self.canonical_model_id, str):
+            raise ValueError("canonical_model_id must be a string")
+        for field_name in (
+            "block_size",
+            "rope_rotary_dim",
+            "tensor_parallel_size",
+            "pipeline_parallel_size",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"{field_name} must be a positive integer when provided")
+        if (self.rope_theta is None) != (self.rope_rotary_dim is None):
+            raise ValueError("rope_theta and rope_rotary_dim must be provided together")
+        if self.rope_theta is not None:
+            if (
+                isinstance(self.rope_theta, bool)
+                or not isinstance(self.rope_theta, (int, float))
+                or not math.isfinite(self.rope_theta)
+                or self.rope_theta <= 0
+            ):
+                raise ValueError("rope_theta must be a positive number when provided")
+            if self.rope_rotary_dim is None or self.rope_rotary_dim % 2:
+                raise ValueError("rope_rotary_dim must be a positive even integer")
+        if self.key_position_encoding == "pre_rope" and self.rope_theta is None:
+            raise ValueError("pre_rope benchmark provenance requires RoPE geometry")
+        object.__setattr__(self, "package_revisions", tuple(self.package_revisions))
+        _validate_package_revisions(self.package_revisions)
+        if self.input_tokens_target is not None and self.input_tokens_target <= 0:
+            raise ValueError("input_tokens_target must be positive when provided")
+        if type(self.complete_dataset_split) is not bool:
+            raise ValueError("complete_dataset_split must be a boolean")
+        scopes = tuple(self.measurement_scopes)
+        if not scopes or any(scope not in {"latency", "quality", "resource"} for scope in scopes):
+            raise ValueError("measurement_scopes contains an unsupported scope")
+        if len(set(scopes)) != len(scopes):
+            raise ValueError("measurement_scopes must not contain duplicates")
+        object.__setattr__(self, "measurement_scopes", scopes)
+        if self.comparison_mode not in {
+            "methods_same_setting",
+            "single_method_setting_variation",
+        }:
+            raise ValueError("unsupported comparison_mode")
+        if self.comparison_mode == "single_method_setting_variation" and not self.varied_setting:
+            raise ValueError("setting-variation comparisons require varied_setting")
+        if self.comparison_mode == "single_method_setting_variation" and not self.reference_arm_id:
+            raise ValueError("setting-variation comparisons require reference_arm_id")
+        if self.comparison_mode == "methods_same_setting" and self.varied_setting:
+            raise ValueError("varied_setting is only valid for setting-variation comparisons")
+        if not isinstance(self.reference_arm_id, str):
+            raise ValueError("reference_arm_id must be a string")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if self.cache_runtime_prompt and self.cache_base_url is None:
@@ -730,6 +898,60 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
         ],
         "commands": [_command_to_record(command) for command in plan.commands],
         "benchmark_output_json": plan.config.benchmark_output_json,
+        "evidence_gate_output_json": plan.config.evidence_gate_output_json,
+        "evidence_policy": plan.config.evidence_policy,
+        "artifact_identity_jsons": list(plan.config.artifact_identity_jsons),
+        "cache_state_attestation_jsons": list(
+            plan.config.cache_state_attestation_jsons
+        ),
+        "benchmark_arm_specs_json": list(plan.config.benchmark_arm_specs_json),
+        "benchmark_arm_spec_json_files": list(
+            plan.config.benchmark_arm_spec_json_files
+        ),
+        "experiment": {
+            "measurement_scopes": list(plan.config.measurement_scopes),
+            "repeats": plan.config.repeats,
+            "request_parallelism": plan.config.request_parallelism,
+            "warmups": plan.config.warmups,
+            "shuffle": plan.config.shuffle,
+            "benchmark_seed": plan.config.benchmark_seed,
+            "generation_seed": plan.config.generation_seed,
+            "interleave_examples": plan.config.interleave_examples,
+            "isolate_arms": plan.config.isolate_arms,
+            "prefix_cache_salt_mode": plan.config.prefix_cache_salt_mode,
+            "model_revision": plan.config.model_revision,
+            "canonical_model_id": plan.config.canonical_model_id,
+            "tokenizer_id": plan.config.tokenizer_id,
+            "tokenizer_revision": plan.config.tokenizer_revision,
+            "lora_id": plan.config.lora_id,
+            "engine_id": plan.config.engine_id,
+            "engine_version": plan.config.engine_version,
+            "serving_platform": plan.config.serving_platform,
+            "model_dtype": plan.config.model_dtype,
+            "model_quantization": plan.config.model_quantization,
+            "runtime_kv_dtype": plan.config.runtime_kv_dtype,
+            "layout_version": plan.config.layout_version,
+            "payload_axis_order": plan.config.payload_axis_order,
+            "block_size": plan.config.block_size,
+            "key_position_encoding": plan.config.key_position_encoding,
+            "rope_theta": plan.config.rope_theta,
+            "rope_rotary_dim": plan.config.rope_rotary_dim,
+            "tensor_parallel_size": plan.config.tensor_parallel_size,
+            "pipeline_parallel_size": plan.config.pipeline_parallel_size,
+            "package_revisions": list(plan.config.package_revisions),
+            "prompt_template_version": plan.config.prompt_template_version,
+            "input_tokens_target": plan.config.input_tokens_target,
+            "max_output_tokens": plan.config.max_tokens,
+            "hardware_fingerprint": plan.config.hardware_fingerprint,
+            "runtime_id": plan.config.runtime_id,
+            "runtime_version": plan.config.runtime_version,
+            "storage_identity": plan.config.storage_identity,
+            "cache_state": plan.config.cache_state,
+            "complete_dataset_split": plan.config.complete_dataset_split,
+            "comparison_mode": plan.config.comparison_mode,
+            "varied_setting": plan.config.varied_setting or None,
+            "reference_arm_id": plan.config.reference_arm_id or None,
+        },
         "storage_benchmark_output_json": (
             plan.config.storage_benchmark.output_json
             if plan.config.storage_benchmark is not None
@@ -963,7 +1185,7 @@ def _benchmark_handoff_command(config: BenchmarkPlanConfig, dataset_path: Benchm
 
 
 def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
-    argv = (
+    argv: tuple[str, ...] = (
         config.python_executable,
         "-m",
         "document_kv_cache.benchmark_runner",
@@ -979,17 +1201,116 @@ def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         str(config.max_tokens),
         "--temperature",
         str(config.temperature),
+        "--repeats",
+        str(config.repeats),
+        "--request-parallelism",
+        str(config.request_parallelism),
+        "--warmups",
+        str(config.warmups),
+        "--evidence-policy",
+        config.evidence_policy,
+        "--prefix-cache-salt-mode",
+        config.prefix_cache_salt_mode,
+        "--model-revision",
+        config.model_revision,
+        "--tokenizer-id",
+        config.tokenizer_id,
+        "--tokenizer-revision",
+        config.tokenizer_revision,
+        "--lora-id",
+        config.lora_id,
+        "--engine-id",
+        config.engine_id,
+        "--engine-version",
+        config.engine_version,
+        "--serving-platform",
+        config.serving_platform,
+        "--model-dtype",
+        config.model_dtype,
+        "--model-quantization",
+        config.model_quantization,
+        "--runtime-kv-dtype",
+        config.runtime_kv_dtype,
+        "--layout-version",
+        config.layout_version,
+        "--payload-axis-order",
+        config.payload_axis_order,
+        "--key-position-encoding",
+        config.key_position_encoding,
+        "--prompt-template-version",
+        config.prompt_template_version,
+        "--hardware-fingerprint",
+        config.hardware_fingerprint,
+        "--runtime-id",
+        config.runtime_id,
+        "--runtime-version",
+        config.runtime_version,
+        "--storage-identity",
+        config.storage_identity,
+        "--cache-state",
+        config.cache_state,
+        "--comparison-mode",
+        config.comparison_mode,
         "--timeout-seconds",
         str(config.timeout_seconds),
         "--output-json",
         config.benchmark_output_json,
     )
+    if config.canonical_model_id:
+        argv = (*argv, "--canonical-model-id", config.canonical_model_id)
+    if config.block_size is not None:
+        argv = (*argv, "--block-size", str(config.block_size))
+    if config.rope_theta is not None:
+        assert config.rope_rotary_dim is not None
+        argv = (
+            *argv,
+            "--rope-theta",
+            str(config.rope_theta),
+            "--rope-rotary-dim",
+            str(config.rope_rotary_dim),
+        )
+    if config.tensor_parallel_size is not None:
+        argv = (*argv, "--tensor-parallel-size", str(config.tensor_parallel_size))
+    if config.pipeline_parallel_size is not None:
+        argv = (*argv, "--pipeline-parallel-size", str(config.pipeline_parallel_size))
     for dataset_path in config.dataset_paths:
         argv = (*argv, "--dataset", f"{dataset_path.dataset}={_benchmark_dataset_jsonl(dataset_path)}")
+    for scope in config.measurement_scopes:
+        argv = (*argv, "--measurement-scope", scope)
+    for arm_spec_json in config.benchmark_arm_specs_json:
+        argv = (*argv, "--arm-spec-json", arm_spec_json)
+    for arm_spec_json_file in config.benchmark_arm_spec_json_files:
+        argv = (*argv, "--arm-spec-json-file", arm_spec_json_file)
+    for package_revision in config.package_revisions:
+        argv = (*argv, "--package-revision", package_revision)
+    for identity_json in config.artifact_identity_jsons:
+        argv = (*argv, "--artifact-identity-json", identity_json)
+    for attestation_json in config.cache_state_attestation_jsons:
+        argv = (*argv, "--cache-state-attestation-json", attestation_json)
     if config.cache_base_url is not None:
         argv = (*argv, "--cache-base-url", config.cache_base_url)
     if config.limit_per_dataset is not None:
         argv = (*argv, "--limit-per-dataset", str(config.limit_per_dataset))
+    if config.evidence_gate_output_json is not None:
+        argv = (*argv, "--evidence-gate-output-json", config.evidence_gate_output_json)
+    if config.input_tokens_target is not None:
+        argv = (*argv, "--input-tokens-target", str(config.input_tokens_target))
+    if config.benchmark_seed is not None:
+        argv = (*argv, "--seed", str(config.benchmark_seed))
+    if config.generation_seed is not None:
+        argv = (*argv, "--generation-seed", str(config.generation_seed))
+    if config.shuffle:
+        argv = (*argv, "--shuffle")
+    if config.interleave_examples:
+        argv = (*argv, "--interleave-examples")
+    if not config.isolate_arms:
+        argv = (*argv, "--no-isolate-arms")
+    if config.complete_dataset_split:
+        argv = (*argv, "--complete-dataset-split")
+    if config.varied_setting:
+        argv = (*argv, "--varied-setting", config.varied_setting)
+    if config.reference_arm_id:
+        argv = (*argv, "--reference-arm-id", config.reference_arm_id)
     if not config.stream:
         argv = (*argv, "--no-stream")
     if config.cache_runtime_prompt:
@@ -1199,6 +1520,12 @@ def _release_evidence_input_argv(config: BenchmarkPlanConfig) -> tuple[str, ...]
         argv = (*argv, "--engine-probe-json", engine_probe_json)
     for engine_action_json in _release_engine_action_jsons(config):
         argv = (*argv, "--engine-actions-json", engine_action_json)
+    if config.release_evidence.benchmark_evidence_gate_json is not None:
+        argv = (
+            *argv,
+            "--benchmark-evidence-gate-json",
+            config.release_evidence.benchmark_evidence_gate_json,
+        )
     return argv
 
 
@@ -1910,6 +2237,46 @@ def _command_to_record(command: BenchmarkCommand) -> dict[str, Any]:
     return {"name": command.name, "argv": list(command.argv), "shell": command.shell}
 
 
+def _validate_benchmark_arm_specs_json(values: Sequence[str]) -> None:
+    parsed: list[Mapping[str, Any]] = []
+    arm_ids: list[str] = []
+    for index, raw in enumerate(values):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"benchmark_arm_specs_json[{index}] is not valid JSON: {exc.msg}"
+            ) from exc
+        if not isinstance(value, Mapping):
+            raise ValueError(f"benchmark_arm_specs_json[{index}] must be an object")
+        arm_id = value.get("arm_id")
+        if not isinstance(arm_id, str) or not arm_id:
+            raise ValueError(
+                f"benchmark_arm_specs_json[{index}].arm_id must be non-empty"
+            )
+        arm_ids.append(arm_id)
+        parsed.append(value)
+    if len(set(arm_ids)) != len(arm_ids):
+        raise ValueError("benchmark_arm_specs_json must not contain duplicate arm ids")
+    if parsed:
+        from document_kv_cache.benchmark_runner import parse_benchmark_arm_specs
+
+        parse_benchmark_arm_specs(parsed)
+
+
+def _validate_package_revisions(values: Sequence[str]) -> None:
+    names: list[str] = []
+    for value in values:
+        if not isinstance(value, str) or "=" not in value:
+            raise ValueError("package_revisions entries must use PACKAGE=REVISION")
+        name, revision = value.split("=", 1)
+        if not name or not revision:
+            raise ValueError("package_revisions entries must use non-empty PACKAGE=REVISION")
+        names.append(name)
+    if len(set(names)) != len(names):
+        raise ValueError("package_revisions must not contain duplicate package names")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Emit a reproducible V1 benchmark command plan.")
     parser.add_argument(
@@ -1930,6 +2297,85 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--limit-per-dataset", type=int)
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--request-parallelism", type=int, default=1)
+    parser.add_argument("--warmups", type=int, default=0)
+    parser.add_argument("--shuffle", action="store_true")
+    parser.add_argument("--benchmark-seed", type=int)
+    parser.add_argument("--generation-seed", type=int)
+    parser.add_argument("--interleave-examples", action="store_true")
+    parser.add_argument("--no-isolate-arms", dest="isolate_arms", action="store_false")
+    parser.set_defaults(isolate_arms=True)
+    parser.add_argument(
+        "--prefix-cache-salt-mode",
+        choices=("static", "per_request"),
+        default="static",
+    )
+    parser.add_argument(
+        "--evidence-policy",
+        choices=("smoke", "canary", "publication"),
+        default="smoke",
+    )
+    parser.add_argument("--evidence-gate-output-json")
+    parser.add_argument("--artifact-identity-json", action="append")
+    parser.add_argument("--cache-state-attestation-json", action="append")
+    parser.add_argument(
+        "--benchmark-arm-spec-json",
+        action="append",
+        help="Inline runner arm-spec JSON. Repeat for N-way comparisons.",
+    )
+    parser.add_argument(
+        "--benchmark-arm-spec-json-file",
+        action="append",
+        help="Runner arm-spec JSON file. Repeat for multiple files.",
+    )
+    parser.add_argument("--model-revision", default="unresolved")
+    parser.add_argument(
+        "--canonical-model-id",
+        default="",
+        help="Canonical source model identity; benchmark runner defaults to --model-id.",
+    )
+    parser.add_argument("--tokenizer-id", default="unresolved")
+    parser.add_argument("--tokenizer-revision", default="unresolved")
+    parser.add_argument("--lora-id", default="base")
+    parser.add_argument("--engine-id", default="unresolved")
+    parser.add_argument("--engine-version", default="unresolved")
+    parser.add_argument("--serving-platform", default="unresolved")
+    parser.add_argument("--model-dtype", default="unresolved")
+    parser.add_argument("--model-quantization", default="none")
+    parser.add_argument("--runtime-kv-dtype", default="unresolved")
+    parser.add_argument("--layout-version", default="unresolved")
+    parser.add_argument("--payload-axis-order", default="unresolved")
+    parser.add_argument("--block-size", type=int)
+    parser.add_argument("--key-position-encoding", default="unresolved")
+    parser.add_argument("--rope-theta", type=float)
+    parser.add_argument("--rope-rotary-dim", type=int)
+    parser.add_argument("--tensor-parallel-size", type=int)
+    parser.add_argument("--pipeline-parallel-size", type=int)
+    parser.add_argument("--package-revision", action="append")
+    parser.add_argument(
+        "--prompt-template-version",
+        default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    )
+    parser.add_argument("--input-tokens-target", type=int)
+    parser.add_argument("--hardware-fingerprint", default="unresolved")
+    parser.add_argument("--runtime-id", default="unresolved")
+    parser.add_argument("--runtime-version", default="unresolved")
+    parser.add_argument("--storage-identity", default="unresolved")
+    parser.add_argument("--cache-state", default="unresolved")
+    parser.add_argument("--complete-dataset-split", action="store_true")
+    parser.add_argument(
+        "--measurement-scope",
+        action="append",
+        choices=("latency", "quality", "resource"),
+    )
+    parser.add_argument(
+        "--comparison-mode",
+        choices=("methods_same_setting", "single_method_setting_variation"),
+        default="methods_same_setting",
+    )
+    parser.add_argument("--varied-setting", default="")
+    parser.add_argument("--reference-arm-id", default="")
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--cache-runtime-prompt", action="store_true")
@@ -2265,6 +2711,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         prepared_dir = Path(args.prepared_dir)
         engine_probes = _engine_probe_configs_from_cli(args)
         benchmark_handoff_output_dir = _benchmark_handoff_output_dir_from_cli(args, prepared_dir=prepared_dir)
+        evidence_gate_output_json = args.evidence_gate_output_json
+        if evidence_gate_output_json is None and args.release_evidence_output_json is not None:
+            evidence_gate_output_json = str(
+                prepared_dir / f"{args.suite_id}-evidence-gate.json"
+            )
         config = BenchmarkPlanConfig(
             suite_id=args.suite_id,
             dataset_paths=_dataset_paths_from_cli(
@@ -2289,6 +2740,59 @@ def main(argv: Sequence[str] | None = None) -> int:
             limit_per_dataset=args.limit_per_dataset,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
+            repeats=args.repeats,
+            request_parallelism=args.request_parallelism,
+            warmups=args.warmups,
+            shuffle=args.shuffle,
+            benchmark_seed=args.benchmark_seed,
+            generation_seed=args.generation_seed,
+            interleave_examples=args.interleave_examples,
+            isolate_arms=args.isolate_arms,
+            prefix_cache_salt_mode=args.prefix_cache_salt_mode,
+            evidence_policy=args.evidence_policy,
+            evidence_gate_output_json=evidence_gate_output_json,
+            artifact_identity_jsons=tuple(args.artifact_identity_json or ()),
+            cache_state_attestation_jsons=tuple(
+                args.cache_state_attestation_json or ()
+            ),
+            benchmark_arm_specs_json=tuple(args.benchmark_arm_spec_json or ()),
+            benchmark_arm_spec_json_files=tuple(
+                args.benchmark_arm_spec_json_file or ()
+            ),
+            model_revision=args.model_revision,
+            canonical_model_id=args.canonical_model_id,
+            tokenizer_id=args.tokenizer_id,
+            tokenizer_revision=args.tokenizer_revision,
+            lora_id=args.lora_id,
+            engine_id=args.engine_id,
+            engine_version=args.engine_version,
+            serving_platform=args.serving_platform,
+            model_dtype=args.model_dtype,
+            model_quantization=args.model_quantization,
+            runtime_kv_dtype=args.runtime_kv_dtype,
+            layout_version=args.layout_version,
+            payload_axis_order=args.payload_axis_order,
+            block_size=args.block_size,
+            key_position_encoding=args.key_position_encoding,
+            rope_theta=args.rope_theta,
+            rope_rotary_dim=args.rope_rotary_dim,
+            tensor_parallel_size=args.tensor_parallel_size,
+            pipeline_parallel_size=args.pipeline_parallel_size,
+            package_revisions=tuple(args.package_revision or ()),
+            prompt_template_version=args.prompt_template_version,
+            input_tokens_target=args.input_tokens_target,
+            hardware_fingerprint=args.hardware_fingerprint,
+            runtime_id=args.runtime_id,
+            runtime_version=args.runtime_version,
+            storage_identity=args.storage_identity,
+            cache_state=args.cache_state,
+            complete_dataset_split=args.complete_dataset_split,
+            measurement_scopes=tuple(
+                args.measurement_scope or ("latency", "quality")
+            ),
+            comparison_mode=args.comparison_mode,
+            varied_setting=args.varied_setting,
+            reference_arm_id=args.reference_arm_id,
             timeout_seconds=args.timeout_seconds,
             stream=not args.no_stream,
             cache_runtime_prompt=args.cache_runtime_prompt,
@@ -2307,6 +2811,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             release_evidence=_release_evidence_config_from_cli(
                 args,
                 has_planned_engine_probes=bool(engine_probes),
+                benchmark_evidence_gate_json=evidence_gate_output_json,
             ),
             release_bundle=_release_bundle_config_from_cli(args, prepared_dir=prepared_dir),
             github_governance_output_json=args.github_governance_output_json,
@@ -2676,6 +3181,7 @@ def _release_evidence_config_from_cli(
     args: argparse.Namespace,
     *,
     has_planned_engine_probes: bool,
+    benchmark_evidence_gate_json: str | None,
 ) -> ReleaseEvidencePlanConfig | None:
     if args.release_evidence_output_json is None:
         if _has_release_evidence_options(args):
@@ -2690,6 +3196,7 @@ def _release_evidence_config_from_cli(
         engine_probe_jsons=tuple(args.release_engine_probe_json or ()),
         engine_actions_jsons=tuple(args.release_engine_actions_json or ()),
         storage_benchmark_json=args.release_storage_benchmark_json,
+        benchmark_evidence_gate_json=benchmark_evidence_gate_json,
     )
 
 

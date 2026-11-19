@@ -132,9 +132,10 @@ including the toy generator and local materialization step.
 | New users | [`docs/getting-started.md`](docs/getting-started.md) |
 | Concepts and vocabulary | [`docs/concepts.md`](docs/concepts.md) |
 | Local runnable example | [`examples/quickstart_local.py`](examples/quickstart_local.py) |
+| KV reuse method authors | [`docs/adding-a-kv-method.md`](docs/adding-a-kv-method.md) |
 | Production serving | [`docs/production.md`](docs/production.md) |
 | vLLM/SGLang adapter maintainers | [`docs/native-engine-integration.md`](docs/native-engine-integration.md) |
-| Benchmarks | [`benchmarks/current/README.md`](benchmarks/current/) |
+| Benchmarks | [`benchmarks/README.md`](benchmarks/) |
 | Repository map | [`docs/repo-map.md`](docs/repo-map.md) |
 | Maintainer operations | [`docs/release-ops/README.md`](docs/release-ops/README.md) |
 
@@ -168,8 +169,21 @@ Maintainer-only CLIs are documented under
 ## Current Status
 
 Cachet is alpha software. The current human-readable benchmark summary lives in
-[`benchmarks/current/README.md`](benchmarks/current/). You do not need cloud
-infrastructure to try the local quickstart.
+[`benchmarks/README.md`](benchmarks/), which publishes the vLLM 0.30.0
+campaign's latency estimates, a separately sealed answer-quality benchmark, and
+a plan-coherent re-run of the auxiliary latency contrasts. In the quality
+benchmark, the per-document Vanilla KV cache loses substantial accuracy on
+multi-hop question answering over several documents (HotpotQA and MuSiQue).
+It matches full prefill on single-document needle retrieval, which tests that
+cached KV survives transfer rather than cross-document reuse. You do not need
+cloud infrastructure to try the local quickstart.
+
+The sealed result records ship with the repository, and
+`python benchmarks/verify_sealed_records.py` checks their integrity. The
+campaign machinery that produced them (GPU qualification, handoff generation,
+latency and full-score execution, and the finalizer) is not part of the
+package; it is preserved at the `vllm-0300-campaign-archive` tag, where the
+records can be fully re-validated.
 
 ## Contributing
 

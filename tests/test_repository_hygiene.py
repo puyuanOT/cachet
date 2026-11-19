@@ -276,4 +276,10 @@ def test_repository_hygiene_rejects_databricks_runs_without_requiring_directory_
 
 
 def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+    # Synthetic commits must not depend on the developer's signing credentials.
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+    )

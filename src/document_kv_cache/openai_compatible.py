@@ -10,13 +10,18 @@ import urllib.request as _urlrequest
 import math
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from document_kv_cache.benchmark_runner import (
     BenchmarkEngineRequest,
     BenchmarkGeneration,
 )
-from document_kv_cache.benchmarks import DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM
+from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
+)
 
 __all__ = [
     "TokenCounter",
@@ -43,6 +48,41 @@ OpenAICompatibleRequestMode = Literal["completion", "chat"]
 
 _COMPLETIONS_ENDPOINT = "/v1/completions"
 _CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions"
+
+
+class _FrozenList(list[Any]):
+    def _immutable(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("evaluation JSON values are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable  # type: ignore[assignment]
+    __imul__ = _immutable  # type: ignore[assignment]
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+_RESERVED_REQUEST_BODY_FIELDS = frozenset(
+    {
+        # These fields are owned by the benchmark's canonical request contract.
+        # Allowing an arm-specific body to replace any of them would make the
+        # recorded manifest disagree with the request that the server received.
+        "model",
+        "prompt",
+        "messages",
+        "max_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "stream",
+        "stream_options",
+        "request_id",
+        "kv_transfer_params",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,11 +141,13 @@ class OpenAICompatibleEngineConfig:
                 "kv_transfer_params_transport must be 'top_level' or 'custom_params'"
             )
         object.__setattr__(self, "endpoint", endpoint)
+        extra_body = _json_object_mapping(self.extra_body, "extra_body")
+        _validate_extra_body_contract(extra_body, "extra_body")
+        object.__setattr__(self, "extra_body", _deep_freeze_mapping(extra_body))
         object.__setattr__(
-            self, "extra_body", _json_object_mapping(self.extra_body, "extra_body")
-        )
-        object.__setattr__(
-            self, "extra_headers", _string_mapping(self.extra_headers, "extra_headers")
+            self,
+            "extra_headers",
+            MappingProxyType(_string_mapping(self.extra_headers, "extra_headers")),
         )
 
 
@@ -188,6 +230,52 @@ def _json_compatible_value(value: Any, field_name: str) -> Any:
             for index, item in enumerate(value)
         ]
     raise ValueError(f"{field_name} must be JSON-compatible")
+
+
+def _validate_extra_body_contract(
+    extra_body: Mapping[str, Any],
+    field_name: str,
+) -> None:
+    reserved = sorted(_RESERVED_REQUEST_BODY_FIELDS.intersection(extra_body))
+    if reserved:
+        raise ValueError(
+            f"{field_name} must not override reserved request fields: "
+            f"{', '.join(reserved)}"
+        )
+    custom_params = extra_body.get("custom_params")
+    if isinstance(custom_params, Mapping) and "kv_transfer_params" in custom_params:
+        raise ValueError(
+            f"{field_name}.custom_params must not override reserved "
+            "kv_transfer_params"
+        )
+
+
+def _deep_freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType(
+        {key: _deep_freeze_value(item) for key, item in value.items()}
+    )
+
+
+def _deep_freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _deep_freeze_mapping(value)
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray, memoryview),
+    ):
+        return _FrozenList(_deep_freeze_value(item) for item in value)
+    return value
+
+
+def _json_materialize(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _json_materialize(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray, memoryview),
+    ):
+        return [_json_materialize(item) for item in value]
+    return value
 
 
 def _chat_message_mapping(value: Any, field_name: str) -> dict[str, Any]:
@@ -276,8 +364,23 @@ class OpenAICompatibleCompletionEngine:
                 custom_params["kv_transfer_params"] = kv_transfer_params
                 payload["custom_params"] = custom_params
             else:
+                declared_benchmark_request_id = kv_transfer_params.get(
+                    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM
+                )
+                if declared_benchmark_request_id is not None and (
+                    not request.request_id
+                    or declared_benchmark_request_id != request.request_id
+                ):
+                    raise ValueError(
+                        "kv_transfer_params."
+                        f"{DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM} must equal the "
+                        "benchmark engine request_id"
+                    )
                 if request.request_id:
                     payload["request_id"] = request.request_id
+                    kv_transfer_params[
+                        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM
+                    ] = request.request_id
                 payload["kv_transfer_params"] = kv_transfer_params
         return payload
 
@@ -289,6 +392,7 @@ class OpenAICompatibleCompletionEngine:
                     self.extra_body_factory(request), "extra_body_factory"
                 )
             )
+        _validate_extra_body_contract(extra_body, "extra_body_factory result")
         return extra_body
 
     def _prompt_text(self, request: BenchmarkEngineRequest) -> str:
@@ -325,7 +429,7 @@ class OpenAICompatibleCompletionEngine:
             _urlparse.urljoin(
                 self.config.base_url.rstrip("/") + "/", endpoint.lstrip("/")
             ),
-            data=json.dumps(payload).encode("utf-8"),
+            data=json.dumps(_json_materialize(payload)).encode("utf-8"),
             headers=self._headers(),
             method="POST",
         )
@@ -482,12 +586,16 @@ class OpenAICompatibleCompletionEngine:
         }
         if self.config.prompt_token_accounting == "server_usage":
             value = usage.get("prompt_tokens")
-            if isinstance(value, int) and value >= 0:
+            if type(value) is int and value >= 0:
+                runtime_count = value
+                if self.config.prompt_text_mode == "logical":
+                    logical_count = value
+                metadata["logical_prompt_tokens"] = str(logical_count)
+                metadata["runtime_prompt_tokens"] = str(runtime_count)
                 metadata["server_usage_prompt_tokens"] = str(value)
                 metadata["server_usage_prompt_tokens_present"] = "true"
-            else:
-                metadata["server_usage_prompt_tokens_present"] = "false"
-            return context_count, context_source, metadata
+                return value, "server_usage", metadata
+            metadata["server_usage_prompt_tokens_present"] = "false"
         return context_count, context_source, metadata
 
 
@@ -529,10 +637,19 @@ def _payload_shape_metadata(
         )
     if "max_tokens" in payload:
         metadata["request_payload_max_tokens"] = str(payload["max_tokens"])
+    add_special_tokens = payload.get("add_special_tokens")
+    if type(add_special_tokens) is bool:
+        metadata["request_payload_add_special_tokens"] = (
+            "true" if add_special_tokens else "false"
+        )
     if "prompt" in payload:
         metadata["request_payload_prompt_chars"] = str(
             _json_content_char_count(payload["prompt"])
         )
+        if isinstance(payload["prompt"], str):
+            metadata["request_payload_prompt_sha256"] = sha256(
+                payload["prompt"].encode("utf-8")
+            ).hexdigest()
     messages = payload.get("messages")
     if isinstance(messages, Sequence) and not isinstance(
         messages, (str, bytes, bytearray, memoryview)

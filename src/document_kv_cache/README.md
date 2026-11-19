@@ -25,15 +25,31 @@ return as a production dependency.
 - `admission.py` exposes pending GPU-memory admission controls.
 - `adapter_scaffold.py` generates fail-closed native-probe delegate modules for
   backend-specific vLLM/SGLang adapter packages.
+- `artifact_identity.py` defines immutable artifact, tokenizer, and runtime
+  compatibility identities.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
   native engine-probe, release-readiness sidecar, and release-evidence command
-  plans.
+  plans. Its local and Databricks command-plan path is deliberately closed to
+  the built-in V1 datasets and scorers; it does not import scorer plugins from
+  user-provided module paths. Custom datasets and scorers use the programmatic
+  `DatasetScorerRegistry` path through `run_openai_compatible_benchmark` and,
+  when creating handoffs, the `scorer_registry` argument to
+  `generate_benchmark_handoff_bundles`.
 - `benchmark_handoffs.py` generates per-row Cachet handoff bundles from
   prepared benchmark JSONL, builds fail-closed `(dataset, example_id)` handoff
   manifests, carries optional SGLang HiCache page-key proof, and attaches those
   handoffs to prepared benchmark JSONL rows.
 - `benchmark_handoff_bundles.py` is the `python -m` entry point for the
   handoff-bundle generation CLI used by reproducible benchmark plans.
+- `benchmark_gates.py` rejects benchmark publication without method identity,
+  paired quality, and mechanically attested cache-state evidence.
+- `benchmark_metrics.py` single-sources canonical latency, quality, and
+  post-TTFT decode-throughput formulas.
+- `benchmark_statistics.py` computes deterministic paired bootstrap confidence
+  intervals for every dataset and cache arm.
+- `benchmark_dataset_sources.py` stages public full-dataset benchmark sources
+  into canonical V1 JSONL with source, split, count, and synthetic NIAH-grid
+  provenance.
 - `benchmark_plan_executor.py` runs command-plan JSON files for local or managed
   job runners and records source-plan SHA-256 provenance.
 - `benchmark_runner.py` owns baseline and cache-arm execution against
@@ -93,6 +109,12 @@ return as a production dependency.
   for native vLLM/SGLang cache-arm requests.
 - `manifest.py` defines manifest lookup and in-memory manifest storage.
 - `materializer.py` loads planned chunks into merged or segmented payloads.
+- `method_conformance.py` checks application method plugins and emits a
+  machine-readable conformance record.
+- `method_scaffold.py` generates fail-closed application method plugins.
+- `methods.py` maps each benchmark method to its KV pre-computation (post-RoPE
+  vs pre-RoPE, selective recompute) and serving connector through `MethodSpec` /
+  `METHOD_SPECS`.
 - `model_profiles.py` defines model attention geometry, portable JSON profile
   artifacts, and Qwen3 layout helpers.
 - `models.py` defines cache keys, chunk references, request models, and
@@ -109,6 +131,11 @@ return as a production dependency.
   identity, traceability, Refactor-skill, and GPT-5.5 review evidence for the
   project workflow; recursive directory validation skips only clean
   validation-summary sidecars.
+- `quality_v2.py` defines quality benchmark protocol v2: Qwen3 chat framing,
+  256-token decoding, the versioned tolerant `<final_answer>` parser with strict
+  format compliance reported separately, WikiBio references without `-lrb-`
+  disambiguators, natural-text NIAH haystacks, and paired bootstrap
+  non-inferiority scoring.
 - `release_bundle.py` copies validated release evidence, optional benchmark
   plan execution records, Databricks run-status records, package wheels, and
   PR-evidence, release preflight, GitHub-governance, repository-hygiene, and
@@ -116,10 +143,19 @@ return as a production dependency.
   strict V1 mode requires the full release artifact set before publishing.
 - `release_evidence.py` validates V1 benchmark, storage, and native engine-probe
   artifacts, including the pinned serving-engine package/version metadata.
+- `reference_method.py` provides the CPU-only method extension and strict
+  workflow conformance fixture; it is not model-quality evidence.
 - `repository_hygiene.py` emits a release-readiness sidecar proving `.gitignore`
   coverage and absence of tracked or untracked generated/secret-like artifacts
   that Git exposes, plus README/package-docstring coverage for repository
   directories.
+- `reuse_contract.py` separates persisted artifact encoding from typed reuse
+  operations and concrete runtime KV layout.
+- `rope.py` provides the shared rotate-half rotary-position-embedding helper
+  (`apply_rope_to_keys`, `rope_cos_sin`) used for absolute pre-RoPE positioning.
+- `runtime_telemetry.py` samples server process-tree RSS/GPU memory, host memory,
+  and GPU utilization, then binds timestamp-filtered arm evidence to its exact
+  experiment, execution window, telemetry bytes, and software/runtime closure.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.
@@ -128,9 +164,9 @@ return as a production dependency.
   preflight required before provider-backed native SGLang probes.
 - `sglang_smoke.py` owns the self-contained Qwen3/SGLang Databricks live smoke
   that starts a pinned SGLang server, validates the dynamic HiCache provider,
-  and runs the supported baseline OpenAI-compatible live check. It fails closed
-  for handoff-backed cache-arm runs until the live SGLang runtime forwards
-  request metadata and SGLang page-key proof into HiCache `extra_info`.
+  and runs the baseline OpenAI-compatible live check followed by a
+  handoff-backed cache request whose prefix loads from HiCache storage.
+  `--baseline-only` skips the cache request for server bring-up.
 - `storage.py` provides Memory, Disk, Unity Catalog Volume, and routed range
   readers.
 - `storage_benchmark.py` measures storage-reader latency and throughput.
@@ -139,6 +175,9 @@ return as a production dependency.
   `KVChunkGenerator` implementation for model-produced prefill KV payloads.
 - `vllm_smoke.py` owns the self-contained Qwen3/vLLM Databricks smoke and
   prepared-mode handoff generation/coverage validation before vLLM startup.
+- `vllm_wheel_repack.py` deterministically applies the reviewed E5M2 patches to
+  the official vLLM 0.27.1 or 0.30.0 CUDA 12.9 wheel and emits a content-addressed,
+  RECORD-verified wheel and build manifest.
 - `vllm_runtime_contract_data.py` single-sources the vLLM V1 KV connector
   lifecycle contract shared by native-probe diagnostics and the vendored vLLM
   adapter package.
@@ -150,6 +189,16 @@ return as a production dependency.
 
 `_reexport.py` is a private helper used by compatibility facades and is not
 part of the public API.
+
+## Archived Campaign Modules
+
+The vLLM 0.27.1/0.30.0 publication campaign machinery (GPU qualification,
+publication freeze, handoff generation and closure, latency and full-score
+execution, the campaign finalizer and table renderer, the Databricks
+cluster-hour ledger, representative canaries, and the Quality v2 job runner) is
+not packaged here. It is preserved, with its tests, at the
+`vllm-0300-campaign-archive` tag, which is the source of truth for re-validating
+the sealed records under `benchmarks/`.
 
 ## Compatibility-Only Modules
 
@@ -166,6 +215,8 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-benchmark-handoff-manifest`
 - `document-kv-benchmark-handoff-bundles`
 - `document-kv-native-probe-scaffold`
+- `document-kv-method-scaffold`
+- `document-kv-method-conformance`
 - `document-kv-run-benchmark-plan`
 - `document-kv-databricks-job`
 - `document-kv-databricks-runs`
@@ -198,6 +249,8 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-benchmark-handoff-manifest`
 - `cachet-benchmark-handoff-bundles`
 - `cachet-native-probe-scaffold`
+- `cachet-method-scaffold`
+- `cachet-method-conformance`
 - `cachet-run-benchmark-plan`
 - `cachet-databricks-job`
 - `cachet-databricks-runs`

@@ -26,13 +26,36 @@ CURRENT_EVIDENCE_PATH = (
 )
 CURRENT_LATEST_VERSIONS = {
     "poetry-core": "2.4.1",
-    "packaging": "26.2",
+    "packaging": "26.3",
     "pyspark": "4.1.2",
     "databricks-sdk": "0.118.0",
     "pytest": "9.1.1",
-    "vllm": "0.23.0",
+    "vllm": "0.30.0+cu129",
+    "torch": "2.13.0+cu129",
+    "torchaudio": "2.11.0+cu129",
+    "torchvision": "0.28.0+cu129",
+    "triton": "3.7.1",
+    "numba": "0.65.0",
+    "torchcodec": "0.16.0+cu129",
+    "pynvvideocodec": "2.0.4",
+    "flashinfer-python": "0.6.18.post1",
+    "flashinfer-cubin": "0.6.18.post1",
+    "flashinfer-jit-cache": "0.6.18.post1+cu129",
+    "apache-tvm-ffi": "0.1.11",
+    "tilelang": "0.1.12",
+    "nvidia-cudnn-frontend": "1.27.0",
+    "nvtx": "0.2.15",
+    "fastsafetensors": "0.3.3",
+    "instanttensor": "0.2.0",
+    "nvidia-cutlass-dsl": "4.7.1",
+    "quack-kernels": "0.6.5",
+    "tokenspeed-mla": "0.1.8",
+    "humming-kernels": "0.1.12",
     "transformers": "5.12.1",
-    "huggingface-hub": "1.20.1",
+    "huggingface-hub": "1.32.0",
+    "bitsandbytes": "0.49.2",
+    "accelerate": "1.14.0",
+    "opencv-python-headless": "4.13.0.92",
     "tokenizers": "0.23.1",
     "numpy": "2.5.0",
     "fastapi": "0.138.0",
@@ -47,20 +70,20 @@ CURRENT_RUNTIME_PIN_ALLOWANCES = {
         "Databricks validation."
     ),
     "tokenizers": (
-        "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 "
-        "serving profile; upgrade after a fresh vLLM Databricks run."
+        "Pinned by the reviewed vLLM 0.30.0 CUDA 12.9 hash lock; upgrade only "
+        "after fresh L4 and A10G Databricks validation."
     ),
     "numpy": (
-        "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 "
-        "serving profile; upgrade after a fresh vLLM Databricks run."
+        "Pinned by the reviewed vLLM 0.30.0 CUDA 12.9 hash lock; upgrade only "
+        "after fresh L4 and A10G Databricks validation."
     ),
     "fastapi": (
-        "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 "
-        "serving profile; upgrade after a fresh vLLM Databricks run."
+        "Pinned by the reviewed vLLM 0.30.0 CUDA 12.9 hash lock; upgrade only "
+        "after fresh L4 and A10G Databricks validation."
     ),
     "prometheus-fastapi-instrumentator": (
-        "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 "
-        "serving profile; upgrade after a fresh vLLM Databricks run."
+        "Pinned by the reviewed vLLM 0.30.0 CUDA 12.9 hash lock; upgrade only "
+        "after fresh L4 and A10G Databricks validation."
     ),
 }
 CURRENT_TRANSITIVE_ALLOWANCES = {
