@@ -2013,12 +2013,12 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "active-taskkey-databricks-run-status.json",
         active_task_key_status_record,
     )
-    non_g5_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
-    non_g5_submit_payload_status_record["submit_payload"]["aws_single_node_gpu_type"] = False
-    non_g5_submit_payload_status_record["submit_payload"]["tasks"][0]["node_type_id"] = "g6.4xlarge"
-    non_g5_submit_payload_status = _write_json(
-        tmp_path / "non-g5-submit-payload-databricks-run-status.json",
-        non_g5_submit_payload_status_record,
+    unsupported_gpu_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
+    unsupported_gpu_submit_payload_status_record["submit_payload"]["aws_single_node_gpu_type"] = False
+    unsupported_gpu_submit_payload_status_record["submit_payload"]["tasks"][0]["node_type_id"] = "g6.4xlarge"
+    unsupported_gpu_submit_payload_status = _write_json(
+        tmp_path / "unsupported-gpu-submit-payload-databricks-run-status.json",
+        unsupported_gpu_submit_payload_status_record,
     )
     missing_purpose_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
     missing_purpose_submit_payload_status_record["submit_payload"]["tasks"][0]["purpose"] = ""
@@ -2919,8 +2919,8 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            databricks_run_status_jsons=(non_g5_submit_payload_status,),
-            output_dir=tmp_path / "non-g5-submit-payload-databricks-status-bundle",
+            databricks_run_status_jsons=(unsupported_gpu_submit_payload_status,),
+            output_dir=tmp_path / "unsupported-gpu-submit-payload-databricks-status-bundle",
         )
 
     with pytest.raises(ValueError, match=r"submit_payload\.tasks\[0\]\.purpose must be a non-empty string"):
