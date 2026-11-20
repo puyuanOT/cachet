@@ -16,13 +16,6 @@
     },
     {
       "current": true,
-      "latest_version": "4.1.2",
-      "package": "pyspark",
-      "pinned_version": "4.1.2",
-      "source": "project.optional-dependencies.databricks"
-    },
-    {
-      "current": true,
       "latest_version": "0.118.0",
       "package": "databricks-sdk",
       "pinned_version": "0.118.0",

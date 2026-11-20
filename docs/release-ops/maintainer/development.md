@@ -9,9 +9,8 @@ enforce. Day-to-day commands are in [`AGENTS.md`](../../../AGENTS.md) and
 
 - `pyproject.toml` uses PEP 621 metadata with exact direct pins: Python
   `>=3.11,<4.0`, build backend `poetry-core==2.4.1`, runtime `packaging==26.3`,
-  the `databricks` extra (`pyspark==4.1.2`, `databricks-sdk==0.118.0`), the
-  `test` extra (`pytest==9.1.1`), and the Poetry dev group (`mypy==2.2.0`,
-  `ruff==0.15.21`).
+  the `databricks` extra (`databricks-sdk==0.118.0`), the `test` extra
+  (`pytest==9.1.1`), and the Poetry dev group (`mypy==2.2.0`, `ruff==0.15.21`).
 - The committed `poetry.lock` records resolver output for the base package and
   both extras; CI validates it with `poetry check --lock`.
 - vLLM and SGLang are not Poetry extras because their dependency graphs

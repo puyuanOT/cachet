@@ -1545,7 +1545,7 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
             "authors": [{"name": "Example Team"}],
             "dependencies": ["requests==2.34.2"],
             "optional-dependencies": {
-                "databricks": ["pyspark==4.1.2"],
+                "databricks": ["databricks-sdk==0.118.0"],
             },
         },
         "tool": {
@@ -1565,7 +1565,7 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
     assert _collect_poetry_dependency_versions(pyproject) == {
         "build-system.poetry-core": "==2.4.1",
         "project.dependencies.requests": "==2.34.2",
-        "project.optional-dependencies.databricks.pyspark": "==4.1.2",
+        "project.optional-dependencies.databricks.databricks-sdk": "==0.118.0",
         "tool.poetry.group.dev.dependencies.ruff": "^0.8",
     }
 
@@ -1650,7 +1650,7 @@ def test_poetry_lockfile_tracks_direct_runtime_pins():
         assert locked_versions[requirement_name] == _requirement_version(requirement)
 
     assert lock["extras"] == {
-        "databricks": ["databricks-sdk", "pyspark"],
+        "databricks": ["databricks-sdk"],
         "test": ["pytest"],
     }
 

@@ -34,7 +34,6 @@ Issues = "https://github.com/puyuanOT/cachet/issues"
 
 [project.optional-dependencies]
 databricks = [
-  "pyspark==4.1.2",
   "databricks-sdk==0.118.0",
 ]
 test = [

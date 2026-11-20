@@ -27,7 +27,6 @@ CURRENT_EVIDENCE_PATH = (
 CURRENT_LATEST_VERSIONS = {
     "poetry-core": "2.4.1",
     "packaging": "26.3",
-    "pyspark": "4.1.2",
     "databricks-sdk": "0.118.0",
     "pytest": "9.1.1",
     "vllm": "0.30.0+cu129",
@@ -109,7 +108,6 @@ def test_dependency_freshness_accepts_current_repo_direct_pins_with_explicit_run
     assert {pin["package"] for pin in record["direct_pins"]} == {
         "poetry-core",
         "packaging",
-        "pyspark",
         "databricks-sdk",
         "pytest",
     }
