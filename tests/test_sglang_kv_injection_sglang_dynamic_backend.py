@@ -674,30 +674,24 @@ def test_document_kv_hicache_backend_loads_provider_factory_from_json(monkeypatc
     assert backend.batch_get_v1(["a", "b", "c"]) == [b"1", b"2", None]
 
 
-def test_document_kv_hicache_backend_accepts_exist_provider_alias(monkeypatch):
-    class ExistAliasProvider:
+def test_document_kv_hicache_backend_requires_provider_exists(monkeypatch):
+    class ProviderWithoutExists:
         def get(self, key):
             return b"value" if key == "doc-1" else None
-
-        def exist(self, key):
-            return key == "doc-1"
 
         def set(self, key, value):
             return None
 
-    module = ModuleType("sglang_document_kv_exist_alias_provider")
-    module.build_provider = lambda *, extra_config: ExistAliasProvider()
+    module = ModuleType("sglang_document_kv_provider_without_exists")
+    module.build_provider = lambda *, extra_config: ProviderWithoutExists()
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    backend = DocumentKVHiCacheBackend(
-        {
-            DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: f"{module.__name__}:build_provider",
-        }
-    )
 
-    assert backend.exists("doc-1") is True
-    assert backend.exist("doc-1") is True
-    assert backend.exists("missing") is False
-    assert backend.get("doc-1") == b"value"
+    with pytest.raises(TypeError, match="must provide callable methods: exists$"):
+        DocumentKVHiCacheBackend(
+            {
+                DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: f"{module.__name__}:build_provider",
+            }
+        )
 
 
 def test_document_kv_hicache_backend_exposes_sglang_runtime_storage_methods():

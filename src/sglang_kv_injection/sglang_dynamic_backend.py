@@ -139,9 +139,6 @@ class NoOpDocumentKVHiCacheProvider:
     def exists(self, key: object) -> bool:
         return False
 
-    def exist(self, key: object) -> bool:
-        return self.exists(key)
-
     def set(self, key: object, value: object) -> None:
         return None
 
@@ -229,9 +226,6 @@ class DocumentKVHiCachePageProvider:
         if self.root is None:
             return _page_key(key, self.storage_identity) in self._memory_pages
         return _page_path(self.root, key, self.storage_identity).is_file()
-
-    def exist(self, key: object) -> bool:
-        return self.exists(key)
 
     def set(
         self,
@@ -572,9 +566,6 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
 
     def exists(self, key: object) -> bool:
         return bool(_provider_exists(self.provider, key))
-
-    def exist(self, key: object) -> bool:
-        return self.exists(key)
 
     def set(
         self,
@@ -1610,34 +1601,21 @@ def _merge_extra_config(target: dict[str, Any], value: object) -> None:
 def _validate_provider(provider: object) -> None:
     missing = [
         method_name
-        for method_name in ("get", "set")
+        for method_name in ("get", "set", "exists")
         if not callable(getattr(provider, method_name, None))
     ]
-    if _provider_exists_handler(provider) is None:
-        missing.append("exists")
     if missing:
         raise TypeError(
             "document KV HiCache provider must provide callable methods: "
             + ", ".join(missing)
-            + "; exist is accepted as an alias for exists"
         )
 
 
 def _provider_exists(provider: object, key: object) -> bool:
-    handler = _provider_exists_handler(provider)
-    if handler is None:  # pragma: no cover - provider validation catches this.
-        raise TypeError("document KV HiCache provider must provide exists or exist")
-    return bool(handler(key))
-
-
-def _provider_exists_handler(provider: object) -> object | None:
     handler = getattr(provider, "exists", None)
-    if callable(handler):
-        return handler
-    handler = getattr(provider, "exist", None)
-    if callable(handler):
-        return handler
-    return None
+    if not callable(handler):  # pragma: no cover - provider validation catches this.
+        raise TypeError("document KV HiCache provider must provide exists")
+    return bool(handler(key))
 
 
 def _call_provider_method(
