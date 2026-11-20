@@ -61,8 +61,8 @@ mean:
 
 The complete strict release bundle is the outstanding publication artifact.
 Build it from source-bound artifacts. Its closed inventory must include each
-governed input named by the release validator: the release evidence sidecar, preflight sidecar, SGLang live V1
-benchmark sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang
+governed input named by the release validator: the release evidence sidecar, preflight sidecar, benchmark
+evidence gate sidecar, SGLang live V1 benchmark sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang
 connector action sidecars, vLLM/SGLang engine launch config sidecars, benchmark
 plan execution sidecar, Databricks run-status sidecars for benchmark, storage,
 and vLLM/SGLang engine-probe runs, tested package wheel, PR evidence sidecar,

@@ -30,6 +30,7 @@ from document_kv_cache.databricks_engine_probe_job import (
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import SGLANG_NATIVE_PROBE_FACTORY, VLLM_NATIVE_PROBE_FACTORY
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
+from document_kv_cache.release_bundle import _build_parser as build_release_bundle_parser
 from document_kv_cache.release_evidence import _build_parser as build_release_evidence_parser
 from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
 
@@ -191,6 +192,7 @@ def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config
                 str(tmp_path / "sglang-probe.json"),
             ),
             engine_actions_jsons=release_action_jsons(tmp_path),
+            benchmark_evidence_gate_json=str(tmp_path / "evidence-gate.json"),
         ),
         "release_bundle": ReleaseBundlePlanConfig(**bundle_values),
     }
@@ -790,6 +792,16 @@ def test_planned_release_evidence_commands_parse_with_the_release_evidence_cli(t
             assert parser.parse_args(argv).benchmark_evidence_gate_json == gate_json
 
 
+def test_planned_strict_release_bundle_command_parses_with_the_release_bundle_cli(tmp_path):
+    bundle_command = build_v1_benchmark_plan(strict_release_bundle_plan_config(tmp_path)).post_benchmark_commands[-1]
+
+    args = build_release_bundle_parser().parse_args(bundle_command.argv[3:])
+
+    assert bundle_command.argv[:3] == ("python", "-m", "document_kv_cache.release_bundle")
+    assert args.benchmark_evidence_gate_json == str(tmp_path / "evidence-gate.json")
+    assert args.require_complete_v1 is True
+
+
 def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidence(tmp_path):
     config = BenchmarkPlanConfig(
         suite_id="v1-g6-l4",
@@ -809,6 +821,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
                 str(tmp_path / "sglang-probe.json"),
             ),
             engine_actions_jsons=release_action_jsons(tmp_path),
+            benchmark_evidence_gate_json=str(tmp_path / "evidence-gate.json"),
         ),
         release_bundle=ReleaseBundlePlanConfig(
             output_dir=str(tmp_path / "release-bundle"),
@@ -891,6 +904,9 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert bundle_command.argv[bundle_command.argv.index("--output-json") + 1] == str(
         tmp_path / "release-bundle-manifest.json"
     )
+    assert bundle_command.argv[bundle_command.argv.index("--benchmark-evidence-gate-json") + 1] == str(
+        tmp_path / "evidence-gate.json"
+    )
     assert bundle_command.argv[bundle_command.argv.index("--compatibility-benchmark-json") + 1] == str(
         tmp_path / "g5-v1-benchmark.json"
     )
@@ -957,6 +973,17 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
     ("bundle_overrides", "config_overrides", "expected_missing"),
     [
         ({"preflight_json": None}, None, "preflight sidecar"),
+        (
+            None,
+            {
+                "release_evidence": ReleaseEvidencePlanConfig(
+                    output_json="release-evidence.json",
+                    engine_probe_jsons=("vllm-probe.json", "sglang-probe.json"),
+                    engine_actions_jsons=("vllm-actions.json", "sglang-actions.json"),
+                )
+            },
+            "benchmark evidence gate sidecar",
+        ),
         ({"plan_execution_jsons": ()}, None, "benchmark plan execution sidecar"),
         (
             {"databricks_run_status_jsons": ()},
