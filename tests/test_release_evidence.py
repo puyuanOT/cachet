@@ -3,10 +3,27 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
 
+from document_kv_cache.artifact_identity import ArtifactIdentity
+from document_kv_cache.benchmark_gates import BENCHMARK_EVIDENCE_GATE_RECORD_TYPE, CacheStateAttestation
+from document_kv_cache.benchmarks import (
+    CACHE_REUSE_ARM,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    DOCUMENT_KV_ARTIFACT_ID_PARAM,
+    DOCUMENT_KV_CACHE_METHOD_PARAM,
+    DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
+    SUPPORTED_V1_DATASETS,
+    BenchmarkExample,
+    BenchmarkSuite,
+    baseline_prefill_arm,
+    method_benchmark_arm,
+)
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
     EngineKVConnectorActions,
@@ -25,7 +42,14 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
-from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.benchmark_runner import (
+    BENCHMARK_RUN_RECORD_TYPE,
+    BenchmarkGeneration,
+    BenchmarkManifestContext,
+    benchmark_record_payload_digest,
+    benchmark_run_result_to_record,
+    run_benchmark_suite,
+)
 from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_RECORD_TYPE,
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
@@ -43,10 +67,12 @@ from document_kv_cache.release_evidence import (
     release_evidence_to_record,
     sglang_live_v1_benchmark_issues,
 )
-from document_kv_cache.methods import method_spec
+from document_kv_cache.release_evidence import main as release_evidence_main
+from document_kv_cache.methods import default_method_registry, method_spec
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
+from document_kv_cache.workflow import SourceDocument
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +102,7 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
         "ok": True,
         "v1_benchmark_ok": True,
         "storage_benchmark_ok": True,
+        "benchmark_evidence_gate_ok": False,
         "engine_probe_backends": ["vllm", "sglang"],
         "missing_engine_probe_backends": [],
         "duplicate_engine_probe_backends": [],
@@ -2388,6 +2415,424 @@ def test_public_release_evidence_cli_rejects_wrong_v1_record_type(tmp_path):
     assert completed.returncode == 2
     assert record["ok"] is False
     assert any("v1 benchmark record_type" in issue for issue in record["issues"])
+
+
+def _evaluate_with_gate(v1_record, gate_record, **kwargs):
+    return evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=gate_record,
+        **kwargs,
+    )
+
+
+def test_release_evidence_accepts_a_passing_benchmark_evidence_gate():
+    v1_record = _gated_v1_record()
+
+    evidence = _evaluate_with_gate(v1_record, v1_record["evidence_gate"])
+
+    assert evidence.issues == ()
+    assert evidence.v1_benchmark_ok
+    assert evidence.benchmark_evidence_gate_ok
+    assert release_evidence_to_record(evidence)["benchmark_evidence_gate_ok"] is True
+    assert v1_record["gate_inputs"]["cache_state_attestations"]
+
+
+def test_release_evidence_recomputes_sanitized_benchmark_evidence_gates():
+    v1_record = _gated_v1_record(sanitize_evidence=True)
+
+    evidence = _evaluate_with_gate(v1_record, v1_record["evidence_gate"])
+
+    assert v1_record["evidence_sanitized"] is True
+    assert evidence.benchmark_evidence_gate_ok
+    assert not any(issue.startswith("benchmark evidence gate") for issue in evidence.issues)
+
+
+def test_release_evidence_recomputes_custom_method_gates_with_the_given_registry():
+    v1_record = _gated_v1_record(custom_method=True)
+
+    explicit = _evaluate_with_gate(
+        v1_record,
+        v1_record["evidence_gate"],
+        method_registry=_custom_method_registry(),
+    )
+    implicit = _evaluate_with_gate(v1_record, v1_record["evidence_gate"])
+
+    assert explicit.ok
+    assert explicit.benchmark_evidence_gate_ok
+    assert implicit.issues == (_RECOMPUTED_GATE_MISMATCH,)
+    assert not implicit.benchmark_evidence_gate_ok
+
+
+_EMBEDDED_GATE_MISMATCH = "benchmark evidence gate must match the v1 benchmark evidence_gate"
+_RECOMPUTED_GATE_MISMATCH = (
+    "benchmark evidence gate must match the publication gate recomputed from the v1 benchmark"
+)
+
+
+def _wrong_gate_record_type():
+    v1_record = _gated_v1_record()
+    return v1_record, {**v1_record["evidence_gate"], "record_type": BENCHMARK_RUN_RECORD_TYPE}
+
+
+def _smoke_policy_gate():
+    v1_record = _gated_v1_record(evidence_policy="smoke")
+    return v1_record, v1_record["evidence_gate"]
+
+
+def _failed_gate():
+    v1_record = _gated_v1_record(with_artifact_identity=False)
+    return v1_record, v1_record["evidence_gate"]
+
+
+def _gate_differing_from_embedded_gate():
+    v1_record = _gated_v1_record()
+    gate = v1_record["evidence_gate"]
+    return v1_record, {**gate, "checked_cache_requests": gate["checked_cache_requests"] + 1}
+
+
+def _gate_for_another_payload():
+    v1_record = _gated_v1_record()
+    v1_record["gate_inputs"]["cache_state_attestations"].pop()
+    return v1_record, v1_record["evidence_gate"]
+
+
+def _forged_passing_gate():
+    v1_record = _gated_v1_record(with_artifact_identity=False)
+    v1_record["evidence_gate"] = {**v1_record["evidence_gate"], "ok": True, "issues": []}
+    return v1_record, v1_record["evidence_gate"]
+
+
+def _forged_gate_over_tampered_gate_inputs():
+    v1_record = _gated_v1_record()
+    v1_record["gate_inputs"]["cache_state_attestations"].pop()
+    v1_record["evidence_gate"]["benchmark_payload_digest"] = benchmark_record_payload_digest(v1_record)
+    return v1_record, v1_record["evidence_gate"]
+
+
+def _gate_without_a_recomputable_record():
+    v1_record = _gated_v1_record()
+    del v1_record["experiment_manifest"]
+    v1_record["evidence_gate"]["benchmark_payload_digest"] = benchmark_record_payload_digest(v1_record)
+    return v1_record, v1_record["evidence_gate"]
+
+
+@pytest.mark.parametrize(
+    ("build_inputs", "expected_issues"),
+    [
+        (
+            _wrong_gate_record_type,
+            (
+                f"benchmark evidence gate record_type must be {BENCHMARK_EVIDENCE_GATE_RECORD_TYPE!r}",
+                _EMBEDDED_GATE_MISMATCH,
+                _RECOMPUTED_GATE_MISMATCH,
+            ),
+        ),
+        (
+            _smoke_policy_gate,
+            ("benchmark evidence gate policy must be 'publication'", _RECOMPUTED_GATE_MISMATCH),
+        ),
+        (_failed_gate, None),
+        (_gate_differing_from_embedded_gate, (_EMBEDDED_GATE_MISMATCH, _RECOMPUTED_GATE_MISMATCH)),
+        (
+            _gate_for_another_payload,
+            (
+                "benchmark evidence gate benchmark_payload_digest must match the v1 benchmark payload",
+                _RECOMPUTED_GATE_MISMATCH,
+            ),
+        ),
+        (_forged_passing_gate, (_RECOMPUTED_GATE_MISMATCH,)),
+        (_forged_gate_over_tampered_gate_inputs, (_RECOMPUTED_GATE_MISMATCH,)),
+        (
+            _gate_without_a_recomputable_record,
+            (
+                "benchmark evidence gate cannot be recomputed from the v1 benchmark: "
+                "experiment_manifest must be an object",
+            ),
+        ),
+    ],
+)
+def test_release_evidence_rejects_unverified_benchmark_evidence_gates(build_inputs, expected_issues):
+    v1_record, gate_record = build_inputs()
+    if expected_issues is None:
+        assert gate_record["ok"] is False
+        expected_issues = tuple(f"benchmark evidence gate: {issue}" for issue in gate_record["issues"])
+
+    evidence = _evaluate_with_gate(v1_record, gate_record)
+
+    assert evidence.issues == expected_issues
+    assert evidence.v1_benchmark_ok
+    assert not evidence.benchmark_evidence_gate_ok
+    assert not evidence.ok
+
+
+def test_release_evidence_cli_checks_the_benchmark_evidence_gate_on_both_paths(tmp_path):
+    v1_record = _gated_v1_record()
+    paths = {
+        "v1": tmp_path / "v1.json",
+        "gate": tmp_path / "benchmark-gate.json",
+        "storage": tmp_path / "storage.json",
+        "vllm": tmp_path / "vllm-probe.json",
+        "sglang": tmp_path / "sglang-probe.json",
+        "vllm_actions": tmp_path / "vllm-actions.json",
+        "sglang_actions": tmp_path / "sglang-actions.json",
+    }
+    _write_json(paths["v1"], v1_record)
+    _write_json(paths["gate"], v1_record["evidence_gate"])
+    _write_json(paths["storage"], _storage_record(ok=True))
+    _write_json(paths["vllm"], _probe_record(ServingBackend.VLLM))
+    _write_json(paths["sglang"], _probe_record(ServingBackend.SGLANG))
+    _write_json(paths["vllm_actions"], _actions_record(ServingBackend.VLLM))
+    _write_json(paths["sglang_actions"], _actions_record(ServingBackend.SGLANG))
+    input_argv = [
+        "--v1-benchmark-json",
+        str(paths["v1"]),
+        "--storage-benchmark-json",
+        str(paths["storage"]),
+        "--engine-probe-json",
+        str(paths["vllm"]),
+        "--engine-probe-json",
+        str(paths["sglang"]),
+        "--engine-actions-json",
+        str(paths["vllm_actions"]),
+        "--engine-actions-json",
+        str(paths["sglang_actions"]),
+        "--benchmark-evidence-gate-json",
+        str(paths["gate"]),
+    ]
+
+    exit_code = release_evidence_main(
+        [
+            *input_argv,
+            "--output-json",
+            str(tmp_path / "release-evidence.json"),
+            "--preflight-output-json",
+            str(tmp_path / "release-inputs.json"),
+        ]
+    )
+    evidence_record = json.loads((tmp_path / "release-evidence.json").read_text(encoding="utf-8"))
+    preflight_record = json.loads((tmp_path / "release-inputs.json").read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert evidence_record["ok"] is True
+    assert evidence_record["benchmark_evidence_gate_ok"] is True
+    assert [source["role"] for source in evidence_record["artifact_sources"]] == [
+        "v1_benchmark",
+        "storage_benchmark",
+        "benchmark_evidence_gate",
+        "engine_probe",
+        "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
+    ]
+    assert evidence_record["artifact_sources"][2] == _artifact_source_record(
+        paths["gate"],
+        role="benchmark_evidence_gate",
+        record_type=BENCHMARK_EVIDENCE_GATE_RECORD_TYPE,
+    )
+    assert preflight_record["ok"] is True
+    assert preflight_record["input_files"][2] == {
+        "role": "benchmark_evidence_gate",
+        "path": str(paths["gate"]),
+        "exists": True,
+        "readable_json": True,
+        "record_type": BENCHMARK_EVIDENCE_GATE_RECORD_TYPE,
+    }
+
+    _write_json(paths["gate"], v1_record)
+    preflight_exit_code = release_evidence_main(
+        [*input_argv, "--preflight-only", "--preflight-output-json", str(tmp_path / "bad-inputs.json")]
+    )
+    bad_preflight_record = json.loads((tmp_path / "bad-inputs.json").read_text(encoding="utf-8"))
+
+    assert preflight_exit_code == 2
+    assert bad_preflight_record["invalid_record_type_paths"] == [str(paths["gate"])]
+
+
+class _GatedV1Engine:
+    def generate(self, request) -> BenchmarkGeneration:
+        cached = request.arm.uses_cache
+        metadata = {
+            "prompt_text_mode": "logical",
+            "prompt_token_source": "logical",
+            "kv_transfer_params_attached": "true" if cached else "false",
+            "logical_prompt_tokens": "32",
+            "runtime_prompt_tokens": "32",
+            "prefix_cache_salt_attached": "true",
+            "prefix_cache_salt": f"{request.example.example_id}:{request.arm.arm_id}",
+        }
+        if cached:
+            metadata["request_id"] = request.example.kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM]
+        return BenchmarkGeneration(
+            output_text="Paris",
+            prompt_tokens=32,
+            completion_tokens=1,
+            ttft_seconds=0.5 if cached else 1.0,
+            time_to_completion_seconds=0.7 if cached else 1.2,
+            metadata=metadata,
+        )
+
+
+def _custom_method_registry():
+    return default_method_registry().with_spec(
+        replace(
+            method_spec("vanilla_prefill"),
+            method="vendor_custom_cache",
+            display_name="Vendor custom cache",
+            arm_id="vendor_custom_cache",
+        )
+    )
+
+
+def _gated_v1_record(**options):
+    return json.loads(_gated_v1_record_json(**options))
+
+
+@lru_cache(maxsize=None)
+def _gated_v1_record_json(
+    *,
+    evidence_policy: str = "publication",
+    sanitize_evidence: bool = False,
+    with_artifact_identity: bool = True,
+    custom_method: bool = False,
+) -> str:
+    registry = _custom_method_registry() if custom_method else None
+    identity = ArtifactIdentity(
+        method_id="vendor_custom_cache" if custom_method else "vanilla_prefill",
+        method_version="2",
+        method_config_digest="1" * 64,
+        model_id="qwen3:4b-instruct",
+        model_revision="model-revision",
+        tokenizer_id="qwen3:4b-instruct",
+        tokenizer_revision="tokenizer-revision",
+        lora_id="none",
+        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        layout_version="v1",
+        kv_dtype="float16",
+        block_size=16,
+        payload_axis_order="layer,kv,token,head,dim",
+        key_position_encoding="pre_rope",
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=128,
+        generator_family="transformers",
+        generator_version="4.53.0",
+    )
+    baseline_arm = baseline_prefill_arm()
+    cache_arm = method_benchmark_arm(
+        identity.method_id,
+        arm_id=CACHE_REUSE_ARM,
+        registry=registry,
+        method_config_digest=identity.method_config_digest,
+    )
+    suite = BenchmarkSuite(
+        suite_id="v1-gated",
+        examples=tuple(
+            BenchmarkExample(
+                example_id=f"{dataset}-{index}",
+                dataset=dataset,
+                documents=(
+                    SourceDocument.from_text(
+                        document_id=f"{dataset}-document-{index}",
+                        text="The answer is Paris.",
+                    ),
+                ),
+                query="What is the answer?",
+                expected_answer="Paris",
+                kv_transfer_params={
+                    DOCUMENT_KV_REQUEST_ID_PARAM: f"{dataset}-cache-request-{index}",
+                    DOCUMENT_KV_HANDOFF_JSON_PARAM: f"/tmp/{dataset}-{index}.handoff.json",
+                    DOCUMENT_KV_CACHE_METHOD_PARAM: identity.method_id,
+                    DOCUMENT_KV_ARTIFACT_ID_PARAM: identity.artifact_id,
+                },
+            )
+            for dataset in SUPPORTED_V1_DATASETS
+            for index in range(4)
+        ),
+        datasets=SUPPORTED_V1_DATASETS,
+    )
+    result = run_benchmark_suite(
+        suite,
+        {baseline_arm.arm_id: _GatedV1Engine(), cache_arm.arm_id: _GatedV1Engine()},
+        arms=(baseline_arm, cache_arm),
+        manifest_context=BenchmarkManifestContext(
+            prompt_template_version=identity.prompt_template_version,
+            model_revision="model-revision",
+            canonical_model_id=identity.model_id,
+            tokenizer_id=suite.model_id,
+            tokenizer_revision="tokenizer-revision",
+            lora_id=identity.lora_id,
+            engine_id="test-engine",
+            engine_version="1",
+            serving_platform="test-serving-platform",
+            model_dtype="float16",
+            runtime_kv_dtype=identity.runtime_kv_dtype,
+            layout_version=identity.layout_version,
+            payload_axis_order=identity.payload_axis_order,
+            block_size=identity.block_size,
+            key_position_encoding=identity.key_position_encoding,
+            rope_theta=identity.rope_theta,
+            rope_rotary_dim=identity.rope_rotary_dim,
+            tensor_parallel_size=identity.tensor_parallel_size,
+            pipeline_parallel_size=identity.pipeline_parallel_size,
+            hardware_fingerprint="test-hardware",
+            runtime_id="test-runtime",
+            runtime_version="1",
+            storage_identity="test-storage",
+            cache_state="cold",
+            max_output_tokens=16,
+            temperature=0.0,
+            stream=True,
+            complete_dataset_split=True,
+            measurement_scopes=("latency",),
+        ),
+        evidence_policy=evidence_policy,
+        prefix_cache_salt_mode="per_request",
+        method_registry=registry,
+    )
+    assert result.experiment_manifest is not None
+    result = replace(
+        result,
+        experiment_manifest=replace(
+            result.experiment_manifest,
+            execution_isolation_mode="separate_process_or_job",
+            order_mode="physically_isolated_jobs",
+            source_execution_ids=((baseline_arm.arm_id, "a" * 64), (cache_arm.arm_id, "b" * 64)),
+        ),
+        execution_isolation_mode="separate_process_or_job",
+    )
+    attestations = tuple(
+        CacheStateAttestation(
+            request_id=measurement.request_id,
+            cache_method=identity.method_id,
+            artifact_id=identity.artifact_id,
+            source="local_path",
+            bytes_read=4096,
+            payload_cache_hit=False,
+            eviction_requested=True,
+            eviction_succeeded=True,
+            expected_bytes=4096,
+            expected_tokens=1,
+            loaded_tokens=1,
+        )
+        for measurement in result.measurements
+        if measurement.arm_id == CACHE_REUSE_ARM
+    )
+    record = benchmark_run_result_to_record(
+        result,
+        cache_state_attestations=attestations,
+        artifact_identities={identity.artifact_id: identity} if with_artifact_identity else None,
+        method_registry=registry,
+        sanitize_evidence=sanitize_evidence,
+    )
+    return json.dumps(record)
 
 
 def _v1_record(*, ok: bool, hardware_target: str = "aws-g6-l4", model_id: str = "qwen3:4b-instruct"):
