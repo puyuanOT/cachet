@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from document_kv_cache._benchmark_records import benchmark_gate_inputs_from_record
 from document_kv_cache.artifact_identity import ArtifactIdentity, canonical_json_sha256
 from document_kv_cache.benchmark_gates import (
     BenchmarkPublicationGateConfig,
@@ -27,6 +28,7 @@ from document_kv_cache.benchmark_runner import (
     benchmark_run_result_from_record,
     benchmark_run_result_payload_to_record,
     benchmark_run_result_to_evidence_record,
+    benchmark_run_result_to_record,
     run_benchmark_suite,
 )
 from document_kv_cache.benchmark_statistics import (
@@ -1686,6 +1688,129 @@ def test_vllm_telemetry_correlation_survives_sanitized_publication_serialization
         "has no cache-state attestation" in issue
         for issue in record["evidence_gate"]["issues"]
     )
+
+
+def _gate_inputs_record(*, sanitize_evidence: bool = False) -> dict:
+    identity = artifact_identity()
+    record = benchmark_run_result_to_record(
+        replace(benchmark_result(identity), evidence_policy="publication"),
+        cache_state_attestations=(cold_attestation(identity),),
+        artifact_identities={identity.artifact_id: identity},
+        sanitize_evidence=sanitize_evidence,
+    )
+    return json.loads(json.dumps(record))
+
+
+@pytest.mark.parametrize("sanitize_evidence", [False, True])
+def test_gate_inputs_reader_inverts_the_record_writer(sanitize_evidence: bool) -> None:
+    identity = artifact_identity()
+    record = _gate_inputs_record(sanitize_evidence=sanitize_evidence)
+
+    identities, attestations = benchmark_gate_inputs_from_record(record)
+
+    request_id = (
+        sha256(b"cache-request-1").hexdigest() if sanitize_evidence else "cache-request-1"
+    )
+    assert identities == {identity.artifact_id: identity}
+    assert attestations == (replace(cold_attestation(identity), request_id=request_id),)
+    assert [attestation.to_record() for attestation in attestations] == record[
+        "gate_inputs"
+    ]["cache_state_attestations"]
+
+
+def test_gate_inputs_reader_returns_no_inputs_for_records_without_them() -> None:
+    record = benchmark_run_result_to_record(benchmark_result(artifact_identity()))
+
+    assert "gate_inputs" not in record
+    assert benchmark_gate_inputs_from_record(record) == ({}, ())
+
+
+def _set_gate_input(path: tuple[str | int, ...], value: object):
+    def mutate(record: dict) -> None:
+        target = record["gate_inputs"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    return mutate
+
+
+def _drop_gate_input(path: tuple[str | int, ...]):
+    def mutate(record: dict) -> None:
+        target = record["gate_inputs"]
+        for key in path[:-1]:
+            target = target[key]
+        del target[path[-1]]
+
+    return mutate
+
+
+def _duplicate_artifact_identity(record: dict) -> None:
+    identities = record["gate_inputs"]["artifact_identities"]
+    identities.append(dict(identities[0]))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda record: record.update(gate_inputs=[]), "gate_inputs must be an object"),
+        (_set_gate_input(("extra",), []), "gate_inputs has unknown fields"),
+        (_drop_gate_input(("artifact_identities",)), "artifact_identities must be an array"),
+        (
+            _set_gate_input(("cache_state_attestations",), "attestation"),
+            "cache_state_attestations must be an array",
+        ),
+        (
+            _set_gate_input(("artifact_identities", 0), "identity"),
+            "artifact_identities[0] must be an object",
+        ),
+        (
+            _set_gate_input(("artifact_identities", 0, "extra"), "value"),
+            "record has unsupported keys",
+        ),
+        (_duplicate_artifact_identity, "gate_inputs has duplicate artifact identity"),
+        (
+            _set_gate_input(("cache_state_attestations", 0), None),
+            "cache_state_attestations[0] must be an object",
+        ),
+        (
+            _set_gate_input(("cache_state_attestations", 0, "extra"), "value"),
+            "cache_state_attestations[0] has unknown fields",
+        ),
+        (
+            _drop_gate_input(("cache_state_attestations", 0, "expected_bytes")),
+            "cache_state_attestations[0] is missing fields: ['expected_bytes']",
+        ),
+        (
+            _set_gate_input(("cache_state_attestations", 0, "record_type"), "other"),
+            "cache_state_attestations[0] has unsupported record_type",
+        ),
+        (
+            _set_gate_input(("cache_state_attestations", 0, "bytes_read"), "4096"),
+            "bytes_read must be a non-negative integer",
+        ),
+        (
+            _set_gate_input(("cache_state_attestations", 0, "payload_cache_hit"), 0),
+            "payload_cache_hit must be a boolean",
+        ),
+        (
+            _set_gate_input(("cache_state_attestations", 0, "cold_read_attested"), False),
+            "cache_state_attestations[0] cold_read_attested contradicts its observed state",
+        ),
+        (
+            lambda record: record.update(evidence_sanitized=True),
+            "cache_state_attestations[0] request_id must be a SHA-256 digest",
+        ),
+    ],
+)
+def test_gate_inputs_reader_rejects_malformed_inputs(mutate, message: str) -> None:
+    record = _gate_inputs_record()
+    mutate(record)
+
+    with pytest.raises(ValueError) as error:
+        benchmark_gate_inputs_from_record(record)
+
+    assert message in str(error.value)
 
 
 def test_paired_statistics_are_deterministic_and_method_aware() -> None:
