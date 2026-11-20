@@ -206,7 +206,7 @@ class CacheBuildConfig:
                 ).artifact_version
             except KeyError:
                 # Application-defined methods remain usable without registering a
-                # process-global MethodSpec. Their historical default is v1, while
+                # process-global MethodSpec. They default to version 1, and
                 # callers can always stamp an explicit custom version.
                 method_version = "1"
         object.__setattr__(self, "method_version", method_version)
