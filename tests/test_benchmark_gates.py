@@ -1509,7 +1509,7 @@ def test_canary_gate_checks_multiple_unique_cache_salts_without_cross_product() 
     assert gate.checked_cache_requests == 4
 
 
-def test_publication_gate_rejects_quality_drop_and_unattested_cache_state() -> None:
+def test_publication_gate_requires_manifest_and_cache_state_attestation() -> None:
     identity = artifact_identity()
     original = benchmark_result(identity)
     degraded_comparison = replace(
@@ -1525,8 +1525,8 @@ def test_publication_gate_rejects_quality_drop_and_unattested_cache_state() -> N
     )
 
     assert not gate.ok
-    assert any("exact-match drop" in issue for issue in gate.issues)
-    assert any("answer-found drop" in issue for issue in gate.issues)
+    assert "publication evidence requires an experiment manifest" in gate.issues
+    assert not any("drop" in issue for issue in gate.issues)
     assert any("has no cache-state attestation" in issue for issue in gate.issues)
 
 

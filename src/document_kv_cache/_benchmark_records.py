@@ -13,7 +13,6 @@ from document_kv_cache._benchmark_manifest import (
     BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE,
     VARIES_BY_ARM,
     _json_materialize,
-    _runtime_environment_to_record,
     _resource_execution_id_digest,
     _resource_runtime_identity_digest,
     _sha256_json,
@@ -598,64 +597,14 @@ def benchmark_gate_inputs_from_record(
 def _arm_runtime_environment_from_record(
     arm: Mapping[str, Any],
     *,
-    model_runtime: Mapping[str, Any],
-    environment: Mapping[str, Any],
-    workload: Mapping[str, Any],
     label: str,
 ) -> BenchmarkArmEnvironment:
-    raw = arm.get("runtime_environment")
-    if raw is None:
-        # Additive V1 compatibility: older records used only global provenance.
-        values: Mapping[str, Any] = {
-            "served_model_id": model_runtime.get("model_id"),
-            "canonical_model_id": model_runtime.get(
-                "canonical_model_id",
-                model_runtime.get("model_id"),
-            ),
-            "model_revision": model_runtime.get("model_revision"),
-            "tokenizer_id": model_runtime.get("tokenizer_id"),
-            "tokenizer_revision": model_runtime.get("tokenizer_revision"),
-            "lora_id": model_runtime.get("lora_id", "base"),
-            "prompt_template_version": model_runtime.get(
-                "prompt_template_version",
-                workload.get("prompt_template_version"),
-            ),
-            "engine_id": model_runtime.get("engine_id"),
-            "engine_version": model_runtime.get("engine_version"),
-            "serving_platform": model_runtime.get("serving_platform", "unresolved"),
-            "hardware_target": environment.get("hardware_target"),
-            "hardware_fingerprint": environment.get("hardware_fingerprint"),
-            "model_dtype": model_runtime.get("model_dtype", "unresolved"),
-            "model_quantization": model_runtime.get("model_quantization", "none"),
-            "runtime_kv_dtype": model_runtime.get(
-                "runtime_kv_dtype",
-                "unresolved",
-            ),
-            "layout_version": model_runtime.get("layout_version", "unresolved"),
-            "payload_axis_order": model_runtime.get(
-                "payload_axis_order",
-                "unresolved",
-            ),
-            "block_size": model_runtime.get("block_size"),
-            "key_position_encoding": model_runtime.get(
-                "key_position_encoding",
-                "unresolved",
-            ),
-            "rope_theta": model_runtime.get("rope_theta"),
-            "rope_rotary_dim": model_runtime.get("rope_rotary_dim"),
-            "tensor_parallel_size": model_runtime.get("tensor_parallel_size"),
-            "pipeline_parallel_size": model_runtime.get("pipeline_parallel_size"),
-            "runtime_version": environment.get("runtime_version"),
-            "storage_identity": environment.get("storage_identity"),
-            "cache_state": environment.get("cache_state"),
-        }
-    else:
-        values = _record_mapping_value(raw, label)
-        _require_record_keys(
-            values,
-            set(BENCHMARK_ARM_ENVIRONMENT_FIELDS),
-            label,
-        )
+    values = _record_mapping_value(arm.get("runtime_environment"), label)
+    _require_record_keys(
+        values,
+        set(BENCHMARK_ARM_ENVIRONMENT_FIELDS),
+        label,
+    )
     return BenchmarkArmEnvironment(
         served_model_id=_record_string(values, "served_model_id"),
         canonical_model_id=_record_string(values, "canonical_model_id"),
@@ -851,19 +800,9 @@ def benchmark_experiment_manifest_from_record(
                         f"arms[{index}].setting_overrides",
                     )
                 ),
-                requires_cachet_handoff=(
-                    _record_bool(arm, "requires_cachet_handoff")
-                    if "requires_cachet_handoff" in arm
-                    else (
-                        _record_bool(arm, "uses_cache")
-                        and _record_string(arm, "implementation_kind") == "cachet"
-                    )
-                ),
+                requires_cachet_handoff=_record_bool(arm, "requires_cachet_handoff"),
                 runtime_environment=_arm_runtime_environment_from_record(
                     arm,
-                    model_runtime=model_runtime,
-                    environment=environment,
-                    workload=workload,
                     label=f"arms[{index}].runtime_environment",
                 ),
             )
@@ -1358,21 +1297,14 @@ def merge_isolated_benchmark_run_records(
     merged_measurements: list[Any] = []
     merged_windows: list[Any] = []
     merged_resource_evidence: list[Any] = []
-    for record, manifest, suite, typed_manifest in zip(
+    for record, manifest, suite in zip(
         payloads,
         manifests,
         suites,
-        typed_manifests,
         strict=True,
     ):
         raw_arm = dict(
             _record_mapping_value(_record_sequence(manifest, "arms")[0], "manifest arm")
-        )
-        raw_arm.setdefault(
-            "runtime_environment",
-            _runtime_environment_to_record(
-                typed_manifest.arms[0].runtime_environment
-            ),
         )
         merged_arms.append(raw_arm)
         merged_suite_arms.extend(_record_sequence(suite, "arms"))

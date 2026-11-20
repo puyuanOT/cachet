@@ -17,6 +17,7 @@ from document_kv_cache._benchmark_manifest import (
     _validate_arm_runtime_environments,
 )
 from document_kv_cache.benchmark_runner import (
+    BenchmarkExperimentManifest,
     BenchmarkRunResult,
     BenchmarkScorerManifest,
 )
@@ -163,8 +164,6 @@ class BenchmarkPublicationGateConfig:
     min_quality_examples_per_row: int = 50
     allow_complete_split_below_quality_min: bool = True
     max_error_rate: float = 0.0
-    max_exact_match_drop: float = 0.02
-    max_answer_found_drop: float = 0.02
     require_method_identity: bool = True
     require_variant_identity: bool = True
     require_artifact_identity: bool = True
@@ -201,8 +200,6 @@ class BenchmarkPublicationGateConfig:
                 raise ValueError(f"{field_name} must be positive")
         for field_name in (
             "max_error_rate",
-            "max_exact_match_drop",
-            "max_answer_found_drop",
             "paired_confidence_level",
         ):
             value = getattr(self, field_name)
@@ -285,8 +282,6 @@ def benchmark_evidence_policy_config(
             min_quality_examples_per_row=1,
             min_paired_samples=1,
             min_paired_examples=1,
-            max_exact_match_drop=1.0,
-            max_answer_found_drop=1.0,
             require_method_identity=False,
             require_variant_identity=False,
             require_artifact_identity=False,
@@ -385,10 +380,11 @@ def evaluate_benchmark_publication_gate(
     latency_claim = "latency" in active_scopes
     quality_claim = "quality" in active_scopes
     resource_claim = "resource" in active_scopes
-    quality_specs_by_dataset = _quality_specs_by_dataset(
-        result,
-        config=resolved,
-    ) if quality_claim else {}
+    quality_specs_by_dataset = (
+        _quality_specs_by_dataset(manifest)
+        if quality_claim and manifest is not None
+        else {}
+    )
     cold_latency_claim = latency_claim and (
         manifest is None
         or any(
@@ -596,11 +592,7 @@ def evaluate_benchmark_publication_gate(
         ):
             issues.append(f"{row_label} is missing latency metrics")
         for metric_name in quality_specs_by_dataset.get(row.dataset, {}):
-            if _row_quality_metric_value(
-                row,
-                metric_name,
-                legacy=manifest is None,
-            ) is None:
+            if row.quality_score_means.get(metric_name) is None:
                 issues.append(f"{row_label} is missing quality metric {metric_name!r}")
                 continue
             quality_examples = len(
@@ -610,12 +602,7 @@ def evaluate_benchmark_publication_gate(
                     if measurement.dataset == row.dataset
                     and measurement.arm_id == row.arm_id
                     and measurement.ok
-                    and _measurement_quality_value(
-                        measurement,
-                        metric_name,
-                        legacy=manifest is None,
-                    )
-                    is not None
+                    and measurement.quality_scores.get(metric_name) is not None
                 }
             )
             if (
@@ -684,11 +671,7 @@ def evaluate_benchmark_publication_gate(
             paired.dataset,
             {},
         ).items():
-            interval = _paired_quality_interval(
-                paired,
-                metric_name,
-                legacy=manifest is None,
-            )
+            interval = paired.quality_score_deltas.get(metric_name)
             if interval is None:
                 issues.append(f"{row_label} is missing paired quality metric {metric_name!r}")
                 continue
@@ -716,23 +699,10 @@ def evaluate_benchmark_publication_gate(
             issues.append(f"{row_label} has no baseline comparison")
             continue
         for metric_name in quality_specs_by_dataset.get(row.dataset, {}):
-            delta = _comparison_quality_delta(
-                comparison,
-                metric_name,
-                legacy=manifest is None,
-            )
-            if delta is None:
+            if comparison.quality_score_deltas.get(metric_name) is None:
                 issues.append(
                     f"{row_label} quality delta {metric_name!r} is missing"
                 )
-            elif manifest is None:
-                tolerance = quality_specs_by_dataset[row.dataset][metric_name][1]
-                if delta < -tolerance:
-                    display_name = metric_name.replace("_", "-")
-                    issues.append(
-                        f"{row_label} {display_name} drop {-delta:.6g} exceeds "
-                        f"{tolerance:.6g}"
-                    )
 
     cachet_arm_ids = {
         arm_id
@@ -1217,19 +1187,8 @@ def _publication_score_contract_issues(
 
 
 def _quality_specs_by_dataset(
-    result: BenchmarkRunResult,
-    *,
-    config: BenchmarkPublicationGateConfig,
+    manifest: BenchmarkExperimentManifest,
 ) -> dict[str, dict[str, tuple[str, float]]]:
-    manifest = result.experiment_manifest
-    if manifest is None:
-        return {
-            dataset: {
-                "exact_match": ("higher_is_better", config.max_exact_match_drop),
-                "answer_found": ("higher_is_better", config.max_answer_found_drop),
-            }
-            for dataset in result.suite.datasets
-        }
     return {
         scorer.dataset: {
             metric.metric_name: (metric.direction, metric.max_regression)
@@ -1237,76 +1196,6 @@ def _quality_specs_by_dataset(
         }
         for scorer in manifest.scorer_identities
     }
-
-
-def _measurement_quality_value(
-    measurement: Any,
-    metric_name: str,
-    *,
-    legacy: bool,
-) -> float | None:
-    value = measurement.quality_scores.get(metric_name)
-    if value is not None:
-        return float(value)
-    if legacy and metric_name == "exact_match":
-        diagnostic = measurement.exact_match
-        return None if diagnostic is None else float(diagnostic)
-    if legacy and metric_name == "answer_found":
-        diagnostic = measurement.answer_found
-        return None if diagnostic is None else float(diagnostic)
-    return None
-
-
-def _row_quality_metric_value(
-    row: Any,
-    metric_name: str,
-    *,
-    legacy: bool,
-) -> float | None:
-    value = row.quality_score_means.get(metric_name)
-    if value is not None:
-        return float(value)
-    if legacy and metric_name == "exact_match":
-        rate = row.exact_match_rate
-        return None if rate is None else float(rate)
-    if legacy and metric_name == "answer_found":
-        rate = row.answer_found_rate
-        return None if rate is None else float(rate)
-    return None
-
-
-def _paired_quality_interval(
-    paired: Any,
-    metric_name: str,
-    *,
-    legacy: bool,
-) -> Any:
-    interval = paired.quality_score_deltas.get(metric_name)
-    if interval is not None:
-        return interval
-    if legacy and metric_name == "exact_match":
-        return paired.exact_match_delta
-    if legacy and metric_name == "answer_found":
-        return paired.answer_found_delta
-    return None
-
-
-def _comparison_quality_delta(
-    comparison: Any,
-    metric_name: str,
-    *,
-    legacy: bool,
-) -> float | None:
-    value = comparison.quality_score_deltas.get(metric_name)
-    if value is not None:
-        return float(value)
-    if legacy and metric_name == "exact_match":
-        delta = comparison.exact_match_delta
-        return None if delta is None else float(delta)
-    if legacy and metric_name == "answer_found":
-        delta = comparison.answer_found_delta
-        return None if delta is None else float(delta)
-    return None
 
 
 def _resource_scope_issues(result: BenchmarkRunResult) -> tuple[str, ...]:

@@ -895,9 +895,19 @@ def test_setting_variation_binds_declared_value_to_actual_arm_environment():
         fp16.runtime_environment_overrides["model_quantization"] = "unsafe"
 
 
-def test_legacy_v1_manifest_without_per_arm_environment_remains_readable() -> None:
+@pytest.mark.parametrize(
+    ("arm_field", "message"),
+    (
+        ("runtime_environment", "arms\\[0\\].runtime_environment must be an object"),
+        ("requires_cachet_handoff", "requires_cachet_handoff must be a boolean"),
+    ),
+)
+def test_manifest_arms_require_runtime_environment_and_handoff_flag(
+    arm_field: str,
+    message: str,
+) -> None:
     suite = BenchmarkSuite(
-        suite_id="legacy-environment",
+        suite_id="arm-environment",
         examples=(example(),),
         datasets=("biography",),
     )
@@ -919,32 +929,10 @@ def test_legacy_v1_manifest_without_per_arm_environment_remains_readable() -> No
         ),
     )
     record = benchmark_run_result_to_record(result)
-    manifest = record["experiment_manifest"]
-    manifest["arms"][0].pop("runtime_environment")
-    for field_name in (
-        "canonical_model_id",
-        "lora_id",
-        "prompt_template_version",
-        "serving_platform",
-        "model_dtype",
-        "model_quantization",
-        "runtime_kv_dtype",
-        "layout_version",
-        "payload_axis_order",
-        "block_size",
-        "key_position_encoding",
-        "tensor_parallel_size",
-        "pipeline_parallel_size",
-    ):
-        manifest["model_runtime"].pop(field_name)
+    record["experiment_manifest"]["arms"][0].pop(arm_field)
 
-    reconstructed = benchmark_run_result_from_record(record)
-
-    assert reconstructed.experiment_manifest is not None
-    environment = reconstructed.experiment_manifest.arms[0].runtime_environment
-    assert environment.served_model_id == suite.model_id
-    assert environment.canonical_model_id == suite.model_id
-    assert environment.serving_platform == "unresolved"
+    with pytest.raises(ValueError, match=message):
+        benchmark_run_result_from_record(record)
 
 
 @pytest.mark.parametrize(
