@@ -6,8 +6,8 @@ product import namespace is the branded `cachet` facade.
 
 - `cachet/` is the branded import facade for root Cachet APIs and public
   `cachet.<module>` aliases.
-- `document_kv_cache/` is the canonical implementation and compatibility
-  namespace used by existing runners, evidence files, and CLI entry points.
-- `vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter
-  compatibility packages. They stay importable under their existing names
-  because native probe metadata references those dotted paths.
+- `document_kv_cache/` is the canonical implementation namespace used by
+  runners, evidence files, and CLI entry points.
+- `vllm_kv_injection/` and `sglang_kv_injection/` are the vendored engine
+  adapter packages. Native probe metadata and launch configs reference their
+  dotted module paths.

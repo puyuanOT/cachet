@@ -7,6 +7,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 import cachet
 import document_kv_cache
 
@@ -881,13 +883,14 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
 
 
 
-def test_cachet_cli_module_facades_execute_with_python_m():
+@pytest.mark.parametrize("module_name", ("benchmark_plan", "vllm_wheel_repack"))
+def test_cachet_cli_module_facades_execute_with_python_m(module_name):
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
     result = subprocess.run(
         [
             sys.executable,
             "-m",
-            "cachet.benchmark_plan",
+            f"cachet.{module_name}",
             "--help",
         ],
         check=True,
@@ -897,10 +900,27 @@ def test_cachet_cli_module_facades_execute_with_python_m():
     )
 
     assert "usage:" in result.stdout
-    assert "benchmark_plan" in result.stdout
+    assert module_name in result.stdout
 
 
-def test_cachet_adapter_facades_delegate_to_vendored_compatibility_packages():
+def test_cachet_module_facades_forward_python_m_for_command_modules():
+    missing_forwarding = []
+    for facade_path in sorted((REPO_ROOT / "src" / "cachet").glob("*.py")):
+        if facade_path.stem.startswith("_"):
+            continue
+        target_path = REPO_ROOT / "src" / "document_kv_cache" / facade_path.name
+        if not target_path.exists():
+            continue
+        if 'if __name__ == "__main__":' not in target_path.read_text(encoding="utf-8"):
+            continue
+        facade_text = facade_path.read_text(encoding="utf-8")
+        if f'_run_main("document_kv_cache.{facade_path.stem}")' not in facade_text:
+            missing_forwarding.append(facade_path.name)
+
+    assert missing_forwarding == []
+
+
+def test_cachet_adapter_facades_delegate_to_vendored_adapter_packages():
     cachet_vllm = importlib.import_module("cachet.adapters.vllm")
     cachet_sglang = importlib.import_module("cachet.adapters.sglang")
     vllm_adapter = importlib.import_module("vllm_kv_injection")
@@ -912,7 +932,7 @@ def test_cachet_adapter_facades_delegate_to_vendored_compatibility_packages():
     assert cachet_sglang.DocumentKVHiCacheBackend is sglang_adapter.DocumentKVHiCacheBackend
 
 
-def test_cachet_adapter_submodules_delegate_to_vendored_compatibility_submodules():
+def test_cachet_adapter_submodules_delegate_to_vendored_adapter_submodules():
     for cachet_module_name, adapter_module_name in (
         ("cachet.adapters.vllm.probe", "vllm_kv_injection.probe"),
         ("cachet.adapters.vllm.protocol", "vllm_kv_injection.protocol"),

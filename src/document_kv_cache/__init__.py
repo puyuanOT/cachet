@@ -1,8 +1,8 @@
-"""Public package facade for Document KV Cache.
+"""Canonical implementation package for Cachet.
 
-This facade exposes the document-generic import path and console script targets
-used by Cachet. The former restaurant-specific compatibility package is no
-longer consulted for root exports or attribute fallback.
+The package root lazily exposes the document KV-cache API that the branded
+``cachet`` facade re-exports, and its public submodules provide the console
+script targets.
 """
 
 from __future__ import annotations

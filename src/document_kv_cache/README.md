@@ -1,26 +1,25 @@
 # `document_kv_cache`
 
-This is the compatibility-preserving implementation package for Cachet. It
-provides document-namespaced modules that own the implementation while the
-branded `cachet` package exposes the user-facing root and `cachet.<module>`
-import surface.
+This is the canonical implementation package for Cachet. It provides
+document-namespaced modules that own the implementation while the branded
+`cachet` package exposes the user-facing root and `cachet.<module>` import
+surface.
 
 Public submodules such as `document_kv_cache.benchmark_plan`,
 `document_kv_cache.storage`, `document_kv_cache.storage_benchmark`, and
 `document_kv_cache.workflow` are the canonical implementation modules with
 `document_kv_cache.*` module identity. New documentation and examples should
-prefer the Cachet aliases, while this namespace remains importable for existing
-benchmark evidence, Databricks runners, and downstream jobs.
+prefer the Cachet aliases; benchmark evidence, Databricks runners, and
+downstream jobs import this namespace directly.
 
-The package root keeps `__all__` document-first for `from document_kv_cache
-import *`; restaurant-specific compatibility aliases are no longer exported
-from the package surface or retained in the core runtime model layer.
+The package root's `__all__` lists the document-owned public API for
+`from document_kv_cache import *`, and the core runtime model layer uses
+document-generic names throughout.
 
 ## Public Module Map
 
 Public files in this package define the document-owned classes, functions,
-records, and CLI targets. The removed restaurant compatibility package must not
-return as a production dependency.
+records, and CLI targets.
 
 - `admission.py` exposes pending GPU-memory admission controls.
 - `adapter_scaffold.py` generates fail-closed native-probe delegate modules for
@@ -265,8 +264,8 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-sglang-smoke`
 - `cachet-sglang-smoke-databricks-job`
 
-Legacy `restaurant-kv-*` aliases are no longer included in built `cachet-kv`
-wheels. Use `cachet-*` or `document-kv-*` commands for installed environments.
+Built `cachet-kv` wheels install exactly the `document-kv-*` and `cachet-*`
+commands listed above.
 
 ## Optional Extras
 

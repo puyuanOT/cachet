@@ -213,11 +213,9 @@ def test_source_layout_readme_reflects_document_owned_implementation():
         "public product import namespace is the branded `cachet` facade" in compact_text
     )
     assert "`cachet/` is the branded import facade" in text
+    assert "`document_kv_cache/` is the canonical implementation namespace" in text
     assert (
-        "`document_kv_cache/` is the canonical implementation and compatibility" in text
-    )
-    assert (
-        "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter"
+        "`vllm_kv_injection/` and `sglang_kv_injection/` are the vendored engine adapter packages"
         in compact_text
     )
     assert "contains the current implementation" not in text
@@ -284,7 +282,7 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "Cachet-branded aliases" in text
     assert "`templates/`" in text
     assert "`templates/databricks/`" in text
-    assert "compatibility-preserving implementation package" in text
+    assert "canonical implementation package for Cachet" in text
     assert "canonical implementation modules" in text
     assert "Public files in this package define the document-owned classes" in text
     assert "core runtime model layer" in text
