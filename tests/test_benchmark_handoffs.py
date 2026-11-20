@@ -1811,38 +1811,19 @@ def test_benchmark_handoff_manifest_record_is_stable():
     }
 
 
-def test_benchmark_handoff_manifest_reads_schema_v1_records():
-    handoffs = benchmark_handoff_manifest_from_record(
-        {
-            "record_type": BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE,
-            "schema_version": 1,
-            "entries": [
-                {
-                    "dataset": "biography",
-                    "example_id": "bio-1",
-                    "request_id": "cachet-bio-1",
-                    "handoff_json": "/Volumes/catalog/schema/volume/cachet/cachet-bio-1.handoff.json",
-                }
-            ],
-        }
-    )
-
-    assert handoffs.entries[0].sglang_hicache_page_keys == ()
-
-
-def test_benchmark_handoff_manifest_rejects_sglang_page_keys_in_schema_v1():
-    with pytest.raises(ValueError, match="entries\\[0\\] has unsupported keys"):
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_benchmark_handoff_manifest_rejects_earlier_schema_versions(schema_version):
+    with pytest.raises(ValueError, match="schema_version must be 3"):
         benchmark_handoff_manifest_from_record(
             {
                 "record_type": BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE,
-                "schema_version": 1,
+                "schema_version": schema_version,
                 "entries": [
                     {
                         "dataset": "biography",
                         "example_id": "bio-1",
                         "request_id": "cachet-bio-1",
                         "handoff_json": "/Volumes/catalog/schema/volume/cachet/cachet-bio-1.handoff.json",
-                        "sglang_hicache_page_keys": ["page-a"],
                     }
                 ],
             }
