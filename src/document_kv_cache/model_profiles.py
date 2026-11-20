@@ -387,10 +387,7 @@ def model_profile_definition_from_record(record: Mapping[str, Any]) -> ModelProf
         default_block_size=_required_int(record, "default_block_size"),
         default_lora_id=_required_str(record, "default_lora_id"),
         default_shares_kv_storage=_required_bool(record, "default_shares_kv_storage"),
-        default_storage_layout=kv_storage_layout_from_value(
-            record.get("default_storage_layout"),
-            field_name="default_storage_layout",
-        ),
+        default_storage_layout=_required_storage_layout(record, "default_storage_layout"),
         metadata=metadata,
     )
     return ModelProfileDefinition(profile=profile, aliases=aliases)
@@ -474,6 +471,13 @@ def _required_bool(record: Mapping[str, Any], key: str) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{key} must be a boolean")
     return value
+
+
+def _required_storage_layout(record: Mapping[str, Any], key: str) -> KVStorageLayout:
+    value = record.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    return kv_storage_layout_from_value(value, field_name=key)
 
 
 def _validate_positive_int(value: Any, name: str) -> None:

@@ -255,7 +255,7 @@ def test_model_profile_definition_round_trips_future_model_artifact(tmp_path):
     ("field_name", "message"),
     (
         ("default_shares_kv_storage", "default_shares_kv_storage must be a boolean"),
-        ("default_storage_layout", "Unsupported default_storage_layout None"),
+        ("default_storage_layout", "default_storage_layout must be a string"),
     ),
 )
 def test_model_profile_definition_requires_storage_defaults(field_name, message):
