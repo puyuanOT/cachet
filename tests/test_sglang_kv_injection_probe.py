@@ -1,8 +1,10 @@
 import json
 from textwrap import dedent
+from types import SimpleNamespace
 
 import pytest
 
+from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.engine_adapters import (
     ServingBackend,
     build_engine_adapter_request,
@@ -40,6 +42,7 @@ from sglang_kv_injection.probe import (
     SGLANG_PROBE_METADATA_PROBE_KIND,
     SGLANG_PROBE_METADATA_REQUEST_ID,
     SGLANG_PROBE_METADATA_RUNTIME_CONTRACT,
+    _handle_from_probe_actions,
     build_in_memory_debug_probe,
     build_native_connector_probe,
 )
@@ -98,6 +101,43 @@ def qwen3_gqa_handle() -> KVCacheHandle:
         total_tokens=2,
         total_bytes=2 * layout.bytes_per_token,
     )
+
+
+def test_probe_handle_keeps_segment_token_contracts():
+    contract = TokenContract.from_token_ids(
+        (11, 12),
+        tokenizer_id="test-tokenizer",
+        tokenizer_revision="rev-1",
+        add_special_tokens=False,
+        prompt_template_version="test-template-v1",
+    )
+    base = handle()
+    copy = SimpleNamespace(
+        document_id="doc-a",
+        chunk_type="document_static",
+        chunk_id="static",
+        token_start=0,
+        token_count=2,
+        global_byte_start=0,
+        global_byte_end=8,
+        source_byte_length=8,
+        content_hash="",
+        token_contract=contract,
+    )
+    reservation = SimpleNamespace(
+        copies=[copy],
+        action=SimpleNamespace(request_id=base.request_id, layout=base.layout, total_tokens=2),
+    )
+    bind = SimpleNamespace(
+        handle_uri=base.handle_uri,
+        metadata={},
+        cache_method=base.cache_method,
+        adapter_ids=base.adapter_ids,
+    )
+
+    rebuilt = _handle_from_probe_actions(reservation, bind)
+
+    assert rebuilt.segments[0].token_contract == contract
 
 
 def write_debug_handoff(tmp_path, ready: EngineReadyRequest):

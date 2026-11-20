@@ -285,6 +285,7 @@ def _handle_from_probe_actions(
             byte_start=copy.global_byte_start,
             byte_length=copy.source_byte_length,
             content_hash=copy.content_hash,
+            token_contract=copy.token_contract,
         )
         for copy in copies
     )
