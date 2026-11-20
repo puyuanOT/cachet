@@ -184,7 +184,7 @@ class KVModelProfile:
                 else KVStorageLayout.SEPARATE_KEY_VALUE
             )
         # Only forward payload_axis_order when the caller requests one so KVLayout
-        # keeps defaulting to token_major for backward compatibility.
+        # applies its token_major default.
         payload_axis_order_kwargs: dict[str, Any] = (
             {} if payload_axis_order is None else {"payload_axis_order": payload_axis_order}
         )

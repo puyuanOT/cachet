@@ -2183,11 +2183,10 @@ def _cache_state_attestation_record(
         "eviction_requested": eviction_requested,
         "eviction_succeeded": eviction_succeeded,
         "direct_io": direct_io,
-        # ``expected_bytes`` remains the v1 compatibility alias for physical
-        # bytes expected from storage. Encoded artifacts may expand to a larger
-        # runtime KV payload after the provider decoder runs.
+        # ``expected_bytes`` is the physical byte count expected from storage,
+        # which CacheStateAttestation checks. Encoded artifacts may expand to a
+        # larger runtime KV payload after the provider decoder runs.
         "expected_bytes": expected_stored_bytes,
-        "expected_stored_bytes": expected_stored_bytes,
         "expected_runtime_bytes": expected_runtime_bytes,
         "decoded_runtime_bytes": decoded_runtime_bytes,
         "expected_tokens": expected_tokens,
@@ -2884,11 +2883,7 @@ def _rope_cos_sin_for_load(
 _FP8_VIEW_DTYPE_NAMES = {
     "fp8": "float8_e4m3fn",
     "fp8_e4m3": "float8_e4m3fn",
-    "fp8_e4m3fn": "float8_e4m3fn",
-    "float8_e4m3": "float8_e4m3fn",
-    "float8_e4m3fn": "float8_e4m3fn",
     "fp8_e5m2": "float8_e5m2",
-    "float8_e5m2": "float8_e5m2",
 }
 
 

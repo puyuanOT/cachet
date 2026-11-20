@@ -775,8 +775,8 @@ class BenchmarkRunResult:
         return self.baseline_arm_id
 
 
-# Keep the historical public import path stable for callers that inspect these
-# facade-exported classes.
+# These classes are public through benchmark_runner, so report that module as
+# their import path.
 for _public_class in (
     BenchmarkManifestContext,
     BenchmarkArmManifest,

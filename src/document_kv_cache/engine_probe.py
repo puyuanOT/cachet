@@ -419,7 +419,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--handoff-json",
         required=True,
-        help="Path to document_kv.engine_adapter_request.v1 schema v2 JSON.",
+        help="Path to document_kv.engine_adapter_request.v1 schema v4 JSON.",
     )
     parser.add_argument("--probe-factory", required=True, help="Dotted native probe factory, e.g. module:factory.")
     parser.add_argument("--output-json", help="Where to write the engine probe JSON record. Defaults to stdout.")

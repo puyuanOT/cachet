@@ -860,7 +860,7 @@ _BUILTIN_METHOD_SPECS: tuple[MethodSpec, ...] = (
 
 DEFAULT_METHOD_REGISTRY = MethodRegistry().with_specs(_BUILTIN_METHOD_SPECS)
 
-# Compatibility view keyed by the historical enum. It is immutable so callers
+# Built-in specs keyed by CacheGenerationMethod. It is immutable so callers
 # cannot silently change the process-wide method contract.
 METHOD_SPECS: Mapping[CacheGenerationMethod, MethodSpec] = MappingProxyType(
     {
