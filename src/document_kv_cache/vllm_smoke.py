@@ -241,7 +241,7 @@ class VLLMSmokeBenchmarkConfig:
 
     @property
     def local_dir(self) -> Path:
-        return self.local_root / f"document-kv-vllm-smoke-{self.benchmark_id}"
+        return self.local_root / f"cachet-vllm-smoke-{self.benchmark_id}"
 
     @property
     def hf_cache_dir(self) -> Path:

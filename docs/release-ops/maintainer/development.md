@@ -56,10 +56,9 @@ install, `ruff check` and `mypy` on an explicit file list, `--help` for every
   re-export alias module per public module, `cachet.__all__` mirrors
   `document_kv_cache.__all__`, and `src/cachet/__init__.pyi` must re-export
   exactly those names.
-- Register every command in `[project.scripts]` under both a `cachet-*` name
-  and a `document-kv-*` alias, list it in the
-  [release-ops command table](../README.md#cli-audience-boundary), and prefer
-  `cachet-*` in documentation.
+- Register every command in `[project.scripts]` under a `cachet-*` name that
+  targets its `cachet.<module>` facade, and list it in the
+  [release-ops command table](../README.md#cli-audience-boundary).
 - `databricks/**/databricks.yml` must stay byte-identical to the packaged
   copies under `src/document_kv_cache/templates/databricks/`.
 - Every Git-visible directory needs a `README.md` or a package docstring.

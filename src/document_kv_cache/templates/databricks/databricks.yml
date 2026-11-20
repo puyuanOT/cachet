@@ -50,7 +50,7 @@ variables:
 resources:
   jobs:
     document_kv_v1_benchmark:
-      name: document-kv-v1-benchmark
+      name: cachet-v1-benchmark
       tasks:
         - task_key: document_kv_v1_benchmark
           new_cluster:
@@ -65,7 +65,7 @@ resources:
               spark.databricks.cluster.profile: singleNode
             custom_tags:
               ResourceClass: SingleNode
-              purpose: document-kv-v1-benchmark
+              purpose: cachet-v1-benchmark
             spark_env_vars:
               DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY: ${var.vllm_native_probe_delegate_factory}
               DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY: ${var.sglang_native_probe_delegate_factory}

@@ -1,16 +1,16 @@
 bundle:
-  name: document-kv-storage-benchmark
+  name: cachet-storage-benchmark
 
 variables:
   runner_python_file:
     description: Cluster-visible Python runner script URI for the storage-reader benchmark task.
   workspace_dir:
-    default: /local_disk0/document-kv-storage-benchmark
+    default: /local_disk0/cachet-storage-benchmark
     description: Cluster-local directory for synthetic shard artifacts.
   benchmark_output_json:
     description: Cluster-visible output path for the storage benchmark evidence JSON.
   benchmark_id:
-    default: document-kv-storage-benchmark
+    default: cachet-storage-benchmark
     description: Benchmark id written into the storage benchmark record.
   uc_volume_root:
     description: Real UC Volume root, usually /Volumes/catalog/schema/volume/path.
@@ -44,7 +44,7 @@ variables:
 resources:
   jobs:
     document_kv_storage_benchmark:
-      name: document-kv-storage-benchmark
+      name: cachet-storage-benchmark
       tasks:
         - task_key: document_kv_storage_benchmark
           new_cluster:
@@ -59,7 +59,7 @@ resources:
               spark.databricks.cluster.profile: singleNode
             custom_tags:
               ResourceClass: SingleNode
-              purpose: document-kv-storage-benchmark
+              purpose: cachet-storage-benchmark
             aws_attributes:
               availability: ON_DEMAND
               zone_id: auto

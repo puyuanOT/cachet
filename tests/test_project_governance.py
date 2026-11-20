@@ -258,28 +258,20 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     pyproject = tomllib.loads(
         (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
-    document_scripts = sorted(
-        name
-        for name in pyproject["project"]["scripts"]
-        if name.startswith("document-kv-")
-    )
     cachet_scripts = sorted(
         name for name in pyproject["project"]["scripts"] if name.startswith("cachet-")
     )
 
     assert public_modules
     assert set(public_modules) == package_modules
-    assert document_scripts
     assert cachet_scripts
     for module_name in public_modules:
         assert f"`{module_name}.py`" in text
     assert "Archived Campaign Modules" in text
     assert "`vllm-0300-campaign-archive`" in text
-    for script_name in document_scripts:
-        assert f"`{script_name}`" in text
     for script_name in cachet_scripts:
         assert f"`{script_name}`" in text
-    assert "Cachet-branded aliases" in text
+    assert "Built `cachet-kv` wheels install exactly the `cachet-*` commands" in text
     assert "`templates/`" in text
     assert "`templates/databricks/`" in text
     assert "canonical implementation package for Cachet" in text
@@ -444,7 +436,7 @@ def test_readme_documents_public_landing_page_and_scope():
         "Databricks",
     ):
         assert forbidden not in public_intro
-    assert "document-kv-cache" not in public_intro
+    assert "document-kv-" not in public_intro
     assert "package name on PyPI is owned by an unrelated project" in compact_text
 
 
@@ -856,10 +848,7 @@ def test_release_ops_doc_classifies_installed_cli_surface():
     assert "`cachet-engine-launch-config`" in release_ops
     for script_name in cachet_scripts:
         assert f"`{script_name}`" in release_ops
-    assert (
-        "The `document-kv-*` console scripts are compatibility aliases" in release_ops
-    )
-    assert "Prefer `cachet-*` in new documentation" in release_ops
+    assert "Keep maintainer commands out of the first-touch user path" in release_ops
 
 
 def _sealed_record_checker():

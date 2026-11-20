@@ -305,7 +305,7 @@ def test_build_in_memory_debug_probe_for_engine_probe_runner(tmp_path):
     assert record["metadata"][SGLANG_PROBE_METADATA_PROBE] == "in_memory_debug"
     assert record["metadata"][SGLANG_PROBE_METADATA_PROBE_KIND] == "debug_in_memory"
     assert record["metadata"][SGLANG_PROBE_METADATA_REQUEST_ID] == "req-1"
-    assert record["metadata"][SGLANG_PROBE_METADATA_RUNTIME_CONTRACT] == "document-kv-debug-connector"
+    assert record["metadata"][SGLANG_PROBE_METADATA_RUNTIME_CONTRACT] == "cachet-debug-connector"
     try:
         validate_engine_kv_connector_probe_record(record)
     except ValueError as exc:

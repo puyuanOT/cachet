@@ -84,14 +84,14 @@ For SGLang, the preferred handoff-backed readiness payload uses
 mkdir -p databricks-runs/sglang-smoke
 python -m document_kv_cache.databricks_sglang_smoke_job \
   --benchmark-id v1_sglang_live_001 \
-  --output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live \
+  --output-dir /Volumes/catalog/schema/volume/cachet-sglang-live \
   --runner-python-file dbfs:/benchmarks/run_sglang_smoke.py \
   --runner-script-output databricks-runs/sglang-smoke/run_sglang_smoke.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
   --generate-live-handoff \
-  --live-handoff-output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live/live-handoff \
+  --live-handoff-output-dir /Volumes/catalog/schema/volume/cachet-sglang-live/live-handoff \
   --spark-env-var CACHET_TRANSFORMERS_DEVICE=cuda \
   --spark-env-var CACHET_TRANSFORMERS_TORCH_DTYPE=bfloat16 \
   --output-json databricks-runs/sglang-smoke/databricks-sglang-smoke-submit.json

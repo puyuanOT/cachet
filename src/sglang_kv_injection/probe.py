@@ -197,7 +197,7 @@ def build_in_memory_debug_probe(context: EngineKVProbeFactoryContext) -> EngineK
             SGLANG_PROBE_METADATA_PROBE: "in_memory_debug",
             SGLANG_PROBE_METADATA_PROBE_KIND: "debug_in_memory",
             SGLANG_PROBE_METADATA_REQUEST_ID: context.plan.request_id,
-            SGLANG_PROBE_METADATA_RUNTIME_CONTRACT: "document-kv-debug-connector",
+            SGLANG_PROBE_METADATA_RUNTIME_CONTRACT: "cachet-debug-connector",
         },
     )
 

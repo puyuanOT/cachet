@@ -1,5 +1,5 @@
 bundle:
-  name: document-kv-engine-probe
+  name: cachet-engine-probe
 
 variables:
   runner_python_file:
@@ -39,7 +39,7 @@ variables:
 resources:
   jobs:
     document_kv_engine_probe:
-      name: document-kv-engine-probe
+      name: cachet-engine-probe
       tasks:
         - task_key: document_kv_engine_probe
           new_cluster:
@@ -54,7 +54,7 @@ resources:
               spark.databricks.cluster.profile: singleNode
             custom_tags:
               ResourceClass: SingleNode
-              purpose: document-kv-engine-probe
+              purpose: cachet-engine-probe
             spark_env_vars:
               DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY: ${var.vllm_native_probe_delegate_factory}
               DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY: ${var.sglang_native_probe_delegate_factory}

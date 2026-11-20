@@ -28,9 +28,9 @@ from document_kv_cache.transformers_generator import (
 
 
 DEFAULT_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
-DEFAULT_DATABRICKS_RUN_NAME = "document-kv-v1-benchmark"
+DEFAULT_DATABRICKS_RUN_NAME = "cachet-v1-benchmark"
 DEFAULT_DATABRICKS_TASK_KEY = "document_kv_v1_benchmark"
-DEFAULT_DATABRICKS_PURPOSE = "document-kv-v1-benchmark"
+DEFAULT_DATABRICKS_PURPOSE = "cachet-v1-benchmark"
 DEFAULT_DATABRICKS_DATA_SECURITY_MODE = "SINGLE_USER"
 DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS = 14_400
 MAX_DATABRICKS_RUN_TIMEOUT_SECONDS = 43_200

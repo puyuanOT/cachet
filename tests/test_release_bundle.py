@@ -2567,20 +2567,20 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-entry-points-bundle",
         )
 
-    wrong_document_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
-    wrong_document_script_entries["document-kv-release-bundle"] = "cachet.release_bundle:main"
-    wrong_document_script_wheel = _write_wheel(
-        tmp_path / "wrong-document-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        entry_points_payload=_wheel_entry_points_payload(wrong_document_script_entries),
+    wrong_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+    wrong_script_entries["cachet-release-bundle"] = "document_kv_cache.release_bundle:main"
+    wrong_script_wheel = _write_wheel(
+        tmp_path / "wrong-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(wrong_script_entries),
     )
-    with pytest.raises(ValueError, match="document-kv-release-bundle"):
+    with pytest.raises(ValueError, match="cachet-release-bundle"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=wrong_document_script_wheel,
-            output_dir=tmp_path / "bad-wheel-wrong-document-script-bundle",
+            package_wheel=wrong_script_wheel,
+            output_dir=tmp_path / "bad-wheel-wrong-script-bundle",
         )
 
     with pytest.raises(ValueError, match="PR evidence sidecar ok"):
@@ -4063,15 +4063,15 @@ def _storage_record(*, ok: bool):
     return {
         "record_type": STORAGE_BENCHMARK_RECORD_TYPE,
         "benchmark_id": "storage-release-smoke",
-        "workspace_dir": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark/workspace",
-        "shard_uri": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark/workspace/storage-benchmark.kvpack",
+        "workspace_dir": "/Volumes/catalog/schema/volume/cachet-storage-benchmark/workspace",
+        "shard_uri": "/Volumes/catalog/schema/volume/cachet-storage-benchmark/workspace/storage-benchmark.kvpack",
         "chunk_count": 4,
         "chunk_bytes": 1024,
         "repeats": 1,
         "parallelism": 2,
         "align_bytes": 4096,
         "readers": list(readers),
-        "uc_volume_root": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        "uc_volume_root": "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         "results": [
             {
                 "reader_id": reader,
@@ -4096,7 +4096,7 @@ def _storage_record(*, ok: bool):
             "readers_without_latency": [],
             "readers_without_throughput": [],
             "require_real_uc_volume": True,
-            "uc_volume_root": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "uc_volume_root": "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "uc_volume_is_real": True,
             "issues": [] if ok else ["missing storage readers: unity_catalog"],
         },
@@ -4225,21 +4225,21 @@ def _runtime_contract_metadata(backend: ServingBackend) -> dict[str, str]:
 
 
 STRICT_V1_DATABRICKS_RUN_STATUS_CASES = (
-    ("document-kv-vllm-smoke", "cachet-vllm-smoke", "document_kv_vllm_smoke", "v1"),
+    ("cachet-vllm-smoke", "cachet-vllm-smoke", "document_kv_vllm_smoke", "v1"),
     (
-        "document-kv-storage-benchmark",
+        "cachet-storage-benchmark",
         "cachet-storage-benchmark",
         "document_kv_storage_benchmark",
         "storage",
     ),
     (
-        "document-kv-engine-probe",
+        "cachet-engine-probe",
         "cachet-native-vllm-engine-probe",
         "document_kv_vllm_engine_probe",
         "engine-probe-vllm",
     ),
     (
-        "document-kv-engine-probe",
+        "cachet-engine-probe",
         "cachet-native-sglang-engine-probe",
         "document_kv_sglang_engine_probe",
         "engine-probe-sglang",
@@ -4807,7 +4807,7 @@ def _databricks_run_status_cli_record(
     *,
     succeeded: bool,
     purpose: str = DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
-    run_name: str = "document-kv-v1",
+    run_name: str = "cachet-v1",
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,
     node_type_id: str = "g6.8xlarge",
 ):
@@ -4828,7 +4828,7 @@ def _databricks_run_status_record(
     *,
     succeeded: bool,
     purpose: str = DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
-    run_name: str = "document-kv-v1",
+    run_name: str = "cachet-v1",
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,
     node_type_id: str = "g6.8xlarge",
 ):
@@ -4876,7 +4876,7 @@ def _databricks_run_status_record(
 def _databricks_run_submit_payload_record(
     *,
     purpose: str = DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
-    run_name: str = "document-kv-v1",
+    run_name: str = "cachet-v1",
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,
     node_type_id: str = "g6.8xlarge",
 ):

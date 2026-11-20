@@ -462,14 +462,14 @@ def test_submit_databricks_run_posts_payload_with_bearer_token():
     opener = _FakeOpener({"run_id": 123, "number_in_job": 1})
     config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token", timeout_seconds=9)
 
-    response = submit_databricks_run(config, {"run_name": "document-kv-vllm-smoke"}, opener=opener)
+    response = submit_databricks_run(config, {"run_name": "cachet-vllm-smoke"}, opener=opener)
 
     assert response == {"run_id": 123, "number_in_job": 1}
     request = opener.requests[0]
     assert request.full_url == "https://dbc.example/api/2.1/jobs/runs/submit"
     assert request.get_method() == "POST"
     assert request.headers["Authorization"] == "Bearer secret-token"
-    assert json.loads(request.data.decode("utf-8")) == {"run_name": "document-kv-vllm-smoke"}
+    assert json.loads(request.data.decode("utf-8")) == {"run_name": "cachet-vllm-smoke"}
     assert opener.timeouts == [9]
 
 
@@ -868,7 +868,7 @@ def test_summarize_databricks_run_extracts_run_and_task_state():
     summary = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1-benchmark",
+            "run_name": "cachet-v1-benchmark",
             "run_page_url": "https://dbc.example/#job/123",
             "state": {
                 "life_cycle_state": "RUNNING",
@@ -899,7 +899,7 @@ def test_summarize_databricks_run_extracts_run_and_task_state():
     assert summary == {
         "record_type": DATABRICKS_RUN_STATUS_RECORD_TYPE,
         "run_id": 123,
-        "run_name": "document-kv-v1-benchmark",
+        "run_name": "cachet-v1-benchmark",
         "run_page_url": "https://dbc.example/#job/123",
         "life_cycle_state": "RUNNING",
         "result_state": None,
@@ -1012,7 +1012,7 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
     summary = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "run_page_url": "https://dbc.example/#job/123/run/123",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
@@ -1093,7 +1093,7 @@ def test_databricks_run_status_sidecar_validation_can_require_exact_node_type():
     exact_record = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
                 {
@@ -1126,7 +1126,7 @@ def test_databricks_run_status_sidecar_validation_rejects_live_node_type_mismatc
     status_record = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
                 {
@@ -1168,7 +1168,7 @@ def test_databricks_run_status_sidecar_validation_requires_live_node_evidence_fo
     status_record = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
                 {
@@ -1325,7 +1325,7 @@ def test_databricks_run_status_sidecar_validation_accepts_g5_hardware_target():
 def test_databricks_run_status_sidecar_validation_matches_submit_payload_run_name():
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
-    submit_payload["run_name"] = "document-kv-stale-run"
+    submit_payload["run_name"] = "cachet-stale-run"
     bad_record = {**status_record, "submit_payload": submit_payload}
 
     issues = databricks_run_status_sidecar_issues(bad_record)
@@ -1419,7 +1419,7 @@ def test_summarize_databricks_run_redacts_token_pattern_spark_env_keys_before_se
     summary = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "run_page_url": "https://dbc.example/#job/123/run/123",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
@@ -1524,9 +1524,9 @@ def test_databricks_http_error_body_echoed_credentials_are_redacted():
 def test_read_and_write_databricks_run_json_helpers(tmp_path):
     payload_path = tmp_path / "payload.json"
     response_path = tmp_path / "response.json"
-    payload_path.write_text('{"run_name":"document-kv-vllm-smoke"}', encoding="utf-8")
+    payload_path.write_text('{"run_name":"cachet-vllm-smoke"}', encoding="utf-8")
 
-    assert read_databricks_run_submit_payload(payload_path) == {"run_name": "document-kv-vllm-smoke"}
+    assert read_databricks_run_submit_payload(payload_path) == {"run_name": "cachet-vllm-smoke"}
 
     write_databricks_run_response_json({"ok": True, "response": {"run_id": 123}}, response_path)
 
@@ -1616,7 +1616,7 @@ def _valid_databricks_run_status_record():
     return summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "run_page_url": "https://dbc.example/#job/123/run/123",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "start_time": 1000,
@@ -1640,7 +1640,7 @@ def _valid_databricks_run_status_record():
 
 def _single_node_gpu_submit_payload():
     return {
-        "run_name": "document-kv-v1",
+        "run_name": "cachet-v1",
         "tasks": [
             {
                 "task_key": "run-benchmark",
@@ -1652,7 +1652,7 @@ def _single_node_gpu_submit_payload():
                     "data_security_mode": "SINGLE_USER",
                     "custom_tags": {
                         "ResourceClass": "SingleNode",
-                        "purpose": "document-kv-benchmark",
+                        "purpose": "cachet-benchmark",
                     },
                 },
             }
@@ -1662,7 +1662,7 @@ def _single_node_gpu_submit_payload():
 
 def _dbfs_artifact_submit_payload():
     return {
-        "run_name": "document-kv-engine-probe",
+        "run_name": "cachet-engine-probe",
         "tasks": [
             {
                 "task_key": "document_kv_engine_probe",
@@ -1680,7 +1680,7 @@ def _dbfs_artifact_submit_payload():
 
 def _generated_native_probe_submit_payload():
     return {
-        "run_name": "document-kv-engine-probe",
+        "run_name": "cachet-engine-probe",
         "tasks": [
             {
                 "task_key": "document_kv_engine_probe",
@@ -1714,7 +1714,7 @@ def _generated_native_probe_submit_payload():
 
 def _non_fixture_engine_probe_submit_payload():
     return {
-        "run_name": "document-kv-engine-probe",
+        "run_name": "cachet-engine-probe",
         "tasks": [
             {
                 "task_key": "document_kv_engine_probe",

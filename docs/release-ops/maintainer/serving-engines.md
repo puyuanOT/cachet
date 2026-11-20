@@ -272,7 +272,7 @@ profile, installs Cachet into it, starts Qwen3 4B Instruct, and writes
 ```bash
 python -m document_kv_cache.vllm_smoke \
   --benchmark-id v1_vllm_smoke_001 \
-  --output-dir /Volumes/catalog/schema/volume/document-kv-v1-smoke
+  --output-dir /Volumes/catalog/schema/volume/cachet-v1-smoke
 ```
 
 - Without `--dataset`, the vLLM helper runs one built-in example per V1
@@ -304,7 +304,7 @@ python -m document_kv_cache.vllm_smoke \
 ```bash
 python -m document_kv_cache.sglang_smoke \
   --benchmark-id v1_sglang_live_001 \
-  --output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live \
+  --output-dir /Volumes/catalog/schema/volume/cachet-sglang-live \
   --baseline-only \
   --hardware-target aws-g6-l4
 ```

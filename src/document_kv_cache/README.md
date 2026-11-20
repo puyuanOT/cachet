@@ -193,41 +193,8 @@ the sealed records under `benchmarks/`.
 
 ## Console Scripts
 
-The implementation package owns these document-branded CLI entry points:
-
-- `document-kv-benchmark-plan`
-- `document-kv-benchmark-handoffs`
-- `document-kv-benchmark-handoff-manifest`
-- `document-kv-benchmark-handoff-bundles`
-- `document-kv-native-probe-scaffold`
-- `document-kv-method-scaffold`
-- `document-kv-method-conformance`
-- `document-kv-run-benchmark-plan`
-- `document-kv-databricks-job`
-- `document-kv-databricks-runs`
-- `document-kv-storage-benchmark`
-- `document-kv-storage-benchmark-databricks-job`
-- `document-kv-templates`
-- `document-kv-release-evidence`
-- `document-kv-release-bundle`
-- `document-kv-pr-evidence`
-- `document-kv-dependency-freshness`
-- `document-kv-github-governance`
-- `document-kv-repository-hygiene`
-- `document-kv-serving-env`
-- `document-kv-native-probe-factories`
-- `document-kv-engine-probe`
-- `document-kv-engine-launch-config`
-- `document-kv-engine-probe-fixture`
-- `document-kv-engine-probe-databricks-job`
-- `document-kv-vllm-runtime-preflight`
-- `document-kv-sglang-runtime-preflight`
-- `document-kv-vllm-smoke`
-- `document-kv-vllm-smoke-databricks-job`
-- `document-kv-sglang-smoke`
-- `document-kv-sglang-smoke-databricks-job`
-
-Cachet-branded aliases point to the same document-owned entry points:
+The package installs these console scripts; each targets the `cachet.<module>`
+facade of its implementation module:
 
 - `cachet-benchmark-plan`
 - `cachet-benchmark-handoffs`
@@ -261,8 +228,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-sglang-smoke`
 - `cachet-sglang-smoke-databricks-job`
 
-Built `cachet-kv` wheels install exactly the `document-kv-*` and `cachet-*`
-commands listed above.
+Built `cachet-kv` wheels install exactly the `cachet-*` commands listed above.
 
 ## Optional Extras
 

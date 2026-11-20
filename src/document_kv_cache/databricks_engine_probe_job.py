@@ -61,9 +61,9 @@ from document_kv_cache.serving_env import (
 from document_kv_cache.storage import local_path
 
 
-DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME = "document-kv-engine-probe"
+DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME = "cachet-engine-probe"
 DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY = "document_kv_engine_probe"
-DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE = "document-kv-engine-probe"
+DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE = "cachet-engine-probe"
 DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY = "probes"
 ENGINE_PROBE_TARGETS_RECORD_TYPE = "document_kv.engine_probe_targets.v1"
 ENGINE_PROBE_TARGETS_SCHEMA_VERSION = 1

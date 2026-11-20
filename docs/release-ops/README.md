@@ -40,10 +40,8 @@ Maintainer and serving-operator commands:
 | Release and governance | `cachet-release-evidence`, `cachet-release-bundle`, `cachet-pr-evidence`, `cachet-dependency-freshness`, `cachet-github-governance`, `cachet-repository-hygiene` |
 | Template extraction | `cachet-templates` |
 
-The `document-kv-*` console scripts are compatibility aliases for the same
-command families. Prefer `cachet-*` in new documentation, and keep both alias
-families out of the first-touch user path unless the command is explicitly
-stable for users.
+Keep maintainer commands out of the first-touch user path unless the command
+is explicitly stable for users.
 
 Keep credentials, raw service responses, generated wheels, logs, and local run
 scratch output out of Git. Use ignored `databricks-runs/` for local work and

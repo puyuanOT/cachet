@@ -126,8 +126,8 @@ python -m document_kv_cache.benchmark_plan \
   --benchmark-handoff-dtype bfloat16 \
   --benchmark-handoff-output-dir /data/handoffs/generated \
   --base-url http://localhost:8000 \
-  --storage-benchmark-workspace-dir /local_disk0/document-kv-storage-benchmark \
-  --storage-benchmark-uc-volume-root /Volumes/catalog/schema/volume/document-kv-storage-benchmark \
+  --storage-benchmark-workspace-dir /local_disk0/cachet-storage-benchmark \
+  --storage-benchmark-uc-volume-root /Volumes/catalog/schema/volume/cachet-storage-benchmark \
   --engine-probe-handoff-json vllm=/data/vllm-handoff.json \
   --engine-probe-output-json vllm=/data/vllm-engine-probe.json \
   --engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json \
@@ -141,7 +141,7 @@ python -m document_kv_cache.benchmark_plan \
   --engine-probe-use-builtin-factories \
   --release-evidence-output-json /data/release-evidence.json \
   --release-preflight-output-json /data/release-inputs.json \
-  --release-bundle-output-dir /data/document-kv-release-bundle \
+  --release-bundle-output-dir /data/cachet-release-bundle \
   --release-bundle-output-json /data/release-bundle-manifest.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-benchmark.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-storage.json \
@@ -260,8 +260,8 @@ read latency and throughput for Memory, Disk, and Unity Catalog Volume readers:
 
 ```bash
 python -m document_kv_cache.storage_benchmark \
-  --workspace-dir /local_disk0/document-kv-storage-benchmark \
-  --uc-volume-root /Volumes/catalog/schema/volume/document-kv-storage-benchmark \
+  --workspace-dir /local_disk0/cachet-storage-benchmark \
+  --uc-volume-root /Volumes/catalog/schema/volume/cachet-storage-benchmark \
   --chunk-count 64 \
   --chunk-bytes 1048576 \
   --repeats 4 \

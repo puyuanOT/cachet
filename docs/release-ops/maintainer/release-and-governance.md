@@ -109,7 +109,7 @@ python -m document_kv_cache.release_bundle \
   --repository-hygiene-json repository-hygiene.json \
   --native-probe-factories-json native-probe-factories.json \
   --require-complete-v1 \
-  --output-dir document-kv-release-bundle \
+  --output-dir cachet-release-bundle \
   --output-json release-bundle-manifest.json
 ```
 

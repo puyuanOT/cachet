@@ -628,37 +628,6 @@ EXPECTED_CONSOLE_SCRIPTS = {
     'cachet-vllm-runtime-preflight': 'cachet.vllm_runtime_preflight:main',
     'cachet-vllm-smoke': 'cachet.vllm_smoke:main',
     'cachet-vllm-smoke-databricks-job': 'cachet.databricks_vllm_smoke_job:main',
-    'document-kv-benchmark-handoff-bundles': 'document_kv_cache.benchmark_handoffs:bundle_main',
-    'document-kv-benchmark-handoff-manifest': 'document_kv_cache.benchmark_handoffs:manifest_main',
-    'document-kv-benchmark-handoffs': 'document_kv_cache.benchmark_handoffs:main',
-    'document-kv-benchmark-plan': 'document_kv_cache.benchmark_plan:main',
-    'document-kv-databricks-job': 'document_kv_cache.databricks_job:main',
-    'document-kv-databricks-runs': 'document_kv_cache.databricks_runs:main',
-    'document-kv-dependency-freshness': 'document_kv_cache.dependency_freshness:main',
-    'document-kv-engine-launch-config': 'document_kv_cache.engine_launch_config:main',
-    'document-kv-engine-probe': 'document_kv_cache.engine_probe:main',
-    'document-kv-engine-probe-databricks-job': 'document_kv_cache.databricks_engine_probe_job:main',
-    'document-kv-engine-probe-fixture': 'document_kv_cache.probe_fixtures:main',
-    'document-kv-github-governance': 'document_kv_cache.github_governance:main',
-    'document-kv-method-conformance': 'document_kv_cache.method_conformance:main',
-    'document-kv-method-scaffold': 'document_kv_cache.method_scaffold:main',
-    'document-kv-native-probe-factories': 'document_kv_cache.native_probe_factories:main',
-    'document-kv-native-probe-scaffold': 'document_kv_cache.adapter_scaffold:main',
-    'document-kv-pr-evidence': 'document_kv_cache.pr_evidence:main',
-    'document-kv-release-bundle': 'document_kv_cache.release_bundle:main',
-    'document-kv-release-evidence': 'document_kv_cache.release_evidence:main',
-    'document-kv-repository-hygiene': 'document_kv_cache.repository_hygiene:main',
-    'document-kv-run-benchmark-plan': 'document_kv_cache.benchmark_plan_executor:main',
-    'document-kv-serving-env': 'document_kv_cache.serving_env:main',
-    'document-kv-sglang-runtime-preflight': 'document_kv_cache.sglang_runtime_preflight:main',
-    'document-kv-sglang-smoke': 'document_kv_cache.sglang_smoke:main',
-    'document-kv-sglang-smoke-databricks-job': 'document_kv_cache.databricks_sglang_smoke_job:main',
-    'document-kv-storage-benchmark': 'document_kv_cache.storage_benchmark:main',
-    'document-kv-storage-benchmark-databricks-job': 'document_kv_cache.databricks_storage_benchmark_job:main',
-    'document-kv-templates': 'document_kv_cache.template_resources:main',
-    'document-kv-vllm-runtime-preflight': 'document_kv_cache.vllm_runtime_preflight:main',
-    'document-kv-vllm-smoke': 'document_kv_cache.vllm_smoke:main',
-    'document-kv-vllm-smoke-databricks-job': 'document_kv_cache.databricks_vllm_smoke_job:main',
 }
 
 
@@ -1061,7 +1030,6 @@ def test_poetry_metadata_lists_release_packages_and_scripts():
     }
     assert scripts == EXPECTED_CONSOLE_SCRIPTS
     assert scripts["cachet-benchmark-plan"] == "cachet.benchmark_plan:main"
-    assert scripts["document-kv-benchmark-plan"] == "document_kv_cache.benchmark_plan:main"
 
 
 def test_cachet_console_script_targets_resolve_through_cachet_facades():

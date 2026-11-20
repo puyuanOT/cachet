@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def test_build_databricks_storage_benchmark_payload_uses_single_node_gpu_cluster():
     config = DatabricksStorageBenchmarkJobConfig(
-        workspace_dir="/local_disk0/document-kv-storage-benchmark",
+        workspace_dir="/local_disk0/cachet-storage-benchmark",
         output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
         runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
         benchmark_id="storage-reader-benchmark-001",
@@ -64,7 +64,7 @@ def test_build_databricks_storage_benchmark_payload_uses_single_node_gpu_cluster
         "python_file": "dbfs:/benchmarks/run_storage_benchmark.py",
         "parameters": [
             "--workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--benchmark-id",
             "storage-reader-benchmark-001",
             "--chunk-count",
@@ -96,7 +96,7 @@ def test_build_databricks_storage_benchmark_payload_uses_single_node_gpu_cluster
 def test_databricks_storage_benchmark_config_requires_single_user_name_and_validates_storage_args():
     try:
         DatabricksStorageBenchmarkJobConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
             runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
             uc_volume_root="/Volumes/catalog/schema/volume/storage",
@@ -108,7 +108,7 @@ def test_databricks_storage_benchmark_config_requires_single_user_name_and_valid
 
     try:
         DatabricksStorageBenchmarkJobConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
             runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
             uc_volume_root="/Volumes/catalog/schema/volume/storage",
@@ -135,7 +135,7 @@ def test_storage_benchmark_job_config_rejects_unbounded_execution(
 ):
     with pytest.raises(ValueError, match=message):
         DatabricksStorageBenchmarkJobConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
             runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
             uc_volume_root="/Volumes/catalog/schema/volume/storage",
@@ -222,7 +222,7 @@ def test_generated_storage_benchmark_runner_installs_wheel_before_forwarding_arg
             "--package-wheel-uri",
             "dbfs:/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
             "--workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--output-json",
             "/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
         ],
@@ -242,7 +242,7 @@ def test_generated_storage_benchmark_runner_installs_wheel_before_forwarding_arg
     ]
     assert json.loads(main_args_path.read_text(encoding="utf-8")) == [
         "--workspace-dir",
-        "/local_disk0/document-kv-storage-benchmark",
+        "/local_disk0/cachet-storage-benchmark",
         "--output-json",
         "/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
     ]
@@ -255,7 +255,7 @@ def test_write_databricks_storage_benchmark_run_submit_json_writes_payload(tmp_p
 
     write_databricks_storage_benchmark_run_submit_json(
         DatabricksStorageBenchmarkJobConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
             runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
             uc_volume_root="/Volumes/catalog/schema/volume/storage",
@@ -275,7 +275,7 @@ def test_main_writes_storage_benchmark_payload_and_runner_script(tmp_path):
     exit_code = main(
         [
             "--workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--benchmark-output-json",
             "/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
             "--runner-python-file",
@@ -314,7 +314,7 @@ def test_main_derives_storage_node_type_from_g5_hardware_target(tmp_path):
     exit_code = main(
         [
             "--workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--benchmark-output-json",
             "/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
             "--runner-python-file",
@@ -342,7 +342,7 @@ def test_main_preserves_explicit_storage_g5_node_type_without_hardware_target(tm
     exit_code = main(
         [
             "--workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--benchmark-output-json",
             "/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
             "--runner-python-file",
@@ -367,7 +367,7 @@ def test_main_preserves_explicit_storage_g5_node_type_without_hardware_target(tm
 def test_databricks_storage_benchmark_config_rejects_non_uc_roots_before_job_submission():
     try:
         DatabricksStorageBenchmarkJobConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
             runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
             uc_volume_root="/local_disk0/not-a-real-uc-volume",

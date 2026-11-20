@@ -1137,7 +1137,7 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["server_client_host"] == "127.0.0.1"
     assert metadata["server_base_url"] == "http://127.0.0.1:8000"
     assert metadata["hf_home"] == str(tmp_path / "local" / "hf-cache")
-    assert metadata["vllm_python"] == str(tmp_path / "local" / "document-kv-vllm-smoke-smoke-1" / "vllm-venv" / "bin" / "python")
+    assert metadata["vllm_python"] == str(tmp_path / "local" / "cachet-vllm-smoke-smoke-1" / "vllm-venv" / "bin" / "python")
     assert metadata["dependency_constraints"] == dependency_constraints()
     assert metadata["dataset_source"] == "smoke"
     assert metadata["dataset_specs"] == []
