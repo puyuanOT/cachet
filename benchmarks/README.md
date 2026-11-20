@@ -89,7 +89,7 @@ estimated from another method.
 
 Latency values are reported in seconds. Memory values are rendered as GiB
 together with their exact byte counts. Each implemented row represents five
-matched deployment blocks; no pre-reset measurement is carried forward.
+matched deployment blocks.
 
 <!-- cachet:vllm-0271-publication-table:core-latency:begin -->
 | Method | Input context | Concurrency setting | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 toks) | P95 TTC (s, 256 toks) | P50 decode tok/s | Configured closed-loop concurrency | Peak GPU process memory | Peak host memory | Peak process-tree RSS |
@@ -171,9 +171,8 @@ neither has a smoke, canary, or publication path.
 > both columns sit near zero. The table is kept because it is part of the sealed
 > report. Use [Quality Benchmark v2](#quality-benchmark-v2) for answer quality.
 
-The reset requires a complete paired evaluation over every selected row in the
-four implemented datasets. The earlier small diagnostic is not retained or
-substituted for this table. Full-score values use one paired pass per method
+The table is a complete paired evaluation over every selected row in the
+four implemented datasets. Full-score values use one paired pass per method
 over all 83,653 natural-length examples, with no padding or tokenizer
 truncation. Requests run at closed-loop concurrency 4, temperature 0, natural
 EOS enabled, and a 64-token maximum. Parser-status cells report the complete

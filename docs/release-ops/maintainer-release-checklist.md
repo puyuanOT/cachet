@@ -11,11 +11,13 @@ Before a public release:
 - refresh benchmark evidence when runtime behavior, model layout, or connector
   behavior changes;
 - validate release evidence and strict release bundles;
-- include required PR traceability sidecars;
+- generate the release PR evidence sidecar with `cachet-pr-evidence` and pass
+  it to the strict release bundle;
 - confirm GitHub governance and branch protection settings are restored;
 - publish release notes and attach any large audit artifacts outside the source
   tree when appropriate.
 
 Internal PR workflow gates such as Refactor-skill evidence and GPT-5.5 review
-belong here and in PR evidence records, not in the beginner contribution path.
+belong here and in the release PR evidence sidecar, not in the beginner
+contribution path.
 

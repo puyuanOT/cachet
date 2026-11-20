@@ -12,8 +12,8 @@ release-operation material.
 - `adding-a-kv-method.md` is the method-author path for scaffolding, contracts,
   serving integration, tests, and benchmark publication gates.
 - `production.md` explains the vLLM, SGLang, and managed-cloud deployment path.
-- `release-ops/` keeps maintainer-only release machinery, audit records, and
-  historical detailed references away from the first-touch user path.
+- `release-ops/` keeps maintainer-only release machinery and governance records
+  away from the first-touch user path.
 - `v1-requirements-matrix.md` maps the generalized document KV-cache goal to
   current repository evidence and remaining V1 release gaps.
 - `repo-map.md` is the human navigation map for source packages, benchmarks,
