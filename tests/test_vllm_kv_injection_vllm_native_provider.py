@@ -1195,7 +1195,7 @@ def test_packed_cache_state_attestation_compares_physical_stored_bytes():
     )
 
     assert attestation["expected_bytes"] == len(b"pkd-byts")
-    assert attestation["expected_stored_bytes"] == len(b"pkd-byts")
+    assert "expected_stored_bytes" not in attestation
     assert attestation["expected_runtime_bytes"] == len(payload())
     assert attestation["decoded_runtime_bytes"] == len(payload())
     assert attestation["cold_read_attested"] is True
@@ -1670,7 +1670,6 @@ def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
         "eviction_succeeded": False,
         "direct_io": False,
         "expected_bytes": len(payload()),
-        "expected_stored_bytes": len(payload()),
         "expected_runtime_bytes": len(payload()),
         "decoded_runtime_bytes": len(payload()),
         "expected_tokens": 2,

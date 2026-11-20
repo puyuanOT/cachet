@@ -74,7 +74,9 @@
   for what it does: `--allow-uncontracted-artifact`,
   `--benchmark-handoff-allow-uncontracted-artifact`, and
   `allow_unregistered_method=`. Segmented-load telemetry reports
-  `segment_remerge_reason` and the `segment_remerge` strategy.
+  `segment_remerge_reason` and the `segment_remerge` strategy, and vLLM
+  cache-state attestations drop the duplicate `expected_stored_bytes` key
+  (read `expected_bytes`).
 - The release-bundle wheel check accepts only the four Cachet packages and
   exactly the console scripts in `pyproject.toml`.
 - `pyspark` is no longer in the `databricks` extra.
