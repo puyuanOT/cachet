@@ -251,23 +251,21 @@ def test_model_profile_definition_round_trips_future_model_artifact(tmp_path):
     assert layout.storage_layout == KVStorageLayout.SEPARATE_KEY_VALUE
 
 
-def test_model_profile_definition_reads_legacy_records_with_shared_storage_defaults():
+@pytest.mark.parametrize(
+    ("field_name", "message"),
+    (
+        ("default_shares_kv_storage", "default_shares_kv_storage must be a boolean"),
+        ("default_storage_layout", "Unsupported default_storage_layout None"),
+    ),
+)
+def test_model_profile_definition_requires_storage_defaults(field_name, message):
     record = model_profile_definition_to_record(
         ModelProfileDefinition(profile=QWEN3_4B_INSTRUCT_PROFILE, aliases=("Qwen/Qwen3-4B-Instruct-2507",))
     )
-    legacy_record = {
-        key: value
-        for key, value in record.items()
-        if key not in {"default_shares_kv_storage", "default_storage_layout"}
-    }
+    del record[field_name]
 
-    definition = model_profile_definition_from_record(legacy_record)
-    layout = definition.profile.to_layout()
-
-    assert definition.profile.default_shares_kv_storage is True
-    assert definition.profile.default_storage_layout == KVStorageLayout.SHARED_KEY_VALUE
-    assert layout.shares_kv_storage is True
-    assert layout.storage_layout == KVStorageLayout.SHARED_KEY_VALUE
+    with pytest.raises(ValueError, match=message):
+        model_profile_definition_from_record(record)
 
 
 def test_model_profile_definition_rejects_malformed_artifacts():
