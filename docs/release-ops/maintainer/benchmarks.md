@@ -209,7 +209,10 @@ python -m document_kv_cache.benchmark_plan \
   [`databricks.md`](databricks.md#engine-probe-jobs).
 - With release-evidence flags, the plan appends
   `document_kv_cache.release_evidence` last; `--release-bundle-output-dir`
-  appends `document_kv_cache.release_bundle` after it.
+  appends `document_kv_cache.release_bundle` after it. Both receive the
+  benchmark's evidence gate as `--benchmark-evidence-gate-json`, written to
+  `--evidence-gate-output-json` (default
+  `<prepared-dir>/<suite-id>-evidence-gate.json`).
 - The plan executor treats plan JSON as a closed schema and rejects unknown
   top-level or per-command keys before running anything. It writes
   `plan-execution.json` only after the planned commands finish, and the
