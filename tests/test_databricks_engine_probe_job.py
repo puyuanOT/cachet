@@ -18,8 +18,6 @@ from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
     DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
     DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
-    DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE,
-    DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
     SGLANG_NATIVE_PROBE_DELEGATE_FACTORY,
     SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
@@ -51,6 +49,7 @@ from document_kv_cache.serving_env import (
     GPU_RUNTIME_PYTHONWARNINGS,
     PIP_BOOTSTRAP_CONSTRAINTS,
     SGLANG_DEPENDENCY_CONSTRAINTS,
+    SGLANG_VERSION,
     VLLM_PACKAGE_INDEX_URLS,
     VLLM_PATCHED_WHEEL_SHA256_ENV,
     VLLM_PATCHED_WHEEL_URI_ENV,
@@ -60,6 +59,7 @@ from document_kv_cache.serving_env import (
     VIRTUALENV_BOOTSTRAP_SHA256,
     VIRTUALENV_BOOTSTRAP_URL,
     VIRTUALENV_BOOTSTRAP_VERSION,
+    VLLM_WHEEL_INSTALL_SPEC,
     vllm_runtime_lock_path,
 )
 
@@ -79,7 +79,7 @@ VLLM_PATCHED_WHEEL_URI = (
 VLLM_RUNTIME_PACKAGE = (
     f"vllm @ {VLLM_PATCHED_WHEEL_URI}#sha256={VLLM_PATCHED_WHEEL_SHA256}"
 )
-SGLANG_RUNTIME_PACKAGE = DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE
+SGLANG_RUNTIME_PACKAGE = f"sglang=={SGLANG_VERSION}"
 VLLM_RUNTIME_PACKAGES = (VLLM_RUNTIME_PACKAGE, *VLLM_INSTALL_REQUIREMENTS[1:])
 SGLANG_RUNTIME_PACKAGES = SGLANG_DEPENDENCY_CONSTRAINTS
 VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE = "opencv-python-headless==4.13.0.92"
@@ -2152,7 +2152,7 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             "--serving-venv-dir",
             str(venv_dir),
             "--pip-package",
-            DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
+            VLLM_WHEEL_INSTALL_SPEC,
             "--pip-package",
             "transformers==5.12.1",
             "--pip-override-package",
@@ -2194,7 +2194,7 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
                 for index_url in VLLM_PACKAGE_INDEX_URLS
                 for argument in ("--extra-index-url", index_url)
             ),
-            DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
+            VLLM_WHEEL_INSTALL_SPEC,
             "transformers==5.12.1",
         ),
         (

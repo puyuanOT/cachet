@@ -2403,48 +2403,6 @@ def _libc_page_cache_calls() -> tuple[Any, Any, Any, Any] | None:
     return ctypes, libc_mmap, libc_munmap, libc_mincore
 
 
-def _read_payload_view(
-    payload_uri: str,
-    *,
-    expected_bytes: int | None = None,
-    evict_page_cache: bool = False,
-) -> memoryview:
-    """Read a merged payload fully into host RAM with a plain buffered read.
-
-    The connector previously memory-mapped the payload and faulted pages on the
-    host->device copy, which reads at only ~0.5 GB/s and does not scale with
-    concurrency. A sequential ``readinto`` in 8 MiB chunks streams at the
-    buffered-read rate (~2.2 GB/s single stream) and returns a ``memoryview`` over a
-    resident buffer.
-
-    When ``evict_page_cache`` is set the file's pages are dropped from the OS page
-    cache before reading.
-    """
-
-    path = local_path(payload_uri)
-    with open(path, "rb", buffering=0) as handle:
-        if evict_page_cache:
-            _evict_file_from_page_cache(handle.fileno())
-        size = os.fstat(handle.fileno()).st_size
-        if expected_bytes is not None and size != expected_bytes:
-            raise ValueError(
-                f"Engine adapter payload length {size} != expected {expected_bytes}"
-            )
-        buffer = bytearray(size)
-        view = memoryview(buffer)
-        offset = 0
-        while offset < size:
-            read = handle.readinto(view[offset : offset + _PREFETCH_CHUNK_BYTES])
-            if not read:
-                break
-            offset += read
-    if offset != size:
-        raise ValueError(
-            f"Engine adapter payload truncated: read {offset} of {size} expected bytes"
-        )
-    return view
-
-
 def _mmap_payload_view(
     payload_uri: str,
     *,

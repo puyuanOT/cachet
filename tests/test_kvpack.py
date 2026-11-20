@@ -1,9 +1,9 @@
 import pytest
 
 from document_kv_cache.engine_protocol import KVStorageLayout
-from document_kv_cache.kvpack import LocalRangeReader, PackChunk, write_kvpack, write_kvpack_bytes
+from document_kv_cache.kvpack import PackChunk, write_kvpack, write_kvpack_bytes
 from document_kv_cache.models import DocumentChunkType, KVCacheKey
-from document_kv_cache.storage import MemoryRangeReader
+from document_kv_cache.storage import DiskRangeReader, MemoryRangeReader
 
 
 def key(chunk_id: str) -> KVCacheKey:
@@ -27,7 +27,7 @@ def test_write_and_range_read_kvpack(tmp_path):
         align_bytes=8,
     )
 
-    reader = LocalRangeReader()
+    reader = DiskRangeReader()
 
     assert [reader.read(ref) for ref in refs] == [b"alpha", b"bravo"]
     assert refs[1].byte_offset % 8 == 0

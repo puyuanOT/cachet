@@ -7,9 +7,7 @@ from hashlib import sha256
 import importlib.metadata as package_metadata
 import json
 import os
-import platform
 import re
-import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -23,7 +21,7 @@ SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE = "document_kv.serving_environment_prof
 VLLM_VERSION = "0.30.0"
 # vLLM 0.30.0 defaults to CUDA 13.0.  Cachet deliberately selects the separate
 # official CUDA 12.9 x86_64 release asset for the benchmark fleet.  The asset
-# hash, indexes, and tagged-source digests make that binary choice auditable.
+# hash and package indexes make that binary choice auditable.
 VLLM_CUDA_VERSION = "12.9"
 VLLM_CUDA_VARIANT = "cu129"
 VLLM_PACKAGE_VERSION = f"{VLLM_VERSION}+{VLLM_CUDA_VARIANT}"
@@ -127,12 +125,6 @@ GPU_RUNTIME_PYTHONWARNINGS = ",".join(
 GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL = "ERROR"
 
 
-VLLM_CUDA_REQUIREMENTS_SHA256 = (
-    "9393effcd139d93e343195924c455efd97bd914053d4f68365c0467e5dba1272"
-)
-VLLM_DOCKERFILE_SHA256 = (
-    "fde129b8d5072fae409147b81b85a7f3283c10669d7071d01d0251a2c927b926"
-)
 VLLM_PYTORCH_INDEX_URL = "https://download.pytorch.org/whl/cu129"
 VLLM_FLASHINFER_INDEX_URL = "https://flashinfer.ai/whl/"
 VLLM_FLASHINFER_JIT_INDEX_URL = "https://flashinfer.ai/whl/cu129"
@@ -208,8 +200,6 @@ NVIDIA_CUTLASS_DSL_CONSTRAINT = "nvidia-cutlass-dsl==4.7.1"
 QUACK_KERNELS_CONSTRAINT = "quack-kernels==0.6.5"
 TOKENSPEED_MLA_CONSTRAINT = "tokenspeed-mla==0.1.8"
 HUMMING_KERNELS_CONSTRAINT = "humming-kernels[cu12]==0.1.12"
-# Backwards-compatible name for callers that only need the Python frontend.
-FLASHINFER_CONSTRAINT = FLASHINFER_PYTHON_CONSTRAINT
 VLLM_PINNED_CUDA_DIRECT_CONSTRAINTS = (
     TORCH_CONSTRAINT,
     TORCHAUDIO_CONSTRAINT,
@@ -369,35 +359,6 @@ def vllm_runtime_lock_path() -> Path:
     if augment_vllm_runtime_lock_indexes(compiled_lock_bytes) != lock_bytes:
         raise RuntimeError("Packaged vLLM runtime lock augmentation is not replayable")
     return lock_path
-
-
-def validate_vllm_runtime_lock_platform(
-    *,
-    python_version: tuple[int, int] | None = None,
-    machine: str | None = None,
-    libc: tuple[str, str] | None = None,
-    operating_system: str | None = None,
-) -> dict[str, str]:
-    """Fail closed outside the DBR 15.4 lock's exact runtime platform."""
-
-    observed_python = python_version or sys.version_info[:2]
-    observed_machine = (machine or platform.machine()).lower()
-    observed_libc = libc or platform.libc_ver()
-    observed_os = operating_system or sys.platform
-    if observed_python != (3, 11):
-        raise RuntimeError("vLLM runtime lock requires CPython 3.11")
-    if observed_os != "linux":
-        raise RuntimeError("vLLM runtime lock requires Linux")
-    if observed_machine not in {"x86_64", "amd64"}:
-        raise RuntimeError("vLLM runtime lock requires x86_64")
-    if observed_libc != ("glibc", "2.35"):
-        raise RuntimeError("vLLM runtime lock requires glibc 2.35")
-    return {
-        "python": "3.11",
-        "operating_system": "linux",
-        "machine": "x86_64",
-        "libc": "glibc-2.35",
-    }
 
 
 def verify_installed_vllm_runtime_lock(
@@ -704,7 +665,6 @@ __all__ = [
     "FASTSAFETENSORS_CONSTRAINT",
     "INSTANTTENSOR_CONSTRAINT",
     "FLASHINFER_CUBIN_CONSTRAINT",
-    "FLASHINFER_CONSTRAINT",
     "FLASHINFER_JIT_CACHE_CONSTRAINT",
     "FLASHINFER_PYTHON_CONSTRAINT",
     "GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL",
@@ -736,10 +696,8 @@ __all__ = [
     "TRANSFORMERS_CONSTRAINT",
     "TRITON_CONSTRAINT",
     "VLLM_DEPENDENCY_CONSTRAINTS",
-    "VLLM_CUDA_REQUIREMENTS_SHA256",
     "VLLM_CUDA_VARIANT",
     "VLLM_CUDA_VERSION",
-    "VLLM_DOCKERFILE_SHA256",
     "VLLM_FLASHINFER_INDEX_URL",
     "VLLM_FLASHINFER_JIT_INDEX_URL",
     "VLLM_PACKAGE_VERSION",
@@ -767,7 +725,6 @@ __all__ = [
     "patched_vllm_wheel_install_spec",
     "vllm_runtime_install_requirements",
     "vllm_runtime_lock_path",
-    "validate_vllm_runtime_lock_platform",
     "verify_installed_vllm_runtime_lock",
     "main",
     "serving_environment_profile",

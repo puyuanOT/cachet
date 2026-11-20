@@ -1436,40 +1436,6 @@ def test_mmap_payload_view_reports_residency_only_when_evicting(tmp_path, monkey
     assert observed == [_COLD_RESIDENCY]
 
 
-def test_read_payload_view_streams_full_file(tmp_path):
-    # The plain buffered reader must return every byte of a multi-chunk payload
-    # (the loop reads in 8 MiB chunks, so exercise more than one chunk boundary).
-    data = bytes((i * 7 + 3) % 256 for i in range(200_000))
-    path = tmp_path / "payload.kv"
-    path.write_bytes(data)
-
-    view = vllm_native_provider._read_payload_view(str(path), expected_bytes=len(data))
-    assert bytes(view) == data
-
-
-def test_read_payload_view_raises_on_size_mismatch(tmp_path):
-    path = tmp_path / "payload.kv"
-    path.write_bytes(b"abcd")
-    with pytest.raises(ValueError, match="!= expected"):
-        vllm_native_provider._read_payload_view(str(path), expected_bytes=8)
-
-
-def test_read_payload_view_evicts_page_cache_when_requested(tmp_path, monkeypatch):
-    # evict_page_cache drops the file from the OS page cache before the buffered read
-    # so the read streams cold from disk (honest cold-hydrate measurement).
-    calls: list[tuple[object, ...]] = []
-    monkeypatch.setattr(os, "posix_fadvise", lambda *a: calls.append(a), raising=False)
-    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
-
-    path = tmp_path / "payload.kv"
-    path.write_bytes(b"hello cachet")
-    view = vllm_native_provider._read_payload_view(str(path), evict_page_cache=True)
-
-    assert bytes(view) == b"hello cachet"
-    assert len(calls) == 1
-    assert calls[0][3] == 4  # POSIX_FADV_DONTNEED
-
-
 def test_advise_sequential_readahead_issues_madvise_hints():
     # The cold-read path should hint the kernel to read the mapping ahead
     # sequentially so the host->device copy pulls large I/Os instead of faulting

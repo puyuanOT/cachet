@@ -15,7 +15,6 @@ from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     FASTSAFETENSORS_CONSTRAINT,
     FLASHINFER_CUBIN_CONSTRAINT,
-    FLASHINFER_CONSTRAINT,
     FLASHINFER_JIT_CACHE_CONSTRAINT,
     FLASHINFER_PYTHON_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
@@ -45,10 +44,8 @@ from document_kv_cache.serving_env import (
     TRANSFORMERS_CONSTRAINT,
     TRITON_CONSTRAINT,
     VLLM_DEPENDENCY_CONSTRAINTS,
-    VLLM_CUDA_REQUIREMENTS_SHA256,
     VLLM_CUDA_VARIANT,
     VLLM_CUDA_VERSION,
-    VLLM_DOCKERFILE_SHA256,
     VLLM_FLASHINFER_INDEX_URL,
     VLLM_FLASHINFER_JIT_INDEX_URL,
     VLLM_INSTALL_REQUIREMENTS,
@@ -72,7 +69,6 @@ from document_kv_cache.serving_env import (
     serving_environment_profile_to_record,
     serving_environment_profiles,
     serving_environment_profiles_to_record,
-    validate_vllm_runtime_lock_platform,
     vllm_runtime_lock_path,
     write_serving_environment_profiles_record_json,
 )
@@ -156,34 +152,6 @@ def test_vllm_runtime_lock_readme_separates_replay_from_regeneration():
     assert "--index-strategy first-index" in readme
     assert "Cachet wheel pins `packaging==26.3`" in readme
     assert "vllm-0300-campaign-archive" in readme
-
-
-def test_vllm_runtime_lock_platform_is_exact():
-    assert validate_vllm_runtime_lock_platform(
-        python_version=(3, 11),
-        operating_system="linux",
-        machine="x86_64",
-        libc=("glibc", "2.35"),
-    ) == {
-        "python": "3.11",
-        "operating_system": "linux",
-        "machine": "x86_64",
-        "libc": "glibc-2.35",
-    }
-    with pytest.raises(RuntimeError, match="CPython 3.11"):
-        validate_vllm_runtime_lock_platform(
-            python_version=(3, 12),
-            operating_system="linux",
-            machine="x86_64",
-            libc=("glibc", "2.35"),
-        )
-    with pytest.raises(RuntimeError, match="glibc 2.35"):
-        validate_vllm_runtime_lock_platform(
-            python_version=(3, 11),
-            operating_system="linux",
-            machine="x86_64",
-            libc=("glibc", "2.36"),
-        )
 
 
 def test_installed_vllm_runtime_lock_verifies_versions_and_direct_url(monkeypatch):
@@ -295,12 +263,8 @@ def test_serving_environment_profiles_are_backend_scoped_and_exactly_pinned():
             ACCELERATE_CONSTRAINT,
             OPENCV_PYTHON_HEADLESS_CONSTRAINT,
         )
-    assert FLASHINFER_CONSTRAINT == FLASHINFER_PYTHON_CONSTRAINT
     assert VLLM_CUDA_VERSION == "12.9"
     assert VLLM_CUDA_VARIANT == "cu129"
-    assert VLLM_CUDA_REQUIREMENTS_SHA256 == (
-        "9393effcd139d93e343195924c455efd97bd914053d4f68365c0467e5dba1272"
-    )
     assert VLLM_PACKAGE_INDEX_URLS == (
         VLLM_PYTORCH_INDEX_URL,
         VLLM_FLASHINFER_INDEX_URL,
@@ -333,9 +297,6 @@ def test_serving_environment_profiles_are_backend_scoped_and_exactly_pinned():
     assert TORCHVISION_CONSTRAINT.endswith("+cu129")
     assert "[cu12]" in HUMMING_KERNELS_CONSTRAINT
     assert "[cu13]" not in NVIDIA_CUTLASS_DSL_CONSTRAINT
-    assert VLLM_DOCKERFILE_SHA256 == (
-        "fde129b8d5072fae409147b81b85a7f3283c10669d7071d01d0251a2c927b926"
-    )
     assert VLLM_WHEEL_FILENAME == (
         "vllm-0.30.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
     )

@@ -11,6 +11,7 @@ import pytest
 
 import document_kv_cache.vllm_smoke as public_vllm_smoke
 from document_kv_cache.serving_env import (
+    OPENCV_PYTHON_HEADLESS_CONSTRAINT,
     VLLM_INSTALL_REQUIREMENTS,
     VLLM_PACKAGE_INDEX_URLS,
     VLLM_SERVING_ENVIRONMENT_PROFILE,
@@ -28,7 +29,6 @@ from document_kv_cache.vllm_smoke import (
     SMOKE_DATASETS,
     TOKENIZERS_CONSTRAINT,
     TRANSFORMERS_CONSTRAINT,
-    VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT,
     VLLM_VERSION,
     VLLMPreparedHandoffGenerationConfig,
     VLLMSmokeBenchmarkConfig,
@@ -233,8 +233,8 @@ def test_dependency_constraints_match_pinned_g5_vllm_stack():
         for argument in ("--extra-index-url", index_url)
     ]
     assert dependency_override_constraints() == []
-    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT in dependency_constraints()
-    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT == "opencv-python-headless==4.13.0.92"
+    assert OPENCV_PYTHON_HEADLESS_CONSTRAINT in dependency_constraints()
+    assert OPENCV_PYTHON_HEADLESS_CONSTRAINT == "opencv-python-headless==4.13.0.92"
     assert VLLM_VERSION == "0.30.0"
     assert TRANSFORMERS_CONSTRAINT == "transformers==5.12.1"
     assert HUGGINGFACE_HUB_CONSTRAINT == "huggingface-hub==1.32.0"
