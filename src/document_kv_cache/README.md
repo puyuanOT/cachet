@@ -185,9 +185,6 @@ return as a production dependency.
 - `workflow.py` coordinates optional training, cache generation, manifest
   registration, materialization, and serving preparation.
 
-`_reexport.py` is a private helper used by compatibility facades and is not
-part of the public API.
-
 ## Archived Campaign Modules
 
 The vLLM 0.27.1/0.30.0 publication campaign machinery (GPU qualification,
@@ -197,12 +194,6 @@ cluster-hour ledger, representative canaries, and the Quality v2 job runner) is
 not packaged here. It is preserved, with its tests, at the
 `vllm-0300-campaign-archive` tag, which is the source of truth for re-validating
 the sealed records under `benchmarks/`.
-
-## Compatibility-Only Modules
-
-- `scheduler.py` remains packaged as a compatibility shim for older
-  admission-helper imports. It is intentionally not advertised through
-  `document_kv_cache._PUBLIC_SUBMODULES`.
 
 ## Console Scripts
 

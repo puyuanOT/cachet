@@ -57,14 +57,24 @@ def test_prepared_request_validates_serving_handoff_inputs():
     assert request.kv is kv
     assert request.estimated_gpu_bytes == 2
 
-    with pytest.raises(ValueError, match="request_id must be non-empty"):
-        PreparedRequest(request_id="", kv=kv, estimated_gpu_bytes=2)
+    for request_id in ("", 123, True):
+        with pytest.raises(ValueError, match="request_id must be non-empty"):
+            PreparedRequest(request_id=request_id, kv=kv, estimated_gpu_bytes=2)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="kv must be a MaterializedKV"):
         PreparedRequest(request_id="req-1", kv=object(), estimated_gpu_bytes=2)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="estimated_gpu_bytes must be an integer"):
-        PreparedRequest(request_id="req-1", kv=kv, estimated_gpu_bytes=True)  # type: ignore[arg-type]
+    for estimated_gpu_bytes in (True, 1.5):
+        with pytest.raises(ValueError, match="estimated_gpu_bytes must be an integer"):
+            PreparedRequest(request_id="req-1", kv=kv, estimated_gpu_bytes=estimated_gpu_bytes)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="estimated_gpu_bytes must be non-negative"):
         PreparedRequest(request_id="req-1", kv=kv, estimated_gpu_bytes=-1)
+
+
+def test_admission_queue_validates_gpu_byte_budget():
+    for max_pending_gpu_bytes in (True, 1.5):
+        with pytest.raises(ValueError, match="max_pending_gpu_bytes must be an integer"):
+            AdmissionQueue(max_pending_gpu_bytes=max_pending_gpu_bytes)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="max_pending_gpu_bytes must be non-negative"):
+        AdmissionQueue(max_pending_gpu_bytes=-1)
 
 
 def test_admission_queue_validates_entries_without_mutating_state():
@@ -91,6 +101,19 @@ def test_admission_queue_enforces_pending_gpu_budget_and_pop_order():
 
     assert queue.pop_ready() is first
     assert queue.pending_gpu_bytes == 2
+    assert queue.try_enqueue(too_large)
+    assert queue.pending_gpu_bytes == 3
     assert queue.pop_ready() is second
+    assert queue.pop_ready() is too_large
     assert queue.pending_gpu_bytes == 0
     assert queue.pop_ready() is None
+
+
+def test_admission_queue_accepts_zero_byte_requests_at_zero_budget():
+    queue = AdmissionQueue(max_pending_gpu_bytes=0)
+    request = PreparedRequest(request_id="zero", kv=materialized_kv(), estimated_gpu_bytes=0)
+
+    assert queue.try_enqueue(request)
+    assert queue.pending_gpu_bytes == 0
+    assert queue.pop_ready() is request
+    assert queue.pending_gpu_bytes == 0

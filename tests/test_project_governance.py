@@ -398,7 +398,6 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
         if path.stem != "__init__" and not path.stem.startswith("_")
     }
     public_modules = sorted(document_kv_cache._PUBLIC_SUBMODULES)
-    compatibility_only_modules = sorted(package_modules - set(public_modules))
     pyproject = tomllib.loads(
         (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
@@ -412,17 +411,13 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     )
 
     assert public_modules
-    assert set(public_modules) <= package_modules
-    assert compatibility_only_modules == ["scheduler"]
+    assert set(public_modules) == package_modules
     assert document_scripts
     assert cachet_scripts
     for module_name in public_modules:
         assert f"`{module_name}.py`" in text
-    for module_name in compatibility_only_modules:
-        assert f"`{module_name}.py`" in text
     assert "Archived Campaign Modules" in text
     assert "`vllm-0300-campaign-archive`" in text
-    assert "Compatibility-Only Modules" in text
     for script_name in document_scripts:
         assert f"`{script_name}`" in text
     for script_name in cachet_scripts:
