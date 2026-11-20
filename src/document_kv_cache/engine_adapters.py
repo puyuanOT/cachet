@@ -53,12 +53,11 @@ _VLLM_RUNTIME_DTYPES = (
     "fp8",
     "fp8_e4m3",
     "fp8_e5m2",
-    "float8",
     "int8",
     "uint8",
 )
 _VLLM_REROPE_DTYPES = tuple(
-    dtype for dtype in _VLLM_RUNTIME_DTYPES if dtype not in {"float8", "int8", "uint8"}
+    dtype for dtype in _VLLM_RUNTIME_DTYPES if dtype not in {"int8", "uint8"}
 )
 _SGLANG_REROPE_DTYPES = (
     "bf16",

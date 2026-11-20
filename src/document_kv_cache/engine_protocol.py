@@ -41,7 +41,6 @@ DTYPE_BYTE_WIDTHS: Mapping[str, int] = MappingProxyType(
         "fp8": 1,
         "fp8_e4m3": 1,
         "fp8_e5m2": 1,
-        "float8": 1,
         "int8": 1,
         "uint8": 1,
     }

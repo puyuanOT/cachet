@@ -61,7 +61,7 @@ _CACHE_AXIS_ORDERS = frozenset(
     }
 )
 _FLOAT_KV_DTYPES = frozenset({"bf16", "bfloat16", "fp16", "float16", "fp32", "float32"})
-_FLOAT8_KV_DTYPES = frozenset({"fp8", "fp8_e4m3", "fp8_e4m3fn", "fp8_e5m2", "float8"})
+_FLOAT8_KV_DTYPES = frozenset({"fp8", "fp8_e4m3", "fp8_e4m3fn", "fp8_e5m2"})
 _SUPPORTED_STORAGE_LAYOUTS = frozenset(
     {
         KVStorageLayout.SEPARATE_KEY_VALUE,
@@ -1096,7 +1096,7 @@ def _torch_dtype_from_name(torch: object, dtype: str) -> object:
         "float32": torch.float32,
         "uint8": torch.uint8,
     }
-    if normalized in {"fp8", "fp8_e4m3", "fp8_e4m3fn", "float8"}:
+    if normalized in {"fp8", "fp8_e4m3", "fp8_e4m3fn"}:
         try:
             return torch.float8_e4m3fn
         except AttributeError as exc:  # pragma: no cover - depends on torch build.
