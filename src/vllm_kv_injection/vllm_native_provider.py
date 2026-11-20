@@ -269,7 +269,7 @@ class _MaterializedPayload:
     selected_strategy: str
     payload_mode: PayloadMode
     canonical_segmented_global_view: bool
-    legacy_fallback_reason: str | None = None
+    segment_remerge_reason: str | None = None
     checksum_validation_count: int = 0
     snapshot_copy_bytes: int = 0
     reassembly_copy_bytes: int = 0
@@ -280,7 +280,7 @@ class _MaterializedPayload:
             "selected_strategy": self.selected_strategy,
             "payload_mode": self.payload_mode.value,
             "canonical_segmented_global_view": self.canonical_segmented_global_view,
-            "legacy_fallback_reason": self.legacy_fallback_reason,
+            "segment_remerge_reason": self.segment_remerge_reason,
             "checksum_validation_count": self.checksum_validation_count,
             "snapshot_copy_bytes": self.snapshot_copy_bytes,
             "reassembly_copy_bytes": self.reassembly_copy_bytes,
@@ -519,11 +519,9 @@ class DocumentKVNativeProvider:
         self._profile_stages = _env_truthy("DOCUMENT_KV_PROFILE_STAGES")
         # Canonical Cachet segmented bundles are serialized as one flat file in
         # global token order. ``auto`` (the default) takes one owned global
-        # snapshot and falls back to the historical segment/remerge path for
-        # third-party action layouts. ``direct`` is the fail-closed experiment
-        # mode: it rejects any action layout that cannot prove the global-order
-        # invariant. ``legacy`` always exercises the old reconstruction path for
-        # apples-to-apples profiling.
+        # snapshot and falls back to the segment re-merge path for third-party
+        # action layouts. ``direct`` is the fail-closed experiment mode: it
+        # rejects any action layout that cannot prove the global-order invariant.
         self._segmented_load_strategy = _segmented_load_strategy_from_env()
         # Cold-read enforcement (opt-in): drop the payload file from the OS page cache
         # (posix_fadvise POSIX_FADV_DONTNEED) immediately before memory-mapping it, so
@@ -855,7 +853,7 @@ class DocumentKVNativeProvider:
             "selected_strategy": "unresolved",
             "payload_mode": "unknown",
             "canonical_segmented_global_view": False,
-            "legacy_fallback_reason": None,
+            "segment_remerge_reason": None,
             "checksum_validation_count": 0,
             "snapshot_copy_bytes": 0,
             "reassembly_copy_bytes": 0,
@@ -1910,11 +1908,7 @@ def _materialized_payload(
         raise ValueError(
             f"payload length {len(payload)} != expected {expected_bytes}"
         )
-    direct_segmented_snapshot = (
-        payload_mode == PayloadMode.SEGMENTED
-        and segmented_load_strategy != "legacy"
-        and canonical
-    )
+    direct_segmented_snapshot = canonical
     snapshot_copy_bytes = 0
     if direct_segmented_snapshot and not isinstance(payload, bytes):
         # A read-only mmap is still a live view of a mutable backing inode. Keep a
@@ -1949,12 +1943,10 @@ def _materialized_payload(
     return _MaterializedPayload(
         payload=segmented,
         configured_segmented_strategy=segmented_load_strategy,
-        selected_strategy="legacy_segment_remerge",
+        selected_strategy="segment_remerge",
         payload_mode=payload_mode,
         canonical_segmented_global_view=canonical,
-        legacy_fallback_reason=(
-            "configured_legacy" if segmented_load_strategy == "legacy" else canonical_issue
-        ),
+        segment_remerge_reason=canonical_issue,
         checksum_validation_count=_payload_checksum_scan_count(load.actions),
         reassembly_copy_bytes=_expected_payload_bytes(load.actions),
     )
@@ -2550,7 +2542,7 @@ def _canonical_segmented_global_view_issue(
     order, and every entry starts at byte zero. Since connector validation already
     proves that global byte spans are contiguous, those invariants prove that
     concatenating the entries produces the global payload byte-for-byte. More
-    general third-party layouts keep using the strict legacy reconstruction path.
+    general third-party layouts keep using the strict segment re-merge path.
     """
 
     if _payload_mode(actions) != PayloadMode.SEGMENTED:
@@ -3206,7 +3198,7 @@ def _probe_kv_caches(layout: object, *, block_count: int) -> dict[str, object]:
 
 def _probe_kv_cache_shape(layout: object, *, block_count: int) -> tuple[int, ...]:
     if getattr(layout, "shares_kv_storage", False):
-        raise ValueError("vLLM 0.27.1 Triton document KV injection does not support shared KV storage")
+        raise ValueError("vLLM 0.30.0 Triton document KV injection does not support shared KV storage")
     block_size = _positive_int(
         getattr(layout, "block_size", None),
         field_name="block_size",
@@ -3274,10 +3266,9 @@ def _env_int(name: str, default: int) -> int:
 def _segmented_load_strategy_from_env() -> str:
     value = os.environ.get(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "auto")
     strategy = value.strip().lower()
-    if strategy not in {"auto", "direct", "legacy"}:
+    if strategy not in {"auto", "direct"}:
         raise ValueError(
-            f"{DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV} must be one of "
-            "'auto', 'direct', or 'legacy'"
+            f"{DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV} must be 'auto' or 'direct'"
         )
     return strategy
 

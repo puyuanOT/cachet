@@ -173,7 +173,7 @@ records, and CLI targets.
 - `vllm_smoke.py` owns the self-contained Qwen3/vLLM Databricks smoke and
   prepared-mode handoff generation/coverage validation before vLLM startup.
 - `vllm_wheel_repack.py` deterministically applies the reviewed E5M2 patches to
-  the official vLLM 0.27.1 or 0.30.0 CUDA 12.9 wheel and emits a content-addressed,
+  the official vLLM 0.30.0 CUDA 12.9 wheel and emits a content-addressed,
   RECORD-verified wheel and build manifest.
 - `vllm_runtime_contract_data.py` single-sources the vLLM V1 KV connector
   lifecycle contract shared by native-probe diagnostics and the vendored vLLM
@@ -186,7 +186,7 @@ records, and CLI targets.
 
 ## Archived Campaign Modules
 
-The vLLM 0.27.1/0.30.0 publication campaign machinery (GPU qualification,
+The vLLM 0.30.0 publication campaign machinery (GPU qualification,
 publication freeze, handoff generation and closure, latency and full-score
 execution, the campaign finalizer and table renderer, the Databricks
 cluster-hour ledger, representative canaries, and the Quality v2 job runner) is

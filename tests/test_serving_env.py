@@ -416,7 +416,7 @@ def test_serving_environment_profile_rejects_ambiguous_or_combined_runtime_pins(
             backend=ServingBackend.VLLM,
             engine_package="vllm",
             engine_version=VLLM_VERSION,
-            dependency_constraints=("vllm>=0.27.1",),
+            dependency_constraints=("vllm>=0.30.0",),
             isolated_environment_required=True,
             notes="range pin",
         )

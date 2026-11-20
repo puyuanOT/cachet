@@ -1123,7 +1123,7 @@ def test_serving_platform_dimension_allows_engine_identity_dependencies() -> Non
         runtime_environment_overrides={
             "serving_platform": "vllm",
             "engine_id": "vllm",
-            "engine_version": "0.27.1",
+            "engine_version": "0.30.0",
             "runtime_version": "vllm-runtime",
         },
         requires_cachet_handoff=False,
@@ -1155,7 +1155,7 @@ def test_serving_platform_dimension_allows_engine_identity_dependencies() -> Non
             reference_arm_id="vllm",
             serving_platform="vllm",
             engine_id="vllm",
-            engine_version="0.27.1",
+            engine_version="0.30.0",
             runtime_version="vllm-runtime",
         ),
         reference_arm_id="vllm",

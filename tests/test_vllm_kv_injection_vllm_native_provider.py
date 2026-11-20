@@ -469,7 +469,7 @@ def scheduler_output(block_ids: list[int], *, request_id: str = "req-1"):
 
 
 def logical_kv_slot(layer, block_id: int, block_offset: int):
-    """Expose one packed vLLM 0.27.1 slot as logical [K/V, H, D]."""
+    """Expose one packed vLLM 0.30.0 slot as logical [K/V, H, D]."""
 
     head_dim = layer.shape[-1] // 2
     return torch.stack(
@@ -2654,7 +2654,7 @@ def test_canonical_segmented_uri_uses_direct_global_snapshot_and_hashes_once(
         "selected_strategy": "direct_global_snapshot",
         "payload_mode": "segmented",
         "canonical_segmented_global_view": True,
-        "legacy_fallback_reason": None,
+        "segment_remerge_reason": None,
         "checksum_validation_count": 1,
         "snapshot_copy_bytes": len(payload()),
         "reassembly_copy_bytes": 0,
@@ -2696,59 +2696,7 @@ def test_direct_global_snapshot_reuses_owned_payload_cache_bytes():
     assert materialized.checksum_validation_count == 1
 
 
-def test_segmented_uri_legacy_switch_preserves_two_copy_path(tmp_path, monkeypatch):
-    monkeypatch.setenv(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "legacy")
-    payload_path = tmp_path / "req-1.kv"
-    payload_path.write_bytes(payload())
-    inline = segmented_handoff_load()
-    actions = replace(
-        inline.actions,
-        reservation=replace(
-            inline.actions.reservation,
-            payload_checksum=hashlib.sha256(payload()).hexdigest(),
-        ),
-    )
-    telemetry_path = tmp_path / "legacy-telemetry.jsonl"
-    checksum_calls: list[int] = []
-    original_verify = vllm_native_provider._verify_payload_checksum
-
-    def count_checksum(action_record, raw_payload):
-        checksum_calls.append(sum(map(len, raw_payload)) if isinstance(raw_payload, tuple) else len(raw_payload))
-        return original_verify(action_record, raw_payload)
-
-    monkeypatch.setattr(
-        vllm_native_provider,
-        "_verify_payload_checksum",
-        count_checksum,
-    )
-    provider = DocumentKVNativeProvider(
-        source=StaticHandoffSource(
-            DocumentKVHandoffLoad(actions=actions, payload_uri=str(payload_path))
-        ),
-        telemetry_jsonl=str(telemetry_path),
-    )
-
-    _connector, layer_0, layer_1 = hydrate_two_token_load(provider)
-
-    assert checksum_calls == [len(payload()), len(payload())]
-    assert torch.equal(logical_kv_slot(layer_0, 4, 0), torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
-    assert torch.equal(logical_kv_slot(layer_1, 4, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
-    row = json.loads(telemetry_path.read_text(encoding="utf-8"))
-    assert row["payload_loading"] == {
-        "configured_segmented_strategy": "legacy",
-        "selected_strategy": "legacy_segment_remerge",
-        "payload_mode": "segmented",
-        "canonical_segmented_global_view": True,
-        "legacy_fallback_reason": "configured_legacy",
-        "checksum_validation_count": 2,
-        "snapshot_copy_bytes": 0,
-        "reassembly_copy_bytes": 2 * len(payload()),
-        "copy_metadata_retained": True,
-        "copy_count": 2,
-    }
-
-
-def test_noncanonical_segmented_uri_auto_uses_strict_legacy_fallback(
+def test_noncanonical_segmented_uri_auto_uses_strict_segment_remerge_fallback(
     tmp_path,
 ):
     payload_path = tmp_path / "req-1.kv"
@@ -2778,9 +2726,9 @@ def test_noncanonical_segmented_uri_auto_uses_strict_legacy_fallback(
     assert torch.equal(logical_kv_slot(layer_1, 4, 1), torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     row = json.loads(telemetry_path.read_text(encoding="utf-8"))
     assert row["payload_loading"]["configured_segmented_strategy"] == "auto"
-    assert row["payload_loading"]["selected_strategy"] == "legacy_segment_remerge"
+    assert row["payload_loading"]["selected_strategy"] == "segment_remerge"
     assert row["payload_loading"]["canonical_segmented_global_view"] is False
-    assert row["payload_loading"]["legacy_fallback_reason"] == "source_byte_start_is_not_zero"
+    assert row["payload_loading"]["segment_remerge_reason"] == "source_byte_start_is_not_zero"
     assert row["payload_loading"]["reassembly_copy_bytes"] == 2 * len(payload())
 
 
@@ -2912,7 +2860,7 @@ def test_direct_eligibility_explicitly_requires_cumulative_global_ranges():
 def test_native_provider_rejects_unknown_segmented_load_strategy(monkeypatch):
     monkeypatch.setenv(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "fast-ish")
 
-    with pytest.raises(ValueError, match="must be one of 'auto', 'direct', or 'legacy'"):
+    with pytest.raises(ValueError, match="must be 'auto' or 'direct'"):
         DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
 
 

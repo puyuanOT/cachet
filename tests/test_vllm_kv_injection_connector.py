@@ -4,7 +4,6 @@ from dataclasses import replace
 import pytest
 
 from document_kv_cache.engine import EngineReadyRequest
-from document_kv_cache.engine_protocol import KVSegment as DocumentKVSegment
 from vllm_kv_injection.connector import InMemoryKVConnector
 from vllm_kv_injection.protocol import KVCacheHandle, KVLayout, KVSegment
 from vllm_kv_injection.vllm_adapter import (
@@ -33,22 +32,6 @@ def segment(
         byte_start=byte_start,
         byte_length=byte_length,
     )
-
-
-def test_legacy_segment_constructor_returns_core_segment():
-    legacy = KVSegment("static", 0, 4, 0, 40)
-    legacy_keywords = KVSegment(chunk_id="static", token_start=0, token_count=4, byte_start=0, byte_length=40)
-    document_positional = KVSegment("doc-a", "document_static", "static", 0, 4, 0, 40)
-
-    assert isinstance(legacy, KVSegment)
-    assert isinstance(legacy, DocumentKVSegment)
-    assert legacy.document_id == "__legacy__"
-    assert legacy.chunk_type == "legacy_chunk"
-    assert legacy.chunk_id == "static"
-    assert legacy_keywords == legacy
-    assert document_positional.document_id == "doc-a"
-    assert document_positional.chunk_type == "document_static"
-    assert document_positional.content_hash == ""
 
 
 def handle() -> KVCacheHandle:
