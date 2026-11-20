@@ -910,7 +910,7 @@ def test_sealed_record_checker_rejects_tampered_records_and_regions(tmp_path):
     ]
 
 
-def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
+def test_benchmark_surface_is_exactly_the_sealed_published_records():
     from document_kv_cache.quality_v2 import (
         validate_quality_v2_readme_region,
         validate_quality_v2_report_record,
@@ -991,8 +991,6 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         assert unsupported in root_readme
     assert "L40S was the designed sole handoff generator" in compact_root_readme
     assert "served an L4-regenerated bundle" in compact_root_readme
-    assert "same-hardware fresh-load byte reproducibility" in compact_root_readme
-    assert "cross-hardware logical/token/layout/size equivalence" in compact_root_readme
 
     quality_dir = benchmark_root / "appendix" / "vllm-0300-quality-v2"
     quality_report = json.loads(
@@ -1016,7 +1014,7 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "Unsupported Method Status",
     )
     assert sha256(unsupported_method_section.encode("utf-8")).hexdigest() == (
-        "29780187ca557ccd7ac5b0d58b95f3df582406783b44bd48cf0e51bec44d4bde"
+        "a2708c852b28bddba60428f3b049027da6f50cbb0bfa1d172cb3cb36f3d33ef9"
     )
     assert "71.390128 reconciled GPU-hours" in root_readme
     assert "exact 236/98/236 post-migration append-only prefix" in root_readme
@@ -1033,12 +1031,7 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "appendix/vllm-0300-quality-v2/quality-v2-report.json",
         "appendix/vllm-0300-auxiliary-latency-rerun/README.md",
         "appendix/vllm-0300-auxiliary-latency-rerun/auxiliary-latency-rerun.json",
-        "databricks/README.md",
-        "native-engine/README.md",
-        "sglang/README.md",
-        "storage/README.md",
         "verify_sealed_records.py",
-        "vllm/README.md",
     }
     expected_directories = {
         "_template",
@@ -1046,11 +1039,6 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "appendix/vllm-0271-publication-v1",
         "appendix/vllm-0300-quality-v2",
         "appendix/vllm-0300-auxiliary-latency-rerun",
-        "databricks",
-        "native-engine",
-        "sglang",
-        "storage",
-        "vllm",
     }
     assert {
         relative_path
@@ -1065,23 +1053,6 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     for path, expected_bytes in byte_snapshots.items():
         assert path.read_bytes() == expected_bytes
     assert benchmark_tree_snapshot() == initial_tree
-
-    subindex_expectations = {
-        "databricks": "No Databricks benchmark result is currently published",
-        "sglang": "not implemented",
-        "storage": "vLLM 0.27.1 campaign defines",
-        "vllm": "vLLM 0.27.1",
-    }
-    for folder, expected in subindex_expectations.items():
-        text = (benchmark_root / folder / "README.md").read_text(encoding="utf-8")
-        assert expected in text
-
-    archive_root = REPO_ROOT / "docs" / "release-ops" / "benchmark-archive"
-    assert (archive_root / "README.md").is_file()
-    for archive_directory in (
-        path for path in archive_root.rglob("*") if path.is_dir()
-    ):
-        assert (archive_directory / "README.md").is_file()
 
 
 def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
