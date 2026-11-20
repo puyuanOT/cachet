@@ -26,6 +26,7 @@ from packaging.version import InvalidVersion, Version
 from document_kv_cache._hardware_targets import HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
 from document_kv_cache.benchmark_plan import PLAN_VERSION
 from document_kv_cache.release_evidence import (
+    RELEASE_EVIDENCE_ARTIFACT_ROLES,
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
     RELEASE_EVIDENCE_RECORD_TYPE,
     REQUIRED_ENGINE_PROBE_BACKENDS,
@@ -160,6 +161,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "sglang_live_v1_benchmark",
     "compatibility_benchmark",
     "storage_benchmark",
+    "benchmark_evidence_gate",
     "engine_probe",
     "engine_connector_actions",
     "engine_launch_config",
@@ -179,6 +181,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
 STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("release_evidence", 1, "release evidence sidecar"),
     ("preflight", 1, "preflight sidecar"),
+    ("benchmark_evidence_gate", 1, "benchmark evidence gate sidecar"),
     ("sglang_live_v1_benchmark", 1, "SGLang live V1 benchmark sidecar"),
     ("engine_probe", 2, "vLLM/SGLang native engine probe sidecars"),
     ("engine_connector_actions", 2, "vLLM/SGLang connector action sidecars"),
@@ -231,6 +234,7 @@ STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT = (
 )
 STRICT_V1_RELEASE_HELP = (
     "Require the full V1 release artifact set: release/preflight sidecars, "
+    "the publication benchmark evidence gate sidecar, "
     "vLLM/SGLang native engine probes, connector actions, and launch configs, "
     "plan execution, Databricks status for benchmark/storage/engine-probe runs, "
     "tested wheel, PR evidence, dependency freshness, governance, repository "
@@ -508,6 +512,7 @@ def build_release_bundle(
     sglang_live_v1_benchmark_jsons: Sequence[str | Path] = (),
     output_dir: str | Path,
     compatibility_benchmark_jsons: Sequence[str | Path] = (),
+    benchmark_evidence_gate_json: str | Path | None = None,
     engine_probe_jsons: Sequence[str | Path] = (),
     engine_actions_jsons: Sequence[str | Path] = (),
     engine_launch_config_jsons: Sequence[str | Path] = (),
@@ -538,6 +543,7 @@ def build_release_bundle(
         storage_benchmark_json=storage_benchmark_json,
         sglang_live_v1_benchmark_jsons=sglang_live_v1_benchmark_jsons,
         compatibility_benchmark_jsons=compatibility_benchmark_jsons,
+        benchmark_evidence_gate_json=benchmark_evidence_gate_json,
         engine_probe_jsons=engine_probe_jsons,
         engine_actions_jsons=engine_actions_jsons,
         engine_launch_config_jsons=engine_launch_config_jsons,
@@ -620,6 +626,7 @@ def _release_bundle_sources(
     storage_benchmark_json: str | Path,
     sglang_live_v1_benchmark_jsons: Sequence[str | Path],
     compatibility_benchmark_jsons: Sequence[str | Path],
+    benchmark_evidence_gate_json: str | Path | None,
     engine_probe_jsons: Sequence[str | Path],
     engine_actions_jsons: Sequence[str | Path],
     engine_launch_config_jsons: Sequence[str | Path],
@@ -642,6 +649,8 @@ def _release_bundle_sources(
         *(("compatibility_benchmark", path) for path in compatibility_benchmark_jsons),
         ("storage_benchmark", storage_benchmark_json),
     ]
+    if benchmark_evidence_gate_json is not None:
+        sources.append(("benchmark_evidence_gate", benchmark_evidence_gate_json))
     sources.extend(("engine_probe", path) for path in engine_probe_jsons)
     sources.extend(("engine_connector_actions", path) for path in engine_actions_jsons)
     sources.extend(("engine_launch_config", path) for path in engine_launch_config_jsons)
@@ -721,6 +730,10 @@ def _validate_release_bundle_inputs(
 ) -> None:
     v1_record = _single_record_for_role(artifacts, "v1_benchmark")
     storage_record = _single_record_for_role(artifacts, "storage_benchmark")
+    gate_record = next(
+        (artifact.record for artifact in artifacts if artifact.role == "benchmark_evidence_gate"),
+        None,
+    )
     engine_probe_records = tuple(artifact.record for artifact in artifacts if artifact.role == "engine_probe")
     engine_action_records = tuple(
         artifact.record for artifact in artifacts if artifact.role == "engine_connector_actions"
@@ -739,11 +752,12 @@ def _validate_release_bundle_inputs(
         storage_record,
         engine_probe_records=engine_probe_records,
         engine_action_records=engine_action_records,
+        benchmark_evidence_gate_record=gate_record,
     )
     release_input_artifacts = tuple(
         artifact
         for artifact in artifacts
-        if artifact.role in ("v1_benchmark", "storage_benchmark", "engine_probe", "engine_connector_actions")
+        if artifact.role in RELEASE_EVIDENCE_ARTIFACT_ROLES
     )
     issues = list(evidence.issues)
     if require_complete_v1 and _strict_v1_benchmark_hardware_target(v1_record) != DEFAULT_HARDWARE_TARGET:
@@ -1365,6 +1379,11 @@ def _release_evidence_sidecar_issues(
         issues.append("release evidence sidecar v1_benchmark_ok must be true")
     if record.get("storage_benchmark_ok") is not True:
         issues.append("release evidence sidecar storage_benchmark_ok must be true")
+    if (
+        any(artifact.role == "benchmark_evidence_gate" for artifact in release_input_artifacts)
+        and record.get("benchmark_evidence_gate_ok") is not True
+    ):
+        issues.append("release evidence sidecar benchmark_evidence_gate_ok must be true")
     if not _matches_required_backend_set(record.get("engine_probe_backends")):
         issues.append("release evidence sidecar engine_probe_backends must match required backends")
     if not _matches_required_backend_set(record.get("engine_action_backends")):
@@ -3125,6 +3144,8 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return f"compatibility_benchmark_{index + 1:02d}_{suffix}.json"
     if role == "storage_benchmark":
         return "storage_benchmark.json"
+    if role == "benchmark_evidence_gate":
+        return "benchmark_evidence_gate.json"
     if role == "release_evidence":
         return "release_evidence.json"
     if role == "preflight":
@@ -3263,6 +3284,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--storage-benchmark-json", required=True)
+    parser.add_argument(
+        "--benchmark-evidence-gate-json",
+        help=(
+            "Standalone benchmark evidence gate sidecar for --v1-benchmark-json. "
+            "Required with --require-complete-v1."
+        ),
+    )
     parser.add_argument("--engine-probe-json", action="append", default=[])
     parser.add_argument("--engine-actions-json", action="append", default=[])
     parser.add_argument("--engine-launch-config-json", action="append", default=[])
@@ -3304,6 +3332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         storage_benchmark_json=args.storage_benchmark_json,
         sglang_live_v1_benchmark_jsons=args.sglang_live_v1_benchmark_json,
         compatibility_benchmark_jsons=args.compatibility_benchmark_json,
+        benchmark_evidence_gate_json=args.benchmark_evidence_gate_json,
         engine_probe_jsons=args.engine_probe_json,
         engine_actions_jsons=args.engine_actions_json,
         engine_launch_config_jsons=args.engine_launch_config_json,
