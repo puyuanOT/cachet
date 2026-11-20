@@ -217,7 +217,7 @@ Commit small, sanitized records when they directly support a durable claim:
 - benchmark report JSON beside a standalone dated benchmark `README.md`
 - Databricks run-status sidecars after secrets and raw response bodies are
   removed
-- dependency freshness or legacy migration records under `docs/release-ops/evidence/`
+- dependency freshness records under `docs/release-ops/evidence/`
 - PR evidence sidecars under `docs/release-ops/pr-evidence/`
 - generated release-bundle manifests only when they are intended as durable
   release handoff material

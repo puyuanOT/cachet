@@ -98,5 +98,3 @@ Any future campaign must meet them again:
 - Publish no numeric result until the new evidence passes the canonical
   publication gate and a strict release bundle is rebuilt from the frozen
   source and wheel.
-- Keep the completed legacy-facade removal contract auditable through
-  `docs/legacy-compatibility-removal.md` and its generated migration evidence.

@@ -14,13 +14,6 @@ import tomllib
 
 import pytest
 
-from document_kv_cache.legacy_compatibility import (
-    LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES,
-    build_legacy_compatibility_migration_evidence_from_scan_config,
-    evaluate_legacy_compatibility_migration_record,
-    legacy_compatibility_migration_to_record,
-)
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAINTAINER_REFERENCE = REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
@@ -472,141 +465,6 @@ def test_legacy_source_package_directory_is_removed():
     legacy_source_dir = REPO_ROOT / "src" / ("restaurant_kv_serving")
 
     assert not legacy_source_dir.exists()
-
-
-def test_legacy_compatibility_removal_gate_is_documented():
-    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    maintainer_reference = MAINTAINER_REFERENCE.read_text(encoding="utf-8")
-    matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(
-        encoding="utf-8"
-    )
-    gate = (REPO_ROOT / "docs" / "legacy-compatibility-removal.md").read_text(
-        encoding="utf-8"
-    )
-    compact_gate = " ".join(gate.split())
-
-    assert "`docs/legacy-compatibility-removal.md`" in maintainer_reference
-    assert "`legacy-compatibility-removal.md`" in docs_readme
-    assert "`docs/legacy-compatibility-removal.md`" in matrix
-    assert "one repository and one distribution package" in compact_gate
-    assert "`puyuanOT/cachet`" in gate
-    assert "`cachet-kv`" in gate
-    assert "primary import surface is the branded `cachet` facade" in compact_gate
-    assert (
-        "`document_kv_cache` remains the canonical implementation namespace"
-        in compact_gate
-    )
-    assert (
-        "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts"
-        in compact_gate
-    )
-    assert (
-        "New code must not add production dependencies on the legacy package"
-        in compact_gate
-    )
-    assert "from `src/`" in compact_gate
-    assert "Completed Compatibility Contract" in gate
-    assert "`pyproject.toml` no longer packages `restaurant_kv_serving`" in compact_gate
-    assert "`src/document_kv_cache/release_bundle.py` rejects" in compact_gate
-    assert "`restaurant_kv_serving/__init__.py`" in gate
-    assert "`restaurant_kv_serving/py.typed`" in gate
-    assert (
-        "`tests/test_public_package.py` proves the public package surface"
-        in compact_gate
-    )
-    assert "`tests/test_project_governance.py` prevents new accidental" in compact_gate
-    assert "PR evidence sidecars with Refactor-skill evidence" in compact_gate
-    assert "completed GPT-5.5 review" in compact_gate
-    assert (
-        "Downstream Databricks benchmark runners and QA jobs have migrated"
-        in compact_gate
-    )
-    assert "record type `document_kv.legacy_compatibility_migration.v1`" in compact_gate
-    assert (
-        "python -m document_kv_cache.legacy_compatibility --validate-json"
-        in compact_gate
-    )
-    assert (
-        "`release`, `benchmark`, `storage`, `native_probe`, and `smoke`" in compact_gate
-    )
-    assert "no checked runner uses `restaurant_kv_serving` imports" in compact_gate
-    assert "`restaurant-kv-*` commands" in compact_gate
-    assert "`legacy_migration_evidence` artifact role" in compact_gate
-    assert "Current AWS g6/L4 release evidence" in compact_gate
-    assert "optional AWS g5/A10G compatibility evidence" in compact_gate
-    assert "strict release-bundle package-wheel gates are updated" in compact_gate
-    assert (
-        "Keep `restaurant_kv_serving` absent from `pyproject.toml` package metadata"
-        in compact_gate
-    )
-    assert "Keep `src/restaurant_kv_serving` absent" in compact_gate
-    assert (
-        "Run the focused governance, public-package, and release-bundle tests"
-        in compact_gate
-    )
-    assert (
-        "Refresh the tested wheel and strict release bundle before publication"
-        in compact_gate
-    )
-
-
-def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
-    evidence_dir = (
-        REPO_ROOT / "docs" / "release-ops" / "evidence" / "legacy-migration" / "current"
-    )
-    scan_config_path = evidence_dir / "legacy-migration-scan-config.json"
-    evidence_path = evidence_dir / "legacy-migration-evidence.json"
-    validation_path = evidence_dir / "legacy-migration-validation.json"
-    readme = (evidence_dir / "README.md").read_text(encoding="utf-8")
-    scan_config = json.loads(scan_config_path.read_text(encoding="utf-8"))
-    committed_record = json.loads(evidence_path.read_text(encoding="utf-8"))
-    validation_record = json.loads(validation_path.read_text(encoding="utf-8"))
-    generated_record = legacy_compatibility_migration_to_record(
-        build_legacy_compatibility_migration_evidence_from_scan_config(
-            scan_config,
-            base_dir=REPO_ROOT,
-        )
-    )
-    evidence = evaluate_legacy_compatibility_migration_record(committed_record)
-
-    assert committed_record == generated_record
-    assert evidence.ok is True
-    assert evidence.issues == ()
-    assert validation_record["ok"] is True
-    assert validation_record == committed_record
-    assert {
-        job["category"] for job in committed_record["checked_downstream_jobs"]
-    } == set(LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES)
-    assert all(
-        job["legacy_imports_present"] is False
-        for job in committed_record["checked_downstream_jobs"]
-    )
-    assert all(
-        job["legacy_console_scripts_present"] is False
-        for job in committed_record["checked_downstream_jobs"]
-    )
-    assert all(
-        job["legacy_reference_hits"] == []
-        for job in committed_record["checked_downstream_jobs"]
-    )
-    assert {
-        evidence["hardware_target"] for evidence in committed_record["release_evidence"]
-    } == {
-        "aws-g6-l4",
-        "aws-g5-a10g",
-    }
-    for job in committed_record["checked_downstream_jobs"]:
-        for checked_path in job["checked_paths"]:
-            assert (REPO_ROOT / checked_path).is_file()
-        assert (REPO_ROOT / job["evidence_uri"]).is_file()
-    for release_evidence in committed_record["release_evidence"]:
-        assert release_evidence["runner_uses_legacy_facade"] is False
-        assert (REPO_ROOT / release_evidence["evidence_uri"]).is_file()
-    assert "This is not the benchmark report directory" in readme
-    assert "`benchmarks/README.md`" in readme
-    assert "older incompatible result mirrors are not retained" in " ".join(readme.split())
-    assert "document_kv.legacy_compatibility_migration.v1" in readme
-    assert "generated from `legacy-migration-scan-config.json`" in readme
 
 
 def test_legacy_restaurant_imports_in_tests_are_explicitly_scoped():
@@ -1531,7 +1389,6 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "summary arrays match the task summaries" in compact_text
     assert "V1 requirements matrix" in compact_text
     assert "--compatibility-databricks-run-status-json" in compact_text
-    assert "--legacy-migration-evidence-json" in compact_text
     assert "--data @.github/main-branch-protection.json" in text
     assert "/repos/OWNER/cachet/branches/main/protection" in text
     assert "private-repository branch protection" in text
@@ -1548,9 +1405,6 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
         compact_remaining_v1_work
     )
     assert "Current governance evidence is green" in compact_remaining_v1_work
-    assert (
-        "`legacy_migration_evidence` release-bundle role" in compact_remaining_v1_work
-    )
     assert len(maintainer_doc_paths) > 1
     for path in maintainer_doc_paths:
         maintainer_doc = path.read_text(encoding="utf-8")

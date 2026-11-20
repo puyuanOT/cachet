@@ -22,10 +22,6 @@ release-operation material.
   `benchmarks/`, `docs/release-ops/evidence/`,
   `docs/release-ops/pr-evidence/`, release bundles, or ignored
   `databricks-runs/` scratch space.
-- `legacy-compatibility-removal.md` records the machine-checkable proof that
-  the source-only `restaurant_kv_serving` compatibility directory was removed;
-  the current downstream migration evidence lives under
-  `release-ops/evidence/legacy-migration/current/`.
 - `release-ops/evidence/dependency-freshness/current/README.md` explains the
   current direct dependency, serving-profile, and resolver-held transitive
   freshness evidence.

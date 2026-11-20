@@ -102,8 +102,6 @@ return as a production dependency.
   protection, merge-settings, auto-merge, and merged-branch cleanup status
   records for release-readiness evidence.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
-- `legacy_compatibility.py` validates downstream migration evidence proving the
-  legacy `restaurant_kv_serving` compatibility facade was removed safely.
 - `live_server.py` owns the one-request live smoke check against an existing
   OpenAI-compatible serving endpoint, including validated Cachet handoff params
   for native vLLM/SGLang cache-arm requests.

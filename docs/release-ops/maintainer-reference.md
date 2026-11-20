@@ -36,9 +36,3 @@ offline validators) is preserved at the `vllm-0300-campaign-archive` tag.
   engine block managers in vLLM and SGLang whenever adapter contracts, runtime
   pins, or launch configs change.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
-- Keep the removed `restaurant_kv_serving` facade out of source, wheels, and
-  console scripts. Current downstream migration evidence is tracked under
-  `docs/release-ops/evidence/legacy-migration/current/` as validated
-  `document_kv.legacy_compatibility_migration.v1` evidence that can be bundled
-  through the optional `legacy_migration_evidence` release-bundle role; see
-  `docs/legacy-compatibility-removal.md` for the completed removal contract.

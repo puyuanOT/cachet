@@ -77,7 +77,6 @@ python -m document_kv_cache.release_bundle \
   --compatibility-databricks-run-status-json databricks-run-status-g5-benchmark.json \
   --package-wheel dist/cachet_kv-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence.json \
-  --legacy-migration-evidence-json docs/release-ops/evidence/legacy-migration/current/legacy-migration-evidence.json \
   --dependency-freshness-json docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
   --github-governance-json github-governance.json \
@@ -107,8 +106,6 @@ for wheel artifacts, size, and SHA-256 for every artifact.
   `--compatibility-databricks-run-status-json` carries the matching successful
   status, must match a bundled compatibility benchmark's hardware target, and
   is required for each compatibility target in strict bundles.
-- `--legacy-migration-evidence-json` carries package-surface cleanup evidence
-  such as the removed restaurant facade.
 - Run-status sidecars are compact `databricks_runs get --summary` outputs (or
   their inner `summary` records). They must be terminal, successful, free of
   active task keys, and attached to a hashed single-node AWS g6/L4
