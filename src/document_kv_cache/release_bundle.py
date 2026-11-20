@@ -50,7 +50,6 @@ from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
 )
 from document_kv_cache.databricks_runs import (
-    DATABRICKS_RUN_STATUS_RECORD_TYPE,
     databricks_run_status_record,
     databricks_run_status_sidecar_issues,
 )
@@ -70,7 +69,6 @@ from document_kv_cache.engine_launch_config import (
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.native_probe_factories import (
-    NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     native_probe_adapter_contract_to_record,
     native_probe_factories_record_issues,
     native_probe_runtime_contract_to_record,
