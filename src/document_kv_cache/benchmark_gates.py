@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from hashlib import sha256
+from types import MappingProxyType
 from typing import Any, Literal
 
 from document_kv_cache.artifact_identity import ArtifactIdentity
@@ -14,10 +16,15 @@ from document_kv_cache._benchmark_manifest import (
     _resource_software_identity,
     _validate_arm_runtime_environments,
 )
-from document_kv_cache.benchmark_runner import BenchmarkRunResult
+from document_kv_cache.benchmark_runner import (
+    BenchmarkRunResult,
+    BenchmarkScorerManifest,
+)
 from document_kv_cache.benchmark_statistics import paired_benchmark_statistics
 from document_kv_cache.benchmarks import (
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
+    FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
+    FINAL_ANSWER_NO_EXTRACTION_VALUE,
     FINAL_ANSWER_PARSER_DIGEST,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
     FINAL_ANSWER_PARSER_ID,
@@ -25,6 +32,7 @@ from document_kv_cache.benchmarks import (
     FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
     FINAL_ANSWER_PARSER_PLUGIN_PATH,
     FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
+    FINAL_ANSWER_PARSER_STATUSES,
     FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
     FINAL_ANSWER_PARSER_VERSION,
     FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
@@ -39,6 +47,17 @@ from document_kv_cache.methods import MethodRegistry, default_method_registry
 BENCHMARK_PUBLICATION_GATE_RECORD_TYPE = "document_kv.benchmark_publication_gate.v1"
 BENCHMARK_EVIDENCE_GATE_RECORD_TYPE = "document_kv.benchmark_evidence_gate.v1"
 CACHE_STATE_ATTESTATION_RECORD_TYPE = "document_kv.cache_state_attestation.v1"
+_NO_EXTRACTION_SHA256 = sha256(
+    FINAL_ANSWER_NO_EXTRACTION_VALUE.encode("utf-8")
+).hexdigest()
+_V1_FINAL_ANSWER_PARSER_IDENTITY = MappingProxyType(
+    {
+        FINAL_ANSWER_PARSER_ID_METADATA_KEY: FINAL_ANSWER_PARSER_ID,
+        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: FINAL_ANSWER_PARSER_VERSION,
+        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: FINAL_ANSWER_PARSER_PLUGIN_PATH,
+        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: FINAL_ANSWER_PARSER_DIGEST,
+    }
+)
 
 __all__ = [
     "BENCHMARK_PUBLICATION_GATE_RECORD_TYPE",
@@ -1049,22 +1068,41 @@ def _is_sha256_digest(value: Any) -> bool:
     )
 
 
+def _scorer_final_answer_parser_identity(
+    scorer: BenchmarkScorerManifest,
+) -> Mapping[str, str]:
+    if not scorer.answer_parser_id:
+        return _V1_FINAL_ANSWER_PARSER_IDENTITY
+    return {
+        FINAL_ANSWER_PARSER_ID_METADATA_KEY: scorer.answer_parser_id,
+        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: scorer.answer_parser_version,
+        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: scorer.answer_parser_plugin_path,
+        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: scorer.answer_parser_digest,
+    }
+
+
 def _publication_score_contract_issues(
     result: BenchmarkRunResult,
 ) -> tuple[str, ...]:
-    """Fail closed when scored measurements cannot reproduce answer extraction."""
+    """Fail closed when scored measurements cannot reproduce answer extraction.
+
+    Every scored measurement must carry the final-answer parser identity its
+    manifest scorer declares, or the built-in v1 parser identity when the
+    scorer declares none. Only the built-in v1 parser can be re-run here, so
+    only raw results scored by it are re-extracted from ``output_text``. Raw
+    results scored by another declared parser are not re-extracted; they are
+    held to identity consistency and to a persisted status, validity flag, and
+    extracted answer that agree with each other. Sanitized results carry
+    neither the output text nor the extracted answer, so they are held to the
+    parser identity, a consistent status/validity pair, and the SHA-256 digest
+    of the extracted answer recorded when the evidence was sanitized.
+    """
 
     manifest = result.experiment_manifest
     if manifest is None:
         return ("publication score contract requires an experiment manifest",)
     scorer_by_dataset = {
         scorer.dataset: scorer for scorer in manifest.scorer_identities
-    }
-    expected_parser_identity = {
-        FINAL_ANSWER_PARSER_ID_METADATA_KEY: FINAL_ANSWER_PARSER_ID,
-        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: FINAL_ANSWER_PARSER_VERSION,
-        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: FINAL_ANSWER_PARSER_PLUGIN_PATH,
-        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: FINAL_ANSWER_PARSER_DIGEST,
     }
     issue_counts: dict[str, int] = {}
     niah_cells_by_arm: dict[str, set[str]] = {}
@@ -1090,22 +1128,63 @@ def _publication_score_contract_issues(
         if set(measurement.quality_scores) != expected_metrics:
             note("score measurement metric set does not match the manifest scorer")
         metadata = measurement.metadata
-        for key, expected_value in expected_parser_identity.items():
+        parser_identity = _scorer_final_answer_parser_identity(scorer)
+        for key, expected_value in parser_identity.items():
             if metadata.get(key) != expected_value:
                 note("score measurement has missing or mixed final-answer parser identity")
                 break
-        extraction = extract_single_final_answer(measurement.output_text)
-        expected_metadata = final_answer_measurement_metadata(extraction)
-        if any(metadata.get(key) != value for key, value in expected_metadata.items()):
-            note("score measurement final-answer extraction cannot be reproduced")
         valid_value = metadata.get(FINAL_ANSWER_PARSER_VALID_METADATA_KEY)
         status_value = metadata.get(FINAL_ANSWER_PARSER_STATUS_METADATA_KEY)
-        extracted_value = metadata.get(FINAL_ANSWER_EXTRACTED_METADATA_KEY)
-        if valid_value not in {"true", "false"} or not isinstance(status_value, str):
-            note("score measurement has an invalid final-answer parser status")
-        if not isinstance(extracted_value, str):
-            note("score measurement does not persist the extracted answer")
-        if not extraction.valid and any(
+        if (
+            result.evidence_sanitized
+            or parser_identity != _V1_FINAL_ANSWER_PARSER_IDENTITY
+        ):
+            extraction_valid = valid_value == "true"
+            if (
+                valid_value not in {"true", "false"}
+                or status_value not in FINAL_ANSWER_PARSER_STATUSES
+                or extraction_valid != (status_value == "ok")
+            ):
+                note("score measurement has an invalid final-answer parser status")
+            if result.evidence_sanitized:
+                answer_digest = metadata.get(FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY)
+                if not _is_sha256_digest(answer_digest):
+                    note(
+                        "sanitized score measurement does not persist the extracted "
+                        "answer digest"
+                    )
+                elif not extraction_valid and answer_digest != _NO_EXTRACTION_SHA256:
+                    note(
+                        "score measurement extracted answer contradicts the "
+                        "final-answer parser status"
+                    )
+            else:
+                extracted_value = metadata.get(FINAL_ANSWER_EXTRACTED_METADATA_KEY)
+                if not isinstance(extracted_value, str):
+                    note("score measurement does not persist the extracted answer")
+                elif (
+                    not extracted_value
+                    if extraction_valid
+                    else extracted_value != FINAL_ANSWER_NO_EXTRACTION_VALUE
+                ):
+                    note(
+                        "score measurement extracted answer contradicts the "
+                        "final-answer parser status"
+                    )
+        else:
+            extraction = extract_single_final_answer(measurement.output_text)
+            expected_metadata = final_answer_measurement_metadata(extraction)
+            if any(
+                metadata.get(key) != value for key, value in expected_metadata.items()
+            ):
+                note("score measurement final-answer extraction cannot be reproduced")
+            extracted_value = metadata.get(FINAL_ANSWER_EXTRACTED_METADATA_KEY)
+            if valid_value not in {"true", "false"} or not isinstance(status_value, str):
+                note("score measurement has an invalid final-answer parser status")
+            if not isinstance(extracted_value, str):
+                note("score measurement does not persist the extracted answer")
+            extraction_valid = extraction.valid
+        if not extraction_valid and any(
             float(value) != 0.0 for value in measurement.quality_scores.values()
         ):
             note("invalid final-answer extraction must score zero for every metric")

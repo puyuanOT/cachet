@@ -168,6 +168,13 @@ class ArtifactIdentity:
             rope_theta=self.rope_theta,
             rope_rotary_dim=self.rope_rotary_dim,
         )
+        if isinstance(self.rope_theta, int):
+            # JSON encodes 5000000 and 5000000.0 differently, which would give
+            # one geometry two artifact ids.
+            rope_theta = float(self.rope_theta)
+            if rope_theta != self.rope_theta:
+                raise ValueError("rope_theta must be exactly representable as a float")
+            object.__setattr__(self, "rope_theta", rope_theta)
 
     @property
     def artifact_id(self) -> str:
