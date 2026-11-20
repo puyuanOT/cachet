@@ -431,7 +431,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--engine-version",
         help=(
-            "Fallback engine version for legacy probe objects or non-native debug probes. "
+            "Fallback engine version for bare probe objects or non-native debug probes. "
             "Native factory-result probes must report their own engine version."
         ),
     )

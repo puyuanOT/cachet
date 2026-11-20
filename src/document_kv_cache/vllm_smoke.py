@@ -626,7 +626,7 @@ def prepared_benchmark_cache_arm(
     """Return the registered cache arm that prepared handoffs declare, if any.
 
     Handoffs from registered-method generation declare their cache method, which
-    the legacy unidentified ``document_kv_cache`` arm cannot consume.
+    the default unidentified ``document_kv_cache`` arm cannot consume.
     """
 
     if not config.uses_prepared_datasets:
@@ -1686,10 +1686,10 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
     parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
     parser.add_argument(
-        "--benchmark-handoff-allow-legacy-artifact-contract",
+        "--benchmark-handoff-allow-uncontracted-artifact",
         action="store_true",
         help=(
-            "Legacy/debug opt-out: allow handoff generation without the registered "
+            "Debug-only opt-out: allow handoff generation without the registered "
             "method's complete artifact contract."
         ),
     )
@@ -1736,7 +1736,7 @@ def _handoff_generation_config_from_args(
         output_dir=Path(_cluster_file_path(output)),
         dtype=args.benchmark_handoff_dtype,
         align_bytes=args.benchmark_handoff_align_bytes,
-        require_artifact_contract=not args.benchmark_handoff_allow_legacy_artifact_contract,
+        require_artifact_contract=not args.benchmark_handoff_allow_uncontracted_artifact,
     )
 
 

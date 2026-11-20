@@ -1591,7 +1591,7 @@ def test_bundle_main_writes_manifest_from_generator_factory(tmp_path, monkeypatc
             "1",
             "--align-bytes",
             "1",
-            "--allow-legacy-artifact",
+            "--allow-uncontracted-artifact",
         ]
     )
 
@@ -1637,7 +1637,7 @@ def test_bundle_main_can_write_sglang_hicache_page_keys(tmp_path, monkeypatch, c
             "8",
             "--align-bytes",
             "1",
-            "--allow-legacy-artifact",
+            "--allow-uncontracted-artifact",
         ]
     )
 
@@ -1671,7 +1671,7 @@ def test_bundle_main_defaults_to_builtin_model_profile_layout(tmp_path, monkeypa
             "profile_cli_generator:factory",
             "--align-bytes",
             "1",
-            "--allow-legacy-artifact",
+            "--allow-uncontracted-artifact",
         ]
     )
 
@@ -1728,7 +1728,7 @@ def test_bundle_main_rejects_layer_major_payload_axis_order(
             "layer_major",
             "--align-bytes",
             "1",
-            "--allow-legacy-artifact",
+            "--allow-uncontracted-artifact",
         ]
     )
 

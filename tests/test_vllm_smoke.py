@@ -2,11 +2,9 @@ from pathlib import Path
 import gc
 import hashlib
 import json
-import os
 import subprocess
 import sys
 from types import ModuleType
-import urllib.error
 import weakref
 
 import pytest
@@ -41,7 +39,6 @@ from document_kv_cache.vllm_smoke import (
     build_prompt_token_budget_rows,
     build_vllm_native_provider_probe_record,
     build_vllm_server_args,
-    cuda_wheel_env_paths,
     dataset_args,
     dependency_constraints,
     dependency_index_args,
@@ -57,7 +54,6 @@ from document_kv_cache.vllm_smoke import (
     prepared_benchmark_handoff_coverage_record,
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
-    site_packages_dirs,
     smoke_dataset_records,
     validate_prepared_benchmark_handoffs,
 )
@@ -218,7 +214,7 @@ class ContractOneTokenBenchmarkKVGenerator:
 
 
 class ConfiguredOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
-    method_config = {"probe": "legacy-one-token"}
+    method_config = {"probe": "configured-one-token"}
 
 
 class TrackedOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
@@ -801,10 +797,10 @@ def test_benchmark_runner_args_use_registered_cache_arm_declared_by_generated_ha
         lambda benchmark_config: real_run(benchmark_config, engine_factory=lambda _arm, _config: _AnswerEngine()),
     )
     capsys.readouterr()
-    legacy_args = build_benchmark_runner_args(config, generated_paths)
-    assert legacy_args[1:3] == args[1:3] == ["-m", "document_kv_cache.benchmark_runner"]
-    assert benchmark_cli_main(legacy_args[3:]) == 1
-    assert "legacy KV params declare cache method 'full_prefix_prefill'" in capsys.readouterr().out
+    default_args = build_benchmark_runner_args(config, generated_paths)
+    assert default_args[1:3] == args[1:3] == ["-m", "document_kv_cache.benchmark_runner"]
+    assert benchmark_cli_main(default_args[3:]) == 1
+    assert "unscoped KV params declare cache method 'full_prefix_prefill'" in capsys.readouterr().out
 
     assert benchmark_cli_main(args[3:]) == 0
     record = json.loads(config.benchmark_output_path.read_text(encoding="utf-8"))
@@ -812,10 +808,10 @@ def test_benchmark_runner_args_use_registered_cache_arm_declared_by_generated_ha
     assert measured_arms == {BASELINE_PREFILL_ARM, CACHE_REUSE_ARM}
 
 
-def test_prepared_benchmark_cache_arm_keeps_legacy_arms_for_undeclared_handoffs(tmp_path):
+def test_prepared_benchmark_cache_arm_keeps_default_arms_for_undeclared_handoffs(tmp_path):
     dataset_paths = prepared_dataset_paths(tmp_path)
     config = VLLMSmokeBenchmarkConfig(
-        benchmark_id="prepared-legacy-arms",
+        benchmark_id="prepared-default-arms",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
         dataset_specs=tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items()),

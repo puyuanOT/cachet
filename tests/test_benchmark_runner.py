@@ -806,7 +806,7 @@ def test_sanitized_evidence_drops_untrusted_generation_metadata():
     assert len(record["gate_inputs"]["cache_state_attestations"][0]["request_id"]) == 64
 
 
-def test_n_way_cache_arms_reject_ambiguous_legacy_handoff_mapping():
+def test_n_way_cache_arms_reject_ambiguous_unscoped_handoff_mapping():
     suite = BenchmarkSuite(
         suite_id="ambiguous-n-way",
         examples=(example(kv_transfer_params={}),),

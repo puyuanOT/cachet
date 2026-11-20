@@ -1051,7 +1051,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--disk-root", help="Optional disk root for relative kvpack shard URIs.")
     parser.add_argument("--uc-volume-root", help="Optional UC Volume root for relative kvpack shard URIs.")
     parser.add_argument(
-        "--allow-legacy-artifact",
+        "--allow-uncontracted-artifact",
         action="store_true",
         help=(
             "Debug-only escape hatch for generators that do not stamp ArtifactIdentity, "
@@ -1106,7 +1106,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             segment_per_document=args.segment_per_document,
             disk_root=args.disk_root,
             uc_volume_root=args.uc_volume_root,
-            require_artifact_contract=not args.allow_legacy_artifact,
+            require_artifact_contract=not args.allow_uncontracted_artifact,
         )
         print(
             json.dumps(
@@ -1248,7 +1248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--arm-id",
         help=(
             "Attach params under arm_kv_transfer_params[ARM_ID] for N-way runs. "
-            "Without this option, write the legacy single-arm kv_transfer_params."
+            "Without this option, write unscoped single-arm kv_transfer_params."
         ),
     )
     parser.add_argument("--overwrite", action="store_true", help="Replace existing kv_transfer_params.")

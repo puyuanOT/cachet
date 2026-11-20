@@ -659,15 +659,15 @@ def test_raw_publication_still_reextracts_even_with_an_answer_digest() -> None:
 
 def test_sanitized_record_without_parser_evidence_loads_but_fails_quality_gate() -> None:
     identity = artifact_identity()
-    legacy = json.loads(json.dumps(_sanitized_quality_record(identity)))
-    for measurement in legacy["measurements"]:
+    parserless = json.loads(json.dumps(_sanitized_quality_record(identity)))
+    for measurement in parserless["measurements"]:
         measurement["metadata"] = {
             key: value
             for key, value in measurement["metadata"].items()
             if not key.startswith("cachet.score.")
         }
 
-    restored = benchmark_run_result_from_record(legacy)
+    restored = benchmark_run_result_from_record(parserless)
     gate = evaluate_benchmark_evidence_gate(
         restored,
         policy="publication",
@@ -675,7 +675,7 @@ def test_sanitized_record_without_parser_evidence_loads_but_fails_quality_gate()
     )
 
     assert restored.evidence_sanitized
-    assert benchmark_record_aggregate_issues(legacy) == ()
+    assert benchmark_record_aggregate_issues(parserless) == ()
     assert not gate.ok
     assert any(
         "missing or mixed final-answer parser identity" in issue
@@ -1592,10 +1592,10 @@ def test_vllm_telemetry_parser_joins_explicit_benchmark_request_id_without_runti
     assert gate.cold_attested_requests == 1
     assert not any("has no cache-state attestation" in issue for issue in gate.issues)
 
-    legacy = dict(telemetry)
-    legacy.pop("benchmark_request_id")
-    legacy_attestation = cache_state_attestation_from_vllm_telemetry(legacy)
-    assert legacy_attestation.request_id == "cmpl-cache-request-1-0-deadbeef"
+    uncorrelated = dict(telemetry)
+    uncorrelated.pop("benchmark_request_id")
+    uncorrelated_attestation = cache_state_attestation_from_vllm_telemetry(uncorrelated)
+    assert uncorrelated_attestation.request_id == "cmpl-cache-request-1-0-deadbeef"
 
 
 def test_publication_gate_rejects_cache_measurements_sharing_one_attested_request_id():

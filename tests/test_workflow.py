@@ -140,8 +140,8 @@ def config(*, cache_method: CacheGenerationMethod = CacheGenerationMethod.FULL_P
     )
 
 
-def _generate_legacy_cache(workflow: DocumentKVWorkflow, **kwargs):
-    """Exercise the pre-contract path only when a test intentionally needs it."""
+def _generate_unregistered_cache(workflow: DocumentKVWorkflow, **kwargs):
+    """Exercise the unregistered-method path only when a test intentionally needs it."""
 
     return workflow.generate_cache(require_registered_method=False, **kwargs)
 
@@ -575,7 +575,7 @@ def test_workflow_generates_registers_and_prepares_cache(tmp_path):
         chunks={"section-1": "hello world"},
     )
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -607,7 +607,7 @@ def test_workflow_with_storage_wires_routed_reader_and_local_cache(tmp_path):
         chunks={"section-1": "hello world"},
     )
 
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -644,7 +644,7 @@ def test_workflow_with_storage_generates_relative_shards_under_disk_root(tmp_pat
         document_id="doc-a",
     )
 
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -675,7 +675,7 @@ def test_workflow_with_storage_generates_relative_shards_under_uc_volume_root(tm
         document_id="doc-a",
     )
 
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -702,7 +702,7 @@ def test_workflow_with_storage_generates_memory_shards_in_process(tmp_path, monk
         document_id="doc-a",
     )
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -722,7 +722,7 @@ def test_workflow_with_storage_generates_mem_alias_shards_in_process(tmp_path, m
     workflow = DocumentKVWorkflow.with_storage(manifest=manifest, cpu_cache_bytes=4096)
     document = SourceDocument.from_text(document_id="doc-a", text="hello from mem alias")
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -763,7 +763,7 @@ def test_workflow_with_storage_populates_injected_service_memory_reader(tmp_path
     )
     document = SourceDocument.from_text(document_id="doc-a", text="service memory")
 
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -805,7 +805,7 @@ def test_workflow_with_storage_rejects_memory_shard_when_injected_service_reader
     document = SourceDocument.from_text(document_id="doc-a", text="service disk reader")
 
     with pytest.raises(ValueError, match="active materializer"):
-        _generate_legacy_cache(workflow,
+        _generate_unregistered_cache(workflow,
             documents=(document,),
             generator=EchoGenerator(),
             config=config(),
@@ -875,7 +875,7 @@ def test_manual_workflow_generates_memory_shards_when_materializer_can_read_memo
     )
     document = SourceDocument.from_text(document_id="doc-a", text="manual memory")
 
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -910,7 +910,7 @@ def test_manual_workflow_rejects_explicit_memory_writer_when_active_materializer
     document = SourceDocument.from_text(document_id="doc-a", text="explicit writer")
 
     with pytest.raises(ValueError, match="active materializer"):
-        _generate_legacy_cache(workflow,
+        _generate_unregistered_cache(workflow,
             documents=(document,),
             generator=EchoGenerator(),
             config=config(),
@@ -930,7 +930,7 @@ def test_manual_workflow_rejects_memory_shard_uri_without_memory_storage(tmp_pat
     document = SourceDocument.from_text(document_id="doc-a", text="manual memory")
 
     with pytest.raises(ValueError, match="active materializer"):
-        _generate_legacy_cache(workflow,
+        _generate_unregistered_cache(workflow,
             documents=(document,),
             generator=EchoGenerator(),
             config=config(),
@@ -957,7 +957,7 @@ def test_workflow_generates_and_prepares_single_text_document(tmp_path):
         document_id="doc-a",
     )
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -995,7 +995,7 @@ def test_workflow_generates_and_prepares_selected_document_chunks(tmp_path):
         static_chunk_id="profile",
     )
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -1041,7 +1041,7 @@ def test_workflow_generates_and_prepares_multi_document_selection(tmp_path):
         static_chunk_id="profile",
     )
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=documents,
         generator=EchoGenerator(),
         config=config(),
@@ -1072,7 +1072,7 @@ def test_workflow_rejects_duplicate_generation_document_ids_before_training(tmp_
     )
 
     with pytest.raises(ValueError, match="documents contain duplicate document ids: doc-a"):
-        _generate_legacy_cache(workflow,
+        _generate_unregistered_cache(workflow,
             documents=documents,
             generator=EchoGenerator(),
             config=config(),
@@ -1093,7 +1093,7 @@ def test_workflow_rejects_non_source_document_generation_entries(tmp_path):
     )
 
     with pytest.raises(TypeError, match="documents entries must be SourceDocument"):
-        _generate_legacy_cache(workflow,
+        _generate_unregistered_cache(workflow,
             documents=(object(),),  # type: ignore[arg-type]
             generator=EchoGenerator(),
             config=config(),
@@ -1110,7 +1110,7 @@ def test_workflow_invokes_optional_training_adapter(tmp_path):
     )
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -1135,7 +1135,7 @@ def test_workflow_records_training_adapter_artifacts_and_derives_engine_adapters
     workflow = DocumentKVWorkflow(manifest=manifest, materializer=materializer)
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=ByteAlignedGenerator(),
         config=config(cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL),
@@ -1169,7 +1169,7 @@ def test_workflow_prepares_and_submits_engine_ready_request(tmp_path):
     connector = RecordingConnector()
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=ByteAlignedGenerator(),
         config=config(cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL),
@@ -1203,7 +1203,7 @@ def test_workflow_records_non_vanilla_cache_generation_method(tmp_path):
     )
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(cache_method=CacheGenerationMethod.KV_PACKET),
@@ -1249,7 +1249,7 @@ def test_workflow_preserves_custom_cache_method_into_engine_handle(tmp_path):
     )
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
 
-    result = _generate_legacy_cache(workflow,
+    result = _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=ByteAlignedGenerator(),
         config=CacheBuildConfig(
@@ -1338,7 +1338,7 @@ def test_workflow_rejects_generator_key_mismatch(tmp_path):
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
 
     with pytest.raises(ValueError, match="document_id"):
-        _generate_legacy_cache(workflow,
+        _generate_unregistered_cache(workflow,
             documents=(document,),
             generator=WrongDocumentGenerator(),
             config=config(),
@@ -1355,7 +1355,7 @@ def test_workflow_rejects_generator_storage_layout_mismatch(tmp_path):
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
 
     with pytest.raises(ValueError, match="storage_layout"):
-        _generate_legacy_cache(workflow,
+        _generate_unregistered_cache(workflow,
             documents=(document,),
             generator=WrongStorageLayoutGenerator(),
             config=config(),
@@ -1374,7 +1374,7 @@ def test_workflow_can_enqueue_prepared_request(tmp_path):
     )
     workflow = DocumentKVWorkflow(manifest=manifest, materializer=materializer, service=service)
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=EchoGenerator(),
         config=config(),
@@ -1443,7 +1443,7 @@ def test_workflow_prepares_engine_ready_request(tmp_path):
     )
     workflow = DocumentKVWorkflow(manifest=manifest, materializer=materializer, service=service)
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=ByteAlignedGenerator(),
         config=config(cache_method=CacheGenerationMethod.KV_PACKET),
@@ -1533,7 +1533,7 @@ def test_workflow_prepares_engine_ready_request_without_service(tmp_path):
     materializer = KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader())
     workflow = DocumentKVWorkflow(manifest=manifest, materializer=materializer)
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=ByteAlignedGenerator(),
         config=config(),
@@ -1556,7 +1556,7 @@ def test_workflow_engine_handoff_accepts_explicit_gpu_multiplier(tmp_path):
     materializer = KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader())
     workflow = DocumentKVWorkflow(manifest=manifest, materializer=materializer)
     document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
-    _generate_legacy_cache(workflow,
+    _generate_unregistered_cache(workflow,
         documents=(document,),
         generator=ByteAlignedGenerator(),
         config=config(),

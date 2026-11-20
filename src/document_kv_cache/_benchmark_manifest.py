@@ -108,7 +108,7 @@ def _build_experiment_manifest(
         for scorer in (scorer_registry.get(dataset),)
     )
     arm_manifests: list[BenchmarkArmManifest] = []
-    allow_legacy_cache_params = (
+    allow_unscoped_cache_params = (
         sum(1 for arm in arms if arm.requires_cachet_handoff) == 1
     )
     for arm in arms:
@@ -157,7 +157,7 @@ def _build_experiment_manifest(
                             _kv_transfer_params_for_arm(
                                 example,
                                 arm,
-                                allow_legacy=allow_legacy_cache_params,
+                                allow_unscoped=allow_unscoped_cache_params,
                             )
                             if arm.requires_cachet_handoff
                             else {}
@@ -238,49 +238,49 @@ def _build_experiment_manifest(
         generation_seed=context.generation_seed,
         decode_settings=context.decode_settings,
         decoding_config_digest=decoding_config_digest,
-        model_id=_legacy_environment_summary(
+        model_id=_arm_environment_summary(
             arm_manifests,
             "served_model_id",
         ),
-        model_revision=_legacy_environment_summary(
+        model_revision=_arm_environment_summary(
             arm_manifests,
             "model_revision",
         ),
-        tokenizer_id=_legacy_environment_summary(
+        tokenizer_id=_arm_environment_summary(
             arm_manifests,
             "tokenizer_id",
         ),
-        tokenizer_revision=_legacy_environment_summary(
+        tokenizer_revision=_arm_environment_summary(
             arm_manifests,
             "tokenizer_revision",
         ),
-        engine_id=_legacy_environment_summary(
+        engine_id=_arm_environment_summary(
             arm_manifests,
             "engine_id",
         ),
-        engine_version=_legacy_environment_summary(
+        engine_version=_arm_environment_summary(
             arm_manifests,
             "engine_version",
         ),
         package_revisions=context.package_revisions,
-        hardware_target=_legacy_environment_summary(
+        hardware_target=_arm_environment_summary(
             arm_manifests,
             "hardware_target",
         ),
-        hardware_fingerprint=_legacy_environment_summary(
+        hardware_fingerprint=_arm_environment_summary(
             arm_manifests,
             "hardware_fingerprint",
         ),
         runtime_id=context.runtime_id,
-        runtime_version=_legacy_environment_summary(
+        runtime_version=_arm_environment_summary(
             arm_manifests,
             "runtime_version",
         ),
-        storage_identity=_legacy_environment_summary(
+        storage_identity=_arm_environment_summary(
             arm_manifests,
             "storage_identity",
         ),
-        cache_state=_legacy_environment_summary(
+        cache_state=_arm_environment_summary(
             arm_manifests,
             "cache_state",
         ),
@@ -473,7 +473,7 @@ def _resource_software_identity_from_package_revisions(
     return resolved
 
 
-def _legacy_environment_summary(
+def _arm_environment_summary(
     arms: Sequence[BenchmarkArmManifest],
     field_name: str,
 ) -> Any:
@@ -709,60 +709,60 @@ def benchmark_experiment_manifest_to_record(
             "tokenizer_revision": manifest.tokenizer_revision,
             "engine_id": manifest.engine_id,
             "engine_version": manifest.engine_version,
-            "canonical_model_id": _legacy_environment_summary(
+            "canonical_model_id": _arm_environment_summary(
                 manifest.arms,
                 "canonical_model_id",
             ),
-            "lora_id": _legacy_environment_summary(manifest.arms, "lora_id"),
-            "prompt_template_version": _legacy_environment_summary(
+            "lora_id": _arm_environment_summary(manifest.arms, "lora_id"),
+            "prompt_template_version": _arm_environment_summary(
                 manifest.arms,
                 "prompt_template_version",
             ),
-            "serving_platform": _legacy_environment_summary(
+            "serving_platform": _arm_environment_summary(
                 manifest.arms,
                 "serving_platform",
             ),
-            "model_dtype": _legacy_environment_summary(
+            "model_dtype": _arm_environment_summary(
                 manifest.arms,
                 "model_dtype",
             ),
-            "model_quantization": _legacy_environment_summary(
+            "model_quantization": _arm_environment_summary(
                 manifest.arms,
                 "model_quantization",
             ),
-            "runtime_kv_dtype": _legacy_environment_summary(
+            "runtime_kv_dtype": _arm_environment_summary(
                 manifest.arms,
                 "runtime_kv_dtype",
             ),
-            "layout_version": _legacy_environment_summary(
+            "layout_version": _arm_environment_summary(
                 manifest.arms,
                 "layout_version",
             ),
-            "payload_axis_order": _legacy_environment_summary(
+            "payload_axis_order": _arm_environment_summary(
                 manifest.arms,
                 "payload_axis_order",
             ),
-            "block_size": _legacy_environment_summary(
+            "block_size": _arm_environment_summary(
                 manifest.arms,
                 "block_size",
             ),
-            "key_position_encoding": _legacy_environment_summary(
+            "key_position_encoding": _arm_environment_summary(
                 manifest.arms,
                 "key_position_encoding",
             ),
-            "rope_theta": _legacy_environment_summary(
+            "rope_theta": _arm_environment_summary(
                 manifest.arms,
                 "rope_theta",
             ),
-            "rope_rotary_dim": _legacy_environment_summary(
+            "rope_rotary_dim": _arm_environment_summary(
                 manifest.arms,
                 "rope_rotary_dim",
             ),
-            "tensor_parallel_size": _legacy_environment_summary(
+            "tensor_parallel_size": _arm_environment_summary(
                 manifest.arms,
                 "tensor_parallel_size",
             ),
-            "pipeline_parallel_size": _legacy_environment_summary(
+            "pipeline_parallel_size": _arm_environment_summary(
                 manifest.arms,
                 "pipeline_parallel_size",
             ),
@@ -963,13 +963,13 @@ def _kv_transfer_params_for_arm(
     example: BenchmarkExample,
     arm: BenchmarkArm,
     *,
-    allow_legacy: bool,
+    allow_unscoped: bool,
 ) -> Mapping[str, Any]:
     if not arm.requires_cachet_handoff:
         return {}
     if arm.arm_id in example.arm_kv_transfer_params:
         return example.arm_kv_transfer_params[arm.arm_id]
-    if allow_legacy:
+    if allow_unscoped:
         return example.kv_transfer_params
     raise ValueError(
         f"example {example.dataset}:{example.example_id} is missing "

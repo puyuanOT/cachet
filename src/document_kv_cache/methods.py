@@ -496,7 +496,7 @@ class MethodSpec:
         generator_position_handling = getattr(generator, "position_handling", None)
         if generator_position_handling is None:
             if not require_implemented:
-                # Legacy/non-strict workflows may use a generic generator while
+                # Unregistered-method workflows may use a generic generator while
                 # carrying an experimental method label. Strict registered
                 # generation requires the executable position capability.
                 return

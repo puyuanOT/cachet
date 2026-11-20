@@ -740,7 +740,7 @@ def _build_default_benchmark_requests(
     shuffle: bool,
     seed: int | None,
     scorer_registry: DatasetScorerRegistry,
-    allow_legacy_cache_params: bool,
+    allow_unscoped_cache_params: bool,
 ) -> list[BenchmarkEngineRequest]:
     requests: list[BenchmarkEngineRequest] = []
     for example in suite.examples:
@@ -763,7 +763,7 @@ def _build_default_benchmark_requests(
                     arm=arm,
                     prompt_parts=prompt_parts,
                     repeat_index=repeat_indices_by_arm[arm.arm_id],
-                    allow_legacy_cache_params=allow_legacy_cache_params,
+                    allow_unscoped_cache_params=allow_unscoped_cache_params,
                 )
             )
     return requests
@@ -776,12 +776,12 @@ def _build_benchmark_engine_request(
     arm: BenchmarkArm,
     prompt_parts: BenchmarkPromptParts,
     repeat_index: int,
-    allow_legacy_cache_params: bool,
+    allow_unscoped_cache_params: bool,
 ) -> BenchmarkEngineRequest:
     kv_transfer_params = _kv_transfer_params_for_arm(
         example,
         arm,
-        allow_legacy=allow_legacy_cache_params,
+        allow_unscoped=allow_unscoped_cache_params,
     )
     return BenchmarkEngineRequest(
         suite_id=suite.suite_id,
@@ -860,7 +860,7 @@ def run_benchmark_suite(
         reference_arm_id=resolved_reference_arm_id,
     )
     _validate_example_arm_params(suite, arms)
-    allow_legacy_cache_params = (
+    allow_unscoped_cache_params = (
         sum(1 for arm in arms if arm.requires_cachet_handoff) == 1
     )
     scorers = scorer_registry or default_dataset_scorer_registry()
@@ -880,7 +880,7 @@ def run_benchmark_suite(
             engines,
             scorers,
             warmups=warmups,
-            allow_legacy_cache_params=allow_legacy_cache_params,
+            allow_unscoped_cache_params=allow_unscoped_cache_params,
         )
     requests = _build_default_benchmark_requests(
         suite,
@@ -889,7 +889,7 @@ def run_benchmark_suite(
         shuffle=shuffle,
         seed=seed,
         scorer_registry=scorers,
-        allow_legacy_cache_params=allow_legacy_cache_params,
+        allow_unscoped_cache_params=allow_unscoped_cache_params,
     )
     # Example interleaving (opt-in): the loop above emits each example's repeats
     # contiguously, so a request_parallelism=N wave would hydrate the SAME document
@@ -1294,7 +1294,7 @@ def _run_benchmark_warmups(
     scorer_registry: DatasetScorerRegistry,
     *,
     warmups: int,
-    allow_legacy_cache_params: bool,
+    allow_unscoped_cache_params: bool,
 ) -> None:
     example = suite.examples[0]
     prompt_parts = build_prompt_parts(
@@ -1306,7 +1306,7 @@ def _run_benchmark_warmups(
             kv_transfer_params = _kv_transfer_params_for_arm(
                 example,
                 arm,
-                allow_legacy=allow_legacy_cache_params,
+                allow_unscoped=allow_unscoped_cache_params,
             )
             request = BenchmarkEngineRequest(
                 suite_id=f"{suite.suite_id}:warmup",
@@ -1593,7 +1593,7 @@ def _validate_example_arm_params(
             expected_method = arms_by_id[arm_id].cache_method
             if declared_method is not None and declared_method != expected_method:
                 raise ValueError(
-                    f"example {example.dataset}:{example.example_id} legacy KV params "
+                    f"example {example.dataset}:{example.example_id} unscoped KV params "
                     f"declare cache method {declared_method!r}, expected "
                     f"{expected_method!r} for arm {arm_id!r}"
                 )

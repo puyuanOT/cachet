@@ -138,7 +138,7 @@ def build_engine_ready_request(
     adapter_ids: Iterable[str] = (),
     kv_gpu_bytes_per_payload_byte: float = 1.0,
     reuse_plan: ReusePlan | None = None,
-    allow_legacy_reuse_plan: bool = False,
+    allow_unregistered_method: bool = False,
     method_registry: MethodRegistry | None = None,
 ) -> EngineReadyRequest:
     gpu_byte_multiplier = _normalize_gpu_byte_multiplier(kv_gpu_bytes_per_payload_byte)
@@ -152,7 +152,7 @@ def build_engine_ready_request(
         resolved_cache_method,
         reuse_plan,
         artifact_identity=artifact_identity,
-        allow_legacy=allow_legacy_reuse_plan,
+        allow_unregistered_method=allow_unregistered_method,
         method_registry=method_registry,
     )
     handle = build_handle_from_materialized(
@@ -348,7 +348,7 @@ def _resolve_reuse_plan(
     reuse_plan: ReusePlan | None,
     *,
     artifact_identity,
-    allow_legacy: bool,
+    allow_unregistered_method: bool,
     method_registry: MethodRegistry | None,
 ) -> ReusePlan | None:
     registry = default_method_registry() if method_registry is None else method_registry
@@ -371,7 +371,7 @@ def _resolve_reuse_plan(
             require_implemented=True,
         ).reuse_plan()
     except (KeyError, NotImplementedError) as exc:
-        if allow_legacy:
+        if allow_unregistered_method:
             return None
         raise ValueError(
             f"cache method {cache_method!r} requires an explicit registered reuse plan"

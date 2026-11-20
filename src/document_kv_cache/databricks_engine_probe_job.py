@@ -2105,7 +2105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "In matrix mode, use per-target pip_packages for backend-specific engine stacks."
         ),
     )
-    parser.add_argument("--engine-version", help="Fallback engine version for legacy or non-native debug probes.")
+    parser.add_argument("--engine-version", help="Fallback engine version for bare-probe or non-native debug probes.")
     parser.add_argument(
         "--native-probe-delegate-factory",
         help=(

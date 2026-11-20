@@ -1780,7 +1780,7 @@ def _validate_v1_measurement_quality_labels(
     quality_scores = measurement.get("quality_scores")
     scores = quality_scores if isinstance(quality_scores, Mapping) else {}
     # Registered scorers score the parsed final answer and record the label in
-    # quality_scores; only unscored legacy measurements use the raw output text.
+    # quality_scores; metrics the scorer does not record use the raw output text.
     for field_name, value, raw_label in (
         ("exact_match", exact_match, _benchmark_exact_match),
         ("answer_found", answer_found, _benchmark_answer_found),
