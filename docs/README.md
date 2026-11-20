@@ -19,8 +19,7 @@ release-operation material.
 - `repo-map.md` is the human navigation map for source packages, benchmarks,
   maintainer evidence, Databricks templates, and ignored local run output.
 - `evidence-policy.md` defines which machine-readable records belong in
-  `benchmarks/`, `docs/release-ops/evidence/`,
-  `docs/release-ops/pr-evidence/`, release bundles, or ignored
+  `benchmarks/`, `docs/release-ops/evidence/`, release bundles, or ignored
   `databricks-runs/` scratch space.
 - `release-ops/evidence/dependency-freshness/current/README.md` explains the
   current direct dependency, serving-profile, and resolver-held transitive

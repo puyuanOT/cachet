@@ -1,8 +1,8 @@
 # Release And Governance
 
-Maintainer reference for validating release evidence, assembling checksummed
-release bundles, and capturing GitHub governance and repository hygiene
-sidecars. The release sequence is in
+Maintainer reference for validating release evidence, generating the release
+PR evidence sidecar, assembling checksummed release bundles, and capturing
+GitHub governance and repository hygiene sidecars. The release sequence is in
 [`../maintainer-release-checklist.md`](../maintainer-release-checklist.md), the
 evidence storage rules are in
 [`../../evidence-policy.md`](../../evidence-policy.md), and the V1 audit map is
@@ -50,6 +50,32 @@ fingerprints to match the bundled payloads when present. The preflight sidecar
 reports malformed JSON, missing paths, and wrong role or record-type
 assignments separately (for example, a connector-actions record passed as
 `--engine-probe-json` appears under `invalid_record_type_paths`).
+
+## PR Evidence
+
+The strict bundle needs a `document_kv.pr_evidence.v1` sidecar for the release
+pull request. Generate it at bundle time and pass it with `--pr-evidence-json`;
+it is a bundle input, not a committed file.
+
+```bash
+cachet-pr-evidence \
+  --pull-request-number <PR_NUMBER> \
+  --pull-request-url https://github.com/OWNER/cachet/pull/<PR_NUMBER> \
+  --what-changed "<change>" \
+  --why "<reason>" \
+  --scope release \
+  --verification "poetry run pytest -q" \
+  --refactor-skill-applied \
+  --gpt55-review-completed \
+  --gpt55-review-outcome clean \
+  --gpt55-review-summary "<review summary>" \
+  --output-json pr-evidence.json
+```
+
+`--what-changed`, `--scope`, and `--verification` repeat for multiple items.
+With `--gpt55-review-outcome findings_resolved`, also pass
+`--gpt55-review-findings-resolved`. `cachet-pr-evidence --validate-json
+pr-evidence.json` re-checks a saved sidecar.
 
 ## Release Bundle
 

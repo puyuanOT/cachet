@@ -7,10 +7,10 @@ and [`../concepts.md`](../concepts.md).
 Release-ops material includes:
 
 - strict release-bundle assembly and validation;
-- PR traceability sidecars;
+- the release PR evidence sidecar, generated at bundle time;
 - repository hygiene and GitHub governance records;
 - Databricks benchmark/job publication details;
-- dependency freshness and legacy migration evidence;
+- dependency freshness evidence;
 - maintainer topic references under `maintainer/`.
 
 ## Maintainer References
@@ -19,7 +19,6 @@ Release-ops material includes:
 | --- | --- |
 | [`maintainer-reference.md`](maintainer-reference.md) | Index of maintainer topics and remaining V1 work |
 | [`maintainer/`](maintainer/) | Topic references for the library, serving engines, benchmarks, Databricks, release and governance, and development |
-| [`pr-evidence/`](pr-evidence/) | Machine-readable PR traceability sidecars |
 | [`evidence/`](evidence/) | Durable non-benchmark release-governance evidence |
 | [`maintainer-release-checklist.md`](maintainer-release-checklist.md) | Human checklist for internal release gates |
 

@@ -1,7 +1,7 @@
 # Evidence Policy
 
-Cachet keeps benchmark results, release evidence, and PR traceability in the
-repository so release claims remain auditable. These folders should stay
+Cachet keeps sealed benchmark results and durable release-governance evidence
+in the repository so release claims remain auditable. These folders should stay
 navigable: human-facing summaries belong in `README.md` files, while bulky raw
 service output stays outside Git.
 
@@ -205,10 +205,9 @@ their earlier interface and do not accept those options.
 | Path | Keep | Do not keep |
 | --- | --- | --- |
 | [`../benchmarks/`](../benchmarks/) | Human-readable benchmark reports, compact sanitized JSON records, current benchmark index | Raw Databricks responses, task logs, package wheels, generated datasets |
-| [`release-ops/evidence/`](release-ops/evidence/) | Durable release-governance records that are not benchmark reports and not PR sidecars | PR traceability records, benchmark reports, local scratch output |
-| [`release-ops/pr-evidence/`](release-ops/pr-evidence/) | Valid `document_kv.pr_evidence.v1` sidecars and validation summaries | Benchmark results, runtime logs, Databricks credentials |
+| [`release-ops/evidence/`](release-ops/evidence/) | Durable release-governance records that are not benchmark reports, such as dependency freshness | PR evidence sidecars, benchmark reports, local scratch output |
 | `../databricks-runs/` | Ignored local scratch output only | Tracked source, durable benchmark reports, release artifacts |
-| Release bundles | Explicit publication handoff artifacts copied into durable storage | Unreviewed local worktree output or credentials |
+| Release bundles | Explicit publication handoff artifacts copied into durable storage, including the release PR's `document_kv.pr_evidence.v1` sidecar | Unreviewed local worktree output or credentials |
 
 ## What To Commit
 
@@ -218,9 +217,13 @@ Commit small, sanitized records when they directly support a durable claim:
 - Databricks run-status sidecars after secrets and raw response bodies are
   removed
 - dependency freshness records under `docs/release-ops/evidence/`
-- PR evidence sidecars under `docs/release-ops/pr-evidence/`
 - generated release-bundle manifests only when they are intended as durable
   release handoff material
+
+PR evidence is not committed. The release PR's sidecar is generated at bundle
+time with `cachet-pr-evidence` and passed to the strict release bundle with
+`--pr-evidence-json`; see
+[`release-ops/maintainer/release-and-governance.md`](release-ops/maintainer/release-and-governance.md#pr-evidence).
 
 Every committed artifact should answer one question clearly: what claim does
 this prove?
@@ -241,7 +244,7 @@ responses, cluster logs, package wheels, generated datasets, `.env` files,
 notebook checkpoints, or local temporary directories. Keep exploratory run
 payloads and task status files under ignored `databricks-runs/` until a compact
 sanitized record is promoted to `benchmarks/`, `docs/release-ops/evidence/`,
-`docs/release-ops/pr-evidence/`, or a release bundle.
+or a release bundle.
 
 ## Promotion Checklist
 

@@ -806,7 +806,7 @@ def test_repository_map_and_evidence_policy_are_documented():
         "../src/sglang_kv_injection/",
         "../benchmarks/",
         "release-ops/evidence/",
-        "release-ops/pr-evidence/",
+        "release-ops/maintainer/release-and-governance.md",
         "release-ops/",
         "../databricks/",
         "../databricks-runs/",
@@ -817,7 +817,8 @@ def test_repository_map_and_evidence_policy_are_documented():
     for required_boundary in (
         "Human-readable benchmark reports",
         "Durable release-governance records",
-        "Valid `document_kv.pr_evidence.v1` sidecars",
+        "including the release PR's `document_kv.pr_evidence.v1` sidecar",
+        "PR evidence is not committed",
         "Ignored local scratch output only",
         "Never commit credentials",
         "Databricks tokens",
@@ -1126,6 +1127,19 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "summary arrays match the task summaries" in compact_text
     assert "V1 requirements matrix" in compact_text
     assert "--compatibility-databricks-run-status-json" in compact_text
+    pr_evidence_section = _markdown_section(text, "PR Evidence")
+    for pr_evidence_flag in (
+        "cachet-pr-evidence",
+        "--pull-request-number",
+        "--pull-request-url",
+        "--refactor-skill-applied",
+        "--gpt55-review-completed",
+        "--output-json pr-evidence.json",
+    ):
+        assert pr_evidence_flag in pr_evidence_section
+    assert "it is a bundle input, not a committed file" in " ".join(
+        pr_evidence_section.split()
+    )
     assert "--data @.github/main-branch-protection.json" in text
     assert "/repos/OWNER/cachet/branches/main/protection" in text
     assert "private-repository branch protection" in text

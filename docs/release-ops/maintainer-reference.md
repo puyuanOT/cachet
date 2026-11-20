@@ -11,7 +11,7 @@ for maintainers and release operators; contributors start with
 | [Serving engines](maintainer/serving-engines.md) | Engine handoff records, connector actions, native probes, launch configs, live and serving smokes |
 | [Benchmarks](maintainer/benchmarks.md) | V1 benchmark contract, handoff bundles, command plans, dataset prep, runner, storage-reader benchmark |
 | [Databricks](maintainer/databricks.md) | Single-node GPU jobs, engine-probe targets, staging, submission, run status |
-| [Release and governance](maintainer/release-and-governance.md) | Release evidence, release bundles, GitHub governance, repository hygiene |
+| [Release and governance](maintainer/release-and-governance.md) | Release evidence, PR evidence, release bundles, GitHub governance, repository hygiene |
 | [Development](maintainer/development.md) | Dependency pins, isolated runtimes, dependency freshness, CI, repository rules, license |
 
 [`docs/v1-requirements-matrix.md`](../v1-requirements-matrix.md) is the audit

@@ -20,8 +20,6 @@ Running these commands as Databricks jobs is covered in
   appendix records; `python benchmarks/verify_sealed_records.py` checks them.
   Do not hand-edit sealed records or the governed README regions, and add a new
   appendix folder only after sanitized evidence passes the publication gate.
-  `docs/release-ops/pr-evidence/` stays reserved for machine-readable PR
-  validation and release-audit sidecars.
 - Provider-backed SGLang probes are integration checks. They do not populate a
   latency or score table, and the Q8 pre-RoPE SGLang serving path stays
   explicitly unsupported.
@@ -151,7 +149,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-sglang-engine-probe.json \
   --release-bundle-package-wheel /data/dist/cachet_kv-0.2.0-py3-none-any.whl \
   --release-bundle-compatibility-benchmark-json /data/g5-v1-results.json \
-  --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
+  --release-bundle-pr-evidence-json /data/pr-evidence.json \
   --github-governance-output-json /data/github-governance.json \
   --repository-hygiene-output-json /data/repository-hygiene.json \
   --native-probe-factories-output-json /data/native-probe-factories.json \
