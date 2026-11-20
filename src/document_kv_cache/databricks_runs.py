@@ -66,11 +66,6 @@ DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
 DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE = "document_kv.databricks_run_submit_payload.v1"
 _DATABRICKS_AUTH_CHECK_ENDPOINT = "/api/2.0/preview/scim/v2/Me"
 _DATABRICKS_GPU_TYPE_FIELD = "aws_single_node_gpu_type"
-_LEGACY_DATABRICKS_GPU_TYPE_FIELD = "aws_g5_node_type"
-_DATABRICKS_GPU_TYPE_FIELDS = (
-    _DATABRICKS_GPU_TYPE_FIELD,
-    _LEGACY_DATABRICKS_GPU_TYPE_FIELD,
-)
 _DATABRICKS_CONFIG_DEFAULT_SECTION = "__cachet_no_inherited_databricks_defaults__"
 _DATABRICKS_ALWAYS_STAGED_ARTIFACT_PARAMETER_FLAGS = frozenset(
     {
@@ -157,7 +152,7 @@ _DATABRICKS_SUBMIT_PAYLOAD_KEYS = frozenset(
         "spark_env_keys",
         "data_security_modes",
         "single_node",
-        *_DATABRICKS_GPU_TYPE_FIELDS,
+        _DATABRICKS_GPU_TYPE_FIELD,
     }
 )
 _DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS = frozenset(
@@ -642,7 +637,6 @@ def summarize_databricks_run_submit_payload(
         "data_security_modes": data_security_modes,
         "single_node": bool(task_summaries) and all(summary["single_node"] for summary in task_summaries),
         _DATABRICKS_GPU_TYPE_FIELD: aws_single_node_gpu_type,
-        _LEGACY_DATABRICKS_GPU_TYPE_FIELD: aws_single_node_gpu_type,
     }
 
 
@@ -918,14 +912,6 @@ def _hardware_targets_for_task_summaries(tasks: Sequence[Any]) -> list[str]:
     return sorted(hardware_targets)
 
 
-def _submit_payload_gpu_type_supported(record: Mapping[str, Any]) -> bool:
-    return all(record[field_name] is True for field_name in _present_gpu_type_fields(record))
-
-
-def _present_gpu_type_fields(record: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(field_name for field_name in _DATABRICKS_GPU_TYPE_FIELDS if field_name in record)
-
-
 def _sha256_hex(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
@@ -1022,7 +1008,7 @@ def _databricks_submit_payload_sidecar_issues(
         issues.append("Databricks run status sidecar submit_payload.sha256 must be a 64-character lowercase hex digest")
     if record.get("single_node") is not True:
         issues.append("Databricks run status sidecar submit_payload.single_node must be true")
-    if _submit_payload_gpu_type_supported(record) is not True:
+    if record.get(_DATABRICKS_GPU_TYPE_FIELD) is not True:
         issues.append("Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true")
     task_count = record.get("task_count")
     payload_tasks = record.get("tasks")
@@ -1145,10 +1131,7 @@ def _databricks_submit_payload_summary_field_issues(
         if actual_spark_env_keys != expected_spark_env_keys:
             issues.append("Databricks run status sidecar submit_payload.spark_env_keys must match submit_payload.tasks")
         issues.extend(_spark_env_key_issues(actual_spark_env_keys, "Databricks run status sidecar submit_payload"))
-    if "hardware_targets" in record:
-        actual_hardware_targets = _valid_string_list(record.get("hardware_targets"))
-    else:
-        actual_hardware_targets = None
+    actual_hardware_targets = _valid_string_list(record.get("hardware_targets"))
     if actual_hardware_targets is not None:
         expected_hardware_targets = _hardware_targets_for_task_summaries(tasks)
         if actual_hardware_targets != expected_hardware_targets:
@@ -1239,33 +1222,20 @@ def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[
     for field_name in ("record_type", "source_path"):
         issues.extend(_required_str_field(record, field_name, "Databricks run status sidecar submit_payload"))
     issues.extend(_optional_str_field(record, "run_name", "Databricks run status sidecar submit_payload"))
-    for field_name in ("task_keys", "node_type_ids", "driver_node_type_ids", "spark_versions", "data_security_modes"):
+    for field_name in (
+        "task_keys",
+        "node_type_ids",
+        "driver_node_type_ids",
+        "hardware_targets",
+        "spark_versions",
+        "data_security_modes",
+    ):
         issues.extend(_list_of_strings_field(record, field_name, "Databricks run status sidecar submit_payload"))
-    if "hardware_targets" in record:
-        issues.extend(
-            _list_of_strings_field(record, "hardware_targets", "Databricks run status sidecar submit_payload")
-        )
     issues.extend(_bool_field(record, "single_node", "Databricks run status sidecar submit_payload"))
-    if not _present_gpu_type_fields(record):
-        issues.append(
-            "Databricks run status sidecar submit_payload.aws_single_node_gpu_type or aws_g5_node_type must be present"
-        )
-    for field_name in _DATABRICKS_GPU_TYPE_FIELDS:
-        if field_name in record:
-            issues.extend(_bool_field(record, field_name, "Databricks run status sidecar submit_payload"))
-    if _gpu_type_fields_contradict(record):
-        issues.append(
-            "Databricks run status sidecar submit_payload.aws_single_node_gpu_type and aws_g5_node_type must match"
-        )
-    return tuple(issues)
-
-
-def _gpu_type_fields_contradict(record: Mapping[str, Any]) -> bool:
-    return (
-        type(record.get(_DATABRICKS_GPU_TYPE_FIELD)) is bool
-        and type(record.get(_LEGACY_DATABRICKS_GPU_TYPE_FIELD)) is bool
-        and record[_DATABRICKS_GPU_TYPE_FIELD] != record[_LEGACY_DATABRICKS_GPU_TYPE_FIELD]
+    issues.extend(
+        _bool_field(record, _DATABRICKS_GPU_TYPE_FIELD, "Databricks run status sidecar submit_payload")
     )
+    return tuple(issues)
 
 
 def _databricks_submit_payload_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:

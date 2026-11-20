@@ -14,48 +14,10 @@ import tomllib
 
 import pytest
 
-from document_kv_cache.legacy_compatibility import (
-    LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES,
-    build_legacy_compatibility_migration_evidence_from_scan_config,
-    evaluate_legacy_compatibility_migration_record,
-    legacy_compatibility_migration_to_record,
-)
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAINTAINER_REFERENCE = REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
 MAINTAINER_TOPICS_DIR = REPO_ROOT / "docs" / "release-ops" / "maintainer"
-LEGACY_PACKAGE_NAME = "restaurant_kv_serving"
-LEGACY_PACKAGE_PREFIX = f"{LEGACY_PACKAGE_NAME}."
-DYNAMIC_LEGACY_IMPORT_CALLS = {
-    "__import__",
-    "import_module",
-    "importlib.import_module",
-    "importorskip",
-    "pytest.importorskip",
-}
-STRING_RESOLVED_TARGET_CALLS = {
-    "patch",
-    "patch.dict",
-    "patch.multiple",
-    "unittest.mock.patch",
-    "unittest.mock.patch.dict",
-    "unittest.mock.patch.multiple",
-}
-STRING_RESOLVED_TARGET_SUFFIXES = (
-    ".delattr",
-    ".patch",
-    ".patch.dict",
-    ".patch.multiple",
-    ".setattr",
-)
-LEGACY_STRING_ARGUMENT_NAMES = {
-    "in_dict",
-    "modname",
-    "module",
-    "name",
-    "target",
-}
 _DYNAMIC_DICT_KEY = object()
 GENERATED_OR_TOOLING_DIRS = {
     ".coverage",
@@ -118,8 +80,6 @@ DEPRECATED_TOOL_POETRY_METADATA_KEYS = {
     "scripts",
     "version",
 }
-ALLOWED_LEGACY_TEST_REFERENCES = {}
-ALLOWED_LEGACY_SOURCE_REFERENCES = {}
 
 
 def _is_ignored(path: Path) -> bool:
@@ -159,113 +119,6 @@ def _git_known_directories() -> set[Path]:
                 continue
             directories.add(directory)
     return directories
-
-
-def _is_legacy_reference(name: str) -> bool:
-    return name == LEGACY_PACKAGE_NAME or name.startswith(LEGACY_PACKAGE_PREFIX)
-
-
-def _dotted_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted_name(node.value)
-        if parent is None:
-            return None
-        return f"{parent}.{node.attr}"
-    return None
-
-
-def _import_aliases(module: ast.Module) -> dict[str, str]:
-    aliases = {}
-    for node in ast.walk(module):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                local_name = alias.asname or alias.name.split(".", maxsplit=1)[0]
-                target_name = alias.name if alias.asname else local_name
-                aliases[local_name] = target_name
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            for alias in node.names:
-                if alias.name == "*":
-                    continue
-                local_name = alias.asname or alias.name
-                aliases[local_name] = f"{node.module}.{alias.name}"
-    return aliases
-
-
-def _resolve_import_alias(name: str, aliases: dict[str, str]) -> str:
-    parts = name.split(".")
-    for prefix_length in range(len(parts), 0, -1):
-        prefix = ".".join(parts[:prefix_length])
-        if prefix not in aliases:
-            continue
-        suffix = ".".join(parts[prefix_length:])
-        return f"{aliases[prefix]}.{suffix}" if suffix else aliases[prefix]
-    return name
-
-
-def _legacy_import_from_references(node: ast.ImportFrom) -> set[str]:
-    if node.module is None:
-        return set()
-    if node.module == LEGACY_PACKAGE_NAME:
-        return {
-            f"{LEGACY_PACKAGE_NAME}.{alias.name}"
-            if alias.name != "*"
-            else f"{LEGACY_PACKAGE_NAME}.*"
-            for alias in node.names
-        }
-    if node.module.startswith(LEGACY_PACKAGE_PREFIX):
-        return {node.module}
-    return set()
-
-
-def _legacy_string_reference(value: object) -> str | None:
-    if isinstance(value, str) and _is_legacy_reference(value):
-        return value
-    return None
-
-
-def _legacy_string_references_in_call(
-    node: ast.Call, aliases: dict[str, str]
-) -> set[str]:
-    call_name = _dotted_name(node.func)
-    if call_name is None:
-        return set()
-    call_name = _resolve_import_alias(call_name, aliases)
-    is_dynamic_import = call_name in DYNAMIC_LEGACY_IMPORT_CALLS
-    is_string_target = call_name in STRING_RESOLVED_TARGET_CALLS or call_name.endswith(
-        STRING_RESOLVED_TARGET_SUFFIXES
-    )
-    if not is_dynamic_import and not is_string_target:
-        return set()
-
-    candidate_values = [getattr(node.args[0], "value", None)] if node.args else []
-    candidate_values.extend(
-        getattr(keyword.value, "value", None)
-        for keyword in node.keywords
-        if keyword.arg in LEGACY_STRING_ARGUMENT_NAMES
-    )
-    return {
-        reference
-        for value in candidate_values
-        if (reference := _legacy_string_reference(value)) is not None
-    }
-
-
-def _legacy_references_in_test_module(path: Path) -> set[str]:
-    module = ast.parse(path.read_text(encoding="utf-8"))
-    aliases = _import_aliases(module)
-    legacy_references = set()
-    for node in ast.walk(module):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if _is_legacy_reference(alias.name):
-                    legacy_references.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            legacy_references.update(_legacy_import_from_references(node))
-        elif isinstance(node, ast.Call):
-            legacy_references.update(_legacy_string_references_in_call(node, aliases))
-    return legacy_references
 
 
 def _display_path(path: Path) -> str:
@@ -360,12 +213,9 @@ def test_source_layout_readme_reflects_document_owned_implementation():
         "public product import namespace is the branded `cachet` facade" in compact_text
     )
     assert "`cachet/` is the branded import facade" in text
+    assert "`document_kv_cache/` is the canonical implementation namespace" in text
     assert (
-        "`document_kv_cache/` is the canonical implementation and compatibility" in text
-    )
-    assert "`restaurant_kv_serving/`" not in text
-    assert (
-        "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter"
+        "`vllm_kv_injection/` and `sglang_kv_injection/` are the vendored engine adapter packages"
         in compact_text
     )
     assert "contains the current implementation" not in text
@@ -405,46 +255,32 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
         if path.stem != "__init__" and not path.stem.startswith("_")
     }
     public_modules = sorted(document_kv_cache._PUBLIC_SUBMODULES)
-    compatibility_only_modules = sorted(package_modules - set(public_modules))
     pyproject = tomllib.loads(
         (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    )
-    document_scripts = sorted(
-        name
-        for name in pyproject["project"]["scripts"]
-        if name.startswith("document-kv-")
     )
     cachet_scripts = sorted(
         name for name in pyproject["project"]["scripts"] if name.startswith("cachet-")
     )
 
     assert public_modules
-    assert set(public_modules) <= package_modules
-    assert compatibility_only_modules == ["scheduler"]
-    assert document_scripts
+    assert set(public_modules) == package_modules
     assert cachet_scripts
     for module_name in public_modules:
         assert f"`{module_name}.py`" in text
-    for module_name in compatibility_only_modules:
-        assert f"`{module_name}.py`" in text
     assert "Archived Campaign Modules" in text
     assert "`vllm-0300-campaign-archive`" in text
-    assert "Compatibility-Only Modules" in text
-    for script_name in document_scripts:
-        assert f"`{script_name}`" in text
     for script_name in cachet_scripts:
         assert f"`{script_name}`" in text
-    assert "Cachet-branded aliases" in text
+    assert "Built `cachet-kv` wheels install exactly the `cachet-*` commands" in text
     assert "`templates/`" in text
     assert "`templates/databricks/`" in text
-    assert "compatibility-preserving implementation package" in text
+    assert "canonical implementation package for Cachet" in text
     assert "canonical implementation modules" in text
     assert "Public files in this package define the document-owned classes" in text
     assert "core runtime model layer" in text
     assert "merge-settings" in text
     assert "auto-merge" in text
     assert "merged-branch cleanup" in text
-    assert "wrappers over implementation modules in `restaurant_kv_serving`" not in text
     assert "real wrapper modules" not in text
     assert "byte-identical segmented generation artifacts across SM89 GPUs" not in (
         compact_text
@@ -466,247 +302,6 @@ def test_method_docs_keep_custom_scorers_programmatic_and_remote_plans_v1_closed
         "explicit programmatic integration rather than a dynamically imported command-line plugin",
     ):
         assert required in compact_text
-
-
-def test_legacy_source_package_directory_is_removed():
-    legacy_source_dir = REPO_ROOT / "src" / ("restaurant_kv_serving")
-
-    assert not legacy_source_dir.exists()
-
-
-def test_legacy_compatibility_removal_gate_is_documented():
-    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    maintainer_reference = MAINTAINER_REFERENCE.read_text(encoding="utf-8")
-    matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(
-        encoding="utf-8"
-    )
-    gate = (REPO_ROOT / "docs" / "legacy-compatibility-removal.md").read_text(
-        encoding="utf-8"
-    )
-    compact_gate = " ".join(gate.split())
-
-    assert "`docs/legacy-compatibility-removal.md`" in maintainer_reference
-    assert "`legacy-compatibility-removal.md`" in docs_readme
-    assert "`docs/legacy-compatibility-removal.md`" in matrix
-    assert "one repository and one distribution package" in compact_gate
-    assert "`puyuanOT/cachet`" in gate
-    assert "`cachet-kv`" in gate
-    assert "primary import surface is the branded `cachet` facade" in compact_gate
-    assert (
-        "`document_kv_cache` remains the canonical implementation namespace"
-        in compact_gate
-    )
-    assert (
-        "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts"
-        in compact_gate
-    )
-    assert (
-        "New code must not add production dependencies on the legacy package"
-        in compact_gate
-    )
-    assert "from `src/`" in compact_gate
-    assert "Completed Compatibility Contract" in gate
-    assert "`pyproject.toml` no longer packages `restaurant_kv_serving`" in compact_gate
-    assert "`src/document_kv_cache/release_bundle.py` rejects" in compact_gate
-    assert "`restaurant_kv_serving/__init__.py`" in gate
-    assert "`restaurant_kv_serving/py.typed`" in gate
-    assert (
-        "`tests/test_public_package.py` proves the public package surface"
-        in compact_gate
-    )
-    assert "`tests/test_project_governance.py` prevents new accidental" in compact_gate
-    assert "PR evidence sidecars with Refactor-skill evidence" in compact_gate
-    assert "completed GPT-5.5 review" in compact_gate
-    assert (
-        "Downstream Databricks benchmark runners and QA jobs have migrated"
-        in compact_gate
-    )
-    assert "record type `document_kv.legacy_compatibility_migration.v1`" in compact_gate
-    assert (
-        "python -m document_kv_cache.legacy_compatibility --validate-json"
-        in compact_gate
-    )
-    assert (
-        "`release`, `benchmark`, `storage`, `native_probe`, and `smoke`" in compact_gate
-    )
-    assert "no checked runner uses `restaurant_kv_serving` imports" in compact_gate
-    assert "`restaurant-kv-*` commands" in compact_gate
-    assert "`legacy_migration_evidence` artifact role" in compact_gate
-    assert "Current AWS g6/L4 release evidence" in compact_gate
-    assert "optional AWS g5/A10G compatibility evidence" in compact_gate
-    assert "strict release-bundle package-wheel gates are updated" in compact_gate
-    assert (
-        "Keep `restaurant_kv_serving` absent from `pyproject.toml` package metadata"
-        in compact_gate
-    )
-    assert "Keep `src/restaurant_kv_serving` absent" in compact_gate
-    assert (
-        "Run the focused governance, public-package, and release-bundle tests"
-        in compact_gate
-    )
-    assert (
-        "Refresh the tested wheel and strict release bundle before publication"
-        in compact_gate
-    )
-
-
-def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
-    evidence_dir = (
-        REPO_ROOT / "docs" / "release-ops" / "evidence" / "legacy-migration" / "current"
-    )
-    scan_config_path = evidence_dir / "legacy-migration-scan-config.json"
-    evidence_path = evidence_dir / "legacy-migration-evidence.json"
-    validation_path = evidence_dir / "legacy-migration-validation.json"
-    readme = (evidence_dir / "README.md").read_text(encoding="utf-8")
-    scan_config = json.loads(scan_config_path.read_text(encoding="utf-8"))
-    committed_record = json.loads(evidence_path.read_text(encoding="utf-8"))
-    validation_record = json.loads(validation_path.read_text(encoding="utf-8"))
-    generated_record = legacy_compatibility_migration_to_record(
-        build_legacy_compatibility_migration_evidence_from_scan_config(
-            scan_config,
-            base_dir=REPO_ROOT,
-        )
-    )
-    evidence = evaluate_legacy_compatibility_migration_record(committed_record)
-
-    assert committed_record == generated_record
-    assert evidence.ok is True
-    assert evidence.issues == ()
-    assert validation_record["ok"] is True
-    assert validation_record == committed_record
-    assert {
-        job["category"] for job in committed_record["checked_downstream_jobs"]
-    } == set(LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES)
-    assert all(
-        job["legacy_imports_present"] is False
-        for job in committed_record["checked_downstream_jobs"]
-    )
-    assert all(
-        job["legacy_console_scripts_present"] is False
-        for job in committed_record["checked_downstream_jobs"]
-    )
-    assert all(
-        job["legacy_reference_hits"] == []
-        for job in committed_record["checked_downstream_jobs"]
-    )
-    assert {
-        evidence["hardware_target"] for evidence in committed_record["release_evidence"]
-    } == {
-        "aws-g6-l4",
-        "aws-g5-a10g",
-    }
-    for job in committed_record["checked_downstream_jobs"]:
-        for checked_path in job["checked_paths"]:
-            assert (REPO_ROOT / checked_path).is_file()
-        assert (REPO_ROOT / job["evidence_uri"]).is_file()
-    for release_evidence in committed_record["release_evidence"]:
-        assert release_evidence["runner_uses_legacy_facade"] is False
-        assert (REPO_ROOT / release_evidence["evidence_uri"]).is_file()
-    assert "This is not the benchmark report directory" in readme
-    assert "`benchmarks/README.md`" in readme
-    assert "older incompatible result mirrors are not retained" in " ".join(readme.split())
-    assert "document_kv.legacy_compatibility_migration.v1" in readme
-    assert "generated from `legacy-migration-scan-config.json`" in readme
-
-
-def test_legacy_restaurant_imports_in_tests_are_explicitly_scoped():
-    actual = {
-        str(path.relative_to(REPO_ROOT)): _legacy_references_in_test_module(path)
-        for path in sorted((REPO_ROOT / "tests").rglob("*.py"))
-        if not _is_ignored(path.relative_to(REPO_ROOT))
-    }
-    actual = {path: imports for path, imports in actual.items() if imports}
-
-    assert actual == ALLOWED_LEGACY_TEST_REFERENCES
-
-
-def test_production_source_does_not_depend_on_legacy_restaurant_package():
-    source_files = sorted((REPO_ROOT / "src").rglob("*.py"))
-    actual = {
-        str(path.relative_to(REPO_ROOT)): _legacy_references_in_test_module(path)
-        for path in source_files
-        if "restaurant_kv_serving" not in path.relative_to(REPO_ROOT).parts
-        and not _is_ignored(path.relative_to(REPO_ROOT))
-    }
-    actual = {path: imports for path, imports in actual.items() if imports}
-
-    assert actual == ALLOWED_LEGACY_SOURCE_REFERENCES
-
-
-def test_core_runtime_modules_are_document_only_after_legacy_alias_removal():
-    core_paths = (
-        REPO_ROOT / "src" / "document_kv_cache" / "models.py",
-        REPO_ROOT / "src" / "document_kv_cache" / "manifest.py",
-        REPO_ROOT / "src" / "document_kv_cache" / "planner.py",
-        REPO_ROOT / "src" / "document_kv_cache" / "service.py",
-    )
-    forbidden_tokens = (
-        "RestaurantKVRequest",
-        "RestaurantKVService",
-        "ChunkType",
-        "LEGACY_RESTAURANT_CHUNK_TYPES",
-        "restaurant_id",
-        "restaurant_reviews",
-        "selected_restaurants",
-        "keys_for_restaurant",
-    )
-
-    for path in core_paths:
-        text = path.read_text(encoding="utf-8")
-        for token in forbidden_tokens:
-            assert not re.search(rf"\b{re.escape(token)}\b", text), (
-                f"{token} leaked into {path.relative_to(REPO_ROOT)}"
-            )
-
-
-def test_legacy_reference_scanner_detects_import_edges_and_string_targets(tmp_path):
-    path = tmp_path / "sample_test.py"
-    path.write_text(
-        dedent(
-            """
-            import importlib
-            import importlib as il
-            import restaurant_kv_serving.cache as legacy_cache
-            from importlib import import_module as load_module
-            from restaurant_kv_serving import models
-            from restaurant_kv_serving import *
-            from restaurant_kv_serving.storage import DiskRangeReader
-            from pytest import importorskip as skip_optional
-            from unittest.mock import patch as mock_patch
-
-            importlib.import_module("restaurant_kv_serving.dynamic")
-            il.import_module("restaurant_kv_serving.alias_dynamic")
-            load_module(name="restaurant_kv_serving.keyword_dynamic")
-            pytest.importorskip("restaurant_kv_serving.optional")
-            skip_optional(modname="restaurant_kv_serving.alias_optional")
-            monkeypatch.setattr("restaurant_kv_serving.runner.hook", fake_hook)
-            monkeypatch.delattr(target="restaurant_kv_serving.runner.old_hook")
-            mock_patch(target="restaurant_kv_serving.mock.patch_target")
-            mock_patch.dict("restaurant_kv_serving.mock.CONFIG", {})
-            mock_patch.dict(in_dict="restaurant_kv_serving.mock.KEYWORD_CONFIG", values={})
-            mock_patch.multiple(target="restaurant_kv_serving.mock.multi_target", hook=fake_hook)
-            """
-        ),
-        encoding="utf-8",
-    )
-
-    assert _legacy_references_in_test_module(path) == {
-        "restaurant_kv_serving.*",
-        "restaurant_kv_serving.alias_dynamic",
-        "restaurant_kv_serving.alias_optional",
-        "restaurant_kv_serving.cache",
-        "restaurant_kv_serving.dynamic",
-        "restaurant_kv_serving.keyword_dynamic",
-        "restaurant_kv_serving.mock.CONFIG",
-        "restaurant_kv_serving.mock.KEYWORD_CONFIG",
-        "restaurant_kv_serving.mock.multi_target",
-        "restaurant_kv_serving.models",
-        "restaurant_kv_serving.mock.patch_target",
-        "restaurant_kv_serving.optional",
-        "restaurant_kv_serving.runner.hook",
-        "restaurant_kv_serving.runner.old_hook",
-        "restaurant_kv_serving.storage",
-    }
 
 
 def test_duplicate_literal_dict_key_scanner_reports_silent_overwrites(tmp_path):
@@ -841,8 +436,7 @@ def test_readme_documents_public_landing_page_and_scope():
         "Databricks",
     ):
         assert forbidden not in public_intro
-    assert "document-kv-cache" not in public_intro
-    assert "restaurant_kv_serving" not in text
+    assert "document-kv-" not in public_intro
     assert "package name on PyPI is owned by an unrelated project" in compact_text
 
 
@@ -888,9 +482,6 @@ def test_readme_minimal_api_uses_cachet_public_imports():
     assert "from cachet import" in minimal_api
     assert "document_kv_cache" not in minimal_api
     assert "document-kv-" not in minimal_api
-    assert "restaurant_kv_serving" not in minimal_api
-    assert "restaurant-kv-" not in minimal_api
-
     example = _first_python_fence_after(text, "## Minimal API Shape")
     namespace: dict[str, object] = {}
     exec(compile(example, "README.md", "exec"), namespace)
@@ -1015,7 +606,6 @@ def test_readme_and_root_license_document_apache_2_license():
 
     assert "Apache License 2.0" in license_section
     assert "`LICENSE`" in license_section
-    assert "`restaurant_kv_serving`" not in license_section
     assert license_text.startswith("Apache License\nVersion 2.0, January 2004")
     assert "https://www.apache.org/licenses/" in license_text
 
@@ -1038,9 +628,6 @@ def test_contributing_development_commands_use_public_package_branding():
     assert "python examples/quickstart_local.py" in text
     assert "poetry check --lock" in text
     assert "poetry run pytest -q" in text
-    assert "restaurant-kv-serving[test]" not in text
-    assert "restaurant-kv-serving/tests" not in text
-
 
 def test_readme_avoids_workspace_local_script_references():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -1086,11 +673,12 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     assert "release-ops/evidence/dependency-freshness/current/README.md" in docs_readme
     for status in (
         "Implemented",
-        "Bundle-refresh pending",
         "Release-gated",
         "Remaining",
     ):
         assert f"**{status}:**" in matrix_text
+    for stale in ("Bundle-refresh pending", "0.27.1", "legacy-v1", "five independent"):
+        assert stale not in matrix_text
 
     for required in (
         "vLLM/SGLang handoff boundary",
@@ -1109,20 +697,17 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "GPT-5.5 review",
         "Refactor skill",
         "rendered from the sealed vLLM 0.30.0 campaign records",
-        "vllm-0300-campaign-archive",
-        "five independent deployment blocks",
-        "corrected full-dataset score evaluation",
+        "Quality Benchmark v2",
+        "strict release bundle requires the release PR's sidecar",
+        "CI does not check other PRs",
     ):
         assert required in matrix_text
 
     for required_gate in (
-        "Freeze the exact vLLM 0.27.1 source",
-        "same-hardware fresh-load byte reproducibility",
-        "L40S as the sole publication handoff generator",
-        "16 independent L40S workers",
-        "concurrency 1, 2, and 4",
-        "Unsupported methods remain explicit",
-        "Publish no numeric result until",
+        "The complete strict release bundle is the outstanding publication artifact",
+        "Build it from source-bound artifacts",
+        "PR evidence sidecar",
+        "`benchmarks/verify_sealed_records.py` checks them",
     ):
         assert required_gate in compact_remaining_release_gates
 
@@ -1211,7 +796,7 @@ def test_repository_map_and_evidence_policy_are_documented():
         "../src/sglang_kv_injection/",
         "../benchmarks/",
         "release-ops/evidence/",
-        "release-ops/pr-evidence/",
+        "release-ops/maintainer/release-and-governance.md",
         "release-ops/",
         "../databricks/",
         "../databricks-runs/",
@@ -1222,7 +807,8 @@ def test_repository_map_and_evidence_policy_are_documented():
     for required_boundary in (
         "Human-readable benchmark reports",
         "Durable release-governance records",
-        "Valid `document_kv.pr_evidence.v1` sidecars",
+        "including the release PR's `document_kv.pr_evidence.v1` sidecar",
+        "PR evidence is not committed",
         "Ignored local scratch output only",
         "Never commit credentials",
         "Databricks tokens",
@@ -1262,10 +848,7 @@ def test_release_ops_doc_classifies_installed_cli_surface():
     assert "`cachet-engine-launch-config`" in release_ops
     for script_name in cachet_scripts:
         assert f"`{script_name}`" in release_ops
-    assert (
-        "The `document-kv-*` console scripts are compatibility aliases" in release_ops
-    )
-    assert "Prefer `cachet-*` in new documentation" in release_ops
+    assert "Keep maintainer commands out of the first-touch user path" in release_ops
 
 
 def _sealed_record_checker():
@@ -1314,7 +897,7 @@ def test_sealed_record_checker_rejects_tampered_records_and_regions(tmp_path):
     ]
 
 
-def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
+def test_benchmark_surface_is_exactly_the_sealed_published_records():
     from document_kv_cache.quality_v2 import (
         validate_quality_v2_readme_region,
         validate_quality_v2_report_record,
@@ -1395,8 +978,6 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         assert unsupported in root_readme
     assert "L40S was the designed sole handoff generator" in compact_root_readme
     assert "served an L4-regenerated bundle" in compact_root_readme
-    assert "same-hardware fresh-load byte reproducibility" in compact_root_readme
-    assert "cross-hardware logical/token/layout/size equivalence" in compact_root_readme
 
     quality_dir = benchmark_root / "appendix" / "vllm-0300-quality-v2"
     quality_report = json.loads(
@@ -1420,7 +1001,7 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "Unsupported Method Status",
     )
     assert sha256(unsupported_method_section.encode("utf-8")).hexdigest() == (
-        "29780187ca557ccd7ac5b0d58b95f3df582406783b44bd48cf0e51bec44d4bde"
+        "4b8d4e1a89fdb755504ba4b4ee78dfda00965bc26b1203a91b7ddf4b0ac7d300"
     )
     assert "71.390128 reconciled GPU-hours" in root_readme
     assert "exact 236/98/236 post-migration append-only prefix" in root_readme
@@ -1437,12 +1018,7 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "appendix/vllm-0300-quality-v2/quality-v2-report.json",
         "appendix/vllm-0300-auxiliary-latency-rerun/README.md",
         "appendix/vllm-0300-auxiliary-latency-rerun/auxiliary-latency-rerun.json",
-        "databricks/README.md",
-        "native-engine/README.md",
-        "sglang/README.md",
-        "storage/README.md",
         "verify_sealed_records.py",
-        "vllm/README.md",
     }
     expected_directories = {
         "_template",
@@ -1450,11 +1026,6 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
         "appendix/vllm-0271-publication-v1",
         "appendix/vllm-0300-quality-v2",
         "appendix/vllm-0300-auxiliary-latency-rerun",
-        "databricks",
-        "native-engine",
-        "sglang",
-        "storage",
-        "vllm",
     }
     assert {
         relative_path
@@ -1469,23 +1040,6 @@ def test_standalone_benchmark_surface_tracks_exact_0271_campaign_state():
     for path, expected_bytes in byte_snapshots.items():
         assert path.read_bytes() == expected_bytes
     assert benchmark_tree_snapshot() == initial_tree
-
-    subindex_expectations = {
-        "databricks": "No Databricks benchmark result is currently published",
-        "sglang": "not implemented",
-        "storage": "vLLM 0.27.1 campaign defines",
-        "vllm": "vLLM 0.27.1",
-    }
-    for folder, expected in subindex_expectations.items():
-        text = (benchmark_root / folder / "README.md").read_text(encoding="utf-8")
-        assert expected in text
-
-    archive_root = REPO_ROOT / "docs" / "release-ops" / "benchmark-archive"
-    assert (archive_root / "README.md").is_file()
-    for archive_directory in (
-        path for path in archive_root.rglob("*") if path.is_dir()
-    ):
-        assert (archive_directory / "README.md").is_file()
 
 
 def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
@@ -1531,7 +1085,19 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "summary arrays match the task summaries" in compact_text
     assert "V1 requirements matrix" in compact_text
     assert "--compatibility-databricks-run-status-json" in compact_text
-    assert "--legacy-migration-evidence-json" in compact_text
+    pr_evidence_section = _markdown_section(text, "PR Evidence")
+    for pr_evidence_flag in (
+        "cachet-pr-evidence",
+        "--pull-request-number",
+        "--pull-request-url",
+        "--refactor-skill-applied",
+        "--gpt55-review-completed",
+        "--output-json pr-evidence.json",
+    ):
+        assert pr_evidence_flag in pr_evidence_section
+    assert "it is a bundle input, not a committed file" in " ".join(
+        pr_evidence_section.split()
+    )
     assert "--data @.github/main-branch-protection.json" in text
     assert "/repos/OWNER/cachet/branches/main/protection" in text
     assert "private-repository branch protection" in text
@@ -1548,9 +1114,6 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
         compact_remaining_v1_work
     )
     assert "Current governance evidence is green" in compact_remaining_v1_work
-    assert (
-        "`legacy_migration_evidence` release-bundle role" in compact_remaining_v1_work
-    )
     assert len(maintainer_doc_paths) > 1
     for path in maintainer_doc_paths:
         maintainer_doc = path.read_text(encoding="utf-8")
@@ -1756,10 +1319,7 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     )
     assert "import cachet" in text
     assert "import document_kv_cache" in text
-    assert 'legacy_package = "restaurant" "_kv_serving"' in text
-    assert "find_spec(legacy_package) is None" in text
     assert "cachet.__all__ == document_kv_cache.__all__" in text
-    assert 'not hasattr(cachet, "RestaurantKVRequest")' in text
     assert "assert cachet.storage is document_kv_cache.storage" in text
     assert "/tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null" in text
     assert "clean PEP 517 wheel build" in compact_workflow_readme
@@ -1767,7 +1327,6 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert "verify the built wheel metadata" in compact_workflow_readme
     assert "built wheel into a fresh venv" in compact_workflow_readme
     assert "`cachet` and `document_kv_cache`" in compact_workflow_readme
-    assert "`restaurant_kv_serving`" not in compact_workflow_readme
 
 
 def test_gitignore_blocks_local_secrets_and_generated_artifacts():
@@ -1975,7 +1534,7 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
             "authors": [{"name": "Example Team"}],
             "dependencies": ["requests==2.34.2"],
             "optional-dependencies": {
-                "databricks": ["pyspark==4.1.2"],
+                "databricks": ["databricks-sdk==0.118.0"],
             },
         },
         "tool": {
@@ -1995,7 +1554,7 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
     assert _collect_poetry_dependency_versions(pyproject) == {
         "build-system.poetry-core": "==2.4.1",
         "project.dependencies.requests": "==2.34.2",
-        "project.optional-dependencies.databricks.pyspark": "==4.1.2",
+        "project.optional-dependencies.databricks.databricks-sdk": "==0.118.0",
         "tool.poetry.group.dev.dependencies.ruff": "^0.8",
     }
 
@@ -2080,7 +1639,7 @@ def test_poetry_lockfile_tracks_direct_runtime_pins():
         assert locked_versions[requirement_name] == _requirement_version(requirement)
 
     assert lock["extras"] == {
-        "databricks": ["databricks-sdk", "pyspark"],
+        "databricks": ["databricks-sdk"],
         "test": ["pytest"],
     }
 
@@ -2137,5 +1696,3 @@ def test_public_and_adapter_packages_publish_pep561_markers():
     for marker_path in marker_paths:
         assert (REPO_ROOT / marker_path).is_file()
         assert marker_path in includes
-    assert not (REPO_ROOT / "src" / ("restaurant_kv_serving") / "py.typed").exists()
-    assert "src/restaurant_kv_serving/py.typed" not in includes

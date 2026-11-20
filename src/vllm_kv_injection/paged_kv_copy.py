@@ -39,10 +39,10 @@ def inject_kv_cache_layer(
     layout: PagedKVLayout = TRITON_PACKED_KV_LAYOUT,
     validate: bool = True,
 ) -> None:
-    """Copy logical document KV into a vLLM 0.27.1 Triton cache page.
+    """Copy logical document KV into a vLLM 0.30.0 Triton cache page.
 
     Cachet artifacts remain engine-independent and expose one materialized layer
-    as ``[token, K/V, kv_head, head_dim]``.  vLLM 0.27.1's Triton backend owns a
+    as ``[token, K/V, kv_head, head_dim]``.  vLLM 0.30.0's Triton backend owns a
     packed logical page ``[block, kv_head, block_slot, 2 * head_dim]`` whose
     content dimension is ``[K | V]``.  This adapter is the only place where the
     two representations are coupled.
@@ -97,20 +97,20 @@ def validate_triton_packed_kv_cache_layer(
     *,
     block_size: int | None = None,
 ) -> None:
-    """Fail closed unless a registered cache has the vLLM 0.27.1 Triton ABI."""
+    """Fail closed unless a registered cache has the vLLM 0.30.0 Triton ABI."""
 
     torch = _torch()
     if not torch.is_tensor(dst_kv_cache_layer):
         raise TypeError("registered vLLM KV cache layer must be a torch.Tensor")
     if dst_kv_cache_layer.ndim != 4:
         raise ValueError(
-            "vLLM 0.27.1 Triton KV cache layer must have logical shape "
+            "vLLM 0.30.0 Triton KV cache layer must have logical shape "
             "[num_blocks, num_kv_heads, block_size, 2 * head_dim]"
         )
     if any(int(dimension) <= 0 for dimension in dst_kv_cache_layer.shape):
-        raise ValueError("vLLM 0.27.1 Triton KV cache dimensions must be positive")
+        raise ValueError("vLLM 0.30.0 Triton KV cache dimensions must be positive")
     if int(dst_kv_cache_layer.shape[-1]) % 2:
-        raise ValueError("vLLM 0.27.1 Triton KV cache packed content dimension must be even")
+        raise ValueError("vLLM 0.30.0 Triton KV cache packed content dimension must be even")
     if block_size is not None and int(dst_kv_cache_layer.shape[2]) != block_size:
         raise ValueError("destination Triton KV cache block dimension does not match block_size")
 

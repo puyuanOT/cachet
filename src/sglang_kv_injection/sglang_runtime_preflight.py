@@ -1408,7 +1408,7 @@ def _module_source(module_name: str) -> str | None:
 def _provider_method_names(provider: object) -> tuple[str, ...]:
     method_names = [
         method_name
-        for method_name in ("get", "set", "exists", "exist")
+        for method_name in ("get", "set", "exists")
         if callable(getattr(provider, method_name, None))
     ]
     return tuple(method_names)
@@ -1425,20 +1425,14 @@ def _backend_method_names(backend: object) -> tuple[str, ...]:
 def _provider_method_issues(provider: object) -> tuple[str, ...]:
     missing = [
         method_name
-        for method_name in ("get", "set")
+        for method_name in ("get", "set", "exists")
         if not callable(getattr(provider, method_name, None))
     ]
-    if not (
-        callable(getattr(provider, "exists", None))
-        or callable(getattr(provider, "exist", None))
-    ):
-        missing.append("exists")
     if not missing:
         return ()
     return (
         "document KV HiCache provider must provide callable methods: "
-        + ", ".join(missing)
-        + "; exist is accepted as an alias for exists",
+        + ", ".join(missing),
     )
 
 

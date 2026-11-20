@@ -630,22 +630,22 @@ def test_document_kv_hicache_backend_loads_provider_factory_from_sglang_storage_
     assert seen_storage_identities == ["runtime-model_tp_1_of_2_pp_0_of_1"]
 
 
-def test_document_kv_hicache_backend_keeps_legacy_provider_factory_signature(monkeypatch):
-    module = ModuleType("sglang_document_kv_legacy_provider")
+def test_document_kv_hicache_backend_accepts_extra_config_only_provider_factory(monkeypatch):
+    module = ModuleType("sglang_document_kv_extra_config_only_provider")
     provider = RecordingProvider()
 
     def build_provider(*, extra_config):
-        assert extra_config["tenant"] == "legacy"
+        assert extra_config["tenant"] == "minimal"
         return provider
 
     module.build_provider = build_provider
     monkeypatch.setitem(sys.modules, module.__name__, module)
     storage_config = SimpleNamespace(
         extra_config={
-            "tenant": "legacy",
+            "tenant": "minimal",
             DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: f"{module.__name__}:build_provider",
         },
-        model_name="legacy-model",
+        model_name="minimal-model",
         tp_rank=0,
         tp_size=1,
     )
@@ -653,7 +653,7 @@ def test_document_kv_hicache_backend_keeps_legacy_provider_factory_signature(mon
     backend = DocumentKVHiCacheBackend(storage_config, {})
 
     assert backend.provider is provider
-    assert backend.storage_identity == "legacy-model_tp_0_of_1"
+    assert backend.storage_identity == "minimal-model_tp_0_of_1"
 
 
 def test_document_kv_hicache_backend_loads_provider_factory_from_json(monkeypatch):
@@ -674,30 +674,24 @@ def test_document_kv_hicache_backend_loads_provider_factory_from_json(monkeypatc
     assert backend.batch_get_v1(["a", "b", "c"]) == [b"1", b"2", None]
 
 
-def test_document_kv_hicache_backend_accepts_exist_provider_alias(monkeypatch):
-    class ExistAliasProvider:
+def test_document_kv_hicache_backend_requires_provider_exists(monkeypatch):
+    class ProviderWithoutExists:
         def get(self, key):
             return b"value" if key == "doc-1" else None
-
-        def exist(self, key):
-            return key == "doc-1"
 
         def set(self, key, value):
             return None
 
-    module = ModuleType("sglang_document_kv_exist_alias_provider")
-    module.build_provider = lambda *, extra_config: ExistAliasProvider()
+    module = ModuleType("sglang_document_kv_provider_without_exists")
+    module.build_provider = lambda *, extra_config: ProviderWithoutExists()
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    backend = DocumentKVHiCacheBackend(
-        {
-            DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: f"{module.__name__}:build_provider",
-        }
-    )
 
-    assert backend.exists("doc-1") is True
-    assert backend.exist("doc-1") is True
-    assert backend.exists("missing") is False
-    assert backend.get("doc-1") == b"value"
+    with pytest.raises(TypeError, match="must provide callable methods: exists$"):
+        DocumentKVHiCacheBackend(
+            {
+                DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: f"{module.__name__}:build_provider",
+            }
+        )
 
 
 def test_document_kv_hicache_backend_exposes_sglang_runtime_storage_methods():
@@ -1578,13 +1572,13 @@ def test_document_kv_hicache_page_provider_rejects_request_id_mismatch(tmp_path)
         provider.batch_exists(["sglang-hash-page-0"], document_kv_request_context=context)
 
 
-def test_document_kv_hicache_backend_omits_context_for_legacy_batch_provider_signatures():
-    class LegacyBatchProvider(RecordingProvider):
+def test_document_kv_hicache_backend_omits_context_for_batch_providers_without_context_parameter():
+    class ContextlessBatchProvider(RecordingProvider):
         def batch_exists(self, keys, *, extra_info=None):
             self.calls.append(("batch_exists", (tuple(keys), extra_info)))
             return len(keys)
 
-    provider = LegacyBatchProvider()
+    provider = ContextlessBatchProvider()
     backend = DocumentKVHiCacheBackend(provider=provider)
     sglang_extra_info = {
         "custom_params": {

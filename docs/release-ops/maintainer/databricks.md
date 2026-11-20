@@ -18,9 +18,8 @@ inside these jobs are described in [`benchmarks.md`](benchmarks.md) and
   `--hardware-target aws-g5-a10g` (`g5.8xlarge`) derives the node type. Pass
   `--node-type-id` only when a cluster policy requires a specific matching
   size.
-- New integrations should use `DatabricksSingleNodeGPUClusterConfig`,
-  `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type`;
-  the older `g5` names remain compatibility aliases.
+- Programmatic integrations use `DatabricksSingleNodeGPUClusterConfig`,
+  `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type`.
 - Use `--spark-env-var` only for non-secret runtime configuration such as the
   Transformers model id, device, dtype, or cache-axis order. The helpers reject
   secret-looking names and Databricks PAT-shaped values.
@@ -84,14 +83,14 @@ For SGLang, the preferred handoff-backed readiness payload uses
 mkdir -p databricks-runs/sglang-smoke
 python -m document_kv_cache.databricks_sglang_smoke_job \
   --benchmark-id v1_sglang_live_001 \
-  --output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live \
+  --output-dir /Volumes/catalog/schema/volume/cachet-sglang-live \
   --runner-python-file dbfs:/benchmarks/run_sglang_smoke.py \
   --runner-script-output databricks-runs/sglang-smoke/run_sglang_smoke.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
   --generate-live-handoff \
-  --live-handoff-output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live/live-handoff \
+  --live-handoff-output-dir /Volumes/catalog/schema/volume/cachet-sglang-live/live-handoff \
   --spark-env-var CACHET_TRANSFORMERS_DEVICE=cuda \
   --spark-env-var CACHET_TRANSFORMERS_TORCH_DTYPE=bfloat16 \
   --output-json databricks-runs/sglang-smoke/databricks-sglang-smoke-submit.json

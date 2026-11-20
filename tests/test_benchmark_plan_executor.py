@@ -249,10 +249,10 @@ def test_execute_benchmark_job_plan_accepts_generated_benchmark_plan_record(tmp_
     assert all(result.skipped for result in results)
 
 
-def test_execute_benchmark_job_plan_accepts_legacy_experiment_without_new_provenance():
+def test_execute_benchmark_job_plan_accepts_experiment_with_partial_provenance():
     plan = {
         **plan_for((sys.executable, "-c", "pass")),
-        "experiment": {"model_revision": "legacy-revision"},
+        "experiment": {"model_revision": "rev-1"},
     }
 
     results = execute_benchmark_job_plan(plan, dry_run=True)

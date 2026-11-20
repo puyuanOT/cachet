@@ -54,7 +54,6 @@ from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
     NUMPY_CONSTRAINT,
-    OPENCV_PYTHON_HEADLESS_CONSTRAINT,
     PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT,
     TOKENIZERS_CONSTRAINT,
     TRANSFORMERS_CONSTRAINT,
@@ -80,11 +79,9 @@ SERVER_PORT = 8000
 BASELINE_PREFIX_CACHE_SALT = "cachet-baseline-prefill"
 CACHE_PREFIX_CACHE_SALT = "cachet-kv-cache"
 PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
-SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
-VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = OPENCV_PYTHON_HEADLESS_CONSTRAINT
 VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
 
 __all__ = [
@@ -97,7 +94,6 @@ __all__ = [
     "PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT",
     "HF_MODEL_ID",
     "SERVED_MODEL_NAME",
-    "SERVER_BASE_URL",
     "SMOKE_DATASETS",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
     "VLLMSmokeBenchmarkConfig",
@@ -130,7 +126,6 @@ __all__ = [
     "parse_args",
     "site_packages_dirs",
     "main",
-    "VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT",
 ]
 
 
@@ -246,7 +241,7 @@ class VLLMSmokeBenchmarkConfig:
 
     @property
     def local_dir(self) -> Path:
-        return self.local_root / f"document-kv-vllm-smoke-{self.benchmark_id}"
+        return self.local_root / f"cachet-vllm-smoke-{self.benchmark_id}"
 
     @property
     def hf_cache_dir(self) -> Path:
@@ -626,7 +621,7 @@ def prepared_benchmark_cache_arm(
     """Return the registered cache arm that prepared handoffs declare, if any.
 
     Handoffs from registered-method generation declare their cache method, which
-    the legacy unidentified ``document_kv_cache`` arm cannot consume.
+    the default unidentified ``document_kv_cache`` arm cannot consume.
     """
 
     if not config.uses_prepared_datasets:
@@ -1686,10 +1681,10 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
     parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
     parser.add_argument(
-        "--benchmark-handoff-allow-legacy-artifact-contract",
+        "--benchmark-handoff-allow-uncontracted-artifact",
         action="store_true",
         help=(
-            "Legacy/debug opt-out: allow handoff generation without the registered "
+            "Debug-only opt-out: allow handoff generation without the registered "
             "method's complete artifact contract."
         ),
     )
@@ -1736,7 +1731,7 @@ def _handoff_generation_config_from_args(
         output_dir=Path(_cluster_file_path(output)),
         dtype=args.benchmark_handoff_dtype,
         align_bytes=args.benchmark_handoff_align_bytes,
-        require_artifact_contract=not args.benchmark_handoff_allow_legacy_artifact_contract,
+        require_artifact_contract=not args.benchmark_handoff_allow_uncontracted_artifact,
     )
 
 

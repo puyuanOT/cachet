@@ -11,7 +11,7 @@ for maintainers and release operators; contributors start with
 | [Serving engines](maintainer/serving-engines.md) | Engine handoff records, connector actions, native probes, launch configs, live and serving smokes |
 | [Benchmarks](maintainer/benchmarks.md) | V1 benchmark contract, handoff bundles, command plans, dataset prep, runner, storage-reader benchmark |
 | [Databricks](maintainer/databricks.md) | Single-node GPU jobs, engine-probe targets, staging, submission, run status |
-| [Release and governance](maintainer/release-and-governance.md) | Release evidence, release bundles, GitHub governance, repository hygiene |
+| [Release and governance](maintainer/release-and-governance.md) | Release evidence, PR evidence, release bundles, GitHub governance, repository hygiene |
 | [Development](maintainer/development.md) | Dependency pins, isolated runtimes, dependency freshness, CI, repository rules, license |
 
 [`docs/v1-requirements-matrix.md`](../v1-requirements-matrix.md) is the audit
@@ -36,9 +36,3 @@ offline validators) is preserved at the `vllm-0300-campaign-archive` tag.
   engine block managers in vLLM and SGLang whenever adapter contracts, runtime
   pins, or launch configs change.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
-- Keep the removed `restaurant_kv_serving` facade out of source, wheels, and
-  console scripts. Current downstream migration evidence is tracked under
-  `docs/release-ops/evidence/legacy-migration/current/` as validated
-  `document_kv.legacy_compatibility_migration.v1` evidence that can be bundled
-  through the optional `legacy_migration_evidence` release-bundle role; see
-  `docs/legacy-compatibility-removal.md` for the completed removal contract.

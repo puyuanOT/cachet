@@ -12,12 +12,15 @@ from document_kv_cache.method_conformance import (
 from document_kv_cache.methods import (
     CACHET_CONNECTOR_MODE,
     DOCUMENT_KV_CACHE_ARM,
+    ENGINE_NATIVE_EXECUTION,
     MethodSpec,
     method_spec,
 )
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.reference_method import METHOD_SPEC as REFERENCE_METHOD_SPEC
 from document_kv_cache.reuse_contract import (
+    ENGINE_NATIVE_ARTIFACT_FORMAT,
+    PayloadDecodeStage,
     RuntimeOperationDescriptor,
     RuntimeOperationHandlerRegistry,
     RuntimeOperationPhase,
@@ -47,7 +50,21 @@ def test_unimplemented_method_fails_closed_unless_explicitly_allowed() -> None:
 
 
 def test_engine_native_method_conforms_without_generator() -> None:
-    result = inspect_method_conformance(method_spec(CacheGenerationMethod.LMCACHE))
+    method = MethodSpec(
+        method="example.engine_native",
+        display_name="Engine-native example",
+        arm_id=DOCUMENT_KV_CACHE_ARM,
+        connector_mode="example_engine_native",
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=True,
+        artifact_version="external-v1",
+        execution_kind=ENGINE_NATIVE_EXECUTION,
+        artifact_format=ENGINE_NATIVE_ARTIFACT_FORMAT,
+        payload_decode_stage=PayloadDecodeStage.ENGINE_NATIVE,
+        description="Application-provided engine-native connector method.",
+    )
+    result = inspect_method_conformance(method)
 
     assert result.ok
     assert not result.factory_loaded
@@ -56,10 +73,10 @@ def test_engine_native_method_conforms_without_generator() -> None:
 def test_method_conformance_cli_writes_machine_readable_record(tmp_path) -> None:
     output = tmp_path / "conformance.json"
 
-    assert main(["--method-id", "lmcache", "--output-json", str(output)]) == 0
+    assert main(["--method-id", "vanilla_prefill", "--output-json", str(output)]) == 0
     record = json.loads(output.read_text(encoding="utf-8"))
     assert record["ok"] is True
-    assert record["method"]["method_id"] == "lmcache"
+    assert record["method"]["method_id"] == "vanilla_prefill"
 
 
 def test_cpu_reference_method_exercises_strict_runtime_handoff_roundtrip() -> None:

@@ -8,20 +8,6 @@ from vllm_kv_injection.connector import KVConnector
 from vllm_kv_injection.protocol import KVCacheHandle
 
 
-class VLLMIntegrationUnavailable(RuntimeError):
-    pass
-
-
-def import_vllm() -> object:
-    try:
-        import vllm
-    except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency path.
-        if exc.name != "vllm":
-            raise
-        raise VLLMIntegrationUnavailable("vLLM is not installed in this environment") from exc
-    return vllm
-
-
 @dataclass(slots=True)
 class VLLMInjectedRequest:
     handle: KVCacheHandle

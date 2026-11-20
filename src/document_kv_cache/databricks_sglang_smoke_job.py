@@ -53,9 +53,9 @@ from document_kv_cache.sglang_smoke import (
 )
 
 
-DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME = "document-kv-sglang-smoke"
+DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME = "cachet-sglang-smoke"
 DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY = "document_kv_sglang_smoke"
-DEFAULT_DATABRICKS_SGLANG_SMOKE_PURPOSE = "document-kv-sglang-smoke"
+DEFAULT_DATABRICKS_SGLANG_SMOKE_PURPOSE = "cachet-sglang-smoke"
 SGLANG_SMOKE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse

@@ -137,7 +137,6 @@ __all__ = [
     "evaluate_repository_hygiene",
     "evaluate_repository_hygiene_paths",
     "repository_hygiene_to_record",
-    "write_repository_hygiene_json",
     "main",
 ]
 
@@ -318,15 +317,6 @@ def repository_hygiene_to_record(evidence: RepositoryHygieneEvidence) -> dict[st
         "issues": list(evidence.issues),
         "untracked_path_count": evidence.untracked_path_count,
     }
-
-
-def write_repository_hygiene_json(evidence: RepositoryHygieneEvidence, path: str | Path) -> None:
-    output_path = local_path(str(path))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(repository_hygiene_to_record(evidence), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _semantic_issues(

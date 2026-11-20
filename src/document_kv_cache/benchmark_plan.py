@@ -630,7 +630,7 @@ class BenchmarkPlanConfig:
         if type(self.complete_dataset_split) is not bool:
             raise ValueError("complete_dataset_split must be a boolean")
         scopes = tuple(self.measurement_scopes)
-        if not scopes or any(scope not in {"latency", "quality", "resource"} for scope in scopes):
+        if not scopes or any(scope not in {"latency", "quality"} for scope in scopes):
             raise ValueError("measurement_scopes contains an unsupported scope")
         if len(set(scopes)) != len(scopes):
             raise ValueError("measurement_scopes must not contain duplicates")
@@ -2367,7 +2367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--measurement-scope",
         action="append",
-        choices=("latency", "quality", "resource"),
+        choices=("latency", "quality"),
     )
     parser.add_argument(
         "--comparison-mode",

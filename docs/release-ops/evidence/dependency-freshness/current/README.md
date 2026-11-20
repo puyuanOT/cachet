@@ -15,7 +15,7 @@ The evidence distinguishes three dependency surfaces:
   accepted only when the record carries an explicit resolver-constraint reason.
 
 Current direct pins are fresh: `poetry-core==2.4.1`, `packaging==26.3`,
-`pyspark==4.1.2`, `databricks-sdk==0.118.0`, and `pytest==9.1.1`.
+`databricks-sdk==0.118.0`, and `pytest==9.1.1`.
 
 The vLLM profile is the reviewed `0.30.0+cu129` publication closure: its direct
 CUDA/runtime packages are exact pins, while all transitive packages are bound
@@ -42,7 +42,6 @@ python -m document_kv_cache.dependency_freshness \
   --pyproject pyproject.toml \
   --latest-version poetry-core=2.4.1 \
   --latest-version packaging=26.3 \
-  --latest-version pyspark=4.1.2 \
   --latest-version databricks-sdk=0.118.0 \
   --latest-version pytest=9.1.1 \
   --latest-version vllm=0.30.0+cu129 \

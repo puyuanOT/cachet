@@ -18,12 +18,11 @@ folders.
 | [`../src/sglang_kv_injection/`](../src/sglang_kv_injection/) | Serving maintainers | Vendored SGLang HiCache adapter, metadata bridge, and probe support |
 | [`../benchmarks/`](../benchmarks/) | Readers citing results | Human-readable benchmark reports plus compact sanitized JSON records |
 | [`release-ops/evidence/`](release-ops/evidence/) | Release operators | Durable non-benchmark release-governance evidence, such as dependency freshness |
-| [`release-ops/pr-evidence/`](release-ops/pr-evidence/) | PR reviewers and release auditors | Machine-checkable PR traceability sidecars |
-| [`release-ops/`](release-ops/) | Release operators | Maintainer-only release, audit, governance, and historical reference material |
+| [`release-ops/`](release-ops/) | Release operators | Maintainer-only release, audit, and governance material |
 | [`../databricks/`](../databricks/) | Databricks operators | Job templates and bundle fragments used to stage managed runs |
 | `../databricks-runs/` | Local operators only | Ignored scratch output for generated payloads, task status, and logs |
 | [`../tests/`](../tests/) | Maintainers | Unit, contract, governance, and release-bundle validation tests |
-| [`./`](./) | Maintainers and release operators | Architecture, migration, native integration, release readiness, and repository policy docs |
+| [`./`](./) | Maintainers and release operators | Architecture, native integration, release readiness, and repository policy docs |
 
 ## Reading Paths
 
@@ -40,8 +39,8 @@ For release readiness, start with [`release-ops/README.md`](release-ops/README.m
 then use [`v1-requirements-matrix.md`](v1-requirements-matrix.md),
 [`../benchmarks/README.md`](../benchmarks/README.md),
 [`release-ops/evidence/README.md`](release-ops/evidence/README.md), and
-[`release-ops/pr-evidence/README.md`](release-ops/pr-evidence/README.md) to
-follow each artifact family.
+[`release-ops/maintainer/release-and-governance.md`](release-ops/maintainer/release-and-governance.md)
+to follow each artifact family.
 
 For repository hygiene, read [`evidence-policy.md`](evidence-policy.md) before
 adding a new machine-readable artifact or a new output directory.

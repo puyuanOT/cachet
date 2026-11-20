@@ -29,9 +29,8 @@ This directory is the public benchmark surface for Cachet.
 
 The governed tables on this page are rendered byte-for-byte from the sealed
 campaign report under [`appendix/vllm-0271-publication-v1/`](appendix/vllm-0271-publication-v1/).
-The campaign ran on vLLM 0.30.0; its identifier keeps the name of the frozen
-0.27.1 design it was ported from. Two later, separately sealed measurements
-complete it:
+The campaign ran on vLLM 0.30.0; `vllm-0271-publication-v1` is its sealed
+identifier. Two later, separately sealed measurements complete it:
 
 - [Quality Benchmark v2](#quality-benchmark-v2) replaces the campaign's score
   table as the measure of answer quality. The v1 full-score protocol did not
@@ -46,15 +45,14 @@ complete it:
 The closed design is implemented by
 [`document_kv_cache.publication_campaign`](https://github.com/puyuanOT/cachet/blob/vllm-0300-campaign-archive/src/document_kv_cache/publication_campaign.py)
 at the `vllm-0300-campaign-archive` tag, which preserves the campaign machinery
-that is not part of the package. The source snapshot and generated campaign
-record must be frozen before any production job is submitted.
+that is not part of the package.
 
 | Field | Frozen value |
 | --- | --- |
 | Campaign | `vllm-0271-publication-v1` |
 | Model | `Qwen/Qwen3-4B-Instruct-2507`, served as `qwen3:4b-instruct` |
 | Model weights | bitsandbytes 4-bit runtime weights; the model identifier is not itself a prequantized 4-bit checkpoint |
-| Serving engine | vLLM `0.30.0`, ported from the frozen vLLM `0.27.1` design |
+| Serving engine | vLLM `0.30.0` |
 | Core serving hardware | AWS g6/L4, `g6.8xlarge` |
 | Handoff generation hardware | AWS g6e/L40S was the designed sole handoff generator, and generated bundles are reused by timed serving jobs. Bundles later lost from the campaign volume were regenerated on L4 with the same pinned generator and runtime (same files and sizes, not byte-identical payloads). Of the 70 latency jobs that serve a handoff bundle, 23 served an L4-regenerated bundle (all fifteen 8k Vanilla jobs, six 32k Vanilla jobs, and two BF16 jobs), 18 served a byte-identical restored copy of an L40S bundle, and the other 29 served their original L40S bundles |
 | Default document/runtime KV | Q8, `fp8_e5m2`, pre-RoPE keys with absolute-position injection |
@@ -76,13 +74,6 @@ record must be frozen before any production job is submitted.
 | Retained ledger opening | 71.390128 reconciled GPU-hours; exact 236/98/236 post-migration append-only prefix is campaign-bound; zero active reservations |
 | Frozen generation workload | 72,871,510 cache-prefix tokens across Q8 latency, BF16 latency, and complete full-score handoffs; 578.345317 GPU-hours at the 35 token/GPU-s gate |
 
-Retained legacy-v1 qualification records keep their historical cross-hardware
-raw-byte identity rule and are never reinterpreted. Fresh native-v2
-qualification uses a distinct repeat-aware sentinel: it requires same-hardware
-fresh-load byte reproducibility on L4 and L40S, cross-hardware
-logical/token/layout/size equivalence without raw-digest equality, and an
-independent L40S throughput pass.
-
 `Baseline` sends the complete logical prompt to vLLM and computes all KV at
 request time. `Vanilla KV` reuses independently generated document KV, stores
 keys pre-RoPE, assembles documents in logical order, applies absolute positions
@@ -98,7 +89,7 @@ estimated from another method.
 
 Latency values are reported in seconds. Memory values are rendered as GiB
 together with their exact byte counts. Each implemented row represents five
-matched deployment blocks; no pre-reset measurement is carried forward.
+matched deployment blocks.
 
 <!-- cachet:vllm-0271-publication-table:core-latency:begin -->
 | Method | Input context | Concurrency setting | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 toks) | P95 TTC (s, 256 toks) | P50 decode tok/s | Configured closed-loop concurrency | Peak GPU process memory | Peak host memory | Peak process-tree RSS |
@@ -163,11 +154,13 @@ exact 95% coverage, and the storage ablation has only two identities per dataset
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | N/A (method not implemented) | N/A (method not implemented) | No pinned executable integration or Cachet artifact/serving contract |
 | CacheBlend | N/A (method not implemented) | N/A (method not implemented) | Selective cross-document recomputation is not implemented |
 | InfoFlow&nbsp;KV | N/A (method not implemented) | N/A (method not implemented) | Cross-document information-flow method is not implemented |
-| LMCache | N/A (runtime not qualified) | N/A (runtime not qualified) | No combined hash-locked vLLM 0.27.1/LMCache runtime or GPU qualification |
-| Multi connector | N/A (runtime not qualified) | N/A (runtime not qualified) | No combined hash-locked vLLM 0.27.1/Multi runtime or GPU qualification |
+| LMCache | N/A (method not implemented) | N/A (method not implemented) | No built-in LMCache method, runtime, or launcher |
+| Multi connector | N/A (method not implemented) | N/A (method not implemented) | No MultiConnector transfer config or launcher |
 
-LMCache and Multi retain smoke implementations. Their vLLM 0.27.1 canary and
-publication paths require a combined hash-locked runtime and GPU qualification.
+An engine-native connector such as LMCache can be registered as an
+application-owned engine-native method (see
+[`docs/adding-a-kv-method.md`](../docs/adding-a-kv-method.md)), but Cachet ships
+none, so neither row has a smoke, canary, or publication path.
 
 ## Benchmark Dataset Score Table
 
@@ -179,9 +172,8 @@ publication paths require a combined hash-locked runtime and GPU qualification.
 > both columns sit near zero. The table is kept because it is part of the sealed
 > report. Use [Quality Benchmark v2](#quality-benchmark-v2) for answer quality.
 
-The reset requires a complete paired evaluation over every selected row in the
-four implemented datasets. The earlier small diagnostic is not retained or
-substituted for this table. Full-score values use one paired pass per method
+The table is a complete paired evaluation over every selected row in the
+four implemented datasets. Full-score values use one paired pass per method
 over all 83,653 natural-length examples, with no padding or tokenizer
 truncation. Requests run at closed-loop concurrency 4, temperature 0, natural
 EOS enabled, and a 64-token maximum. Parser-status cells report the complete
@@ -493,41 +485,17 @@ pair under `appendix/vllm-0271-publication-v1/`. Raw Jobs API responses,
 credentials, wheels, logs, generated datasets, prompt payloads, and local
 scratch output do not belong here.
 
-The frozen vLLM 0.27.1 design required all of the following:
-
-- the frozen campaign source and wheel identity;
-- one closed campaign record and exact input provenance;
-- qualified L4/A10G/L40S runtime artifacts as applicable;
-- 16 independent Q8 and 16 independent BF16 no-retry L40S
-  handoff-generation attestations;
-- 23 attempt-zero, no-retry CPU coordinator attestations (two Q8/BF16 tree
-  closers, one latency-source closer, and 20 full-score ready/evidence closers),
-  each proving zero GPU-ledger mutation;
-- matched fresh-cluster latency execution records for all planned cells;
-- the corrected complete paired score execution record;
-- resource, cache-state, and Databricks control-plane attestations; and
-- one sealed, sanitized campaign report that reaggregates both branches,
-  binds the exact 115-job latency closure and 160-shard full-score closure,
-  and projects the published tables; and
-- its exact passing `document_kv.benchmark_publication_gate.v1` pair, whose
-  `benchmark_payload_digest` equals the campaign report's
-  `closed_record_sha256`.
-
-The vLLM 0.30.0 finalizer that produced the published
-`cachet.vllm_0300_publication_report.v1` replays the latency collection, GPU
-qualification, and final full-score consumer authorities. It does not replay
-the L40S handoff-generation, Q8/BF16 tree-closure, or latency-source-closure
-attestations: after the campaign
-volume lost those trees, each latency job record instead carries its own
-handoff provenance (distributed L40S generation, a closed BF16 bundle, a
-byte-identical restored bundle, or an L4-regenerated bundle), and the
-collection verifies it per job.
+The sealed `cachet.vllm_0300_publication_report.v1` reaggregates the 115-job
+latency closure and the 160-shard full-score closure and projects the
+published tables. Its passing `document_kv.benchmark_publication_gate.v1`
+record is bound to it: the gate's `benchmark_payload_digest` equals the
+report's `closed_record_sha256`. Each latency job record carries its own
+handoff provenance: distributed L40S generation, a closed BF16 bundle, a
+byte-identical restored bundle, or an L4-regenerated bundle.
 
 The isolated one-arm latency jobs are component evidence under the `smoke`
-policy. They make no standalone comparative claim. Publication is authorized
-only by the final campaign-level report/gate pair after all Baseline and Vanilla
-components have been recomputed and the shared GPU ledger closes with no active
-reservation and the protected 124-hour headroom intact.
+policy. They make no standalone comparative claim; only the campaign-level
+report/gate pair authorizes publication.
 
 The quality v2 report and the auxiliary latency re-run record are sealed
 separately, each with its own `closed_record_sha256`, in
@@ -544,12 +512,8 @@ rendering. The renderers and the full record validators run at the
 
 ## Directory Layout
 
-| Folder | Purpose |
+| Path | Purpose |
 | --- | --- |
 | [`appendix/`](appendix/) | Sealed campaign report/gate pair, the quality v2 report, and the auxiliary latency re-run record |
-| [`databricks/`](databricks/) | Databricks evidence-handling policy; no run results are currently published |
-| [`native-engine/`](native-engine/) | Native integration scope; not a latency result folder |
-| [`sglang/`](sglang/) | Explicit unsupported/pending SGLang benchmark status |
-| [`storage/`](storage/) | Storage-ablation campaign status |
-| [`vllm/`](vllm/) | vLLM 0.30.0 campaign index |
 | [`_template/`](_template/) | Required report shape for future sanitized evidence |
+| [`verify_sealed_records.py`](verify_sealed_records.py) | Integrity checker for the sealed records, pinned files, and governed README regions |

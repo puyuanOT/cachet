@@ -1,23 +1,21 @@
 # Evidence
 
-This directory holds durable, machine-readable Cachet evidence that is not a
-Databricks benchmark report and is not a pull-request traceability sidecar.
+This directory holds durable, machine-readable Cachet release-governance
+evidence that is not a benchmark report.
 
 Use this boundary when adding evidence:
 
 - `benchmarks/` is for human-readable benchmark summaries plus their sanitized
   benchmark JSON records.
-- `../pr-evidence/` is for `document_kv.pr_evidence.v1` pull-request audit
-  sidecars.
-- `./` is for release-governance evidence with other record types, such
-  as dependency freshness and legacy compatibility migration readiness.
+- `./` is for release-governance records such as dependency freshness.
+- Per-release sidecars such as PR evidence, GitHub governance, and repository
+  hygiene are generated at bundle time and travel in the release bundle; they
+  are not committed here.
 
 Current evidence families:
 
 - [`dependency-freshness/`](dependency-freshness/) records direct package pins,
   isolated serving-profile pins, and resolver-held transitive drift.
-- [`legacy-migration/`](legacy-migration/) records source-only legacy
-  compatibility cleanup readiness.
 
 Do not commit tokens, raw service responses, logs, wheels, generated datasets,
 or local scratch output here.

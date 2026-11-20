@@ -6,9 +6,8 @@ This package is the branded Cachet import facade. It delegates to the canonical
 submodules keep their `document_kv_cache.*` module identity.
 
 New user-facing examples should prefer `cachet` and `cachet.<module>` imports.
-The underlying implementation namespace remains importable as
-`document_kv_cache` during the migration so existing benchmark evidence,
-Databricks runners, and downstream jobs keep working.
+The underlying `document_kv_cache` implementation namespace is also importable
+directly; benchmark evidence, Databricks runners, and downstream jobs use it.
 
 - `__init__.py` implements the lightweight root facade.
 - `*.py` module facades re-export typed APIs from the document-owned modules,

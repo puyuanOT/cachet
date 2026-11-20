@@ -13,19 +13,19 @@ All templates expect caller-supplied variables for workspace paths, wheel URIs,
 and the single-user identity used by Unity Catalog enabled clusters. The main
 benchmark bundle also accepts non-secret `transformers_*` variables for
 `CACHET_TRANSFORMERS_*` generator runtime settings.
-Use the `document-kv-templates` CLI from an installed wheel to inspect or
+Use the `cachet-templates` CLI from an installed wheel to inspect or
 extract these package-data files before running Databricks Asset Bundle
 commands:
 
 ```bash
-document-kv-templates list --prefix databricks
-document-kv-templates extract \
+cachet-templates list --prefix databricks
+cachet-templates extract \
   --prefix databricks \
-  --output-dir ./document-kv-templates
+  --output-dir ./cachet-templates
 ```
 
 After extraction, run `databricks bundle validate` or deploy commands from the
-extracted bundle root, such as `document-kv-templates/databricks/`,
-`document-kv-templates/databricks/storage-benchmark/`,
-`document-kv-templates/databricks/engine-probe/`, or
-`document-kv-templates/databricks/vllm-smoke/`.
+extracted bundle root, such as `cachet-templates/databricks/`,
+`cachet-templates/databricks/storage-benchmark/`,
+`cachet-templates/databricks/engine-probe/`, or
+`cachet-templates/databricks/vllm-smoke/`.

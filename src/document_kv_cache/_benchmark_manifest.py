@@ -45,14 +45,6 @@ _V1_ANSWER_PARSER_IDENTITY = MappingProxyType(
     }
 )
 VARIES_BY_ARM = "varies_by_arm"
-RESOURCE_SOFTWARE_IDENTITY_PACKAGE_KEYS = MappingProxyType(
-    {
-        "source_revision": ("cachet-source", "git:"),
-        "source_tree_sha256": ("cachet-source-tree", "sha256:"),
-        "wheel_sha256": ("cachet-kv", "wheel-sha256:"),
-        "runner_sha256": ("cachet-runner", "sha256:"),
-    }
-)
 
 
 def _build_experiment_manifest(
@@ -108,7 +100,7 @@ def _build_experiment_manifest(
         for scorer in (scorer_registry.get(dataset),)
     )
     arm_manifests: list[BenchmarkArmManifest] = []
-    allow_legacy_cache_params = (
+    allow_unscoped_cache_params = (
         sum(1 for arm in arms if arm.requires_cachet_handoff) == 1
     )
     for arm in arms:
@@ -157,7 +149,7 @@ def _build_experiment_manifest(
                             _kv_transfer_params_for_arm(
                                 example,
                                 arm,
-                                allow_legacy=allow_legacy_cache_params,
+                                allow_unscoped=allow_unscoped_cache_params,
                             )
                             if arm.requires_cachet_handoff
                             else {}
@@ -238,49 +230,49 @@ def _build_experiment_manifest(
         generation_seed=context.generation_seed,
         decode_settings=context.decode_settings,
         decoding_config_digest=decoding_config_digest,
-        model_id=_legacy_environment_summary(
+        model_id=_arm_environment_summary(
             arm_manifests,
             "served_model_id",
         ),
-        model_revision=_legacy_environment_summary(
+        model_revision=_arm_environment_summary(
             arm_manifests,
             "model_revision",
         ),
-        tokenizer_id=_legacy_environment_summary(
+        tokenizer_id=_arm_environment_summary(
             arm_manifests,
             "tokenizer_id",
         ),
-        tokenizer_revision=_legacy_environment_summary(
+        tokenizer_revision=_arm_environment_summary(
             arm_manifests,
             "tokenizer_revision",
         ),
-        engine_id=_legacy_environment_summary(
+        engine_id=_arm_environment_summary(
             arm_manifests,
             "engine_id",
         ),
-        engine_version=_legacy_environment_summary(
+        engine_version=_arm_environment_summary(
             arm_manifests,
             "engine_version",
         ),
         package_revisions=context.package_revisions,
-        hardware_target=_legacy_environment_summary(
+        hardware_target=_arm_environment_summary(
             arm_manifests,
             "hardware_target",
         ),
-        hardware_fingerprint=_legacy_environment_summary(
+        hardware_fingerprint=_arm_environment_summary(
             arm_manifests,
             "hardware_fingerprint",
         ),
         runtime_id=context.runtime_id,
-        runtime_version=_legacy_environment_summary(
+        runtime_version=_arm_environment_summary(
             arm_manifests,
             "runtime_version",
         ),
-        storage_identity=_legacy_environment_summary(
+        storage_identity=_arm_environment_summary(
             arm_manifests,
             "storage_identity",
         ),
-        cache_state=_legacy_environment_summary(
+        cache_state=_arm_environment_summary(
             arm_manifests,
             "cache_state",
         ),
@@ -380,100 +372,7 @@ def _runtime_environment_to_record(
     }
 
 
-def _resource_execution_id_digest(
-    manifest: BenchmarkExperimentManifest,
-    arm_id: str,
-) -> str:
-    """Return the physical execution identity declared for one arm."""
-
-    if not isinstance(manifest, BenchmarkExperimentManifest):
-        raise TypeError("manifest must be BenchmarkExperimentManifest")
-    _validate_non_empty_string(arm_id, "arm_id")
-    known_arm_ids = {arm.arm_id for arm in manifest.arms}
-    if arm_id not in known_arm_ids:
-        raise ValueError(f"resource evidence references unknown arm {arm_id!r}")
-    source_ids = dict(manifest.source_execution_ids)
-    if source_ids:
-        try:
-            return source_ids[arm_id]
-        except KeyError as exc:
-            raise ValueError(
-                f"manifest has no source execution identity for arm {arm_id!r}"
-            ) from exc
-    return sha256(manifest.runtime_id.encode("utf-8")).hexdigest()
-
-
-def _resource_runtime_identity_digest(
-    manifest: BenchmarkExperimentManifest,
-    arm_id: str,
-    *,
-    execution_id_digest: str | None = None,
-) -> str:
-    """Hash the runtime closure used to interpret one arm's telemetry."""
-
-    expected_execution_id = _resource_execution_id_digest(manifest, arm_id)
-    if execution_id_digest is not None and execution_id_digest != expected_execution_id:
-        raise ValueError("resource execution identity does not match the manifest")
-    arm = next(candidate for candidate in manifest.arms if candidate.arm_id == arm_id)
-    return _sha256_json(
-        {
-            "execution_id_digest": expected_execution_id,
-            "package_revisions": dict(manifest.package_revisions),
-            "runtime_environment": _runtime_environment_to_record(
-                arm.runtime_environment
-            ),
-        }
-    )
-
-
-def _resource_software_identity(
-    manifest: BenchmarkExperimentManifest,
-) -> dict[str, str]:
-    """Resolve the source/wheel/runner closure declared by the manifest."""
-
-    if not isinstance(manifest, BenchmarkExperimentManifest):
-        raise TypeError("manifest must be BenchmarkExperimentManifest")
-    return _resource_software_identity_from_package_revisions(
-        dict(manifest.package_revisions)
-    )
-
-
-def _resource_software_identity_from_package_revisions(
-    package_revisions: Mapping[str, Any],
-) -> dict[str, str]:
-    """Resolve a resource closure directly from provenance package revisions."""
-
-    if not isinstance(package_revisions, Mapping):
-        raise TypeError("package_revisions must be a mapping")
-    resolved: dict[str, str] = {}
-    for field_name, (package_name, prefix) in (
-        RESOURCE_SOFTWARE_IDENTITY_PACKAGE_KEYS.items()
-    ):
-        raw_value = package_revisions.get(package_name)
-        if not isinstance(raw_value, str) or not raw_value.startswith(prefix):
-            raise ValueError(
-                f"manifest package_revisions.{package_name} must use {prefix!r}"
-            )
-        value = raw_value.removeprefix(prefix)
-        if not value:
-            raise ValueError(
-                f"manifest package_revisions.{package_name} has no identity value"
-            )
-        if field_name != "source_revision" and (
-            len(value) != 64
-            or any(character not in "0123456789abcdef" for character in value)
-        ):
-            raise ValueError(
-                f"manifest package_revisions.{package_name} must contain a "
-                "lowercase SHA-256 digest"
-            )
-        if field_name == "source_revision" and value in {"unresolved", "unknown"}:
-            raise ValueError("manifest Cachet source revision is unresolved")
-        resolved[field_name] = value
-    return resolved
-
-
-def _legacy_environment_summary(
+def _arm_environment_summary(
     arms: Sequence[BenchmarkArmManifest],
     field_name: str,
 ) -> Any:
@@ -709,60 +608,60 @@ def benchmark_experiment_manifest_to_record(
             "tokenizer_revision": manifest.tokenizer_revision,
             "engine_id": manifest.engine_id,
             "engine_version": manifest.engine_version,
-            "canonical_model_id": _legacy_environment_summary(
+            "canonical_model_id": _arm_environment_summary(
                 manifest.arms,
                 "canonical_model_id",
             ),
-            "lora_id": _legacy_environment_summary(manifest.arms, "lora_id"),
-            "prompt_template_version": _legacy_environment_summary(
+            "lora_id": _arm_environment_summary(manifest.arms, "lora_id"),
+            "prompt_template_version": _arm_environment_summary(
                 manifest.arms,
                 "prompt_template_version",
             ),
-            "serving_platform": _legacy_environment_summary(
+            "serving_platform": _arm_environment_summary(
                 manifest.arms,
                 "serving_platform",
             ),
-            "model_dtype": _legacy_environment_summary(
+            "model_dtype": _arm_environment_summary(
                 manifest.arms,
                 "model_dtype",
             ),
-            "model_quantization": _legacy_environment_summary(
+            "model_quantization": _arm_environment_summary(
                 manifest.arms,
                 "model_quantization",
             ),
-            "runtime_kv_dtype": _legacy_environment_summary(
+            "runtime_kv_dtype": _arm_environment_summary(
                 manifest.arms,
                 "runtime_kv_dtype",
             ),
-            "layout_version": _legacy_environment_summary(
+            "layout_version": _arm_environment_summary(
                 manifest.arms,
                 "layout_version",
             ),
-            "payload_axis_order": _legacy_environment_summary(
+            "payload_axis_order": _arm_environment_summary(
                 manifest.arms,
                 "payload_axis_order",
             ),
-            "block_size": _legacy_environment_summary(
+            "block_size": _arm_environment_summary(
                 manifest.arms,
                 "block_size",
             ),
-            "key_position_encoding": _legacy_environment_summary(
+            "key_position_encoding": _arm_environment_summary(
                 manifest.arms,
                 "key_position_encoding",
             ),
-            "rope_theta": _legacy_environment_summary(
+            "rope_theta": _arm_environment_summary(
                 manifest.arms,
                 "rope_theta",
             ),
-            "rope_rotary_dim": _legacy_environment_summary(
+            "rope_rotary_dim": _arm_environment_summary(
                 manifest.arms,
                 "rope_rotary_dim",
             ),
-            "tensor_parallel_size": _legacy_environment_summary(
+            "tensor_parallel_size": _arm_environment_summary(
                 manifest.arms,
                 "tensor_parallel_size",
             ),
-            "pipeline_parallel_size": _legacy_environment_summary(
+            "pipeline_parallel_size": _arm_environment_summary(
                 manifest.arms,
                 "pipeline_parallel_size",
             ),
@@ -788,10 +687,6 @@ def benchmark_experiment_manifest_to_record(
             "source_execution_ids": [
                 {"arm_id": arm_id, "execution_id_digest": execution_id_digest}
                 for arm_id, execution_id_digest in manifest.source_execution_ids
-            ],
-            "resource_evidence_ids": [
-                {"arm_id": arm_id, "resource_evidence_sha256": evidence_digest}
-                for arm_id, evidence_digest in manifest.resource_evidence_ids
             ],
         },
         "arms": [
@@ -963,13 +858,13 @@ def _kv_transfer_params_for_arm(
     example: BenchmarkExample,
     arm: BenchmarkArm,
     *,
-    allow_legacy: bool,
+    allow_unscoped: bool,
 ) -> Mapping[str, Any]:
     if not arm.requires_cachet_handoff:
         return {}
     if arm.arm_id in example.arm_kv_transfer_params:
         return example.arm_kv_transfer_params[arm.arm_id]
-    if allow_legacy:
+    if allow_unscoped:
         return example.kv_transfer_params
     raise ValueError(
         f"example {example.dataset}:{example.example_id} is missing "

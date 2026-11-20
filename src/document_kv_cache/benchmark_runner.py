@@ -31,14 +31,10 @@ from document_kv_cache._benchmark_manifest import (
     benchmark_experiment_manifest_to_record,
 )
 from document_kv_cache._benchmark_records import (
-    BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE,
     BENCHMARK_RUN_RECORD_TYPE,
     benchmark_experiment_manifest_from_record,
-    benchmark_gate_inputs_from_record,
     benchmark_record_aggregate_issues,
     benchmark_record_payload_digest,
-    benchmark_resource_evidence_from_record,
-    benchmark_resource_evidence_to_record,
     benchmark_run_result_from_record,
     benchmark_run_result_payload_to_record,
     benchmark_run_result_to_evidence_record,
@@ -47,7 +43,6 @@ from document_kv_cache._benchmark_records import (
     write_benchmark_run_result_json,
 )
 from document_kv_cache.benchmarks import (
-    BASELINE_PREFILL_ARM,
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
@@ -82,7 +77,6 @@ from document_kv_cache._benchmark_models import (
     BenchmarkExecutionWindow,
     BenchmarkExperimentManifest,
     BenchmarkManifestContext,
-    BenchmarkResourceEvidence,
     BenchmarkRunResult,
     BenchmarkScorerManifest,
     _deep_freeze_json_mapping,
@@ -102,7 +96,6 @@ PREFIX_CACHE_SALT_MODES = ("static", "per_request")
 
 __all__ = [
     "BENCHMARK_RUN_RECORD_TYPE",
-    "BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE",
     "BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE",
     "DEFAULT_OPENAI_COMPLETIONS_ENDPOINT",
     "BenchmarkGeneration",
@@ -110,7 +103,6 @@ __all__ = [
     "BenchmarkEngine",
     "BenchmarkRunResult",
     "BenchmarkExecutionWindow",
-    "BenchmarkResourceEvidence",
     "BenchmarkArmManifest",
     "BenchmarkArmEnvironment",
     "BenchmarkScorerManifest",
@@ -126,10 +118,7 @@ __all__ = [
     "benchmark_run_result_payload_to_record",
     "benchmark_run_result_to_record",
     "benchmark_run_result_to_evidence_record",
-    "benchmark_gate_inputs_from_record",
     "benchmark_record_payload_digest",
-    "benchmark_resource_evidence_to_record",
-    "benchmark_resource_evidence_from_record",
     "benchmark_experiment_manifest_to_record",
     "benchmark_experiment_manifest_from_record",
     "benchmark_run_result_from_record",
@@ -740,7 +729,7 @@ def _build_default_benchmark_requests(
     shuffle: bool,
     seed: int | None,
     scorer_registry: DatasetScorerRegistry,
-    allow_legacy_cache_params: bool,
+    allow_unscoped_cache_params: bool,
 ) -> list[BenchmarkEngineRequest]:
     requests: list[BenchmarkEngineRequest] = []
     for example in suite.examples:
@@ -763,7 +752,7 @@ def _build_default_benchmark_requests(
                     arm=arm,
                     prompt_parts=prompt_parts,
                     repeat_index=repeat_indices_by_arm[arm.arm_id],
-                    allow_legacy_cache_params=allow_legacy_cache_params,
+                    allow_unscoped_cache_params=allow_unscoped_cache_params,
                 )
             )
     return requests
@@ -776,12 +765,12 @@ def _build_benchmark_engine_request(
     arm: BenchmarkArm,
     prompt_parts: BenchmarkPromptParts,
     repeat_index: int,
-    allow_legacy_cache_params: bool,
+    allow_unscoped_cache_params: bool,
 ) -> BenchmarkEngineRequest:
     kv_transfer_params = _kv_transfer_params_for_arm(
         example,
         arm,
-        allow_legacy=allow_legacy_cache_params,
+        allow_unscoped=allow_unscoped_cache_params,
     )
     return BenchmarkEngineRequest(
         suite_id=suite.suite_id,
@@ -860,7 +849,7 @@ def run_benchmark_suite(
         reference_arm_id=resolved_reference_arm_id,
     )
     _validate_example_arm_params(suite, arms)
-    allow_legacy_cache_params = (
+    allow_unscoped_cache_params = (
         sum(1 for arm in arms if arm.requires_cachet_handoff) == 1
     )
     scorers = scorer_registry or default_dataset_scorer_registry()
@@ -880,7 +869,7 @@ def run_benchmark_suite(
             engines,
             scorers,
             warmups=warmups,
-            allow_legacy_cache_params=allow_legacy_cache_params,
+            allow_unscoped_cache_params=allow_unscoped_cache_params,
         )
     requests = _build_default_benchmark_requests(
         suite,
@@ -889,7 +878,7 @@ def run_benchmark_suite(
         shuffle=shuffle,
         seed=seed,
         scorer_registry=scorers,
-        allow_legacy_cache_params=allow_legacy_cache_params,
+        allow_unscoped_cache_params=allow_unscoped_cache_params,
     )
     # Example interleaving (opt-in): the loop above emits each example's repeats
     # contiguously, so a request_parallelism=N wave would hydrate the SAME document
@@ -1294,7 +1283,7 @@ def _run_benchmark_warmups(
     scorer_registry: DatasetScorerRegistry,
     *,
     warmups: int,
-    allow_legacy_cache_params: bool,
+    allow_unscoped_cache_params: bool,
 ) -> None:
     example = suite.examples[0]
     prompt_parts = build_prompt_parts(
@@ -1306,7 +1295,7 @@ def _run_benchmark_warmups(
             kv_transfer_params = _kv_transfer_params_for_arm(
                 example,
                 arm,
-                allow_legacy=allow_legacy_cache_params,
+                allow_unscoped=allow_unscoped_cache_params,
             )
             request = BenchmarkEngineRequest(
                 suite_id=f"{suite.suite_id}:warmup",
@@ -1593,24 +1582,10 @@ def _validate_example_arm_params(
             expected_method = arms_by_id[arm_id].cache_method
             if declared_method is not None and declared_method != expected_method:
                 raise ValueError(
-                    f"example {example.dataset}:{example.example_id} legacy KV params "
+                    f"example {example.dataset}:{example.example_id} unscoped KV params "
                     f"declare cache method {declared_method!r}, expected "
                     f"{expected_method!r} for arm {arm_id!r}"
                 )
-
-
-def _arm_id_for_prefill(arms: Sequence[BenchmarkArm]) -> str:
-    for arm in arms:
-        if not arm.uses_cache:
-            return arm.arm_id
-    return BASELINE_PREFILL_ARM
-
-
-def _arm_id_for_cache(arms: Sequence[BenchmarkArm]) -> str:
-    for arm in arms:
-        if arm.uses_cache:
-            return arm.arm_id
-    return CACHE_REUSE_ARM
 
 
 def _request_id_for_arm(

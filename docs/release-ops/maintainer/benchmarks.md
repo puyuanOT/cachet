@@ -20,8 +20,6 @@ Running these commands as Databricks jobs is covered in
   appendix records; `python benchmarks/verify_sealed_records.py` checks them.
   Do not hand-edit sealed records or the governed README regions, and add a new
   appendix folder only after sanitized evidence passes the publication gate.
-  `docs/release-ops/pr-evidence/` stays reserved for machine-readable PR
-  validation and release-audit sidecars.
 - Provider-backed SGLang probes are integration checks. They do not populate a
   latency or score table, and the Q8 pre-RoPE SGLang serving path stays
   explicitly unsupported.
@@ -35,6 +33,10 @@ Running these commands as Databricks jobs is covered in
   with speedups and quality deltas, successful latency measurements, and
   quality rates are present. Single-dataset smoke runs are allowed but report
   `v1_evidence.ok` as false.
+- Quality v2 (`cachet.quality_v2`) is a library API with no packaged CLI: it
+  supplies the chat-framed prompts, tolerant parser, scorers, and report and
+  README-region validators for that protocol. The job runner that executed it
+  is preserved at the `vllm-0300-campaign-archive` tag.
 
 For servers exposing the OpenAI-compatible completions API, use the
 stdlib-only `OpenAICompatibleCompletionEngine`. It posts the full logical
@@ -128,8 +130,8 @@ python -m document_kv_cache.benchmark_plan \
   --benchmark-handoff-dtype bfloat16 \
   --benchmark-handoff-output-dir /data/handoffs/generated \
   --base-url http://localhost:8000 \
-  --storage-benchmark-workspace-dir /local_disk0/document-kv-storage-benchmark \
-  --storage-benchmark-uc-volume-root /Volumes/catalog/schema/volume/document-kv-storage-benchmark \
+  --storage-benchmark-workspace-dir /local_disk0/cachet-storage-benchmark \
+  --storage-benchmark-uc-volume-root /Volumes/catalog/schema/volume/cachet-storage-benchmark \
   --engine-probe-handoff-json vllm=/data/vllm-handoff.json \
   --engine-probe-output-json vllm=/data/vllm-engine-probe.json \
   --engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json \
@@ -143,7 +145,7 @@ python -m document_kv_cache.benchmark_plan \
   --engine-probe-use-builtin-factories \
   --release-evidence-output-json /data/release-evidence.json \
   --release-preflight-output-json /data/release-inputs.json \
-  --release-bundle-output-dir /data/document-kv-release-bundle \
+  --release-bundle-output-dir /data/cachet-release-bundle \
   --release-bundle-output-json /data/release-bundle-manifest.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-benchmark.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-storage.json \
@@ -151,7 +153,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-sglang-engine-probe.json \
   --release-bundle-package-wheel /data/dist/cachet_kv-0.2.0-py3-none-any.whl \
   --release-bundle-compatibility-benchmark-json /data/g5-v1-results.json \
-  --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
+  --release-bundle-pr-evidence-json /data/pr-evidence.json \
   --github-governance-output-json /data/github-governance.json \
   --repository-hygiene-output-json /data/repository-hygiene.json \
   --native-probe-factories-output-json /data/native-probe-factories.json \
@@ -262,8 +264,8 @@ read latency and throughput for Memory, Disk, and Unity Catalog Volume readers:
 
 ```bash
 python -m document_kv_cache.storage_benchmark \
-  --workspace-dir /local_disk0/document-kv-storage-benchmark \
-  --uc-volume-root /Volumes/catalog/schema/volume/document-kv-storage-benchmark \
+  --workspace-dir /local_disk0/cachet-storage-benchmark \
+  --uc-volume-root /Volumes/catalog/schema/volume/cachet-storage-benchmark \
   --chunk-count 64 \
   --chunk-bytes 1048576 \
   --repeats 4 \

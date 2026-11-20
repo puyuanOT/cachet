@@ -1253,7 +1253,7 @@ def test_sglang_smoke_accepts_baseline_only_without_handoff_fields(tmp_path):
 
     assert config.baseline_only is True
     assert config.sglang_hicache_page_keys == ()
-    assert config.local_dir == Path("/local_disk0/document-kv-sglang-smoke-sglang-1")
+    assert config.local_dir == Path("/local_disk0/cachet-sglang-smoke-sglang-1")
 
 
 def test_sglang_smoke_rejects_invalid_hicache_prefetch_threshold(tmp_path):

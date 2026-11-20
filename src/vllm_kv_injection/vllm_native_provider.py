@@ -269,7 +269,7 @@ class _MaterializedPayload:
     selected_strategy: str
     payload_mode: PayloadMode
     canonical_segmented_global_view: bool
-    legacy_fallback_reason: str | None = None
+    segment_remerge_reason: str | None = None
     checksum_validation_count: int = 0
     snapshot_copy_bytes: int = 0
     reassembly_copy_bytes: int = 0
@@ -280,7 +280,7 @@ class _MaterializedPayload:
             "selected_strategy": self.selected_strategy,
             "payload_mode": self.payload_mode.value,
             "canonical_segmented_global_view": self.canonical_segmented_global_view,
-            "legacy_fallback_reason": self.legacy_fallback_reason,
+            "segment_remerge_reason": self.segment_remerge_reason,
             "checksum_validation_count": self.checksum_validation_count,
             "snapshot_copy_bytes": self.snapshot_copy_bytes,
             "reassembly_copy_bytes": self.reassembly_copy_bytes,
@@ -519,11 +519,9 @@ class DocumentKVNativeProvider:
         self._profile_stages = _env_truthy("DOCUMENT_KV_PROFILE_STAGES")
         # Canonical Cachet segmented bundles are serialized as one flat file in
         # global token order. ``auto`` (the default) takes one owned global
-        # snapshot and falls back to the historical segment/remerge path for
-        # third-party action layouts. ``direct`` is the fail-closed experiment
-        # mode: it rejects any action layout that cannot prove the global-order
-        # invariant. ``legacy`` always exercises the old reconstruction path for
-        # apples-to-apples profiling.
+        # snapshot and falls back to the segment re-merge path for third-party
+        # action layouts. ``direct`` is the fail-closed experiment mode: it
+        # rejects any action layout that cannot prove the global-order invariant.
         self._segmented_load_strategy = _segmented_load_strategy_from_env()
         # Cold-read enforcement (opt-in): drop the payload file from the OS page cache
         # (posix_fadvise POSIX_FADV_DONTNEED) immediately before memory-mapping it, so
@@ -855,7 +853,7 @@ class DocumentKVNativeProvider:
             "selected_strategy": "unresolved",
             "payload_mode": "unknown",
             "canonical_segmented_global_view": False,
-            "legacy_fallback_reason": None,
+            "segment_remerge_reason": None,
             "checksum_validation_count": 0,
             "snapshot_copy_bytes": 0,
             "reassembly_copy_bytes": 0,
@@ -1910,11 +1908,7 @@ def _materialized_payload(
         raise ValueError(
             f"payload length {len(payload)} != expected {expected_bytes}"
         )
-    direct_segmented_snapshot = (
-        payload_mode == PayloadMode.SEGMENTED
-        and segmented_load_strategy != "legacy"
-        and canonical
-    )
+    direct_segmented_snapshot = canonical
     snapshot_copy_bytes = 0
     if direct_segmented_snapshot and not isinstance(payload, bytes):
         # A read-only mmap is still a live view of a mutable backing inode. Keep a
@@ -1949,12 +1943,10 @@ def _materialized_payload(
     return _MaterializedPayload(
         payload=segmented,
         configured_segmented_strategy=segmented_load_strategy,
-        selected_strategy="legacy_segment_remerge",
+        selected_strategy="segment_remerge",
         payload_mode=payload_mode,
         canonical_segmented_global_view=canonical,
-        legacy_fallback_reason=(
-            "configured_legacy" if segmented_load_strategy == "legacy" else canonical_issue
-        ),
+        segment_remerge_reason=canonical_issue,
         checksum_validation_count=_payload_checksum_scan_count(load.actions),
         reassembly_copy_bytes=_expected_payload_bytes(load.actions),
     )
@@ -2191,11 +2183,10 @@ def _cache_state_attestation_record(
         "eviction_requested": eviction_requested,
         "eviction_succeeded": eviction_succeeded,
         "direct_io": direct_io,
-        # ``expected_bytes`` remains the v1 compatibility alias for physical
-        # bytes expected from storage. Encoded artifacts may expand to a larger
-        # runtime KV payload after the provider decoder runs.
+        # ``expected_bytes`` is the physical byte count expected from storage,
+        # which CacheStateAttestation checks. Encoded artifacts may expand to a
+        # larger runtime KV payload after the provider decoder runs.
         "expected_bytes": expected_stored_bytes,
-        "expected_stored_bytes": expected_stored_bytes,
         "expected_runtime_bytes": expected_runtime_bytes,
         "decoded_runtime_bytes": decoded_runtime_bytes,
         "expected_tokens": expected_tokens,
@@ -2411,48 +2402,6 @@ def _libc_page_cache_calls() -> tuple[Any, Any, Any, Any] | None:
     return ctypes, libc_mmap, libc_munmap, libc_mincore
 
 
-def _read_payload_view(
-    payload_uri: str,
-    *,
-    expected_bytes: int | None = None,
-    evict_page_cache: bool = False,
-) -> memoryview:
-    """Read a merged payload fully into host RAM with a plain buffered read.
-
-    The connector previously memory-mapped the payload and faulted pages on the
-    host->device copy, which reads at only ~0.5 GB/s and does not scale with
-    concurrency. A sequential ``readinto`` in 8 MiB chunks streams at the
-    buffered-read rate (~2.2 GB/s single stream) and returns a ``memoryview`` over a
-    resident buffer.
-
-    When ``evict_page_cache`` is set the file's pages are dropped from the OS page
-    cache before reading.
-    """
-
-    path = local_path(payload_uri)
-    with open(path, "rb", buffering=0) as handle:
-        if evict_page_cache:
-            _evict_file_from_page_cache(handle.fileno())
-        size = os.fstat(handle.fileno()).st_size
-        if expected_bytes is not None and size != expected_bytes:
-            raise ValueError(
-                f"Engine adapter payload length {size} != expected {expected_bytes}"
-            )
-        buffer = bytearray(size)
-        view = memoryview(buffer)
-        offset = 0
-        while offset < size:
-            read = handle.readinto(view[offset : offset + _PREFETCH_CHUNK_BYTES])
-            if not read:
-                break
-            offset += read
-    if offset != size:
-        raise ValueError(
-            f"Engine adapter payload truncated: read {offset} of {size} expected bytes"
-        )
-    return view
-
-
 def _mmap_payload_view(
     payload_uri: str,
     *,
@@ -2550,7 +2499,7 @@ def _canonical_segmented_global_view_issue(
     order, and every entry starts at byte zero. Since connector validation already
     proves that global byte spans are contiguous, those invariants prove that
     concatenating the entries produces the global payload byte-for-byte. More
-    general third-party layouts keep using the strict legacy reconstruction path.
+    general third-party layouts keep using the strict segment re-merge path.
     """
 
     if _payload_mode(actions) != PayloadMode.SEGMENTED:
@@ -2934,12 +2883,7 @@ def _rope_cos_sin_for_load(
 _FP8_VIEW_DTYPE_NAMES = {
     "fp8": "float8_e4m3fn",
     "fp8_e4m3": "float8_e4m3fn",
-    "fp8_e4m3fn": "float8_e4m3fn",
-    "float8": "float8_e4m3fn",
-    "float8_e4m3": "float8_e4m3fn",
-    "float8_e4m3fn": "float8_e4m3fn",
     "fp8_e5m2": "float8_e5m2",
-    "float8_e5m2": "float8_e5m2",
 }
 
 
@@ -3104,7 +3048,6 @@ def _torch_dtype(dtype: str) -> object:
         "fp8": torch.uint8,
         "fp8_e4m3": torch.uint8,
         "fp8_e5m2": torch.uint8,
-        "float8": torch.uint8,
         "int8": torch.int8,
         "uint8": torch.uint8,
     }
@@ -3120,7 +3063,7 @@ def _dtype_width(dtype: str) -> int:
         return 2
     if normalized in {"fp32", "float32"}:
         return 4
-    if normalized in {"int8", "uint8", "fp8", "fp8_e4m3", "fp8_e5m2", "float8"}:
+    if normalized in {"int8", "uint8", "fp8", "fp8_e4m3", "fp8_e5m2"}:
         return 1
     raise ValueError(f"Unsupported document KV payload dtype {dtype!r}")
 
@@ -3206,7 +3149,7 @@ def _probe_kv_caches(layout: object, *, block_count: int) -> dict[str, object]:
 
 def _probe_kv_cache_shape(layout: object, *, block_count: int) -> tuple[int, ...]:
     if getattr(layout, "shares_kv_storage", False):
-        raise ValueError("vLLM 0.27.1 Triton document KV injection does not support shared KV storage")
+        raise ValueError("vLLM 0.30.0 Triton document KV injection does not support shared KV storage")
     block_size = _positive_int(
         getattr(layout, "block_size", None),
         field_name="block_size",
@@ -3274,10 +3217,9 @@ def _env_int(name: str, default: int) -> int:
 def _segmented_load_strategy_from_env() -> str:
     value = os.environ.get(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "auto")
     strategy = value.strip().lower()
-    if strategy not in {"auto", "direct", "legacy"}:
+    if strategy not in {"auto", "direct"}:
         raise ValueError(
-            f"{DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV} must be one of "
-            "'auto', 'direct', or 'legacy'"
+            f"{DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV} must be 'auto' or 'direct'"
         )
     return strategy
 

@@ -206,7 +206,7 @@ class CacheBuildConfig:
                 ).artifact_version
             except KeyError:
                 # Application-defined methods remain usable without registering a
-                # process-global MethodSpec. Their historical default is v1, while
+                # process-global MethodSpec. They default to version 1, and
                 # callers can always stamp an explicit custom version.
                 method_version = "1"
         object.__setattr__(self, "method_version", method_version)
@@ -585,7 +585,7 @@ class DocumentKVWorkflow:
                 raise
             return None
         if not require_registered_method and not spec.implemented:
-            # Explicit legacy generation may preserve an experimental label, but
+            # Explicit unregistered generation may preserve an experimental label, but
             # an unimplemented MethodSpec must never mint an executable ReusePlan.
             return None
         if require_registered_method and config.method_version != spec.artifact_version:
@@ -714,7 +714,7 @@ class DocumentKVWorkflow:
             adapter_ids=engine_adapter_ids,
             kv_gpu_bytes_per_payload_byte=gpu_byte_multiplier,
             reuse_plan=reuse_plan,
-            allow_legacy_reuse_plan=not require_registered_method,
+            allow_unregistered_method=not require_registered_method,
             method_registry=self.method_registry,
         )
 

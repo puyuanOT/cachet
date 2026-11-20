@@ -8,7 +8,7 @@ These tests cover the document KV-cache orchestration package.
 - `test_engine_adapters.py` verifies the explicit external vLLM/SGLang adapter contracts and rejection of unsupported payload or LoRA modes.
 - `test_engine_probe.py` verifies the CLI runner that loads a handoff payload, invokes a backend-provided native probe factory, and emits release-gate probe records.
 - `test_planner_materializer.py` verifies document-only planning, CPU cache reuse, and materialized byte ordering.
-- `test_scheduler.py` verifies admission queue accounting for pending GPU bytes and the legacy scheduler-module compatibility shim.
+- `test_admission.py` verifies prepared-request validation and admission queue accounting for pending GPU bytes.
 - `test_storage.py` verifies Memory, Disk, Unity Catalog Volume, and routed range readers.
 - `test_storage_benchmark.py` verifies the synthetic Memory/Disk/Unity Catalog reader benchmark and JSON/CLI result contract.
 - `test_template_resources.py` verifies listing, reading, and extracting packaged Databricks templates.

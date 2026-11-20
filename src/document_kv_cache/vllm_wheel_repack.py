@@ -1,4 +1,4 @@
-"""Deterministically repack the official vLLM 0.30.0 or 0.27.1 cu129 wheel.
+"""Deterministically repack the official vLLM 0.30.0 cu129 wheel.
 
 The benchmark runtime must never mutate installed ``site-packages``.  This
 module verifies the official release asset, applies Cachet's three approved
@@ -35,20 +35,32 @@ VLLM_PATCHED_WHEEL_MANIFEST_RECORD_TYPE = (
 )
 VLLM_PATCHED_WHEEL_MANIFEST_SCHEMA_VERSION = 2
 
-# Full-file hashes are for the exact sources shipped by the official v0.27.1
-# cu129 wheel.  Target hashes cover every byte after deterministic replacement.
-VLLM_0271_E5M2_PATCH_CLOSURE: tuple[Mapping[str, object], ...] = (
+# Official v0.30.0 cu129 wheel.  Member hashes are the wheel bytes, not the
+# GitHub tag text; target hashes cover every byte after deterministic
+# replacement.  v0.30.0 tests ``startswith("nvfp4")`` and still builds the
+# query quantizer for ``fp8_e5m2``.
+VLLM_0300_WHEEL_FILENAME = (
+    "vllm-0.30.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
+)
+VLLM_0300_WHEEL_SHA256 = (
+    "e98cb69659bfcfc849cf11ce0781a7161d40b02b51a6c3636924a5909f2aabcc"
+)
+VLLM_0300_KV_CONNECTOR_V1_BASE_SOURCE_SHA256 = (
+    "97af64220475c6c9e8273438d7b5138b105ebe6944beb783facb36a3bb76f31b"
+)
+VLLM_0300_E5M2_PATCH_CLOSURE: tuple[Mapping[str, object], ...] = (
     {
         "id": "vllm-qwen-attention-disable-e5m2-query-quant",
         "relative_path": "vllm/model_executor/layers/attention/attention.py",
-        "source_sha256": "dae6d1f09448adc1d67c776089e77e8b75378332166844a234cd8fa45c18195e",
-        "patched_sha256": "5735acfb390cf344caeec950c2f286344bcd84721ce287e0a56701f2a18bc839",
+        "source_sha256": "bc897e452f3aea603e353ca42a365d3be8836e9485d78cbf8cc4677baca2fb42",
+        "patched_sha256": "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce",
         "replacements": (
             (
                 """        if (
             self.impl.supports_quant_query_input
             and (
-                self.kv_cache_dtype.startswith("fp8") or self.kv_cache_dtype == "nvfp4"
+                self.kv_cache_dtype.startswith("fp8")
+                or self.kv_cache_dtype.startswith("nvfp4")
             )
             and not self.kv_cache_dtype.endswith("per_token_head")
         ):
@@ -61,7 +73,7 @@ VLLM_0271_E5M2_PATCH_CLOSURE: tuple[Mapping[str, object], ...] = (
             ),
         ),
         "reason": (
-            "vLLM 0.27.1 constructs an E4M3-only query quantizer for "
+            "vLLM 0.30.0 constructs an E4M3-only query quantizer for "
             "fp8_e5m2; E5M2 queries must stay in the model compute dtype."
         ),
     },
@@ -115,15 +127,15 @@ VLLM_0271_E5M2_PATCH_CLOSURE: tuple[Mapping[str, object], ...] = (
             ),
         ),
         "reason": (
-            "vLLM 0.27.1 otherwise views fp8_e5m2 pages through the platform "
+            "vLLM 0.30.0 otherwise views fp8_e5m2 pages through the platform "
             "E4M3 dtype and rejects the SM80-SM88 E5M2 software path."
         ),
     },
     {
         "id": "vllm-triton-attention-e5m2-closure",
         "relative_path": "vllm/v1/attention/backends/triton_attn.py",
-        "source_sha256": "20b4dd5f8c15cd2d6f9598268368f5fc572f2c980eb75327c5992100c49ff3ed",
-        "patched_sha256": "4dae0ff6c4ee8f11c1f195151a11673d595d457c413032e7bae7550913f94390",
+        "source_sha256": "1057663d110e1d5229495a799027b27277c1eca325d5b6780fa2259afbf58a1a",
+        "patched_sha256": "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a",
         "replacements": (
             (
                 """            if self.kv_cache_dtype.startswith("fp8") and not (
@@ -149,77 +161,6 @@ VLLM_0271_E5M2_PATCH_CLOSURE: tuple[Mapping[str, object], ...] = (
             ),
         ),
         "reason": (
-            "vLLM 0.27.1 otherwise binds Triton KV views to E4M3 and rejects "
-            "fp8_e5m2 on A10G despite the targeted SM80+ E5M2 path."
-        ),
-    },
-)
-
-
-# Official v0.30.0 cu129 wheel.  Member hashes are the wheel bytes, not the
-# GitHub tag text.  The reshape member is byte-identical to v0.27.1, so that
-# patched hash is reused.  The query-quantizer edit is retargeted because
-# v0.30.0 tests ``startswith("nvfp4")`` and still builds the quantizer for
-# ``fp8_e5m2``.
-VLLM_0300_WHEEL_FILENAME = (
-    "vllm-0.30.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
-)
-VLLM_0300_WHEEL_SHA256 = (
-    "e98cb69659bfcfc849cf11ce0781a7161d40b02b51a6c3636924a5909f2aabcc"
-)
-VLLM_0271_KV_CONNECTOR_V1_BASE_SOURCE_SHA256 = (
-    "ec3e461a802fdbc0d324d8cb200a161042da0614cfc0cb342accdd9d58dca31d"
-)
-VLLM_0300_KV_CONNECTOR_V1_BASE_SOURCE_SHA256 = (
-    "97af64220475c6c9e8273438d7b5138b105ebe6944beb783facb36a3bb76f31b"
-)
-VLLM_0300_E5M2_PATCH_CLOSURE: tuple[Mapping[str, object], ...] = (
-    {
-        "id": "vllm-qwen-attention-disable-e5m2-query-quant",
-        "relative_path": "vllm/model_executor/layers/attention/attention.py",
-        "source_sha256": "bc897e452f3aea603e353ca42a365d3be8836e9485d78cbf8cc4677baca2fb42",
-        "patched_sha256": "8efa67985b30f0521867ca0dd373c88cca165ac7a546f6aa1b17cd08392058ce",
-        "replacements": (
-            (
-                """        if (
-            self.impl.supports_quant_query_input
-            and (
-                self.kv_cache_dtype.startswith("fp8")
-                or self.kv_cache_dtype.startswith("nvfp4")
-            )
-            and not self.kv_cache_dtype.endswith("per_token_head")
-        ):
-""",
-                """        if (
-            self.impl.supports_quant_query_input
-            and self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}
-        ):
-""",
-            ),
-        ),
-        "reason": (
-            "vLLM 0.30.0 constructs an E4M3-only query quantizer for "
-            "fp8_e5m2; E5M2 queries must stay in the model compute dtype."
-        ),
-    },
-    {
-        "id": "vllm-triton-reshape-cache-e5m2-closure",
-        "relative_path": "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py",
-        "source_sha256": "6cac51475b8c656992a21b2d150acd3a16a95a7ab7d49aab151a3ef13c24b80d",
-        "patched_sha256": "0682ca7bc56edf7cea5419188a81c78510b54192471472b160aa447ac0ceeb08",
-        "replacements": VLLM_0271_E5M2_PATCH_CLOSURE[1]["replacements"],
-        "reason": (
-            "vLLM 0.30.0 otherwise views fp8_e5m2 pages through the platform "
-            "E4M3 dtype and rejects the SM80-SM88 E5M2 software path."
-        ),
-    },
-    {
-        "id": "vllm-triton-attention-e5m2-closure",
-        "relative_path": "vllm/v1/attention/backends/triton_attn.py",
-        "source_sha256": "1057663d110e1d5229495a799027b27277c1eca325d5b6780fa2259afbf58a1a",
-        "patched_sha256": "a28a150bcead50012c1559406feed0bb0b3a370dd881a8f6c3009bc090c6923a",
-        "replacements": VLLM_0271_E5M2_PATCH_CLOSURE[2]["replacements"],
-        "reason": (
             "vLLM 0.30.0 otherwise binds Triton KV views to E4M3 and rejects "
             "fp8_e5m2 on A10G despite the targeted SM80+ E5M2 path."
         ),
@@ -236,17 +177,17 @@ class PatchedVLLMWheel:
     source_wheel_sha256: str
 
 
-def repack_vllm_0271_cu129_wheel(
+def repack_vllm_cu129_wheel(
     source_wheel: str | Path,
     output_dir: str | Path,
     *,
     expected_source_wheel_sha256: str = VLLM_WHEEL_SHA256,
-    patch_closure: Sequence[Mapping[str, object]] = VLLM_0271_E5M2_PATCH_CLOSURE,
+    patch_closure: Sequence[Mapping[str, object]] = VLLM_0300_E5M2_PATCH_CLOSURE,
     approved_wheel_filename: str = VLLM_WHEEL_FILENAME,
     base_version: str = VLLM_VERSION,
     package_version: str = VLLM_PACKAGE_VERSION,
-    connector_base_source_sha256: str = VLLM_0271_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
-    temporary_wheel_name: str = ".vllm-0.27.1-cu129-cachet-repack.tmp.whl",
+    connector_base_source_sha256: str = VLLM_0300_KV_CONNECTOR_V1_BASE_SOURCE_SHA256,
+    temporary_wheel_name: str = f".vllm-{VLLM_VERSION}-cu129-cachet-repack.tmp.whl",
     runtime_lock: Mapping[str, object] | None = None,
 ) -> PatchedVLLMWheel:
     """Create a deterministic, content-addressed E5M2-patched vLLM wheel."""
@@ -388,7 +329,7 @@ def repack_vllm_0300_cu129_wheel(
 ) -> PatchedVLLMWheel:
     """Create the content-addressed E5M2 wheel from the official 0.30.0 cu129 asset."""
 
-    return repack_vllm_0271_cu129_wheel(
+    return repack_vllm_cu129_wheel(
         source_wheel,
         output_dir,
         expected_source_wheel_sha256=VLLM_0300_WHEEL_SHA256,
@@ -409,31 +350,6 @@ def repack_vllm_0300_cu129_wheel(
             "excluded_package": "vllm",
         },
     )
-
-
-def validate_patched_vllm_member_bytes(
-    member_name: str,
-    content: bytes,
-    *,
-    patch_closure: Sequence[Mapping[str, object]] = VLLM_0271_E5M2_PATCH_CLOSURE,
-) -> str:
-    """Return the approved patched digest or fail closed for one member."""
-
-    matching = [
-        patch
-        for patch in patch_closure
-        if patch.get("relative_path") == member_name
-    ]
-    if len(matching) != 1:
-        raise ValueError(f"no unique approved vLLM patch member for {member_name!r}")
-    expected = _required_patch_digest(matching[0], "patched_sha256")
-    observed = sha256(content).hexdigest()
-    if observed != expected:
-        raise ValueError(
-            f"installed vLLM member {member_name} SHA-256 {observed} does not "
-            f"match approved patched source {expected}"
-        )
-    return observed
 
 
 def _apply_patch_replacements(
@@ -647,7 +563,6 @@ def _file_sha256(path: Path) -> str:
 
 _REPACKERS_BY_VERSION = {
     "0.30.0": lambda source_wheel, output_dir: repack_vllm_0300_cu129_wheel(source_wheel, output_dir),
-    "0.27.1": lambda source_wheel, output_dir: repack_vllm_0271_cu129_wheel(source_wheel, output_dir),
 }
 
 
@@ -693,7 +608,6 @@ __all__ = [
     "VLLM_PATCHED_WHEEL_MANIFEST_RECORD_TYPE",
     "VLLM_PATCHED_WHEEL_MANIFEST_SCHEMA_VERSION",
     "main",
-    "repack_vllm_0271_cu129_wheel",
     "repack_vllm_0300_cu129_wheel",
-    "validate_patched_vllm_member_bytes",
+    "repack_vllm_cu129_wheel",
 ]

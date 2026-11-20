@@ -1,8 +1,9 @@
 """Quality benchmark protocol v2 for the vLLM 0.30.0 publication.
 
-The governed full-score campaign (protocol ``cachet-vllm-0.27.1-complete-score-v2``)
-sent raw completions without the model's chat template, stopped decoding at 64
-tokens, and scored only an exact whole-output ``<final_answer>`` block.  Under that
+The sealed vLLM 0.27.1 full-score run (protocol
+``cachet-vllm-0.27.1-complete-score-v2``) sent raw completions without the model's
+chat template, stopped decoding at 64 tokens, and scored only an exact
+whole-output ``<final_answer>`` block.  Under that
 request shape the instruct model echoed instruction text before its answer, so the
 strict parser rejected almost every output for both arms and the published quality
 numbers do not measure answer quality.

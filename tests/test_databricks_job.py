@@ -11,16 +11,11 @@ from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET
 from document_kv_cache.databricks_job import (
     DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_PURPOSE,
-    RESERVED_SINGLE_NODE_G5_TAG_KEYS,
-    RESERVED_SINGLE_NODE_GPU_TAG_KEYS,
     DatabricksBenchmarkJobConfig,
-    DatabricksSingleNodeG5ClusterConfig,
     DatabricksSingleNodeGPUClusterConfig,
     build_databricks_run_submit_payload,
-    build_single_node_g5_cluster,
     build_single_node_gpu_cluster,
     main,
-    validate_aws_g5_node_type,
     validate_aws_single_node_gpu_type,
     write_databricks_runner_script,
     write_databricks_run_submit_json,
@@ -56,7 +51,7 @@ PACKAGED_ENGINE_PROBE_BUNDLE_TEMPLATE = (
 )
 
 
-def test_build_databricks_run_submit_payload_uses_single_node_g5_cluster():
+def test_build_databricks_run_submit_payload_uses_single_node_gpu_cluster():
     config = DatabricksBenchmarkJobConfig(
         plan_json_uri="dbfs:/benchmarks/v1-plan.json",
         runner_python_file="dbfs:/benchmarks/run_plan.py",
@@ -70,7 +65,7 @@ def test_build_databricks_run_submit_payload_uses_single_node_g5_cluster():
     task = payload["tasks"][0]
     cluster = task["new_cluster"]
 
-    assert payload["run_name"] == "document-kv-v1-benchmark"
+    assert payload["run_name"] == "cachet-v1-benchmark"
     assert payload["timeout_seconds"] == 14_400
     assert task["timeout_seconds"] == 14_400
     assert task["max_retries"] == 0
@@ -124,10 +119,10 @@ def test_databricks_benchmark_job_rejects_automatic_retries(
         )
 
 
-def test_build_single_node_g5_cluster_is_reusable_with_custom_purpose():
-    cluster = build_single_node_g5_cluster(
-        DatabricksSingleNodeG5ClusterConfig(
-            purpose="document-kv-vllm-smoke",
+def test_build_single_node_gpu_cluster_is_reusable_with_custom_purpose():
+    cluster = build_single_node_gpu_cluster(
+        DatabricksSingleNodeGPUClusterConfig(
+            purpose="cachet-vllm-smoke",
             node_type_id="g5.8xlarge",
             single_user_name=SINGLE_USER_NAME,
             custom_tags={"team": "document-kv"},
@@ -138,7 +133,7 @@ def test_build_single_node_g5_cluster_is_reusable_with_custom_purpose():
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
     assert cluster["custom_tags"] == {
         "ResourceClass": "SingleNode",
-        "purpose": "document-kv-vllm-smoke",
+        "purpose": "cachet-vllm-smoke",
         "team": "document-kv",
     }
     assert cluster["single_user_name"] == SINGLE_USER_NAME
@@ -226,17 +221,17 @@ def test_databricks_run_submit_payload_rejects_secret_like_spark_env_vars():
         )
 
 
-def test_single_node_g5_cluster_rejects_reserved_custom_tags():
+def test_single_node_gpu_cluster_rejects_reserved_custom_tags():
     with pytest.raises(ValueError, match="reserved tags"):
-        DatabricksSingleNodeG5ClusterConfig(
-            purpose="document-kv-vllm-smoke",
+        DatabricksSingleNodeGPUClusterConfig(
+            purpose="cachet-vllm-smoke",
             single_user_name=SINGLE_USER_NAME,
             custom_tags={"ResourceClass": "MultiNode"},
         )
 
     with pytest.raises(ValueError, match="reserved tags"):
-        DatabricksSingleNodeG5ClusterConfig(
-            purpose="document-kv-vllm-smoke",
+        DatabricksSingleNodeGPUClusterConfig(
+            purpose="cachet-vllm-smoke",
             single_user_name=SINGLE_USER_NAME,
             custom_tags={"purpose": "wrong-purpose"},
         )
@@ -278,12 +273,12 @@ def test_databricks_config_keeps_single_user_name_for_dedicated_clusters():
     assert payload["tasks"][0]["new_cluster"]["single_user_name"] == SINGLE_USER_NAME
 
 
-def test_validate_aws_g5_node_type_alias_accepts_v1_g5_and_g6_families():
-    validate_aws_g5_node_type("g5.8xlarge")
-    validate_aws_g5_node_type("g6.8xlarge")
+def test_validate_aws_single_node_gpu_type_accepts_v1_g5_and_g6_families():
+    validate_aws_single_node_gpu_type("g5.8xlarge")
+    validate_aws_single_node_gpu_type("g6.8xlarge")
 
     with pytest.raises(ValueError, match="supported V1 Databricks node type"):
-        validate_aws_g5_node_type("g6e.8xlarge")
+        validate_aws_single_node_gpu_type("g6e.8xlarge")
 
 
 def test_databricks_defaults_share_v1_hardware_target_profile():
@@ -309,21 +304,6 @@ def test_hardware_target_node_type_helpers_map_v1_databricks_defaults():
     validate_aws_single_node_gpu_type_for_hardware_target("g6.8xlarge", "aws-g6-l4")
     with pytest.raises(ValueError, match="hardware target 'aws-g5-a10g'"):
         validate_aws_single_node_gpu_type_for_hardware_target("g6.8xlarge", "aws-g5-a10g")
-
-
-def test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names():
-    assert RESERVED_SINGLE_NODE_GPU_TAG_KEYS is RESERVED_SINGLE_NODE_G5_TAG_KEYS
-    assert DatabricksSingleNodeGPUClusterConfig is DatabricksSingleNodeG5ClusterConfig
-    assert validate_aws_single_node_gpu_type is validate_aws_g5_node_type
-    assert build_single_node_gpu_cluster is build_single_node_g5_cluster
-    assert DatabricksSingleNodeGPUClusterConfig.__name__ == "DatabricksSingleNodeGPUClusterConfig"
-    assert validate_aws_single_node_gpu_type.__name__ == "validate_aws_single_node_gpu_type"
-    assert validate_aws_single_node_gpu_type.__module__ == "document_kv_cache.databricks_job"
-    assert validate_aws_g5_node_type.__module__ == "document_kv_cache.databricks_job"
-    assert build_single_node_gpu_cluster.__name__ == "build_single_node_gpu_cluster"
-
-    validate_aws_single_node_gpu_type("g6.8xlarge")
-    validate_aws_single_node_gpu_type("g5.8xlarge")
 
 
 def test_write_databricks_runner_script_imports_plan_executor(tmp_path):
@@ -516,7 +496,7 @@ def test_main_derives_node_type_from_g5_hardware_target(tmp_path):
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
 
 
-def test_main_preserves_legacy_g5_node_type_without_hardware_target(tmp_path):
+def test_main_preserves_explicit_g5_node_type_without_hardware_target(tmp_path):
     payload_path = tmp_path / "payload.json"
 
     exit_code = main(
@@ -616,7 +596,7 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
     assert "UC Volume or workspace file path" in variables["wheel_uri"]["description"]
     assert set(jobs) == {"document_kv_v1_benchmark"}
-    assert jobs["document_kv_v1_benchmark"]["name"] == "document-kv-v1-benchmark"
+    assert jobs["document_kv_v1_benchmark"]["name"] == "cachet-v1-benchmark"
     assert task["task_key"] == "document_kv_v1_benchmark"
     assert cluster["spark_version"] == "${var.spark_version}"
     assert cluster["node_type_id"] == "${var.node_type_id}"
@@ -662,8 +642,8 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert WHEEL_URI in readme_text
     assert WHEEL_URI not in root_readme_text
     assert WHEEL_URI in maintainer_reference_text
-    assert "document-kv-databricks-job" in readme_text
-    assert "document-kv-vllm-smoke-databricks-job" in readme_text
+    assert "cachet-databricks-job" in readme_text
+    assert "cachet-vllm-smoke-databricks-job" in readme_text
     assert "--vllm-native-probe-delegate-factory" in readme_text
     assert "--sglang-native-probe-delegate-factory" in readme_text
     assert f"--engine-probe-metadata vllm={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA}" in readme_text
@@ -693,7 +673,7 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
     task = jobs["document_kv_vllm_smoke"]["tasks"][0]
     cluster = task["new_cluster"]
 
-    assert bundle["bundle"]["name"] == "document-kv-vllm-smoke"
+    assert bundle["bundle"]["name"] == "cachet-vllm-smoke"
     assert set(jobs) == {"document_kv_vllm_smoke"}
     assert set(variables) == {
         "runner_python_file",
@@ -709,7 +689,7 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
     assert variables["hardware_target"]["default"] == "aws-g6-l4"
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
-    assert jobs["document_kv_vllm_smoke"]["name"] == "document-kv-vllm-smoke"
+    assert jobs["document_kv_vllm_smoke"]["name"] == "cachet-vllm-smoke"
     assert task["task_key"] == "document_kv_vllm_smoke"
     assert cluster["spark_version"] == "${var.spark_version}"
     assert cluster["node_type_id"] == "${var.node_type_id}"
@@ -722,7 +702,7 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
         "spark.databricks.cluster.profile": "singleNode",
     }
     assert cluster["custom_tags"]["ResourceClass"] == "SingleNode"
-    assert cluster["custom_tags"]["purpose"] == "document-kv-vllm-smoke"
+    assert cluster["custom_tags"]["purpose"] == "cachet-vllm-smoke"
     assert cluster["aws_attributes"] == {"availability": "ON_DEMAND", "zone_id": "auto"}
     assert "libraries" not in task
     assert task["spark_python_task"] == {

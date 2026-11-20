@@ -116,6 +116,22 @@ def test_smoke_gate_accepts_execution_without_quality_or_manifest() -> None:
     assert gate.measurement_scopes == ()
 
 
+def test_quality_claim_without_manifest_fails_when_manifest_is_optional() -> None:
+    identity = artifact_identity()
+    original = benchmark_result(identity)
+
+    gate = evaluate_benchmark_publication_gate(
+        replace(original, experiment_manifest=None),
+        config=BenchmarkPublicationGateConfig(require_manifest=False),
+        cache_state_attestations=(cold_attestation(identity),),
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not gate.ok
+    assert "quality claim requires an experiment manifest with scorer specs" in gate.issues
+    assert not any("evidence requires an experiment manifest" in issue for issue in gate.issues)
+
+
 def test_declared_input_target_is_bound_to_every_arbitrary_arm_measurement() -> None:
     class TokenEngine:
         def __init__(self, logical_tokens: int) -> None:
@@ -659,15 +675,15 @@ def test_raw_publication_still_reextracts_even_with_an_answer_digest() -> None:
 
 def test_sanitized_record_without_parser_evidence_loads_but_fails_quality_gate() -> None:
     identity = artifact_identity()
-    legacy = json.loads(json.dumps(_sanitized_quality_record(identity)))
-    for measurement in legacy["measurements"]:
+    parserless = json.loads(json.dumps(_sanitized_quality_record(identity)))
+    for measurement in parserless["measurements"]:
         measurement["metadata"] = {
             key: value
             for key, value in measurement["metadata"].items()
             if not key.startswith("cachet.score.")
         }
 
-    restored = benchmark_run_result_from_record(legacy)
+    restored = benchmark_run_result_from_record(parserless)
     gate = evaluate_benchmark_evidence_gate(
         restored,
         policy="publication",
@@ -675,7 +691,7 @@ def test_sanitized_record_without_parser_evidence_loads_but_fails_quality_gate()
     )
 
     assert restored.evidence_sanitized
-    assert benchmark_record_aggregate_issues(legacy) == ()
+    assert benchmark_record_aggregate_issues(parserless) == ()
     assert not gate.ok
     assert any(
         "missing or mixed final-answer parser identity" in issue
@@ -814,7 +830,7 @@ def test_v1_scorer_manifest_record_omits_parser_identity_and_keeps_its_digest() 
         for key in scorer
     )
     assert canonical_json_sha256(record) == (
-        "7ba97d0ebb3d0de1d712b03a043054a91ec9456b4334c472b14c7c95fc70fbe0"
+        "1fa1bd8195769154f11b6118000553c292f24ce3e60926481f57e20a10722fa1"
     )
     assert benchmark_experiment_manifest_from_record(record) == manifest
 
@@ -1509,7 +1525,7 @@ def test_canary_gate_checks_multiple_unique_cache_salts_without_cross_product() 
     assert gate.checked_cache_requests == 4
 
 
-def test_publication_gate_rejects_quality_drop_and_unattested_cache_state() -> None:
+def test_publication_gate_requires_manifest_and_cache_state_attestation() -> None:
     identity = artifact_identity()
     original = benchmark_result(identity)
     degraded_comparison = replace(
@@ -1525,8 +1541,8 @@ def test_publication_gate_rejects_quality_drop_and_unattested_cache_state() -> N
     )
 
     assert not gate.ok
-    assert any("exact-match drop" in issue for issue in gate.issues)
-    assert any("answer-found drop" in issue for issue in gate.issues)
+    assert "publication evidence requires an experiment manifest" in gate.issues
+    assert not any("drop" in issue for issue in gate.issues)
     assert any("has no cache-state attestation" in issue for issue in gate.issues)
 
 
@@ -1592,10 +1608,10 @@ def test_vllm_telemetry_parser_joins_explicit_benchmark_request_id_without_runti
     assert gate.cold_attested_requests == 1
     assert not any("has no cache-state attestation" in issue for issue in gate.issues)
 
-    legacy = dict(telemetry)
-    legacy.pop("benchmark_request_id")
-    legacy_attestation = cache_state_attestation_from_vllm_telemetry(legacy)
-    assert legacy_attestation.request_id == "cmpl-cache-request-1-0-deadbeef"
+    uncorrelated = dict(telemetry)
+    uncorrelated.pop("benchmark_request_id")
+    uncorrelated_attestation = cache_state_attestation_from_vllm_telemetry(uncorrelated)
+    assert uncorrelated_attestation.request_id == "cmpl-cache-request-1-0-deadbeef"
 
 
 def test_publication_gate_rejects_cache_measurements_sharing_one_attested_request_id():

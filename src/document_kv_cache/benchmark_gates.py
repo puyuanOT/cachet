@@ -11,12 +11,10 @@ from typing import Any, Literal
 from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache._benchmark_manifest import (
     VARIES_BY_ARM,
-    _resource_execution_id_digest,
-    _resource_runtime_identity_digest,
-    _resource_software_identity,
     _validate_arm_runtime_environments,
 )
 from document_kv_cache.benchmark_runner import (
+    BenchmarkExperimentManifest,
     BenchmarkRunResult,
     BenchmarkScorerManifest,
 )
@@ -163,8 +161,6 @@ class BenchmarkPublicationGateConfig:
     min_quality_examples_per_row: int = 50
     allow_complete_split_below_quality_min: bool = True
     max_error_rate: float = 0.0
-    max_exact_match_drop: float = 0.02
-    max_answer_found_drop: float = 0.02
     require_method_identity: bool = True
     require_variant_identity: bool = True
     require_artifact_identity: bool = True
@@ -201,8 +197,6 @@ class BenchmarkPublicationGateConfig:
                 raise ValueError(f"{field_name} must be positive")
         for field_name in (
             "max_error_rate",
-            "max_exact_match_drop",
-            "max_answer_found_drop",
             "paired_confidence_level",
         ):
             value = getattr(self, field_name)
@@ -285,8 +279,6 @@ def benchmark_evidence_policy_config(
             min_quality_examples_per_row=1,
             min_paired_samples=1,
             min_paired_examples=1,
-            max_exact_match_drop=1.0,
-            max_answer_found_drop=1.0,
             require_method_identity=False,
             require_variant_identity=False,
             require_artifact_identity=False,
@@ -384,11 +376,11 @@ def evaluate_benchmark_publication_gate(
         active_scopes = set()
     latency_claim = "latency" in active_scopes
     quality_claim = "quality" in active_scopes
-    resource_claim = "resource" in active_scopes
-    quality_specs_by_dataset = _quality_specs_by_dataset(
-        result,
-        config=resolved,
-    ) if quality_claim else {}
+    quality_specs_by_dataset = (
+        _quality_specs_by_dataset(manifest)
+        if quality_claim and manifest is not None
+        else {}
+    )
     cold_latency_claim = latency_claim and (
         manifest is None
         or any(
@@ -399,6 +391,8 @@ def evaluate_benchmark_publication_gate(
     )
     if resolved.require_manifest and manifest is None:
         issues.append(f"{resolved.policy} evidence requires an experiment manifest")
+    elif quality_claim and manifest is None:
+        issues.append("quality claim requires an experiment manifest with scorer specs")
     if manifest is not None:
         if manifest.example_count != len(result.suite.examples):
             issues.append("experiment manifest example_count does not match the suite")
@@ -596,11 +590,7 @@ def evaluate_benchmark_publication_gate(
         ):
             issues.append(f"{row_label} is missing latency metrics")
         for metric_name in quality_specs_by_dataset.get(row.dataset, {}):
-            if _row_quality_metric_value(
-                row,
-                metric_name,
-                legacy=manifest is None,
-            ) is None:
+            if row.quality_score_means.get(metric_name) is None:
                 issues.append(f"{row_label} is missing quality metric {metric_name!r}")
                 continue
             quality_examples = len(
@@ -610,12 +600,7 @@ def evaluate_benchmark_publication_gate(
                     if measurement.dataset == row.dataset
                     and measurement.arm_id == row.arm_id
                     and measurement.ok
-                    and _measurement_quality_value(
-                        measurement,
-                        metric_name,
-                        legacy=manifest is None,
-                    )
-                    is not None
+                    and measurement.quality_scores.get(metric_name) is not None
                 }
             )
             if (
@@ -684,11 +669,7 @@ def evaluate_benchmark_publication_gate(
             paired.dataset,
             {},
         ).items():
-            interval = _paired_quality_interval(
-                paired,
-                metric_name,
-                legacy=manifest is None,
-            )
+            interval = paired.quality_score_deltas.get(metric_name)
             if interval is None:
                 issues.append(f"{row_label} is missing paired quality metric {metric_name!r}")
                 continue
@@ -716,23 +697,10 @@ def evaluate_benchmark_publication_gate(
             issues.append(f"{row_label} has no baseline comparison")
             continue
         for metric_name in quality_specs_by_dataset.get(row.dataset, {}):
-            delta = _comparison_quality_delta(
-                comparison,
-                metric_name,
-                legacy=manifest is None,
-            )
-            if delta is None:
+            if comparison.quality_score_deltas.get(metric_name) is None:
                 issues.append(
                     f"{row_label} quality delta {metric_name!r} is missing"
                 )
-            elif manifest is None:
-                tolerance = quality_specs_by_dataset[row.dataset][metric_name][1]
-                if delta < -tolerance:
-                    display_name = metric_name.replace("_", "-")
-                    issues.append(
-                        f"{row_label} {display_name} drop {-delta:.6g} exceeds "
-                        f"{tolerance:.6g}"
-                    )
 
     cachet_arm_ids = {
         arm_id
@@ -822,9 +790,6 @@ def evaluate_benchmark_publication_gate(
                 issues.append(f"cache request {measurement.request_id} is not mechanically attested cold")
             else:
                 cold_attested += 1
-
-    if resource_claim:
-        issues.extend(_resource_scope_issues(result))
 
     if benchmark_payload_digest is None:
         from document_kv_cache.benchmark_runner import (
@@ -1217,19 +1182,8 @@ def _publication_score_contract_issues(
 
 
 def _quality_specs_by_dataset(
-    result: BenchmarkRunResult,
-    *,
-    config: BenchmarkPublicationGateConfig,
+    manifest: BenchmarkExperimentManifest,
 ) -> dict[str, dict[str, tuple[str, float]]]:
-    manifest = result.experiment_manifest
-    if manifest is None:
-        return {
-            dataset: {
-                "exact_match": ("higher_is_better", config.max_exact_match_drop),
-                "answer_found": ("higher_is_better", config.max_answer_found_drop),
-            }
-            for dataset in result.suite.datasets
-        }
     return {
         scorer.dataset: {
             metric.metric_name: (metric.direction, metric.max_regression)
@@ -1237,194 +1191,6 @@ def _quality_specs_by_dataset(
         }
         for scorer in manifest.scorer_identities
     }
-
-
-def _measurement_quality_value(
-    measurement: Any,
-    metric_name: str,
-    *,
-    legacy: bool,
-) -> float | None:
-    value = measurement.quality_scores.get(metric_name)
-    if value is not None:
-        return float(value)
-    if legacy and metric_name == "exact_match":
-        diagnostic = measurement.exact_match
-        return None if diagnostic is None else float(diagnostic)
-    if legacy and metric_name == "answer_found":
-        diagnostic = measurement.answer_found
-        return None if diagnostic is None else float(diagnostic)
-    return None
-
-
-def _row_quality_metric_value(
-    row: Any,
-    metric_name: str,
-    *,
-    legacy: bool,
-) -> float | None:
-    value = row.quality_score_means.get(metric_name)
-    if value is not None:
-        return float(value)
-    if legacy and metric_name == "exact_match":
-        rate = row.exact_match_rate
-        return None if rate is None else float(rate)
-    if legacy and metric_name == "answer_found":
-        rate = row.answer_found_rate
-        return None if rate is None else float(rate)
-    return None
-
-
-def _paired_quality_interval(
-    paired: Any,
-    metric_name: str,
-    *,
-    legacy: bool,
-) -> Any:
-    interval = paired.quality_score_deltas.get(metric_name)
-    if interval is not None:
-        return interval
-    if legacy and metric_name == "exact_match":
-        return paired.exact_match_delta
-    if legacy and metric_name == "answer_found":
-        return paired.answer_found_delta
-    return None
-
-
-def _comparison_quality_delta(
-    comparison: Any,
-    metric_name: str,
-    *,
-    legacy: bool,
-) -> float | None:
-    value = comparison.quality_score_deltas.get(metric_name)
-    if value is not None:
-        return float(value)
-    if legacy and metric_name == "exact_match":
-        delta = comparison.exact_match_delta
-        return None if delta is None else float(delta)
-    if legacy and metric_name == "answer_found":
-        delta = comparison.answer_found_delta
-        return None if delta is None else float(delta)
-    return None
-
-
-def _resource_scope_issues(result: BenchmarkRunResult) -> tuple[str, ...]:
-    manifest = result.experiment_manifest
-    if manifest is None:
-        return ("resource evidence requires an experiment manifest",)
-    from document_kv_cache.benchmark_runner import (
-        benchmark_resource_evidence_to_record,
-    )
-
-    issues: list[str] = []
-    expected_arm_ids = {arm.arm_id for arm in manifest.arms}
-    evidence_by_arm = {item.arm_id: item for item in result.resource_evidence}
-    observed_arm_ids = set(evidence_by_arm)
-    for arm_id in sorted(expected_arm_ids.difference(observed_arm_ids)):
-        issues.append(
-            f"resource arm {arm_id!r} has no governed runtime resource evidence"
-        )
-    for arm_id in sorted(observed_arm_ids.difference(expected_arm_ids)):
-        issues.append(f"resource evidence references unknown arm {arm_id!r}")
-    declared_ids = dict(manifest.resource_evidence_ids)
-    actual_ids = {
-        arm_id: str(benchmark_resource_evidence_to_record(item)["record_sha256"])
-        for arm_id, item in evidence_by_arm.items()
-    }
-    if declared_ids != actual_ids:
-        issues.append(
-            "experiment manifest resource_evidence_ids do not match resource records"
-        )
-    windows_by_arm = {
-        window.arm_id: window
-        for window in result.execution_windows
-        if window.arm_id != "all_arms"
-    }
-    software_closures: set[tuple[str, str, str, str]] = set()
-    telemetry_digests: list[str] = []
-    try:
-        declared_software_identity = _resource_software_identity(manifest)
-    except ValueError as exc:
-        declared_software_identity = {}
-        issues.append(f"resource manifest software identity is invalid: {exc}")
-    for arm_id, evidence in sorted(evidence_by_arm.items()):
-        label = f"resource arm {arm_id!r}"
-        if evidence.experiment_id != manifest.experiment_id:
-            issues.append(f"{label} changes experiment identity")
-        try:
-            expected_execution_id = _resource_execution_id_digest(
-                manifest,
-                arm_id,
-            )
-            expected_runtime_identity = _resource_runtime_identity_digest(
-                manifest,
-                arm_id,
-                execution_id_digest=evidence.execution_id_digest,
-            )
-        except ValueError as exc:
-            issues.append(f"{label} has invalid identity binding: {exc}")
-        else:
-            if evidence.execution_id_digest != expected_execution_id:
-                issues.append(f"{label} changes execution identity")
-            if evidence.runtime_identity_sha256 != expected_runtime_identity:
-                issues.append(f"{label} changes runtime identity")
-        window = windows_by_arm.get(arm_id)
-        if window is None:
-            issues.append(f"{label} has no arm execution window")
-        elif window.started_at_seconds is None or window.ended_at_seconds is None:
-            issues.append(f"{label} execution window is not timestamped")
-        elif (
-            evidence.measurement_started_at_seconds != window.started_at_seconds
-            or evidence.measurement_ended_at_seconds != window.ended_at_seconds
-        ):
-            issues.append(f"{label} measurement window does not match execution")
-        if not evidence.complete:
-            issues.append(f"{label} telemetry coverage is incomplete")
-        if evidence.error_count:
-            issues.append(f"{label} telemetry contains sampling errors")
-        if evidence.sample_count < evidence.expected_sample_count:
-            issues.append(f"{label} has fewer samples than required")
-        if evidence.source_revision.strip().lower() in {"", "unresolved", "unknown"}:
-            issues.append(f"{label} has unresolved source revision")
-        observed_software_identity = {
-            "source_revision": evidence.source_revision,
-            "source_tree_sha256": evidence.source_tree_sha256,
-            "wheel_sha256": evidence.wheel_sha256,
-            "runner_sha256": evidence.runner_sha256,
-        }
-        if observed_software_identity != declared_software_identity:
-            issues.append(
-                f"{label} source/wheel/runner identity does not match the manifest"
-            )
-        for field_name in (
-            "peak_gpu_process_memory_bytes",
-            "peak_process_tree_rss_bytes",
-            "peak_host_memory_used_bytes",
-        ):
-            if getattr(evidence, field_name) <= 0:
-                issues.append(f"{label} has no positive {field_name}")
-        software_closures.add(
-            (
-                evidence.source_revision,
-                evidence.source_tree_sha256,
-                evidence.wheel_sha256,
-                evidence.runner_sha256,
-            )
-        )
-        telemetry_digests.append(evidence.telemetry_sha256)
-    if manifest.comparison_mode == "methods_same_setting" and len(software_closures) > 1:
-        issues.append(
-            "method comparison resource arms use different source/wheel/runner identities"
-        )
-    if (
-        manifest.execution_isolation_mode == "separate_process_or_job"
-        and len(telemetry_digests) != len(set(telemetry_digests))
-    ):
-        issues.append(
-            "separate resource arms must use distinct telemetry sidecars"
-        )
-    return tuple(issues)
 
 
 def _cachet_arm_contract_issues(

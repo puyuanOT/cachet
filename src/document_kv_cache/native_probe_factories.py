@@ -140,7 +140,6 @@ _BUILTIN_NATIVE_PROBE_FACTORY_TARGETS = frozenset(
         ("document_kv_cache.native_probe_factories", "sglang_native_probe_factory"),
     }
 )
-_FORBIDDEN_DELEGATE_FACTORY_MODULE_PREFIXES = ("restaurant" "_kv_serving",)
 
 
 class NativeProbeFactoryUnavailable(RuntimeError):
@@ -244,12 +243,6 @@ def inspect_builtin_native_probe_factory(backend: ServingBackend | str) -> Nativ
             f"{package_name} {version} is installed; set "
             f"{_delegate_factory_env_name(backend)} to a backend-native "
             "Document KV probe factory"
-        )
-        supported = False
-    elif _is_forbidden_delegate_factory_path(delegate_factory_path):
-        reason = (
-            f"delegate native probe factory {delegate_factory_path!r} points at the source-only "
-            "legacy compatibility module; set the delegate to a backend-native block-manager adapter"
         )
         supported = False
     elif _is_builtin_native_probe_factory_path(delegate_factory_path):
@@ -572,17 +565,6 @@ def _is_builtin_native_probe_factory_path(factory_path: str) -> bool:
     return _factory_path_target(factory_path) in _BUILTIN_NATIVE_PROBE_FACTORY_TARGETS
 
 
-def _is_forbidden_delegate_factory_path(factory_path: str) -> bool:
-    target = _factory_path_target(factory_path)
-    if target is None:
-        return False
-    module_name, _attribute_name = target
-    return any(
-        module_name == prefix or module_name.startswith(f"{prefix}.")
-        for prefix in _FORBIDDEN_DELEGATE_FACTORY_MODULE_PREFIXES
-    )
-
-
 def _is_builtin_native_probe_factory(factory: Any) -> bool:
     return factory is vllm_native_probe_factory or factory is sglang_native_probe_factory
 
@@ -626,11 +608,12 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
         issues.extend(_required_str_field(factory, field_name, label))
     issues.extend(_optional_str_field(factory, "package_version", label))
     issues.extend(_optional_str_field(factory, "delegate_factory_path", label))
-    if "delegate_adapter_contract_valid" in factory:
-        issues.extend(_bool_field(factory, "delegate_adapter_contract_valid", label))
-    if "delegate_runtime_contract_valid" in factory:
-        issues.extend(_bool_field(factory, "delegate_runtime_contract_valid", label))
-    for field_name in ("package_importable", "supported"):
+    for field_name in (
+        "delegate_adapter_contract_valid",
+        "delegate_runtime_contract_valid",
+        "package_importable",
+        "supported",
+    ):
         issues.extend(_bool_field(factory, field_name, label))
     adapter_contract = factory.get("adapter_contract")
     if not isinstance(adapter_contract, Mapping):
@@ -682,29 +665,19 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
             issues.append(f"{label}.package_version must be non-empty when supported is true")
         if not isinstance(factory.get("delegate_factory_path"), str) or not factory["delegate_factory_path"]:
             issues.append(f"{label}.delegate_factory_path must be non-empty when supported is true")
-        elif _is_forbidden_delegate_factory_path(factory["delegate_factory_path"]):
-            issues.append(
-                f"{label}.delegate_factory_path must not point at the source-only legacy compatibility module"
-            )
         elif _is_builtin_native_probe_factory_path(factory["delegate_factory_path"]):
             issues.append(
                 f"{label}.delegate_factory_path must not point at a built-in native probe factory "
                 "when supported is true"
             )
-        if "delegate_adapter_contract_valid" in factory or "delegate_adapter_contract" in factory:
-            if factory.get("delegate_adapter_contract_valid") is not True:
-                issues.append(
-                    f"{label}.delegate_adapter_contract_valid must be true when supported is true"
-                )
-            if not isinstance(delegate_adapter_contract, Mapping):
-                issues.append(f"{label}.delegate_adapter_contract must be an object when supported is true")
-        if "delegate_runtime_contract_valid" in factory or "delegate_runtime_contract" in factory:
-            if factory.get("delegate_runtime_contract_valid") is not True:
-                issues.append(
-                    f"{label}.delegate_runtime_contract_valid must be true when supported is true"
-                )
-            if not isinstance(delegate_runtime_contract, Mapping):
-                issues.append(f"{label}.delegate_runtime_contract must be an object when supported is true")
+        if factory.get("delegate_adapter_contract_valid") is not True:
+            issues.append(f"{label}.delegate_adapter_contract_valid must be true when supported is true")
+        if not isinstance(delegate_adapter_contract, Mapping):
+            issues.append(f"{label}.delegate_adapter_contract must be an object when supported is true")
+        if factory.get("delegate_runtime_contract_valid") is not True:
+            issues.append(f"{label}.delegate_runtime_contract_valid must be true when supported is true")
+        if not isinstance(delegate_runtime_contract, Mapping):
+            issues.append(f"{label}.delegate_runtime_contract must be an object when supported is true")
     serving_profile = factory.get("serving_environment_profile")
     if not isinstance(serving_profile, Mapping):
         issues.append(f"{label}.serving_environment_profile must be an object")

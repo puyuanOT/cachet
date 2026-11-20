@@ -54,7 +54,7 @@ def test_template_resources_can_be_filtered_read_and_serialized():
     ]
     assert record["record_type"] == TEMPLATE_RESOURCE_RECORD_TYPE
     assert record["resources"][0]["name"] == "databricks/storage-benchmark/README.md"
-    assert "document-kv-storage-benchmark" in bundle_text
+    assert "cachet-storage-benchmark" in bundle_text
     assert "libraries:" not in bundle_text
     assert "--package-wheel-uri" in bundle_text
 
@@ -84,14 +84,14 @@ def test_packaged_engine_probe_template_matches_checked_in_bundle_install_path()
 def test_packaged_databricks_readme_explains_installed_wheel_extraction():
     readme_text = read_template_resource("databricks/README.md")
 
-    assert "document-kv-templates list --prefix databricks" in readme_text
-    assert "document-kv-templates extract" in readme_text
+    assert "cachet-templates list --prefix databricks" in readme_text
+    assert "cachet-templates extract" in readme_text
     assert "--prefix databricks" in readme_text
-    assert "--output-dir ./document-kv-templates" in readme_text
-    assert "document-kv-templates/databricks/" in readme_text
-    assert "document-kv-templates/databricks/storage-benchmark/" in readme_text
-    assert "document-kv-templates/databricks/engine-probe/" in readme_text
-    assert "document-kv-templates/databricks/vllm-smoke/" in readme_text
+    assert "--output-dir ./cachet-templates" in readme_text
+    assert "cachet-templates/databricks/" in readme_text
+    assert "cachet-templates/databricks/storage-benchmark/" in readme_text
+    assert "cachet-templates/databricks/engine-probe/" in readme_text
+    assert "cachet-templates/databricks/vllm-smoke/" in readme_text
 
 
 def test_template_resource_validates_names():
@@ -115,7 +115,7 @@ def test_extract_template_resources_preserves_relative_paths_and_requires_overwr
         "databricks/storage-benchmark/README.md",
         "databricks/storage-benchmark/databricks.yml",
     ]
-    assert "document-kv-storage-benchmark" in (
+    assert "cachet-storage-benchmark" in (
         tmp_path / "templates" / "databricks" / "storage-benchmark" / "databricks.yml"
     ).read_text(encoding="utf-8")
 
@@ -143,7 +143,7 @@ def test_template_resources_cli_lists_shows_and_extracts(tmp_path, capsys):
     assert record["record_type"] == TEMPLATE_RESOURCE_RECORD_TYPE
 
     assert main(["show", "databricks/storage-benchmark/databricks.yml"]) == 0
-    assert "document-kv-storage-benchmark" in capsys.readouterr().out
+    assert "cachet-storage-benchmark" in capsys.readouterr().out
 
     output_dir = tmp_path / "extracted"
     assert main(["extract", "--prefix", "databricks/storage-benchmark", "--output-dir", str(output_dir)]) == 0

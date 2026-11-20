@@ -1,26 +1,25 @@
 # `document_kv_cache`
 
-This is the compatibility-preserving implementation package for Cachet. It
-provides document-namespaced modules that own the implementation while the
-branded `cachet` package exposes the user-facing root and `cachet.<module>`
-import surface.
+This is the canonical implementation package for Cachet. It provides
+document-namespaced modules that own the implementation while the branded
+`cachet` package exposes the user-facing root and `cachet.<module>` import
+surface.
 
 Public submodules such as `document_kv_cache.benchmark_plan`,
 `document_kv_cache.storage`, `document_kv_cache.storage_benchmark`, and
 `document_kv_cache.workflow` are the canonical implementation modules with
 `document_kv_cache.*` module identity. New documentation and examples should
-prefer the Cachet aliases, while this namespace remains importable for existing
-benchmark evidence, Databricks runners, and downstream jobs.
+prefer the Cachet aliases; benchmark evidence, Databricks runners, and
+downstream jobs import this namespace directly.
 
-The package root keeps `__all__` document-first for `from document_kv_cache
-import *`; restaurant-specific compatibility aliases are no longer exported
-from the package surface or retained in the core runtime model layer.
+The package root's `__all__` lists the document-owned public API for
+`from document_kv_cache import *`, and the core runtime model layer uses
+document-generic names throughout.
 
 ## Public Module Map
 
 Public files in this package define the document-owned classes, functions,
-records, and CLI targets. The removed restaurant compatibility package must not
-return as a production dependency.
+records, and CLI targets.
 
 - `admission.py` exposes pending GPU-memory admission controls.
 - `adapter_scaffold.py` generates fail-closed native-probe delegate modules for
@@ -102,8 +101,6 @@ return as a production dependency.
   protection, merge-settings, auto-merge, and merged-branch cleanup status
   records for release-readiness evidence.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
-- `legacy_compatibility.py` validates downstream migration evidence proving the
-  legacy `restaurant_kv_serving` compatibility facade was removed safely.
 - `live_server.py` owns the one-request live smoke check against an existing
   OpenAI-compatible serving endpoint, including validated Cachet handoff params
   for native vLLM/SGLang cache-arm requests.
@@ -153,9 +150,6 @@ return as a production dependency.
   operations and concrete runtime KV layout.
 - `rope.py` provides the shared rotate-half rotary-position-embedding helper
   (`apply_rope_to_keys`, `rope_cos_sin`) used for absolute pre-RoPE positioning.
-- `runtime_telemetry.py` samples server process-tree RSS/GPU memory, host memory,
-  and GPU utilization, then binds timestamp-filtered arm evidence to its exact
-  experiment, execution window, telemetry bytes, and software/runtime closure.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.
@@ -176,7 +170,7 @@ return as a production dependency.
 - `vllm_smoke.py` owns the self-contained Qwen3/vLLM Databricks smoke and
   prepared-mode handoff generation/coverage validation before vLLM startup.
 - `vllm_wheel_repack.py` deterministically applies the reviewed E5M2 patches to
-  the official vLLM 0.27.1 or 0.30.0 CUDA 12.9 wheel and emits a content-addressed,
+  the official vLLM 0.30.0 CUDA 12.9 wheel and emits a content-addressed,
   RECORD-verified wheel and build manifest.
 - `vllm_runtime_contract_data.py` single-sources the vLLM V1 KV connector
   lifecycle contract shared by native-probe diagnostics and the vendored vLLM
@@ -187,12 +181,9 @@ return as a production dependency.
 - `workflow.py` coordinates optional training, cache generation, manifest
   registration, materialization, and serving preparation.
 
-`_reexport.py` is a private helper used by compatibility facades and is not
-part of the public API.
-
 ## Archived Campaign Modules
 
-The vLLM 0.27.1/0.30.0 publication campaign machinery (GPU qualification,
+The vLLM 0.30.0 publication campaign machinery (GPU qualification,
 publication freeze, handoff generation and closure, latency and full-score
 execution, the campaign finalizer and table renderer, the Databricks
 cluster-hour ledger, representative canaries, and the Quality v2 job runner) is
@@ -200,49 +191,10 @@ not packaged here. It is preserved, with its tests, at the
 `vllm-0300-campaign-archive` tag, which is the source of truth for re-validating
 the sealed records under `benchmarks/`.
 
-## Compatibility-Only Modules
-
-- `scheduler.py` remains packaged as a compatibility shim for older
-  admission-helper imports. It is intentionally not advertised through
-  `document_kv_cache._PUBLIC_SUBMODULES`.
-
 ## Console Scripts
 
-The implementation package owns these document-branded CLI entry points:
-
-- `document-kv-benchmark-plan`
-- `document-kv-benchmark-handoffs`
-- `document-kv-benchmark-handoff-manifest`
-- `document-kv-benchmark-handoff-bundles`
-- `document-kv-native-probe-scaffold`
-- `document-kv-method-scaffold`
-- `document-kv-method-conformance`
-- `document-kv-run-benchmark-plan`
-- `document-kv-databricks-job`
-- `document-kv-databricks-runs`
-- `document-kv-storage-benchmark`
-- `document-kv-storage-benchmark-databricks-job`
-- `document-kv-templates`
-- `document-kv-release-evidence`
-- `document-kv-release-bundle`
-- `document-kv-pr-evidence`
-- `document-kv-dependency-freshness`
-- `document-kv-github-governance`
-- `document-kv-repository-hygiene`
-- `document-kv-serving-env`
-- `document-kv-native-probe-factories`
-- `document-kv-engine-probe`
-- `document-kv-engine-launch-config`
-- `document-kv-engine-probe-fixture`
-- `document-kv-engine-probe-databricks-job`
-- `document-kv-vllm-runtime-preflight`
-- `document-kv-sglang-runtime-preflight`
-- `document-kv-vllm-smoke`
-- `document-kv-vllm-smoke-databricks-job`
-- `document-kv-sglang-smoke`
-- `document-kv-sglang-smoke-databricks-job`
-
-Cachet-branded aliases point to the same document-owned entry points:
+The package installs these console scripts; each targets the `cachet.<module>`
+facade of its implementation module:
 
 - `cachet-benchmark-plan`
 - `cachet-benchmark-handoffs`
@@ -276,8 +228,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-sglang-smoke`
 - `cachet-sglang-smoke-databricks-job`
 
-Legacy `restaurant-kv-*` aliases are no longer included in built `cachet-kv`
-wheels. Use `cachet-*` or `document-kv-*` commands for installed environments.
+Built `cachet-kv` wheels install exactly the `cachet-*` commands listed above.
 
 ## Optional Extras
 

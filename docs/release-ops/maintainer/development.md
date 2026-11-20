@@ -9,9 +9,8 @@ enforce. Day-to-day commands are in [`AGENTS.md`](../../../AGENTS.md) and
 
 - `pyproject.toml` uses PEP 621 metadata with exact direct pins: Python
   `>=3.11,<4.0`, build backend `poetry-core==2.4.1`, runtime `packaging==26.3`,
-  the `databricks` extra (`pyspark==4.1.2`, `databricks-sdk==0.118.0`), the
-  `test` extra (`pytest==9.1.1`), and the Poetry dev group (`mypy==2.2.0`,
-  `ruff==0.15.21`).
+  the `databricks` extra (`databricks-sdk==0.118.0`), the `test` extra
+  (`pytest==9.1.1`), and the Poetry dev group (`mypy==2.2.0`, `ruff==0.15.21`).
 - The committed `poetry.lock` records resolver output for the base package and
   both extras; CI validates it with `poetry check --lock`.
 - vLLM and SGLang are not Poetry extras because their dependency graphs
@@ -57,10 +56,9 @@ install, `ruff check` and `mypy` on an explicit file list, `--help` for every
   re-export alias module per public module, `cachet.__all__` mirrors
   `document_kv_cache.__all__`, and `src/cachet/__init__.pyi` must re-export
   exactly those names.
-- Register every command in `[project.scripts]` under both a `cachet-*` name
-  and a `document-kv-*` alias, list it in the
-  [release-ops command table](../README.md#cli-audience-boundary), and prefer
-  `cachet-*` in documentation.
+- Register every command in `[project.scripts]` under a `cachet-*` name that
+  targets its `cachet.<module>` facade, and list it in the
+  [release-ops command table](../README.md#cli-audience-boundary).
 - `databricks/**/databricks.yml` must stay byte-identical to the packaged
   copies under `src/document_kv_cache/templates/databricks/`.
 - Every Git-visible directory needs a `README.md` or a package docstring.

@@ -50,7 +50,6 @@ from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
 )
 from document_kv_cache.databricks_runs import (
-    DATABRICKS_RUN_STATUS_RECORD_TYPE,
     databricks_run_status_record,
     databricks_run_status_sidecar_issues,
 )
@@ -69,12 +68,7 @@ from document_kv_cache.engine_launch_config import (
     evaluate_engine_launch_config_evidence,
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
-from document_kv_cache.legacy_compatibility import (
-    LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE,
-    evaluate_legacy_compatibility_migration_record,
-)
 from document_kv_cache.native_probe_factories import (
-    NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     native_probe_adapter_contract_to_record,
     native_probe_factories_record_issues,
     native_probe_runtime_contract_to_record,
@@ -122,18 +116,11 @@ RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS = (
     "cachet/py.typed",
     "document_kv_cache/py.typed",
 )
-RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES = (
-    "restaurant" "_kv_serving/",
-)
-RELEASE_BUNDLE_FORBIDDEN_PACKAGE_INSTALL_SCHEMES = (
-    "purelib",
-    "platlib",
-)
-RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_PREFIXES = (
-    "restaurant" "-kv-",
-)
-RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_TARGET_PREFIXES = (
-    "restaurant" "_kv_serving",
+RELEASE_BUNDLE_PACKAGE_TOP_LEVEL_PACKAGES = (
+    "cachet",
+    "document_kv_cache",
+    "sglang_kv_injection",
+    "vllm_kv_injection",
 )
 RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-benchmark-handoff-bundles": "cachet.benchmark_handoffs:bundle_main",
@@ -148,6 +135,8 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-engine-probe-databricks-job": "cachet.databricks_engine_probe_job:main",
     "cachet-engine-probe-fixture": "cachet.probe_fixtures:main",
     "cachet-github-governance": "cachet.github_governance:main",
+    "cachet-method-conformance": "cachet.method_conformance:main",
+    "cachet-method-scaffold": "cachet.method_scaffold:main",
     "cachet-native-probe-factories": "cachet.native_probe_factories:main",
     "cachet-native-probe-scaffold": "cachet.adapter_scaffold:main",
     "cachet-pr-evidence": "cachet.pr_evidence:main",
@@ -157,39 +146,14 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-run-benchmark-plan": "cachet.benchmark_plan_executor:main",
     "cachet-serving-env": "cachet.serving_env:main",
     "cachet-sglang-runtime-preflight": "cachet.sglang_runtime_preflight:main",
+    "cachet-sglang-smoke": "cachet.sglang_smoke:main",
+    "cachet-sglang-smoke-databricks-job": "cachet.databricks_sglang_smoke_job:main",
     "cachet-storage-benchmark": "cachet.storage_benchmark:main",
     "cachet-storage-benchmark-databricks-job": "cachet.databricks_storage_benchmark_job:main",
     "cachet-templates": "cachet.template_resources:main",
     "cachet-vllm-runtime-preflight": "cachet.vllm_runtime_preflight:main",
     "cachet-vllm-smoke": "cachet.vllm_smoke:main",
     "cachet-vllm-smoke-databricks-job": "cachet.databricks_vllm_smoke_job:main",
-    "document-kv-benchmark-handoff-bundles": "document_kv_cache.benchmark_handoffs:bundle_main",
-    "document-kv-benchmark-handoff-manifest": "document_kv_cache.benchmark_handoffs:manifest_main",
-    "document-kv-benchmark-handoffs": "document_kv_cache.benchmark_handoffs:main",
-    "document-kv-benchmark-plan": "document_kv_cache.benchmark_plan:main",
-    "document-kv-databricks-job": "document_kv_cache.databricks_job:main",
-    "document-kv-databricks-runs": "document_kv_cache.databricks_runs:main",
-    "document-kv-dependency-freshness": "document_kv_cache.dependency_freshness:main",
-    "document-kv-engine-launch-config": "document_kv_cache.engine_launch_config:main",
-    "document-kv-engine-probe": "document_kv_cache.engine_probe:main",
-    "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
-    "document-kv-engine-probe-fixture": "document_kv_cache.probe_fixtures:main",
-    "document-kv-github-governance": "document_kv_cache.github_governance:main",
-    "document-kv-native-probe-factories": "document_kv_cache.native_probe_factories:main",
-    "document-kv-native-probe-scaffold": "document_kv_cache.adapter_scaffold:main",
-    "document-kv-pr-evidence": "document_kv_cache.pr_evidence:main",
-    "document-kv-release-bundle": "document_kv_cache.release_bundle:main",
-    "document-kv-release-evidence": "document_kv_cache.release_evidence:main",
-    "document-kv-repository-hygiene": "document_kv_cache.repository_hygiene:main",
-    "document-kv-run-benchmark-plan": "document_kv_cache.benchmark_plan_executor:main",
-    "document-kv-serving-env": "document_kv_cache.serving_env:main",
-    "document-kv-sglang-runtime-preflight": "document_kv_cache.sglang_runtime_preflight:main",
-    "document-kv-storage-benchmark": "document_kv_cache.storage_benchmark:main",
-    "document-kv-storage-benchmark-databricks-job": "document_kv_cache.databricks_storage_benchmark_job:main",
-    "document-kv-templates": "document_kv_cache.template_resources:main",
-    "document-kv-vllm-runtime-preflight": "document_kv_cache.vllm_runtime_preflight:main",
-    "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",
-    "document-kv-vllm-smoke-databricks-job": "document_kv_cache.databricks_vllm_smoke_job:main",
 }
 RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "v1_benchmark",
@@ -206,7 +170,6 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "compatibility_databricks_run_status",
     "package_wheel",
     "pr_evidence",
-    "legacy_migration_evidence",
     "dependency_freshness",
     "requirements_matrix",
     "github_governance",
@@ -554,7 +517,6 @@ def build_release_bundle(
     compatibility_databricks_run_status_jsons: Sequence[str | Path] = (),
     package_wheel: str | Path | None = None,
     pr_evidence_jsons: Sequence[str | Path] = (),
-    legacy_migration_evidence_jsons: Sequence[str | Path] = (),
     dependency_freshness_json: str | Path | None = None,
     requirements_matrix_md: str | Path | None = None,
     github_governance_json: str | Path | None = None,
@@ -585,7 +547,6 @@ def build_release_bundle(
         compatibility_databricks_run_status_jsons=compatibility_databricks_run_status_jsons,
         package_wheel=package_wheel,
         pr_evidence_jsons=pr_evidence_jsons,
-        legacy_migration_evidence_jsons=legacy_migration_evidence_jsons,
         dependency_freshness_json=dependency_freshness_json,
         requirements_matrix_md=requirements_matrix_md,
         github_governance_json=github_governance_json,
@@ -668,7 +629,6 @@ def _release_bundle_sources(
     compatibility_databricks_run_status_jsons: Sequence[str | Path],
     package_wheel: str | Path | None,
     pr_evidence_jsons: Sequence[str | Path],
-    legacy_migration_evidence_jsons: Sequence[str | Path],
     dependency_freshness_json: str | Path | None,
     requirements_matrix_md: str | Path | None,
     github_governance_json: str | Path | None,
@@ -697,7 +657,6 @@ def _release_bundle_sources(
     if package_wheel is not None:
         sources.append(("package_wheel", package_wheel))
     sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
-    sources.extend(("legacy_migration_evidence", path) for path in legacy_migration_evidence_jsons)
     if dependency_freshness_json is not None:
         sources.append(("dependency_freshness", dependency_freshness_json))
     if requirements_matrix_md is not None:
@@ -806,11 +765,6 @@ def _validate_release_bundle_inputs(
                 issues.append("PR evidence sidecar must be JSON")
                 continue
             issues.extend(_pr_evidence_sidecar_issues(artifact.record))
-        elif artifact.role == "legacy_migration_evidence":
-            if artifact.record is None:
-                issues.append("legacy migration evidence sidecar must be JSON")
-                continue
-            issues.extend(_legacy_migration_evidence_sidecar_issues(artifact.record))
         elif artifact.role == "dependency_freshness":
             if artifact.record is None:
                 issues.append("dependency freshness sidecar must be JSON")
@@ -1475,19 +1429,6 @@ def _pr_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         issues.append("PR evidence sidecar GPT-5.5 review must be completed")
     if evidence.refactor_skill_applied is not True:
         issues.append("PR evidence sidecar Refactor skill must be applied")
-    return _dedupe_strings(issues)
-
-
-def _legacy_migration_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    evidence = evaluate_legacy_compatibility_migration_record(record)
-    issues = list(evidence.issues)
-    if record.get("record_type") != LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE:
-        issues.append(
-            "legacy migration evidence sidecar record_type must be "
-            f"{LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE!r}"
-        )
-    if record.get("ok") is not True:
-        issues.append("legacy migration evidence sidecar ok must be true")
     return _dedupe_strings(issues)
 
 
@@ -2276,9 +2217,9 @@ def _wheel_zip_payload_issues(
     license_issues = _wheel_license_file_issues(names, dist_info_prefix=dist_info_prefixes[0])
     if license_issues:
         return license_issues
-    forbidden_path_issues = _wheel_forbidden_path_issues(names)
-    if forbidden_path_issues:
-        return forbidden_path_issues
+    layout_issues = _wheel_layout_issues(names, dist_info_prefix=dist_info_prefixes[0])
+    if layout_issues:
+        return layout_issues
     typed_marker_issues = _wheel_typed_marker_issues(names)
     if typed_marker_issues:
         return typed_marker_issues
@@ -2794,27 +2735,32 @@ def _wheel_typed_marker_issues(names: Sequence[str]) -> tuple[str, ...]:
     )
 
 
-def _wheel_forbidden_path_issues(names: Sequence[str]) -> tuple[str, ...]:
-    forbidden_paths = tuple(name for name in names if _is_forbidden_package_wheel_path(name))
-    if not forbidden_paths:
-        return ()
-    return (
-        "package wheel artifact must not contain legacy compatibility package files: "
-        + ", ".join(repr(path) for path in forbidden_paths),
-    )
-
-
-def _is_forbidden_package_wheel_path(name: str) -> bool:
-    if any(name.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES):
-        return True
-    path_parts = tuple(part for part in name.split("/") if part)
-    for index, part in enumerate(path_parts[:-1]):
-        if part not in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_INSTALL_SCHEMES:
+def _wheel_layout_issues(names: Sequence[str], *, dist_info_prefix: str) -> tuple[str, ...]:
+    allowed_top_level = {*RELEASE_BUNDLE_PACKAGE_TOP_LEVEL_PACKAGES, dist_info_prefix}
+    install_scheme_trees: set[str] = set()
+    unexpected_top_level: set[str] = set()
+    for name in names:
+        top_level, separator, rest = name.partition("/")
+        if separator and top_level in allowed_top_level:
             continue
-        installed_path = "/".join(path_parts[index + 1 :])
-        if any(installed_path.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES):
-            return True
-    return False
+        scheme, _, installed_path = rest.partition("/")
+        if top_level.endswith(".data") and scheme in {"purelib", "platlib"}:
+            install_scheme_trees.add(f"{top_level}/{scheme}/{installed_path.partition('/')[0]}")
+        else:
+            unexpected_top_level.add(top_level)
+    issues: list[str] = []
+    if install_scheme_trees:
+        issues.append(
+            "package wheel artifact must not install packages through .data/purelib or .data/platlib: "
+            + ", ".join(repr(tree) for tree in sorted(install_scheme_trees))
+        )
+    if unexpected_top_level:
+        allowed_list = ", ".join(repr(entry) for entry in sorted(allowed_top_level))
+        issues.append(
+            f"package wheel artifact top-level entries must be limited to {allowed_list}; found "
+            + ", ".join(repr(entry) for entry in sorted(unexpected_top_level))
+        )
+    return tuple(issues)
 
 
 def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
@@ -2823,18 +2769,6 @@ def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
     except UnicodeDecodeError:
         return ("package wheel artifact entry_points.txt must be UTF-8 text",)
     issues: list[str] = []
-    for script_name in sorted(scripts):
-        if any(script_name.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_PREFIXES):
-            issues.append(
-                "package wheel artifact entry_points.txt must not include "
-                f"legacy compatibility console script {script_name!r}"
-            )
-        target = scripts[script_name]
-        if _is_forbidden_console_script_target(target):
-            issues.append(
-                "package wheel artifact entry_points.txt console script "
-                f"{script_name!r} must not target legacy compatibility module {target!r}"
-            )
     for script_name, expected_target in RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS.items():
         actual_target = scripts.get(script_name)
         if actual_target is None:
@@ -2844,14 +2778,11 @@ def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
                 "package wheel artifact entry_points.txt console script "
                 f"{script_name!r} must target {expected_target!r}"
             )
+    for script_name in sorted(set(scripts) - set(RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)):
+        issues.append(
+            f"package wheel artifact entry_points.txt must not include unexpected console script {script_name!r}"
+        )
     return tuple(issues)
-
-
-def _is_forbidden_console_script_target(target: str) -> bool:
-    return any(
-        target == prefix or target.startswith(f"{prefix}.") or target.startswith(f"{prefix}:")
-        for prefix in RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_TARGET_PREFIXES
-    )
 
 
 def _console_scripts_from_entry_points(text: str) -> dict[str, str]:
@@ -3209,8 +3140,6 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return Path(prepared.source_path).name
     if role == "pr_evidence":
         return f"pr_evidence_{index + 1:02d}.json"
-    if role == "legacy_migration_evidence":
-        return f"legacy_migration_evidence_{index + 1:02d}.json"
     if role == "dependency_freshness":
         return "dependency_freshness.json"
     if role == "requirements_matrix":
@@ -3351,17 +3280,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
-    parser.add_argument(
-        "--legacy-migration-evidence-json",
-        action="append",
-        default=[],
-        help=(
-            "Optional legacy compatibility migration evidence JSON to bundle when "
-            "removing the "
-            "restaurant"
-            "_kv_serving facade."
-        ),
-    )
     parser.add_argument("--requirements-matrix-md")
     parser.add_argument("--github-governance-json")
     parser.add_argument("--repository-hygiene-json")
@@ -3395,7 +3313,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         compatibility_databricks_run_status_jsons=args.compatibility_databricks_run_status_json,
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
-        legacy_migration_evidence_jsons=args.legacy_migration_evidence_json,
         dependency_freshness_json=args.dependency_freshness_json,
         requirements_matrix_md=args.requirements_matrix_md,
         github_governance_json=args.github_governance_json,

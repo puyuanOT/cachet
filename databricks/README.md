@@ -16,9 +16,9 @@ workspace URLs, tokens, catalogs, or upload paths.
 The same bundle templates are included in package artifacts under
 `document_kv_cache/templates/databricks/` so release consumers can retrieve them
 without cloning the repository.
-Use `document-kv-templates list --prefix databricks` to inspect packaged
-templates or `document-kv-templates extract --prefix databricks --output-dir
-./document-kv-templates` to copy them from an installed wheel.
+Use `cachet-templates list --prefix databricks` to inspect packaged
+templates or `cachet-templates extract --prefix databricks --output-dir
+./cachet-templates` to copy them from an installed wheel.
 
 Prepare the benchmark plan, wheel, and tiny runner script with the package CLIs,
 upload those artifacts using your workspace tooling, then validate or deploy the
@@ -33,7 +33,7 @@ include:
 `--engine-probe-metadata vllm=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`.
 
 ```bash
-document-kv-databricks-job \
+cachet-databricks-job \
   --plan-json-uri dbfs:/benchmarks/v1-plan.json \
   --runner-python-file dbfs:/benchmarks/run_plan.py \
   --runner-script-output run_plan.py \
@@ -85,7 +85,7 @@ cd databricks/vllm-smoke
 databricks bundle validate \
   --var runner_python_file=dbfs:/benchmarks/run_vllm_smoke.py \
   --var benchmark_id=v1_vllm_smoke_001 \
-  --var output_dir=/Volumes/catalog/schema/volume/document-kv-v1-smoke \
+  --var output_dir=/Volumes/catalog/schema/volume/cachet-v1-smoke \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
@@ -100,8 +100,8 @@ For standalone storage-reader evidence, generate the storage runner and
 `/Volumes/...` root for UC evidence:
 
 ```bash
-document-kv-storage-benchmark-databricks-job \
-  --workspace-dir /local_disk0/document-kv-storage-benchmark \
+cachet-storage-benchmark-databricks-job \
+  --workspace-dir /local_disk0/cachet-storage-benchmark \
   --benchmark-output-json /Volumes/catalog/schema/volume/storage/storage-benchmark.json \
   --uc-volume-root /Volumes/catalog/schema/volume/storage \
   --runner-python-file dbfs:/benchmarks/run_storage_benchmark.py \
@@ -118,7 +118,7 @@ standalone storage benchmark bundle:
 cd databricks/storage-benchmark
 databricks bundle validate \
   --var runner_python_file=dbfs:/benchmarks/run_storage_benchmark.py \
-  --var workspace_dir=/local_disk0/document-kv-storage-benchmark \
+  --var workspace_dir=/local_disk0/cachet-storage-benchmark \
   --var benchmark_output_json=/Volumes/catalog/schema/volume/storage/storage-benchmark.json \
   --var uc_volume_root=/Volumes/catalog/schema/volume/storage \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
@@ -129,9 +129,9 @@ For an ad hoc managed smoke without Asset Bundles, generate the separate smoke
 runner and `runs/submit` payload:
 
 ```bash
-document-kv-vllm-smoke-databricks-job \
+cachet-vllm-smoke-databricks-job \
   --benchmark-id v1_vllm_smoke_001 \
-  --output-dir /Volumes/catalog/schema/volume/document-kv-v1-smoke \
+  --output-dir /Volumes/catalog/schema/volume/cachet-v1-smoke \
   --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
   --runner-script-output run_vllm_smoke.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
@@ -144,7 +144,7 @@ payload after uploading the handoff JSON, payload bytes, package wheel, and
 workspace-specific probe factory module:
 
 ```bash
-document-kv-engine-probe-databricks-job \
+cachet-engine-probe-databricks-job \
   --provider-backed-vllm-native-probe \
   --fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
@@ -209,7 +209,7 @@ The standalone bundle writes the same required connector actions sidecar as the
 Python helper through `actions_output_json`. When the probe uses an
 adapter-package native wrapper delegate, pass the matching connector factory
 through `native_probe_metadata`. Use the Python
-`document-kv-engine-probe-databricks-job` helper shown above for two-backend
+`cachet-engine-probe-databricks-job` helper shown above for two-backend
 release-safe probe matrices.
 
 Small runner, wheel, or SGLang launch-config artifacts can be staged to DBFS with the same

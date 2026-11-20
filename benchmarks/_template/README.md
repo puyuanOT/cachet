@@ -28,26 +28,25 @@ lengths.
 | --- | --- |
 | Model | `Qwen/Qwen3-4B-Instruct-2507`, served as `qwen3:4b-instruct` unless this report explicitly varies the model |
 | Model weights | bitsandbytes 4-bit runtime weights; the model identifier is not a prequantized 4-bit checkpoint |
-| Serving engine | vLLM 0.27.1 for the frozen campaign, or an explicitly declared ablation target |
+| Serving engine | Engine version from the pinned `cachet-serving-env` profile, or an explicitly declared ablation target |
 | Hardware | e.g. AWS g6/L4, `g6.8xlarge` |
-| Closed-loop request concurrency | 1, 2, or 4 with zero think time, or `N/A` |
+| Closed-loop request concurrency | e.g. 1, 2, or 4 with zero think time, or `N/A` |
 | Output length for TTC | e.g. forced 256-token decode, or `N/A` |
-| Distinct latency examples | 32 per dataset, or `N/A` |
-| Repeats | 2 per example within each deployment block, or `N/A` |
-| Deployment blocks | 5 matched fresh-cluster blocks, or `N/A` |
+| Distinct latency examples | e.g. 32 per dataset, or `N/A` |
+| Repeats | e.g. 2 per example within each deployment block, or `N/A` |
+| Deployment blocks | e.g. 5 matched fresh-cluster blocks, or `N/A` |
 | Input context length | e.g. 8k, 16k, 32k, or measured prompt-token range |
 | Method | Baseline, Vanilla KV, KV Packet, etc. |
 | Method ID / version | Stable `MethodSpec.method_id` and artifact-semantics version |
 | Artifact ID | SHA-256 `ArtifactIdentity.artifact_id`, or `N/A` for baseline |
 | Document KV precision | bf16, Q8 / `fp8_e5m2`, packed Q4, or `N/A` |
 | Runtime KV dtype | e.g. `fp8_e5m2`, `bfloat16`, or `N/A` |
-| Storage tier / cache residency | RAM, disk, Unity Catalog, hybrid, or `N/A` |
+| Storage tier / cache residency | RAM, disk, Unity Catalog, or `N/A` |
 | TTFT measurement boundary | Cold disk-to-GPU hydrate, warm prewarmed prefix cache, RAM-resident hydrate, or `N/A` |
 | Prefix-cache policy | Per-request `cache_salt`, static `cache_salt`, prefix caching disabled, or `N/A` |
 | Dataset / task scope | Dataset names and example count |
 | Quality metric | Versioned governed full-dataset metric and answer-parser identity, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
-| Campaign report | Sealed `cachet.vllm_0300_publication_report.v1` record (or the frozen-design `cachet.vllm_0271_publication_report.v1`), or `N/A` outside that campaign |
 | Publication gate | Passing `document_kv.benchmark_publication_gate.v1` record |
 
 For method comparisons, fix the complete setting and vary only the method. For
@@ -66,9 +65,9 @@ The preferred decode-only metric is
 Place the detailed caption below the table. The caption should define each
 method label, state the request concurrency used during measurement, give the
 successful request count behind percentiles, and explain whether P95 is
-publication-grade. The frozen campaign uses 32 distinct examples per dataset,
-two repeats per example, and 256 successful requests per
-method/context/concurrency cell in each of five matched deployment blocks. The
+publication-grade. State the distinct examples per dataset, repeats per
+example, and successful requests per method/context/concurrency cell in each
+deployment block. The
 caption must also say whether TTFT includes loading external document KV from
 storage into GPU memory, or whether the measured requests used already-warm
 prefix-cache blocks.
@@ -93,14 +92,12 @@ table.
 Report every preregistered comparison as `reference latency / treatment
 latency`, so a speedup above 1 means the treatment is faster. Include separate
 TTFT and TTC geometric speedups and pointwise 95% paired crossed-bootstrap
-intervals. The 0.27.1 campaign has 13 rows: nine Baseline/Vanilla
-context-by-concurrency comparisons plus BF16/Q8, RAM/Disk, Unity Catalog/Disk,
-and A10G/L4.
+intervals.
 
 Resample deployments and shared example identities as crossed factors. Use one
 example multiset per dataset across every sampled block and retain paired
 repeats. State that these approximate intervals target deployment and example
-uncertainty; five deployments do not guarantee exact 95% coverage.
+uncertainty; a handful of deployments does not guarantee exact 95% coverage.
 
 | Treatment vs reference | Setting | TTFT geometric speedup | TTFT 95% CI | TTC geometric speedup | TTC 95% CI |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -146,7 +143,7 @@ GPU memory rather than peak GPU process memory.
 
 | Limitation | Current state |
 | --- | --- |
-| Primary-table comparability | State whether this result matches the frozen vLLM 0.27.1, bitsandbytes 4-bit-runtime-weight, Q8-document-KV protocol |
+| Primary-table comparability | State whether this result matches the [published campaign configuration](../README.md#frozen-campaign-configuration) |
 | Model coverage | List covered models or say `not yet measured` |
 | Method coverage | List covered methods and mark genuinely unimplemented methods explicitly |
 | Context coverage | List covered context lengths or prompt-token ranges |
@@ -156,41 +153,24 @@ GPU memory rather than peak GPU process memory.
 
 ## Provenance
 
-List sanitized records committed beside this README, such as:
+List the sanitized records committed beside this README, such as:
 
-- `summary.json`
-- `v1-benchmark.json`
-- `metadata.json`
-- `document-kv-connector-telemetry.jsonl`
-- `cache-state-attestations.jsonl`
-- `campaign-report.json`
-- `benchmark-publication-gate.json`
-- `prepared-handoff-generation.json`
-- `prewarm-cache-prefix.json`, only for warm/prewarmed-prefix measurements
+- `document_kv.benchmark_run.v1` records from the packaged vLLM or SGLang
+  runner, with the runner's `metadata.json`
+- prepared-handoff generation records for cache arms
+- `document_kv.cache_state_attestation.v1` records for cold-read or
+  warm-prefix claims
+- the passing `document_kv.benchmark_publication_gate.v1` record
+- a sealed `cachet.quality_v2_report.v1` record for dataset score tables
 
-For the vLLM 0.27.1 campaign, `campaign-report.json` and
-`benchmark-publication-gate.json` are an exact pair: the gate's
-`benchmark_payload_digest` must equal the report's `closed_record_sha256`.
-Neither file qualifies evidence by itself. Publication writes the gate first
-and the report last as the pair's commit file; only an exact immutable
-gate-only interruption may be resumed. The authority-replaying loader accepts
-the sealed files directly or secure-umask Git checkout copies (`0600`, `0640`,
-or `0644`, including read-only variants), but never uses checkout mode as a
-substitute for canonical-byte and source replay. That replay needs the
-authority objects of the finalizing process and the unchanged campaign ledger,
-so it runs only at finalization time. Afterwards only the offline pair
-validator runs; it checks internal consistency and pinned source digests, not
-the campaign evidence. The vLLM 0.30.0 campaign's source of truth is the tag
-`vllm-0300-publication-ffb1f1d`; see
-[`docs/evidence-policy.md`](../../docs/evidence-policy.md).
-
-For the frozen campaign, do not transcribe report values into Markdown by
-hand. Generate the named table regions from the exact report/gate pair and
-require byte-for-byte renderer validation before committing the report folder.
-Generate the child `README.md` from the same pair; it must name both JSON files
-and embed the validated report digest exactly.
-Pending and finalized table states are mutually exclusive; partial promotion
-or a mixed pending/populated table is invalid.
+A sealed report and its gate are a pair: the gate's `benchmark_payload_digest`
+must equal the report's `closed_record_sha256`, and neither file qualifies
+evidence by itself. Generate README tables from the sealed records instead of
+transcribing values by hand, keep them in named regions, and register each
+sealed record and region in
+[`../verify_sealed_records.py`](../verify_sealed_records.py) so its bytes stay
+checked. Pending and finalized table states are mutually exclusive; partial
+promotion or a mixed pending/populated table is invalid.
 
 Do not include Databricks tokens, raw Jobs API responses, package wheels,
 cluster logs, generated payload blobs, prompt text, or local scratch

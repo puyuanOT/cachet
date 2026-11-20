@@ -53,12 +53,11 @@ _VLLM_RUNTIME_DTYPES = (
     "fp8",
     "fp8_e4m3",
     "fp8_e5m2",
-    "float8",
     "int8",
     "uint8",
 )
 _VLLM_REROPE_DTYPES = tuple(
-    dtype for dtype in _VLLM_RUNTIME_DTYPES if dtype not in {"float8", "int8", "uint8"}
+    dtype for dtype in _VLLM_RUNTIME_DTYPES if dtype not in {"int8", "uint8"}
 )
 _SGLANG_REROPE_DTYPES = (
     "bf16",
@@ -72,11 +71,7 @@ _SGLANG_REROPE_DTYPES = (
 RESERVED_METADATA_PREFIXES = ("document_kv.", "engine.")
 ENGINE_ADAPTER_HANDOFF_RECORD_TYPE = "document_kv.engine_adapter_request.v1"
 ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION = 4
-_ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION = 2
-_ENGINE_ADAPTER_HANDOFF_SUPPORTED_SCHEMA_VERSIONS = frozenset(
-    {_ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION, ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION}
-)
-_ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V2 = frozenset(
+_ENGINE_ADAPTER_HANDOFF_RECORD_KEYS = frozenset(
     {
         "record_type",
         "schema_version",
@@ -92,10 +87,8 @@ _ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V2 = frozenset(
         "estimated_gpu_bytes",
         "payload_source",
         "handle",
+        "reuse_plan",
     }
-)
-_ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V4 = (
-    _ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V2 | {"reuse_plan"}
 )
 ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE = "document_kv.engine_kv_connector_actions.v1"
 ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION = 2
@@ -1227,7 +1220,6 @@ def read_engine_adapter_request_json(
     *,
     expected_backend: ServingBackend | str | None = None,
     require_external_payload_uri: bool = True,
-    allow_legacy_reuse_plan: bool = False,
     adapter_spec: EngineAdapterSpec | None = None,
     operation_handlers: RuntimeOperationHandlerRegistry | None = None,
     method_registry: MethodRegistry | None = None,
@@ -1242,7 +1234,6 @@ def read_engine_adapter_request_json(
         record,
         expected_backend=expected_backend,
         require_external_payload_uri=require_external_payload_uri,
-        allow_legacy_reuse_plan=allow_legacy_reuse_plan,
         adapter_spec=adapter_spec,
         operation_handlers=operation_handlers,
         method_registry=method_registry,
@@ -1255,7 +1246,6 @@ def validate_engine_adapter_request_record(
     *,
     expected_backend: ServingBackend | str | None = None,
     require_external_payload_uri: bool = True,
-    allow_legacy_reuse_plan: bool = False,
     adapter_spec: EngineAdapterSpec | None = None,
     operation_handlers: RuntimeOperationHandlerRegistry | None = None,
     method_registry: MethodRegistry | None = None,
@@ -1265,27 +1255,14 @@ def validate_engine_adapter_request_record(
     if record.get("record_type") != ENGINE_ADAPTER_HANDOFF_RECORD_TYPE:
         raise ValueError(f"Unsupported engine adapter handoff record_type {record.get('record_type')!r}")
     schema_version = record.get("schema_version")
-    if schema_version not in _ENGINE_ADAPTER_HANDOFF_SUPPORTED_SCHEMA_VERSIONS:
+    if schema_version != ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION:
         raise ValueError(
             "Unsupported engine adapter handoff schema_version "
             f"{schema_version!r}"
         )
-    if (
-        schema_version == _ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION
-        and not allow_legacy_reuse_plan
-    ):
-        raise ValueError(
-            "schema_version 2 omits reuse_plan; pass "
-            "allow_legacy_reuse_plan=True only for legacy raw-KV handoffs"
-        )
-    expected_record_keys = (
-        _ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V4
-        if schema_version == ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION
-        else _ENGINE_ADAPTER_HANDOFF_RECORD_KEYS_V2
-    )
     _reject_unsupported_keys(
         record,
-        expected_record_keys,
+        _ENGINE_ADAPTER_HANDOFF_RECORD_KEYS,
         label="engine adapter handoff record",
     )
 
@@ -1309,12 +1286,7 @@ def validate_engine_adapter_request_record(
     _required_nonnegative_int(record, "estimated_gpu_bytes")
 
     handle = _required_mapping(record, "handle")
-    reuse_plan = _reuse_plan_from_handoff_record(
-        record,
-        handle=handle,
-        allow_legacy=allow_legacy_reuse_plan,
-        method_registry=method_registry,
-    )
+    reuse_plan = _reuse_plan_from_handoff_record(record)
     payload_source = _required_mapping(record, "payload_source")
     _validate_payload_source_record(
         payload_source,
@@ -1361,7 +1333,7 @@ def validate_engine_adapter_request_record(
         record,
         handle,
         metadata,
-        method_registry=method_registry,
+        reuse_plan=reuse_plan,
     )
 
 
@@ -1432,7 +1404,6 @@ def build_engine_kv_injection_plan(
     *,
     expected_backend: ServingBackend | str | None = None,
     require_external_payload_uri: bool = True,
-    allow_legacy_reuse_plan: bool = False,
     adapter_spec: EngineAdapterSpec | None = None,
     operation_handlers: RuntimeOperationHandlerRegistry | None = None,
     method_registry: MethodRegistry | None = None,
@@ -1441,7 +1412,6 @@ def build_engine_kv_injection_plan(
         record,
         expected_backend=expected_backend,
         require_external_payload_uri=require_external_payload_uri,
-        allow_legacy_reuse_plan=allow_legacy_reuse_plan,
         adapter_spec=adapter_spec,
         operation_handlers=operation_handlers,
         method_registry=method_registry,
@@ -1451,12 +1421,7 @@ def build_engine_kv_injection_plan(
     total_tokens = _required_nonnegative_int(handle, "total_tokens")
     total_bytes = _required_nonnegative_int(handle, "total_bytes")
     payload_source = _required_mapping(record, "payload_source")
-    reuse_plan = _reuse_plan_from_handoff_record(
-        record,
-        handle=handle,
-        allow_legacy=allow_legacy_reuse_plan,
-        method_registry=method_registry,
-    )
+    reuse_plan = _reuse_plan_from_handoff_record(record)
     return EngineKVInjectionPlan(
         backend=_backend_from_value(_required_str(record, "backend"), field_name="backend"),
         request_id=_required_str(record, "request_id"),
@@ -2247,18 +2212,9 @@ def _validate_reserved_record_metadata(
     handle: Mapping[str, Any],
     metadata: Mapping[str, str],
     *,
-    method_registry: MethodRegistry | None,
+    reuse_plan: ReusePlan,
 ) -> None:
     backend = _backend_from_value(_required_str(record, "backend"), field_name="backend")
-    reuse_plan = _reuse_plan_from_handoff_record(
-        record,
-        handle=handle,
-        allow_legacy=(
-            record.get("schema_version")
-            == _ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION
-        ),
-        method_registry=method_registry,
-    )
     payload_mode = _payload_mode_from_value(_required_str(record, "payload_mode"), field_name="payload_mode")
     artifact_identity = _optional_artifact_identity(handle, "artifact_identity")
     expected_values = {
@@ -2294,30 +2250,26 @@ def _validate_reserved_record_metadata(
     )
     if mismatches:
         raise ValueError(f"Reserved metadata does not match handoff fields: {', '.join(mismatches)}")
-    if record.get("schema_version") == ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION:
-        required_identity_keys = (
-            "document_kv.artifact_id",
-            "document_kv.method_version",
-            "document_kv.method_config_digest",
-            "document_kv.reuse_capability_id",
+    required_identity_keys = (
+        "document_kv.artifact_id",
+        "document_kv.method_version",
+        "document_kv.method_config_digest",
+        "document_kv.reuse_capability_id",
+    )
+    missing_or_mismatched = tuple(
+        key
+        for key in required_identity_keys
+        if metadata.get(key) != expected_values[key]
+    )
+    if missing_or_mismatched:
+        raise ValueError(
+            "schema_version 4 metadata must bind the handle artifact and "
+            "reuse capability: "
+            + ", ".join(missing_or_mismatched)
         )
-        missing_or_mismatched = tuple(
-            key
-            for key in required_identity_keys
-            if metadata.get(key) != expected_values[key]
-        )
-        if missing_or_mismatched:
-            raise ValueError(
-                "schema_version 4 metadata must bind the handle artifact and "
-                "reuse capability: "
-                + ", ".join(missing_or_mismatched)
-            )
 
 
 def _layout_from_record(layout: Mapping[str, Any]) -> KVLayout:
-    pre_rope = layout.get("pre_rope", False)
-    if not isinstance(pre_rope, bool):
-        raise TypeError("pre_rope must be a boolean")
     kv_layout = KVLayout(
         model_id=_required_str(layout, "model_id"),
         lora_id=_required_str(layout, "lora_id"),
@@ -2336,17 +2288,14 @@ def _layout_from_record(layout: Mapping[str, Any]) -> KVLayout:
             field_name="layout.storage_layout",
         ),
         payload_axis_order=kv_payload_axis_order_from_value(
-            layout.get("payload_axis_order", "token_major"),
+            _required_str(layout, "payload_axis_order"),
             field_name="layout.payload_axis_order",
         ),
-        pre_rope=pre_rope,
+        pre_rope=_required_bool(layout, "pre_rope"),
         rope_theta=layout.get("rope_theta"),
         rope_rotary_dim=_optional_positive_int(layout, "rope_rotary_dim"),
         key_position_encoding=kv_key_position_encoding_from_value(
-            layout.get(
-                "key_position_encoding",
-                "pre_rope" if pre_rope else "stored_post_rope",
-            ),
+            _required_str(layout, "key_position_encoding"),
             field_name="layout.key_position_encoding",
         ),
     )
@@ -2437,54 +2386,13 @@ def _reuse_plan_for_ready_request(
     return plan
 
 
-def _reuse_plan_from_handoff_record(
-    record: Mapping[str, Any],
-    *,
-    handle: Mapping[str, Any],
-    allow_legacy: bool,
-    method_registry: MethodRegistry | None,
-) -> ReusePlan:
-    registry = _method_registry(method_registry)
-    schema_version = record.get("schema_version")
-    if schema_version == ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION:
-        reuse_plan_record = record.get("reuse_plan")
-        if not isinstance(reuse_plan_record, Mapping):
-            raise TypeError("reuse_plan must be a mapping")
-        plan = ReusePlan.from_record(reuse_plan_record)
-        return plan
-    if (
-        schema_version != _ENGINE_ADAPTER_HANDOFF_LEGACY_SCHEMA_VERSION
-        or not allow_legacy
-    ):
+def _reuse_plan_from_handoff_record(record: Mapping[str, Any]) -> ReusePlan:
+    if record.get("schema_version") != ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION:
         raise ValueError("engine handoff does not contain a supported reuse plan")
-    method_id = _required_str(handle, "cache_method")
-    try:
-        plan = registry.get(
-            method_id,
-            require_implemented=True,
-        ).reuse_plan()
-    except (KeyError, NotImplementedError) as exc:
-        raise ValueError(
-            f"legacy handoff method {method_id!r} has no registered default reuse plan"
-        ) from exc
-    if (
-        plan.artifact_format.encoding != ArtifactEncoding.RAW_KV
-        or plan.payload_decode_stage != PayloadDecodeStage.NONE
-        or plan.token_recompute_policy != TokenRecomputePolicy.NONE
-    ):
-        raise ValueError(
-            "legacy handoffs are supported only for registered raw-KV methods "
-            "without decode or recomputation operations"
-        )
-    validate_registered_reuse_plan(
-        plan,
-        artifact_identity=_optional_artifact_identity(
-            handle,
-            "artifact_identity",
-        ),
-        registry=registry,
-    )
-    return plan
+    reuse_plan_record = record.get("reuse_plan")
+    if not isinstance(reuse_plan_record, Mapping):
+        raise TypeError("reuse_plan must be a mapping")
+    return ReusePlan.from_record(reuse_plan_record)
 
 
 def _adapter_spec_for_backend(backend: ServingBackend) -> EngineAdapterSpec:
