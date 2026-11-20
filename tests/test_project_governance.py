@@ -681,11 +681,12 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     assert "release-ops/evidence/dependency-freshness/current/README.md" in docs_readme
     for status in (
         "Implemented",
-        "Bundle-refresh pending",
         "Release-gated",
         "Remaining",
     ):
         assert f"**{status}:**" in matrix_text
+    for stale in ("Bundle-refresh pending", "0.27.1", "legacy-v1", "five independent"):
+        assert stale not in matrix_text
 
     for required in (
         "vLLM/SGLang handoff boundary",
@@ -704,20 +705,17 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "GPT-5.5 review",
         "Refactor skill",
         "rendered from the sealed vLLM 0.30.0 campaign records",
-        "vllm-0300-campaign-archive",
-        "five independent deployment blocks",
-        "corrected full-dataset score evaluation",
+        "Quality Benchmark v2",
+        "strict release bundle requires the release PR's sidecar",
+        "CI does not check other PRs",
     ):
         assert required in matrix_text
 
     for required_gate in (
-        "Freeze the exact vLLM 0.27.1 source",
-        "same-hardware fresh-load byte reproducibility",
-        "L40S as the sole publication handoff generator",
-        "16 independent L40S workers",
-        "concurrency 1, 2, and 4",
-        "Unsupported methods remain explicit",
-        "Publish no numeric result until",
+        "The complete strict release bundle is the outstanding publication artifact",
+        "Build it from source-bound artifacts",
+        "PR evidence sidecar",
+        "`benchmarks/verify_sealed_records.py` checks them",
     ):
         assert required_gate in compact_remaining_release_gates
 
