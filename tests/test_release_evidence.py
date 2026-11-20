@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import document_kv_cache.release_evidence as public_release_evidence
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
     EngineKVConnectorActions,
@@ -784,14 +783,13 @@ def test_evaluate_release_evidence_rejects_duplicate_v1_evidence_identities():
     assert "v1 benchmark evidence: duplicate report rows: biography:baseline_prefill" in evidence.issues
 
 
-def test_evaluate_release_evidence_allows_legacy_v1_evidence_without_duplicate_identity_fields():
+@pytest.mark.parametrize(
+    "field_name",
+    ("duplicate_required_datasets", "duplicate_report_rows", "duplicate_comparisons"),
+)
+def test_evaluate_release_evidence_requires_v1_duplicate_identity_fields(field_name):
     v1_record = _v1_record(ok=True)
-    for field_name in (
-        "duplicate_required_datasets",
-        "duplicate_report_rows",
-        "duplicate_comparisons",
-    ):
-        v1_record["v1_evidence"].pop(field_name)
+    v1_record["v1_evidence"].pop(field_name)
 
     evidence = evaluate_release_evidence(
         v1_record,
@@ -806,8 +804,8 @@ def test_evaluate_release_evidence_allows_legacy_v1_evidence_without_duplicate_i
         ),
     )
 
-    assert evidence.v1_benchmark_ok
-    assert not any("duplicate_" in issue for issue in evidence.issues)
+    assert not evidence.v1_benchmark_ok
+    assert f"v1 benchmark evidence {field_name} must be empty" in evidence.issues
 
 
 def test_evaluate_release_evidence_rejects_non_numeric_comparison_metrics():

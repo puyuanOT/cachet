@@ -66,7 +66,6 @@ from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_FACTORY,
     VLLM_NATIVE_PROBE_FACTORY,
     native_probe_adapter_contract_to_record,
-    native_probe_factories_record_issues,
     native_probe_runtime_contract_to_record,
 )
 from document_kv_cache.release_bundle import (
@@ -588,21 +587,21 @@ def test_build_release_bundle_rejects_non_executed_plan_execution_commands(tmp_p
     assert "benchmark plan execution sidecar commands[0].skipped must be false" in error
 
 
-def test_build_release_bundle_non_strict_allows_legacy_plan_source_target(tmp_path):
+def test_build_release_bundle_non_strict_allows_plan_source_without_plan_target(tmp_path):
     source_dir = tmp_path / "sources"
     artifacts = _write_release_ready_artifacts(source_dir)
-    legacy_record = _plan_execution_record(ok=True)
+    targetless_record = _plan_execution_record(ok=True)
     for field_name in ("plan_version", "suite_id", "model_id", "hardware_target", "command_count"):
-        legacy_record["plan_source"].pop(field_name)
-    legacy_plan = _write_json(source_dir / "legacy-plan-execution.json", legacy_record)
+        targetless_record["plan_source"].pop(field_name)
+    targetless_plan = _write_json(source_dir / "targetless-plan-execution.json", targetless_record)
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-        plan_execution_jsons=(legacy_plan,),
-        output_dir=tmp_path / "non-strict-legacy-plan-source-bundle",
+        plan_execution_jsons=(targetless_plan,),
+        output_dir=tmp_path / "non-strict-targetless-plan-source-bundle",
     )
     record = release_bundle_to_record(bundle)
 
@@ -1226,7 +1225,7 @@ def test_build_release_bundle_strict_v1_rejects_wrong_plan_source_target(tmp_pat
         databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
     )
     wrong_target_record = _plan_execution_record(ok=True)
-    wrong_target_record["plan_source"]["plan_version"] = "legacy"
+    wrong_target_record["plan_source"]["plan_version"] = "v0"
     wrong_target_record["plan_source"]["model_id"] = "qwen2:7b"
     wrong_target_record["plan_source"]["hardware_target"] = "aws-g6"
     wrong_target_record["plan_source"]["suite_id"] = ""
@@ -1454,63 +1453,28 @@ def test_build_release_bundle_strict_v1_requires_supported_native_probe_factorie
         )
 
 
-def test_build_release_bundle_strict_v1_requires_delegate_contract_proof_for_native_probe_support(tmp_path):
-    source_dir = tmp_path / "legacy-supported-native-factories"
+@pytest.mark.parametrize("contract_kind", ("adapter", "runtime"))
+def test_build_release_bundle_rejects_native_probe_support_without_delegate_contract_proof(tmp_path, contract_kind):
+    source_dir = tmp_path / f"{contract_kind}-contractless-native-factories"
     release_kwargs = _strict_v1_release_bundle_kwargs(
         source_dir,
         databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
     )
-    legacy_supported_record = _native_probe_factories_record(supported=True)
-    for factory in legacy_supported_record["factories"]:
-        del factory["delegate_adapter_contract"]
-        del factory["delegate_adapter_contract_valid"]
-    assert native_probe_factories_record_issues(legacy_supported_record) == ()
-    legacy_supported_native_probe_factories = _write_json(
-        source_dir / "legacy-supported-native-probe-factories.json",
-        legacy_supported_record,
+    contractless_record = _native_probe_factories_record(supported=True)
+    for factory in contractless_record["factories"]:
+        del factory[f"delegate_{contract_kind}_contract"]
+        del factory[f"delegate_{contract_kind}_contract_valid"]
+    contractless_native_probe_factories = _write_json(
+        source_dir / f"{contract_kind}-contractless-native-probe-factories.json",
+        contractless_record,
     )
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match=rf"delegate_{contract_kind}_contract_valid must be boolean"):
         build_release_bundle(
-            **{**release_kwargs, "native_probe_factories_jsons": (legacy_supported_native_probe_factories,)},
-            output_dir=tmp_path / "strict-legacy-supported-native-factories",
+            **{**release_kwargs, "native_probe_factories_jsons": (contractless_native_probe_factories,)},
+            output_dir=tmp_path / f"strict-{contract_kind}-contractless-native-factories",
             require_complete_v1=True,
-    )
-
-    error = str(exc_info.value)
-    assert "vLLM native probe factory support" in error
-    assert "SGLang native probe factory support" in error
-
-
-def test_build_release_bundle_strict_v1_requires_runtime_contract_proof_for_native_probe_support(tmp_path):
-    source_dir = tmp_path / "runtime-contractless-native-factories"
-    release_kwargs = _strict_v1_release_bundle_kwargs(
-        source_dir,
-        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
-    )
-    runtime_contractless_record = _native_probe_factories_record(supported=True)
-    for factory in runtime_contractless_record["factories"]:
-        del factory["delegate_runtime_contract"]
-        del factory["delegate_runtime_contract_valid"]
-    assert native_probe_factories_record_issues(runtime_contractless_record) == ()
-    runtime_contractless_native_probe_factories = _write_json(
-        source_dir / "runtime-contractless-native-probe-factories.json",
-        runtime_contractless_record,
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        build_release_bundle(
-            **{
-                **release_kwargs,
-                "native_probe_factories_jsons": (runtime_contractless_native_probe_factories,),
-            },
-            output_dir=tmp_path / "strict-runtime-contractless-native-factories",
-            require_complete_v1=True,
-    )
-
-    error = str(exc_info.value)
-    assert "vLLM native probe factory support" in error
-    assert "SGLang native probe factory support" in error
+        )
 
 
 def test_build_release_bundle_strict_v1_accepts_split_native_probe_factory_support(tmp_path):
@@ -3529,21 +3493,24 @@ def test_build_release_bundle_rejects_release_evidence_for_changed_same_path_art
         )
 
 
-def test_build_release_bundle_accepts_legacy_release_evidence_without_source_fingerprints(tmp_path):
+def test_build_release_bundle_accepts_release_evidence_without_source_fingerprints(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
-    legacy_evidence_record = json.loads(Path(artifacts["evidence"]).read_text(encoding="utf-8"))
-    for source in legacy_evidence_record["artifact_sources"]:
+    unfingerprinted_evidence_record = json.loads(Path(artifacts["evidence"]).read_text(encoding="utf-8"))
+    for source in unfingerprinted_evidence_record["artifact_sources"]:
         source.pop("size_bytes")
         source.pop("sha256")
-    legacy_evidence_path = _write_json(tmp_path / "legacy-release-evidence.json", legacy_evidence_record)
+    unfingerprinted_evidence_path = _write_json(
+        tmp_path / "unfingerprinted-release-evidence.json",
+        unfingerprinted_evidence_record,
+    )
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-        release_evidence_json=legacy_evidence_path,
-        output_dir=tmp_path / "legacy-evidence-bundle",
+        release_evidence_json=unfingerprinted_evidence_path,
+        output_dir=tmp_path / "unfingerprinted-evidence-bundle",
     )
 
     assert any(artifact.role == "release_evidence" for artifact in bundle.artifacts)

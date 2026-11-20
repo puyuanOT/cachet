@@ -681,16 +681,18 @@ def test_validate_native_probe_factories_record_accepts_builtin_record():
     validate_native_probe_factories_record(record)
 
 
-def test_validate_native_probe_factories_record_accepts_legacy_v1_without_delegate_contract_fields():
+@pytest.mark.parametrize("contract_kind", ("adapter", "runtime"))
+def test_validate_native_probe_factories_record_requires_delegate_contract_fields(contract_kind):
     record = builtin_native_probe_factories_to_record()
     for factory in record["factories"]:
-        del factory["delegate_adapter_contract"]
-        del factory["delegate_adapter_contract_valid"]
-        del factory["delegate_runtime_contract"]
-        del factory["delegate_runtime_contract_valid"]
+        del factory[f"delegate_{contract_kind}_contract"]
+        del factory[f"delegate_{contract_kind}_contract_valid"]
 
-    assert native_probe_factories_record_issues(record) == ()
-    validate_native_probe_factories_record(record)
+    issues = native_probe_factories_record_issues(record)
+
+    assert f"native probe factories sidecar factories[0].delegate_{contract_kind}_contract_valid must be boolean" in issues
+    with pytest.raises(ValueError, match=rf"delegate_{contract_kind}_contract_valid must be boolean"):
+        validate_native_probe_factories_record(record)
 
 
 def test_validate_native_probe_factories_record_reports_malformed_sidecars():

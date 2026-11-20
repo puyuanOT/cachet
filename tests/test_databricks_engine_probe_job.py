@@ -12,6 +12,7 @@ import zipfile
 import pytest
 
 import document_kv_cache._databricks_engine_probe_runner as engine_probe_runner
+from document_kv_cache.benchmark_plan import ENGINE_PROBE_TARGETS_RECORD_TYPE, ENGINE_PROBE_TARGETS_SCHEMA_VERSION
 from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY,
     DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
@@ -130,6 +131,15 @@ def _release_target(backend: str, **overrides):
     }
     values.update(overrides)
     return _target(backend, **values)
+
+
+def _engine_probe_targets_record(probes, *, release_safe=False):
+    return {
+        "record_type": ENGINE_PROBE_TARGETS_RECORD_TYPE,
+        "schema_version": ENGINE_PROBE_TARGETS_SCHEMA_VERSION,
+        "release_safe": release_safe,
+        DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY: probes,
+    }
 
 
 def _parameter_values(parameters, flag):
@@ -1227,6 +1237,8 @@ def test_read_databricks_engine_probe_targets_json_accepts_object_and_aliases(tm
     path.write_text(
         json.dumps(
             {
+                "record_type": ENGINE_PROBE_TARGETS_RECORD_TYPE,
+                "schema_version": ENGINE_PROBE_TARGETS_SCHEMA_VERSION,
                 DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY: [
                     {
                         "backend": "vllm",
@@ -1268,7 +1280,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_object_and_aliases(tm
 def test_read_databricks_engine_probe_targets_json_accepts_native_delegate_factory(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1278,7 +1290,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_native_delegate_facto
                     "native_probe_delegate_factory": "document_kv_vllm_native_adapter:build_probe",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1290,7 +1302,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_native_delegate_facto
 def test_read_databricks_engine_probe_targets_json_accepts_pip_packages(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1300,7 +1312,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_pip_packages(tmp_path
                     "pip_packages": [VLLM_RUNTIME_PACKAGE],
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1312,7 +1324,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_pip_packages(tmp_path
 def test_read_databricks_engine_probe_targets_json_accepts_vllm_runtime_preflight_fields(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1323,7 +1335,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_vllm_runtime_prefligh
                     "vllm_runtime_preflight_layer_names_json": VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1336,7 +1348,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_vllm_runtime_prefligh
 def test_read_databricks_engine_probe_targets_json_rejects_string_pip_packages(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1346,7 +1358,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_string_pip_packages(t
                     "pip_packages": VLLM_RUNTIME_PACKAGE,
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1358,7 +1370,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_fixture_fields(tmp_pa
     path = tmp_path / "probe-targets.json"
     fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1369,7 +1381,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_fixture_fields(tmp_pa
                     "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1382,7 +1394,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_fixture_fields(tmp_pa
 def test_read_databricks_engine_probe_targets_json_rejects_fixture_handoff_mismatch(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1392,7 +1404,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_fixture_handoff_misma
                     "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1404,7 +1416,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_absolute_alias_for_re
     path = tmp_path / "probe-targets.json"
     fixture_dir = "vllm-fixture"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1416,7 +1428,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_absolute_alias_for_re
                     "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1428,7 +1440,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_unsupported_fixture_o
     path = tmp_path / "probe-targets.json"
     fixture_dir = "s3://bucket/probes/vllm-fixture"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1438,7 +1450,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_unsupported_fixture_o
                     "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1450,7 +1462,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_fixture_payload_misma
     path = tmp_path / "probe-targets.json"
     fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1461,7 +1473,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_fixture_payload_misma
                     "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1472,7 +1484,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_fixture_payload_misma
 def test_read_databricks_engine_probe_targets_json_rejects_non_boolean_debug_flag(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1482,7 +1494,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_non_boolean_debug_fla
                     "allow_non_native_probe": "false",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -1532,7 +1544,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_unsupported_envelope_
 def test_read_databricks_engine_probe_targets_json_rejects_unsupported_probe_keys(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -1542,11 +1554,40 @@ def test_read_databricks_engine_probe_targets_json_rejects_unsupported_probe_key
                     "debug": {"accepted": False},
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match=r"backend config probe 0 has unsupported keys: \['debug'\]"):
+        read_databricks_engine_probe_targets_json(path)
+
+
+@pytest.mark.parametrize(
+    ("missing_field", "message"),
+    (
+        (None, r"must be a document_kv\.engine_probe_targets\.v1 object"),
+        ("record_type", "Unsupported engine probe targets record_type None"),
+        ("schema_version", "Unsupported engine probe targets schema_version None"),
+    ),
+)
+def test_read_databricks_engine_probe_targets_json_requires_record_envelope(tmp_path, missing_field, message):
+    probes = [
+        {
+            "backend": "vllm",
+            "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+            "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        }
+    ]
+    if missing_field is None:
+        record = probes
+    else:
+        record = _engine_probe_targets_record(probes)
+        del record[missing_field]
+    path = tmp_path / "probe-targets.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
         read_databricks_engine_probe_targets_json(path)
 
 
@@ -3681,7 +3722,7 @@ def test_main_matrix_derives_node_type_from_g5_hardware_target(tmp_path):
     payload_path = tmp_path / "payload.json"
     backend_config_path = tmp_path / "targets.json"
     backend_config_path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -3691,7 +3732,7 @@ def test_main_matrix_derives_node_type_from_g5_hardware_target(tmp_path):
                     "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -3720,7 +3761,7 @@ def test_main_matrix_preserves_explicit_g5_node_type_without_hardware_target(tmp
     payload_path = tmp_path / "payload.json"
     backend_config_path = tmp_path / "targets.json"
     backend_config_path.write_text(
-        json.dumps(
+        json.dumps(_engine_probe_targets_record(
             [
                 {
                     "backend": "vllm",
@@ -3730,7 +3771,7 @@ def test_main_matrix_preserves_explicit_g5_node_type_without_hardware_target(tmp
                     "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
                 }
             ]
-        ),
+        )),
         encoding="utf-8",
     )
 
@@ -3972,6 +4013,8 @@ def test_main_writes_engine_probe_matrix_payload_from_backend_config_json(tmp_pa
     backend_config_path.write_text(
         json.dumps(
             {
+                "record_type": ENGINE_PROBE_TARGETS_RECORD_TYPE,
+                "schema_version": ENGINE_PROBE_TARGETS_SCHEMA_VERSION,
                 "probes": [
                     {
                         "backend": "vllm",

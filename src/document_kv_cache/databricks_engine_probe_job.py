@@ -1675,15 +1675,13 @@ def read_databricks_engine_probe_targets_json(path: str | Path) -> tuple[Databri
 
 def read_databricks_engine_probe_targets_file_json(path: str | Path) -> DatabricksEngineProbeTargetsFile:
     record = json.loads(Path(path).read_text(encoding="utf-8"))
-    release_safe = False
-    if isinstance(record, Mapping):
-        _validate_engine_probe_targets_record_envelope(record)
-        release_safe = bool(record.get("release_safe", False))
-        raw_targets = record.get(DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY)
-    else:
-        raw_targets = record
+    if not isinstance(record, Mapping):
+        raise ValueError(f"backend config JSON must be a {ENGINE_PROBE_TARGETS_RECORD_TYPE} object")
+    _validate_engine_probe_targets_record_envelope(record)
+    release_safe = bool(record.get("release_safe", False))
+    raw_targets = record.get(DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY)
     if not isinstance(raw_targets, Sequence) or isinstance(raw_targets, (str, bytes, bytearray)) or not raw_targets:
-        raise ValueError("backend config JSON must be a non-empty array or an object with a non-empty probes array")
+        raise ValueError("backend config JSON must contain a non-empty probes array")
     return DatabricksEngineProbeTargetsFile(
         probe_targets=tuple(
             _probe_target_from_record(raw_target, index=index)
@@ -1696,10 +1694,10 @@ def read_databricks_engine_probe_targets_file_json(path: str | Path) -> Databric
 def _validate_engine_probe_targets_record_envelope(record: Mapping[str, Any]) -> None:
     _reject_unsupported_keys(record, _ENGINE_PROBE_TARGETS_ENVELOPE_KEYS, label="engine probe targets record")
     record_type = record.get("record_type")
-    if record_type is not None and record_type != ENGINE_PROBE_TARGETS_RECORD_TYPE:
+    if record_type != ENGINE_PROBE_TARGETS_RECORD_TYPE:
         raise ValueError(f"Unsupported engine probe targets record_type {record_type!r}")
     schema_version = record.get("schema_version")
-    if schema_version is not None and schema_version != ENGINE_PROBE_TARGETS_SCHEMA_VERSION:
+    if schema_version != ENGINE_PROBE_TARGETS_SCHEMA_VERSION:
         raise ValueError(
             f"Unsupported engine probe targets schema_version {schema_version!r}; "
             f"expected {ENGINE_PROBE_TARGETS_SCHEMA_VERSION}"
