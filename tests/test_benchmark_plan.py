@@ -30,6 +30,7 @@ from document_kv_cache.databricks_engine_probe_job import (
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import SGLANG_NATIVE_PROBE_FACTORY, VLLM_NATIVE_PROBE_FACTORY
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
+from document_kv_cache.release_evidence import _build_parser as build_release_evidence_parser
 from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
 
 
@@ -719,6 +720,74 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
     assert str(tmp_path / "sglang-probe.json") in release_command.argv
     assert str(tmp_path / "vllm-actions.json") in release_command.argv
     assert str(tmp_path / "sglang-actions.json") in release_command.argv
+
+
+def _planned_release_evidence_argvs(commands):
+    return {
+        name: tuple(argv[3:])
+        for name, argv in commands
+        if tuple(argv[1:3]) == ("-m", "document_kv_cache.release_evidence")
+    }
+
+
+def test_planned_release_evidence_commands_parse_with_the_release_evidence_cli(tmp_path):
+    plan_json = tmp_path / "plan.json"
+    exit_code = main(
+        [
+            *planned_release_probe_cli_args(tmp_path),
+            "--release-preflight-output-json",
+            str(tmp_path / "release-inputs.json"),
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+    cli_record = json.loads(plan_json.read_text(encoding="utf-8"))
+    config_plan = build_v1_benchmark_plan(
+        BenchmarkPlanConfig(
+            suite_id="v1-g6-l4",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            evidence_gate_output_json=str(tmp_path / "benchmark-gate.json"),
+            release_preflight_output_json=str(tmp_path / "release-inputs.json"),
+            storage_benchmark=StorageBenchmarkPlanConfig(
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
+                output_json=str(tmp_path / "storage.json"),
+                readers=("memory", "disk", "unity_catalog"),
+                uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
+            ),
+            release_evidence=ReleaseEvidencePlanConfig(
+                output_json=str(tmp_path / "release-evidence.json"),
+                engine_probe_jsons=(
+                    str(tmp_path / "vllm-probe.json"),
+                    str(tmp_path / "sglang-probe.json"),
+                ),
+                engine_actions_jsons=release_action_jsons(tmp_path),
+                benchmark_evidence_gate_json=str(tmp_path / "benchmark-gate.json"),
+            ),
+        )
+    )
+    planned = [
+        (
+            cli_record["evidence_gate_output_json"],
+            _planned_release_evidence_argvs(
+                (command["name"], command["argv"]) for command in cli_record["commands"]
+            ),
+        ),
+        (
+            str(tmp_path / "benchmark-gate.json"),
+            _planned_release_evidence_argvs(
+                (command.name, command.argv) for command in config_plan.commands
+            ),
+        ),
+    ]
+    parser = build_release_evidence_parser()
+
+    assert exit_code == 0
+    for gate_json, argvs in planned:
+        assert sorted(argvs) == ["preflight-release-evidence", "validate-release-evidence"]
+        for argv in argvs.values():
+            assert parser.parse_args(argv).benchmark_evidence_gate_json == gate_json
 
 
 def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidence(tmp_path):

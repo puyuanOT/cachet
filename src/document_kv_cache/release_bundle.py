@@ -283,6 +283,7 @@ _RELEASE_EVIDENCE_SIDECAR_KEYS = frozenset(
         "ok",
         "v1_benchmark_ok",
         "storage_benchmark_ok",
+        "benchmark_evidence_gate_ok",
         "engine_probe_backends",
         "missing_engine_probe_backends",
         "duplicate_engine_probe_backends",
