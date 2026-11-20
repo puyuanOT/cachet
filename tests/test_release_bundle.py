@@ -8,12 +8,35 @@ import subprocess
 import sys
 import tomllib
 import zipfile
+from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
 
 import document_kv_cache.release_bundle as public_release_bundle
-from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.artifact_identity import ArtifactIdentity
+from document_kv_cache.benchmark_gates import BENCHMARK_EVIDENCE_GATE_RECORD_TYPE, CacheStateAttestation
+from document_kv_cache.benchmark_runner import (
+    BENCHMARK_RUN_RECORD_TYPE,
+    BenchmarkGeneration,
+    BenchmarkManifestContext,
+    benchmark_run_result_to_record,
+    run_benchmark_suite,
+)
+from document_kv_cache.benchmarks import (
+    CACHE_REUSE_ARM,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    DOCUMENT_KV_ARTIFACT_ID_PARAM,
+    DOCUMENT_KV_CACHE_METHOD_PARAM,
+    DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
+    SUPPORTED_V1_DATASETS,
+    BenchmarkExample,
+    BenchmarkSuite,
+    baseline_prefill_arm,
+    method_benchmark_arm,
+)
 from document_kv_cache.benchmark_plan_executor import (
     BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
     BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
@@ -89,11 +112,13 @@ from document_kv_cache.release_evidence import (
     SGLANG_LIVE_V1_BENCHMARK_SCOPE,
     evaluate_release_evidence_files,
     inspect_release_evidence_input_files,
+    release_evidence_to_record,
     write_release_evidence_input_status_json,
     write_release_evidence_json,
 )
 from document_kv_cache.serving_env import serving_environment_profile, serving_environment_profile_to_record
 from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
+from document_kv_cache.workflow import SourceDocument
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1012,6 +1037,7 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         "v1_benchmark",
         "sglang_live_v1_benchmark",
         "storage_benchmark",
+        "benchmark_evidence_gate",
         "engine_probe",
         "engine_probe",
         "engine_connector_actions",
@@ -1033,6 +1059,9 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         "repository_hygiene",
         "native_probe_factories",
     ]
+    gate_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "benchmark_evidence_gate")
+    assert gate_artifact["bundled_path"] == "benchmark_evidence_gate.json"
+    assert gate_artifact["record_type"] == BENCHMARK_EVIDENCE_GATE_RECORD_TYPE
     matrix_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "requirements_matrix")
     assert matrix_artifact["bundled_path"] == "v1_requirements_matrix.md"
     assert "record_type" not in matrix_artifact
@@ -1053,8 +1082,8 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
     ]
     assert [artifact["backend"] for artifact in launch_config_artifacts] == ["vllm", "sglang"]
     assert [artifact["bundled_path"] for artifact in launch_config_artifacts] == [
-        "engine_launch_config_08_vllm.json",
-        "engine_launch_config_09_sglang.json",
+        "engine_launch_config_09_vllm.json",
+        "engine_launch_config_10_sglang.json",
     ]
 
 
@@ -1101,9 +1130,136 @@ def test_build_release_bundle_strict_v1_requires_compatibility_status_for_compat
     record = release_bundle_to_record(bundle)
 
     assert record["ok"] is True
-    assert record["artifact_count"] == 25
+    assert record["artifact_count"] == 26
     assert any(artifact["role"] == "compatibility_benchmark" for artifact in record["artifacts"])
     assert any(artifact["role"] == "compatibility_databricks_run_status" for artifact in record["artifacts"])
+
+
+def test_build_release_bundle_strict_v1_requires_the_benchmark_evidence_gate(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    ungated = _write_release_ready_artifacts(source_dir / "ungated")
+
+    with pytest.raises(ValueError, match="Strict V1 release bundle requires benchmark evidence gate sidecar$"):
+        build_release_bundle(
+            **{
+                **release_kwargs,
+                "v1_benchmark_json": ungated["v1"],
+                "storage_benchmark_json": ungated["storage"],
+                "benchmark_evidence_gate_json": None,
+                "engine_probe_jsons": (ungated["vllm"], ungated["sglang"]),
+                "engine_actions_jsons": (ungated["vllm_actions"], ungated["sglang_actions"]),
+                "release_evidence_json": ungated["evidence"],
+                "preflight_json": ungated["preflight"],
+            },
+            output_dir=tmp_path / "strict-missing-benchmark-evidence-gate",
+            require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_revalidates_the_bundled_benchmark_evidence_gate(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    gate = json.loads(release_kwargs["benchmark_evidence_gate_json"].read_text(encoding="utf-8"))
+    tampered_gate = _write_json(
+        source_dir / "tampered-benchmark-gate.json",
+        {**gate, "checked_cache_requests": gate["checked_cache_requests"] + 1},
+    )
+    tampered_inputs = {
+        "v1_benchmark_json": release_kwargs["v1_benchmark_json"],
+        "storage_benchmark_json": release_kwargs["storage_benchmark_json"],
+        "engine_probe_jsons": release_kwargs["engine_probe_jsons"],
+        "engine_actions_jsons": release_kwargs["engine_actions_jsons"],
+        "benchmark_evidence_gate_json": tampered_gate,
+    }
+    tampered_evidence = release_evidence_to_record(evaluate_release_evidence_files(**tampered_inputs))
+    forged_evidence = _write_json(
+        source_dir / "forged-release-evidence.json",
+        {**tampered_evidence, "ok": True, "issues": [], "benchmark_evidence_gate_ok": True},
+    )
+    tampered_preflight = source_dir / "tampered-release-inputs.json"
+    write_release_evidence_input_status_json(
+        inspect_release_evidence_input_files(**tampered_inputs),
+        tampered_preflight,
+    )
+    understated_evidence = _write_json(
+        source_dir / "understated-release-evidence.json",
+        {
+            **json.loads(release_kwargs["release_evidence_json"].read_text(encoding="utf-8")),
+            "benchmark_evidence_gate_ok": False,
+        },
+    )
+
+    assert tampered_evidence["benchmark_evidence_gate_ok"] is False
+    with pytest.raises(ValueError, match="benchmark evidence gate must match the v1 benchmark evidence_gate"):
+        build_release_bundle(
+            **{
+                **release_kwargs,
+                "benchmark_evidence_gate_json": tampered_gate,
+                "release_evidence_json": forged_evidence,
+                "preflight_json": tampered_preflight,
+            },
+            output_dir=tmp_path / "strict-tampered-benchmark-evidence-gate",
+            require_complete_v1=True,
+        )
+    with pytest.raises(ValueError, match="release evidence sidecar benchmark_evidence_gate_ok must be true"):
+        build_release_bundle(
+            **{**release_kwargs, "release_evidence_json": understated_evidence},
+            output_dir=tmp_path / "strict-understated-benchmark-evidence-gate",
+            require_complete_v1=True,
+        )
+
+
+def test_release_bundle_cli_bundles_the_benchmark_evidence_gate(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources", benchmark_evidence_gate=True)
+    output_json = tmp_path / "bundle-record.json"
+
+    exit_code = public_release_bundle.main(
+        [
+            "--v1-benchmark-json",
+            str(artifacts["v1"]),
+            "--storage-benchmark-json",
+            str(artifacts["storage"]),
+            "--benchmark-evidence-gate-json",
+            str(artifacts["gate"]),
+            "--engine-probe-json",
+            str(artifacts["vllm"]),
+            "--engine-probe-json",
+            str(artifacts["sglang"]),
+            "--engine-actions-json",
+            str(artifacts["vllm_actions"]),
+            "--engine-actions-json",
+            str(artifacts["sglang_actions"]),
+            "--release-evidence-json",
+            str(artifacts["evidence"]),
+            "--preflight-json",
+            str(artifacts["preflight"]),
+            "--output-dir",
+            str(tmp_path / "bundle"),
+            "--output-json",
+            str(output_json),
+        ]
+    )
+    record = json.loads(output_json.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert [artifact["role"] for artifact in record["artifacts"]] == [
+        "v1_benchmark",
+        "storage_benchmark",
+        "benchmark_evidence_gate",
+        "engine_probe",
+        "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
+        "release_evidence",
+        "preflight",
+    ]
 
 
 def test_build_release_bundle_strict_v1_rejects_databricks_hardware_target_mismatch(tmp_path):
@@ -3800,6 +3956,7 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
     assert "--require-complete-v1" in completed.stdout
     assert "--compatibility-benchmark-json" in completed.stdout
     assert "--requirements-matrix-md" in completed.stdout
+    assert "the publication benchmark evidence gate sidecar" in help_text
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
     assert "vLLM/SGLang native engine probes, connector actions, and launch configs" in help_text
     assert "supported native probe factory diagnostics" in help_text
@@ -3822,13 +3979,16 @@ def _write_release_ready_artifacts(
     *,
     suite_id: str = "v1-suite",
     hardware_target: str = "aws-g6-l4",
+    benchmark_evidence_gate: bool = False,
 ) -> dict[str, Path]:
     source_dir.mkdir(parents=True, exist_ok=True)
+    v1_record = (
+        _gated_v1_record(suite_id=suite_id, hardware_target=hardware_target)
+        if benchmark_evidence_gate
+        else _v1_record(ok=True, suite_id=suite_id, hardware_target=hardware_target)
+    )
     paths = {
-        "v1": _write_json(
-            source_dir / "v1.json",
-            _v1_record(ok=True, suite_id=suite_id, hardware_target=hardware_target),
-        ),
+        "v1": _write_json(source_dir / "v1.json", v1_record),
         "storage": _write_json(source_dir / "storage.json", _storage_record(ok=True)),
         "vllm": _write_json(source_dir / "vllm-probe.json", _probe_record(ServingBackend.VLLM)),
         "sglang": _write_json(source_dir / "sglang-probe.json", _probe_record(ServingBackend.SGLANG)),
@@ -3844,17 +4004,21 @@ def _write_release_ready_artifacts(
             _sglang_live_v1_benchmark_record(ok=True),
         ),
     }
+    if benchmark_evidence_gate:
+        paths["gate"] = _write_json(source_dir / "benchmark-gate.json", v1_record["evidence_gate"])
     evidence = evaluate_release_evidence_files(
         v1_benchmark_json=paths["v1"],
         storage_benchmark_json=paths["storage"],
         engine_probe_jsons=(paths["vllm"], paths["sglang"]),
         engine_actions_jsons=(paths["vllm_actions"], paths["sglang_actions"]),
+        benchmark_evidence_gate_json=paths.get("gate"),
     )
     status = inspect_release_evidence_input_files(
         v1_benchmark_json=paths["v1"],
         storage_benchmark_json=paths["storage"],
         engine_probe_jsons=(paths["vllm"], paths["sglang"]),
         engine_actions_jsons=(paths["vllm_actions"], paths["sglang_actions"]),
+        benchmark_evidence_gate_json=paths.get("gate"),
     )
     paths["evidence"] = source_dir / "release-evidence.json"
     paths["preflight"] = source_dir / "release-inputs.json"
@@ -3906,6 +4070,163 @@ def _v1_record(*, ok: bool, suite_id: str = "v1-suite", hardware_target: str = "
             "issues": [] if ok else ["missing report rows: hotpotqa:baseline_prefill"],
         },
     }
+
+
+class _GatedV1Engine:
+    def generate(self, request) -> BenchmarkGeneration:
+        cached = request.arm.uses_cache
+        metadata = {
+            "prompt_text_mode": "logical",
+            "prompt_token_source": "logical",
+            "kv_transfer_params_attached": "true" if cached else "false",
+            "logical_prompt_tokens": "32",
+            "runtime_prompt_tokens": "32",
+            "prefix_cache_salt_attached": "true",
+            "prefix_cache_salt": f"{request.example.example_id}:{request.arm.arm_id}",
+        }
+        if cached:
+            metadata["request_id"] = request.example.kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM]
+        return BenchmarkGeneration(
+            output_text="Paris",
+            prompt_tokens=32,
+            completion_tokens=1,
+            ttft_seconds=0.5 if cached else 1.0,
+            time_to_completion_seconds=0.7 if cached else 1.2,
+            metadata=metadata,
+        )
+
+
+def _gated_v1_record(**options):
+    return json.loads(_gated_v1_record_json(**options))
+
+
+@lru_cache(maxsize=None)
+def _gated_v1_record_json(*, suite_id: str, hardware_target: str) -> str:
+    identity = ArtifactIdentity(
+        method_id="vanilla_prefill",
+        method_version="2",
+        method_config_digest="1" * 64,
+        model_id="qwen3:4b-instruct",
+        model_revision="model-revision",
+        tokenizer_id="qwen3:4b-instruct",
+        tokenizer_revision="tokenizer-revision",
+        lora_id="none",
+        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        layout_version="v1",
+        kv_dtype="float16",
+        block_size=16,
+        payload_axis_order="layer,kv,token,head,dim",
+        key_position_encoding="pre_rope",
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=128,
+        generator_family="transformers",
+        generator_version="4.53.0",
+    )
+    baseline_arm = baseline_prefill_arm()
+    cache_arm = method_benchmark_arm(
+        identity.method_id,
+        arm_id=CACHE_REUSE_ARM,
+        method_config_digest=identity.method_config_digest,
+    )
+    suite = BenchmarkSuite(
+        suite_id=suite_id,
+        hardware_target=hardware_target,
+        examples=tuple(
+            BenchmarkExample(
+                example_id=f"{dataset}-{index}",
+                dataset=dataset,
+                documents=(
+                    SourceDocument.from_text(
+                        document_id=f"{dataset}-document-{index}",
+                        text="The answer is Paris.",
+                    ),
+                ),
+                query="What is the answer?",
+                expected_answer="Paris",
+                kv_transfer_params={
+                    DOCUMENT_KV_REQUEST_ID_PARAM: f"{dataset}-cache-request-{index}",
+                    DOCUMENT_KV_HANDOFF_JSON_PARAM: f"/tmp/{dataset}-{index}.handoff.json",
+                    DOCUMENT_KV_CACHE_METHOD_PARAM: identity.method_id,
+                    DOCUMENT_KV_ARTIFACT_ID_PARAM: identity.artifact_id,
+                },
+            )
+            for dataset in SUPPORTED_V1_DATASETS
+            for index in range(4)
+        ),
+        datasets=SUPPORTED_V1_DATASETS,
+    )
+    result = run_benchmark_suite(
+        suite,
+        {baseline_arm.arm_id: _GatedV1Engine(), cache_arm.arm_id: _GatedV1Engine()},
+        arms=(baseline_arm, cache_arm),
+        manifest_context=BenchmarkManifestContext(
+            prompt_template_version=identity.prompt_template_version,
+            model_revision="model-revision",
+            canonical_model_id=identity.model_id,
+            tokenizer_id=suite.model_id,
+            tokenizer_revision="tokenizer-revision",
+            lora_id=identity.lora_id,
+            engine_id="test-engine",
+            engine_version="1",
+            serving_platform="test-serving-platform",
+            model_dtype="float16",
+            runtime_kv_dtype=identity.runtime_kv_dtype,
+            layout_version=identity.layout_version,
+            payload_axis_order=identity.payload_axis_order,
+            block_size=identity.block_size,
+            key_position_encoding=identity.key_position_encoding,
+            rope_theta=identity.rope_theta,
+            rope_rotary_dim=identity.rope_rotary_dim,
+            tensor_parallel_size=identity.tensor_parallel_size,
+            pipeline_parallel_size=identity.pipeline_parallel_size,
+            hardware_fingerprint="test-hardware",
+            runtime_id="test-runtime",
+            runtime_version="1",
+            storage_identity="test-storage",
+            cache_state="cold",
+            max_output_tokens=16,
+            temperature=0.0,
+            stream=True,
+            complete_dataset_split=True,
+            measurement_scopes=("latency",),
+        ),
+        evidence_policy="publication",
+        prefix_cache_salt_mode="per_request",
+    )
+    assert result.experiment_manifest is not None
+    result = replace(
+        result,
+        experiment_manifest=replace(
+            result.experiment_manifest,
+            execution_isolation_mode="separate_process_or_job",
+            order_mode="physically_isolated_jobs",
+            source_execution_ids=((baseline_arm.arm_id, "a" * 64), (cache_arm.arm_id, "b" * 64)),
+        ),
+        execution_isolation_mode="separate_process_or_job",
+    )
+    attestations = tuple(
+        CacheStateAttestation(
+            request_id=measurement.request_id,
+            cache_method=identity.method_id,
+            artifact_id=identity.artifact_id,
+            source="local_path",
+            bytes_read=4096,
+            payload_cache_hit=False,
+            eviction_requested=True,
+            eviction_succeeded=True,
+            expected_bytes=4096,
+            expected_tokens=1,
+            loaded_tokens=1,
+        )
+        for measurement in result.measurements
+        if measurement.arm_id == CACHE_REUSE_ARM
+    )
+    record = benchmark_run_result_to_record(
+        result,
+        cache_state_attestations=attestations,
+        artifact_identities={identity.artifact_id: identity},
+    )
+    return json.dumps(record)
 
 
 def _sglang_live_v1_benchmark_record(*, ok: bool = True):
@@ -4258,6 +4579,7 @@ def _strict_v1_release_bundle_kwargs(
         source_dir,
         suite_id=suite_id,
         hardware_target=hardware_target,
+        benchmark_evidence_gate=True,
     )
     package_wheel = _write_wheel(source_dir / "cachet_kv-0.2.0-py3-none-any.whl")
     plan_execution = _write_json(
@@ -4280,6 +4602,7 @@ def _strict_v1_release_bundle_kwargs(
         "v1_benchmark_json": artifacts["v1"],
         "sglang_live_v1_benchmark_jsons": (artifacts["sglang_live_v1"],),
         "storage_benchmark_json": artifacts["storage"],
+        "benchmark_evidence_gate_json": artifacts["gate"],
         "engine_probe_jsons": (artifacts["vllm"], artifacts["sglang"]),
         "engine_actions_jsons": (artifacts["vllm_actions"], artifacts["sglang_actions"]),
         "engine_launch_config_jsons": (artifacts["vllm_launch"], artifacts["sglang_launch"]),

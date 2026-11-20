@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache._benchmark_records import benchmark_gate_inputs_from_record
 from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_V1_MODEL_ID,
@@ -20,7 +21,16 @@ from document_kv_cache.benchmarks import (
     answer_found as _benchmark_answer_found,
     exact_match as _benchmark_exact_match,
 )
-from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.benchmark_gates import (
+    BENCHMARK_EVIDENCE_GATE_RECORD_TYPE,
+    benchmark_evidence_gate_to_record,
+    evaluate_benchmark_evidence_gate,
+)
+from document_kv_cache.benchmark_runner import (
+    BENCHMARK_RUN_RECORD_TYPE,
+    benchmark_record_payload_digest,
+    benchmark_run_result_from_record,
+)
 from document_kv_cache.engine_adapters import (
     ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
     ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
@@ -40,6 +50,7 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
+from document_kv_cache.methods import MethodRegistry
 from document_kv_cache.model_profiles import get_model_profile
 from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
 from document_kv_cache.serving_env import serving_environment_profile
@@ -78,6 +89,7 @@ REQUIRED_ENGINE_PROBE_BACKENDS = tuple(backend.value for backend in ServingBacke
 RELEASE_EVIDENCE_ARTIFACT_ROLES = (
     "v1_benchmark",
     "storage_benchmark",
+    "benchmark_evidence_gate",
     "engine_probe",
     "engine_connector_actions",
 )
@@ -130,6 +142,7 @@ class ReleaseEvidence:
     artifact_sources: tuple[ReleaseEvidenceArtifactSource, ...] = ()
     duplicate_engine_probe_backends: tuple[str, ...] = ()
     duplicate_engine_action_backends: tuple[str, ...] = ()
+    benchmark_evidence_gate_ok: bool = False
 
     @property
     def ok(self) -> bool:
@@ -237,14 +250,26 @@ def evaluate_release_evidence(
     required_engine_probe_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     required_engine_action_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     artifact_sources: Sequence[ReleaseEvidenceArtifactSource] = (),
+    benchmark_evidence_gate_record: Mapping[str, Any] | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> ReleaseEvidence:
     required_backends = _validated_required_backends(required_engine_probe_backends)
     required_action_backends = _validated_required_backends(required_engine_action_backends)
     artifact_source_tuple = _validated_artifact_sources(artifact_sources)
     issues: list[str] = []
     v1_issues = _v1_benchmark_issues(v1_benchmark_record)
+    gate_issues = (
+        ()
+        if benchmark_evidence_gate_record is None
+        else _benchmark_evidence_gate_issues(
+            v1_benchmark_record,
+            benchmark_evidence_gate_record,
+            method_registry=method_registry,
+        )
+    )
     storage_issues = _storage_benchmark_issues(storage_benchmark_record)
     issues.extend(v1_issues)
+    issues.extend(gate_issues)
     issues.extend(storage_issues)
 
     probe_backends, invalid_probe_records, duplicate_probe_backends, valid_probe_records = _engine_probe_evidence(
@@ -284,6 +309,7 @@ def evaluate_release_evidence(
         invalid_engine_action_records=invalid_action_records,
         issues=tuple(issues),
         artifact_sources=artifact_source_tuple,
+        benchmark_evidence_gate_ok=benchmark_evidence_gate_record is not None and not gate_issues,
     )
 
 
@@ -293,9 +319,12 @@ def evaluate_release_evidence_files(
     storage_benchmark_json: str | Path,
     engine_probe_jsons: Sequence[str | Path] = (),
     engine_actions_jsons: Sequence[str | Path] = (),
+    benchmark_evidence_gate_json: str | Path | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> ReleaseEvidence:
     v1_record = _read_json_record(v1_benchmark_json)
     storage_record = _read_json_record(storage_benchmark_json)
+    gate_record = None if benchmark_evidence_gate_json is None else _read_json_record(benchmark_evidence_gate_json)
     engine_probe_records = tuple(_read_json_record(path) for path in engine_probe_jsons)
     engine_action_records = tuple(_read_json_record(path) for path in engine_actions_jsons)
     return evaluate_release_evidence(
@@ -308,11 +337,15 @@ def evaluate_release_evidence_files(
             v1_record=v1_record,
             storage_benchmark_json=storage_benchmark_json,
             storage_record=storage_record,
+            benchmark_evidence_gate_json=benchmark_evidence_gate_json,
+            benchmark_evidence_gate_record=gate_record,
             engine_probe_jsons=engine_probe_jsons,
             engine_probe_records=engine_probe_records,
             engine_actions_jsons=engine_actions_jsons,
             engine_action_records=engine_action_records,
         ),
+        benchmark_evidence_gate_record=gate_record,
+        method_registry=method_registry,
     )
 
 
@@ -322,6 +355,7 @@ def inspect_release_evidence_input_files(
     storage_benchmark_json: str | Path,
     engine_probe_jsons: Sequence[str | Path] = (),
     engine_actions_jsons: Sequence[str | Path] = (),
+    benchmark_evidence_gate_json: str | Path | None = None,
     required_engine_probe_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     required_engine_action_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
 ) -> ReleaseEvidenceInputStatus:
@@ -331,6 +365,10 @@ def inspect_release_evidence_input_files(
         _inspect_release_evidence_input_file("v1_benchmark", v1_benchmark_json),
         _inspect_release_evidence_input_file("storage_benchmark", storage_benchmark_json),
     ]
+    if benchmark_evidence_gate_json is not None:
+        input_files.append(
+            _inspect_release_evidence_input_file("benchmark_evidence_gate", benchmark_evidence_gate_json)
+        )
     input_files.extend(_inspect_release_evidence_input_file("engine_probe", path) for path in engine_probe_jsons)
     input_files.extend(
         _inspect_release_evidence_input_file("engine_connector_actions", path)
@@ -381,6 +419,7 @@ def release_evidence_to_record(evidence: ReleaseEvidence) -> dict[str, Any]:
         "ok": evidence.ok,
         "v1_benchmark_ok": evidence.v1_benchmark_ok,
         "storage_benchmark_ok": evidence.storage_benchmark_ok,
+        "benchmark_evidence_gate_ok": evidence.benchmark_evidence_gate_ok,
         "engine_probe_backends": list(evidence.engine_probe_backends),
         "missing_engine_probe_backends": list(evidence.missing_engine_probe_backends),
         "duplicate_engine_probe_backends": list(evidence.duplicate_engine_probe_backends),
@@ -439,6 +478,8 @@ def _artifact_sources_for_records(
     v1_record: Mapping[str, Any],
     storage_benchmark_json: str | Path,
     storage_record: Mapping[str, Any],
+    benchmark_evidence_gate_json: str | Path | None,
+    benchmark_evidence_gate_record: Mapping[str, Any] | None,
     engine_probe_jsons: Sequence[str | Path],
     engine_probe_records: Sequence[Mapping[str, Any]],
     engine_actions_jsons: Sequence[str | Path],
@@ -458,6 +499,15 @@ def _artifact_sources_for_records(
             **_artifact_source_fingerprint(storage_benchmark_json),
         ),
     ]
+    if benchmark_evidence_gate_json is not None and benchmark_evidence_gate_record is not None:
+        sources.append(
+            ReleaseEvidenceArtifactSource(
+                role="benchmark_evidence_gate",
+                path=str(benchmark_evidence_gate_json),
+                record_type=_optional_str(benchmark_evidence_gate_record.get("record_type")),
+                **_artifact_source_fingerprint(benchmark_evidence_gate_json),
+            )
+        )
     for path, record in zip(engine_probe_jsons, engine_probe_records, strict=True):
         sources.append(
             ReleaseEvidenceArtifactSource(
@@ -568,6 +618,8 @@ def _expected_record_type_for_role(role: str) -> str:
         return BENCHMARK_RUN_RECORD_TYPE
     if role == "storage_benchmark":
         return STORAGE_BENCHMARK_RECORD_TYPE
+    if role == "benchmark_evidence_gate":
+        return BENCHMARK_EVIDENCE_GATE_RECORD_TYPE
     if role == "engine_probe":
         return ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE
     if role == "engine_connector_actions":
@@ -643,6 +695,48 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         _validate_v1_report_rows(report_rows, issues)
     if comparisons is not None:
         _validate_v1_comparisons(comparisons, issues)
+    return tuple(issues)
+
+
+def _benchmark_evidence_gate_issues(
+    benchmark_record: Mapping[str, Any],
+    gate_record: Mapping[str, Any],
+    *,
+    method_registry: MethodRegistry | None,
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    if gate_record.get("record_type") != BENCHMARK_EVIDENCE_GATE_RECORD_TYPE:
+        issues.append(f"benchmark evidence gate record_type must be {BENCHMARK_EVIDENCE_GATE_RECORD_TYPE!r}")
+    if gate_record.get("policy") != "publication":
+        issues.append("benchmark evidence gate policy must be 'publication'")
+    if gate_record.get("ok") is not True:
+        gate_issues = gate_record.get("issues")
+        if isinstance(gate_issues, list) and gate_issues:
+            issues.extend(f"benchmark evidence gate: {issue}" for issue in gate_issues)
+        else:
+            issues.append("benchmark evidence gate did not pass")
+    if gate_record != benchmark_record.get("evidence_gate"):
+        issues.append("benchmark evidence gate must match the v1 benchmark evidence_gate")
+    try:
+        payload_digest = benchmark_record_payload_digest(benchmark_record)
+        artifact_identities, cache_state_attestations = benchmark_gate_inputs_from_record(benchmark_record)
+        recomputed_gate = benchmark_evidence_gate_to_record(
+            evaluate_benchmark_evidence_gate(
+                benchmark_run_result_from_record(benchmark_record, evidence_policy="publication"),
+                policy="publication",
+                cache_state_attestations=cache_state_attestations,
+                artifact_identities=artifact_identities,
+                method_registry=method_registry,
+                benchmark_payload_digest=payload_digest,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        issues.append(f"benchmark evidence gate cannot be recomputed from the v1 benchmark: {exc}")
+        return tuple(issues)
+    if gate_record.get("benchmark_payload_digest") != payload_digest:
+        issues.append("benchmark evidence gate benchmark_payload_digest must match the v1 benchmark payload")
+    if gate_record != recomputed_gate:
+        issues.append("benchmark evidence gate must match the publication gate recomputed from the v1 benchmark")
     return tuple(issues)
 
 
@@ -2296,16 +2390,27 @@ def _read_json_record(path: str | Path) -> Mapping[str, Any]:
     return record
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Validate Document KV Cache release evidence JSON artifacts.")
     parser.add_argument("--v1-benchmark-json", required=True)
     parser.add_argument("--storage-benchmark-json", required=True)
+    parser.add_argument(
+        "--benchmark-evidence-gate-json",
+        help=(
+            "Standalone benchmark evidence gate sidecar for --v1-benchmark-json; it must pass "
+            "under the publication policy and match the record's embedded and recomputed gate."
+        ),
+    )
     parser.add_argument("--engine-probe-json", action="append", default=[])
     parser.add_argument("--engine-actions-json", action="append", default=[])
     parser.add_argument("--output-json", help="Write the release evidence JSON to this path instead of stdout.")
     parser.add_argument("--preflight-output-json", help="Write release-evidence input file status JSON before validation.")
     parser.add_argument("--preflight-only", action="store_true", help="Only inspect input file availability and record types.")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
 
     try:
         if args.preflight_output_json or args.preflight_only:
@@ -2314,6 +2419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 storage_benchmark_json=args.storage_benchmark_json,
                 engine_probe_jsons=tuple(args.engine_probe_json),
                 engine_actions_jsons=tuple(args.engine_actions_json),
+                benchmark_evidence_gate_json=args.benchmark_evidence_gate_json,
             )
             if args.preflight_output_json:
                 write_release_evidence_input_status_json(input_status, args.preflight_output_json)
@@ -2326,6 +2432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             storage_benchmark_json=args.storage_benchmark_json,
             engine_probe_jsons=tuple(args.engine_probe_json),
             engine_actions_jsons=tuple(args.engine_actions_json),
+            benchmark_evidence_gate_json=args.benchmark_evidence_gate_json,
         )
         if args.output_json:
             write_release_evidence_json(evidence, args.output_json)
