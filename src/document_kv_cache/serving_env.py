@@ -127,15 +127,6 @@ GPU_RUNTIME_PYTHONWARNINGS = ",".join(
 GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL = "ERROR"
 
 
-def gpu_runtime_warning_environment_overrides() -> dict[str, str]:
-    """Return the exact warning policy for verifier and worker descendants."""
-
-    return {
-        "FLASHINFER_LOGGING_LEVEL": GPU_RUNTIME_FLASHINFER_LOGGING_LEVEL,
-        "PYTHONWARNINGS": GPU_RUNTIME_PYTHONWARNINGS,
-    }
-
-
 VLLM_CUDA_REQUIREMENTS_SHA256 = (
     "9393effcd139d93e343195924c455efd97bd914053d4f68365c0467e5dba1272"
 )
@@ -185,17 +176,12 @@ PIP_BOOTSTRAP_CONSTRAINTS = (
     "wheel==0.48.0",
 )
 VIRTUALENV_BOOTSTRAP_VERSION = "20.39.1"
-VIRTUALENV_BOOTSTRAP_FILENAME = "virtualenv.pyz"
 VIRTUALENV_BOOTSTRAP_URL = (
     "https://github.com/pypa/virtualenv/releases/download/20.39.1/virtualenv.pyz"
 )
 VIRTUALENV_BOOTSTRAP_SHA256 = (
     "8a22f3495357316e30db13f4bdee8487fe27137fa94d383ba1e6fe3e242b6165"
 )
-# GPU jobs download the bootstrap and some locked wheels from GitHub's release
-# CDN, whose transient gateway errors otherwise fail the whole job.
-DOWNLOAD_RETRY_DELAYS_SECONDS = (10, 20, 40, 80, 160, 300, 300)
-DOWNLOAD_RETRY_HTTP_CODES = (408, 429, 500, 502, 503, 504)
 
 # Pinned compiled direct dependencies.  The cu12 extras mirror the
 # transformation in vLLM's tagged Dockerfile when CUDA_VERSION has major
@@ -774,13 +760,9 @@ __all__ = [
     "VLLM_WHEEL_INSTALL_SPEC",
     "VLLM_WHEEL_SHA256",
     "VLLM_WHEEL_URL",
-    "VIRTUALENV_BOOTSTRAP_FILENAME",
     "VIRTUALENV_BOOTSTRAP_SHA256",
     "VIRTUALENV_BOOTSTRAP_URL",
     "VIRTUALENV_BOOTSTRAP_VERSION",
-    "DOWNLOAD_RETRY_DELAYS_SECONDS",
-    "DOWNLOAD_RETRY_HTTP_CODES",
-    "gpu_runtime_warning_environment_overrides",
     "augment_vllm_runtime_lock_indexes",
     "patched_vllm_wheel_install_spec",
     "vllm_runtime_install_requirements",

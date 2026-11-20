@@ -1586,14 +1586,6 @@ def _format_benchmark_handoff_template(
     )
 
 
-def _validate_benchmark_handoff_template(template: str, *, field_name: str) -> None:
-    _validate_benchmark_template(
-        template,
-        field_name=field_name,
-        supported_fields=_TEMPLATE_FIELDS,
-    )
-
-
 def _format_benchmark_bundle_template(
     template: str,
     *,

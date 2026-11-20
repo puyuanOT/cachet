@@ -352,31 +352,6 @@ def repack_vllm_0300_cu129_wheel(
     )
 
 
-def validate_patched_vllm_member_bytes(
-    member_name: str,
-    content: bytes,
-    *,
-    patch_closure: Sequence[Mapping[str, object]] = VLLM_0300_E5M2_PATCH_CLOSURE,
-) -> str:
-    """Return the approved patched digest or fail closed for one member."""
-
-    matching = [
-        patch
-        for patch in patch_closure
-        if patch.get("relative_path") == member_name
-    ]
-    if len(matching) != 1:
-        raise ValueError(f"no unique approved vLLM patch member for {member_name!r}")
-    expected = _required_patch_digest(matching[0], "patched_sha256")
-    observed = sha256(content).hexdigest()
-    if observed != expected:
-        raise ValueError(
-            f"installed vLLM member {member_name} SHA-256 {observed} does not "
-            f"match approved patched source {expected}"
-        )
-    return observed
-
-
 def _apply_patch_replacements(
     source_bytes: bytes,
     patch: Mapping[str, object],
@@ -635,5 +610,4 @@ __all__ = [
     "main",
     "repack_vllm_0300_cu129_wheel",
     "repack_vllm_cu129_wheel",
-    "validate_patched_vllm_member_bytes",
 ]

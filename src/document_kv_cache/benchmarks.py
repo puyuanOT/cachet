@@ -206,7 +206,6 @@ __all__ = [
     "V1BenchmarkEvidence",
     "baseline_prefill_arm",
     "document_kv_cache_arm",
-    "external_benchmark_arm",
     "method_benchmark_arm",
     "require_runnable_cachet_benchmark_arm",
     "default_dataset_scorer_registry",
@@ -1441,45 +1440,6 @@ def document_kv_cache_arm() -> BenchmarkArm:
     )
 
 
-def external_benchmark_arm(
-    arm_id: str,
-    *,
-    description: str,
-    implementation_kind: Literal["upstream", "external"] = "upstream",
-    uses_cache: bool = True,
-    method: str = "",
-    method_version: str = "",
-    method_config_digest: str = "",
-    variant_id: str = "default",
-    physical_transform_id: str,
-    physical_transform_version: str,
-    physical_transform_config_digest: str,
-    offline_costs: BenchmarkOfflineCosts | None = None,
-    source_revision: str,
-    checkpoint_identity: str,
-    setting_overrides: Mapping[str, Any] | None = None,
-) -> BenchmarkArm:
-    """Describe an author/upstream or other externally executed comparison arm."""
-
-    return BenchmarkArm(
-        arm_id=arm_id,
-        uses_cache=uses_cache,
-        description=description,
-        cache_method=method if uses_cache else "",
-        variant_id=variant_id,
-        implementation_kind=implementation_kind,
-        method_version=method_version,
-        method_config_digest=method_config_digest,
-        physical_transform_id=physical_transform_id,
-        physical_transform_version=physical_transform_version,
-        physical_transform_config_digest=physical_transform_config_digest,
-        offline_costs=offline_costs or BenchmarkOfflineCosts(),
-        source_revision=source_revision,
-        checkpoint_identity=checkpoint_identity,
-        setting_overrides=setting_overrides or {},
-    )
-
-
 def method_benchmark_arm(
     method: str,
     *,
@@ -2385,13 +2345,6 @@ def _percentile(sorted_values: Sequence[float], percentile: float) -> float:
 
 def _mean(values: Sequence[int]) -> float | None:
     return statistics.fmean(values) if values else None
-
-
-def _rate(values: Iterable[bool | None]) -> float | None:
-    present = [value for value in values if value is not None]
-    if not present:
-        return None
-    return sum(1 for value in present if value) / len(present)
 
 
 def _unique_example_rate(

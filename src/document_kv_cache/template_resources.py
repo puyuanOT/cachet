@@ -95,11 +95,9 @@ def _walk_template_resources(root: resources.abc.Traversable, relative_root: Pat
 
 def _resource_path_for_name(name: str) -> resources.abc.Traversable:
     normalized_name = _validated_resource_name(name)
-    by_name = {resource.name: resource for resource in list_template_resources()}
-    try:
-        resource = by_name[normalized_name]
-    except KeyError as exc:
-        raise ValueError(f"Unknown template resource {name!r}") from exc
+    known_names = {resource.name for resource in list_template_resources()}
+    if normalized_name not in known_names:
+        raise ValueError(f"Unknown template resource {name!r}")
     root = resources.files(PACKAGED_TEMPLATE_PACKAGE)
     path = root
     for part in normalized_name.split("/"):

@@ -2199,11 +2199,6 @@ def _add_unique_v1_dataset_arm(
     seen.add(key)
 
 
-def _validate_optional_bool(value: Any, label: str, issues: list[str]) -> None:
-    if value is not None and type(value) is not bool:
-        issues.append(f"{label} must be boolean when present")
-
-
 def _validate_optional_rate(value: Any, label: str, issues: list[str]) -> None:
     if value is None:
         return

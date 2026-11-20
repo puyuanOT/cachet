@@ -47,7 +47,6 @@ from document_kv_cache._benchmark_records import (
     write_benchmark_run_result_json,
 )
 from document_kv_cache.benchmarks import (
-    BASELINE_PREFILL_ARM,
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
@@ -1597,20 +1596,6 @@ def _validate_example_arm_params(
                     f"declare cache method {declared_method!r}, expected "
                     f"{expected_method!r} for arm {arm_id!r}"
                 )
-
-
-def _arm_id_for_prefill(arms: Sequence[BenchmarkArm]) -> str:
-    for arm in arms:
-        if not arm.uses_cache:
-            return arm.arm_id
-    return BASELINE_PREFILL_ARM
-
-
-def _arm_id_for_cache(arms: Sequence[BenchmarkArm]) -> str:
-    for arm in arms:
-        if arm.uses_cache:
-            return arm.arm_id
-    return CACHE_REUSE_ARM
 
 
 def _request_id_for_arm(

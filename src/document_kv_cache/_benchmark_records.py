@@ -115,14 +115,6 @@ _SANITIZED_ENUM_METADATA_VALUES = {
     FINAL_ANSWER_PARSER_STATUS_METADATA_KEY: frozenset(FINAL_ANSWER_PARSER_STATUSES),
     "niah_cell_id": frozenset(NIAH_CELL_IDS),
 }
-SANITIZED_MEASUREMENT_METADATA_KEYS = frozenset(
-    _SANITIZED_DIGEST_METADATA_KEYS
-    | _SANITIZED_IDENTIFIER_METADATA_KEYS
-    | _SANITIZED_INTEGER_METADATA_KEYS
-    | _SANITIZED_FLOAT_METADATA_KEYS
-    | _SANITIZED_BOOLEAN_METADATA_KEYS
-    | frozenset(_SANITIZED_ENUM_METADATA_VALUES)
-)
 
 
 def benchmark_run_result_payload_to_record(
@@ -1945,52 +1937,6 @@ def _sanitized_identifier(value: str) -> str:
     if _is_sha256_digest(value):
         return value
     return sha256(value.encode("utf-8")).hexdigest()
-
-
-def sanitized_measurement_metadata_issues(value: object) -> tuple[str, ...]:
-    """Validate metadata already marked as safe committed evidence."""
-
-    if not isinstance(value, Mapping):
-        return ("measurement metadata must be an object",)
-    issues: list[str] = []
-    unexpected = sorted(str(key) for key in value if key not in SANITIZED_MEASUREMENT_METADATA_KEYS)
-    if unexpected:
-        issues.append(f"measurement metadata contains non-sanitized keys: {unexpected}")
-    for key, item in value.items():
-        if key not in SANITIZED_MEASUREMENT_METADATA_KEYS:
-            continue
-        if not isinstance(item, str):
-            issues.append(f"measurement metadata {key} must be a string")
-            continue
-        if key in _SANITIZED_DIGEST_METADATA_KEYS and not _is_sha256_digest(item):
-            issues.append(f"measurement metadata {key} must be a SHA-256 digest")
-        elif key in _SANITIZED_IDENTIFIER_METADATA_KEYS and not _is_sanitized_identifier(item):
-            issues.append(f"measurement metadata {key} must be a plain identifier")
-        elif key in _SANITIZED_INTEGER_METADATA_KEYS:
-            try:
-                normalized = int(item)
-            except ValueError:
-                normalized = -1
-            if normalized < 0 or str(normalized) != item:
-                issues.append(
-                    f"measurement metadata {key} must be a canonical non-negative integer"
-                )
-        elif key in _SANITIZED_FLOAT_METADATA_KEYS:
-            try:
-                normalized_float = float(item)
-            except ValueError:
-                normalized_float = math.nan
-            if not math.isfinite(normalized_float) or normalized_float < 0:
-                issues.append(
-                    f"measurement metadata {key} must be finite and non-negative"
-                )
-        elif key in _SANITIZED_BOOLEAN_METADATA_KEYS and item not in {"true", "false"}:
-            issues.append(f"measurement metadata {key} must be true or false")
-        elif key in _SANITIZED_ENUM_METADATA_VALUES and item not in _SANITIZED_ENUM_METADATA_VALUES[key]:
-            issues.append(
-                f"measurement metadata {key} has an unsupported value"
-            )
-    return tuple(issues)
 
 
 def _is_sha256_digest(value: object) -> bool:
