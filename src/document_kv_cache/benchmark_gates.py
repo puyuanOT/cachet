@@ -391,6 +391,8 @@ def evaluate_benchmark_publication_gate(
     )
     if resolved.require_manifest and manifest is None:
         issues.append(f"{resolved.policy} evidence requires an experiment manifest")
+    elif quality_claim and manifest is None:
+        issues.append("quality claim requires an experiment manifest with scorer specs")
     if manifest is not None:
         if manifest.example_count != len(result.suite.examples):
             issues.append("experiment manifest example_count does not match the suite")

@@ -116,6 +116,22 @@ def test_smoke_gate_accepts_execution_without_quality_or_manifest() -> None:
     assert gate.measurement_scopes == ()
 
 
+def test_quality_claim_without_manifest_fails_when_manifest_is_optional() -> None:
+    identity = artifact_identity()
+    original = benchmark_result(identity)
+
+    gate = evaluate_benchmark_publication_gate(
+        replace(original, experiment_manifest=None),
+        config=BenchmarkPublicationGateConfig(require_manifest=False),
+        cache_state_attestations=(cold_attestation(identity),),
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not gate.ok
+    assert "quality claim requires an experiment manifest with scorer specs" in gate.issues
+    assert not any("evidence requires an experiment manifest" in issue for issue in gate.issues)
+
+
 def test_declared_input_target_is_bound_to_every_arbitrary_arm_measurement() -> None:
     class TokenEngine:
         def __init__(self, logical_tokens: int) -> None:
