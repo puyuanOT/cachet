@@ -27,7 +27,6 @@ from document_kv_cache.transformers_generator import (
 )
 
 
-DEFAULT_AWS_G5_NODE_TYPE = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
 DEFAULT_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
 DEFAULT_DATABRICKS_RUN_NAME = "document-kv-v1-benchmark"
 DEFAULT_DATABRICKS_TASK_KEY = "document_kv_v1_benchmark"
@@ -41,7 +40,6 @@ SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
     {DEFAULT_DATABRICKS_DATA_SECURITY_MODE, DEDICATED_DATABRICKS_DATA_SECURITY_MODE}
 )
 RESERVED_SINGLE_NODE_GPU_TAG_KEYS = frozenset({"ResourceClass", "purpose"})
-RESERVED_SINGLE_NODE_G5_TAG_KEYS = RESERVED_SINGLE_NODE_GPU_TAG_KEYS
 RESERVED_SPARK_ENV_VAR_KEYS = frozenset(
     {
         VLLM_NATIVE_PROBE_DELEGATE_ENV,
@@ -103,7 +101,6 @@ if __name__ == "__main__":
 
 __all__ = [
     "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
-    "DEFAULT_AWS_G5_NODE_TYPE",
     "SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES",
     "DEFAULT_DATABRICKS_SPARK_VERSION",
     "DEFAULT_DATABRICKS_RUN_NAME",
@@ -116,12 +113,9 @@ __all__ = [
     "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
     "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
     "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
-    "DatabricksSingleNodeG5ClusterConfig",
     "DatabricksSingleNodeGPUClusterConfig",
     "DatabricksBenchmarkJobConfig",
-    "validate_aws_g5_node_type",
     "validate_aws_single_node_gpu_type",
-    "build_single_node_g5_cluster",
     "build_single_node_gpu_cluster",
     "build_databricks_run_submit_payload",
     "write_databricks_run_submit_json",
@@ -177,8 +171,6 @@ class DatabricksSingleNodeGPUClusterConfig:
             raise ValueError(f"custom_tags cannot override reserved tags: {sorted(reserved_tags)!r}")
 
 
-DatabricksSingleNodeG5ClusterConfig = DatabricksSingleNodeGPUClusterConfig
-
 
 @dataclass(frozen=True, slots=True)
 class DatabricksBenchmarkJobConfig:
@@ -188,7 +180,7 @@ class DatabricksBenchmarkJobConfig:
     task_key: str = DEFAULT_DATABRICKS_TASK_KEY
     run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
     task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
-    node_type_id: str = DEFAULT_AWS_G5_NODE_TYPE
+    node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
@@ -232,15 +224,13 @@ def validate_aws_single_node_gpu_type(node_type_id: str) -> None:
     _validate_aws_single_node_gpu_type(node_type_id)
 
 
-validate_aws_g5_node_type = validate_aws_single_node_gpu_type
-
 
 def build_databricks_run_submit_payload(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_key": config.task_key,
         "timeout_seconds": config.run_timeout_seconds,
         "max_retries": config.task_max_retries,
-        "new_cluster": _single_node_g5_cluster(config),
+        "new_cluster": _single_node_gpu_cluster(config),
         "spark_python_task": {
             "python_file": config.runner_python_file,
             "parameters": _runner_parameters(config),
@@ -290,8 +280,6 @@ def build_single_node_gpu_cluster(config: DatabricksSingleNodeGPUClusterConfig) 
     return cluster
 
 
-build_single_node_g5_cluster = build_single_node_gpu_cluster
-
 
 def _single_node_gpu_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
     cluster = build_single_node_gpu_cluster(_cluster_config_from_benchmark_job(config))
@@ -300,8 +288,6 @@ def _single_node_gpu_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, 
         cluster["spark_env_vars"] = spark_env_vars
     return cluster
 
-
-_single_node_g5_cluster = _single_node_gpu_cluster
 
 
 def _cluster_config_from_benchmark_job(config: DatabricksBenchmarkJobConfig) -> DatabricksSingleNodeGPUClusterConfig:
@@ -389,7 +375,6 @@ def _looks_secret_like_env_key(key: str) -> bool:
 
 
 _DEFAULT_VALIDATE_AWS_SINGLE_NODE_GPU_TYPE = validate_aws_single_node_gpu_type
-_DEFAULT_VALIDATE_AWS_G5_NODE_TYPE = validate_aws_g5_node_type
 _DEFAULT_IS_SINGLE_USER_MODE = _is_single_user_mode
 _DEFAULT_CLUSTER_CONFIG_FROM_BENCHMARK_JOB = _cluster_config_from_benchmark_job
 

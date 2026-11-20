@@ -23,7 +23,7 @@ SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_build_databricks_storage_benchmark_payload_uses_single_node_g5_cluster():
+def test_build_databricks_storage_benchmark_payload_uses_single_node_gpu_cluster():
     config = DatabricksStorageBenchmarkJobConfig(
         workspace_dir="/local_disk0/document-kv-storage-benchmark",
         output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
@@ -336,7 +336,7 @@ def test_main_derives_storage_node_type_from_g5_hardware_target(tmp_path):
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
 
 
-def test_main_preserves_legacy_storage_g5_node_type_without_hardware_target(tmp_path):
+def test_main_preserves_explicit_storage_g5_node_type_without_hardware_target(tmp_path):
     payload_path = tmp_path / "payload.json"
 
     exit_code = main(

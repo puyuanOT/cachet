@@ -136,7 +136,7 @@ def _parameter_values(parameters, flag):
     return [parameters[index + 1] for index, value in enumerate(parameters[:-1]) if value == flag]
 
 
-def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
+def test_build_databricks_engine_probe_payload_uses_single_node_gpu_cluster():
     config = DatabricksEngineProbeJobConfig(
         handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
         probe_factory="document_kv_cache_vllm_probe:build_probe",
@@ -3716,7 +3716,7 @@ def test_main_matrix_derives_node_type_from_g5_hardware_target(tmp_path):
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
 
 
-def test_main_matrix_preserves_legacy_g5_node_type_without_hardware_target(tmp_path):
+def test_main_matrix_preserves_explicit_g5_node_type_without_hardware_target(tmp_path):
     payload_path = tmp_path / "payload.json"
     backend_config_path = tmp_path / "targets.json"
     backend_config_path.write_text(

@@ -161,7 +161,6 @@ from document_kv_cache.databricks_engine_probe_job import (
 from document_kv_cache.databricks_job import (
     DEDICATED_DATABRICKS_DATA_SECURITY_MODE as DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE as DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
-    DEFAULT_AWS_G5_NODE_TYPE as DEFAULT_AWS_G5_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE as DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_PURPOSE as DEFAULT_DATABRICKS_PURPOSE,
     DEFAULT_DATABRICKS_RUN_NAME as DEFAULT_DATABRICKS_RUN_NAME,
@@ -169,14 +168,11 @@ from document_kv_cache.databricks_job import (
     DEFAULT_DATABRICKS_TASK_KEY as DEFAULT_DATABRICKS_TASK_KEY,
     DatabricksSingleNodeGPUClusterConfig as DatabricksSingleNodeGPUClusterConfig,
     DatabricksBenchmarkJobConfig as DatabricksBenchmarkJobConfig,
-    DatabricksSingleNodeG5ClusterConfig as DatabricksSingleNodeG5ClusterConfig,
     RESERVED_SINGLE_NODE_GPU_TAG_KEYS as RESERVED_SINGLE_NODE_GPU_TAG_KEYS,
     SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES as SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES,
     build_databricks_run_submit_payload as build_databricks_run_submit_payload,
     build_single_node_gpu_cluster as build_single_node_gpu_cluster,
-    build_single_node_g5_cluster as build_single_node_g5_cluster,
     validate_aws_single_node_gpu_type as validate_aws_single_node_gpu_type,
-    validate_aws_g5_node_type as validate_aws_g5_node_type,
     write_databricks_run_submit_json as write_databricks_run_submit_json,
     write_databricks_runner_script as write_databricks_runner_script,
 )

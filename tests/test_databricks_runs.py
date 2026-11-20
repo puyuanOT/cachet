@@ -1,9 +1,6 @@
 import hashlib
 import json
 import os
-import pickle
-from pathlib import Path
-import subprocess
 import sys
 import types
 import urllib.error
@@ -16,7 +13,6 @@ from document_kv_cache._hardware_targets import (
     SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
 )
 from document_kv_cache.databricks_runs import (
-    DEFAULT_DATABRICKS_CONFIG_FILE,
     DEFAULT_DATABRICKS_HOST_ENV,
     DEFAULT_DATABRICKS_TOKEN_ENV,
     DATABRICKS_PROFILE_AUTH_MODES,
@@ -32,7 +28,6 @@ from document_kv_cache.databricks_runs import (
     databricks_workspace_config_from_profile,
     databricks_workspace_config_from_sdk_profile,
     get_databricks_run,
-    main,
     plan_databricks_stage_and_submit,
     put_databricks_dbfs_file,
     read_databricks_run_submit_payload,
@@ -957,7 +952,7 @@ def test_summarize_databricks_run_marks_successful_terminal_run():
 
 
 def test_summarize_databricks_run_can_attach_submit_payload_provenance():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload["tasks"][0]["new_cluster"]["spark_env_vars"] = {
         "CACHET_TRANSFORMERS_DEVICE": "cuda",
         "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
@@ -986,7 +981,6 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
     assert len(submit_payload["sha256"]) == 64
     assert submit_payload["single_node"] is True
     assert submit_payload["aws_single_node_gpu_type"] is True
-    assert submit_payload["aws_g5_node_type"] is True
     assert submit_payload["node_type_ids"] == ["g6.4xlarge"]
     assert submit_payload["hardware_targets"] == ["aws-g6-l4"]
     assert submit_payload["data_security_modes"] == ["SINGLE_USER"]
@@ -1010,7 +1004,7 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
 
 
 def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     cluster = payload["tasks"][0]["new_cluster"]
     cluster["node_type_id"] = "g6.8xlarge"
     cluster["driver_node_type_id"] = "g6.8xlarge"
@@ -1038,7 +1032,6 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
     )
 
     assert summary["submit_payload"]["aws_single_node_gpu_type"] is True
-    assert summary["submit_payload"]["aws_g5_node_type"] is True
     assert summary["submit_payload"]["node_type_ids"] == ["g6.8xlarge"]
     assert summary["submit_payload"]["hardware_targets"] == ["aws-g6-l4"]
     assert summary["tasks"][0]["node_type_id"] == "g6.8xlarge"
@@ -1093,7 +1086,7 @@ def test_databricks_run_status_sidecar_validation_can_require_exact_node_type():
         "node_type_id 'g6.8xlarge'",
     )
 
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     cluster = payload["tasks"][0]["new_cluster"]
     cluster["node_type_id"] = "g6.8xlarge"
     cluster["driver_node_type_id"] = "g6.8xlarge"
@@ -1126,7 +1119,7 @@ def test_databricks_run_status_sidecar_validation_can_require_exact_node_type():
 
 
 def test_databricks_run_status_sidecar_validation_rejects_live_node_type_mismatch():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload_cluster = payload["tasks"][0]["new_cluster"]
     payload_cluster["node_type_id"] = "g6.8xlarge"
     payload_cluster["driver_node_type_id"] = "g6.8xlarge"
@@ -1168,7 +1161,7 @@ def test_databricks_run_status_sidecar_validation_rejects_live_node_type_mismatc
 
 
 def test_databricks_run_status_sidecar_validation_requires_live_node_evidence_for_exact_node_type():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload_cluster = payload["tasks"][0]["new_cluster"]
     payload_cluster["node_type_id"] = "g6.8xlarge"
     payload_cluster["driver_node_type_id"] = "g6.8xlarge"
@@ -1264,7 +1257,6 @@ def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mis
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
     submit_payload["aws_single_node_gpu_type"] = False
-    submit_payload["aws_g5_node_type"] = False
     submit_payload["tasks"][0]["task_key"] = "different-task"
     submit_payload["tasks"][0]["node_type_id"] = "g6e.8xlarge"
     submit_payload["task_keys"] = ["different-task"]
@@ -1280,40 +1272,22 @@ def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mis
     assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
 
 
-def test_databricks_run_status_sidecar_validation_rejects_contradictory_gpu_flags():
+@pytest.mark.parametrize(
+    ("field_name", "message"),
+    (
+        ("aws_single_node_gpu_type", "submit_payload.aws_single_node_gpu_type must be boolean"),
+        ("hardware_targets", "submit_payload.hardware_targets must be an array of non-empty strings"),
+    ),
+)
+def test_databricks_run_status_sidecar_validation_requires_gpu_flag_and_hardware_targets(field_name, message):
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
-    submit_payload["aws_single_node_gpu_type"] = True
-    submit_payload["aws_g5_node_type"] = False
+    del submit_payload[field_name]
     bad_record = {**status_record, "submit_payload": submit_payload}
 
-    issues = databricks_run_status_sidecar_issues(bad_record)
+    issues = databricks_run_status_sidecar_issues(bad_record, expected_hardware_target="aws-g6-l4")
 
-    assert "Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true" in issues
-    assert (
-        "Databricks run status sidecar submit_payload.aws_single_node_gpu_type and aws_g5_node_type must match"
-        in issues
-    )
-
-
-def test_databricks_run_status_sidecar_validation_accepts_legacy_gpu_flag_only():
-    status_record = _valid_databricks_run_status_record()
-    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
-    del submit_payload["aws_single_node_gpu_type"]
-    bad_record = {**status_record, "submit_payload": submit_payload}
-
-    assert databricks_run_status_sidecar_issues(bad_record, expected_hardware_target="aws-g6-l4") == ()
-    validate_databricks_run_status_sidecar(bad_record, expected_hardware_target="aws-g6-l4")
-
-
-def test_databricks_run_status_sidecar_validation_accepts_missing_hardware_targets_for_legacy_sidecars():
-    status_record = _valid_databricks_run_status_record()
-    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
-    del submit_payload["hardware_targets"]
-    legacy_record = {**status_record, "submit_payload": submit_payload}
-
-    assert databricks_run_status_sidecar_issues(legacy_record, expected_hardware_target="aws-g6-l4") == ()
-    validate_databricks_run_status_sidecar(legacy_record, expected_hardware_target="aws-g6-l4")
+    assert f"Databricks run status sidecar {message}" in issues
 
 
 def test_databricks_run_status_sidecar_validation_rejects_null_hardware_targets():
@@ -1439,7 +1413,7 @@ def test_databricks_run_status_sidecar_validation_rejects_malformed_spark_env_ke
 
 def test_summarize_databricks_run_redacts_token_pattern_spark_env_keys_before_serializing():
     token_like_key = "dapi" + ("0" * 32)
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload["tasks"][0]["new_cluster"]["spark_env_vars"] = {token_like_key: "not-serialized"}
 
     summary = summarize_databricks_run(
@@ -1496,7 +1470,7 @@ def test_databricks_run_status_sidecar_validation_rejects_stale_spark_env_key_cl
 
 
 def test_summarize_databricks_run_submit_payload_reports_unsupported_gpu_multi_node_payload():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload["tasks"][0]["new_cluster"]["node_type_id"] = "g6e.4xlarge"
     payload["tasks"][0]["new_cluster"]["num_workers"] = 1
 
@@ -1505,7 +1479,6 @@ def test_summarize_databricks_run_submit_payload_reports_unsupported_gpu_multi_n
     assert summary["record_type"] == DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
     assert summary["single_node"] is False
     assert summary["aws_single_node_gpu_type"] is False
-    assert summary["aws_g5_node_type"] is False
 
 
 def test_databricks_http_errors_are_sanitized():
@@ -1660,12 +1633,12 @@ def _valid_databricks_run_status_record():
                 }
             ],
         },
-        submit_payload=_single_node_g5_submit_payload(),
+        submit_payload=_single_node_gpu_submit_payload(),
         submit_payload_path="/Volumes/catalog/schema/volume/databricks-run-submit.json",
     )
 
 
-def _single_node_g5_submit_payload():
+def _single_node_gpu_submit_payload():
     return {
         "run_name": "document-kv-v1",
         "tasks": [

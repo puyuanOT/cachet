@@ -4935,6 +4935,7 @@ def _databricks_run_submit_payload_record(
         ],
         "node_type_ids": [node_type_id],
         "driver_node_type_ids": [node_type_id],
+        "hardware_targets": ["aws-g5-a10g" if node_type_id.startswith("g5.") else "aws-g6-l4"],
         "spark_versions": ["15.4.x-gpu-ml-scala2.12"],
         "spark_env_keys": [],
         "data_security_modes": ["SINGLE_USER"],
