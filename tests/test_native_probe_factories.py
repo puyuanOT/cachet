@@ -602,54 +602,6 @@ def test_inspect_builtin_native_probe_factory_rejects_builtin_delegate_paths(
         factory(context(backend))
 
 
-@pytest.mark.parametrize(
-    ("backend", "env_name", "delegate_path", "factory"),
-    [
-        (
-            ServingBackend.VLLM,
-            VLLM_NATIVE_PROBE_DELEGATE_ENV,
-            "restaurant_kv_serving.native_probe_factories:vllm_native_probe_factory",
-            vllm_native_probe_factory,
-        ),
-        (
-            ServingBackend.VLLM,
-            VLLM_NATIVE_PROBE_DELEGATE_ENV,
-            "restaurant_kv_serving:sglang_native_probe_factory",
-            vllm_native_probe_factory,
-        ),
-        (
-            ServingBackend.SGLANG,
-            SGLANG_NATIVE_PROBE_DELEGATE_ENV,
-            "restaurant_kv_serving.native_probe_factories:sglang_native_probe_factory",
-            sglang_native_probe_factory,
-        ),
-        (
-            ServingBackend.SGLANG,
-            SGLANG_NATIVE_PROBE_DELEGATE_ENV,
-            "restaurant_kv_serving:vllm_native_probe_factory",
-            sglang_native_probe_factory,
-        ),
-    ],
-)
-def test_inspect_builtin_native_probe_factory_rejects_source_only_legacy_delegate_paths(
-    monkeypatch,
-    backend,
-    env_name,
-    delegate_path,
-    factory,
-):
-    mark_backend_packages_installed(monkeypatch)
-    monkeypatch.setenv(env_name, delegate_path)
-
-    inspection = inspect_builtin_native_probe_factory(backend)
-
-    assert inspection.supported is False
-    assert inspection.delegate_factory_path == delegate_path
-    assert "source-only legacy compatibility module" in inspection.reason
-    with pytest.raises(NativeProbeFactoryUnavailable, match="source-only legacy compatibility module"):
-        factory(context(backend))
-
-
 def test_native_probe_adapter_contract_records_required_engine_handoff_versions():
     assert native_probe_adapter_contract_to_record() == {
         "handoff_record_type": ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
@@ -886,25 +838,6 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
     )
     with pytest.raises(ValueError, match="must not point at a built-in native probe factory"):
         validate_native_probe_factories_record(facade_module_reserved_delegate_record)
-
-    legacy_delegate_record = builtin_native_probe_factories_to_record()
-    legacy_delegate_record["factories"][0] = {
-        **legacy_delegate_record["factories"][0],
-        "delegate_factory_path": "restaurant_kv_serving.native_probe_factories:vllm_native_probe_factory",
-        "package_importable": True,
-        "package_version": VLLM_SERVING_ENVIRONMENT_PROFILE.engine_version,
-        "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
-        "delegate_adapter_contract_valid": True,
-        "supported": True,
-    }
-    legacy_delegate_issues = native_probe_factories_record_issues(legacy_delegate_record)
-
-    assert any(
-        "delegate_factory_path must not point at the source-only legacy compatibility module" in issue
-        for issue in legacy_delegate_issues
-    )
-    with pytest.raises(ValueError, match="source-only legacy compatibility module"):
-        validate_native_probe_factories_record(legacy_delegate_record)
 
     invalid_supported_contract_record = builtin_native_probe_factories_to_record()
     invalid_supported_contract_record["factories"][0] = {

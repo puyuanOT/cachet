@@ -6,6 +6,7 @@ import re
 import stat
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -2358,20 +2359,6 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-unrecorded-document-file-bundle",
         )
 
-    unrecorded_legacy_file_wheel = _write_wheel(
-        tmp_path / "unrecorded-legacy-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        extra_entries=(("restaurant_kv_serving/compat_runtime.py", b"UNRECORDED = True\n"),),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=unrecorded_legacy_file_wheel,
-            output_dir=tmp_path / "bad-wheel-unrecorded-legacy-file-bundle",
-        )
-
     with pytest.warns(UserWarning, match="Duplicate name"):
         duplicate_document_member_wheel = _write_wheel(
             tmp_path / "duplicate-document-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
@@ -2388,10 +2375,10 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     with pytest.warns(UserWarning, match="Duplicate name"):
-        duplicate_legacy_member_wheel = _write_wheel(
-            tmp_path / "duplicate-legacy-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-            extra_entries=(("restaurant_kv_serving/__init__.py", b""),),
-            duplicate_entries=(("restaurant_kv_serving/__init__.py", b"DUPLICATE = True\n"),),
+        duplicate_extra_member_wheel = _write_wheel(
+            tmp_path / "duplicate-extra-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+            extra_entries=(("cachet/extra.py", b""),),
+            duplicate_entries=(("cachet/extra.py", b"DUPLICATE = True\n"),),
         )
     with pytest.raises(ValueError, match="duplicate file paths"):
         build_release_bundle(
@@ -2399,8 +2386,8 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=duplicate_legacy_member_wheel,
-            output_dir=tmp_path / "bad-wheel-duplicate-legacy-member-bundle",
+            package_wheel=duplicate_extra_member_wheel,
+            output_dir=tmp_path / "bad-wheel-duplicate-extra-member-bundle",
         )
 
     with pytest.warns(UserWarning, match="Duplicate name"):
@@ -2560,52 +2547,6 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-document-init-bundle",
         )
 
-    legacy_package_file_wheel = _write_wheel(
-        tmp_path / "legacy-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        include_legacy_init=True,
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_package_file_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-package-file-bundle",
-        )
-
-    legacy_purelib_package_file_wheel = _write_wheel(
-        tmp_path / "legacy-purelib-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        extra_entries=(
-            ("cachet_kv-0.2.0.data/purelib/restaurant_kv_serving/__init__.py", b""),
-        ),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_purelib_package_file_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-purelib-package-file-bundle",
-        )
-
-    legacy_platlib_package_file_wheel = _write_wheel(
-        tmp_path / "legacy-platlib-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        extra_entries=(
-            ("cachet_kv-0.2.0.data/platlib/restaurant_kv_serving/__init__.py", b""),
-        ),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_platlib_package_file_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-platlib-package-file-bundle",
-        )
-
     missing_cachet_stub_wheel = _write_wheel(
         tmp_path / "missing-cachet-stub-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_cachet_stub=False,
@@ -2648,20 +2589,6 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-document-typed-marker-bundle",
         )
 
-    legacy_typed_marker_wheel = _write_wheel(
-        tmp_path / "legacy-typed-marker-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        include_legacy_typed_marker=True,
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_typed_marker_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-typed-marker-bundle",
-        )
-
     missing_entry_points_wheel = _write_wheel(
         tmp_path / "missing-entry-points-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_entry_points=False,
@@ -2674,38 +2601,6 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=missing_entry_points_wheel,
             output_dir=tmp_path / "bad-wheel-missing-entry-points-bundle",
-        )
-
-    legacy_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
-    legacy_script_entries["restaurant-kv-vllm-smoke"] = "restaurant_kv_serving.vllm_smoke:main"
-    legacy_script_wheel = _write_wheel(
-        tmp_path / "legacy-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        entry_points_payload=_wheel_entry_points_payload(legacy_script_entries),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility console script"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_script_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-script-bundle",
-        )
-
-    legacy_target_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
-    legacy_target_entries["cachet-legacy-smoke"] = "restaurant_kv_serving.vllm_smoke:main"
-    legacy_target_wheel = _write_wheel(
-        tmp_path / "legacy-script-target-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        entry_points_payload=_wheel_entry_points_payload(legacy_target_entries),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility module"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_target_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-script-target-bundle",
         )
 
     wrong_document_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
@@ -3123,6 +3018,132 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             databricks_run_status_jsons=(raw_object_in_wrapper_action,),
             output_dir=tmp_path / "raw-object-in-wrapper-action-databricks-status-bundle",
         )
+
+
+def _package_wheel_issues(wheel: Path) -> tuple[str, ...]:
+    return public_release_bundle._package_wheel_issues(  # noqa: SLF001
+        str(wheel),
+        wheel.read_bytes(),
+        expected_version="0.2.0",
+    )
+
+
+def test_package_wheel_console_scripts_match_pyproject_scripts() -> None:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS == pyproject["project"]["scripts"]
+
+
+def test_package_wheel_layout_accepts_only_release_packages_and_dist_info(tmp_path: Path) -> None:
+    valid_wheel = _write_wheel(tmp_path / "valid" / "cachet_kv-0.2.0-py3-none-any.whl")
+    assert _package_wheel_issues(valid_wheel) == ()
+
+    for label, member_name in (
+        ("cachet-module", "cachet/extra.py"),
+        ("document-module", "document_kv_cache/extra.py"),
+        ("vllm-package", "vllm_kv_injection/__init__.py"),
+        ("sglang-package", "sglang_kv_injection/__init__.py"),
+        ("dist-info-file", "cachet_kv-0.2.0.dist-info/licenses/NOTICE"),
+    ):
+        accepted = _write_wheel_with_recorded_extra(
+            valid_wheel,
+            tmp_path / f"accepted-{label}" / valid_wheel.name,
+            member_name=member_name,
+            payload=b"",
+            external_attr=None,
+            create_system=None,
+        )
+        assert _package_wheel_issues(accepted) == (), label
+
+    top_level_issue = (
+        "package wheel artifact top-level entries must be limited to 'cachet', "
+        "'cachet_kv-0.2.0.dist-info', 'document_kv_cache', 'sglang_kv_injection', "
+        "'vllm_kv_injection'; found "
+    )
+    install_scheme_issue = (
+        "package wheel artifact must not install packages through .data/purelib or .data/platlib: "
+    )
+    for label, member_name, expected_issue in (
+        ("extra-package", "other_pkg/__init__.py", f"{top_level_issue}'other_pkg'"),
+        ("top-level-module", "other_module.py", f"{top_level_issue}'other_module.py'"),
+        (
+            "data-purelib",
+            "cachet_kv-0.2.0.data/purelib/other_pkg/__init__.py",
+            f"{install_scheme_issue}'cachet_kv-0.2.0.data/purelib/other_pkg'",
+        ),
+        (
+            "data-platlib",
+            "cachet_kv-0.2.0.data/platlib/cachet/__init__.py",
+            f"{install_scheme_issue}'cachet_kv-0.2.0.data/platlib/cachet'",
+        ),
+        (
+            "data-scripts",
+            "cachet_kv-0.2.0.data/scripts/other-tool",
+            f"{top_level_issue}'cachet_kv-0.2.0.data'",
+        ),
+    ):
+        rejected = _write_wheel_with_recorded_extra(
+            valid_wheel,
+            tmp_path / f"rejected-{label}" / valid_wheel.name,
+            member_name=member_name,
+            payload=b"",
+            external_attr=None,
+            create_system=None,
+        )
+        assert _package_wheel_issues(rejected) == (expected_issue,), label
+
+
+def test_build_release_bundle_rejects_package_wheel_with_extra_top_level_package(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    valid_wheel = _write_wheel(tmp_path / "valid" / "cachet_kv-0.2.0-py3-none-any.whl")
+    extra_package_wheel = _write_wheel_with_recorded_extra(
+        valid_wheel,
+        source_dir / valid_wheel.name,
+        member_name="other_pkg/__init__.py",
+        payload=b"",
+        external_attr=None,
+        create_system=None,
+    )
+
+    with pytest.raises(ValueError, match="top-level entries must be limited to"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=extra_package_wheel,
+            output_dir=tmp_path / "bundle",
+        )
+
+
+def test_package_wheel_console_scripts_must_equal_release_console_scripts(tmp_path: Path) -> None:
+    expected_scripts = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+    valid_wheel = _write_wheel(
+        tmp_path / "valid" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(expected_scripts),
+    )
+    assert _package_wheel_issues(valid_wheel) == ()
+
+    extra_script_wheel = _write_wheel(
+        tmp_path / "extra-script" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(
+            {**expected_scripts, "other-tool": "cachet.release_bundle:main"}
+        ),
+    )
+    assert _package_wheel_issues(extra_script_wheel) == (
+        "package wheel artifact entry_points.txt must not include unexpected console script 'other-tool'",
+    )
+
+    missing_script_wheel = _write_wheel(
+        tmp_path / "missing-script" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(
+            {name: target for name, target in expected_scripts.items() if name != "cachet-sglang-smoke"}
+        ),
+    )
+    assert _package_wheel_issues(missing_script_wheel) == (
+        "package wheel artifact entry_points.txt must include 'cachet-sglang-smoke'",
+    )
 
 
 def test_package_wheel_structure_rejects_record_closed_path_and_mode_adversaries(
@@ -4383,11 +4404,9 @@ def _write_wheel(
     include_license_file: bool = True,
     include_cachet_init: bool = True,
     include_document_init: bool = True,
-    include_legacy_init: bool = False,
     include_cachet_stub: bool = True,
     include_cachet_typed_marker: bool = True,
     include_document_typed_marker: bool = True,
-    include_legacy_typed_marker: bool = False,
     include_entry_points: bool = True,
     entry_points_payload: bytes | None = None,
     record_lines: tuple[str, ...] | None = None,
@@ -4423,8 +4442,6 @@ def _write_wheel(
         wheel_entries.append(("cachet/__init__.pyi", package_payload))
     if include_document_init:
         wheel_entries.append(("document_kv_cache/__init__.py", package_payload))
-    if include_legacy_init:
-        wheel_entries.append(("restaurant_kv_serving/__init__.py", package_payload))
     if include_entry_points:
         wheel_entries.append(
             (
@@ -4438,8 +4455,6 @@ def _write_wheel(
         wheel_entries.append(("cachet/py.typed", b""))
     if include_document_typed_marker:
         wheel_entries.append(("document_kv_cache/py.typed", b""))
-    if include_legacy_typed_marker:
-        wheel_entries.append(("restaurant_kv_serving/py.typed", b""))
     with zipfile.ZipFile(path, "w") as wheel_zip:
         for name, payload in wheel_entries:
             wheel_zip.writestr(name, payload)

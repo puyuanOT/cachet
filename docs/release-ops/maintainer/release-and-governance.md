@@ -122,7 +122,11 @@ for wheel artifacts, size, and SHA-256 for every artifact.
 - The wheel must be a pure Python `py3-none-any` `cachet-kv` wheel whose
   filename, root `.dist-info` directory, and `METADATA` describe the same
   package identity, with a `RECORD` that lists the payload and metadata with
-  matching hashes and sizes and no duplicate zip members. The manifest records
+  matching hashes and sizes and no duplicate zip members. Its top-level entries
+  must be limited to the `cachet`, `document_kv_cache`, `vllm_kv_injection`,
+  and `sglang_kv_injection` packages and that `.dist-info` directory, so
+  `.data/purelib` and `.data/platlib` package trees are rejected, and its
+  console scripts must exactly match `[project.scripts]`. The manifest records
   the normalized package name and package version for the copied wheel. Strict
   bundles also require the wheel version to match the current project version
   from `pyproject.toml` or installed package metadata, and the wheel must

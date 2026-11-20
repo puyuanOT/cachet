@@ -715,7 +715,6 @@ def test_public_document_package_reexports_core_api():
         "document_kv_cache.native_probe_factories"
     )
     assert "DocumentKVRequest" in dir(document_kv_cache)
-    assert not hasattr(document_kv_cache, "RestaurantKVRequest")
 
 
 def test_public_document_package_star_exports_are_document_first():
@@ -727,8 +726,6 @@ def test_public_document_package_star_exports_are_document_first():
     assert "build_vllm_launch_config" in document_kv_cache.__all__
     assert "build_vllm_kv_offloading_config" in document_kv_cache.__all__
     assert "vllm_native_probe_factory" in document_kv_cache.__all__
-    assert "RestaurantKVRequest" not in document_kv_cache.__all__
-    assert "RestaurantKVService" not in document_kv_cache.__all__
     assert "ChunkType" not in document_kv_cache.__all__
 
     star_namespace: dict[str, object] = {}
@@ -739,61 +736,6 @@ def test_public_document_package_star_exports_are_document_first():
     assert star_namespace["DocumentKVService"] is document_kv_cache.DocumentKVService
     assert star_namespace["DocumentKVWorkflow"] is document_kv_cache.DocumentKVWorkflow
     assert star_namespace["CacheTier"] is document_kv_cache.CacheTier
-    assert "RestaurantKVRequest" not in star_namespace
-
-
-
-def test_public_roots_ignore_stale_external_legacy_package(tmp_path):
-    legacy_package = tmp_path / ("restaurant" "_kv_serving")
-    legacy_package.mkdir()
-    (legacy_package / "__init__.py").write_text(
-        "\n".join(
-            [
-                "__all__ = ['LegacyOnly', 'RestaurantKVRequest']",
-                "LegacyOnly = object()",
-                "RestaurantKVRequest = object()",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "\n".join(
-                [
-                    "import json",
-                    "import cachet, document_kv_cache",
-                    "print(json.dumps({",
-                    "    'document_has_legacy_only': hasattr(document_kv_cache, 'LegacyOnly'),",
-                    "    'document_has_restaurant_request': hasattr(document_kv_cache, 'RestaurantKVRequest'),",
-                    "    'document_legacy_only_in_all': 'LegacyOnly' in document_kv_cache.__all__,",
-                    "    'cachet_has_legacy_only': hasattr(cachet, 'LegacyOnly'),",
-                    "    'cachet_has_restaurant_request': hasattr(cachet, 'RestaurantKVRequest'),",
-                    "    'cachet_legacy_only_in_all': 'LegacyOnly' in cachet.__all__,",
-                    "}, sort_keys=True))",
-                ]
-            ),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PYTHONPATH": os.pathsep.join((str(tmp_path), str(REPO_ROOT / "src"))),
-        },
-    )
-
-    assert json.loads(result.stdout) == {
-        "cachet_has_legacy_only": False,
-        "cachet_has_restaurant_request": False,
-        "cachet_legacy_only_in_all": False,
-        "document_has_legacy_only": False,
-        "document_has_restaurant_request": False,
-        "document_legacy_only_in_all": False,
-    }
 
 
 def test_cachet_brand_facade_delegates_to_document_package():
@@ -850,8 +792,6 @@ def test_cachet_brand_facade_delegates_to_document_package():
 
     assert star_namespace["DocumentKVService"] is document_kv_cache.DocumentKVService
     assert star_namespace["CacheTier"] is document_kv_cache.CacheTier
-    assert "RestaurantKVRequest" not in star_namespace
-    assert not hasattr(cachet, "RestaurantKVRequest")
     assert "from document_kv_cache.cache import" in stub_text
     assert "import document_kv_cache.storage as storage" not in stub_text
     assert "CacheTier as CacheTier" in stub_text
@@ -887,7 +827,6 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "write_engine_adapter_payload as write_engine_adapter_payload" in stub_text
     assert "from document_kv_cache.models import" in stub_text
     assert "DocumentKVRequest as DocumentKVRequest" in stub_text
-    assert "RestaurantKVRequest" not in stub_text
 
 
 def test_cachet_typing_stub_tracks_document_public_api():
@@ -898,8 +837,6 @@ def test_cachet_typing_stub_tracks_document_public_api():
     assert non_reexport_aliases == []
     assert missing_source_symbols == []
     assert stub_exports == document_exports
-    assert "RestaurantKVRequest" not in stub_exports
-    assert "RestaurantKVService" not in stub_exports
 
 
 def test_public_cli_submodules_are_importable_under_document_namespace():
@@ -1076,7 +1013,6 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         assert exports, module_name
         assert all(isinstance(name, str) and name for name in exports), module_name
         assert all(not name.startswith("_") for name in exports), module_name
-        assert all("Restaurant" not in name for name in exports), module_name
 
     cache_star_namespace: dict[str, object] = {}
     storage_star_namespace: dict[str, object] = {}
@@ -1088,8 +1024,6 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert cache_star_namespace["CacheTier"] is document_kv_cache.CacheTier
     assert storage_star_namespace["DiskRangeReader"] is document_kv_cache.DiskRangeReader
     assert workflow_star_namespace["DocumentKVWorkflow"] is document_kv_cache.DocumentKVWorkflow
-    assert "RestaurantKVRequest" not in workflow_star_namespace
-
 
 
 def test_package_level_submodule_imports_use_document_namespace_after_symbol_lookup():
@@ -1102,14 +1036,11 @@ def test_package_level_submodule_imports_use_document_namespace_after_symbol_loo
     assert cache.ChunkCacheResult.__module__ == "document_kv_cache.cache"
 
 
-def test_poetry_metadata_excludes_removed_package_and_scripts():
+def test_poetry_metadata_lists_release_packages_and_scripts():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     poetry = pyproject["tool"]["poetry"]
     scripts = pyproject["project"]["scripts"]
     included_packages = {package["include"] for package in poetry["packages"]}
-    included_files = {include["path"] for include in poetry["include"]}
-    old_import = "restaurant" "_kv_serving"
-    old_script_prefix = "restaurant" "-kv-"
 
     assert included_packages == {
         "cachet",
@@ -1118,10 +1049,6 @@ def test_poetry_metadata_excludes_removed_package_and_scripts():
         "sglang_kv_injection",
     }
     assert scripts == EXPECTED_CONSOLE_SCRIPTS
-    assert old_import not in included_packages
-    assert f"src/{old_import}/py.typed" not in included_files
-    assert not any(name.startswith(old_script_prefix) for name in scripts)
-    assert not any(old_import in target for target in scripts.values())
     assert scripts["cachet-benchmark-plan"] == "cachet.benchmark_plan:main"
     assert scripts["document-kv-benchmark-plan"] == "document_kv_cache.benchmark_plan:main"
 

@@ -23,8 +23,8 @@ The `test` job runs independently on Python 3.11 and 3.12. Each matrix job:
 8. builds the source and wheel distributions with Poetry and validates the
    wheel metadata again; and
 9. installs the built wheel into a fresh virtual environment, checks the
-   `cachet` and `document_kv_cache` import surfaces, verifies that the removed
-   legacy facade is absent, and exercises a packaged Cachet CLI.
+   `cachet` and `document_kv_cache` import surfaces, and exercises a packaged
+   Cachet CLI.
 
 Ruff/mypy targets are intentionally explicit. After `poetry install`,
 non-target first-party imports resolve through the installed PEP 561 package

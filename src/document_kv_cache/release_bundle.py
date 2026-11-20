@@ -118,18 +118,11 @@ RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS = (
     "cachet/py.typed",
     "document_kv_cache/py.typed",
 )
-RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES = (
-    "restaurant" "_kv_serving/",
-)
-RELEASE_BUNDLE_FORBIDDEN_PACKAGE_INSTALL_SCHEMES = (
-    "purelib",
-    "platlib",
-)
-RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_PREFIXES = (
-    "restaurant" "-kv-",
-)
-RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_TARGET_PREFIXES = (
-    "restaurant" "_kv_serving",
+RELEASE_BUNDLE_PACKAGE_TOP_LEVEL_PACKAGES = (
+    "cachet",
+    "document_kv_cache",
+    "sglang_kv_injection",
+    "vllm_kv_injection",
 )
 RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-benchmark-handoff-bundles": "cachet.benchmark_handoffs:bundle_main",
@@ -144,6 +137,8 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-engine-probe-databricks-job": "cachet.databricks_engine_probe_job:main",
     "cachet-engine-probe-fixture": "cachet.probe_fixtures:main",
     "cachet-github-governance": "cachet.github_governance:main",
+    "cachet-method-conformance": "cachet.method_conformance:main",
+    "cachet-method-scaffold": "cachet.method_scaffold:main",
     "cachet-native-probe-factories": "cachet.native_probe_factories:main",
     "cachet-native-probe-scaffold": "cachet.adapter_scaffold:main",
     "cachet-pr-evidence": "cachet.pr_evidence:main",
@@ -153,6 +148,8 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-run-benchmark-plan": "cachet.benchmark_plan_executor:main",
     "cachet-serving-env": "cachet.serving_env:main",
     "cachet-sglang-runtime-preflight": "cachet.sglang_runtime_preflight:main",
+    "cachet-sglang-smoke": "cachet.sglang_smoke:main",
+    "cachet-sglang-smoke-databricks-job": "cachet.databricks_sglang_smoke_job:main",
     "cachet-storage-benchmark": "cachet.storage_benchmark:main",
     "cachet-storage-benchmark-databricks-job": "cachet.databricks_storage_benchmark_job:main",
     "cachet-templates": "cachet.template_resources:main",
@@ -171,6 +168,8 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
     "document-kv-engine-probe-fixture": "document_kv_cache.probe_fixtures:main",
     "document-kv-github-governance": "document_kv_cache.github_governance:main",
+    "document-kv-method-conformance": "document_kv_cache.method_conformance:main",
+    "document-kv-method-scaffold": "document_kv_cache.method_scaffold:main",
     "document-kv-native-probe-factories": "document_kv_cache.native_probe_factories:main",
     "document-kv-native-probe-scaffold": "document_kv_cache.adapter_scaffold:main",
     "document-kv-pr-evidence": "document_kv_cache.pr_evidence:main",
@@ -180,6 +179,8 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "document-kv-run-benchmark-plan": "document_kv_cache.benchmark_plan_executor:main",
     "document-kv-serving-env": "document_kv_cache.serving_env:main",
     "document-kv-sglang-runtime-preflight": "document_kv_cache.sglang_runtime_preflight:main",
+    "document-kv-sglang-smoke": "document_kv_cache.sglang_smoke:main",
+    "document-kv-sglang-smoke-databricks-job": "document_kv_cache.databricks_sglang_smoke_job:main",
     "document-kv-storage-benchmark": "document_kv_cache.storage_benchmark:main",
     "document-kv-storage-benchmark-databricks-job": "document_kv_cache.databricks_storage_benchmark_job:main",
     "document-kv-templates": "document_kv_cache.template_resources:main",
@@ -2249,9 +2250,9 @@ def _wheel_zip_payload_issues(
     license_issues = _wheel_license_file_issues(names, dist_info_prefix=dist_info_prefixes[0])
     if license_issues:
         return license_issues
-    forbidden_path_issues = _wheel_forbidden_path_issues(names)
-    if forbidden_path_issues:
-        return forbidden_path_issues
+    layout_issues = _wheel_layout_issues(names, dist_info_prefix=dist_info_prefixes[0])
+    if layout_issues:
+        return layout_issues
     typed_marker_issues = _wheel_typed_marker_issues(names)
     if typed_marker_issues:
         return typed_marker_issues
@@ -2767,27 +2768,32 @@ def _wheel_typed_marker_issues(names: Sequence[str]) -> tuple[str, ...]:
     )
 
 
-def _wheel_forbidden_path_issues(names: Sequence[str]) -> tuple[str, ...]:
-    forbidden_paths = tuple(name for name in names if _is_forbidden_package_wheel_path(name))
-    if not forbidden_paths:
-        return ()
-    return (
-        "package wheel artifact must not contain legacy compatibility package files: "
-        + ", ".join(repr(path) for path in forbidden_paths),
-    )
-
-
-def _is_forbidden_package_wheel_path(name: str) -> bool:
-    if any(name.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES):
-        return True
-    path_parts = tuple(part for part in name.split("/") if part)
-    for index, part in enumerate(path_parts[:-1]):
-        if part not in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_INSTALL_SCHEMES:
+def _wheel_layout_issues(names: Sequence[str], *, dist_info_prefix: str) -> tuple[str, ...]:
+    allowed_top_level = {*RELEASE_BUNDLE_PACKAGE_TOP_LEVEL_PACKAGES, dist_info_prefix}
+    install_scheme_trees: set[str] = set()
+    unexpected_top_level: set[str] = set()
+    for name in names:
+        top_level, separator, rest = name.partition("/")
+        if separator and top_level in allowed_top_level:
             continue
-        installed_path = "/".join(path_parts[index + 1 :])
-        if any(installed_path.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES):
-            return True
-    return False
+        scheme, _, installed_path = rest.partition("/")
+        if top_level.endswith(".data") and scheme in {"purelib", "platlib"}:
+            install_scheme_trees.add(f"{top_level}/{scheme}/{installed_path.partition('/')[0]}")
+        else:
+            unexpected_top_level.add(top_level)
+    issues: list[str] = []
+    if install_scheme_trees:
+        issues.append(
+            "package wheel artifact must not install packages through .data/purelib or .data/platlib: "
+            + ", ".join(repr(tree) for tree in sorted(install_scheme_trees))
+        )
+    if unexpected_top_level:
+        allowed_list = ", ".join(repr(entry) for entry in sorted(allowed_top_level))
+        issues.append(
+            f"package wheel artifact top-level entries must be limited to {allowed_list}; found "
+            + ", ".join(repr(entry) for entry in sorted(unexpected_top_level))
+        )
+    return tuple(issues)
 
 
 def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
@@ -2796,18 +2802,6 @@ def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
     except UnicodeDecodeError:
         return ("package wheel artifact entry_points.txt must be UTF-8 text",)
     issues: list[str] = []
-    for script_name in sorted(scripts):
-        if any(script_name.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_PREFIXES):
-            issues.append(
-                "package wheel artifact entry_points.txt must not include "
-                f"legacy compatibility console script {script_name!r}"
-            )
-        target = scripts[script_name]
-        if _is_forbidden_console_script_target(target):
-            issues.append(
-                "package wheel artifact entry_points.txt console script "
-                f"{script_name!r} must not target legacy compatibility module {target!r}"
-            )
     for script_name, expected_target in RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS.items():
         actual_target = scripts.get(script_name)
         if actual_target is None:
@@ -2817,14 +2811,11 @@ def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
                 "package wheel artifact entry_points.txt console script "
                 f"{script_name!r} must target {expected_target!r}"
             )
+    for script_name in sorted(set(scripts) - set(RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)):
+        issues.append(
+            f"package wheel artifact entry_points.txt must not include unexpected console script {script_name!r}"
+        )
     return tuple(issues)
-
-
-def _is_forbidden_console_script_target(target: str) -> bool:
-    return any(
-        target == prefix or target.startswith(f"{prefix}.") or target.startswith(f"{prefix}:")
-        for prefix in RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_TARGET_PREFIXES
-    )
 
 
 def _console_scripts_from_entry_points(text: str) -> dict[str, str]:

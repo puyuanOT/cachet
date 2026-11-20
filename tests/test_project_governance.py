@@ -18,37 +18,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAINTAINER_REFERENCE = REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
 MAINTAINER_TOPICS_DIR = REPO_ROOT / "docs" / "release-ops" / "maintainer"
-LEGACY_PACKAGE_NAME = "restaurant_kv_serving"
-LEGACY_PACKAGE_PREFIX = f"{LEGACY_PACKAGE_NAME}."
-DYNAMIC_LEGACY_IMPORT_CALLS = {
-    "__import__",
-    "import_module",
-    "importlib.import_module",
-    "importorskip",
-    "pytest.importorskip",
-}
-STRING_RESOLVED_TARGET_CALLS = {
-    "patch",
-    "patch.dict",
-    "patch.multiple",
-    "unittest.mock.patch",
-    "unittest.mock.patch.dict",
-    "unittest.mock.patch.multiple",
-}
-STRING_RESOLVED_TARGET_SUFFIXES = (
-    ".delattr",
-    ".patch",
-    ".patch.dict",
-    ".patch.multiple",
-    ".setattr",
-)
-LEGACY_STRING_ARGUMENT_NAMES = {
-    "in_dict",
-    "modname",
-    "module",
-    "name",
-    "target",
-}
 _DYNAMIC_DICT_KEY = object()
 GENERATED_OR_TOOLING_DIRS = {
     ".coverage",
@@ -111,8 +80,6 @@ DEPRECATED_TOOL_POETRY_METADATA_KEYS = {
     "scripts",
     "version",
 }
-ALLOWED_LEGACY_TEST_REFERENCES = {}
-ALLOWED_LEGACY_SOURCE_REFERENCES = {}
 
 
 def _is_ignored(path: Path) -> bool:
@@ -152,113 +119,6 @@ def _git_known_directories() -> set[Path]:
                 continue
             directories.add(directory)
     return directories
-
-
-def _is_legacy_reference(name: str) -> bool:
-    return name == LEGACY_PACKAGE_NAME or name.startswith(LEGACY_PACKAGE_PREFIX)
-
-
-def _dotted_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted_name(node.value)
-        if parent is None:
-            return None
-        return f"{parent}.{node.attr}"
-    return None
-
-
-def _import_aliases(module: ast.Module) -> dict[str, str]:
-    aliases = {}
-    for node in ast.walk(module):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                local_name = alias.asname or alias.name.split(".", maxsplit=1)[0]
-                target_name = alias.name if alias.asname else local_name
-                aliases[local_name] = target_name
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            for alias in node.names:
-                if alias.name == "*":
-                    continue
-                local_name = alias.asname or alias.name
-                aliases[local_name] = f"{node.module}.{alias.name}"
-    return aliases
-
-
-def _resolve_import_alias(name: str, aliases: dict[str, str]) -> str:
-    parts = name.split(".")
-    for prefix_length in range(len(parts), 0, -1):
-        prefix = ".".join(parts[:prefix_length])
-        if prefix not in aliases:
-            continue
-        suffix = ".".join(parts[prefix_length:])
-        return f"{aliases[prefix]}.{suffix}" if suffix else aliases[prefix]
-    return name
-
-
-def _legacy_import_from_references(node: ast.ImportFrom) -> set[str]:
-    if node.module is None:
-        return set()
-    if node.module == LEGACY_PACKAGE_NAME:
-        return {
-            f"{LEGACY_PACKAGE_NAME}.{alias.name}"
-            if alias.name != "*"
-            else f"{LEGACY_PACKAGE_NAME}.*"
-            for alias in node.names
-        }
-    if node.module.startswith(LEGACY_PACKAGE_PREFIX):
-        return {node.module}
-    return set()
-
-
-def _legacy_string_reference(value: object) -> str | None:
-    if isinstance(value, str) and _is_legacy_reference(value):
-        return value
-    return None
-
-
-def _legacy_string_references_in_call(
-    node: ast.Call, aliases: dict[str, str]
-) -> set[str]:
-    call_name = _dotted_name(node.func)
-    if call_name is None:
-        return set()
-    call_name = _resolve_import_alias(call_name, aliases)
-    is_dynamic_import = call_name in DYNAMIC_LEGACY_IMPORT_CALLS
-    is_string_target = call_name in STRING_RESOLVED_TARGET_CALLS or call_name.endswith(
-        STRING_RESOLVED_TARGET_SUFFIXES
-    )
-    if not is_dynamic_import and not is_string_target:
-        return set()
-
-    candidate_values = [getattr(node.args[0], "value", None)] if node.args else []
-    candidate_values.extend(
-        getattr(keyword.value, "value", None)
-        for keyword in node.keywords
-        if keyword.arg in LEGACY_STRING_ARGUMENT_NAMES
-    )
-    return {
-        reference
-        for value in candidate_values
-        if (reference := _legacy_string_reference(value)) is not None
-    }
-
-
-def _legacy_references_in_test_module(path: Path) -> set[str]:
-    module = ast.parse(path.read_text(encoding="utf-8"))
-    aliases = _import_aliases(module)
-    legacy_references = set()
-    for node in ast.walk(module):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if _is_legacy_reference(alias.name):
-                    legacy_references.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            legacy_references.update(_legacy_import_from_references(node))
-        elif isinstance(node, ast.Call):
-            legacy_references.update(_legacy_string_references_in_call(node, aliases))
-    return legacy_references
 
 
 def _display_path(path: Path) -> str:
@@ -356,7 +216,6 @@ def test_source_layout_readme_reflects_document_owned_implementation():
     assert (
         "`document_kv_cache/` is the canonical implementation and compatibility" in text
     )
-    assert "`restaurant_kv_serving/`" not in text
     assert (
         "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter"
         in compact_text
@@ -432,7 +291,6 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "merge-settings" in text
     assert "auto-merge" in text
     assert "merged-branch cleanup" in text
-    assert "wrappers over implementation modules in `restaurant_kv_serving`" not in text
     assert "real wrapper modules" not in text
     assert "byte-identical segmented generation artifacts across SM89 GPUs" not in (
         compact_text
@@ -454,112 +312,6 @@ def test_method_docs_keep_custom_scorers_programmatic_and_remote_plans_v1_closed
         "explicit programmatic integration rather than a dynamically imported command-line plugin",
     ):
         assert required in compact_text
-
-
-def test_legacy_source_package_directory_is_removed():
-    legacy_source_dir = REPO_ROOT / "src" / ("restaurant_kv_serving")
-
-    assert not legacy_source_dir.exists()
-
-
-def test_legacy_restaurant_imports_in_tests_are_explicitly_scoped():
-    actual = {
-        str(path.relative_to(REPO_ROOT)): _legacy_references_in_test_module(path)
-        for path in sorted((REPO_ROOT / "tests").rglob("*.py"))
-        if not _is_ignored(path.relative_to(REPO_ROOT))
-    }
-    actual = {path: imports for path, imports in actual.items() if imports}
-
-    assert actual == ALLOWED_LEGACY_TEST_REFERENCES
-
-
-def test_production_source_does_not_depend_on_legacy_restaurant_package():
-    source_files = sorted((REPO_ROOT / "src").rglob("*.py"))
-    actual = {
-        str(path.relative_to(REPO_ROOT)): _legacy_references_in_test_module(path)
-        for path in source_files
-        if "restaurant_kv_serving" not in path.relative_to(REPO_ROOT).parts
-        and not _is_ignored(path.relative_to(REPO_ROOT))
-    }
-    actual = {path: imports for path, imports in actual.items() if imports}
-
-    assert actual == ALLOWED_LEGACY_SOURCE_REFERENCES
-
-
-def test_core_runtime_modules_are_document_only_after_legacy_alias_removal():
-    core_paths = (
-        REPO_ROOT / "src" / "document_kv_cache" / "models.py",
-        REPO_ROOT / "src" / "document_kv_cache" / "manifest.py",
-        REPO_ROOT / "src" / "document_kv_cache" / "planner.py",
-        REPO_ROOT / "src" / "document_kv_cache" / "service.py",
-    )
-    forbidden_tokens = (
-        "RestaurantKVRequest",
-        "RestaurantKVService",
-        "ChunkType",
-        "LEGACY_RESTAURANT_CHUNK_TYPES",
-        "restaurant_id",
-        "restaurant_reviews",
-        "selected_restaurants",
-        "keys_for_restaurant",
-    )
-
-    for path in core_paths:
-        text = path.read_text(encoding="utf-8")
-        for token in forbidden_tokens:
-            assert not re.search(rf"\b{re.escape(token)}\b", text), (
-                f"{token} leaked into {path.relative_to(REPO_ROOT)}"
-            )
-
-
-def test_legacy_reference_scanner_detects_import_edges_and_string_targets(tmp_path):
-    path = tmp_path / "sample_test.py"
-    path.write_text(
-        dedent(
-            """
-            import importlib
-            import importlib as il
-            import restaurant_kv_serving.cache as legacy_cache
-            from importlib import import_module as load_module
-            from restaurant_kv_serving import models
-            from restaurant_kv_serving import *
-            from restaurant_kv_serving.storage import DiskRangeReader
-            from pytest import importorskip as skip_optional
-            from unittest.mock import patch as mock_patch
-
-            importlib.import_module("restaurant_kv_serving.dynamic")
-            il.import_module("restaurant_kv_serving.alias_dynamic")
-            load_module(name="restaurant_kv_serving.keyword_dynamic")
-            pytest.importorskip("restaurant_kv_serving.optional")
-            skip_optional(modname="restaurant_kv_serving.alias_optional")
-            monkeypatch.setattr("restaurant_kv_serving.runner.hook", fake_hook)
-            monkeypatch.delattr(target="restaurant_kv_serving.runner.old_hook")
-            mock_patch(target="restaurant_kv_serving.mock.patch_target")
-            mock_patch.dict("restaurant_kv_serving.mock.CONFIG", {})
-            mock_patch.dict(in_dict="restaurant_kv_serving.mock.KEYWORD_CONFIG", values={})
-            mock_patch.multiple(target="restaurant_kv_serving.mock.multi_target", hook=fake_hook)
-            """
-        ),
-        encoding="utf-8",
-    )
-
-    assert _legacy_references_in_test_module(path) == {
-        "restaurant_kv_serving.*",
-        "restaurant_kv_serving.alias_dynamic",
-        "restaurant_kv_serving.alias_optional",
-        "restaurant_kv_serving.cache",
-        "restaurant_kv_serving.dynamic",
-        "restaurant_kv_serving.keyword_dynamic",
-        "restaurant_kv_serving.mock.CONFIG",
-        "restaurant_kv_serving.mock.KEYWORD_CONFIG",
-        "restaurant_kv_serving.mock.multi_target",
-        "restaurant_kv_serving.models",
-        "restaurant_kv_serving.mock.patch_target",
-        "restaurant_kv_serving.optional",
-        "restaurant_kv_serving.runner.hook",
-        "restaurant_kv_serving.runner.old_hook",
-        "restaurant_kv_serving.storage",
-    }
 
 
 def test_duplicate_literal_dict_key_scanner_reports_silent_overwrites(tmp_path):
@@ -695,7 +447,6 @@ def test_readme_documents_public_landing_page_and_scope():
     ):
         assert forbidden not in public_intro
     assert "document-kv-cache" not in public_intro
-    assert "restaurant_kv_serving" not in text
     assert "package name on PyPI is owned by an unrelated project" in compact_text
 
 
@@ -741,9 +492,6 @@ def test_readme_minimal_api_uses_cachet_public_imports():
     assert "from cachet import" in minimal_api
     assert "document_kv_cache" not in minimal_api
     assert "document-kv-" not in minimal_api
-    assert "restaurant_kv_serving" not in minimal_api
-    assert "restaurant-kv-" not in minimal_api
-
     example = _first_python_fence_after(text, "## Minimal API Shape")
     namespace: dict[str, object] = {}
     exec(compile(example, "README.md", "exec"), namespace)
@@ -868,7 +616,6 @@ def test_readme_and_root_license_document_apache_2_license():
 
     assert "Apache License 2.0" in license_section
     assert "`LICENSE`" in license_section
-    assert "`restaurant_kv_serving`" not in license_section
     assert license_text.startswith("Apache License\nVersion 2.0, January 2004")
     assert "https://www.apache.org/licenses/" in license_text
 
@@ -891,9 +638,6 @@ def test_contributing_development_commands_use_public_package_branding():
     assert "python examples/quickstart_local.py" in text
     assert "poetry check --lock" in text
     assert "poetry run pytest -q" in text
-    assert "restaurant-kv-serving[test]" not in text
-    assert "restaurant-kv-serving/tests" not in text
-
 
 def test_readme_avoids_workspace_local_script_references():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -1605,10 +1349,7 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     )
     assert "import cachet" in text
     assert "import document_kv_cache" in text
-    assert 'legacy_package = "restaurant" "_kv_serving"' in text
-    assert "find_spec(legacy_package) is None" in text
     assert "cachet.__all__ == document_kv_cache.__all__" in text
-    assert 'not hasattr(cachet, "RestaurantKVRequest")' in text
     assert "assert cachet.storage is document_kv_cache.storage" in text
     assert "/tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null" in text
     assert "clean PEP 517 wheel build" in compact_workflow_readme
@@ -1616,7 +1357,6 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert "verify the built wheel metadata" in compact_workflow_readme
     assert "built wheel into a fresh venv" in compact_workflow_readme
     assert "`cachet` and `document_kv_cache`" in compact_workflow_readme
-    assert "`restaurant_kv_serving`" not in compact_workflow_readme
 
 
 def test_gitignore_blocks_local_secrets_and_generated_artifacts():
@@ -1986,5 +1726,3 @@ def test_public_and_adapter_packages_publish_pep561_markers():
     for marker_path in marker_paths:
         assert (REPO_ROOT / marker_path).is_file()
         assert marker_path in includes
-    assert not (REPO_ROOT / "src" / ("restaurant_kv_serving") / "py.typed").exists()
-    assert "src/restaurant_kv_serving/py.typed" not in includes
