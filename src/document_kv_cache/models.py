@@ -55,7 +55,6 @@ class DocumentChunkRole(StrEnum):
 class CacheGenerationMethod(StrEnum):
     FULL_PREFIX_PREFILL = "full_prefix_prefill"
     VANILLA_PREFILL = "vanilla_prefill"
-    LMCACHE = "lmcache"
     ADAPTER_TRAINED = "adapter_trained"
     KV_PACKET = "kv_packet"
     CACHEBLEND = "cacheblend"

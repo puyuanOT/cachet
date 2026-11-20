@@ -54,7 +54,6 @@ __all__ = [
     "BASELINE_PREFILL_ARM",
     "DOCUMENT_KV_CACHE_ARM",
     "CACHET_CONNECTOR_MODE",
-    "LMCACHE_CONNECTOR_MODE",
     "CACHET_ARTIFACT_EXECUTION",
     "ENGINE_NATIVE_EXECUTION",
     "validate_registered_reuse_plan",
@@ -79,7 +78,6 @@ DOCUMENT_KV_CACHE_ARM = "document_kv_cache"
 
 # Serving-engine KV connector mode.
 CACHET_CONNECTOR_MODE = "cachet"
-LMCACHE_CONNECTOR_MODE = "lmcache"
 
 CACHET_ARTIFACT_EXECUTION = "cachet_artifact"
 ENGINE_NATIVE_EXECUTION = "engine_native"
@@ -856,24 +854,6 @@ _BUILTIN_METHOD_SPECS: tuple[MethodSpec, ...] = (
             "Planned: recover cross-document information flow over reused KV. Expected to "
             "build on position-independent pre-RoPE keys; the information-flow recovery "
             "step is not yet defined."
-        ),
-    ),
-    MethodSpec(
-        method=CacheGenerationMethod.LMCACHE,
-        display_name="LMCache",
-        arm_id=DOCUMENT_KV_CACHE_ARM,
-        connector_mode=LMCACHE_CONNECTOR_MODE,
-        pre_rope=False,
-        selective_recompute=False,
-        implemented=True,
-        artifact_version="external-v1",
-        execution_kind=ENGINE_NATIVE_EXECUTION,
-        artifact_format=ENGINE_NATIVE_ARTIFACT_FORMAT,
-        payload_decode_stage=PayloadDecodeStage.ENGINE_NATIVE,
-        description=(
-            "Reuse engine-generated KV through LMCache's native vLLM connector. "
-            "The serving engine owns cache creation, persistence, and loading; Cachet "
-            "owns the shared experiment contract and evidence."
         ),
     ),
 )

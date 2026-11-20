@@ -9,7 +9,6 @@ from document_kv_cache.methods import (
     ENGINE_NATIVE_EXECUTION,
     FULL_PREFIX_HANDOFF_TOPOLOGY,
     HandoffTopologySpec,
-    LMCACHE_CONNECTOR_MODE,
     METHOD_SPECS,
     MethodCodeStatus,
     MethodLifecycle,
@@ -23,6 +22,22 @@ from document_kv_cache.methods import (
     method_spec,
 )
 from document_kv_cache.models import CacheGenerationMethod
+from document_kv_cache.reuse_contract import ENGINE_NATIVE_ARTIFACT_FORMAT, PayloadDecodeStage
+
+ENGINE_NATIVE_METHOD = MethodSpec(
+    method="example.engine_native",
+    display_name="Engine-native example",
+    arm_id=DOCUMENT_KV_CACHE_ARM,
+    connector_mode="example_engine_native",
+    pre_rope=False,
+    selective_recompute=False,
+    implemented=True,
+    artifact_version="external-v1",
+    execution_kind=ENGINE_NATIVE_EXECUTION,
+    artifact_format=ENGINE_NATIVE_ARTIFACT_FORMAT,
+    payload_decode_stage=PayloadDecodeStage.ENGINE_NATIVE,
+    description="Application-provided engine-native connector method.",
+)
 
 
 def test_every_cache_generation_method_has_a_spec_or_is_excluded():
@@ -60,7 +75,7 @@ def test_implemented_specs_reference_valid_arms_and_connectors():
     valid_arms = {arm_baseline, arm_cache}
     for spec in METHOD_SPECS.values():
         assert spec.arm_id in valid_arms, spec
-        assert spec.connector_mode in {CACHET_CONNECTOR_MODE, LMCACHE_CONNECTOR_MODE}, spec
+        assert spec.connector_mode == CACHET_CONNECTOR_MODE, spec
 
 
 def test_builtin_executable_methods_are_registered_as_implemented():
@@ -68,7 +83,6 @@ def test_builtin_executable_methods_are_registered_as_implemented():
     assert implemented == {
         CacheGenerationMethod.FULL_PREFIX_PREFILL,
         CacheGenerationMethod.VANILLA_PREFILL,
-        CacheGenerationMethod.LMCACHE,
     }
 
 
@@ -144,12 +158,12 @@ def test_kv_packet_is_a_fail_closed_placeholder():
         spec.reuse_plan()
 
 
-def test_lmcache_is_an_engine_native_method():
-    spec = method_spec(CacheGenerationMethod.LMCACHE)
-    assert spec.connector_mode == LMCACHE_CONNECTOR_MODE
+def test_application_engine_native_method_registers_without_generator():
+    registry = default_method_registry().with_spec(ENGINE_NATIVE_METHOD)
+    spec = registry.get("example.engine_native", require_implemented=True)
+    assert spec is ENGINE_NATIVE_METHOD
     assert spec.execution_kind == ENGINE_NATIVE_EXECUTION
     assert spec.generator_factory is None
-    spec.require_implemented()
 
 
 def test_default_registry_is_immutable_and_supports_custom_methods():
@@ -206,7 +220,7 @@ def test_method_loads_declared_generator_factory() -> None:
 
 def test_engine_native_method_has_no_generator_factory() -> None:
     with pytest.raises(ValueError, match="engine-native"):
-        method_spec(CacheGenerationMethod.LMCACHE).load_generator_factory()
+        ENGINE_NATIVE_METHOD.load_generator_factory()
 
 
 def test_method_spec_is_frozen():

@@ -1012,7 +1012,7 @@ def test_benchmark_surface_is_exactly_the_sealed_published_records():
         "Unsupported Method Status",
     )
     assert sha256(unsupported_method_section.encode("utf-8")).hexdigest() == (
-        "a2708c852b28bddba60428f3b049027da6f50cbb0bfa1d172cb3cb36f3d33ef9"
+        "4b8d4e1a89fdb755504ba4b4ee78dfda00965bc26b1203a91b7ddf4b0ac7d300"
     )
     assert "71.390128 reconciled GPU-hours" in root_readme
     assert "exact 236/98/236 post-migration append-only prefix" in root_readme

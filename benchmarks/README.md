@@ -154,12 +154,13 @@ exact 95% coverage, and the storage ablation has only two identities per dataset
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | N/A (method not implemented) | N/A (method not implemented) | No pinned executable integration or Cachet artifact/serving contract |
 | CacheBlend | N/A (method not implemented) | N/A (method not implemented) | Selective cross-document recomputation is not implemented |
 | InfoFlow&nbsp;KV | N/A (method not implemented) | N/A (method not implemented) | Cross-document information-flow method is not implemented |
-| LMCache | N/A (runtime not qualified) | N/A (runtime not qualified) | No packaged LMCache runtime, launcher, or GPU qualification |
-| Multi connector | N/A (runtime not qualified) | N/A (runtime not qualified) | No packaged runner launches a MultiConnector configuration |
+| LMCache | N/A (method not implemented) | N/A (method not implemented) | No built-in LMCache method, runtime, or launcher |
+| Multi connector | N/A (method not implemented) | N/A (method not implemented) | No MultiConnector transfer config or launcher |
 
-Cachet registers LMCache as an engine-native method and can build a vLLM
-MultiConnector transfer config, but no packaged runner launches either, so
-neither has a smoke, canary, or publication path.
+An engine-native connector such as LMCache can be registered as an
+application-owned engine-native method (see
+[`docs/adding-a-kv-method.md`](../docs/adding-a-kv-method.md)), but Cachet ships
+none, so neither row has a smoke, canary, or publication path.
 
 ## Benchmark Dataset Score Table
 

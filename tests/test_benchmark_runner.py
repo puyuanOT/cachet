@@ -66,7 +66,13 @@ from document_kv_cache.engine_adapters import (
     vllm_adapter_spec,
 )
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
-from document_kv_cache.methods import default_method_registry
+from document_kv_cache.methods import (
+    DOCUMENT_KV_CACHE_ARM,
+    ENGINE_NATIVE_EXECUTION,
+    MethodSpec,
+    default_method_registry,
+)
+from document_kv_cache.reuse_contract import ENGINE_NATIVE_ARTIFACT_FORMAT, PayloadDecodeStage
 from document_kv_cache.workflow import SourceDocument
 
 
@@ -300,13 +306,31 @@ def test_arm_spec_parses_only_typed_runtime_environment_overrides() -> None:
 
 
 def test_arbitrary_engine_native_cachet_arm_does_not_require_cachet_handoff() -> None:
-    lmcache = default_method_registry().get("lmcache", require_implemented=True)
-    spec = _cachet_arm_spec("lmcache", method_version=lmcache.artifact_version)
+    engine_native = MethodSpec(
+        method="example.engine_native",
+        display_name="Engine-native example",
+        arm_id=DOCUMENT_KV_CACHE_ARM,
+        connector_mode="example_engine_native",
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=True,
+        artifact_version="external-v1",
+        execution_kind=ENGINE_NATIVE_EXECUTION,
+        artifact_format=ENGINE_NATIVE_ARTIFACT_FORMAT,
+        payload_decode_stage=PayloadDecodeStage.ENGINE_NATIVE,
+        description="Application-provided engine-native connector method.",
+    )
+    registry = default_method_registry().with_spec(engine_native)
+    spec = _cachet_arm_spec(
+        engine_native.method_id,
+        method_version=engine_native.artifact_version,
+    )
+    spec["connector_mode"] = engine_native.connector_mode
     spec["requires_cachet_handoff"] = False
 
-    arms, _, _, _ = parse_benchmark_arm_specs((spec,))
+    arms, _, _, _ = parse_benchmark_arm_specs((spec,), method_registry=registry)
 
-    assert arms[0].cache_method == "lmcache"
+    assert arms[0].cache_method == engine_native.method_id
     assert arms[0].requires_cachet_handoff is False
 
 
