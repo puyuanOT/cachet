@@ -143,6 +143,7 @@ python -m document_kv_cache.benchmark_plan \
   --engine-probe-sglang-runtime-preflight-output-json sglang=/data/sglang-runtime-preflight.json \
   --engine-probe-sglang-runtime-preflight-launch-config-json sglang=/data/engine-launch-configs/sglang-launch-config.json \
   --engine-probe-use-builtin-factories \
+  --evidence-policy publication \
   --release-evidence-output-json /data/release-evidence.json \
   --release-preflight-output-json /data/release-inputs.json \
   --release-bundle-output-dir /data/cachet-release-bundle \

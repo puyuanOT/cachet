@@ -809,6 +809,12 @@ class BenchmarkPlanConfig:
             and not _uses_release_storage_benchmark_readers(self.storage_benchmark.readers)
         ):
             raise ValueError("release_evidence requires the planned storage_benchmark to use release readers")
+        if (
+            self.release_evidence is not None
+            and self.release_evidence.benchmark_evidence_gate_json is not None
+            and self.evidence_policy != "publication"
+        ):
+            raise ValueError("release_evidence with a benchmark evidence gate requires evidence_policy 'publication'")
         if self.release_bundle is not None and self.release_evidence is None:
             raise ValueError("release_bundle requires release_evidence")
         _validate_strict_v1_release_bundle_plan(self)

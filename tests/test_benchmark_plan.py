@@ -87,6 +87,8 @@ def planned_release_probe_cli_args(tmp_path):
         f"sglang={tmp_path / 'sglang-launch-config.json'}",
         "--release-evidence-output-json",
         str(tmp_path / "release-evidence.json"),
+        "--evidence-policy",
+        "publication",
     ]
 
 
@@ -179,6 +181,7 @@ def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config
         "dataset_paths": dataset_paths(tmp_path),
         "base_url": "http://localhost:8000",
         "benchmark_output_json": str(tmp_path / "results.json"),
+        "evidence_policy": "publication",
         "storage_benchmark": StorageBenchmarkPlanConfig(
             workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
@@ -621,6 +624,25 @@ def test_benchmark_plan_config_rejects_unsupported_v1_hardware_target(tmp_path):
         )
 
 
+@pytest.mark.parametrize("policy", ["smoke", "canary"])
+def test_benchmark_plan_rejects_gated_release_evidence_without_publication_policy(tmp_path, policy):
+    with pytest.raises(ValueError, match="requires evidence_policy 'publication'"):
+        strict_release_bundle_plan_config(tmp_path, config_overrides={"evidence_policy": policy})
+
+
+def test_main_rejects_release_evidence_under_default_smoke_policy(capsys, tmp_path):
+    argv = planned_release_probe_cli_args(tmp_path)
+    policy_index = argv.index("--evidence-policy")
+    del argv[policy_index : policy_index + 2]
+
+    exit_code = main([*argv, "--plan-output-json", str(tmp_path / "plan.json")])
+
+    record = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert "requires evidence_policy 'publication'" in record["error"]
+    assert not (tmp_path / "plan.json").exists()
+
+
 def test_build_v1_benchmark_plan_can_append_storage_reader_benchmark(tmp_path):
     config = BenchmarkPlanConfig(
         suite_id="v1-g6-l4",
@@ -746,6 +768,7 @@ def test_planned_release_evidence_commands_parse_with_the_release_evidence_cli(t
     cli_record = json.loads(plan_json.read_text(encoding="utf-8"))
     config_plan = build_v1_benchmark_plan(
         BenchmarkPlanConfig(
+            evidence_policy="publication",
             suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
@@ -804,6 +827,7 @@ def test_planned_strict_release_bundle_command_parses_with_the_release_bundle_cl
 
 def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidence(tmp_path):
     config = BenchmarkPlanConfig(
+        evidence_policy="publication",
         suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
@@ -3242,6 +3266,8 @@ def test_main_can_include_release_evidence_validation_command(tmp_path):
             "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
+            "--evidence-policy",
+            "publication",
             "--release-engine-probe-json",
             str(tmp_path / "vllm-probe.json"),
             "--release-engine-probe-json",
@@ -3330,6 +3356,8 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
             f"sglang={tmp_path / 'sglang-launch-config.json'}",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
+            "--evidence-policy",
+            "publication",
             "--plan-output-json",
             str(plan_json),
             "--engine-probe-targets-output-json",
@@ -3539,6 +3567,8 @@ def test_main_derives_fixture_actions_for_release_planned_engine_probes(tmp_path
             "--engine-probe-use-builtin-factories",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
+            "--evidence-policy",
+            "publication",
             "--plan-output-json",
             str(plan_json),
         ]
@@ -3612,6 +3642,8 @@ def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_pat
             "--engine-probe-use-builtin-factories",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
+            "--evidence-policy",
+            "publication",
             "--plan-output-json",
             str(plan_json),
             "--engine-probe-targets-output-json",
@@ -3864,6 +3896,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
+            "--evidence-policy",
+            "publication",
             "--release-preflight-output-json",
             str(tmp_path / "release-inputs.json"),
             "--release-engine-probe-json",
@@ -4076,6 +4110,8 @@ def test_main_rejects_incomplete_strict_release_bundle_command(capsys, tmp_path)
             "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
+            "--evidence-policy",
+            "publication",
             "--release-engine-probe-json",
             str(tmp_path / "vllm-probe.json"),
             "--release-engine-probe-json",
@@ -4219,6 +4255,8 @@ def test_main_rejects_plan_output_sh_colliding_with_release_bundle_output_dir(ca
             "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
+            "--evidence-policy",
+            "publication",
             "--release-engine-probe-json",
             str(tmp_path / "vllm-probe.json"),
             "--release-engine-probe-json",
