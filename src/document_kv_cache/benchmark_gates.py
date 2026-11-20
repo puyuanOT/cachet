@@ -11,9 +11,6 @@ from typing import Any, Literal
 from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache._benchmark_manifest import (
     VARIES_BY_ARM,
-    _resource_execution_id_digest,
-    _resource_runtime_identity_digest,
-    _resource_software_identity,
     _validate_arm_runtime_environments,
 )
 from document_kv_cache.benchmark_runner import (
@@ -379,7 +376,6 @@ def evaluate_benchmark_publication_gate(
         active_scopes = set()
     latency_claim = "latency" in active_scopes
     quality_claim = "quality" in active_scopes
-    resource_claim = "resource" in active_scopes
     quality_specs_by_dataset = (
         _quality_specs_by_dataset(manifest)
         if quality_claim and manifest is not None
@@ -793,9 +789,6 @@ def evaluate_benchmark_publication_gate(
             else:
                 cold_attested += 1
 
-    if resource_claim:
-        issues.extend(_resource_scope_issues(result))
-
     if benchmark_payload_digest is None:
         from document_kv_cache.benchmark_runner import (
             benchmark_record_payload_digest,
@@ -1196,124 +1189,6 @@ def _quality_specs_by_dataset(
         }
         for scorer in manifest.scorer_identities
     }
-
-
-def _resource_scope_issues(result: BenchmarkRunResult) -> tuple[str, ...]:
-    manifest = result.experiment_manifest
-    if manifest is None:
-        return ("resource evidence requires an experiment manifest",)
-    from document_kv_cache.benchmark_runner import (
-        benchmark_resource_evidence_to_record,
-    )
-
-    issues: list[str] = []
-    expected_arm_ids = {arm.arm_id for arm in manifest.arms}
-    evidence_by_arm = {item.arm_id: item for item in result.resource_evidence}
-    observed_arm_ids = set(evidence_by_arm)
-    for arm_id in sorted(expected_arm_ids.difference(observed_arm_ids)):
-        issues.append(
-            f"resource arm {arm_id!r} has no governed runtime resource evidence"
-        )
-    for arm_id in sorted(observed_arm_ids.difference(expected_arm_ids)):
-        issues.append(f"resource evidence references unknown arm {arm_id!r}")
-    declared_ids = dict(manifest.resource_evidence_ids)
-    actual_ids = {
-        arm_id: str(benchmark_resource_evidence_to_record(item)["record_sha256"])
-        for arm_id, item in evidence_by_arm.items()
-    }
-    if declared_ids != actual_ids:
-        issues.append(
-            "experiment manifest resource_evidence_ids do not match resource records"
-        )
-    windows_by_arm = {
-        window.arm_id: window
-        for window in result.execution_windows
-        if window.arm_id != "all_arms"
-    }
-    software_closures: set[tuple[str, str, str, str]] = set()
-    telemetry_digests: list[str] = []
-    try:
-        declared_software_identity = _resource_software_identity(manifest)
-    except ValueError as exc:
-        declared_software_identity = {}
-        issues.append(f"resource manifest software identity is invalid: {exc}")
-    for arm_id, evidence in sorted(evidence_by_arm.items()):
-        label = f"resource arm {arm_id!r}"
-        if evidence.experiment_id != manifest.experiment_id:
-            issues.append(f"{label} changes experiment identity")
-        try:
-            expected_execution_id = _resource_execution_id_digest(
-                manifest,
-                arm_id,
-            )
-            expected_runtime_identity = _resource_runtime_identity_digest(
-                manifest,
-                arm_id,
-                execution_id_digest=evidence.execution_id_digest,
-            )
-        except ValueError as exc:
-            issues.append(f"{label} has invalid identity binding: {exc}")
-        else:
-            if evidence.execution_id_digest != expected_execution_id:
-                issues.append(f"{label} changes execution identity")
-            if evidence.runtime_identity_sha256 != expected_runtime_identity:
-                issues.append(f"{label} changes runtime identity")
-        window = windows_by_arm.get(arm_id)
-        if window is None:
-            issues.append(f"{label} has no arm execution window")
-        elif window.started_at_seconds is None or window.ended_at_seconds is None:
-            issues.append(f"{label} execution window is not timestamped")
-        elif (
-            evidence.measurement_started_at_seconds != window.started_at_seconds
-            or evidence.measurement_ended_at_seconds != window.ended_at_seconds
-        ):
-            issues.append(f"{label} measurement window does not match execution")
-        if not evidence.complete:
-            issues.append(f"{label} telemetry coverage is incomplete")
-        if evidence.error_count:
-            issues.append(f"{label} telemetry contains sampling errors")
-        if evidence.sample_count < evidence.expected_sample_count:
-            issues.append(f"{label} has fewer samples than required")
-        if evidence.source_revision.strip().lower() in {"", "unresolved", "unknown"}:
-            issues.append(f"{label} has unresolved source revision")
-        observed_software_identity = {
-            "source_revision": evidence.source_revision,
-            "source_tree_sha256": evidence.source_tree_sha256,
-            "wheel_sha256": evidence.wheel_sha256,
-            "runner_sha256": evidence.runner_sha256,
-        }
-        if observed_software_identity != declared_software_identity:
-            issues.append(
-                f"{label} source/wheel/runner identity does not match the manifest"
-            )
-        for field_name in (
-            "peak_gpu_process_memory_bytes",
-            "peak_process_tree_rss_bytes",
-            "peak_host_memory_used_bytes",
-        ):
-            if getattr(evidence, field_name) <= 0:
-                issues.append(f"{label} has no positive {field_name}")
-        software_closures.add(
-            (
-                evidence.source_revision,
-                evidence.source_tree_sha256,
-                evidence.wheel_sha256,
-                evidence.runner_sha256,
-            )
-        )
-        telemetry_digests.append(evidence.telemetry_sha256)
-    if manifest.comparison_mode == "methods_same_setting" and len(software_closures) > 1:
-        issues.append(
-            "method comparison resource arms use different source/wheel/runner identities"
-        )
-    if (
-        manifest.execution_isolation_mode == "separate_process_or_job"
-        and len(telemetry_digests) != len(set(telemetry_digests))
-    ):
-        issues.append(
-            "separate resource arms must use distinct telemetry sidecars"
-        )
-    return tuple(issues)
 
 
 def _cachet_arm_contract_issues(

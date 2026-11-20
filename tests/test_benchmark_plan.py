@@ -269,7 +269,7 @@ def test_plan_propagates_n_way_arms_manifest_and_standalone_gate(tmp_path):
         benchmark_arm_spec_json_files=(str(arm_file),),
         evidence_policy="canary",
         evidence_gate_output_json=str(tmp_path / "gate.json"),
-        measurement_scopes=("latency", "resource"),
+        measurement_scopes=("latency", "quality"),
         repeats=2,
         request_parallelism=4,
         warmups=1,
@@ -294,7 +294,7 @@ def test_plan_propagates_n_way_arms_manifest_and_standalone_gate(tmp_path):
 
     assert _parameter_values(argv, "--arm-spec-json") == [baseline_spec, cache_spec]
     assert _parameter_values(argv, "--arm-spec-json-file") == [str(arm_file)]
-    assert _parameter_values(argv, "--measurement-scope") == ["latency", "resource"]
+    assert _parameter_values(argv, "--measurement-scope") == ["latency", "quality"]
     assert _parameter_values(argv, "--evidence-gate-output-json") == [str(tmp_path / "gate.json")]
     assert record["evidence_policy"] == "canary"
     assert record["experiment"]["request_parallelism"] == 4

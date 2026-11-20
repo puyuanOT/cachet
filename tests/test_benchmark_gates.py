@@ -814,7 +814,7 @@ def test_v1_scorer_manifest_record_omits_parser_identity_and_keeps_its_digest() 
         for key in scorer
     )
     assert canonical_json_sha256(record) == (
-        "7ba97d0ebb3d0de1d712b03a043054a91ec9456b4334c472b14c7c95fc70fbe0"
+        "1fa1bd8195769154f11b6118000553c292f24ce3e60926481f57e20a10722fa1"
     )
     assert benchmark_experiment_manifest_from_record(record) == manifest
 

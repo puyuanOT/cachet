@@ -244,7 +244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--measurement-scope",
         action="append",
-        choices=("latency", "quality", "resource"),
+        choices=("latency", "quality"),
         help=(
             "Declared evidence scope. Repeat as needed; defaults to latency and "
             "quality."

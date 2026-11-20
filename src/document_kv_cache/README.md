@@ -150,9 +150,6 @@ records, and CLI targets.
   operations and concrete runtime KV layout.
 - `rope.py` provides the shared rotate-half rotary-position-embedding helper
   (`apply_rope_to_keys`, `rope_cos_sin`) used for absolute pre-RoPE positioning.
-- `runtime_telemetry.py` samples server process-tree RSS/GPU memory, host memory,
-  and GPU utilization, then binds timestamp-filtered arm evidence to its exact
-  experiment, execution window, telemetry bytes, and software/runtime closure.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.
