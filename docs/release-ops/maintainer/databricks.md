@@ -18,9 +18,8 @@ inside these jobs are described in [`benchmarks.md`](benchmarks.md) and
   `--hardware-target aws-g5-a10g` (`g5.8xlarge`) derives the node type. Pass
   `--node-type-id` only when a cluster policy requires a specific matching
   size.
-- New integrations should use `DatabricksSingleNodeGPUClusterConfig`,
-  `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type`;
-  the older `g5` names remain compatibility aliases.
+- Programmatic integrations use `DatabricksSingleNodeGPUClusterConfig`,
+  `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type`.
 - Use `--spark-env-var` only for non-secret runtime configuration such as the
   Transformers model id, device, dtype, or cache-axis order. The helpers reject
   secret-looking names and Databricks PAT-shaped values.

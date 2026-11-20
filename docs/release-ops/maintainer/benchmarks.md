@@ -33,6 +33,10 @@ Running these commands as Databricks jobs is covered in
   with speedups and quality deltas, successful latency measurements, and
   quality rates are present. Single-dataset smoke runs are allowed but report
   `v1_evidence.ok` as false.
+- Quality v2 (`cachet.quality_v2`) is a library API with no packaged CLI: it
+  supplies the chat-framed prompts, tolerant parser, scorers, and report and
+  README-region validators for that protocol. The job runner that executed it
+  is preserved at the `vllm-0300-campaign-archive` tag.
 
 For servers exposing the OpenAI-compatible completions API, use the
 stdlib-only `OpenAICompatibleCompletionEngine`. It posts the full logical

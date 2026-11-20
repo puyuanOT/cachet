@@ -13,7 +13,7 @@ The controller-side semantic lock, which was never co-installed into the Linux
 serving runtime, and the publication runners that consumed these locks during
 the vLLM 0.30.0 campaign are preserved at the `vllm-0300-campaign-archive` tag.
 
-## vLLM qualification lock
+## vLLM serving lock
 
 Byte-for-byte artifact replay means consuming the checked-in lock unchanged at
 runtime, not recompiling or rewriting it during a job. Before installation,
@@ -71,6 +71,6 @@ PYTHONPATH=src python -c \
   'from pathlib import Path; from document_kv_cache.serving_env import augment_vllm_runtime_lock_indexes; source = Path("/tmp/vllm-0.30.0-cu129-py311-manylinux_2_35.compiled.lock"); target = Path("src/document_kv_cache/runtime_locks/vllm-0.30.0-cu129-py311-manylinux_2_35.lock"); target.write_bytes(augment_vllm_runtime_lock_indexes(source.read_bytes()))'
 ```
 
-Any regenerated output requires review of the complete version-and-hash diff,
-an updated lock digest, and fresh L4 and A10G GPU qualification before
-publication jobs may run.
+Any regenerated output requires review of the complete version-and-hash diff
+and an updated lock digest, and must be validated on the L4 and A10G hardware
+targets before it backs new benchmark evidence.
