@@ -5,7 +5,7 @@ variables:
   runner_python_file:
     description: Cluster-visible Python runner script URI for the native engine-probe task.
   handoff_json:
-    description: Cluster-visible document_kv.engine_adapter_request.v1 schema v2 handoff JSON path or URI.
+    description: Cluster-visible document_kv.engine_adapter_request.v1 schema v4 handoff JSON path or URI.
   probe_factory:
     description: Dotted native probe factory, such as my_engine_adapter.probes:build_probe.
   probe_output_json:
