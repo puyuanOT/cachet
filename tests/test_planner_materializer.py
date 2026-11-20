@@ -583,7 +583,6 @@ def test_plan_static_then_selected_document_chunks_and_materialize(tmp_path):
     materialized = materializer.materialize(plan)
 
     assert plan.selected_document_ids == ("doc-1", "doc-2")
-    assert plan.selected_documents == ("doc-1", "doc-2")
     assert plan.total_tokens == 25
     assert [segment.ref.key.chunk_id for segment in plan.segments] == [
         "static",
@@ -926,7 +925,6 @@ def test_document_request_uses_generic_chunk_aliases(tmp_path):
 
     plan = CachePlanner(manifest).build_plan(request)
 
-    assert plan.selected_documents == ("doc-a",)
     assert plan.selected_document_ids == ("doc-a",)
     assert [segment.ref.key.document_id for segment in plan.segments] == ["_task", "doc-a", "doc-a"]
     assert [segment.ref.key.chunk_id for segment in plan.segments] == ["prefix", "profile", "section-1"]
@@ -986,4 +984,4 @@ def test_materialization_plan_uses_document_id_metadata():
 
     assert selected_document_ids_field.default_factory is not MISSING
     assert plan.selected_document_ids == ()
-    assert replace(plan, selected_document_ids=("doc-a",)).selected_documents == ("doc-a",)
+    assert replace(plan, selected_document_ids=("doc-a",)).selected_document_ids == ("doc-a",)

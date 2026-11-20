@@ -555,9 +555,6 @@ def _direct_url_sha256(direct_url: Mapping[str, Any]) -> str | None:
         digest = hashes.get("sha256")
         if isinstance(digest, str):
             return digest.lower()
-    legacy_hash = archive_info.get("hash")
-    if isinstance(legacy_hash, str) and legacy_hash.startswith("sha256="):
-        return legacy_hash.removeprefix("sha256=").lower()
     return None
 
 SGLANG_VERSION = "0.5.10.post1"

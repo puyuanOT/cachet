@@ -370,7 +370,7 @@ class TransformersKVChunkGenerator:
         if self.pre_rope:
             with torch.no_grad(), _capture_pre_rope_keys(self.model) as captured_keys:
                 outputs = self.model(**inputs, use_cache=True, **forward_kwargs)
-            post_cache = _legacy_past_key_values(_past_key_values(outputs))
+            post_cache = _past_key_value_layers(_past_key_values(outputs))
             source_cache = _pre_rope_cache(
                 captured_keys,
                 post_cache,
@@ -569,15 +569,15 @@ def _payload_from_past_key_values(
     cache_axis_order: str,
 ) -> bytes:
     torch = _torch()
-    legacy_cache = _legacy_past_key_values(past_key_values)
-    if len(legacy_cache) != layout.num_layers:
+    cache_layers = _past_key_value_layers(past_key_values)
+    if len(cache_layers) != layout.num_layers:
         raise ValueError(
-            f"past_key_values layer count {len(legacy_cache)} != layout.num_layers "
+            f"past_key_values layer count {len(cache_layers)} != layout.num_layers "
             f"{layout.num_layers}"
         )
     dtype = _torch_dtype_from_name(torch, layout.dtype)
     payload_tensor = None
-    for layer_index, layer in enumerate(legacy_cache):
+    for layer_index, layer in enumerate(cache_layers):
         key, value = _key_value_pair(layer, layer_index=layer_index)
         key_values = _normalize_cache_tensor(
             key,
@@ -602,9 +602,9 @@ def _payload_from_past_key_values(
             # [layer, token, K/V, kv_head, head_dim] so one layer's token span is
             # contiguous (enables per-layer streaming in the vLLM provider).
             outer_shape = (
-                (len(legacy_cache), token_count)
+                (len(cache_layers), token_count)
                 if layer_major
-                else (token_count, len(legacy_cache))
+                else (token_count, len(cache_layers))
             )
             payload_tensor = torch.empty(
                 (*outer_shape, *tuple(layer_values.shape[1:])),
@@ -622,14 +622,7 @@ def _payload_from_past_key_values(
     return _tensor_bytes(payload_tensor)
 
 
-def _legacy_past_key_values(past_key_values: object) -> tuple[object, ...]:
-    converter = getattr(past_key_values, "to_legacy_cache", None)
-    if callable(converter):
-        past_key_values = converter()
-    key_cache = getattr(past_key_values, "key_cache", None)
-    value_cache = getattr(past_key_values, "value_cache", None)
-    if key_cache is not None and value_cache is not None:
-        return tuple(zip(tuple(key_cache), tuple(value_cache), strict=True))
+def _past_key_value_layers(past_key_values: object) -> tuple[object, ...]:
     layer_cache = _layer_past_key_values(past_key_values)
     if layer_cache is not None:
         return layer_cache
@@ -650,7 +643,7 @@ def _layer_past_key_values(past_key_values: object) -> tuple[object, ...] | None
         layer_tuple = tuple(layers)
     except TypeError:
         return None
-    legacy_layers = []
+    key_value_layers = []
     for layer_index, layer in enumerate(layer_tuple):
         key = getattr(layer, "keys", None)
         value = getattr(layer, "values", None)
@@ -658,8 +651,8 @@ def _layer_past_key_values(past_key_values: object) -> tuple[object, ...] | None
             raise TypeError(
                 f"past_key_values.layers[{layer_index}] must expose keys and values tensors"
             )
-        legacy_layers.append((key, value))
-    return tuple(legacy_layers)
+        key_value_layers.append((key, value))
+    return tuple(key_value_layers)
 
 
 def _key_value_pair(layer: object, *, layer_index: int) -> tuple[object, object]:
@@ -948,7 +941,7 @@ def _pre_rope_cache(
     rope_theta: float | None,
     rotary_dim: int | None,
 ) -> tuple[tuple[Any, Any], ...]:
-    """Build a legacy ``[(pre_rope_K, V), ...]`` cache and self-check the rotation.
+    """Build a per-layer ``[(pre_rope_K, V), ...]`` cache and self-check the rotation.
 
     Values come from the model's post-RoPE cache (V is not rotated); keys are the
     captured pre-RoPE tensors. As a correctness gate, re-roping the first layer's

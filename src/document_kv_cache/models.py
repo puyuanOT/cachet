@@ -5,15 +5,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-
-try:
-    from enum import StrEnum
-except ImportError:  # pragma: no cover - Python 3.10 compatibility path.
-    from enum import Enum
-
-    class StrEnum(str, Enum):
-        pass
-
+from enum import StrEnum
 from typing import TypeAlias
 
 from document_kv_cache.artifact_identity import ArtifactIdentity, TokenContract
@@ -405,10 +397,6 @@ class DocumentKVRequest:
     def selected_document_ids(self) -> tuple[str, ...]:
         return tuple(self.document_chunks.keys())
 
-    @property
-    def selected_documents(self) -> tuple[str, ...]:
-        return self.selected_document_ids
-
 
 @dataclass(frozen=True, slots=True)
 class PlanSegment:
@@ -459,10 +447,6 @@ class MaterializationPlan:
     @property
     def chunk_count(self) -> int:
         return len(self.segments)
-
-    @property
-    def selected_documents(self) -> tuple[str, ...]:
-        return self.selected_document_ids
 
 
 def _is_non_empty_string(value: object) -> bool:
