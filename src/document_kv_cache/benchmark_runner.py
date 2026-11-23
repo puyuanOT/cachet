@@ -1219,23 +1219,13 @@ def _run_engine(
             repeat_index=request.repeat_index,
         )
     scorer = scorer_registry.get(request.example.dataset)
-    extraction = scorer.parse_answer(generation.output_text)
-    scorer_output = (
-        generation.output_text
-        if extraction is None
-        else extraction.extracted_answer
-    )
-    quality_scores = (
-        scorer.zero_scores()
-        if extraction is not None and not extraction.valid
-        else scorer.score(
-            DatasetScoreContext(
-                dataset=request.example.dataset,
-                example_id=request.example.example_id,
-                output_text=scorer_output,
-                references=request.example.references,
-                metadata=request.example.metadata,
-            )
+    extraction, quality_scores = scorer.score_output(
+        DatasetScoreContext(
+            dataset=request.example.dataset,
+            example_id=request.example.example_id,
+            output_text=generation.output_text,
+            references=request.example.references,
+            metadata=request.example.metadata,
         )
     )
     metadata = dict(generation.metadata)

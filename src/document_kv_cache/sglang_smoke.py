@@ -44,6 +44,7 @@ from document_kv_cache.benchmarks import (
     BenchmarkExample,
     BenchmarkPromptParts,
     BenchmarkReportRow,
+    DatasetScoreContext,
     InferenceMeasurement,
     answer_found,
     baseline_prefill_arm,
@@ -52,6 +53,7 @@ from document_kv_cache.benchmarks import (
     benchmark_cache_source_document,
     compare_to_baseline,
     document_kv_cache_arm,
+    final_answer_measurement_metadata,
     summarize_measurements,
     validate_v1_hardware_target,
 )
@@ -91,6 +93,7 @@ from document_kv_cache.openai_compatible import (
 from document_kv_cache.quality_v2 import (
     QUALITY_V2_MAX_TOKENS,
     QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    quality_v2_scorer_registry,
 )
 from document_kv_cache.serving_env import (
     SGLANG_DEPENDENCY_CONSTRAINTS,
@@ -2735,6 +2738,17 @@ def _live_check_result_to_measurement(
     label: str,
     repeat_index: int,
 ) -> InferenceMeasurement:
+    example = result.request.example
+    scorer = quality_v2_scorer_registry().get(example.dataset)
+    extraction, quality_scores = scorer.score_output(
+        DatasetScoreContext(
+            dataset=example.dataset,
+            example_id=example.example_id,
+            output_text=result.generation.output_text,
+            references=example.references,
+            metadata=example.metadata,
+        )
+    )
     metadata = {
         **dict(result.generation.metadata),
         "engine": "sglang",
@@ -2745,17 +2759,26 @@ def _live_check_result_to_measurement(
         "request_mode": result.request_mode,
         "prompt_format": result.prompt_format,
     }
+    if extraction is not None:
+        metadata.update(final_answer_measurement_metadata(extraction))
+    niah_cell_id = example.metadata.get("niah_cell_id")
+    if example.dataset == "niah" and niah_cell_id is not None:
+        metadata["niah_cell_id"] = niah_cell_id
     return InferenceMeasurement(
-        example_id=result.request.example.example_id,
-        dataset=result.request.example.dataset,
+        example_id=example.example_id,
+        dataset=example.dataset,
         arm_id=result.request.arm.arm_id,
         prompt_tokens=result.generation.prompt_tokens,
         completion_tokens=result.generation.completion_tokens,
         ttft_seconds=result.generation.ttft_seconds,
         time_to_completion_seconds=result.generation.time_to_completion_seconds,
         output_text=result.generation.output_text,
-        expected_answer=result.request.example.expected_answer,
+        expected_answer=example.expected_answer,
+        references=example.references,
         metadata=metadata,
+        scorer_id=scorer.scorer_id,
+        scorer_version=scorer.version,
+        quality_scores=quality_scores,
     )
 
 
@@ -2830,10 +2853,14 @@ def _inference_measurement_to_record(
         "time_to_completion_seconds": measurement.time_to_completion_seconds,
         "output_text": measurement.output_text,
         "expected_answer": measurement.expected_answer,
+        "references": list(measurement.references),
         "exact_match": measurement.exact_match,
         "answer_found": measurement.answer_found,
         "error": measurement.error,
         "metadata": dict(measurement.metadata),
+        "scorer_id": measurement.scorer_id,
+        "scorer_version": measurement.scorer_version,
+        "quality_scores": dict(measurement.quality_scores),
     }
 
 

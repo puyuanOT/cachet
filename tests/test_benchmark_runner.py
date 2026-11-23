@@ -1792,7 +1792,9 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
         suite,
         {
             BASELINE_PREFILL_ARM: RecordingEngine(output="Charles Babbage"),
-            CACHE_REUSE_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: RecordingEngine(
+                output="<final_answer>Ada Lovelace</final_answer>"
+            ),
         },
     )
 

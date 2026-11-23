@@ -34,6 +34,7 @@ from document_kv_cache.benchmarks import (
     BenchmarkExample,
     BenchmarkSuite,
     baseline_prefill_arm,
+    final_answer_measurement_metadata,
     method_benchmark_arm,
 )
 from document_kv_cache.benchmark_plan_executor import (
@@ -90,7 +91,11 @@ from document_kv_cache.native_probe_factories import (
     native_probe_adapter_contract_to_record,
     native_probe_runtime_contract_to_record,
 )
-from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    extract_first_final_answer,
+    quality_v2_scorer_registry,
+)
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
     RELEASE_BUNDLE_RECORD_TYPE,
@@ -4087,7 +4092,7 @@ class _GatedV1Engine:
         if cached:
             metadata["request_id"] = request.example.kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM]
         return BenchmarkGeneration(
-            output_text="Paris",
+            output_text="<final_answer>Paris</final_answer>",
             prompt_tokens=32,
             completion_tokens=1,
             ttft_seconds=0.5 if cached else 1.0,
@@ -4324,8 +4329,18 @@ def _sglang_live_v1_cache_hit_validation(dataset: str, repeat: int):
     }
 
 
+_V1_MEASUREMENT_OUTPUT = "<final_answer>Ada Lovelace</final_answer>"
+_V1_MEASUREMENT_QUALITY_SCORES = {
+    "biography": {"exact_match": 1.0},
+    "hotpotqa": {"exact_match": 1.0, "f1": 1.0},
+    "musique": {"answer_em": 1.0, "answer_f1": 1.0},
+    "niah": {"accuracy": 1.0},
+}
+
+
 def _v1_measurement_record(dataset: str, arm: str):
     prompt_tokens = 1024 if arm == "baseline_prefill" else 128
+    scorer = quality_v2_scorer_registry().get(dataset)
     return {
         "example_id": f"{dataset}-1",
         "dataset": dataset,
@@ -4334,12 +4349,15 @@ def _v1_measurement_record(dataset: str, arm: str):
         "completion_tokens": 16,
         "ttft_seconds": 1.0,
         "time_to_completion_seconds": 2.0,
-        "output_text": "Ada Lovelace",
+        "output_text": _V1_MEASUREMENT_OUTPUT,
         "expected_answer": "Ada Lovelace",
         "exact_match": True,
         "answer_found": True,
         "error": None,
         "metadata": _v1_measurement_metadata(arm),
+        "scorer_id": scorer.scorer_id,
+        "scorer_version": scorer.version,
+        "quality_scores": dict(_V1_MEASUREMENT_QUALITY_SCORES[dataset]),
     }
 
 
@@ -4361,8 +4379,12 @@ def _v1_report_row_record(dataset: str, arm: str):
 
 
 def _v1_measurement_metadata(arm: str):
+    parser_metadata = final_answer_measurement_metadata(
+        extract_first_final_answer(_V1_MEASUREMENT_OUTPUT)
+    )
     if arm == "baseline_prefill":
         return {
+            **parser_metadata,
             "prompt_text_mode": "logical",
             "prompt_token_source": "logical",
             "kv_transfer_params_attached": "false",
@@ -4370,6 +4392,7 @@ def _v1_measurement_metadata(arm: str):
             "runtime_prompt_tokens": "1024",
         }
     return {
+        **parser_metadata,
         "prompt_text_mode": "runtime",
         "prompt_token_source": "server_usage",
         "kv_transfer_params_attached": "true",

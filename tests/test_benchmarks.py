@@ -42,6 +42,7 @@ from document_kv_cache.benchmarks import (
     evaluate_v1_benchmark_evidence,
     exact_match,
     extract_single_final_answer,
+    final_answer_measurement_metadata,
     format_document_context,
     hotpotqa_official_answer_scores,
     musique_official_answer_scores,
@@ -925,6 +926,81 @@ def test_publication_approved_scorers_must_declare_their_prompt_and_parser():
         )
     with pytest.raises(ValueError, match="answer_parser_digest"):
         approved(answer_parser_digest="")
+
+
+def test_score_output_scores_the_answer_the_declared_parser_extracts():
+    scorer = quality_v2_scorer_registry().get("hotpotqa")
+
+    def scored(output_text):
+        extraction, scores = scorer.score_output(
+            DatasetScoreContext(
+                dataset="hotpotqa",
+                example_id="hotpotqa-1",
+                output_text=output_text,
+                references=("Ada Lovelace",),
+            )
+        )
+        return extraction, dict(scores)
+
+    extraction, scores = scored("Thinking. <final_answer>Ada Lovelace</final_answer>")
+    assert extraction == extract_first_final_answer(
+        "Thinking. <final_answer>Ada Lovelace</final_answer>"
+    )
+    assert scores == {"exact_match": 1.0, "f1": 1.0}
+    assert scored("<final_answer>Charles Babbage</final_answer> Ada Lovelace")[1] == {
+        "exact_match": 0.0,
+        "f1": 0.0,
+    }
+    extraction, scores = scored("Ada Lovelace")
+    assert extraction.status == "missing_block"
+    assert scores == {"exact_match": 0.0, "f1": 0.0}
+
+
+def test_score_output_scores_the_raw_output_of_a_scorer_without_a_parser():
+    scorer = DatasetScorer(
+        scorer_id="author.future_dataset",
+        version="2026.1",
+        metric_names=("official_score",),
+        score_function=lambda context: {"official_score": float(context.output_text == "raw")},
+    )
+
+    extraction, scores = scorer.score_output(
+        DatasetScoreContext(
+            dataset="future-dataset",
+            example_id="example-1",
+            output_text="raw",
+            references=("raw",),
+        )
+    )
+
+    assert extraction is None
+    assert scores == {"official_score": 1.0}
+
+
+@pytest.mark.parametrize(
+    ("output_text", "expected_labels"),
+    [
+        ("<final_answer>Ada Lovelace</final_answer>", (True, True)),
+        ("<final_answer>Countess Ada Lovelace</final_answer>", (False, True)),
+        ("<final_answer>Charles Babbage</final_answer> Ada Lovelace", (False, False)),
+        ("Ada Lovelace", (False, False)),
+    ],
+)
+def test_measurement_labels_compare_the_extracted_final_answer(output_text, expected_labels):
+    measurement = InferenceMeasurement(
+        example_id="musique-1",
+        dataset="musique",
+        arm_id=BASELINE_PREFILL_ARM,
+        prompt_tokens=8,
+        completion_tokens=4,
+        ttft_seconds=0.1,
+        time_to_completion_seconds=0.2,
+        output_text=output_text,
+        expected_answer="Ada Lovelace",
+        metadata=final_answer_measurement_metadata(extract_first_final_answer(output_text)),
+    )
+
+    assert (measurement.exact_match, measurement.answer_found) == expected_labels
 
 
 def test_summarize_measurements_computes_latency_quality_and_errors():

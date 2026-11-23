@@ -13,6 +13,7 @@ import document_kv_cache.sglang_smoke as public_sglang_smoke
 from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmark_runner import BenchmarkGeneration
 from document_kv_cache.benchmarks import (
+    FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
@@ -30,7 +31,11 @@ from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import KVCacheKey
-from document_kv_cache.quality_v2 import quality_v2_prompt_parts
+from document_kv_cache.quality_v2 import (
+    quality_v2_prompt_parts,
+    quality_v2_scorer_registry,
+)
+from document_kv_cache.release_evidence import sglang_live_v1_benchmark_issues
 from document_kv_cache.sglang_smoke import (
     CACHET_MODEL_ID,
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
@@ -2555,7 +2560,7 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
         return public_sglang_smoke.LiveServerCheckResult(
             request=request,
             generation=BenchmarkGeneration(
-                output_text="otkv7391",
+                output_text="<final_answer>otkv7391</final_answer>",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 ttft_seconds=ttft_seconds,
@@ -2612,6 +2617,108 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
     assert written == record
 
 
+def _run_prepared_sglang_live_benchmark(monkeypatch, tmp_path, *, output_text):
+    dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def fake_benchmark_request(live_config, *, request, use_cache_arm):
+        cached_tokens = 32 if use_cache_arm else 0
+        with live_config.server_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                f"[INFO] Prefill batch, #new-token: {40 - cached_tokens}, "
+                f"#cached-token: {cached_tokens}\n"
+            )
+        return public_sglang_smoke.LiveServerCheckResult(
+            request=request,
+            generation=BenchmarkGeneration(
+                output_text=output_text(request.example.expected_answer or ""),
+                prompt_tokens=40,
+                completion_tokens=2,
+                ttft_seconds=0.1,
+                time_to_completion_seconds=0.2,
+                metadata={
+                    "prompt_token_source": "server_usage",
+                    "server_usage_prompt_tokens": "40",
+                },
+            ),
+            prompt_text_mode=(
+                live_config.cache_prompt_text_mode if use_cache_arm else "logical"
+            ),
+            request_mode=live_config.live_check_request_mode,
+            prompt_format=live_config.live_check_prompt_format,
+            answer_found=True,
+        )
+
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "flush_sglang_cache",
+        lambda live_config, *, reason: fake_flush_record(reason=reason),
+    )
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "_run_sglang_live_benchmark_request",
+        fake_benchmark_request,
+    )
+    return run_sglang_live_benchmark(config)
+
+
+def test_prepared_sglang_live_benchmark_scores_measurements_with_quality_v2(
+    monkeypatch, tmp_path
+):
+    record = _run_prepared_sglang_live_benchmark(
+        monkeypatch,
+        tmp_path,
+        output_text=lambda answer: f"<final_answer>{answer}</final_answer>",
+    )
+
+    registry = quality_v2_scorer_registry()
+    assert record["ok"] is True
+    assert len(record["measurements"]) == len(SUPPORTED_V1_DATASETS) * 2
+    for measurement in record["measurements"]:
+        scorer = registry.get(measurement["dataset"])
+        assert measurement["scorer_id"] == scorer.scorer_id
+        assert measurement["scorer_version"] == scorer.version
+        assert measurement["quality_scores"] == dict.fromkeys(scorer.metric_names, 1.0)
+        assert (
+            measurement["metadata"][FINAL_ANSWER_EXTRACTED_METADATA_KEY]
+            == measurement["expected_answer"]
+        )
+    scorer_identities = {
+        registry.get(dataset).identity for dataset in SUPPORTED_V1_DATASETS
+    }
+    assert not [
+        issue
+        for issue in sglang_live_v1_benchmark_issues(record)
+        if any(identity in issue for identity in scorer_identities)
+    ]
+
+
+def test_prepared_sglang_live_benchmark_rejects_answers_outside_the_final_answer_block(
+    monkeypatch, tmp_path
+):
+    record = _run_prepared_sglang_live_benchmark(
+        monkeypatch,
+        tmp_path,
+        output_text=lambda answer: f"<final_answer>unknown</final_answer> {answer}",
+    )
+
+    assert record["ok"] is False
+    assert all(
+        measurement["answer_found"] is False for measurement in record["measurements"]
+    )
+    assert len(record["issues"]) == len(SUPPORTED_V1_DATASETS) * 2
+    assert all(
+        issue.endswith("did not return the expected answer") for issue in record["issues"]
+    )
+
+
 def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
     monkeypatch, tmp_path
 ):
@@ -2651,7 +2758,7 @@ def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
         return public_sglang_smoke.LiveServerCheckResult(
             request=request,
             generation=BenchmarkGeneration(
-                output_text=f"The answer is {expected_answer}.",
+                output_text=f"<final_answer>{expected_answer}</final_answer>",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 ttft_seconds=ttft_seconds,

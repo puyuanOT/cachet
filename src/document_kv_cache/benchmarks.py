@@ -7,7 +7,7 @@ import string
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from html import escape
 from types import MappingProxyType
@@ -167,6 +167,7 @@ __all__ = [
     "diagnostic_answer_scores",
     "extract_single_final_answer",
     "final_answer_measurement_metadata",
+    "quality_label",
     "normalize_biography_title",
     "hotpotqa_official_answer_scores",
     "musique_official_answer_scores",
@@ -506,6 +507,27 @@ class DatasetScorer:
 
     def zero_scores(self) -> Mapping[str, float]:
         return MappingProxyType({metric_name: 0.0 for metric_name in self.metric_names})
+
+    def score_output(
+        self,
+        context: DatasetScoreContext,
+    ) -> tuple[FinalAnswerExtraction | None, Mapping[str, float]]:
+        """Parse a raw model output with the declared parser and score its answer.
+
+        Without a parser the raw output is scored; an output the parser rejects
+        scores zero on every metric.
+        """
+
+        if not isinstance(context, DatasetScoreContext):
+            raise TypeError("context must be DatasetScoreContext")
+        extraction = self.parse_answer(context.output_text)
+        if extraction is None:
+            return None, self.score(context)
+        if not extraction.valid:
+            return extraction, self.zero_scores()
+        return extraction, self.score(
+            replace(context, output_text=extraction.extracted_answer)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1101,21 +1123,57 @@ class InferenceMeasurement:
 
     @property
     def exact_match(self) -> bool | None:
-        explicit = self.quality_scores.get("exact_match")
-        if explicit is not None:
-            return explicit >= 0.5
-        if self.expected_answer is None or not self.ok:
-            return None
-        return exact_match(self.output_text, self.expected_answer)
+        return quality_label(
+            "exact_match",
+            quality_scores=self.quality_scores,
+            metadata=self.metadata,
+            output_text=self.output_text,
+            expected_answer=self.expected_answer if self.ok else None,
+        )
 
     @property
     def answer_found(self) -> bool | None:
-        explicit = self.quality_scores.get("answer_found")
-        if explicit is not None:
-            return explicit >= 0.5
-        if self.expected_answer is None or not self.ok:
-            return None
-        return answer_found(self.output_text, self.expected_answer)
+        return quality_label(
+            "answer_found",
+            quality_scores=self.quality_scores,
+            metadata=self.metadata,
+            output_text=self.output_text,
+            expected_answer=self.expected_answer if self.ok else None,
+        )
+
+
+def quality_label(
+    label: Literal["exact_match", "answer_found"],
+    *,
+    quality_scores: Mapping[str, float],
+    metadata: Mapping[str, str],
+    output_text: str,
+    expected_answer: str | None,
+) -> bool | None:
+    """Return a measurement's ``exact_match`` or ``answer_found`` label.
+
+    A score the scorer records under the label's name decides it. Otherwise the
+    label compares the answer the declared parser extracted, recorded in the
+    final-answer metadata, with ``expected_answer``; an output the parser
+    rejected is never a match, and only outputs scored without a parser are
+    compared as raw text.
+    """
+
+    label_function = {"exact_match": exact_match, "answer_found": answer_found}[label]
+    explicit = quality_scores.get(label)
+    if explicit is not None:
+        return explicit >= 0.5
+    if expected_answer is None:
+        return None
+    parser_valid = metadata.get(FINAL_ANSWER_PARSER_VALID_METADATA_KEY)
+    if parser_valid is None:
+        return label_function(output_text, expected_answer)
+    if parser_valid != "true":
+        return False
+    extracted_answer = metadata.get(FINAL_ANSWER_EXTRACTED_METADATA_KEY)
+    if extracted_answer is None:
+        return None
+    return label_function(extracted_answer, expected_answer)
 
 
 @dataclass(frozen=True, slots=True)

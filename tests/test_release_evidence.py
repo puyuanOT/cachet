@@ -13,6 +13,7 @@ from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache.benchmark_gates import BENCHMARK_EVIDENCE_GATE_RECORD_TYPE, CacheStateAttestation
 from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
+    FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
     DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
@@ -20,7 +21,9 @@ from document_kv_cache.benchmarks import (
     SUPPORTED_V1_DATASETS,
     BenchmarkExample,
     BenchmarkSuite,
+    BASELINE_PREFILL_ARM,
     baseline_prefill_arm,
+    final_answer_measurement_metadata,
     method_benchmark_arm,
 )
 from document_kv_cache.engine_adapters import (
@@ -49,7 +52,11 @@ from document_kv_cache.benchmark_runner import (
     benchmark_run_result_to_record,
     run_benchmark_suite,
 )
-from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    extract_first_final_answer,
+    quality_v2_scorer_registry,
+)
 from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_RECORD_TYPE,
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
@@ -992,36 +999,150 @@ def test_evaluate_release_evidence_rejects_incorrect_measurement_quality_labels(
         ),
     )
 
+    identity = quality_v2_scorer_registry().get("biography").identity
     assert not evidence.ok
-    assert any("biography:baseline_prefill exact_match must match output_text" in issue for issue in evidence.issues)
-    assert any("biography:document_kv_cache answer_found must match output_text" in issue for issue in evidence.issues)
+    assert (
+        f"v1 benchmark measurement biography:baseline_prefill exact_match must match {identity} re-scoring output_text"
+        in evidence.issues
+    )
+    assert (
+        f"v1 benchmark measurement biography:document_kv_cache answer_found must match {identity} re-scoring output_text"
+        in evidence.issues
+    )
 
 
-def test_evaluate_release_evidence_checks_scored_labels_against_quality_scores():
+def _measurement_rescoring_issues(dataset, tamper):
     v1_record = _v1_record(ok=True)
-    scored = {
-        **v1_record["measurements"][0],
-        "output_text": "<final_answer>Ada Lovelace</final_answer>",
-        "quality_scores": {"exact_match": 1.0},
-    }
-    v1_record["measurements"][0] = scored
+    index, measurement = next(
+        (index, measurement)
+        for index, measurement in enumerate(v1_record["measurements"])
+        if measurement["dataset"] == dataset and measurement["arm_id"] == BASELINE_PREFILL_ARM
+    )
+    v1_record["measurements"][index] = tamper(measurement)
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+    label = f"v1 benchmark measurement {dataset}:{BASELINE_PREFILL_ARM} "
+    return [issue.removeprefix(label) for issue in evidence.issues if issue.startswith(label)]
 
-    def label_issues(record):
-        evidence = evaluate_release_evidence(
-            record,
-            _storage_record(ok=True),
-            engine_probe_records=(
-                _probe_record(ServingBackend.VLLM),
-                _probe_record(ServingBackend.SGLANG),
-            ),
-        )
-        return [issue for issue in evidence.issues if "biography:baseline_prefill exact_match" in issue]
 
-    assert label_issues(v1_record) == []
-    v1_record["measurements"][0] = {**scored, "quality_scores": {"exact_match": 0.0}}
-    assert label_issues(v1_record) == [
-        "v1 benchmark measurement biography:baseline_prefill exact_match must match quality_scores.exact_match"
+@pytest.mark.parametrize("dataset", SUPPORTED_V1_DATASETS)
+def test_evaluate_release_evidence_accepts_measurements_the_quality_v2_scorer_reproduces(dataset):
+    assert _measurement_rescoring_issues(dataset, lambda measurement: measurement) == []
+
+
+@pytest.mark.parametrize(
+    ("dataset", "tamper", "expected_issues"),
+    [
+        pytest.param(
+            "biography",
+            lambda measurement: {**measurement, "quality_scores": {"exact_match": 0.0}},
+            ["quality_scores must match {identity} re-scoring output_text"],
+            id="tampered-quality-scores",
+        ),
+        pytest.param(
+            "hotpotqa",
+            lambda measurement: {**measurement, "quality_scores": {"exact_match": 1.0}},
+            ["quality_scores must match {identity} re-scoring output_text"],
+            id="missing-metric",
+        ),
+        pytest.param(
+            "biography",
+            lambda measurement: {
+                **measurement,
+                "metadata": {**measurement["metadata"], FINAL_ANSWER_EXTRACTED_METADATA_KEY: "Charles Babbage"},
+            },
+            ["final-answer metadata must match {identity} re-parsing output_text"],
+            id="tampered-extracted-answer",
+        ),
+        pytest.param(
+            "musique",
+            lambda measurement: {
+                **measurement,
+                "output_text": "<final_answer>Charles Babbage</final_answer> Ada Lovelace",
+                "quality_scores": {"answer_em": 0.0, "answer_f1": 0.0},
+                "exact_match": False,
+                "metadata": {**measurement["metadata"], FINAL_ANSWER_EXTRACTED_METADATA_KEY: "Charles Babbage"},
+            },
+            ["answer_found must match {identity} re-scoring output_text"],
+            id="answer-outside-final-answer-block",
+        ),
+        pytest.param(
+            "niah",
+            lambda measurement: {**measurement, "output_text": "Ada Lovelace"},
+            [
+                "quality_scores must match {identity} re-scoring output_text",
+                "final-answer metadata must match {identity} re-parsing output_text",
+                "exact_match must match {identity} re-scoring output_text",
+                "answer_found must match {identity} re-scoring output_text",
+            ],
+            id="output-without-final-answer-block",
+        ),
+        pytest.param(
+            "niah",
+            lambda measurement: {
+                **measurement,
+                "metadata": {**measurement["metadata"], "niah_cell_id": "64k-50"},
+            },
+            [
+                "cannot be re-scored by {identity}: "
+                "niah_cell_id metadata must identify a NIAH grid cell"
+            ],
+            id="unknown-niah-cell",
+        ),
+        pytest.param(
+            "hotpotqa",
+            lambda measurement: {**measurement, "references": ["Charles Babbage", "Ada Lovelace"]},
+            ["references must be non-empty strings led by expected_answer"],
+            id="references-not-led-by-expected-answer",
+        ),
+    ],
+)
+def test_evaluate_release_evidence_rescores_measurements_with_the_quality_v2_scorer(
+    dataset,
+    tamper,
+    expected_issues,
+):
+    identity = quality_v2_scorer_registry().get(dataset).identity
+
+    assert _measurement_rescoring_issues(dataset, tamper) == [
+        issue.format(identity=identity) for issue in expected_issues
     ]
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        pytest.param(
+            lambda measurement: {
+                key: value
+                for key, value in measurement.items()
+                if key not in {"scorer_id", "scorer_version"}
+            },
+            id="undeclared",
+        ),
+        pytest.param(
+            lambda measurement: {
+                **measurement,
+                "scorer_version": "biography_entity_identification_v2+final_answer_v1",
+            },
+            id="other-version",
+        ),
+        pytest.param(
+            lambda measurement: {**measurement, "scorer_id": "cachet.biography_contains_answer"},
+            id="other-scorer",
+        ),
+    ],
+)
+def test_evaluate_release_evidence_requires_the_quality_v2_scorer(tamper):
+    identity = quality_v2_scorer_registry().get("biography").identity
+
+    assert _measurement_rescoring_issues("biography", tamper) == [f"must be scored by {identity}"]
 
 
 def test_evaluate_release_evidence_rejects_malformed_measurement_trace_fields():
@@ -2672,7 +2793,7 @@ class _GatedV1Engine:
         if cached:
             metadata["request_id"] = request.example.kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM]
         return BenchmarkGeneration(
-            output_text="Paris",
+            output_text="<final_answer>Paris</final_answer>",
             prompt_tokens=32,
             completion_tokens=1,
             ttft_seconds=0.5 if cached else 1.0,
@@ -2975,8 +3096,18 @@ def _sglang_live_v1_cache_hit_validation(dataset: str, repeat: int):
     }
 
 
+_V1_MEASUREMENT_OUTPUT = "<final_answer>Ada Lovelace</final_answer>"
+_V1_MEASUREMENT_QUALITY_SCORES = {
+    "biography": {"exact_match": 1.0},
+    "hotpotqa": {"exact_match": 1.0, "f1": 1.0},
+    "musique": {"answer_em": 1.0, "answer_f1": 1.0},
+    "niah": {"accuracy": 1.0},
+}
+
+
 def _v1_measurement_record(dataset: str, arm: str):
     prompt_tokens = 1024 if arm == "baseline_prefill" else 128
+    scorer = quality_v2_scorer_registry().get(dataset)
     return {
         "example_id": f"{dataset}-1",
         "dataset": dataset,
@@ -2985,12 +3116,15 @@ def _v1_measurement_record(dataset: str, arm: str):
         "completion_tokens": 16,
         "ttft_seconds": 1.0,
         "time_to_completion_seconds": 2.0,
-        "output_text": "Ada Lovelace",
+        "output_text": _V1_MEASUREMENT_OUTPUT,
         "expected_answer": "Ada Lovelace",
         "exact_match": True,
         "answer_found": True,
         "error": None,
         "metadata": _v1_measurement_metadata(arm),
+        "scorer_id": scorer.scorer_id,
+        "scorer_version": scorer.version,
+        "quality_scores": dict(_V1_MEASUREMENT_QUALITY_SCORES[dataset]),
     }
 
 
@@ -3012,8 +3146,12 @@ def _v1_report_row_record(dataset: str, arm: str):
 
 
 def _v1_measurement_metadata(arm: str):
+    parser_metadata = final_answer_measurement_metadata(
+        extract_first_final_answer(_V1_MEASUREMENT_OUTPUT)
+    )
     if arm == "baseline_prefill":
         return {
+            **parser_metadata,
             "prompt_text_mode": "logical",
             "prompt_token_source": "logical",
             "kv_transfer_params_attached": "false",
@@ -3021,6 +3159,7 @@ def _v1_measurement_metadata(arm: str):
             "runtime_prompt_tokens": "1024",
         }
     return {
+        **parser_metadata,
         "prompt_text_mode": "runtime",
         "prompt_token_source": "server_usage",
         "kv_transfer_params_attached": "true",
