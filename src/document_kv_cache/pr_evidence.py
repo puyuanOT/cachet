@@ -14,9 +14,9 @@ from urllib.parse import urlparse
 from document_kv_cache.storage import local_path
 
 
-PR_EVIDENCE_RECORD_TYPE = "document_kv.pr_evidence.v1"
+PR_EVIDENCE_RECORD_TYPE = "document_kv.pr_evidence.v2"
 PR_EVIDENCE_VALIDATION_RECORD_TYPE = "document_kv.pr_evidence_validation.v1"
-GPT55_REVIEW_OUTCOMES = ("clean", "findings_resolved")
+PR_REVIEW_OUTCOMES = ("clean", "findings_resolved")
 _GITHUB_REPOSITORY_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _GITHUB_PULL_REQUEST_NUMBER_RE = re.compile(r"^[1-9][0-9]*$")
 _PR_EVIDENCE_RECORD_KEYS = frozenset(
@@ -30,10 +30,11 @@ _PR_EVIDENCE_RECORD_KEYS = frozenset(
         "scope",
         "verification",
         "refactor_skill_applied",
-        "gpt55_review_completed",
-        "gpt55_review_findings_resolved",
-        "gpt55_review_outcome",
-        "gpt55_review_summary",
+        "review_model",
+        "review_completed",
+        "review_findings_resolved",
+        "review_outcome",
+        "review_summary",
         "issues",
     }
 )
@@ -42,7 +43,7 @@ _PR_EVIDENCE_VALIDATION_RECORD_KEYS = frozenset({"record_type", "ok", "files"})
 __all__ = [
     "PR_EVIDENCE_RECORD_TYPE",
     "PR_EVIDENCE_VALIDATION_RECORD_TYPE",
-    "GPT55_REVIEW_OUTCOMES",
+    "PR_REVIEW_OUTCOMES",
     "PullRequestEvidence",
     "evaluate_pr_evidence",
     "evaluate_pr_evidence_directory",
@@ -62,10 +63,11 @@ class PullRequestEvidence:
     scope: tuple[str, ...]
     verification: tuple[str, ...]
     refactor_skill_applied: bool
-    gpt55_review_completed: bool
-    gpt55_review_findings_resolved: bool
-    gpt55_review_outcome: str
-    gpt55_review_summary: str
+    review_model: str
+    review_completed: bool
+    review_findings_resolved: bool
+    review_outcome: str
+    review_summary: str
     issues: tuple[str, ...] = field(default_factory=tuple)
     pull_request_number: int | None = None
     pull_request_url: str = ""
@@ -79,15 +81,16 @@ class PullRequestEvidence:
         object.__setattr__(self, "why", _string_or_empty(self.why, "why"))
         object.__setattr__(self, "scope", _string_tuple(self.scope, "scope"))
         object.__setattr__(self, "verification", _string_tuple(self.verification, "verification"))
-        object.__setattr__(self, "gpt55_review_outcome", _string_or_empty(self.gpt55_review_outcome, "gpt55_review_outcome"))
-        object.__setattr__(self, "gpt55_review_summary", _string_or_empty(self.gpt55_review_summary, "gpt55_review_summary"))
+        object.__setattr__(self, "review_model", _string_or_empty(self.review_model, "review_model"))
+        object.__setattr__(self, "review_outcome", _string_or_empty(self.review_outcome, "review_outcome"))
+        object.__setattr__(self, "review_summary", _string_or_empty(self.review_summary, "review_summary"))
         object.__setattr__(
             self,
             "pull_request_number",
             _optional_positive_int(self.pull_request_number, "pull_request_number"),
         )
         object.__setattr__(self, "pull_request_url", _string_or_empty(self.pull_request_url, "pull_request_url"))
-        for field_name in ("refactor_skill_applied", "gpt55_review_completed", "gpt55_review_findings_resolved"):
+        for field_name in ("refactor_skill_applied", "review_completed", "review_findings_resolved"):
             if type(getattr(self, field_name)) is not bool:
                 raise ValueError(f"{field_name} must be boolean")
         explicit_issues = _string_tuple(self.issues, "issues")
@@ -97,10 +100,11 @@ class PullRequestEvidence:
             scope=self.scope,
             verification=self.verification,
             refactor_skill_applied=self.refactor_skill_applied,
-            gpt55_review_completed=self.gpt55_review_completed,
-            gpt55_review_findings_resolved=self.gpt55_review_findings_resolved,
-            gpt55_review_outcome=self.gpt55_review_outcome,
-            gpt55_review_summary=self.gpt55_review_summary,
+            review_model=self.review_model,
+            review_completed=self.review_completed,
+            review_findings_resolved=self.review_findings_resolved,
+            review_outcome=self.review_outcome,
+            review_summary=self.review_summary,
             pull_request_number=self.pull_request_number,
             pull_request_url=self.pull_request_url,
         )
@@ -114,10 +118,11 @@ def evaluate_pr_evidence(
     scope: Sequence[str],
     verification: Sequence[str],
     refactor_skill_applied: bool,
-    gpt55_review_completed: bool,
-    gpt55_review_findings_resolved: bool,
-    gpt55_review_outcome: str,
-    gpt55_review_summary: str,
+    review_model: str,
+    review_completed: bool,
+    review_findings_resolved: bool,
+    review_outcome: str,
+    review_summary: str,
     pull_request_number: int | None = None,
     pull_request_url: str = "",
 ) -> PullRequestEvidence:
@@ -127,10 +132,11 @@ def evaluate_pr_evidence(
         scope=tuple(scope),
         verification=tuple(verification),
         refactor_skill_applied=refactor_skill_applied,
-        gpt55_review_completed=gpt55_review_completed,
-        gpt55_review_findings_resolved=gpt55_review_findings_resolved,
-        gpt55_review_outcome=gpt55_review_outcome,
-        gpt55_review_summary=gpt55_review_summary,
+        review_model=review_model,
+        review_completed=review_completed,
+        review_findings_resolved=review_findings_resolved,
+        review_outcome=review_outcome,
+        review_summary=review_summary,
         pull_request_number=pull_request_number,
         pull_request_url=pull_request_url,
     )
@@ -144,10 +150,11 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
             scope=(),
             verification=(),
             refactor_skill_applied=False,
-            gpt55_review_completed=False,
-            gpt55_review_findings_resolved=False,
-            gpt55_review_outcome="",
-            gpt55_review_summary="",
+            review_model="",
+            review_completed=False,
+            review_findings_resolved=False,
+            review_outcome="",
+            review_summary="",
             issues=(f"record_type must be {PR_EVIDENCE_RECORD_TYPE!r}",),
         )
     parsing_issues: list[str] = []
@@ -157,10 +164,11 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
     scope = _record_string_sequence(record, "scope", parsing_issues)
     verification = _record_string_sequence(record, "verification", parsing_issues)
     refactor_skill_applied = _record_bool(record, "refactor_skill_applied", parsing_issues)
-    gpt55_review_completed = _record_bool(record, "gpt55_review_completed", parsing_issues)
-    gpt55_review_findings_resolved = _record_bool(record, "gpt55_review_findings_resolved", parsing_issues)
-    gpt55_review_outcome = _record_string(record, "gpt55_review_outcome", parsing_issues)
-    gpt55_review_summary = _record_string(record, "gpt55_review_summary", parsing_issues)
+    review_model = _record_string(record, "review_model", parsing_issues)
+    review_completed = _record_bool(record, "review_completed", parsing_issues)
+    review_findings_resolved = _record_bool(record, "review_findings_resolved", parsing_issues)
+    review_outcome = _record_string(record, "review_outcome", parsing_issues)
+    review_summary = _record_string(record, "review_summary", parsing_issues)
     pull_request_number = _record_optional_positive_int(record, "pull_request_number", parsing_issues)
     pull_request_url = _record_string(record, "pull_request_url", parsing_issues)
     return PullRequestEvidence(
@@ -169,10 +177,11 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
         scope=scope,
         verification=verification,
         refactor_skill_applied=refactor_skill_applied,
-        gpt55_review_completed=gpt55_review_completed,
-        gpt55_review_findings_resolved=gpt55_review_findings_resolved,
-        gpt55_review_outcome=gpt55_review_outcome,
-        gpt55_review_summary=gpt55_review_summary,
+        review_model=review_model,
+        review_completed=review_completed,
+        review_findings_resolved=review_findings_resolved,
+        review_outcome=review_outcome,
+        review_summary=review_summary,
         pull_request_number=pull_request_number,
         pull_request_url=pull_request_url,
         issues=tuple(parsing_issues),
@@ -263,10 +272,11 @@ def pr_evidence_to_record(evidence: PullRequestEvidence) -> dict[str, Any]:
         "scope": list(evidence.scope),
         "verification": list(evidence.verification),
         "refactor_skill_applied": evidence.refactor_skill_applied,
-        "gpt55_review_completed": evidence.gpt55_review_completed,
-        "gpt55_review_findings_resolved": evidence.gpt55_review_findings_resolved,
-        "gpt55_review_outcome": evidence.gpt55_review_outcome,
-        "gpt55_review_summary": evidence.gpt55_review_summary,
+        "review_model": evidence.review_model,
+        "review_completed": evidence.review_completed,
+        "review_findings_resolved": evidence.review_findings_resolved,
+        "review_outcome": evidence.review_outcome,
+        "review_summary": evidence.review_summary,
         "issues": list(evidence.issues),
     }
 
@@ -290,10 +300,11 @@ def _failed_pr_evidence(*issues: str) -> PullRequestEvidence:
         scope=(),
         verification=(),
         refactor_skill_applied=False,
-        gpt55_review_completed=False,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="",
-        gpt55_review_summary="",
+        review_model="",
+        review_completed=False,
+        review_findings_resolved=False,
+        review_outcome="",
+        review_summary="",
         issues=issues,
     )
 
@@ -397,10 +408,11 @@ def _semantic_issues(
     scope: tuple[str, ...],
     verification: tuple[str, ...],
     refactor_skill_applied: bool,
-    gpt55_review_completed: bool,
-    gpt55_review_findings_resolved: bool,
-    gpt55_review_outcome: str,
-    gpt55_review_summary: str,
+    review_model: str,
+    review_completed: bool,
+    review_findings_resolved: bool,
+    review_outcome: str,
+    review_summary: str,
     pull_request_number: int | None,
     pull_request_url: str,
 ) -> tuple[str, ...]:
@@ -415,14 +427,16 @@ def _semantic_issues(
         issues.append("verification must include tests, builds, benchmarks, or an explicit not-applicable note")
     if not refactor_skill_applied:
         issues.append("Refactor skill must be applied during the PR slice")
-    if not gpt55_review_completed:
-        issues.append("GPT-5.5 review must be completed")
-    if gpt55_review_outcome not in GPT55_REVIEW_OUTCOMES:
-        issues.append("gpt55_review_outcome must be 'clean' or 'findings_resolved'")
-    if gpt55_review_outcome == "findings_resolved" and not gpt55_review_findings_resolved:
-        issues.append("GPT-5.5 findings must be resolved when gpt55_review_outcome is 'findings_resolved'")
-    if not gpt55_review_summary:
-        issues.append("gpt55_review_summary must describe findings and fixes, or state that the review was clean")
+    if not review_model:
+        issues.append("review_model must name the model that performed the review")
+    if not review_completed:
+        issues.append("model review must be completed")
+    if review_outcome not in PR_REVIEW_OUTCOMES:
+        issues.append("review_outcome must be 'clean' or 'findings_resolved'")
+    if review_outcome == "findings_resolved" and not review_findings_resolved:
+        issues.append("review findings must be resolved when review_outcome is 'findings_resolved'")
+    if not review_summary:
+        issues.append("review_summary must describe findings and fixes, or state that the review was clean")
     pull_request_identity = _github_pull_request_url_identity(pull_request_url) if pull_request_url else None
     if pull_request_url and pull_request_identity is None:
         issues.append("pull_request_url must be a GitHub pull request URL when provided")
@@ -471,10 +485,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pull-request-number", type=int)
     parser.add_argument("--pull-request-url", default="")
     parser.add_argument("--refactor-skill-applied", action="store_true")
-    parser.add_argument("--gpt55-review-completed", action="store_true")
-    parser.add_argument("--gpt55-review-findings-resolved", action="store_true")
-    parser.add_argument("--gpt55-review-outcome", default="", choices=("", *GPT55_REVIEW_OUTCOMES))
-    parser.add_argument("--gpt55-review-summary", default="")
+    parser.add_argument("--review-model", default="", help="Model that performed the PR review.")
+    parser.add_argument("--review-completed", action="store_true")
+    parser.add_argument("--review-findings-resolved", action="store_true")
+    parser.add_argument("--review-outcome", default="", choices=("", *PR_REVIEW_OUTCOMES))
+    parser.add_argument("--review-summary", default="")
     parser.add_argument("--validate-json", action="append", default=[], metavar="PATH", help="Validate a PR evidence JSON sidecar.")
     parser.add_argument(
         "--validate-directory",
@@ -505,10 +520,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             scope=tuple(args.scope),
             verification=tuple(args.verification),
             refactor_skill_applied=args.refactor_skill_applied,
-            gpt55_review_completed=args.gpt55_review_completed,
-            gpt55_review_findings_resolved=args.gpt55_review_findings_resolved,
-            gpt55_review_outcome=args.gpt55_review_outcome,
-            gpt55_review_summary=args.gpt55_review_summary,
+            review_model=args.review_model,
+            review_completed=args.review_completed,
+            review_findings_resolved=args.review_findings_resolved,
+            review_outcome=args.review_outcome,
+            review_summary=args.review_summary,
             pull_request_number=args.pull_request_number,
             pull_request_url=args.pull_request_url,
         )

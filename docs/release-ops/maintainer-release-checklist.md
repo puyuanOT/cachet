@@ -17,7 +17,7 @@ Before a public release:
 - publish release notes and attach any large audit artifacts outside the source
   tree when appropriate.
 
-Internal PR workflow gates such as Refactor-skill evidence and GPT-5.5 review
+Internal PR workflow gates such as Refactor-skill evidence and model review
 belong here and in the release PR evidence sidecar, not in the beginner
 contribution path.
 

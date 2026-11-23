@@ -130,7 +130,7 @@ hydration occur inside or outside the measured online request boundary.
 | [`../benchmarks/`](../benchmarks/) | Human-readable benchmark reports, compact sanitized JSON records, current benchmark index | Raw Databricks responses, task logs, package wheels, generated datasets |
 | [`release-ops/evidence/`](release-ops/evidence/) | Durable release-governance records that are not benchmark reports, such as dependency freshness | PR evidence sidecars, benchmark reports, local scratch output |
 | `../databricks-runs/` | Ignored local scratch output only | Tracked source, durable benchmark reports, release artifacts |
-| Release bundles | Explicit publication handoff artifacts copied into durable storage, including the release PR's `document_kv.pr_evidence.v1` sidecar | Unreviewed local worktree output or credentials |
+| Release bundles | Explicit publication handoff artifacts copied into durable storage, including the release PR's `document_kv.pr_evidence.v2` sidecar | Unreviewed local worktree output or credentials |
 
 ## What To Commit
 

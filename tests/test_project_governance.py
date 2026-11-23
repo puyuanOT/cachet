@@ -377,7 +377,7 @@ def test_contributing_doc_is_friendly_to_external_contributors():
         "Internal PR workflow gates such as Refactor-skill evidence"
         in compact_maintainer_checklist
     )
-    assert "GPT-5.5 review" in maintainer_checklist
+    assert "Refactor-skill evidence and model review" in compact_maintainer_checklist
 
 
 def _markdown_section(text: str, heading: str) -> str:
@@ -694,7 +694,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "KV Packet",
         "Qwen3.5",
         "MiniMax",
-        "GPT-5.5 review",
+        "Model review for each PR",
         "Refactor skill",
         "rendered from the sealed vLLM 0.30.0 campaign records",
         "Quality Benchmark v2",
@@ -807,7 +807,7 @@ def test_repository_map_and_evidence_policy_are_documented():
     for required_boundary in (
         "Human-readable benchmark reports",
         "Durable release-governance records",
-        "including the release PR's `document_kv.pr_evidence.v1` sidecar",
+        "including the release PR's `document_kv.pr_evidence.v2` sidecar",
         "PR evidence is not committed",
         "Ignored local scratch output only",
         "Never commit credentials",
@@ -1092,7 +1092,8 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
         "--pull-request-number",
         "--pull-request-url",
         "--refactor-skill-applied",
-        "--gpt55-review-completed",
+        "--review-model",
+        "--review-completed",
         "--output-json pr-evidence.json",
     ):
         assert pr_evidence_flag in pr_evidence_section

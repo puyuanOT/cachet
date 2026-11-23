@@ -749,7 +749,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert wheel_artifact["package_name"] == "cachet-kv"
     assert wheel_artifact["package_version"] == "0.2.0"
     assert (bundle_dir / wheel_artifact["bundled_path"]).read_bytes() == package_wheel.read_bytes()
-    assert pr_artifact["record_type"] == "document_kv.pr_evidence.v1"
+    assert pr_artifact["record_type"] == "document_kv.pr_evidence.v2"
     assert json.loads((bundle_dir / pr_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
     assert matrix_artifact["bundled_path"] == "v1_requirements_matrix.md"
     assert "record_type" not in matrix_artifact
@@ -2144,8 +2144,8 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         raw_open_pr_github_governance_record,
     )
     unresolved_review_pr_evidence_record = _pr_evidence_record(ok=True)
-    unresolved_review_pr_evidence_record["gpt55_review_outcome"] = "findings_resolved"
-    unresolved_review_pr_evidence_record["gpt55_review_findings_resolved"] = False
+    unresolved_review_pr_evidence_record["review_outcome"] = "findings_resolved"
+    unresolved_review_pr_evidence_record["review_findings_resolved"] = False
     unresolved_review_pr_evidence = _write_json(
         tmp_path / "unresolved-review-pr-evidence.json",
         unresolved_review_pr_evidence_record,
@@ -2754,7 +2754,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-pr-evidence-bundle",
         )
 
-    with pytest.raises(ValueError, match="GPT-5.5 findings must be resolved"):
+    with pytest.raises(ValueError, match="review findings must be resolved"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
@@ -3859,8 +3859,8 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
 def test_public_release_bundle_cli_rejects_unresolved_pr_evidence(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
     unresolved_review_pr_evidence_record = _pr_evidence_record(ok=True)
-    unresolved_review_pr_evidence_record["gpt55_review_outcome"] = "findings_resolved"
-    unresolved_review_pr_evidence_record["gpt55_review_findings_resolved"] = False
+    unresolved_review_pr_evidence_record["review_outcome"] = "findings_resolved"
+    unresolved_review_pr_evidence_record["review_findings_resolved"] = False
     unresolved_review_pr_evidence = _write_json(
         tmp_path / "unresolved-review-pr-evidence.json",
         unresolved_review_pr_evidence_record,
@@ -3895,7 +3895,7 @@ def test_public_release_bundle_cli_rejects_unresolved_pr_evidence(tmp_path):
     )
 
     assert completed.returncode != 0
-    assert "GPT-5.5 findings must be resolved" in completed.stderr
+    assert "review findings must be resolved" in completed.stderr
     assert not (tmp_path / "bundle" / RELEASE_BUNDLE_MANIFEST_FILENAME).exists()
 
 
@@ -4886,7 +4886,7 @@ def _wheel_record_line(path: str, payload: bytes) -> str:
 
 def _pr_evidence_record(*, ok: bool):
     return {
-        "record_type": "document_kv.pr_evidence.v1",
+        "record_type": "document_kv.pr_evidence.v2",
         "ok": ok,
         "pull_request_number": 123,
         "pull_request_url": "https://github.com/owner/cachet/pull/123",
@@ -4895,10 +4895,11 @@ def _pr_evidence_record(*, ok: bool):
         "scope": ["release_bundle.py"],
         "verification": ["pytest"],
         "refactor_skill_applied": True,
-        "gpt55_review_completed": True,
-        "gpt55_review_findings_resolved": True,
-        "gpt55_review_outcome": "clean",
-        "gpt55_review_summary": "clean" if ok else "",
+        "review_model": "example-review-model",
+        "review_completed": True,
+        "review_findings_resolved": True,
+        "review_outcome": "clean",
+        "review_summary": "clean" if ok else "",
         "issues": [] if ok else ["missing review summary"],
     }
 

@@ -501,7 +501,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     'WhitespaceTokenCounter': ('document_kv_cache.openai_compatible', 'WhitespaceTokenCounter'),
     'CachePlanner': ('document_kv_cache.planner', 'CachePlanner'),
     'CacheRequest': ('document_kv_cache.planner', 'CacheRequest'),
-    'GPT55_REVIEW_OUTCOMES': ('document_kv_cache.pr_evidence', 'GPT55_REVIEW_OUTCOMES'),
+    'PR_REVIEW_OUTCOMES': ('document_kv_cache.pr_evidence', 'PR_REVIEW_OUTCOMES'),
     'PR_EVIDENCE_RECORD_TYPE': ('document_kv_cache.pr_evidence', 'PR_EVIDENCE_RECORD_TYPE'),
     'PR_EVIDENCE_VALIDATION_RECORD_TYPE': ('document_kv_cache.pr_evidence', 'PR_EVIDENCE_VALIDATION_RECORD_TYPE'),
     'PullRequestEvidence': ('document_kv_cache.pr_evidence', 'PullRequestEvidence'),

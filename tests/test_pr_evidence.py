@@ -8,7 +8,7 @@ import pytest
 
 import document_kv_cache.pr_evidence as public_pr_evidence
 from document_kv_cache.pr_evidence import (
-    GPT55_REVIEW_OUTCOMES,
+    PR_REVIEW_OUTCOMES,
     PR_EVIDENCE_RECORD_TYPE,
     PR_EVIDENCE_VALIDATION_RECORD_TYPE,
     PullRequestEvidence,
@@ -35,10 +35,11 @@ def test_evaluate_pr_evidence_accepts_complete_traceability_record():
         scope=("release-evidence", "tests"),
         verification=("poetry run pytest -q tests/test_release_evidence.py",),
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=True,
-        gpt55_review_outcome="clean",
-        gpt55_review_summary="GPT-5.5 review returned no findings.",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=True,
+        review_outcome="clean",
+        review_summary="Model review returned no findings.",
     )
     record = pr_evidence_to_record(evidence)
 
@@ -53,10 +54,11 @@ def test_evaluate_pr_evidence_accepts_complete_traceability_record():
         "scope": ["release-evidence", "tests"],
         "verification": ["poetry run pytest -q tests/test_release_evidence.py"],
         "refactor_skill_applied": True,
-        "gpt55_review_completed": True,
-        "gpt55_review_findings_resolved": True,
-        "gpt55_review_outcome": "clean",
-        "gpt55_review_summary": "GPT-5.5 review returned no findings.",
+        "review_model": "example-review-model",
+        "review_completed": True,
+        "review_findings_resolved": True,
+        "review_outcome": "clean",
+        "review_summary": "Model review returned no findings.",
         "issues": [],
     }
 
@@ -68,10 +70,11 @@ def test_evaluate_pr_evidence_reports_missing_traceability_and_review_gates():
         scope=(),
         verification=(),
         refactor_skill_applied=False,
-        gpt55_review_completed=False,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="",
-        gpt55_review_summary="",
+        review_model="example-review-model",
+        review_completed=False,
+        review_findings_resolved=False,
+        review_outcome="",
+        review_summary="",
     )
 
     assert not evidence.ok
@@ -81,9 +84,32 @@ def test_evaluate_pr_evidence_reports_missing_traceability_and_review_gates():
         "scope must include at least one touched boundary",
         "verification must include tests, builds, benchmarks, or an explicit not-applicable note",
         "Refactor skill must be applied during the PR slice",
-        "GPT-5.5 review must be completed",
-        "gpt55_review_outcome must be 'clean' or 'findings_resolved'",
-        "gpt55_review_summary must describe findings and fixes, or state that the review was clean",
+        "model review must be completed",
+        "review_outcome must be 'clean' or 'findings_resolved'",
+        "review_summary must describe findings and fixes, or state that the review was clean",
+    )
+
+
+def test_pr_evidence_requires_the_model_that_performed_the_review():
+    evidence = evaluate_pr_evidence(
+        what_changed=("Generalized PR review evidence",),
+        why="Record which model reviewed the PR.",
+        scope=("pr_evidence.py",),
+        verification=("pytest -q tests/test_pr_evidence.py",),
+        refactor_skill_applied=True,
+        review_model=" ",
+        review_completed=True,
+        review_findings_resolved=False,
+        review_outcome="clean",
+        review_summary="Model review returned no findings.",
+    )
+    record = pr_evidence_to_record(evidence)
+    record_without_model = {key: value for key, value in record.items() if key != "review_model"}
+
+    assert evidence.issues == ("review_model must name the model that performed the review",)
+    assert record["review_model"] == ""
+    assert "review_model must name the model that performed the review" in (
+        evaluate_pr_evidence_record(record_without_model).issues
     )
 
 
@@ -96,10 +122,11 @@ def test_pr_evidence_tracks_optional_pull_request_identity():
         scope=("databricks_runs.py",),
         verification=("pytest -q tests/test_databricks_runs.py",),
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="clean",
-        gpt55_review_summary="Review was clean.",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=False,
+        review_outcome="clean",
+        review_summary="Review was clean.",
     )
 
     assert evidence.ok
@@ -125,10 +152,11 @@ def test_pr_evidence_rejects_malformed_github_pull_request_urls():
         scope=("pr_evidence.py",),
         verification=("pytest -q tests/test_pr_evidence.py",),
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="clean",
-        gpt55_review_summary="Review was clean.",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=False,
+        review_outcome="clean",
+        review_summary="Review was clean.",
     )
     assert _github_pull_request_url_identity(evidence.pull_request_url) == ("owner/cachet", 123)
 
@@ -164,14 +192,15 @@ def test_pr_evidence_dataclass_validates_json_safe_schema_and_semantics():
         scope=[" docs "],
         verification=[" tests "],
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="clean",
-        gpt55_review_summary=" clean ",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=False,
+        review_outcome="clean",
+        review_summary=" clean ",
     )
 
     assert evidence.what_changed == ("changed",)
-    assert evidence.gpt55_review_summary == "clean"
+    assert evidence.review_summary == "clean"
     assert evidence.ok
 
     with pytest.raises(TypeError, match="what_changed"):
@@ -181,10 +210,11 @@ def test_pr_evidence_dataclass_validates_json_safe_schema_and_semantics():
             scope=("docs",),
             verification=("tests",),
             refactor_skill_applied=True,
-            gpt55_review_completed=True,
-            gpt55_review_findings_resolved=True,
-            gpt55_review_outcome="clean",
-            gpt55_review_summary="clean",
+            review_model="example-review-model",
+            review_completed=True,
+            review_findings_resolved=True,
+            review_outcome="clean",
+            review_summary="clean",
         )
     with pytest.raises(ValueError, match="refactor_skill_applied"):
         PullRequestEvidence(
@@ -193,10 +223,11 @@ def test_pr_evidence_dataclass_validates_json_safe_schema_and_semantics():
             scope=("docs",),
             verification=("tests",),
             refactor_skill_applied=1,
-            gpt55_review_completed=True,
-            gpt55_review_findings_resolved=True,
-            gpt55_review_outcome="clean",
-            gpt55_review_summary="clean",
+            review_model="example-review-model",
+            review_completed=True,
+            review_findings_resolved=True,
+            review_outcome="clean",
+            review_summary="clean",
         )
 
 
@@ -207,15 +238,16 @@ def test_pr_evidence_dataclass_derives_issues_for_invalid_direct_objects():
         scope=(),
         verification=(),
         refactor_skill_applied=False,
-        gpt55_review_completed=False,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="findings_resolved",
-        gpt55_review_summary="",
+        review_model="example-review-model",
+        review_completed=False,
+        review_findings_resolved=False,
+        review_outcome="findings_resolved",
+        review_summary="",
     )
 
     assert not evidence.ok
     assert "what_changed must include at least one item" in evidence.issues
-    assert "GPT-5.5 findings must be resolved when gpt55_review_outcome is 'findings_resolved'" in evidence.issues
+    assert "review findings must be resolved when review_outcome is 'findings_resolved'" in evidence.issues
 
 
 def test_pr_evidence_dataclass_preserves_positional_issues_argument():
@@ -225,6 +257,7 @@ def test_pr_evidence_dataclass_preserves_positional_issues_argument():
         ("scope",),
         ("pytest",),
         True,
+        "example-review-model",
         True,
         False,
         "clean",
@@ -251,10 +284,11 @@ def test_evaluate_pr_evidence_record_rejects_unsupported_keys():
         scope=("pr_evidence.py",),
         verification=("poetry run pytest tests/test_pr_evidence.py",),
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="clean",
-        gpt55_review_summary="Review was clean.",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=False,
+        review_outcome="clean",
+        review_summary="Review was clean.",
     )
     record = pr_evidence_to_record(evidence)
     record["debug"] = {"accepted": False}
@@ -276,10 +310,11 @@ def test_evaluate_pr_evidence_record_returns_failed_evidence_for_malformed_curre
             "scope": "governance",
             "verification": ["tests"],
             "refactor_skill_applied": "true",
-            "gpt55_review_completed": True,
-            "gpt55_review_findings_resolved": False,
-            "gpt55_review_outcome": "findings_resolved",
-            "gpt55_review_summary": 42,
+            "review_model": "example-review-model",
+            "review_completed": True,
+            "review_findings_resolved": False,
+            "review_outcome": "findings_resolved",
+            "review_summary": 42,
         }
     )
 
@@ -290,8 +325,8 @@ def test_evaluate_pr_evidence_record_returns_failed_evidence_for_malformed_curre
     assert "why must be a string" in evidence.issues
     assert "scope must be a sequence" in evidence.issues
     assert "refactor_skill_applied must be boolean" in evidence.issues
-    assert "gpt55_review_summary must be a string" in evidence.issues
-    assert "GPT-5.5 findings must be resolved when gpt55_review_outcome is 'findings_resolved'" in evidence.issues
+    assert "review_summary must be a string" in evidence.issues
+    assert "review findings must be resolved when review_outcome is 'findings_resolved'" in evidence.issues
 
 
 def test_evaluate_pr_evidence_file_reports_invalid_json_and_non_object_records(tmp_path):
@@ -324,10 +359,11 @@ def test_evaluate_pr_evidence_directory_sorts_and_validates_sidecars(tmp_path):
         scope=("governance",),
         verification=("poetry run pytest -q tests/test_pr_evidence.py",),
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="clean",
-        gpt55_review_summary="Review was clean.",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=False,
+        review_outcome="clean",
+        review_summary="Review was clean.",
     )
     write_pr_evidence_json(valid, tmp_path / "b-valid.json")
     write_pr_evidence_json(valid, tmp_path / "nested" / "c-valid.json")
@@ -375,7 +411,7 @@ def test_evaluate_pr_evidence_directory_sorts_and_validates_sidecars(tmp_path):
     assert evidence_by_file["b-valid.json"].ok
     assert not evidence_by_file["nested/bad-validation-summary.json"].ok
     assert any(
-        "record_type must be 'document_kv.pr_evidence.v1'" in issue
+        "record_type must be 'document_kv.pr_evidence.v2'" in issue
         for issue in evidence_by_file["nested/bad-validation-summary.json"].issues
     )
     assert evidence_by_file["nested/c-valid.json"].ok
@@ -395,10 +431,11 @@ def test_pr_evidence_validation_to_record_summarizes_per_file_evidence(tmp_path)
         scope=("governance",),
         verification=("poetry run pytest -q tests/test_pr_evidence.py",),
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="clean",
-        gpt55_review_summary="Review was clean.",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=False,
+        review_outcome="clean",
+        review_summary="Review was clean.",
     )
     invalid = evaluate_pr_evidence_record({})
 
@@ -419,10 +456,11 @@ def test_write_pr_evidence_json_round_trips(tmp_path):
         scope=("governance",),
         verification=("poetry run pytest -q tests/test_pr_evidence.py",),
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=True,
-        gpt55_review_outcome="findings_resolved",
-        gpt55_review_summary="Review findings were fixed.",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=True,
+        review_outcome="findings_resolved",
+        review_summary="Review findings were fixed.",
     )
 
     write_pr_evidence_json(evidence, output_path)
@@ -442,10 +480,11 @@ def test_public_pr_evidence_cli_uses_wrapper_hooks(monkeypatch, tmp_path):
             scope=("governance",),
             verification=("hooked",),
             refactor_skill_applied=True,
-            gpt55_review_completed=True,
-            gpt55_review_findings_resolved=True,
-            gpt55_review_outcome="clean",
-            gpt55_review_summary="clean",
+            review_model="example-review-model",
+            review_completed=True,
+            review_findings_resolved=True,
+            review_outcome="clean",
+            review_summary="clean",
         )
 
     monkeypatch.setattr(public_pr_evidence, "evaluate_pr_evidence", fake_evaluate_pr_evidence)
@@ -465,11 +504,13 @@ def test_public_pr_evidence_cli_uses_wrapper_hooks(monkeypatch, tmp_path):
             "--pull-request-url",
             "https://github.com/puyuanOT/cachet/pull/321",
             "--refactor-skill-applied",
-            "--gpt55-review-completed",
-            "--gpt55-review-findings-resolved",
-            "--gpt55-review-outcome",
+            "--review-model",
+            "example-review-model",
+            "--review-completed",
+            "--review-findings-resolved",
+            "--review-outcome",
             "findings_resolved",
-            "--gpt55-review-summary",
+            "--review-summary",
             "ignored",
             "--output-json",
             str(output_path),
@@ -480,7 +521,7 @@ def test_public_pr_evidence_cli_uses_wrapper_hooks(monkeypatch, tmp_path):
     assert called["kwargs"]["what_changed"] == ("ignored",)
     assert called["kwargs"]["pull_request_number"] == 321
     assert called["kwargs"]["pull_request_url"] == "https://github.com/puyuanOT/cachet/pull/321"
-    assert called["kwargs"]["gpt55_review_outcome"] == "findings_resolved"
+    assert called["kwargs"]["review_outcome"] == "findings_resolved"
     record = json.loads(output_path.read_text(encoding="utf-8"))
     assert record["what_changed"] == ["public wrapper hook"]
 
@@ -499,10 +540,11 @@ def test_public_pr_evidence_cli_validates_directory_with_wrapper_hooks(monkeypat
                 scope=("governance",),
                 verification=("hooked",),
                 refactor_skill_applied=True,
-                gpt55_review_completed=True,
-                gpt55_review_findings_resolved=False,
-                gpt55_review_outcome="clean",
-                gpt55_review_summary="clean",
+                review_model="example-review-model",
+                review_completed=True,
+                review_findings_resolved=False,
+                review_outcome="clean",
+                review_summary="clean",
             )
         }
 
@@ -538,10 +580,11 @@ def test_public_pr_evidence_cli_validates_json_with_record_wrapper_hook(monkeypa
             scope=("governance",),
             verification=("hooked",),
             refactor_skill_applied=True,
-            gpt55_review_completed=True,
-            gpt55_review_findings_resolved=False,
-            gpt55_review_outcome="clean",
-            gpt55_review_summary="clean",
+            review_model="example-review-model",
+            review_completed=True,
+            review_findings_resolved=False,
+            review_outcome="clean",
+            review_summary="clean",
         )
 
     monkeypatch.setattr(public_pr_evidence, "evaluate_pr_evidence_record", fake_evaluate_pr_evidence_record)
@@ -585,8 +628,8 @@ def test_pr_evidence_cli_writes_failed_evidence_for_missing_gates(tmp_path):
     assert completed.returncode == 2
     assert record["ok"] is False
     assert "Refactor skill must be applied during the PR slice" in record["issues"]
-    assert "gpt55_review_outcome must be 'clean' or 'findings_resolved'" in record["issues"]
-    assert GPT55_REVIEW_OUTCOMES == ("clean", "findings_resolved")
+    assert "review_outcome must be 'clean' or 'findings_resolved'" in record["issues"]
+    assert PR_REVIEW_OUTCOMES == ("clean", "findings_resolved")
 
 
 def test_pr_evidence_cli_validates_directory_and_sets_exit_code(tmp_path):
@@ -596,10 +639,11 @@ def test_pr_evidence_cli_validates_directory_and_sets_exit_code(tmp_path):
         scope=("governance",),
         verification=("poetry run pytest -q tests/test_pr_evidence.py",),
         refactor_skill_applied=True,
-        gpt55_review_completed=True,
-        gpt55_review_findings_resolved=False,
-        gpt55_review_outcome="clean",
-        gpt55_review_summary="Review was clean.",
+        review_model="example-review-model",
+        review_completed=True,
+        review_findings_resolved=False,
+        review_outcome="clean",
+        review_summary="Review was clean.",
     )
     write_pr_evidence_json(valid, tmp_path / "valid.json")
     (tmp_path / "invalid.json").write_text("{}", encoding="utf-8")

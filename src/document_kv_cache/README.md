@@ -127,7 +127,7 @@ records, and CLI targets.
 - `probe_fixtures.py` writes deterministic Qwen3 V1 adapter handoff fixtures
   for backend-native vLLM/SGLang connector development and probe debugging.
 - `pr_evidence.py` emits and validates closed-schema, machine-checkable PR
-  identity, traceability, Refactor-skill, and GPT-5.5 review evidence for the
+  identity, traceability, Refactor-skill, and model review evidence for the
   project workflow; recursive directory validation skips only clean
   validation-summary sidecars.
 - `quality_v2.py` defines Quality v2, the answer-quality protocol every

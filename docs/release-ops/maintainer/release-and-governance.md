@@ -60,7 +60,7 @@ assignments separately (for example, a connector-actions record passed as
 
 ## PR Evidence
 
-The strict bundle needs a `document_kv.pr_evidence.v1` sidecar for the release
+The strict bundle needs a `document_kv.pr_evidence.v2` sidecar for the release
 pull request. Generate it at bundle time and pass it with `--pr-evidence-json`;
 it is a bundle input, not a committed file.
 
@@ -73,15 +73,17 @@ cachet-pr-evidence \
   --scope release \
   --verification "poetry run pytest -q" \
   --refactor-skill-applied \
-  --gpt55-review-completed \
-  --gpt55-review-outcome clean \
-  --gpt55-review-summary "<review summary>" \
+  --review-model "<model that reviewed the PR>" \
+  --review-completed \
+  --review-outcome clean \
+  --review-summary "<review summary>" \
   --output-json pr-evidence.json
 ```
 
 `--what-changed`, `--scope`, and `--verification` repeat for multiple items.
-With `--gpt55-review-outcome findings_resolved`, also pass
-`--gpt55-review-findings-resolved`. `cachet-pr-evidence --validate-json
+`--review-model` names the model that actually performed the review; record
+only a review that happened. With `--review-outcome findings_resolved`, also
+pass `--review-findings-resolved`. `cachet-pr-evidence --validate-json
 pr-evidence.json` re-checks a saved sidecar.
 
 ## Release Bundle
@@ -149,9 +151,10 @@ for wheel artifacts, size, and SHA-256 for every artifact.
   API responses from `--include-response` are rejected.
 - Release-evidence, preflight, plan-execution (including each command and the
   embedded plan-source record), and PR evidence sidecars are closed schemas.
-- PR evidence must be a `document_kv.pr_evidence.v1` record with the pull
+- PR evidence must be a `document_kv.pr_evidence.v2` record with the pull
   request number and canonical owner/repo URL, Refactor-skill evidence, a
-  completed GPT-5.5 review, and every GPT-5.5 finding resolved. With a
+  completed model review that names the reviewing model, and every review
+  finding resolved. With a
   governance sidecar bundled, each PR URL must point at the governed
   repository.
 - The wheel must be a pure Python `py3-none-any` `cachet-kv` wheel whose
