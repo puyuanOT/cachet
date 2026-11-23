@@ -411,15 +411,6 @@ def test_pr_evidence_validation_to_record_summarizes_per_file_evidence(tmp_path)
     assert pr_evidence_validation_to_record({})["ok"] is False
 
 
-def test_repository_pr_evidence_sidecars_are_valid():
-    evidence_by_file = evaluate_pr_evidence_directory(
-        REPO_ROOT / "docs" / "release-ops" / "pr-evidence"
-    )
-
-    assert evidence_by_file
-    assert {path: evidence.issues for path, evidence in evidence_by_file.items() if not evidence.ok} == {}
-
-
 def test_write_pr_evidence_json_round_trips(tmp_path):
     output_path = tmp_path / "nested" / "pr-evidence.json"
     evidence = evaluate_pr_evidence(

@@ -13,10 +13,10 @@ from document_kv_cache.engine_protocol import (
     kv_storage_layout_from_value,
 )
 from document_kv_cache.models import ChunkRef, KVCacheKey
-from document_kv_cache.storage import DiskRangeReader, local_path
+from document_kv_cache.storage import local_path
 
 
-__all__ = ["PackChunk", "LocalRangeReader", "write_kvpack", "write_kvpack_bytes"]
+__all__ = ["PackChunk", "write_kvpack", "write_kvpack_bytes"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,9 +49,6 @@ class PackChunk:
             raise ValueError("dtype must be non-empty")
         if not isinstance(self.layout_version, str) or not self.layout_version:
             raise ValueError("layout_version must be non-empty")
-
-
-LocalRangeReader = DiskRangeReader
 
 
 def write_kvpack(

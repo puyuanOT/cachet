@@ -79,7 +79,12 @@ source chunk. Its key must carry:
 Set `implemented=True` only after `MethodSpec.create_generator` succeeds,
 generation produces these contracts, and an established serving-engine
 connector consumes the artifact. Engine-native methods instead declare
-`execution_kind="engine_native"` and must not declare a generator factory.
+`execution_kind="engine_native"`, `artifact_format=ENGINE_NATIVE_ARTIFACT_FORMAT`,
+and `payload_decode_stage=PayloadDecodeStage.ENGINE_NATIVE`, and must not
+declare a generator factory: the serving engine's own connector creates,
+persists, and loads the KV, while Cachet owns the shared experiment contract and
+evidence. Cachet ships no built-in engine-native method; register one in an
+application registry as shown above.
 
 ## Declare The Physical Handoff Topology
 

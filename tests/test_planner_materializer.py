@@ -1,5 +1,4 @@
 import copy
-import importlib
 import json
 import math
 import pickle
@@ -86,8 +85,6 @@ def test_kv_cache_key_uses_document_id_only():
     assert key.document_id == "doc-a"
     assert "|doc-a|document_chunk|section-1|" in key.storage_key()
     assert replace(key, document_id="doc-b").document_id == "doc-b"
-    with pytest.raises(TypeError, match="restaurant_id"):
-        replace(key, restaurant_id="legacy-b")  # type: ignore[call-arg]
 
 
 def test_kv_cache_key_requires_a_document_id():
@@ -141,7 +138,6 @@ def test_chunk_roles_use_document_chunk_types():
     assert chunk_type_role(DocumentChunkType.DOCUMENT_CHUNK) == DocumentChunkRole.CONTENT
     assert chunk_type_role("custom_chunk") == DocumentChunkRole.OTHER
     assert chunk_type_role("review") == DocumentChunkRole.OTHER
-    assert chunk_type_role("restaurant_static") == DocumentChunkRole.OTHER
     assert chunk_type_sort_order(DocumentChunkType.TASK_PREFIX) < chunk_type_sort_order(DocumentChunkType.DOCUMENT_STATIC)
     assert chunk_type_sort_order(DocumentChunkType.DOCUMENT_CHUNK) < chunk_type_sort_order("review")
 
@@ -549,7 +545,6 @@ def test_manifest_validates_and_normalizes_document_filters(tmp_path):
 
     assert manifest.keys_for_document("doc-a", "document_chunk") == [refs[1].key]
     assert manifest.keys_for_document("doc-a", "document_static") == [refs[0].key]
-    assert not hasattr(manifest, "keys_for_restaurant")
     with pytest.raises(ValueError, match="document_id"):
         manifest.keys_for_document("")
     with pytest.raises(ValueError, match="document_id"):
@@ -588,7 +583,6 @@ def test_plan_static_then_selected_document_chunks_and_materialize(tmp_path):
     materialized = materializer.materialize(plan)
 
     assert plan.selected_document_ids == ("doc-1", "doc-2")
-    assert plan.selected_documents == ("doc-1", "doc-2")
     assert plan.total_tokens == 25
     assert [segment.ref.key.chunk_id for segment in plan.segments] == [
         "static",
@@ -832,14 +826,6 @@ def test_materialization_plan_validates_segment_cursors_and_totals(tmp_path):
             total_bytes=5,
             selected_document_ids=("doc-a", "doc-a"),
         )
-    with pytest.raises(TypeError, match="selected_restaurants"):
-        MaterializationPlan(
-            request=plan.request,
-            segments=plan.segments,
-            total_tokens=5,
-            total_bytes=5,
-            selected_restaurants=("doc-a",),  # type: ignore[call-arg]
-        )
     with pytest.raises(ValueError, match="output_token_start"):
         MaterializationPlan(
             request=plan.request,
@@ -939,7 +925,6 @@ def test_document_request_uses_generic_chunk_aliases(tmp_path):
 
     plan = CachePlanner(manifest).build_plan(request)
 
-    assert plan.selected_documents == ("doc-a",)
     assert plan.selected_document_ids == ("doc-a",)
     assert [segment.ref.key.document_id for segment in plan.segments] == ["_task", "doc-a", "doc-a"]
     assert [segment.ref.key.chunk_id for segment in plan.segments] == ["prefix", "profile", "section-1"]
@@ -999,6 +984,4 @@ def test_materialization_plan_uses_document_id_metadata():
 
     assert selected_document_ids_field.default_factory is not MISSING
     assert plan.selected_document_ids == ()
-    assert replace(plan, selected_document_ids=("doc-a",)).selected_documents == ("doc-a",)
-    with pytest.raises(TypeError, match="selected_restaurants"):
-        replace(plan, selected_restaurants=("legacy-a",))  # type: ignore[call-arg]
+    assert replace(plan, selected_document_ids=("doc-a",)).selected_document_ids == ("doc-a",)

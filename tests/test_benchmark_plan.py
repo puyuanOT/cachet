@@ -58,11 +58,11 @@ def planned_release_probe_cli_args(tmp_path):
         "http://localhost:8000",
         "--allow-partial",
         "--storage-benchmark-workspace-dir",
-        "/local_disk0/document-kv-storage-benchmark",
+        "/local_disk0/cachet-storage-benchmark",
         "--storage-benchmark-output-json",
         str(tmp_path / "storage.json"),
         "--storage-benchmark-uc-volume-root",
-        "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         "--engine-probe-handoff-json",
         f"vllm={tmp_path / 'vllm-handoff.json'}",
         "--engine-probe-factory",
@@ -178,10 +178,10 @@ def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config
         "base_url": "http://localhost:8000",
         "benchmark_output_json": str(tmp_path / "results.json"),
         "storage_benchmark": StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         "release_evidence": ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -269,7 +269,7 @@ def test_plan_propagates_n_way_arms_manifest_and_standalone_gate(tmp_path):
         benchmark_arm_spec_json_files=(str(arm_file),),
         evidence_policy="canary",
         evidence_gate_output_json=str(tmp_path / "gate.json"),
-        measurement_scopes=("latency", "resource"),
+        measurement_scopes=("latency", "quality"),
         repeats=2,
         request_parallelism=4,
         warmups=1,
@@ -294,7 +294,7 @@ def test_plan_propagates_n_way_arms_manifest_and_standalone_gate(tmp_path):
 
     assert _parameter_values(argv, "--arm-spec-json") == [baseline_spec, cache_spec]
     assert _parameter_values(argv, "--arm-spec-json-file") == [str(arm_file)]
-    assert _parameter_values(argv, "--measurement-scope") == ["latency", "resource"]
+    assert _parameter_values(argv, "--measurement-scope") == ["latency", "quality"]
     assert _parameter_values(argv, "--evidence-gate-output-json") == [str(tmp_path / "gate.json")]
     assert record["evidence_policy"] == "canary"
     assert record["experiment"]["request_parallelism"] == 4
@@ -625,7 +625,7 @@ def test_build_v1_benchmark_plan_can_append_storage_reader_benchmark(tmp_path):
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json="/Volumes/catalog/schema/volume/storage-result.json",
             benchmark_id="storage-g6-l4",
             chunk_count=8,
@@ -633,7 +633,7 @@ def test_build_v1_benchmark_plan_can_append_storage_reader_benchmark(tmp_path):
             repeats=3,
             parallelism=2,
             readers=("disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
     )
 
@@ -645,12 +645,12 @@ def test_build_v1_benchmark_plan_can_append_storage_reader_benchmark(tmp_path):
     assert record["storage_benchmark_output_json"] == "/Volumes/catalog/schema/volume/storage-result.json"
     assert storage_command.argv[:3] == ("python", "-m", "document_kv_cache.storage_benchmark")
     assert "--workspace-dir" in storage_command.argv
-    assert "/local_disk0/document-kv-storage-benchmark" in storage_command.argv
+    assert "/local_disk0/cachet-storage-benchmark" in storage_command.argv
     assert "--reader" in storage_command.argv
     assert "disk" in storage_command.argv
     assert "unity_catalog" in storage_command.argv
     assert "--uc-volume-root" in storage_command.argv
-    assert "/Volumes/catalog/schema/volume/document-kv-storage-benchmark" in storage_command.argv
+    assert "/Volumes/catalog/schema/volume/cachet-storage-benchmark" in storage_command.argv
 
 
 def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path):
@@ -662,10 +662,10 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
         evidence_policy="publication",
         evidence_gate_output_json=str(tmp_path / "benchmark-gate.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -728,10 +728,10 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -857,10 +857,10 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -996,10 +996,10 @@ def test_build_v1_benchmark_plan_can_generate_and_bundle_github_governance(tmp_p
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -1052,10 +1052,10 @@ def test_build_v1_benchmark_plan_allows_equivalent_generated_github_governance_b
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -1095,10 +1095,10 @@ def test_benchmark_plan_rejects_conflicting_generated_github_governance_bundle_p
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
                 readers=("memory", "disk", "unity_catalog"),
-                uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+                uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             ),
             release_evidence=ReleaseEvidencePlanConfig(
                 output_json=str(tmp_path / "release-evidence.json"),
@@ -1125,10 +1125,10 @@ def test_build_v1_benchmark_plan_can_generate_and_bundle_repository_hygiene(tmp_
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -1183,10 +1183,10 @@ def test_build_v1_benchmark_plan_allows_equivalent_generated_repository_hygiene_
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -1226,10 +1226,10 @@ def test_benchmark_plan_rejects_conflicting_generated_repository_hygiene_bundle_
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
                 readers=("memory", "disk", "unity_catalog"),
-                uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+                uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             ),
             release_evidence=ReleaseEvidencePlanConfig(
                 output_json=str(tmp_path / "release-evidence.json"),
@@ -1256,10 +1256,10 @@ def test_build_v1_benchmark_plan_can_generate_and_bundle_native_probe_factories(
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -1311,10 +1311,10 @@ def test_build_v1_benchmark_plan_dedupes_equivalent_native_probe_factories_paths
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -1352,10 +1352,10 @@ def test_build_v1_benchmark_plan_bundles_engine_probe_runtime_native_factories(t
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         engine_probes=(
             EngineProbePlanConfig(
@@ -1406,10 +1406,10 @@ def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_va
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         engine_probes=(
             EngineProbePlanConfig(
@@ -2325,10 +2325,10 @@ def test_benchmark_plan_rejects_generated_artifact_output_path_collisions(tmp_pa
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
                 readers=("memory", "disk", "unity_catalog"),
-                uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+                uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             ),
             engine_probes=(
                 EngineProbePlanConfig(
@@ -2358,10 +2358,10 @@ def test_benchmark_plan_rejects_release_bundle_output_path_collisions(tmp_path):
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
                 readers=("memory", "disk", "unity_catalog"),
-                uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+                uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             ),
             release_evidence=ReleaseEvidencePlanConfig(
                 output_json=str(tmp_path / "release-evidence.json"),
@@ -2386,10 +2386,10 @@ def test_benchmark_plan_rejects_release_bundle_output_dir_colliding_with_generat
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
                 readers=("memory", "disk", "unity_catalog"),
-                uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+                uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             ),
             release_evidence=ReleaseEvidencePlanConfig(
                 output_json=str(tmp_path / "release-evidence.json"),
@@ -2414,7 +2414,7 @@ def test_benchmark_plan_rejects_native_probe_factories_output_path_collisions(tm
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
             ),
             native_probe_factories_output_json=str(tmp_path / "storage.json"),
@@ -2448,10 +2448,10 @@ def test_build_v1_benchmark_plan_can_generate_and_bundle_release_preflight(tmp_p
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -2503,10 +2503,10 @@ def test_build_v1_benchmark_plan_allows_equivalent_generated_release_preflight_b
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("memory", "disk", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -2544,10 +2544,10 @@ def test_benchmark_plan_rejects_conflicting_generated_release_preflight_bundle_p
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
                 readers=("memory", "disk", "unity_catalog"),
-                uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+                uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             ),
             release_evidence=ReleaseEvidencePlanConfig(
                 output_json=str(tmp_path / "release-evidence.json"),
@@ -2585,7 +2585,7 @@ def test_benchmark_plan_rejects_release_preflight_output_path_collisions(tmp_pat
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
             ),
             release_evidence=ReleaseEvidencePlanConfig(
@@ -2608,7 +2608,7 @@ def test_benchmark_plan_rejects_repository_hygiene_output_path_collisions(tmp_pa
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
             ),
             repository_hygiene_output_json=str(tmp_path / "storage.json"),
@@ -2623,7 +2623,7 @@ def test_benchmark_plan_rejects_github_governance_output_path_collisions(tmp_pat
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
             ),
             github_governance_output_json=str(tmp_path / "storage.json"),
@@ -2638,7 +2638,7 @@ def test_benchmark_plan_rejects_equivalent_generated_artifact_output_paths(tmp_p
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "subdir" / ".." / "results.json"),
             ),
         )
@@ -2652,7 +2652,7 @@ def test_benchmark_plan_rejects_local_uri_alias_generated_artifact_output_paths(
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=f"disk:{tmp_path / 'results.json'}",
             ),
         )
@@ -2677,7 +2677,7 @@ def test_benchmark_plan_requires_release_storage_readers_for_planned_release_evi
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
             storage_benchmark=StorageBenchmarkPlanConfig(
-                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                workspace_dir="/local_disk0/cachet-storage-benchmark",
                 output_json=str(tmp_path / "storage.json"),
                 readers=("disk",),
             ),
@@ -2699,10 +2699,10 @@ def test_benchmark_plan_accepts_release_storage_readers_in_any_order(tmp_path):
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
             readers=("disk", "memory", "unity_catalog"),
-            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            uc_volume_root="/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ),
         release_evidence=ReleaseEvidencePlanConfig(
             output_json=str(tmp_path / "release-evidence.json"),
@@ -2750,7 +2750,7 @@ def test_storage_benchmark_plan_defaults_to_memory_and_disk_without_uc_root(tmp_
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
-            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            workspace_dir="/local_disk0/cachet-storage-benchmark",
             output_json=str(tmp_path / "storage.json"),
         ),
     )
@@ -3107,7 +3107,7 @@ def test_main_can_include_storage_benchmark_command(tmp_path):
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-reader",
@@ -3139,11 +3139,11 @@ def test_main_can_include_release_evidence_validation_command(tmp_path):
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
             "--release-engine-probe-json",
@@ -3193,11 +3193,11 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--engine-probe-handoff-json",
             f"vllm={tmp_path / 'vllm-handoff.json'}",
             "--engine-probe-factory",
@@ -3427,11 +3427,11 @@ def test_main_derives_fixture_actions_for_release_planned_engine_probes(tmp_path
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--engine-probe-fixture-output-dir",
             f"vllm={vllm_fixture_dir}",
             "--engine-probe-fixture-output-dir",
@@ -3488,11 +3488,11 @@ def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_pat
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--engine-probe-fixture-output-dir",
             f"vllm={vllm_fixture_dir}",
             "--engine-probe-output-json",
@@ -3761,11 +3761,11 @@ def test_main_can_include_release_bundle_command(tmp_path):
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
             "--release-preflight-output-json",
@@ -3973,11 +3973,11 @@ def test_main_rejects_incomplete_strict_release_bundle_command(capsys, tmp_path)
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
             "--release-engine-probe-json",
@@ -4017,11 +4017,11 @@ def test_main_rejects_mismatched_generated_and_explicit_engine_launch_configs(ca
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
             "--release-engine-probe-json",
@@ -4116,11 +4116,11 @@ def test_main_rejects_plan_output_sh_colliding_with_release_bundle_output_dir(ca
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-output-json",
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
             "--release-engine-probe-json",
@@ -4206,9 +4206,9 @@ def test_main_uses_all_storage_readers_when_uc_root_is_explicit(tmp_path):
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "--plan-output-json",
             str(plan_json),
         ]
@@ -4219,7 +4219,7 @@ def test_main_uses_all_storage_readers_when_uc_root_is_explicit(tmp_path):
     assert exit_code == 0
     assert storage_argv.count("--reader") == 3
     assert "unity_catalog" in storage_argv
-    assert "/Volumes/catalog/schema/volume/document-kv-storage-benchmark" in storage_argv
+    assert "/Volumes/catalog/schema/volume/cachet-storage-benchmark" in storage_argv
 
 
 def test_main_rejects_storage_options_without_workspace(capsys, tmp_path):
@@ -4233,7 +4233,7 @@ def test_main_rejects_storage_options_without_workspace(capsys, tmp_path):
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-uc-volume-root",
-            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         ]
     )
 
@@ -4593,7 +4593,7 @@ def test_main_rejects_explicit_uc_reader_without_uc_root(capsys, tmp_path):
             "http://localhost:8000",
             "--allow-partial",
             "--storage-benchmark-workspace-dir",
-            "/local_disk0/document-kv-storage-benchmark",
+            "/local_disk0/cachet-storage-benchmark",
             "--storage-benchmark-reader",
             "unity_catalog",
         ]

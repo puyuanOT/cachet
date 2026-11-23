@@ -1,7 +1,6 @@
 import json
 from array import array
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
@@ -133,9 +132,10 @@ def test_layout_record_round_trips_payload_axis_order():
     assert _layout_from_record(token_record).payload_axis_order is KVPayloadAxisOrder.TOKEN_MAJOR
     assert _layout_from_record(layer_record).payload_axis_order is KVPayloadAxisOrder.LAYER_MAJOR
 
-    legacy_record = {key: value for key, value in token_record.items() if key != "payload_axis_order"}
-    assert "payload_axis_order" not in legacy_record
-    assert _layout_from_record(legacy_record).payload_axis_order is KVPayloadAxisOrder.TOKEN_MAJOR
+    for field_name in ("payload_axis_order", "pre_rope", "key_position_encoding"):
+        incomplete = {key: value for key, value in token_record.items() if key != field_name}
+        with pytest.raises(TypeError, match=field_name):
+            _layout_from_record(incomplete)
 
 
 def test_layout_record_rejects_non_boolean_pre_rope():
@@ -372,50 +372,6 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
                 "token_contract": None,
         },
     ]
-
-
-def test_schema_v2_raw_handoff_fixture_requires_explicit_legacy_opt_in():
-    fixture_path = (
-        Path(__file__).with_name("fixtures") / "engine_adapter_handoff_v2.json"
-    )
-    legacy = json.loads(fixture_path.read_text(encoding="utf-8"))
-
-    assert legacy["schema_version"] == 2
-    assert "reuse_plan" not in legacy
-    assert "document_kv.reuse_capability_id" not in legacy["metadata"]
-
-    with pytest.raises(ValueError, match="omits reuse_plan"):
-        validate_engine_adapter_request_record(
-            legacy,
-            require_external_payload_uri=False,
-        )
-
-    validate_engine_adapter_request_record(
-        legacy,
-        require_external_payload_uri=False,
-        allow_legacy_reuse_plan=True,
-    )
-    injection_plan = build_engine_kv_injection_plan(
-        legacy,
-        require_external_payload_uri=False,
-        allow_legacy_reuse_plan=True,
-    )
-    assert injection_plan.reuse_plan == method_spec(
-        CacheGenerationMethod.FULL_PREFIX_PREFILL
-    ).reuse_plan()
-    mismatched = {
-        **legacy,
-        "metadata": {
-            **legacy["metadata"],
-            "document_kv.reuse_capability_id": "0" * 64,
-        },
-    }
-    with pytest.raises(ValueError, match="Reserved metadata"):
-        validate_engine_adapter_request_record(
-            mismatched,
-            require_external_payload_uri=False,
-            allow_legacy_reuse_plan=True,
-        )
 
 
 def test_schema_v4_handoff_rejects_unknown_top_level_capabilities(tmp_path):

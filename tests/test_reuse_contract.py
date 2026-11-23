@@ -11,9 +11,15 @@ from document_kv_cache.engine_protocol import (
     KVPayloadAxisOrder,
     KVStorageLayout,
 )
-from document_kv_cache.methods import method_spec
+from document_kv_cache.methods import (
+    DOCUMENT_KV_CACHE_ARM,
+    ENGINE_NATIVE_EXECUTION,
+    MethodSpec,
+    method_spec,
+)
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.reuse_contract import (
+    ENGINE_NATIVE_ARTIFACT_FORMAT,
     ArtifactEncoding,
     ArtifactFormat,
     PayloadDecodeStage,
@@ -80,8 +86,21 @@ def test_cacheblend_plan_requires_pre_rope_and_selective_recompute() -> None:
         method.reuse_plan()
 
 
-def test_lmcache_plan_is_fully_engine_native() -> None:
-    plan = method_spec(CacheGenerationMethod.LMCACHE).reuse_plan()
+def test_engine_native_plan_is_fully_engine_native() -> None:
+    plan = MethodSpec(
+        method="example.engine_native",
+        display_name="Engine-native example",
+        arm_id=DOCUMENT_KV_CACHE_ARM,
+        connector_mode="example_engine_native",
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=True,
+        artifact_version="external-v1",
+        execution_kind=ENGINE_NATIVE_EXECUTION,
+        artifact_format=ENGINE_NATIVE_ARTIFACT_FORMAT,
+        payload_decode_stage=PayloadDecodeStage.ENGINE_NATIVE,
+        description="Application-provided engine-native connector method.",
+    ).reuse_plan()
 
     assert not plan.requires_artifact
     assert plan.position_handling == PositionHandling.ENGINE_NATIVE

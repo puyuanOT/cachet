@@ -41,7 +41,6 @@ DTYPE_BYTE_WIDTHS: Mapping[str, int] = MappingProxyType(
         "fp8": 1,
         "fp8_e4m3": 1,
         "fp8_e5m2": 1,
-        "float8": 1,
         "int8": 1,
         "uint8": 1,
     }
@@ -120,7 +119,7 @@ class KVLayout:
     # and must be re-roped at its true absolute offset during injection. rope_theta
     # (and optionally rope_rotary_dim, defaulting to head_size) make the payload
     # self-describing so the injector needs no external model handle. Default False
-    # preserves the legacy post-RoPE behavior.
+    # stores post-RoPE keys.
     pre_rope: bool = False
     rope_theta: float | None = None
     rope_rotary_dim: int | None = None

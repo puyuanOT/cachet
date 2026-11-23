@@ -1,9 +1,6 @@
 import hashlib
 import json
 import os
-import pickle
-from pathlib import Path
-import subprocess
 import sys
 import types
 import urllib.error
@@ -16,7 +13,6 @@ from document_kv_cache._hardware_targets import (
     SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
 )
 from document_kv_cache.databricks_runs import (
-    DEFAULT_DATABRICKS_CONFIG_FILE,
     DEFAULT_DATABRICKS_HOST_ENV,
     DEFAULT_DATABRICKS_TOKEN_ENV,
     DATABRICKS_PROFILE_AUTH_MODES,
@@ -32,7 +28,6 @@ from document_kv_cache.databricks_runs import (
     databricks_workspace_config_from_profile,
     databricks_workspace_config_from_sdk_profile,
     get_databricks_run,
-    main,
     plan_databricks_stage_and_submit,
     put_databricks_dbfs_file,
     read_databricks_run_submit_payload,
@@ -467,14 +462,14 @@ def test_submit_databricks_run_posts_payload_with_bearer_token():
     opener = _FakeOpener({"run_id": 123, "number_in_job": 1})
     config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token", timeout_seconds=9)
 
-    response = submit_databricks_run(config, {"run_name": "document-kv-vllm-smoke"}, opener=opener)
+    response = submit_databricks_run(config, {"run_name": "cachet-vllm-smoke"}, opener=opener)
 
     assert response == {"run_id": 123, "number_in_job": 1}
     request = opener.requests[0]
     assert request.full_url == "https://dbc.example/api/2.1/jobs/runs/submit"
     assert request.get_method() == "POST"
     assert request.headers["Authorization"] == "Bearer secret-token"
-    assert json.loads(request.data.decode("utf-8")) == {"run_name": "document-kv-vllm-smoke"}
+    assert json.loads(request.data.decode("utf-8")) == {"run_name": "cachet-vllm-smoke"}
     assert opener.timeouts == [9]
 
 
@@ -873,7 +868,7 @@ def test_summarize_databricks_run_extracts_run_and_task_state():
     summary = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1-benchmark",
+            "run_name": "cachet-v1-benchmark",
             "run_page_url": "https://dbc.example/#job/123",
             "state": {
                 "life_cycle_state": "RUNNING",
@@ -904,7 +899,7 @@ def test_summarize_databricks_run_extracts_run_and_task_state():
     assert summary == {
         "record_type": DATABRICKS_RUN_STATUS_RECORD_TYPE,
         "run_id": 123,
-        "run_name": "document-kv-v1-benchmark",
+        "run_name": "cachet-v1-benchmark",
         "run_page_url": "https://dbc.example/#job/123",
         "life_cycle_state": "RUNNING",
         "result_state": None,
@@ -957,7 +952,7 @@ def test_summarize_databricks_run_marks_successful_terminal_run():
 
 
 def test_summarize_databricks_run_can_attach_submit_payload_provenance():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload["tasks"][0]["new_cluster"]["spark_env_vars"] = {
         "CACHET_TRANSFORMERS_DEVICE": "cuda",
         "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
@@ -986,7 +981,6 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
     assert len(submit_payload["sha256"]) == 64
     assert submit_payload["single_node"] is True
     assert submit_payload["aws_single_node_gpu_type"] is True
-    assert submit_payload["aws_g5_node_type"] is True
     assert submit_payload["node_type_ids"] == ["g6.4xlarge"]
     assert submit_payload["hardware_targets"] == ["aws-g6-l4"]
     assert submit_payload["data_security_modes"] == ["SINGLE_USER"]
@@ -1010,7 +1004,7 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
 
 
 def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     cluster = payload["tasks"][0]["new_cluster"]
     cluster["node_type_id"] = "g6.8xlarge"
     cluster["driver_node_type_id"] = "g6.8xlarge"
@@ -1018,7 +1012,7 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
     summary = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "run_page_url": "https://dbc.example/#job/123/run/123",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
@@ -1038,7 +1032,6 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
     )
 
     assert summary["submit_payload"]["aws_single_node_gpu_type"] is True
-    assert summary["submit_payload"]["aws_g5_node_type"] is True
     assert summary["submit_payload"]["node_type_ids"] == ["g6.8xlarge"]
     assert summary["submit_payload"]["hardware_targets"] == ["aws-g6-l4"]
     assert summary["tasks"][0]["node_type_id"] == "g6.8xlarge"
@@ -1093,14 +1086,14 @@ def test_databricks_run_status_sidecar_validation_can_require_exact_node_type():
         "node_type_id 'g6.8xlarge'",
     )
 
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     cluster = payload["tasks"][0]["new_cluster"]
     cluster["node_type_id"] = "g6.8xlarge"
     cluster["driver_node_type_id"] = "g6.8xlarge"
     exact_record = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
                 {
@@ -1126,14 +1119,14 @@ def test_databricks_run_status_sidecar_validation_can_require_exact_node_type():
 
 
 def test_databricks_run_status_sidecar_validation_rejects_live_node_type_mismatch():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload_cluster = payload["tasks"][0]["new_cluster"]
     payload_cluster["node_type_id"] = "g6.8xlarge"
     payload_cluster["driver_node_type_id"] = "g6.8xlarge"
     status_record = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
                 {
@@ -1168,14 +1161,14 @@ def test_databricks_run_status_sidecar_validation_rejects_live_node_type_mismatc
 
 
 def test_databricks_run_status_sidecar_validation_requires_live_node_evidence_for_exact_node_type():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload_cluster = payload["tasks"][0]["new_cluster"]
     payload_cluster["node_type_id"] = "g6.8xlarge"
     payload_cluster["driver_node_type_id"] = "g6.8xlarge"
     status_record = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
                 {
@@ -1264,7 +1257,6 @@ def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mis
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
     submit_payload["aws_single_node_gpu_type"] = False
-    submit_payload["aws_g5_node_type"] = False
     submit_payload["tasks"][0]["task_key"] = "different-task"
     submit_payload["tasks"][0]["node_type_id"] = "g6e.8xlarge"
     submit_payload["task_keys"] = ["different-task"]
@@ -1280,40 +1272,22 @@ def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mis
     assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
 
 
-def test_databricks_run_status_sidecar_validation_rejects_contradictory_gpu_flags():
+@pytest.mark.parametrize(
+    ("field_name", "message"),
+    (
+        ("aws_single_node_gpu_type", "submit_payload.aws_single_node_gpu_type must be boolean"),
+        ("hardware_targets", "submit_payload.hardware_targets must be an array of non-empty strings"),
+    ),
+)
+def test_databricks_run_status_sidecar_validation_requires_gpu_flag_and_hardware_targets(field_name, message):
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
-    submit_payload["aws_single_node_gpu_type"] = True
-    submit_payload["aws_g5_node_type"] = False
+    del submit_payload[field_name]
     bad_record = {**status_record, "submit_payload": submit_payload}
 
-    issues = databricks_run_status_sidecar_issues(bad_record)
+    issues = databricks_run_status_sidecar_issues(bad_record, expected_hardware_target="aws-g6-l4")
 
-    assert "Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true" in issues
-    assert (
-        "Databricks run status sidecar submit_payload.aws_single_node_gpu_type and aws_g5_node_type must match"
-        in issues
-    )
-
-
-def test_databricks_run_status_sidecar_validation_accepts_legacy_gpu_flag_only():
-    status_record = _valid_databricks_run_status_record()
-    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
-    del submit_payload["aws_single_node_gpu_type"]
-    bad_record = {**status_record, "submit_payload": submit_payload}
-
-    assert databricks_run_status_sidecar_issues(bad_record, expected_hardware_target="aws-g6-l4") == ()
-    validate_databricks_run_status_sidecar(bad_record, expected_hardware_target="aws-g6-l4")
-
-
-def test_databricks_run_status_sidecar_validation_accepts_missing_hardware_targets_for_legacy_sidecars():
-    status_record = _valid_databricks_run_status_record()
-    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
-    del submit_payload["hardware_targets"]
-    legacy_record = {**status_record, "submit_payload": submit_payload}
-
-    assert databricks_run_status_sidecar_issues(legacy_record, expected_hardware_target="aws-g6-l4") == ()
-    validate_databricks_run_status_sidecar(legacy_record, expected_hardware_target="aws-g6-l4")
+    assert f"Databricks run status sidecar {message}" in issues
 
 
 def test_databricks_run_status_sidecar_validation_rejects_null_hardware_targets():
@@ -1351,7 +1325,7 @@ def test_databricks_run_status_sidecar_validation_accepts_g5_hardware_target():
 def test_databricks_run_status_sidecar_validation_matches_submit_payload_run_name():
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
-    submit_payload["run_name"] = "document-kv-stale-run"
+    submit_payload["run_name"] = "cachet-stale-run"
     bad_record = {**status_record, "submit_payload": submit_payload}
 
     issues = databricks_run_status_sidecar_issues(bad_record)
@@ -1439,13 +1413,13 @@ def test_databricks_run_status_sidecar_validation_rejects_malformed_spark_env_ke
 
 def test_summarize_databricks_run_redacts_token_pattern_spark_env_keys_before_serializing():
     token_like_key = "dapi" + ("0" * 32)
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload["tasks"][0]["new_cluster"]["spark_env_vars"] = {token_like_key: "not-serialized"}
 
     summary = summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "run_page_url": "https://dbc.example/#job/123/run/123",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "tasks": [
@@ -1496,7 +1470,7 @@ def test_databricks_run_status_sidecar_validation_rejects_stale_spark_env_key_cl
 
 
 def test_summarize_databricks_run_submit_payload_reports_unsupported_gpu_multi_node_payload():
-    payload = _single_node_g5_submit_payload()
+    payload = _single_node_gpu_submit_payload()
     payload["tasks"][0]["new_cluster"]["node_type_id"] = "g6e.4xlarge"
     payload["tasks"][0]["new_cluster"]["num_workers"] = 1
 
@@ -1505,7 +1479,6 @@ def test_summarize_databricks_run_submit_payload_reports_unsupported_gpu_multi_n
     assert summary["record_type"] == DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
     assert summary["single_node"] is False
     assert summary["aws_single_node_gpu_type"] is False
-    assert summary["aws_g5_node_type"] is False
 
 
 def test_databricks_http_errors_are_sanitized():
@@ -1551,9 +1524,9 @@ def test_databricks_http_error_body_echoed_credentials_are_redacted():
 def test_read_and_write_databricks_run_json_helpers(tmp_path):
     payload_path = tmp_path / "payload.json"
     response_path = tmp_path / "response.json"
-    payload_path.write_text('{"run_name":"document-kv-vllm-smoke"}', encoding="utf-8")
+    payload_path.write_text('{"run_name":"cachet-vllm-smoke"}', encoding="utf-8")
 
-    assert read_databricks_run_submit_payload(payload_path) == {"run_name": "document-kv-vllm-smoke"}
+    assert read_databricks_run_submit_payload(payload_path) == {"run_name": "cachet-vllm-smoke"}
 
     write_databricks_run_response_json({"ok": True, "response": {"run_id": 123}}, response_path)
 
@@ -1643,7 +1616,7 @@ def _valid_databricks_run_status_record():
     return summarize_databricks_run(
         {
             "run_id": 123,
-            "run_name": "document-kv-v1",
+            "run_name": "cachet-v1",
             "run_page_url": "https://dbc.example/#job/123/run/123",
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
             "start_time": 1000,
@@ -1660,14 +1633,14 @@ def _valid_databricks_run_status_record():
                 }
             ],
         },
-        submit_payload=_single_node_g5_submit_payload(),
+        submit_payload=_single_node_gpu_submit_payload(),
         submit_payload_path="/Volumes/catalog/schema/volume/databricks-run-submit.json",
     )
 
 
-def _single_node_g5_submit_payload():
+def _single_node_gpu_submit_payload():
     return {
-        "run_name": "document-kv-v1",
+        "run_name": "cachet-v1",
         "tasks": [
             {
                 "task_key": "run-benchmark",
@@ -1679,7 +1652,7 @@ def _single_node_g5_submit_payload():
                     "data_security_mode": "SINGLE_USER",
                     "custom_tags": {
                         "ResourceClass": "SingleNode",
-                        "purpose": "document-kv-benchmark",
+                        "purpose": "cachet-benchmark",
                     },
                 },
             }
@@ -1689,7 +1662,7 @@ def _single_node_g5_submit_payload():
 
 def _dbfs_artifact_submit_payload():
     return {
-        "run_name": "document-kv-engine-probe",
+        "run_name": "cachet-engine-probe",
         "tasks": [
             {
                 "task_key": "document_kv_engine_probe",
@@ -1707,7 +1680,7 @@ def _dbfs_artifact_submit_payload():
 
 def _generated_native_probe_submit_payload():
     return {
-        "run_name": "document-kv-engine-probe",
+        "run_name": "cachet-engine-probe",
         "tasks": [
             {
                 "task_key": "document_kv_engine_probe",
@@ -1741,7 +1714,7 @@ def _generated_native_probe_submit_payload():
 
 def _non_fixture_engine_probe_submit_payload():
     return {
-        "run_name": "document-kv-engine-probe",
+        "run_name": "cachet-engine-probe",
         "tasks": [
             {
                 "task_key": "document_kv_engine_probe",

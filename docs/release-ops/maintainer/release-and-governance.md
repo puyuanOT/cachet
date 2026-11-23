@@ -1,8 +1,8 @@
 # Release And Governance
 
-Maintainer reference for validating release evidence, assembling checksummed
-release bundles, and capturing GitHub governance and repository hygiene
-sidecars. The release sequence is in
+Maintainer reference for validating release evidence, generating the release
+PR evidence sidecar, assembling checksummed release bundles, and capturing
+GitHub governance and repository hygiene sidecars. The release sequence is in
 [`../maintainer-release-checklist.md`](../maintainer-release-checklist.md), the
 evidence storage rules are in
 [`../../evidence-policy.md`](../../evidence-policy.md), and the V1 audit map is
@@ -51,6 +51,32 @@ reports malformed JSON, missing paths, and wrong role or record-type
 assignments separately (for example, a connector-actions record passed as
 `--engine-probe-json` appears under `invalid_record_type_paths`).
 
+## PR Evidence
+
+The strict bundle needs a `document_kv.pr_evidence.v1` sidecar for the release
+pull request. Generate it at bundle time and pass it with `--pr-evidence-json`;
+it is a bundle input, not a committed file.
+
+```bash
+cachet-pr-evidence \
+  --pull-request-number <PR_NUMBER> \
+  --pull-request-url https://github.com/OWNER/cachet/pull/<PR_NUMBER> \
+  --what-changed "<change>" \
+  --why "<reason>" \
+  --scope release \
+  --verification "poetry run pytest -q" \
+  --refactor-skill-applied \
+  --gpt55-review-completed \
+  --gpt55-review-outcome clean \
+  --gpt55-review-summary "<review summary>" \
+  --output-json pr-evidence.json
+```
+
+`--what-changed`, `--scope`, and `--verification` repeat for multiple items.
+With `--gpt55-review-outcome findings_resolved`, also pass
+`--gpt55-review-findings-resolved`. `cachet-pr-evidence --validate-json
+pr-evidence.json` re-checks a saved sidecar.
+
 ## Release Bundle
 
 Build the release bundle as its own command after plan execution:
@@ -77,14 +103,13 @@ python -m document_kv_cache.release_bundle \
   --compatibility-databricks-run-status-json databricks-run-status-g5-benchmark.json \
   --package-wheel dist/cachet_kv-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence.json \
-  --legacy-migration-evidence-json docs/release-ops/evidence/legacy-migration/current/legacy-migration-evidence.json \
   --dependency-freshness-json docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
   --github-governance-json github-governance.json \
   --repository-hygiene-json repository-hygiene.json \
   --native-probe-factories-json native-probe-factories.json \
   --require-complete-v1 \
-  --output-dir document-kv-release-bundle \
+  --output-dir cachet-release-bundle \
   --output-json release-bundle-manifest.json
 ```
 
@@ -107,8 +132,6 @@ for wheel artifacts, size, and SHA-256 for every artifact.
   `--compatibility-databricks-run-status-json` carries the matching successful
   status, must match a bundled compatibility benchmark's hardware target, and
   is required for each compatibility target in strict bundles.
-- `--legacy-migration-evidence-json` carries package-surface cleanup evidence
-  such as the removed restaurant facade.
 - Run-status sidecars are compact `databricks_runs get --summary` outputs (or
   their inner `summary` records). They must be terminal, successful, free of
   active task keys, and attached to a hashed single-node AWS g6/L4
@@ -125,7 +148,11 @@ for wheel artifacts, size, and SHA-256 for every artifact.
 - The wheel must be a pure Python `py3-none-any` `cachet-kv` wheel whose
   filename, root `.dist-info` directory, and `METADATA` describe the same
   package identity, with a `RECORD` that lists the payload and metadata with
-  matching hashes and sizes and no duplicate zip members. The manifest records
+  matching hashes and sizes and no duplicate zip members. Its top-level entries
+  must be limited to the `cachet`, `document_kv_cache`, `vllm_kv_injection`,
+  and `sglang_kv_injection` packages and that `.dist-info` directory, so
+  `.data/purelib` and `.data/platlib` package trees are rejected, and its
+  console scripts must exactly match `[project.scripts]`. The manifest records
   the normalized package name and package version for the copied wheel. Strict
   bundles also require the wheel version to match the current project version
   from `pyproject.toml` or installed package metadata, and the wheel must

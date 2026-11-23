@@ -4,7 +4,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-import document_kv_cache.databricks_vllm_smoke_job as public_vllm_smoke_job
 from document_kv_cache.databricks_vllm_smoke_job import (
     DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
     DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME,
@@ -26,7 +25,7 @@ DATASET_SPECS = tuple(
 )
 
 
-def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
+def test_build_databricks_vllm_smoke_payload_uses_single_node_gpu_cluster():
     config = DatabricksVLLMSmokeJobConfig(
         benchmark_id="v1-vllm-smoke-001",
         output_dir="/Volumes/catalog/schema/volume/v1-vllm-smoke",
@@ -415,7 +414,7 @@ def test_main_derives_vllm_smoke_node_type_from_g5_hardware_target(tmp_path):
     assert parameters[parameters.index("--hardware-target") + 1] == "aws-g5-a10g"
 
 
-def test_main_preserves_legacy_vllm_smoke_g5_node_type_without_hardware_target(tmp_path):
+def test_main_preserves_explicit_vllm_smoke_g5_node_type_without_hardware_target(tmp_path):
     payload_path = tmp_path / "payload.json"
 
     exit_code = main(

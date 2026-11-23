@@ -54,7 +54,6 @@ __all__ = [
     "BASELINE_PREFILL_ARM",
     "DOCUMENT_KV_CACHE_ARM",
     "CACHET_CONNECTOR_MODE",
-    "LMCACHE_CONNECTOR_MODE",
     "CACHET_ARTIFACT_EXECUTION",
     "ENGINE_NATIVE_EXECUTION",
     "validate_registered_reuse_plan",
@@ -79,7 +78,6 @@ DOCUMENT_KV_CACHE_ARM = "document_kv_cache"
 
 # Serving-engine KV connector mode.
 CACHET_CONNECTOR_MODE = "cachet"
-LMCACHE_CONNECTOR_MODE = "lmcache"
 
 CACHET_ARTIFACT_EXECUTION = "cachet_artifact"
 ENGINE_NATIVE_EXECUTION = "engine_native"
@@ -496,7 +494,7 @@ class MethodSpec:
         generator_position_handling = getattr(generator, "position_handling", None)
         if generator_position_handling is None:
             if not require_implemented:
-                # Legacy/non-strict workflows may use a generic generator while
+                # Unregistered-method workflows may use a generic generator while
                 # carrying an experimental method label. Strict registered
                 # generation requires the executable position capability.
                 return
@@ -858,29 +856,11 @@ _BUILTIN_METHOD_SPECS: tuple[MethodSpec, ...] = (
             "step is not yet defined."
         ),
     ),
-    MethodSpec(
-        method=CacheGenerationMethod.LMCACHE,
-        display_name="LMCache",
-        arm_id=DOCUMENT_KV_CACHE_ARM,
-        connector_mode=LMCACHE_CONNECTOR_MODE,
-        pre_rope=False,
-        selective_recompute=False,
-        implemented=True,
-        artifact_version="external-v1",
-        execution_kind=ENGINE_NATIVE_EXECUTION,
-        artifact_format=ENGINE_NATIVE_ARTIFACT_FORMAT,
-        payload_decode_stage=PayloadDecodeStage.ENGINE_NATIVE,
-        description=(
-            "Reuse engine-generated KV through LMCache's native vLLM connector. "
-            "The serving engine owns cache creation, persistence, and loading; Cachet "
-            "owns the shared experiment contract and evidence."
-        ),
-    ),
 )
 
 DEFAULT_METHOD_REGISTRY = MethodRegistry().with_specs(_BUILTIN_METHOD_SPECS)
 
-# Compatibility view keyed by the historical enum. It is immutable so callers
+# Built-in specs keyed by CacheGenerationMethod. It is immutable so callers
 # cannot silently change the process-wide method contract.
 METHOD_SPECS: Mapping[CacheGenerationMethod, MethodSpec] = MappingProxyType(
     {

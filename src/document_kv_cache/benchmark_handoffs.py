@@ -81,9 +81,6 @@ from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 
 BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE = "document_kv.benchmark_handoffs.v1"
 BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION = 3
-_BENCHMARK_HANDOFF_MANIFEST_SUPPORTED_SCHEMA_VERSIONS = frozenset(
-    {1, 2, BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION}
-)
 _TEMPLATE_FIELDS = frozenset({"dataset", "example_id"})
 _BUNDLE_TEMPLATE_FIELDS = frozenset({"dataset", "example_id", "artifact_stem"})
 _DEFAULT_BUNDLE_SHARD_FILENAME = "cachet-benchmark.kvpack"
@@ -96,7 +93,7 @@ _MANUAL_LAYOUT_TRIGGER_FIELDS = (
     "head_size",
 )
 _MANIFEST_KEYS = frozenset({"record_type", "schema_version", "entries"})
-_ENTRY_KEYS_V1 = frozenset(
+_ENTRY_KEYS = frozenset(
     {
         "dataset",
         "example_id",
@@ -104,19 +101,13 @@ _ENTRY_KEYS_V1 = frozenset(
         "handoff_json",
         "handoff_record",
         "payload_uri",
+        "prompt_text_mode",
+        "runtime_prefix_text",
+        "sglang_hicache_page_keys",
+        "cache_method",
+        "artifact_id",
     }
 )
-_ENTRY_KEYS_V2 = _ENTRY_KEYS_V1 | {
-    "prompt_text_mode",
-    "runtime_prefix_text",
-    "sglang_hicache_page_keys",
-}
-_ENTRY_KEYS = _ENTRY_KEYS_V2 | {"cache_method", "artifact_id"}
-_ENTRY_KEYS_BY_SCHEMA_VERSION = {
-    1: _ENTRY_KEYS_V1,
-    2: _ENTRY_KEYS_V2,
-    BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION: _ENTRY_KEYS,
-}
 
 __all__ = [
     "BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE",
@@ -298,15 +289,16 @@ def benchmark_handoff_manifest_from_record(record: Mapping[str, Any]) -> Benchma
     schema_version = record.get("schema_version")
     if (
         type(schema_version) is not int
-        or schema_version not in _BENCHMARK_HANDOFF_MANIFEST_SUPPORTED_SCHEMA_VERSIONS
+        or schema_version != BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION
     ):
-        supported = sorted(_BENCHMARK_HANDOFF_MANIFEST_SUPPORTED_SCHEMA_VERSIONS)
-        raise ValueError(f"schema_version must be one of {supported}")
+        raise ValueError(
+            f"schema_version must be {BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION}"
+        )
     raw_entries = record.get("entries")
     if not isinstance(raw_entries, Sequence) or isinstance(raw_entries, (str, bytes, bytearray)):
         raise ValueError("entries must be an array")
     entries = tuple(
-        _entry_from_record(entry, index=index, schema_version=schema_version)
+        _entry_from_record(entry, index=index)
         for index, entry in enumerate(raw_entries)
     )
     return BenchmarkHandoffManifest(entries=entries)
@@ -1059,7 +1051,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--disk-root", help="Optional disk root for relative kvpack shard URIs.")
     parser.add_argument("--uc-volume-root", help="Optional UC Volume root for relative kvpack shard URIs.")
     parser.add_argument(
-        "--allow-legacy-artifact",
+        "--allow-uncontracted-artifact",
         action="store_true",
         help=(
             "Debug-only escape hatch for generators that do not stamp ArtifactIdentity, "
@@ -1114,7 +1106,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             segment_per_document=args.segment_per_document,
             disk_root=args.disk_root,
             uc_volume_root=args.uc_volume_root,
-            require_artifact_contract=not args.allow_legacy_artifact,
+            require_artifact_contract=not args.allow_uncontracted_artifact,
         )
         print(
             json.dumps(
@@ -1256,7 +1248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--arm-id",
         help=(
             "Attach params under arm_kv_transfer_params[ARM_ID] for N-way runs. "
-            "Without this option, write the legacy single-arm kv_transfer_params."
+            "Without this option, write unscoped single-arm kv_transfer_params."
         ),
     )
     parser.add_argument("--overwrite", action="store_true", help="Replace existing kv_transfer_params.")
@@ -1281,11 +1273,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _entry_from_record(record: object, *, index: int, schema_version: int) -> BenchmarkHandoffEntry:
+def _entry_from_record(record: object, *, index: int) -> BenchmarkHandoffEntry:
     if not isinstance(record, Mapping):
         raise ValueError(f"entries[{index}] must be an object")
-    entry_keys = _ENTRY_KEYS_BY_SCHEMA_VERSION[schema_version]
-    unexpected = sorted(str(key) for key in record if key not in entry_keys)
+    unexpected = sorted(str(key) for key in record if key not in _ENTRY_KEYS)
     if unexpected:
         raise ValueError(f"entries[{index}] has unsupported keys: {unexpected}")
     return BenchmarkHandoffEntry(
@@ -1592,14 +1583,6 @@ def _format_benchmark_handoff_template(
         field_name=field_name,
         supported_fields=_TEMPLATE_FIELDS,
         values={"dataset": dataset, "example_id": example_id},
-    )
-
-
-def _validate_benchmark_handoff_template(template: str, *, field_name: str) -> None:
-    _validate_benchmark_template(
-        template,
-        field_name=field_name,
-        supported_fields=_TEMPLATE_FIELDS,
     )
 
 

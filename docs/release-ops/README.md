@@ -7,10 +7,10 @@ and [`../concepts.md`](../concepts.md).
 Release-ops material includes:
 
 - strict release-bundle assembly and validation;
-- PR traceability sidecars;
+- the release PR evidence sidecar, generated at bundle time;
 - repository hygiene and GitHub governance records;
 - Databricks benchmark/job publication details;
-- dependency freshness and legacy migration evidence;
+- dependency freshness evidence;
 - maintainer topic references under `maintainer/`.
 
 ## Maintainer References
@@ -19,7 +19,6 @@ Release-ops material includes:
 | --- | --- |
 | [`maintainer-reference.md`](maintainer-reference.md) | Index of maintainer topics and remaining V1 work |
 | [`maintainer/`](maintainer/) | Topic references for the library, serving engines, benchmarks, Databricks, release and governance, and development |
-| [`pr-evidence/`](pr-evidence/) | Machine-readable PR traceability sidecars |
 | [`evidence/`](evidence/) | Durable non-benchmark release-governance evidence |
 | [`maintainer-release-checklist.md`](maintainer-release-checklist.md) | Human checklist for internal release gates |
 
@@ -41,10 +40,8 @@ Maintainer and serving-operator commands:
 | Release and governance | `cachet-release-evidence`, `cachet-release-bundle`, `cachet-pr-evidence`, `cachet-dependency-freshness`, `cachet-github-governance`, `cachet-repository-hygiene` |
 | Template extraction | `cachet-templates` |
 
-The `document-kv-*` console scripts are compatibility aliases for the same
-command families. Prefer `cachet-*` in new documentation, and keep both alias
-families out of the first-touch user path unless the command is explicitly
-stable for users.
+Keep maintainer commands out of the first-touch user path unless the command
+is explicitly stable for users.
 
 Keep credentials, raw service responses, generated wheels, logs, and local run
 scratch output out of Git. Use ignored `databricks-runs/` for local work and

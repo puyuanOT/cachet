@@ -13,12 +13,12 @@ from document_kv_cache.vllm_wheel_repack import (
     VLLM_PATCHED_WHEEL_MANIFEST_RECORD_TYPE,
     VLLM_PATCHED_WHEEL_MANIFEST_SCHEMA_VERSION,
     PatchedVLLMWheel,
-    repack_vllm_0271_cu129_wheel,
+    repack_vllm_cu129_wheel,
 )
 
 
 SOURCE_WHEEL_NAME = (
-    "vllm-0.27.1+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
+    "vllm-0.30.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
 )
 PATCH_PATHS = (
     "vllm/model_executor/layers/attention/attention.py",
@@ -36,14 +36,14 @@ def _zip_info(name: str) -> ZipInfo:
 def _write_source_wheel(path: Path, sources: tuple[bytes, ...]) -> None:
     members = {
         **dict(zip(PATCH_PATHS, sources, strict=True)),
-        "vllm-0.27.1+cu129.dist-info/METADATA": (
-            b"Metadata-Version: 2.3\nName: vllm\nVersion: 0.27.1+cu129\n"
+        "vllm-0.30.0+cu129.dist-info/METADATA": (
+            b"Metadata-Version: 2.3\nName: vllm\nVersion: 0.30.0+cu129\n"
         ),
-        "vllm-0.27.1+cu129.dist-info/WHEEL": (
+        "vllm-0.30.0+cu129.dist-info/WHEEL": (
             b"Wheel-Version: 1.0\nRoot-Is-Purelib: false\n"
             b"Tag: cp38-abi3-manylinux_2_28_x86_64\n"
         ),
-        "vllm-0.27.1+cu129.dist-info/RECORD": b"stale-record\n",
+        "vllm-0.30.0+cu129.dist-info/RECORD": b"stale-record\n",
     }
     with ZipFile(path, "w") as archive:
         for name in sorted(members):
@@ -87,13 +87,13 @@ def test_repack_is_deterministic_content_addressed_and_rebuilds_record(tmp_path)
     source_digest = _file_digest(source_wheel)
     closure = _closure(sources)
 
-    first = repack_vllm_0271_cu129_wheel(
+    first = repack_vllm_cu129_wheel(
         source_wheel,
         tmp_path / "first",
         expected_source_wheel_sha256=source_digest,
         patch_closure=closure,
     )
-    second = repack_vllm_0271_cu129_wheel(
+    second = repack_vllm_cu129_wheel(
         source_wheel,
         tmp_path / "second",
         expected_source_wheel_sha256=source_digest,
@@ -116,7 +116,7 @@ def test_repack_is_deterministic_content_addressed_and_rebuilds_record(tmp_path)
         assert f"new-{index}".encode() in members[member_name]
         assert f"old-{index}".encode() not in members[member_name]
 
-    record_name = "vllm-0.27.1+cu129.dist-info/RECORD"
+    record_name = "vllm-0.30.0+cu129.dist-info/RECORD"
     record_rows = {
         row[0]: row[1:]
         for row in csv.reader(io.StringIO(members[record_name].decode()))
@@ -153,7 +153,7 @@ def test_repack_rejects_unapproved_source_wheel_digest(tmp_path):
     _write_source_wheel(source_wheel, sources)
 
     with pytest.raises(ValueError, match="does not match approved cu129 asset"):
-        repack_vllm_0271_cu129_wheel(
+        repack_vllm_cu129_wheel(
             source_wheel,
             tmp_path / "output",
             expected_source_wheel_sha256="0" * 64,
@@ -169,7 +169,7 @@ def test_repack_rejects_pristine_member_hash_mismatch(tmp_path):
     closure[1] = {**closure[1], "source_sha256": "f" * 64}
 
     with pytest.raises(ValueError, match="does not match approved pristine source"):
-        repack_vllm_0271_cu129_wheel(
+        repack_vllm_cu129_wheel(
             source_wheel,
             tmp_path / "output",
             expected_source_wheel_sha256=_file_digest(source_wheel),
@@ -177,27 +177,25 @@ def test_repack_rejects_pristine_member_hash_mismatch(tmp_path):
         )
 
 
-def test_main_repacks_the_requested_vllm_release(tmp_path, monkeypatch, capsys):
+def test_main_repacks_the_vllm_0300_release(tmp_path, monkeypatch, capsys):
     calls = []
 
-    def recording_repacker(version):
-        def repack(source_wheel, output_dir):
-            calls.append((version, source_wheel, output_dir))
-            return PatchedVLLMWheel(
-                wheel_path=Path(output_dir) / "patched.whl",
-                manifest_path=Path(output_dir) / "manifest.json",
-                wheel_sha256="a" * 64,
-                wheel_size=1,
-                source_wheel_sha256="b" * 64,
-            )
+    def repack(source_wheel, output_dir):
+        calls.append((source_wheel, output_dir))
+        return PatchedVLLMWheel(
+            wheel_path=Path(output_dir) / "patched.whl",
+            manifest_path=Path(output_dir) / "manifest.json",
+            wheel_sha256="a" * 64,
+            wheel_size=1,
+            source_wheel_sha256="b" * 64,
+        )
 
-        return repack
-
-    monkeypatch.setattr(wheel_repack, "repack_vllm_0300_cu129_wheel", recording_repacker("0.30.0"))
-    monkeypatch.setattr(wheel_repack, "repack_vllm_0271_cu129_wheel", recording_repacker("0.27.1"))
+    monkeypatch.setattr(wheel_repack, "repack_vllm_0300_cu129_wheel", repack)
 
     assert wheel_repack.main(["source.whl", str(tmp_path)]) == 0
-    assert wheel_repack.main(["source.whl", str(tmp_path), "--vllm-version", "0.27.1"]) == 0
+    assert wheel_repack.main(["source.whl", str(tmp_path), "--vllm-version", "0.30.0"]) == 0
+    with pytest.raises(SystemExit):
+        wheel_repack.main(["source.whl", str(tmp_path), "--vllm-version", "0.27.1"])
 
-    assert calls == [("0.30.0", "source.whl", str(tmp_path)), ("0.27.1", "source.whl", str(tmp_path))]
+    assert calls == [("source.whl", str(tmp_path)), ("source.whl", str(tmp_path))]
     assert json.loads(capsys.readouterr().out.splitlines()[0])["wheel_sha256"] == "a" * 64

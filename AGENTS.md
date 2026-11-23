@@ -36,8 +36,7 @@ python benchmarks/verify_sealed_records.py
 
 - Keep Cachet at the engine handoff boundary; do not add a scheduler, decode
   loop, or native block manager.
-- Use `cachet` imports and `cachet-*` commands in new docs; every console script
-  also keeps its `document-kv-*` alias.
+- Use `cachet` imports and `cachet-*` commands in new docs.
 - Never commit credentials, raw service responses, wheels, logs, or
   `databricks-runs/` output; see `docs/evidence-policy.md`. Do not hand-edit
   sealed records under `benchmarks/`.

@@ -31,9 +31,9 @@ from document_kv_cache.storage_benchmark import (
 from document_kv_cache.storage import is_real_uc_volume_root
 
 
-DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME = "document-kv-storage-benchmark"
+DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME = "cachet-storage-benchmark"
 DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY = "document_kv_storage_benchmark"
-DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE = "document-kv-storage-benchmark"
+DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE = "cachet-storage-benchmark"
 STORAGE_BENCHMARK_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse

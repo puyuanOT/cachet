@@ -116,15 +116,3 @@ def test_map_segments_to_reserved_blocks_rejects_non_contiguous_logical_blocks()
 
     with pytest.raises(ValueError, match="contiguous"):
         map_segments_to_reserved_blocks((segment,), blocks)
-
-
-def test_legacy_segment_constructor_still_maps_by_unique_chunk_id():
-    segment = KVSegment("static", 0, 2, 0, 20)
-
-    mapping = map_segments_to_blocks((segment,), block_size=4)
-
-    assert (0, "__legacy__", "legacy_chunk", "static", "") in mapping
-    assert "static" in mapping
-    assert mapping["static"] == mapping[(0, "__legacy__", "legacy_chunk", "static", "")]
-    assert list(mapping.unique_chunk_ids()) == ["static"]
-    assert len(mapping) == 1

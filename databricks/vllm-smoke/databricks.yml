@@ -1,5 +1,5 @@
 bundle:
-  name: document-kv-vllm-smoke
+  name: cachet-vllm-smoke
 
 variables:
   runner_python_file:
@@ -26,7 +26,7 @@ variables:
 resources:
   jobs:
     document_kv_vllm_smoke:
-      name: document-kv-vllm-smoke
+      name: cachet-vllm-smoke
       tasks:
         - task_key: document_kv_vllm_smoke
           new_cluster:
@@ -41,7 +41,7 @@ resources:
               spark.databricks.cluster.profile: singleNode
             custom_tags:
               ResourceClass: SingleNode
-              purpose: document-kv-vllm-smoke
+              purpose: cachet-vllm-smoke
             aws_attributes:
               availability: ON_DEMAND
               zone_id: auto

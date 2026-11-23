@@ -34,9 +34,9 @@ from document_kv_cache.vllm_smoke import (
 )
 
 
-DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME = "document-kv-vllm-smoke"
+DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME = "cachet-vllm-smoke"
 DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY = "document_kv_vllm_smoke"
-DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE = "document-kv-vllm-smoke"
+DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE = "cachet-vllm-smoke"
 VLLM_SMOKE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse

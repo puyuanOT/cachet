@@ -6,6 +6,7 @@ import re
 import stat
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -58,7 +59,6 @@ from document_kv_cache.engine_launch_config import (
     DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
-from document_kv_cache.legacy_compatibility import LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.methods import method_spec
 from document_kv_cache.native_probe_factories import (
@@ -66,7 +66,6 @@ from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_FACTORY,
     VLLM_NATIVE_PROBE_FACTORY,
     native_probe_adapter_contract_to_record,
-    native_probe_factories_record_issues,
     native_probe_runtime_contract_to_record,
 )
 from document_kv_cache.release_bundle import (
@@ -340,52 +339,6 @@ def test_build_release_bundle_can_include_compatibility_databricks_status(tmp_pa
     assert bundled_record["summary"]["submit_payload"]["node_type_ids"] == ["g5.8xlarge"]
 
 
-def test_build_release_bundle_can_include_legacy_migration_evidence(tmp_path):
-    source_dir = tmp_path / "sources"
-    bundle_dir = tmp_path / "bundle"
-    artifacts = _write_release_ready_artifacts(source_dir)
-    migration_evidence = _write_json(
-        source_dir / "legacy-migration.json",
-        _legacy_migration_evidence_record(ok=True),
-    )
-
-    bundle = build_release_bundle(
-        v1_benchmark_json=artifacts["v1"],
-        storage_benchmark_json=artifacts["storage"],
-        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-        legacy_migration_evidence_jsons=(migration_evidence,),
-        output_dir=bundle_dir,
-    )
-    record = release_bundle_to_record(bundle)
-
-    artifact = record["artifacts"][-1]
-    assert artifact["role"] == "legacy_migration_evidence"
-    assert artifact["record_type"] == LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE
-    assert artifact["bundled_path"] == "legacy_migration_evidence_07.json"
-    bundled_record = json.loads((bundle_dir / artifact["bundled_path"]).read_text(encoding="utf-8"))
-    assert bundled_record["record_type"] == LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE
-
-
-def test_build_release_bundle_rejects_invalid_legacy_migration_evidence(tmp_path):
-    source_dir = tmp_path / "sources"
-    artifacts = _write_release_ready_artifacts(source_dir)
-    migration_evidence = _write_json(
-        source_dir / "legacy-migration.json",
-        _legacy_migration_evidence_record(ok=False),
-    )
-
-    with pytest.raises(ValueError, match="legacy migration evidence ok must be true"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            legacy_migration_evidence_jsons=(migration_evidence,),
-            output_dir=tmp_path / "invalid-legacy-migration-bundle",
-        )
-
-
 def test_build_release_bundle_can_include_dependency_freshness(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
@@ -634,21 +587,21 @@ def test_build_release_bundle_rejects_non_executed_plan_execution_commands(tmp_p
     assert "benchmark plan execution sidecar commands[0].skipped must be false" in error
 
 
-def test_build_release_bundle_non_strict_allows_legacy_plan_source_target(tmp_path):
+def test_build_release_bundle_non_strict_allows_plan_source_without_plan_target(tmp_path):
     source_dir = tmp_path / "sources"
     artifacts = _write_release_ready_artifacts(source_dir)
-    legacy_record = _plan_execution_record(ok=True)
+    targetless_record = _plan_execution_record(ok=True)
     for field_name in ("plan_version", "suite_id", "model_id", "hardware_target", "command_count"):
-        legacy_record["plan_source"].pop(field_name)
-    legacy_plan = _write_json(source_dir / "legacy-plan-execution.json", legacy_record)
+        targetless_record["plan_source"].pop(field_name)
+    targetless_plan = _write_json(source_dir / "targetless-plan-execution.json", targetless_record)
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-        plan_execution_jsons=(legacy_plan,),
-        output_dir=tmp_path / "non-strict-legacy-plan-source-bundle",
+        plan_execution_jsons=(targetless_plan,),
+        output_dir=tmp_path / "non-strict-targetless-plan-source-bundle",
     )
     record = release_bundle_to_record(bundle)
 
@@ -1152,29 +1105,6 @@ def test_build_release_bundle_strict_v1_requires_compatibility_status_for_compat
     assert any(artifact["role"] == "compatibility_benchmark" for artifact in record["artifacts"])
     assert any(artifact["role"] == "compatibility_databricks_run_status" for artifact in record["artifacts"])
 
-    migration_evidence = _write_json(
-        source_dir / "legacy-migration.json",
-        _legacy_migration_evidence_record(ok=True),
-    )
-    bundle_with_migration = build_release_bundle(
-        **{
-            **release_kwargs,
-            "compatibility_benchmark_jsons": (compatibility_benchmark,),
-            "compatibility_databricks_run_status_jsons": (compatibility_status,),
-            "legacy_migration_evidence_jsons": (migration_evidence,),
-        },
-        output_dir=tmp_path / "strict-complete-with-compatibility-and-migration",
-        require_complete_v1=True,
-    )
-    record_with_migration = release_bundle_to_record(bundle_with_migration)
-
-    assert record_with_migration["ok"] is True
-    assert record_with_migration["artifact_count"] == 26
-    assert any(
-        artifact["role"] == "legacy_migration_evidence"
-        for artifact in record_with_migration["artifacts"]
-    )
-
 
 def test_build_release_bundle_strict_v1_rejects_databricks_hardware_target_mismatch(tmp_path):
     source_dir = tmp_path / "sources"
@@ -1295,7 +1225,7 @@ def test_build_release_bundle_strict_v1_rejects_wrong_plan_source_target(tmp_pat
         databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
     )
     wrong_target_record = _plan_execution_record(ok=True)
-    wrong_target_record["plan_source"]["plan_version"] = "legacy"
+    wrong_target_record["plan_source"]["plan_version"] = "v0"
     wrong_target_record["plan_source"]["model_id"] = "qwen2:7b"
     wrong_target_record["plan_source"]["hardware_target"] = "aws-g6"
     wrong_target_record["plan_source"]["suite_id"] = ""
@@ -1523,63 +1453,28 @@ def test_build_release_bundle_strict_v1_requires_supported_native_probe_factorie
         )
 
 
-def test_build_release_bundle_strict_v1_requires_delegate_contract_proof_for_native_probe_support(tmp_path):
-    source_dir = tmp_path / "legacy-supported-native-factories"
+@pytest.mark.parametrize("contract_kind", ("adapter", "runtime"))
+def test_build_release_bundle_rejects_native_probe_support_without_delegate_contract_proof(tmp_path, contract_kind):
+    source_dir = tmp_path / f"{contract_kind}-contractless-native-factories"
     release_kwargs = _strict_v1_release_bundle_kwargs(
         source_dir,
         databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
     )
-    legacy_supported_record = _native_probe_factories_record(supported=True)
-    for factory in legacy_supported_record["factories"]:
-        del factory["delegate_adapter_contract"]
-        del factory["delegate_adapter_contract_valid"]
-    assert native_probe_factories_record_issues(legacy_supported_record) == ()
-    legacy_supported_native_probe_factories = _write_json(
-        source_dir / "legacy-supported-native-probe-factories.json",
-        legacy_supported_record,
+    contractless_record = _native_probe_factories_record(supported=True)
+    for factory in contractless_record["factories"]:
+        del factory[f"delegate_{contract_kind}_contract"]
+        del factory[f"delegate_{contract_kind}_contract_valid"]
+    contractless_native_probe_factories = _write_json(
+        source_dir / f"{contract_kind}-contractless-native-probe-factories.json",
+        contractless_record,
     )
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match=rf"delegate_{contract_kind}_contract_valid must be boolean"):
         build_release_bundle(
-            **{**release_kwargs, "native_probe_factories_jsons": (legacy_supported_native_probe_factories,)},
-            output_dir=tmp_path / "strict-legacy-supported-native-factories",
+            **{**release_kwargs, "native_probe_factories_jsons": (contractless_native_probe_factories,)},
+            output_dir=tmp_path / f"strict-{contract_kind}-contractless-native-factories",
             require_complete_v1=True,
-    )
-
-    error = str(exc_info.value)
-    assert "vLLM native probe factory support" in error
-    assert "SGLang native probe factory support" in error
-
-
-def test_build_release_bundle_strict_v1_requires_runtime_contract_proof_for_native_probe_support(tmp_path):
-    source_dir = tmp_path / "runtime-contractless-native-factories"
-    release_kwargs = _strict_v1_release_bundle_kwargs(
-        source_dir,
-        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
-    )
-    runtime_contractless_record = _native_probe_factories_record(supported=True)
-    for factory in runtime_contractless_record["factories"]:
-        del factory["delegate_runtime_contract"]
-        del factory["delegate_runtime_contract_valid"]
-    assert native_probe_factories_record_issues(runtime_contractless_record) == ()
-    runtime_contractless_native_probe_factories = _write_json(
-        source_dir / "runtime-contractless-native-probe-factories.json",
-        runtime_contractless_record,
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        build_release_bundle(
-            **{
-                **release_kwargs,
-                "native_probe_factories_jsons": (runtime_contractless_native_probe_factories,),
-            },
-            output_dir=tmp_path / "strict-runtime-contractless-native-factories",
-            require_complete_v1=True,
-    )
-
-    error = str(exc_info.value)
-    assert "vLLM native probe factory support" in error
-    assert "SGLang native probe factory support" in error
+        )
 
 
 def test_build_release_bundle_strict_v1_accepts_split_native_probe_factory_support(tmp_path):
@@ -2118,12 +2013,12 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "active-taskkey-databricks-run-status.json",
         active_task_key_status_record,
     )
-    non_g5_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
-    non_g5_submit_payload_status_record["submit_payload"]["aws_single_node_gpu_type"] = False
-    non_g5_submit_payload_status_record["submit_payload"]["tasks"][0]["node_type_id"] = "g6.4xlarge"
-    non_g5_submit_payload_status = _write_json(
-        tmp_path / "non-g5-submit-payload-databricks-run-status.json",
-        non_g5_submit_payload_status_record,
+    unsupported_gpu_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
+    unsupported_gpu_submit_payload_status_record["submit_payload"]["aws_single_node_gpu_type"] = False
+    unsupported_gpu_submit_payload_status_record["submit_payload"]["tasks"][0]["node_type_id"] = "g6.4xlarge"
+    unsupported_gpu_submit_payload_status = _write_json(
+        tmp_path / "unsupported-gpu-submit-payload-databricks-run-status.json",
+        unsupported_gpu_submit_payload_status_record,
     )
     missing_purpose_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
     missing_purpose_submit_payload_status_record["submit_payload"]["tasks"][0]["purpose"] = ""
@@ -2428,20 +2323,6 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-unrecorded-document-file-bundle",
         )
 
-    unrecorded_legacy_file_wheel = _write_wheel(
-        tmp_path / "unrecorded-legacy-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        extra_entries=(("restaurant_kv_serving/compat_runtime.py", b"UNRECORDED = True\n"),),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=unrecorded_legacy_file_wheel,
-            output_dir=tmp_path / "bad-wheel-unrecorded-legacy-file-bundle",
-        )
-
     with pytest.warns(UserWarning, match="Duplicate name"):
         duplicate_document_member_wheel = _write_wheel(
             tmp_path / "duplicate-document-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
@@ -2458,10 +2339,10 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     with pytest.warns(UserWarning, match="Duplicate name"):
-        duplicate_legacy_member_wheel = _write_wheel(
-            tmp_path / "duplicate-legacy-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-            extra_entries=(("restaurant_kv_serving/__init__.py", b""),),
-            duplicate_entries=(("restaurant_kv_serving/__init__.py", b"DUPLICATE = True\n"),),
+        duplicate_extra_member_wheel = _write_wheel(
+            tmp_path / "duplicate-extra-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+            extra_entries=(("cachet/extra.py", b""),),
+            duplicate_entries=(("cachet/extra.py", b"DUPLICATE = True\n"),),
         )
     with pytest.raises(ValueError, match="duplicate file paths"):
         build_release_bundle(
@@ -2469,8 +2350,8 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=duplicate_legacy_member_wheel,
-            output_dir=tmp_path / "bad-wheel-duplicate-legacy-member-bundle",
+            package_wheel=duplicate_extra_member_wheel,
+            output_dir=tmp_path / "bad-wheel-duplicate-extra-member-bundle",
         )
 
     with pytest.warns(UserWarning, match="Duplicate name"):
@@ -2630,52 +2511,6 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-document-init-bundle",
         )
 
-    legacy_package_file_wheel = _write_wheel(
-        tmp_path / "legacy-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        include_legacy_init=True,
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_package_file_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-package-file-bundle",
-        )
-
-    legacy_purelib_package_file_wheel = _write_wheel(
-        tmp_path / "legacy-purelib-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        extra_entries=(
-            ("cachet_kv-0.2.0.data/purelib/restaurant_kv_serving/__init__.py", b""),
-        ),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_purelib_package_file_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-purelib-package-file-bundle",
-        )
-
-    legacy_platlib_package_file_wheel = _write_wheel(
-        tmp_path / "legacy-platlib-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        extra_entries=(
-            ("cachet_kv-0.2.0.data/platlib/restaurant_kv_serving/__init__.py", b""),
-        ),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_platlib_package_file_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-platlib-package-file-bundle",
-        )
-
     missing_cachet_stub_wheel = _write_wheel(
         tmp_path / "missing-cachet-stub-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_cachet_stub=False,
@@ -2718,20 +2553,6 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-document-typed-marker-bundle",
         )
 
-    legacy_typed_marker_wheel = _write_wheel(
-        tmp_path / "legacy-typed-marker-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        include_legacy_typed_marker=True,
-    )
-    with pytest.raises(ValueError, match="legacy compatibility package files"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_typed_marker_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-typed-marker-bundle",
-        )
-
     missing_entry_points_wheel = _write_wheel(
         tmp_path / "missing-entry-points-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_entry_points=False,
@@ -2746,52 +2567,20 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-entry-points-bundle",
         )
 
-    legacy_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
-    legacy_script_entries["restaurant-kv-vllm-smoke"] = "restaurant_kv_serving.vllm_smoke:main"
-    legacy_script_wheel = _write_wheel(
-        tmp_path / "legacy-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        entry_points_payload=_wheel_entry_points_payload(legacy_script_entries),
+    wrong_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+    wrong_script_entries["cachet-release-bundle"] = "document_kv_cache.release_bundle:main"
+    wrong_script_wheel = _write_wheel(
+        tmp_path / "wrong-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(wrong_script_entries),
     )
-    with pytest.raises(ValueError, match="legacy compatibility console script"):
+    with pytest.raises(ValueError, match="cachet-release-bundle"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_script_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-script-bundle",
-        )
-
-    legacy_target_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
-    legacy_target_entries["cachet-legacy-smoke"] = "restaurant_kv_serving.vllm_smoke:main"
-    legacy_target_wheel = _write_wheel(
-        tmp_path / "legacy-script-target-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        entry_points_payload=_wheel_entry_points_payload(legacy_target_entries),
-    )
-    with pytest.raises(ValueError, match="legacy compatibility module"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=legacy_target_wheel,
-            output_dir=tmp_path / "bad-wheel-legacy-script-target-bundle",
-        )
-
-    wrong_document_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
-    wrong_document_script_entries["document-kv-release-bundle"] = "cachet.release_bundle:main"
-    wrong_document_script_wheel = _write_wheel(
-        tmp_path / "wrong-document-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        entry_points_payload=_wheel_entry_points_payload(wrong_document_script_entries),
-    )
-    with pytest.raises(ValueError, match="document-kv-release-bundle"):
-        build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=wrong_document_script_wheel,
-            output_dir=tmp_path / "bad-wheel-wrong-document-script-bundle",
+            package_wheel=wrong_script_wheel,
+            output_dir=tmp_path / "bad-wheel-wrong-script-bundle",
         )
 
     with pytest.raises(ValueError, match="PR evidence sidecar ok"):
@@ -3130,8 +2919,8 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            databricks_run_status_jsons=(non_g5_submit_payload_status,),
-            output_dir=tmp_path / "non-g5-submit-payload-databricks-status-bundle",
+            databricks_run_status_jsons=(unsupported_gpu_submit_payload_status,),
+            output_dir=tmp_path / "unsupported-gpu-submit-payload-databricks-status-bundle",
         )
 
     with pytest.raises(ValueError, match=r"submit_payload\.tasks\[0\]\.purpose must be a non-empty string"):
@@ -3193,6 +2982,132 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             databricks_run_status_jsons=(raw_object_in_wrapper_action,),
             output_dir=tmp_path / "raw-object-in-wrapper-action-databricks-status-bundle",
         )
+
+
+def _package_wheel_issues(wheel: Path) -> tuple[str, ...]:
+    return public_release_bundle._package_wheel_issues(  # noqa: SLF001
+        str(wheel),
+        wheel.read_bytes(),
+        expected_version="0.2.0",
+    )
+
+
+def test_package_wheel_console_scripts_match_pyproject_scripts() -> None:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS == pyproject["project"]["scripts"]
+
+
+def test_package_wheel_layout_accepts_only_release_packages_and_dist_info(tmp_path: Path) -> None:
+    valid_wheel = _write_wheel(tmp_path / "valid" / "cachet_kv-0.2.0-py3-none-any.whl")
+    assert _package_wheel_issues(valid_wheel) == ()
+
+    for label, member_name in (
+        ("cachet-module", "cachet/extra.py"),
+        ("document-module", "document_kv_cache/extra.py"),
+        ("vllm-package", "vllm_kv_injection/__init__.py"),
+        ("sglang-package", "sglang_kv_injection/__init__.py"),
+        ("dist-info-file", "cachet_kv-0.2.0.dist-info/licenses/NOTICE"),
+    ):
+        accepted = _write_wheel_with_recorded_extra(
+            valid_wheel,
+            tmp_path / f"accepted-{label}" / valid_wheel.name,
+            member_name=member_name,
+            payload=b"",
+            external_attr=None,
+            create_system=None,
+        )
+        assert _package_wheel_issues(accepted) == (), label
+
+    top_level_issue = (
+        "package wheel artifact top-level entries must be limited to 'cachet', "
+        "'cachet_kv-0.2.0.dist-info', 'document_kv_cache', 'sglang_kv_injection', "
+        "'vllm_kv_injection'; found "
+    )
+    install_scheme_issue = (
+        "package wheel artifact must not install packages through .data/purelib or .data/platlib: "
+    )
+    for label, member_name, expected_issue in (
+        ("extra-package", "other_pkg/__init__.py", f"{top_level_issue}'other_pkg'"),
+        ("top-level-module", "other_module.py", f"{top_level_issue}'other_module.py'"),
+        (
+            "data-purelib",
+            "cachet_kv-0.2.0.data/purelib/other_pkg/__init__.py",
+            f"{install_scheme_issue}'cachet_kv-0.2.0.data/purelib/other_pkg'",
+        ),
+        (
+            "data-platlib",
+            "cachet_kv-0.2.0.data/platlib/cachet/__init__.py",
+            f"{install_scheme_issue}'cachet_kv-0.2.0.data/platlib/cachet'",
+        ),
+        (
+            "data-scripts",
+            "cachet_kv-0.2.0.data/scripts/other-tool",
+            f"{top_level_issue}'cachet_kv-0.2.0.data'",
+        ),
+    ):
+        rejected = _write_wheel_with_recorded_extra(
+            valid_wheel,
+            tmp_path / f"rejected-{label}" / valid_wheel.name,
+            member_name=member_name,
+            payload=b"",
+            external_attr=None,
+            create_system=None,
+        )
+        assert _package_wheel_issues(rejected) == (expected_issue,), label
+
+
+def test_build_release_bundle_rejects_package_wheel_with_extra_top_level_package(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    valid_wheel = _write_wheel(tmp_path / "valid" / "cachet_kv-0.2.0-py3-none-any.whl")
+    extra_package_wheel = _write_wheel_with_recorded_extra(
+        valid_wheel,
+        source_dir / valid_wheel.name,
+        member_name="other_pkg/__init__.py",
+        payload=b"",
+        external_attr=None,
+        create_system=None,
+    )
+
+    with pytest.raises(ValueError, match="top-level entries must be limited to"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=extra_package_wheel,
+            output_dir=tmp_path / "bundle",
+        )
+
+
+def test_package_wheel_console_scripts_must_equal_release_console_scripts(tmp_path: Path) -> None:
+    expected_scripts = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+    valid_wheel = _write_wheel(
+        tmp_path / "valid" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(expected_scripts),
+    )
+    assert _package_wheel_issues(valid_wheel) == ()
+
+    extra_script_wheel = _write_wheel(
+        tmp_path / "extra-script" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(
+            {**expected_scripts, "other-tool": "cachet.release_bundle:main"}
+        ),
+    )
+    assert _package_wheel_issues(extra_script_wheel) == (
+        "package wheel artifact entry_points.txt must not include unexpected console script 'other-tool'",
+    )
+
+    missing_script_wheel = _write_wheel(
+        tmp_path / "missing-script" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(
+            {name: target for name, target in expected_scripts.items() if name != "cachet-sglang-smoke"}
+        ),
+    )
+    assert _package_wheel_issues(missing_script_wheel) == (
+        "package wheel artifact entry_points.txt must include 'cachet-sglang-smoke'",
+    )
 
 
 def test_package_wheel_structure_rejects_record_closed_path_and_mode_adversaries(
@@ -3578,21 +3493,24 @@ def test_build_release_bundle_rejects_release_evidence_for_changed_same_path_art
         )
 
 
-def test_build_release_bundle_accepts_legacy_release_evidence_without_source_fingerprints(tmp_path):
+def test_build_release_bundle_accepts_release_evidence_without_source_fingerprints(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
-    legacy_evidence_record = json.loads(Path(artifacts["evidence"]).read_text(encoding="utf-8"))
-    for source in legacy_evidence_record["artifact_sources"]:
+    unfingerprinted_evidence_record = json.loads(Path(artifacts["evidence"]).read_text(encoding="utf-8"))
+    for source in unfingerprinted_evidence_record["artifact_sources"]:
         source.pop("size_bytes")
         source.pop("sha256")
-    legacy_evidence_path = _write_json(tmp_path / "legacy-release-evidence.json", legacy_evidence_record)
+    unfingerprinted_evidence_path = _write_json(
+        tmp_path / "unfingerprinted-release-evidence.json",
+        unfingerprinted_evidence_record,
+    )
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-        release_evidence_json=legacy_evidence_path,
-        output_dir=tmp_path / "legacy-evidence-bundle",
+        release_evidence_json=unfingerprinted_evidence_path,
+        output_dir=tmp_path / "unfingerprinted-evidence-bundle",
     )
 
     assert any(artifact.role == "release_evidence" for artifact in bundle.artifacts)
@@ -3881,7 +3799,6 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
 
     assert "--require-complete-v1" in completed.stdout
     assert "--compatibility-benchmark-json" in completed.stdout
-    assert "--legacy-migration-evidence-json" in completed.stdout
     assert "--requirements-matrix-md" in completed.stdout
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
     assert "vLLM/SGLang native engine probes, connector actions, and launch configs" in help_text
@@ -4146,15 +4063,15 @@ def _storage_record(*, ok: bool):
     return {
         "record_type": STORAGE_BENCHMARK_RECORD_TYPE,
         "benchmark_id": "storage-release-smoke",
-        "workspace_dir": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark/workspace",
-        "shard_uri": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark/workspace/storage-benchmark.kvpack",
+        "workspace_dir": "/Volumes/catalog/schema/volume/cachet-storage-benchmark/workspace",
+        "shard_uri": "/Volumes/catalog/schema/volume/cachet-storage-benchmark/workspace/storage-benchmark.kvpack",
         "chunk_count": 4,
         "chunk_bytes": 1024,
         "repeats": 1,
         "parallelism": 2,
         "align_bytes": 4096,
         "readers": list(readers),
-        "uc_volume_root": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        "uc_volume_root": "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
         "results": [
             {
                 "reader_id": reader,
@@ -4179,7 +4096,7 @@ def _storage_record(*, ok: bool):
             "readers_without_latency": [],
             "readers_without_throughput": [],
             "require_real_uc_volume": True,
-            "uc_volume_root": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "uc_volume_root": "/Volumes/catalog/schema/volume/cachet-storage-benchmark",
             "uc_volume_is_real": True,
             "issues": [] if ok else ["missing storage readers: unity_catalog"],
         },
@@ -4308,21 +4225,21 @@ def _runtime_contract_metadata(backend: ServingBackend) -> dict[str, str]:
 
 
 STRICT_V1_DATABRICKS_RUN_STATUS_CASES = (
-    ("document-kv-vllm-smoke", "cachet-vllm-smoke", "document_kv_vllm_smoke", "v1"),
+    ("cachet-vllm-smoke", "cachet-vllm-smoke", "document_kv_vllm_smoke", "v1"),
     (
-        "document-kv-storage-benchmark",
+        "cachet-storage-benchmark",
         "cachet-storage-benchmark",
         "document_kv_storage_benchmark",
         "storage",
     ),
     (
-        "document-kv-engine-probe",
+        "cachet-engine-probe",
         "cachet-native-vllm-engine-probe",
         "document_kv_vllm_engine_probe",
         "engine-probe-vllm",
     ),
     (
-        "document-kv-engine-probe",
+        "cachet-engine-probe",
         "cachet-native-sglang-engine-probe",
         "document_kv_sglang_engine_probe",
         "engine-probe-sglang",
@@ -4454,11 +4371,9 @@ def _write_wheel(
     include_license_file: bool = True,
     include_cachet_init: bool = True,
     include_document_init: bool = True,
-    include_legacy_init: bool = False,
     include_cachet_stub: bool = True,
     include_cachet_typed_marker: bool = True,
     include_document_typed_marker: bool = True,
-    include_legacy_typed_marker: bool = False,
     include_entry_points: bool = True,
     entry_points_payload: bytes | None = None,
     record_lines: tuple[str, ...] | None = None,
@@ -4494,8 +4409,6 @@ def _write_wheel(
         wheel_entries.append(("cachet/__init__.pyi", package_payload))
     if include_document_init:
         wheel_entries.append(("document_kv_cache/__init__.py", package_payload))
-    if include_legacy_init:
-        wheel_entries.append(("restaurant_kv_serving/__init__.py", package_payload))
     if include_entry_points:
         wheel_entries.append(
             (
@@ -4509,8 +4422,6 @@ def _write_wheel(
         wheel_entries.append(("cachet/py.typed", b""))
     if include_document_typed_marker:
         wheel_entries.append(("document_kv_cache/py.typed", b""))
-    if include_legacy_typed_marker:
-        wheel_entries.append(("restaurant_kv_serving/py.typed", b""))
     with zipfile.ZipFile(path, "w") as wheel_zip:
         for name, payload in wheel_entries:
             wheel_zip.writestr(name, payload)
@@ -4647,41 +4558,6 @@ def _pr_evidence_record(*, ok: bool):
     }
 
 
-def _legacy_migration_evidence_record(*, ok: bool):
-    return {
-        "record_type": LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE,
-        "ok": ok,
-        "checked_downstream_jobs": [
-            _legacy_migration_checked_job("release", "cachet-release-bundle"),
-            _legacy_migration_checked_job("benchmark", "cachet-vllm-benchmark"),
-            _legacy_migration_checked_job("storage", "cachet-storage-benchmark"),
-            _legacy_migration_checked_job("native_probe", "cachet-native-engine-probe"),
-            _legacy_migration_checked_job("smoke", "cachet-vllm-smoke"),
-        ],
-        "release_evidence": [
-            {
-                "hardware_target": "aws-g6-l4",
-                "evidence_uri": "dbfs:/evidence/g6-release.json",
-                "runner_uses_legacy_facade": False,
-            }
-        ],
-        "issues": [] if ok else ["legacy runner remains"],
-    }
-
-
-def _legacy_migration_checked_job(category: str, name: str):
-    return {
-        "name": name,
-        "category": category,
-        "environment": "Databricks QA",
-        "migrated_import_surface": "cachet",
-        "migrated_command_prefix": "cachet-",
-        "legacy_imports_present": False,
-        "legacy_console_scripts_present": False,
-        "evidence_uri": f"dbfs:/migration/{name}.json",
-    }
-
-
 def _github_governance_cli_record(*, ok: bool):
     summary = {
         "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
@@ -4771,8 +4647,8 @@ def _dependency_freshness_record(*, ok: bool):
         "runtime_pins": [
             {
                 "package": "vllm",
-                "pinned_version": "0.27.1",
-                "latest_version": "0.27.1",
+                "pinned_version": "0.30.0",
+                "latest_version": "0.30.0",
                 "source": "serving_env.vllm",
                 "current": True,
                 "allowed": True,
@@ -4931,7 +4807,7 @@ def _databricks_run_status_cli_record(
     *,
     succeeded: bool,
     purpose: str = DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
-    run_name: str = "document-kv-v1",
+    run_name: str = "cachet-v1",
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,
     node_type_id: str = "g6.8xlarge",
 ):
@@ -4952,7 +4828,7 @@ def _databricks_run_status_record(
     *,
     succeeded: bool,
     purpose: str = DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
-    run_name: str = "document-kv-v1",
+    run_name: str = "cachet-v1",
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,
     node_type_id: str = "g6.8xlarge",
 ):
@@ -5000,7 +4876,7 @@ def _databricks_run_status_record(
 def _databricks_run_submit_payload_record(
     *,
     purpose: str = DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
-    run_name: str = "document-kv-v1",
+    run_name: str = "cachet-v1",
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,
     node_type_id: str = "g6.8xlarge",
 ):
@@ -5026,6 +4902,7 @@ def _databricks_run_submit_payload_record(
         ],
         "node_type_ids": [node_type_id],
         "driver_node_type_ids": [node_type_id],
+        "hardware_targets": ["aws-g5-a10g" if node_type_id.startswith("g5.") else "aws-g6-l4"],
         "spark_versions": ["15.4.x-gpu-ml-scala2.12"],
         "spark_env_keys": [],
         "data_security_modes": ["SINGLE_USER"],

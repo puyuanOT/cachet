@@ -1,8 +1,8 @@
-"""Public package facade for Document KV Cache.
+"""Canonical implementation package for Cachet.
 
-This facade exposes the document-generic import path and console script targets
-used by Cachet. The former restaurant-specific compatibility package is no
-longer consulted for root exports or attribute fallback.
+The package root lazily exposes the document KV-cache API that the branded
+``cachet`` facade re-exports, and its public submodules provide the console
+script targets.
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ _PUBLIC_SUBMODULES = frozenset(
         "engine_protocol",
         "github_governance",
         "kvpack",
-        "legacy_compatibility",
         "live_server",
         "manifest",
         "materializer",
@@ -63,7 +62,6 @@ _PUBLIC_SUBMODULES = frozenset(
         "repository_hygiene",
         "reuse_contract",
         "rope",
-        "runtime_telemetry",
         "service",
         "serving_env",
         "sglang_runtime_preflight",
@@ -133,16 +131,12 @@ _DOCUMENT_ROOT_EXPORTS = {
     'latency_speedup': ('document_kv_cache.benchmark_metrics', 'latency_speedup'),
     'quality_delta': ('document_kv_cache.benchmark_metrics', 'quality_delta'),
     'BENCHMARK_RUN_RECORD_TYPE': ('document_kv_cache.benchmark_runner', 'BENCHMARK_RUN_RECORD_TYPE'),
-    'BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE': ('document_kv_cache.benchmark_runner', 'BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE'),
     'BenchmarkEngine': ('document_kv_cache.benchmark_runner', 'BenchmarkEngine'),
     'BenchmarkEngineRequest': ('document_kv_cache.benchmark_runner', 'BenchmarkEngineRequest'),
     'BenchmarkGeneration': ('document_kv_cache.benchmark_runner', 'BenchmarkGeneration'),
     'BenchmarkRunResult': ('document_kv_cache.benchmark_runner', 'BenchmarkRunResult'),
-    'BenchmarkResourceEvidence': ('document_kv_cache.benchmark_runner', 'BenchmarkResourceEvidence'),
     'OpenAICompatibleBenchmarkConfig': ('document_kv_cache.benchmark_runner', 'OpenAICompatibleBenchmarkConfig'),
     'benchmark_run_result_to_record': ('document_kv_cache.benchmark_runner', 'benchmark_run_result_to_record'),
-    'benchmark_resource_evidence_to_record': ('document_kv_cache.benchmark_runner', 'benchmark_resource_evidence_to_record'),
-    'benchmark_resource_evidence_from_record': ('document_kv_cache.benchmark_runner', 'benchmark_resource_evidence_from_record'),
     'default_benchmark_arms': ('document_kv_cache.benchmark_runner', 'default_benchmark_arms'),
     'load_benchmark_jsonl': ('document_kv_cache.benchmark_runner', 'load_benchmark_jsonl'),
     'load_v1_jsonl_suite': ('document_kv_cache.benchmark_runner', 'load_v1_jsonl_suite'),
@@ -236,7 +230,6 @@ _DOCUMENT_ROOT_EXPORTS = {
     'write_databricks_engine_probe_runner_script': ('document_kv_cache.databricks_engine_probe_job', 'write_databricks_engine_probe_runner_script'),
     'DEDICATED_DATABRICKS_DATA_SECURITY_MODE': ('document_kv_cache.databricks_job', 'DEDICATED_DATABRICKS_DATA_SECURITY_MODE'),
     'DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE': ('document_kv_cache.databricks_job', 'DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE'),
-    'DEFAULT_AWS_G5_NODE_TYPE': ('document_kv_cache.databricks_job', 'DEFAULT_AWS_G5_NODE_TYPE'),
     'DEFAULT_DATABRICKS_DATA_SECURITY_MODE': ('document_kv_cache.databricks_job', 'DEFAULT_DATABRICKS_DATA_SECURITY_MODE'),
     'DEFAULT_DATABRICKS_PURPOSE': ('document_kv_cache.databricks_job', 'DEFAULT_DATABRICKS_PURPOSE'),
     'DEFAULT_DATABRICKS_RUN_NAME': ('document_kv_cache.databricks_job', 'DEFAULT_DATABRICKS_RUN_NAME'),
@@ -244,14 +237,11 @@ _DOCUMENT_ROOT_EXPORTS = {
     'DEFAULT_DATABRICKS_TASK_KEY': ('document_kv_cache.databricks_job', 'DEFAULT_DATABRICKS_TASK_KEY'),
     'DatabricksSingleNodeGPUClusterConfig': ('document_kv_cache.databricks_job', 'DatabricksSingleNodeGPUClusterConfig'),
     'DatabricksBenchmarkJobConfig': ('document_kv_cache.databricks_job', 'DatabricksBenchmarkJobConfig'),
-    'DatabricksSingleNodeG5ClusterConfig': ('document_kv_cache.databricks_job', 'DatabricksSingleNodeG5ClusterConfig'),
     'RESERVED_SINGLE_NODE_GPU_TAG_KEYS': ('document_kv_cache.databricks_job', 'RESERVED_SINGLE_NODE_GPU_TAG_KEYS'),
     'SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES': ('document_kv_cache.databricks_job', 'SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES'),
     'build_databricks_run_submit_payload': ('document_kv_cache.databricks_job', 'build_databricks_run_submit_payload'),
     'build_single_node_gpu_cluster': ('document_kv_cache.databricks_job', 'build_single_node_gpu_cluster'),
-    'build_single_node_g5_cluster': ('document_kv_cache.databricks_job', 'build_single_node_g5_cluster'),
     'validate_aws_single_node_gpu_type': ('document_kv_cache.databricks_job', 'validate_aws_single_node_gpu_type'),
-    'validate_aws_g5_node_type': ('document_kv_cache.databricks_job', 'validate_aws_g5_node_type'),
     'write_databricks_run_submit_json': ('document_kv_cache.databricks_job', 'write_databricks_run_submit_json'),
     'write_databricks_runner_script': ('document_kv_cache.databricks_job', 'write_databricks_runner_script'),
     'DATABRICKS_AUTH_CHECK_RECORD_TYPE': ('document_kv_cache.databricks_runs', 'DATABRICKS_AUTH_CHECK_RECORD_TYPE'),

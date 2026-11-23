@@ -12,20 +12,15 @@ release-operation material.
 - `adding-a-kv-method.md` is the method-author path for scaffolding, contracts,
   serving integration, tests, and benchmark publication gates.
 - `production.md` explains the vLLM, SGLang, and managed-cloud deployment path.
-- `release-ops/` keeps maintainer-only release machinery, audit records, and
-  historical detailed references away from the first-touch user path.
+- `release-ops/` keeps maintainer-only release machinery and governance records
+  away from the first-touch user path.
 - `v1-requirements-matrix.md` maps the generalized document KV-cache goal to
   current repository evidence and remaining V1 release gaps.
 - `repo-map.md` is the human navigation map for source packages, benchmarks,
   maintainer evidence, Databricks templates, and ignored local run output.
 - `evidence-policy.md` defines which machine-readable records belong in
-  `benchmarks/`, `docs/release-ops/evidence/`,
-  `docs/release-ops/pr-evidence/`, release bundles, or ignored
+  `benchmarks/`, `docs/release-ops/evidence/`, release bundles, or ignored
   `databricks-runs/` scratch space.
-- `legacy-compatibility-removal.md` records the machine-checkable proof that
-  the source-only `restaurant_kv_serving` compatibility directory was removed;
-  the current downstream migration evidence lives under
-  `release-ops/evidence/legacy-migration/current/`.
 - `release-ops/evidence/dependency-freshness/current/README.md` explains the
   current direct dependency, serving-profile, and resolver-held transitive
   freshness evidence.

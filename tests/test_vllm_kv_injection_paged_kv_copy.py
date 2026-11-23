@@ -25,7 +25,7 @@ def test_slot_mapping_from_reserved_physical_blocks():
 
 
 def test_inject_triton_packed_layer_from_engine_independent_logical_source():
-    # Destination is vLLM 0.27.1 logical [B,H,BS,2D]; source stays [T,2,H,D].
+    # Destination is vLLM 0.30.0 logical [B,H,BS,2D]; source stays [T,2,H,D].
     dst = torch.zeros((3, 2, 4, 6), dtype=torch.float32)
     src = torch.arange(5 * 2 * 2 * 3, dtype=torch.float32).reshape(5, 2, 2, 3)
     slots = torch.tensor([9, 10, 0, 1, 2], dtype=torch.long)
@@ -128,7 +128,7 @@ def test_inject_kv_cache_layer_rejects_slots_outside_destination_cache():
 )
 def test_inject_kv_cache_layer_fails_closed_on_unsupported_layouts(dst):
     src = torch.ones((1, 2, 1, 2))
-    with pytest.raises(ValueError, match="vLLM 0.27.1 Triton|packed content"):
+    with pytest.raises(ValueError, match="vLLM 0.30.0 Triton|packed content"):
         inject_kv_cache_layer(dst, src, torch.tensor([0]), block_size=4)
 
 

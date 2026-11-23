@@ -626,10 +626,6 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
             "duplicate_required_datasets",
             "duplicate_report_rows",
             "duplicate_comparisons",
-        ):
-            if evidence.get(field_name, []) not in ([], ()):
-                issues.append(f"v1 benchmark evidence {field_name} must be empty")
-        for field_name in (
             "missing_report_rows",
             "missing_comparisons",
             "comparisons_without_metrics",
@@ -1784,7 +1780,7 @@ def _validate_v1_measurement_quality_labels(
     quality_scores = measurement.get("quality_scores")
     scores = quality_scores if isinstance(quality_scores, Mapping) else {}
     # Registered scorers score the parsed final answer and record the label in
-    # quality_scores; only unscored legacy measurements use the raw output text.
+    # quality_scores; metrics the scorer does not record use the raw output text.
     for field_name, value, raw_label in (
         ("exact_match", exact_match, _benchmark_exact_match),
         ("answer_found", answer_found, _benchmark_answer_found),
@@ -2201,11 +2197,6 @@ def _add_unique_v1_dataset_arm(
         issues.append(f"v1 benchmark {collection_name} has duplicate row for {dataset}:{arm_id}")
         return
     seen.add(key)
-
-
-def _validate_optional_bool(value: Any, label: str, issues: list[str]) -> None:
-    if value is not None and type(value) is not bool:
-        issues.append(f"{label} must be boolean when present")
 
 
 def _validate_optional_rate(value: Any, label: str, issues: list[str]) -> None:

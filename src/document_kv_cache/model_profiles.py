@@ -184,7 +184,7 @@ class KVModelProfile:
                 else KVStorageLayout.SEPARATE_KEY_VALUE
             )
         # Only forward payload_axis_order when the caller requests one so KVLayout
-        # keeps defaulting to token_major for backward compatibility.
+        # applies its token_major default.
         payload_axis_order_kwargs: dict[str, Any] = (
             {} if payload_axis_order is None else {"payload_axis_order": payload_axis_order}
         )
@@ -386,12 +386,8 @@ def model_profile_definition_from_record(record: Mapping[str, Any]) -> ModelProf
         default_dtype=_required_str(record, "default_dtype"),
         default_block_size=_required_int(record, "default_block_size"),
         default_lora_id=_required_str(record, "default_lora_id"),
-        default_shares_kv_storage=_optional_bool(record, "default_shares_kv_storage", default=True),
-        default_storage_layout=_optional_storage_layout(
-            record,
-            "default_storage_layout",
-            default=KVStorageLayout.SHARED_KEY_VALUE,
-        ),
+        default_shares_kv_storage=_required_bool(record, "default_shares_kv_storage"),
+        default_storage_layout=_required_storage_layout(record, "default_storage_layout"),
         metadata=metadata,
     )
     return ModelProfileDefinition(profile=profile, aliases=aliases)
@@ -470,20 +466,17 @@ def _required_int(record: Mapping[str, Any], key: str) -> int:
     return value
 
 
-def _optional_bool(record: Mapping[str, Any], key: str, *, default: bool) -> bool:
-    value = record.get(key, default)
+def _required_bool(record: Mapping[str, Any], key: str) -> bool:
+    value = record.get(key)
     if type(value) is not bool:
         raise ValueError(f"{key} must be a boolean")
     return value
 
 
-def _optional_storage_layout(
-    record: Mapping[str, Any],
-    key: str,
-    *,
-    default: KVStorageLayout,
-) -> KVStorageLayout:
-    value = record.get(key, default)
+def _required_storage_layout(record: Mapping[str, Any], key: str) -> KVStorageLayout:
+    value = record.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
     return kv_storage_layout_from_value(value, field_name=key)
 
 

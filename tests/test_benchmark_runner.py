@@ -66,7 +66,13 @@ from document_kv_cache.engine_adapters import (
     vllm_adapter_spec,
 )
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
-from document_kv_cache.methods import default_method_registry
+from document_kv_cache.methods import (
+    DOCUMENT_KV_CACHE_ARM,
+    ENGINE_NATIVE_EXECUTION,
+    MethodSpec,
+    default_method_registry,
+)
+from document_kv_cache.reuse_contract import ENGINE_NATIVE_ARTIFACT_FORMAT, PayloadDecodeStage
 from document_kv_cache.workflow import SourceDocument
 
 
@@ -300,13 +306,31 @@ def test_arm_spec_parses_only_typed_runtime_environment_overrides() -> None:
 
 
 def test_arbitrary_engine_native_cachet_arm_does_not_require_cachet_handoff() -> None:
-    lmcache = default_method_registry().get("lmcache", require_implemented=True)
-    spec = _cachet_arm_spec("lmcache", method_version=lmcache.artifact_version)
+    engine_native = MethodSpec(
+        method="example.engine_native",
+        display_name="Engine-native example",
+        arm_id=DOCUMENT_KV_CACHE_ARM,
+        connector_mode="example_engine_native",
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=True,
+        artifact_version="external-v1",
+        execution_kind=ENGINE_NATIVE_EXECUTION,
+        artifact_format=ENGINE_NATIVE_ARTIFACT_FORMAT,
+        payload_decode_stage=PayloadDecodeStage.ENGINE_NATIVE,
+        description="Application-provided engine-native connector method.",
+    )
+    registry = default_method_registry().with_spec(engine_native)
+    spec = _cachet_arm_spec(
+        engine_native.method_id,
+        method_version=engine_native.artifact_version,
+    )
+    spec["connector_mode"] = engine_native.connector_mode
     spec["requires_cachet_handoff"] = False
 
-    arms, _, _, _ = parse_benchmark_arm_specs((spec,))
+    arms, _, _, _ = parse_benchmark_arm_specs((spec,), method_registry=registry)
 
-    assert arms[0].cache_method == "lmcache"
+    assert arms[0].cache_method == engine_native.method_id
     assert arms[0].requires_cachet_handoff is False
 
 
@@ -806,7 +830,7 @@ def test_sanitized_evidence_drops_untrusted_generation_metadata():
     assert len(record["gate_inputs"]["cache_state_attestations"][0]["request_id"]) == 64
 
 
-def test_n_way_cache_arms_reject_ambiguous_legacy_handoff_mapping():
+def test_n_way_cache_arms_reject_ambiguous_unscoped_handoff_mapping():
     suite = BenchmarkSuite(
         suite_id="ambiguous-n-way",
         examples=(example(kv_transfer_params={}),),
@@ -895,9 +919,19 @@ def test_setting_variation_binds_declared_value_to_actual_arm_environment():
         fp16.runtime_environment_overrides["model_quantization"] = "unsafe"
 
 
-def test_legacy_v1_manifest_without_per_arm_environment_remains_readable() -> None:
+@pytest.mark.parametrize(
+    ("arm_field", "message"),
+    (
+        ("runtime_environment", "arms\\[0\\].runtime_environment must be an object"),
+        ("requires_cachet_handoff", "requires_cachet_handoff must be a boolean"),
+    ),
+)
+def test_manifest_arms_require_runtime_environment_and_handoff_flag(
+    arm_field: str,
+    message: str,
+) -> None:
     suite = BenchmarkSuite(
-        suite_id="legacy-environment",
+        suite_id="arm-environment",
         examples=(example(),),
         datasets=("biography",),
     )
@@ -919,32 +953,10 @@ def test_legacy_v1_manifest_without_per_arm_environment_remains_readable() -> No
         ),
     )
     record = benchmark_run_result_to_record(result)
-    manifest = record["experiment_manifest"]
-    manifest["arms"][0].pop("runtime_environment")
-    for field_name in (
-        "canonical_model_id",
-        "lora_id",
-        "prompt_template_version",
-        "serving_platform",
-        "model_dtype",
-        "model_quantization",
-        "runtime_kv_dtype",
-        "layout_version",
-        "payload_axis_order",
-        "block_size",
-        "key_position_encoding",
-        "tensor_parallel_size",
-        "pipeline_parallel_size",
-    ):
-        manifest["model_runtime"].pop(field_name)
+    record["experiment_manifest"]["arms"][0].pop(arm_field)
 
-    reconstructed = benchmark_run_result_from_record(record)
-
-    assert reconstructed.experiment_manifest is not None
-    environment = reconstructed.experiment_manifest.arms[0].runtime_environment
-    assert environment.served_model_id == suite.model_id
-    assert environment.canonical_model_id == suite.model_id
-    assert environment.serving_platform == "unresolved"
+    with pytest.raises(ValueError, match=message):
+        benchmark_run_result_from_record(record)
 
 
 @pytest.mark.parametrize(
@@ -1135,7 +1147,7 @@ def test_serving_platform_dimension_allows_engine_identity_dependencies() -> Non
         runtime_environment_overrides={
             "serving_platform": "vllm",
             "engine_id": "vllm",
-            "engine_version": "0.27.1",
+            "engine_version": "0.30.0",
             "runtime_version": "vllm-runtime",
         },
         requires_cachet_handoff=False,
@@ -1167,7 +1179,7 @@ def test_serving_platform_dimension_allows_engine_identity_dependencies() -> Non
             reference_arm_id="vllm",
             serving_platform="vllm",
             engine_id="vllm",
-            engine_version="0.27.1",
+            engine_version="0.30.0",
             runtime_version="vllm-runtime",
         ),
         reference_arm_id="vllm",

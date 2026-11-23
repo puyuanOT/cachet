@@ -7,6 +7,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 import cachet
 import document_kv_cache
 
@@ -66,16 +68,12 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'latency_speedup',
     'quality_delta',
     'BENCHMARK_RUN_RECORD_TYPE',
-    'BENCHMARK_RESOURCE_EVIDENCE_RECORD_TYPE',
     'BenchmarkEngine',
     'BenchmarkEngineRequest',
     'BenchmarkGeneration',
     'BenchmarkRunResult',
-    'BenchmarkResourceEvidence',
     'OpenAICompatibleBenchmarkConfig',
     'benchmark_run_result_to_record',
-    'benchmark_resource_evidence_to_record',
-    'benchmark_resource_evidence_from_record',
     'default_benchmark_arms',
     'load_benchmark_jsonl',
     'load_v1_jsonl_suite',
@@ -169,7 +167,6 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'write_databricks_engine_probe_runner_script',
     'DEDICATED_DATABRICKS_DATA_SECURITY_MODE',
     'DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE',
-    'DEFAULT_AWS_G5_NODE_TYPE',
     'DEFAULT_DATABRICKS_DATA_SECURITY_MODE',
     'DEFAULT_DATABRICKS_PURPOSE',
     'DEFAULT_DATABRICKS_RUN_NAME',
@@ -177,14 +174,11 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'DEFAULT_DATABRICKS_TASK_KEY',
     'DatabricksSingleNodeGPUClusterConfig',
     'DatabricksBenchmarkJobConfig',
-    'DatabricksSingleNodeG5ClusterConfig',
     'RESERVED_SINGLE_NODE_GPU_TAG_KEYS',
     'SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES',
     'build_databricks_run_submit_payload',
     'build_single_node_gpu_cluster',
-    'build_single_node_g5_cluster',
     'validate_aws_single_node_gpu_type',
-    'validate_aws_g5_node_type',
     'write_databricks_run_submit_json',
     'write_databricks_runner_script',
     'DATABRICKS_AUTH_CHECK_RECORD_TYPE',
@@ -567,7 +561,6 @@ EXPECTED_PUBLIC_SUBMODULES = frozenset(
     'engine_protocol',
     'github_governance',
     'kvpack',
-    'legacy_compatibility',
     'live_server',
     'manifest',
     'materializer',
@@ -588,7 +581,6 @@ EXPECTED_PUBLIC_SUBMODULES = frozenset(
     'repository_hygiene',
     'reuse_contract',
     'rope',
-    'runtime_telemetry',
     'service',
     'serving_env',
     'sglang_runtime_preflight',
@@ -636,37 +628,6 @@ EXPECTED_CONSOLE_SCRIPTS = {
     'cachet-vllm-runtime-preflight': 'cachet.vllm_runtime_preflight:main',
     'cachet-vllm-smoke': 'cachet.vllm_smoke:main',
     'cachet-vllm-smoke-databricks-job': 'cachet.databricks_vllm_smoke_job:main',
-    'document-kv-benchmark-handoff-bundles': 'document_kv_cache.benchmark_handoffs:bundle_main',
-    'document-kv-benchmark-handoff-manifest': 'document_kv_cache.benchmark_handoffs:manifest_main',
-    'document-kv-benchmark-handoffs': 'document_kv_cache.benchmark_handoffs:main',
-    'document-kv-benchmark-plan': 'document_kv_cache.benchmark_plan:main',
-    'document-kv-databricks-job': 'document_kv_cache.databricks_job:main',
-    'document-kv-databricks-runs': 'document_kv_cache.databricks_runs:main',
-    'document-kv-dependency-freshness': 'document_kv_cache.dependency_freshness:main',
-    'document-kv-engine-launch-config': 'document_kv_cache.engine_launch_config:main',
-    'document-kv-engine-probe': 'document_kv_cache.engine_probe:main',
-    'document-kv-engine-probe-databricks-job': 'document_kv_cache.databricks_engine_probe_job:main',
-    'document-kv-engine-probe-fixture': 'document_kv_cache.probe_fixtures:main',
-    'document-kv-github-governance': 'document_kv_cache.github_governance:main',
-    'document-kv-method-conformance': 'document_kv_cache.method_conformance:main',
-    'document-kv-method-scaffold': 'document_kv_cache.method_scaffold:main',
-    'document-kv-native-probe-factories': 'document_kv_cache.native_probe_factories:main',
-    'document-kv-native-probe-scaffold': 'document_kv_cache.adapter_scaffold:main',
-    'document-kv-pr-evidence': 'document_kv_cache.pr_evidence:main',
-    'document-kv-release-bundle': 'document_kv_cache.release_bundle:main',
-    'document-kv-release-evidence': 'document_kv_cache.release_evidence:main',
-    'document-kv-repository-hygiene': 'document_kv_cache.repository_hygiene:main',
-    'document-kv-run-benchmark-plan': 'document_kv_cache.benchmark_plan_executor:main',
-    'document-kv-serving-env': 'document_kv_cache.serving_env:main',
-    'document-kv-sglang-runtime-preflight': 'document_kv_cache.sglang_runtime_preflight:main',
-    'document-kv-sglang-smoke': 'document_kv_cache.sglang_smoke:main',
-    'document-kv-sglang-smoke-databricks-job': 'document_kv_cache.databricks_sglang_smoke_job:main',
-    'document-kv-storage-benchmark': 'document_kv_cache.storage_benchmark:main',
-    'document-kv-storage-benchmark-databricks-job': 'document_kv_cache.databricks_storage_benchmark_job:main',
-    'document-kv-templates': 'document_kv_cache.template_resources:main',
-    'document-kv-vllm-runtime-preflight': 'document_kv_cache.vllm_runtime_preflight:main',
-    'document-kv-vllm-smoke': 'document_kv_cache.vllm_smoke:main',
-    'document-kv-vllm-smoke-databricks-job': 'document_kv_cache.databricks_vllm_smoke_job:main',
 }
 
 
@@ -716,7 +677,6 @@ def test_public_document_package_reexports_core_api():
         "document_kv_cache.native_probe_factories"
     )
     assert "DocumentKVRequest" in dir(document_kv_cache)
-    assert not hasattr(document_kv_cache, "RestaurantKVRequest")
 
 
 def test_public_document_package_star_exports_are_document_first():
@@ -728,8 +688,6 @@ def test_public_document_package_star_exports_are_document_first():
     assert "build_vllm_launch_config" in document_kv_cache.__all__
     assert "build_vllm_kv_offloading_config" in document_kv_cache.__all__
     assert "vllm_native_probe_factory" in document_kv_cache.__all__
-    assert "RestaurantKVRequest" not in document_kv_cache.__all__
-    assert "RestaurantKVService" not in document_kv_cache.__all__
     assert "ChunkType" not in document_kv_cache.__all__
 
     star_namespace: dict[str, object] = {}
@@ -740,61 +698,6 @@ def test_public_document_package_star_exports_are_document_first():
     assert star_namespace["DocumentKVService"] is document_kv_cache.DocumentKVService
     assert star_namespace["DocumentKVWorkflow"] is document_kv_cache.DocumentKVWorkflow
     assert star_namespace["CacheTier"] is document_kv_cache.CacheTier
-    assert "RestaurantKVRequest" not in star_namespace
-
-
-
-def test_public_roots_ignore_stale_external_legacy_package(tmp_path):
-    legacy_package = tmp_path / ("restaurant" "_kv_serving")
-    legacy_package.mkdir()
-    (legacy_package / "__init__.py").write_text(
-        "\n".join(
-            [
-                "__all__ = ['LegacyOnly', 'RestaurantKVRequest']",
-                "LegacyOnly = object()",
-                "RestaurantKVRequest = object()",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "\n".join(
-                [
-                    "import json",
-                    "import cachet, document_kv_cache",
-                    "print(json.dumps({",
-                    "    'document_has_legacy_only': hasattr(document_kv_cache, 'LegacyOnly'),",
-                    "    'document_has_restaurant_request': hasattr(document_kv_cache, 'RestaurantKVRequest'),",
-                    "    'document_legacy_only_in_all': 'LegacyOnly' in document_kv_cache.__all__,",
-                    "    'cachet_has_legacy_only': hasattr(cachet, 'LegacyOnly'),",
-                    "    'cachet_has_restaurant_request': hasattr(cachet, 'RestaurantKVRequest'),",
-                    "    'cachet_legacy_only_in_all': 'LegacyOnly' in cachet.__all__,",
-                    "}, sort_keys=True))",
-                ]
-            ),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PYTHONPATH": os.pathsep.join((str(tmp_path), str(REPO_ROOT / "src"))),
-        },
-    )
-
-    assert json.loads(result.stdout) == {
-        "cachet_has_legacy_only": False,
-        "cachet_has_restaurant_request": False,
-        "cachet_legacy_only_in_all": False,
-        "document_has_legacy_only": False,
-        "document_has_restaurant_request": False,
-        "document_legacy_only_in_all": False,
-    }
 
 
 def test_cachet_brand_facade_delegates_to_document_package():
@@ -851,8 +754,6 @@ def test_cachet_brand_facade_delegates_to_document_package():
 
     assert star_namespace["DocumentKVService"] is document_kv_cache.DocumentKVService
     assert star_namespace["CacheTier"] is document_kv_cache.CacheTier
-    assert "RestaurantKVRequest" not in star_namespace
-    assert not hasattr(cachet, "RestaurantKVRequest")
     assert "from document_kv_cache.cache import" in stub_text
     assert "import document_kv_cache.storage as storage" not in stub_text
     assert "CacheTier as CacheTier" in stub_text
@@ -888,7 +789,6 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "write_engine_adapter_payload as write_engine_adapter_payload" in stub_text
     assert "from document_kv_cache.models import" in stub_text
     assert "DocumentKVRequest as DocumentKVRequest" in stub_text
-    assert "RestaurantKVRequest" not in stub_text
 
 
 def test_cachet_typing_stub_tracks_document_public_api():
@@ -899,8 +799,6 @@ def test_cachet_typing_stub_tracks_document_public_api():
     assert non_reexport_aliases == []
     assert missing_source_symbols == []
     assert stub_exports == document_exports
-    assert "RestaurantKVRequest" not in stub_exports
-    assert "RestaurantKVService" not in stub_exports
 
 
 def test_public_cli_submodules_are_importable_under_document_namespace():
@@ -942,17 +840,17 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert modules["databricks_job"].DatabricksBenchmarkJobConfig.__module__ == (
         "document_kv_cache.databricks_job"
     )
-    assert "scheduler" not in document_kv_cache._PUBLIC_SUBMODULES
 
 
 
-def test_cachet_cli_module_facades_execute_with_python_m():
+@pytest.mark.parametrize("module_name", ("benchmark_plan", "vllm_wheel_repack"))
+def test_cachet_cli_module_facades_execute_with_python_m(module_name):
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
     result = subprocess.run(
         [
             sys.executable,
             "-m",
-            "cachet.benchmark_plan",
+            f"cachet.{module_name}",
             "--help",
         ],
         check=True,
@@ -962,10 +860,27 @@ def test_cachet_cli_module_facades_execute_with_python_m():
     )
 
     assert "usage:" in result.stdout
-    assert "benchmark_plan" in result.stdout
+    assert module_name in result.stdout
 
 
-def test_cachet_adapter_facades_delegate_to_vendored_compatibility_packages():
+def test_cachet_module_facades_forward_python_m_for_command_modules():
+    missing_forwarding = []
+    for facade_path in sorted((REPO_ROOT / "src" / "cachet").glob("*.py")):
+        if facade_path.stem.startswith("_"):
+            continue
+        target_path = REPO_ROOT / "src" / "document_kv_cache" / facade_path.name
+        if not target_path.exists():
+            continue
+        if 'if __name__ == "__main__":' not in target_path.read_text(encoding="utf-8"):
+            continue
+        facade_text = facade_path.read_text(encoding="utf-8")
+        if f'_run_main("document_kv_cache.{facade_path.stem}")' not in facade_text:
+            missing_forwarding.append(facade_path.name)
+
+    assert missing_forwarding == []
+
+
+def test_cachet_adapter_facades_delegate_to_vendored_adapter_packages():
     cachet_vllm = importlib.import_module("cachet.adapters.vllm")
     cachet_sglang = importlib.import_module("cachet.adapters.sglang")
     vllm_adapter = importlib.import_module("vllm_kv_injection")
@@ -977,7 +892,7 @@ def test_cachet_adapter_facades_delegate_to_vendored_compatibility_packages():
     assert cachet_sglang.DocumentKVHiCacheBackend is sglang_adapter.DocumentKVHiCacheBackend
 
 
-def test_cachet_adapter_submodules_delegate_to_vendored_compatibility_submodules():
+def test_cachet_adapter_submodules_delegate_to_vendored_adapter_submodules():
     for cachet_module_name, adapter_module_name in (
         ("cachet.adapters.vllm.probe", "vllm_kv_injection.probe"),
         ("cachet.adapters.vllm.protocol", "vllm_kv_injection.protocol"),
@@ -1078,7 +993,6 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         assert exports, module_name
         assert all(isinstance(name, str) and name for name in exports), module_name
         assert all(not name.startswith("_") for name in exports), module_name
-        assert all("Restaurant" not in name for name in exports), module_name
 
     cache_star_namespace: dict[str, object] = {}
     storage_star_namespace: dict[str, object] = {}
@@ -1090,60 +1004,6 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert cache_star_namespace["CacheTier"] is document_kv_cache.CacheTier
     assert storage_star_namespace["DiskRangeReader"] is document_kv_cache.DiskRangeReader
     assert workflow_star_namespace["DocumentKVWorkflow"] is document_kv_cache.DocumentKVWorkflow
-    assert "RestaurantKVRequest" not in workflow_star_namespace
-
-
-
-def test_scheduler_compatibility_module_stays_out_of_root_facades():
-    probe = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "\n".join(
-                [
-                    "import json",
-                    "import cachet, document_kv_cache",
-                    "summary = {}",
-                    "for root_module in (document_kv_cache, cachet):",
-                    "    root_star_namespace = {}",
-                    "    exec(f'from {root_module.__name__} import *', root_star_namespace)",
-                    "    summary[root_module.__name__] = {",
-                    "        'in_all': 'scheduler' in root_module.__all__,",
-                    "        'in_dir': 'scheduler' in dir(root_module),",
-                    "        'hasattr': hasattr(root_module, 'scheduler'),",
-                    "        'in_star': 'scheduler' in root_star_namespace,",
-                    "    }",
-                    "print(json.dumps(summary, sort_keys=True))",
-                ]
-            ),
-        ],
-        cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    fresh_root_surfaces = json.loads(probe.stdout)
-
-    assert fresh_root_surfaces == {
-        "cachet": {"hasattr": False, "in_all": False, "in_dir": False, "in_star": False},
-        "document_kv_cache": {"hasattr": False, "in_all": False, "in_dir": False, "in_star": False},
-    }
-
-    admission = importlib.import_module("document_kv_cache.admission")
-    document_scheduler = importlib.import_module("document_kv_cache.scheduler")
-    document_star_namespace_after_import: dict[str, object] = {}
-    cachet_star_namespace_after_import: dict[str, object] = {}
-    exec("from document_kv_cache import *", document_star_namespace_after_import)
-    exec("from cachet import *", cachet_star_namespace_after_import)
-
-    assert document_scheduler.AdmissionQueue is admission.AdmissionQueue
-    assert document_scheduler.PreparedRequest is admission.PreparedRequest
-    assert "scheduler" not in document_kv_cache._PUBLIC_SUBMODULES
-    assert "scheduler" not in document_kv_cache.__all__
-    assert "scheduler" not in cachet.__all__
-    assert "scheduler" not in document_star_namespace_after_import
-    assert "scheduler" not in cachet_star_namespace_after_import
 
 
 def test_package_level_submodule_imports_use_document_namespace_after_symbol_lookup():
@@ -1156,14 +1016,11 @@ def test_package_level_submodule_imports_use_document_namespace_after_symbol_loo
     assert cache.ChunkCacheResult.__module__ == "document_kv_cache.cache"
 
 
-def test_poetry_metadata_excludes_removed_package_and_scripts():
+def test_poetry_metadata_lists_release_packages_and_scripts():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     poetry = pyproject["tool"]["poetry"]
     scripts = pyproject["project"]["scripts"]
     included_packages = {package["include"] for package in poetry["packages"]}
-    included_files = {include["path"] for include in poetry["include"]}
-    old_import = "restaurant" "_kv_serving"
-    old_script_prefix = "restaurant" "-kv-"
 
     assert included_packages == {
         "cachet",
@@ -1172,12 +1029,7 @@ def test_poetry_metadata_excludes_removed_package_and_scripts():
         "sglang_kv_injection",
     }
     assert scripts == EXPECTED_CONSOLE_SCRIPTS
-    assert old_import not in included_packages
-    assert f"src/{old_import}/py.typed" not in included_files
-    assert not any(name.startswith(old_script_prefix) for name in scripts)
-    assert not any(old_import in target for target in scripts.values())
     assert scripts["cachet-benchmark-plan"] == "cachet.benchmark_plan:main"
-    assert scripts["document-kv-benchmark-plan"] == "document_kv_cache.benchmark_plan:main"
 
 
 def test_cachet_console_script_targets_resolve_through_cachet_facades():

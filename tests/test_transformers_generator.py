@@ -467,6 +467,22 @@ def test_pre_rope_layout_binding_is_idempotent_and_rejects_real_conflicts() -> N
         generator.bind_layout(replace(layout, lora_id="conflicting-adapter"))
 
 
+def test_pre_rope_generator_reads_rope_theta_from_rope_parameters() -> None:
+    config = SimpleNamespace(
+        rope_parameters={"rope_type": "default", "rope_theta": 1_000_000.0},
+        head_dim=128,
+    )
+    config.get_text_config = lambda: config
+    generator = TransformersKVChunkGenerator(
+        model=SimpleNamespace(config=config),
+        tokenizer=TinyTokenizer(),
+        pre_rope=True,
+    )
+
+    assert not hasattr(config, "rope_theta")
+    assert (generator.rope_theta, generator.rope_rotary_dim) == (1_000_000.0, 128)
+
+
 @pytest.mark.parametrize(
     ("capture_mode", "message"),
     (
