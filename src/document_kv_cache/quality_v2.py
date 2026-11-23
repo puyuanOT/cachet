@@ -463,7 +463,7 @@ class QualityV2DatasetSummary:
     errors: Mapping[str, int]
 
     def to_record(self) -> dict[str, Any]:
-        return json.loads(
+        record: dict[str, Any] = json.loads(
             json.dumps(
                 {
                     "dataset": self.dataset,
@@ -478,6 +478,7 @@ class QualityV2DatasetSummary:
                 sort_keys=True,
             )
         )
+        return record
 
 
 def summarize_quality_v2_pairs(
