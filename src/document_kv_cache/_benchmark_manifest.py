@@ -4,7 +4,6 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from hashlib import sha256
-from types import MappingProxyType
 from typing import Any
 
 from document_kv_cache._benchmark_models import (
@@ -19,10 +18,6 @@ from document_kv_cache._benchmark_models import (
     _validate_non_empty_string,
 )
 from document_kv_cache.benchmarks import (
-    FINAL_ANSWER_PARSER_DIGEST,
-    FINAL_ANSWER_PARSER_ID,
-    FINAL_ANSWER_PARSER_PLUGIN_PATH,
-    FINAL_ANSWER_PARSER_VERSION,
     BenchmarkArm,
     BenchmarkExample,
     BenchmarkSuite,
@@ -35,14 +30,6 @@ from document_kv_cache.benchmarks import (
 
 BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE = (
     "document_kv.benchmark_experiment_manifest.v1"
-)
-_V1_ANSWER_PARSER_IDENTITY = MappingProxyType(
-    {
-        "answer_parser_id": FINAL_ANSWER_PARSER_ID,
-        "answer_parser_version": FINAL_ANSWER_PARSER_VERSION,
-        "answer_parser_plugin_path": FINAL_ANSWER_PARSER_PLUGIN_PATH,
-        "answer_parser_digest": FINAL_ANSWER_PARSER_DIGEST,
-    }
 )
 VARIES_BY_ARM = "varies_by_arm"
 
@@ -291,15 +278,14 @@ def _build_experiment_manifest(
 
 
 def _declared_answer_parser_identity(scorer: DatasetScorer) -> dict[str, str]:
-    identity = {
+    if not scorer.answer_parser_id:
+        return {}
+    return {
         "answer_parser_id": scorer.answer_parser_id,
         "answer_parser_version": scorer.answer_parser_version,
         "answer_parser_plugin_path": scorer.answer_parser_plugin_path,
         "answer_parser_digest": scorer.answer_parser_digest,
     }
-    if not scorer.answer_parser_id or identity == _V1_ANSWER_PARSER_IDENTITY:
-        return {}
-    return identity
 
 
 def _build_arm_runtime_environment(

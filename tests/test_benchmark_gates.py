@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from document_kv_cache._benchmark_records import benchmark_gate_inputs_from_record
-from document_kv_cache.artifact_identity import ArtifactIdentity, canonical_json_sha256
+from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache.benchmark_gates import (
     BenchmarkPublicationGateConfig,
     CacheStateAttestation,
@@ -40,14 +40,11 @@ from document_kv_cache.benchmarks import (
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
     FINAL_ANSWER_NO_EXTRACTION_VALUE,
-    FINAL_ANSWER_PARSER_DIGEST,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
-    FINAL_ANSWER_PARSER_ID,
     FINAL_ANSWER_PARSER_ID_METADATA_KEY,
-    FINAL_ANSWER_PARSER_PLUGIN_PATH,
+    FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
     FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
     FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
-    FINAL_ANSWER_PARSER_VERSION,
     FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
     NIAH_CELL_IDS,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
@@ -62,6 +59,7 @@ from document_kv_cache.benchmarks import (
     DatasetScorer,
     DatasetScorerRegistry,
     DatasetMetricSpec,
+    FinalAnswerExtraction,
     InferenceMeasurement,
     LatencySummary,
     baseline_prefill_arm,
@@ -75,6 +73,7 @@ from document_kv_cache.quality_v2 import (
     QUALITY_V2_PARSER_PLUGIN_PATH,
     QUALITY_V2_PARSER_VERSION,
     QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    extract_first_final_answer,
     quality_v2_scorer_registry,
 )
 from document_kv_cache.workflow import SourceDocument
@@ -814,7 +813,36 @@ def _quality_v2_result(identity: ArtifactIdentity) -> BenchmarkRunResult:
     )
 
 
-def test_v1_scorer_manifest_record_omits_parser_identity_and_keeps_its_digest() -> None:
+UNREGISTERED_PARSER_IDENTITY = {
+    "parser_id": "example.first_final_answer",
+    "parser_version": "1",
+    "parser_plugin_path": "tests.test_benchmark_gates:unregistered_final_answer",
+    "parser_digest": "e" * 64,
+}
+
+
+def unregistered_final_answer(output_text: str) -> FinalAnswerExtraction:
+    return replace(extract_first_final_answer(output_text), **UNREGISTERED_PARSER_IDENTITY)
+
+
+def _unregistered_parser_result(identity: ArtifactIdentity) -> BenchmarkRunResult:
+    scorer = replace(
+        quality_v2_scorer_registry().get("hotpotqa"),
+        answer_parser_function=unregistered_final_answer,
+        **{
+            f"answer_{field_name}": value
+            for field_name, value in UNREGISTERED_PARSER_IDENTITY.items()
+        },
+    )
+    return scoped_benchmark_result(
+        identity,
+        scopes=("quality",),
+        with_answers=True,
+        scorers=DatasetScorerRegistry().register("hotpotqa", scorer),
+    )
+
+
+def test_scorer_manifest_record_carries_every_declared_parser_identity() -> None:
     result = scoped_benchmark_result(
         artifact_identity(),
         scopes=("quality",),
@@ -822,18 +850,20 @@ def test_v1_scorer_manifest_record_omits_parser_identity_and_keeps_its_digest() 
     )
     manifest = result.experiment_manifest
     assert manifest is not None
+    declared = {
+        measurement.metadata[FINAL_ANSWER_PARSER_ID_METADATA_KEY]
+        for measurement in result.measurements
+    }
 
     record = benchmark_experiment_manifest_to_record(manifest)
 
-    assert all(scorer.answer_parser_id == "" for scorer in manifest.scorer_identities)
-    assert not any(
-        key.startswith("answer_parser_")
-        for scorer in record["logical_workload"]["scorers"]
-        for key in scorer
+    assert [scorer.answer_parser_id for scorer in manifest.scorer_identities] == sorted(
+        declared
     )
-    assert canonical_json_sha256(record) == (
-        "1fa1bd8195769154f11b6118000553c292f24ce3e60926481f57e20a10722fa1"
-    )
+    assert [
+        scorer_record["answer_parser_id"]
+        for scorer_record in record["logical_workload"]["scorers"]
+    ] == sorted(declared)
     assert benchmark_experiment_manifest_from_record(record) == manifest
 
 
@@ -953,12 +983,12 @@ def test_publication_gate_accepts_declared_quality_v2_parser_raw_and_sanitized()
         ),
     ],
 )
-def test_publication_gate_rejects_tampered_declared_parser_metadata(
+def test_publication_gate_rejects_tampered_unregistered_parser_metadata(
     changes: dict[str, str | None],
     issue_fragment: str,
 ) -> None:
     identity = _quality_v2_identity()
-    original = _quality_v2_result(identity)
+    original = _unregistered_parser_result(identity)
     first = original.measurements[0]
     metadata = dict(first.metadata)
     for key, value in changes.items():
@@ -971,41 +1001,33 @@ def test_publication_gate_rejects_tampered_declared_parser_metadata(
         measurements=(replace(first, metadata=metadata), *original.measurements[1:]),
     )
 
+    original_gate = evaluate_benchmark_evidence_gate(
+        original,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
     gate = evaluate_benchmark_evidence_gate(
         result,
         policy="publication",
         artifact_identities={identity.artifact_id: identity},
     )
 
+    assert original_gate.ok, original_gate.issues
     assert not gate.ok
     assert any(issue_fragment in issue for issue in gate.issues), gate.issues
 
 
-def test_publication_gate_reextracts_when_manifest_declares_the_v1_parser() -> None:
-    identity = artifact_identity()
-    original = scoped_benchmark_result(
-        identity,
-        scopes=("quality",),
-        with_answers=True,
-    )
-    assert original.experiment_manifest is not None
-    (scorer,) = original.experiment_manifest.scorer_identities
+def test_publication_gate_reextracts_raw_output_with_the_declared_parser() -> None:
+    identity = _quality_v2_identity()
+    original = _quality_v2_result(identity)
     first = original.measurements[0]
+    echoed = (
+        "Required response form: <final_answer>answer</final_answer>\n"
+        "<final_answer>London</final_answer>"
+    )
     result = replace(
         original,
-        experiment_manifest=replace(
-            original.experiment_manifest,
-            scorer_identities=(
-                replace(
-                    scorer,
-                    answer_parser_id=FINAL_ANSWER_PARSER_ID,
-                    answer_parser_version=FINAL_ANSWER_PARSER_VERSION,
-                    answer_parser_plugin_path=FINAL_ANSWER_PARSER_PLUGIN_PATH,
-                    answer_parser_digest=FINAL_ANSWER_PARSER_DIGEST,
-                ),
-            ),
-        ),
-        measurements=(replace(first, output_text=""), *original.measurements[1:]),
+        measurements=(replace(first, output_text=echoed), *original.measurements[1:]),
     )
 
     gate = evaluate_benchmark_evidence_gate(
@@ -1018,7 +1040,7 @@ def test_publication_gate_reextracts_when_manifest_declares_the_v1_parser() -> N
     assert any("extraction cannot be reproduced" in issue for issue in gate.issues)
 
 
-def test_v1_scorer_manifest_rejects_measurements_from_an_undeclared_parser() -> None:
+def test_publication_gate_rejects_a_scorer_without_a_parser_identity() -> None:
     identity = _quality_v2_identity()
     original = _quality_v2_result(identity)
     assert original.experiment_manifest is not None
@@ -1044,9 +1066,40 @@ def test_v1_scorer_manifest_rejects_measurements_from_an_undeclared_parser() -> 
 
     assert not gate.ok
     assert any(
+        "scorer declares no final-answer parser identity" in issue
+        for issue in gate.issues
+    )
+
+
+def test_publication_gate_rejects_measurements_from_another_parser() -> None:
+    identity = _quality_v2_identity()
+    original = _quality_v2_result(identity)
+    other_parser = {
+        FINAL_ANSWER_PARSER_ID_METADATA_KEY: "example.other_final_answer",
+        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: "1",
+        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: "example.parsers:other_final_answer",
+        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: "0" * 64,
+    }
+    result = replace(
+        original,
+        measurements=tuple(
+            replace(measurement, metadata={**measurement.metadata, **other_parser})
+            for measurement in original.measurements
+        ),
+    )
+
+    gate = evaluate_benchmark_evidence_gate(
+        result,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not gate.ok
+    assert any(
         "missing or mixed final-answer parser identity" in issue
         for issue in gate.issues
     )
+    assert any("extraction cannot be reproduced" in issue for issue in gate.issues)
 
 
 @pytest.mark.parametrize(
