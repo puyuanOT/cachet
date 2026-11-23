@@ -91,6 +91,11 @@
   the record's `gate_inputs`. Strict release bundles require and re-verify it,
   and benchmark plans that request release evidence must use
   `--evidence-policy publication`.
+- The benchmark page no longer publishes the campaign's v1 full-score tables
+  (dataset scores and the NIAH grid), whose strict parser rejected most outputs
+  of both methods. Quality Benchmark v2 is the published answer-quality
+  measure. The sealed campaign report is unchanged and still contains the v1
+  pass; `verify_sealed_records.py` now checks 11 README regions.
 
 ## 0.2.0
 
