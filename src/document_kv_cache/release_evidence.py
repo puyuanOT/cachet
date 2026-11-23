@@ -817,8 +817,6 @@ def _validate_sglang_live_v1_runtime_metadata(
         issues.append("SGLang live V1 benchmark served_model_name must be non-empty")
     if record.get("cache_prompt_text_mode") != "logical":
         issues.append("SGLang live V1 benchmark cache_prompt_text_mode must be 'logical'")
-    if record.get("live_check_prompt_format") != "plain":
-        issues.append("SGLang live V1 benchmark live_check_prompt_format must be 'plain'")
     if record.get("live_check_request_mode") != "completion":
         issues.append("SGLang live V1 benchmark live_check_request_mode must be 'completion'")
     temperature = record.get("live_check_temperature")

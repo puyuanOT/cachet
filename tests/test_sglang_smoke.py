@@ -44,7 +44,6 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
-    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
@@ -1143,6 +1142,26 @@ def test_parse_args_accepts_live_check_extra_body_json(tmp_path):
     }
 
 
+def test_parse_args_rejects_the_removed_live_check_prompt_format_flag(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exc:
+        parse_args(
+            [
+                "--benchmark-id",
+                "sglang-prompt-format",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--live-check-prompt-format",
+                "plain",
+            ]
+        )
+
+    assert exc.value.code == 2
+    assert (
+        "unrecognized arguments: --live-check-prompt-format plain"
+        in capsys.readouterr().err
+    )
+
+
 def test_parse_args_can_disable_cache_flushes(tmp_path):
     config = parse_args(
         [
@@ -1397,10 +1416,10 @@ def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(
     assert generation["sglang_hicache_page_size"] == 2
 
 
-def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
+def test_prepare_generated_live_handoff_renders_the_chat_template_in_chat_mode(
     tmp_path, monkeypatch
 ):
-    module = ModuleType("cachet_test_sglang_live_handoff_prompt_format_generator")
+    module = ModuleType("cachet_test_sglang_live_handoff_chat_template_generator")
     module.build_generator = PromptFormatSGLangLiveKVGenerator
     monkeypatch.setitem(sys.modules, module.__name__, module)
     PromptFormatTokenizer.seen_texts.clear()
@@ -1421,8 +1440,7 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
 
     runtime_config = prepare_generated_live_handoff(config)
 
-    assert config.live_check_prompt_format == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
-    assert config.live_check_request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
+    assert config.live_check_request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE == "chat"
     assert runtime_config.sglang_hicache_page_keys == sglang_hicache_page_keys(
         PromptFormatTokenizer.source_token_ids,
         page_size=2,
@@ -1453,7 +1471,8 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
         config.live_handoff_generation_path.read_text(encoding="utf-8")
     )
     assert generation["live_check_request_mode"] == "chat"
-    assert generation["live_handoff_prompt_format"] == "plain"
+    assert "live_check_prompt_format" not in generation
+    assert "live_handoff_prompt_format" not in generation
     assert generation["chat_template_rendered"] is True
     assert generation["live_check_chat_template_kwargs"] == {
         "reasoning_effort": "none",
@@ -1467,6 +1486,46 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
         PromptFormatTokenizer.runtime_token_ids
     )
     assert generation["cache_prefix_token_stable"] is True
+
+
+def test_prepare_generated_live_handoff_caches_the_quality_v2_prefix_in_completion_mode(
+    tmp_path, monkeypatch
+):
+    module = ModuleType("cachet_test_sglang_live_handoff_completion_generator")
+    module.build_generator = PromptFormatSGLangLiveKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    PromptFormatTokenizer.seen_texts.clear()
+    PromptFormatTokenizer.seen_templates.clear()
+    PromptFormatTokenizer.seen_template_kwargs.clear()
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-completion",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        live_check_request_mode="completion",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "generated-live",
+            generator_factory=f"{module.__name__}:build_generator",
+            dtype="bfloat16",
+            align_bytes=1,
+            page_size=2,
+        ),
+    )
+
+    prepare_generated_live_handoff(config)
+
+    live_request = public_sglang_smoke.build_live_server_check_request(
+        model_id=CACHET_MODEL_ID, use_cache_arm=True
+    )
+    assert PromptFormatTokenizer.seen_templates == []
+    assert PromptFormatTokenizer.seen_texts[:2] == [
+        live_request.cache_prefix_text,
+        live_request.logical_prompt_text,
+    ]
+    generation = json.loads(
+        config.live_handoff_generation_path.read_text(encoding="utf-8")
+    )
+    assert generation["live_check_request_mode"] == "completion"
+    assert generation["chat_template_rendered"] is False
 
 
 def test_prepare_generated_live_handoff_uses_token_stable_runtime_prefix(
@@ -1581,7 +1640,6 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         benchmark_id="sglang-generated-venv",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
-        live_check_prompt_format="plain",
         live_check_temperature=0.25,
         handoff_generation=generation,
     )
@@ -1594,12 +1652,12 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         assert argv[0] == str(config.venv_python)
         assert argv[1] == "-c"
         assert "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,\n" in argv[2]
-        assert "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,\n" in argv[2]
+        assert "PROMPT_FORMAT" not in argv[2]
         assert "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,\n" in argv[2]
         assert "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,\n" in argv[2]
         input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
         assert input_payload["benchmark_id"] == "sglang-generated-venv"
-        assert input_payload["live_check_prompt_format"] == "plain"
+        assert "live_check_prompt_format" not in input_payload
         assert input_payload["live_check_temperature"] == 0.25
         assert (
             input_payload["live_check_extra_body"]
@@ -1874,8 +1932,6 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
             "8",
             "--sglang-hicache-page-size",
             "2",
-            "--live-check-prompt-format",
-            "plain",
             "--live-check-request-mode",
             "completion",
             "--live-check-temperature",
@@ -1897,7 +1953,6 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
     assert generation.align_bytes == 8
     assert generation.page_size == 2
     assert generation.timeout_seconds == 12.5
-    assert seen_configs[0].live_check_prompt_format == "plain"
     assert seen_configs[0].live_check_request_mode == "completion"
     assert seen_configs[0].live_check_temperature == 0.25
     assert seen_configs[0].hicache_page_size == 2
@@ -2020,9 +2075,7 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
         "enable_deterministic_inference": False,
     }
     assert metadata["cache_prompt_text_mode"] == "logical"
-    assert (
-        metadata["live_check_prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
-    )
+    assert "live_check_prompt_format" not in metadata
     assert metadata["live_check_request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert metadata["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert metadata["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
@@ -2132,7 +2185,7 @@ def test_run_sglang_quality_canary_records_model_sanity_result(tmp_path):
     assert record["model_id"] == CACHET_MODEL_ID
     assert record["served_model_name"] == SERVED_MODEL_NAME
     assert record["request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
-    assert record["prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    assert "prompt_format" not in record
     assert record["expected_answer"] == SGLANG_QUALITY_CANARY_ANSWER
     assert record["answer_found"] is True
     assert record["metadata"]["request_payload_endpoint"] == "/v1/chat/completions"
@@ -2423,7 +2476,7 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert record["cache_arm_blocker"] is None
     assert record["requires_kv_transfer_params"] is True
     assert record["live_request_metadata_bridge_ok"] is True
-    assert record["live_check_prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    assert "live_check_prompt_format" not in record
     assert record["live_check_request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert record["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert record["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
@@ -2572,7 +2625,6 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
             ),
             prompt_text_mode=live_config.prompt_text_mode,
             request_mode=live_config.request_mode,
-            prompt_format=live_config.prompt_format,
             answer_found=True,
         )
 
@@ -2652,7 +2704,6 @@ def _run_prepared_sglang_live_benchmark(monkeypatch, tmp_path, *, output_text):
                 live_config.cache_prompt_text_mode if use_cache_arm else "logical"
             ),
             request_mode=live_config.live_check_request_mode,
-            prompt_format=live_config.live_check_prompt_format,
             answer_found=True,
         )
 
@@ -2772,7 +2823,6 @@ def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
                 live_config.cache_prompt_text_mode if use_cache_arm else "logical"
             ),
             request_mode=live_config.live_check_request_mode,
-            prompt_format=live_config.live_check_prompt_format,
             answer_found=True,
         )
 
@@ -3797,7 +3847,6 @@ def test_sglang_prepared_live_benchmark_serves_the_quality_v2_prompt(
         local_root=tmp_path / "local",
         dataset_specs=write_prepared_sglang_v1_datasets(tmp_path / "prepared"),
         live_benchmark_repeats=1,
-        live_check_prompt_format="qwen3_chat",
         live_check_request_mode=request_mode,
     )
 

@@ -3,6 +3,7 @@ import json
 import pytest
 
 import document_kv_cache.live_server as public_live_server
+import document_kv_cache.openai_compatible as openai_compatible_module
 from document_kv_cache.benchmark_runner import BenchmarkGeneration
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
@@ -23,7 +24,6 @@ from document_kv_cache.engine_adapters import (
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.live_server import (
     DEFAULT_LIVE_CHECK_ANSWER,
-    DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
     LIVE_CHECK_SUITE_ID,
     LiveServerCheckConfig,
     build_live_server_check_request,
@@ -283,7 +283,6 @@ def test_run_openai_compatible_live_check_returns_json_ready_record():
         "request_id": None,
         "prompt_text_mode": "logical",
         "request_mode": "completion",
-        "prompt_format": DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
         "kv_transfer_params_present": False,
         "kv_transfer_param_keys": [],
         "logical_prompt_chars": len(engine.requests[0].logical_prompt_text),
@@ -328,30 +327,22 @@ def test_run_openai_compatible_live_check_attaches_kv_transfer_params(tmp_path):
     assert result.to_record()["kv_transfer_param_keys"] == sorted(params)
 
 
-def test_chat_qwen_live_check_uses_plain_request_and_records_chat_mode():
+def test_chat_live_check_serves_the_quality_v2_prompt_and_records_chat_mode():
     engine = FakeEngine()
 
     result = run_openai_compatible_live_check(
-        LiveServerCheckConfig(
-            base_url="http://localhost:8000",
-            request_mode="chat",
-            prompt_format="qwen3_chat",
-        ),
+        LiveServerCheckConfig(base_url="http://localhost:8000", request_mode="chat"),
         engine=engine,
     )
 
     request = engine.requests[0]
     assert request.prompt_parts == quality_v2_prompt_parts(request.example)
     assert result.to_record()["request_mode"] == "chat"
-    assert result.to_record()["prompt_format"] == "qwen3_chat"
+    assert "prompt_format" not in result.to_record()
 
 
-def test_chat_qwen_live_check_messages_render_the_quality_v2_prompt():
-    config = LiveServerCheckConfig(
-        base_url="http://localhost:8000",
-        request_mode="chat",
-        prompt_format="qwen3_chat",
-    )
+def test_chat_live_check_messages_render_the_quality_v2_prompt():
+    config = LiveServerCheckConfig(base_url="http://localhost:8000", request_mode="chat")
     request = build_live_server_check_request()
     factory = public_live_server._live_check_chat_messages_factory(config)
 
@@ -359,6 +350,62 @@ def test_chat_qwen_live_check_messages_render_the_quality_v2_prompt():
     messages = factory(request)
     assert [message["role"] for message in messages] == ["user"]
     assert render_qwen3_chat_template(messages) == request.logical_prompt_text
+
+
+class _JSONResponse:
+    def __init__(self, data):
+        self.data = data
+
+    def read(self):
+        return json.dumps(self.data).encode("utf-8")
+
+    def close(self):
+        pass
+
+
+def _post_live_check(monkeypatch, **config_kwargs):
+    bodies = []
+
+    def fake_urlopen(request, *, timeout):
+        bodies.append(json.loads(request.data))
+        return _JSONResponse(
+            {"choices": [{"text": f"<final_answer>{DEFAULT_LIVE_CHECK_ANSWER}</final_answer>"}]}
+        )
+
+    monkeypatch.setattr(openai_compatible_module, "_urlopen", fake_urlopen)
+    result = run_openai_compatible_live_check(
+        LiveServerCheckConfig(base_url="http://localhost:8000", stream=False, **config_kwargs)
+    )
+    (body,) = bodies
+    return result, body
+
+
+def test_chat_live_check_sends_one_user_message_without_chat_markers(monkeypatch):
+    result, body = _post_live_check(monkeypatch, request_mode="chat")
+
+    assert "prompt" not in body
+    (message,) = body["messages"]
+    assert message["role"] == "user"
+    assert "<|im_start|>" not in message["content"]
+    assert "<|im_end|>" not in message["content"]
+    assert render_qwen3_chat_template(body["messages"]) == result.request.logical_prompt_text
+
+
+def test_completion_live_check_sends_the_quality_v2_prompt_text(monkeypatch):
+    result, body = _post_live_check(monkeypatch)
+
+    assert "messages" not in body
+    assert body["prompt"] == quality_v2_prompt_parts(result.request.example).prefill_prompt
+    assert body["prompt"].startswith("<|im_start|>user\n")
+    assert body["prompt"].endswith("<|im_end|>\n<|im_start|>assistant\n")
+
+
+def test_cli_rejects_the_removed_prompt_format_flag(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--base-url", "http://localhost:8000", "--prompt-format", "plain"])
+
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --prompt-format plain" in capsys.readouterr().err
 
 
 def test_live_server_check_config_rejects_invalid_kv_transfer_transport():

@@ -3022,7 +3022,6 @@ def _sglang_live_v1_benchmark_record(*, ok: bool = True):
             "release_v1_suite": True,
         },
         "cache_prompt_text_mode": "logical",
-        "live_check_prompt_format": "plain",
         "live_check_request_mode": "completion",
         "live_check_temperature": 0.0,
         "kv_transfer_params_transport": "custom_params",

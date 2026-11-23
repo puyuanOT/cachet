@@ -69,11 +69,9 @@ from document_kv_cache.engine_probe import (
     write_engine_adapter_handoff_bundle,
 )
 from document_kv_cache.live_server import (
-    LiveCheckPromptFormat,
     LiveServerCheckConfig,
     LiveServerCheckResult,
     _live_check_chat_messages,
-    _live_check_request_prompt_format,
     _qwen3_chat_user_content,
     build_live_server_check_request,
     live_check_kv_transfer_params,
@@ -138,7 +136,6 @@ DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE = layout_for_model(
 ).block_size
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY = "wait_complete"
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
-DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
 DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE: OpenAICompatibleRequestMode = "chat"
 DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.0
 DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM = True
@@ -217,7 +214,6 @@ __all__ = [
     "DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD",
-    "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT",
     "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE",
     "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE",
     "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY",
@@ -393,9 +389,6 @@ class SGLangSmokeBenchmarkConfig:
     dataset_specs: tuple[str, ...] = ()
     baseline_only: bool = False
     cache_prompt_text_mode: PromptTextMode = "logical"
-    live_check_prompt_format: LiveCheckPromptFormat = (
-        DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
-    )
     live_check_request_mode: OpenAICompatibleRequestMode = (
         DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     )
@@ -506,8 +499,6 @@ class SGLangSmokeBenchmarkConfig:
             parse_dataset_specs(dataset_specs)
         if self.cache_prompt_text_mode not in {"logical", "runtime"}:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
-        if self.live_check_prompt_format not in {"plain", "qwen3_chat"}:
-            raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
         if self.live_check_request_mode not in {"completion", "chat"}:
             raise ValueError("live_check_request_mode must be 'completion' or 'chat'")
         if (
@@ -901,7 +892,6 @@ def build_metadata(
         "requires_kv_transfer_params": not config.baseline_only,
         "requires_prepared_sglang_hicache_page_keys": config.uses_prepared_datasets,
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
-        "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
         "live_check_extra_body": dict(config.live_check_extra_body),
@@ -1578,7 +1568,6 @@ def _generate_live_handoff_inputs_in_subprocess(
         "output_dir": str(config.output_dir),
         "local_root": str(config.local_root),
         "hardware_target": config.hardware_target,
-        "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
         "live_check_extra_body": dict(config.live_check_extra_body),
@@ -1592,7 +1581,6 @@ from pathlib import Path
 
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
-    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     SGLangLiveHandoffGenerationConfig,
@@ -1619,7 +1607,6 @@ config = SGLangSmokeBenchmarkConfig(
     output_dir=Path(payload["output_dir"]),
     local_root=Path(payload["local_root"]),
     hardware_target=payload["hardware_target"],
-    live_check_prompt_format=payload.get("live_check_prompt_format", DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT),
     live_check_request_mode=payload.get("live_check_request_mode", DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE),
     live_check_temperature=float(payload.get("live_check_temperature", DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE)),
     live_check_extra_body=payload.get("live_check_extra_body", DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY),
@@ -1792,13 +1779,8 @@ def _generate_live_handoff_inputs(
         "source_shard_uri": source_shard_uri,
         "sglang_hicache_page_keys": list(page_keys),
         "sglang_hicache_page_size": generation.page_size,
-        "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
         "live_check_chat_template_kwargs": dict(chat_template_kwargs),
-        "live_handoff_prompt_format": _live_check_request_prompt_format(
-            config.live_check_prompt_format,
-            request_mode=config.live_check_request_mode,
-        ),
         "chat_template_rendered": chat_template_rendered,
         "cache_prefix_chars": len(source_chunk.text),
         "cache_prefix_source_chars": len(original_source_chunk.text),
@@ -1862,10 +1844,7 @@ def _live_handoff_cache_source_document(
 def _should_render_live_handoff_chat_template(
     config: SGLangSmokeBenchmarkConfig,
 ) -> bool:
-    return (
-        config.live_check_request_mode == "chat"
-        and config.live_check_prompt_format == "qwen3_chat"
-    )
+    return config.live_check_request_mode == "chat"
 
 
 def _render_qwen3_chat_live_handoff_prompt(
@@ -2242,7 +2221,6 @@ def run_live_checks(
             max_tokens=config.max_tokens,
             timeout_seconds=config.timeout_seconds,
             stream=config.stream,
-            prompt_format=config.live_check_prompt_format,
             request_mode=config.live_check_request_mode,
             temperature=config.live_check_temperature,
             prompt_token_accounting="server_usage",
@@ -2272,7 +2250,6 @@ def run_live_checks(
                 hardware_target=config.hardware_target,
                 use_cache_arm=True,
                 prompt_text_mode=config.cache_prompt_text_mode,
-                prompt_format=config.live_check_prompt_format,
                 request_mode=config.live_check_request_mode,
                 temperature=config.live_check_temperature,
                 prompt_token_accounting="server_usage",
@@ -2340,7 +2317,6 @@ def run_live_checks(
         "requires_kv_transfer_params": not config.baseline_only,
         "kv_transfer_params_transport": "custom_params",
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
-        "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
         "live_check_extra_body": dict(config.live_check_extra_body),
@@ -2473,7 +2449,6 @@ def run_sglang_live_benchmark(
             config, request_pairs=request_pairs, repeats=repeats
         ),
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
-        "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
         "kv_transfer_params_transport": "custom_params",
@@ -2647,7 +2622,6 @@ def _sglang_live_benchmark_check_config(
         "model_id": SERVED_MODEL_NAME,
         "hardware_target": config.hardware_target,
         "use_cache_arm": use_cache_arm,
-        "prompt_format": config.live_check_prompt_format,
         "request_mode": config.live_check_request_mode,
         "temperature": config.live_check_temperature,
         "prompt_token_accounting": "server_usage",
@@ -2698,7 +2672,6 @@ def _run_sglang_live_benchmark_request(
         generation=generation,
         prompt_text_mode=prompt_text_mode,
         request_mode=config.live_check_request_mode,
-        prompt_format=config.live_check_prompt_format,
         answer_found=answer_found(generation.output_text, request.example.expected_answer),
     )
 
@@ -2708,7 +2681,7 @@ def _sglang_live_benchmark_chat_messages_factory(
     *,
     prompt_text_mode: PromptTextMode,
 ) -> Any:
-    if config.live_check_request_mode != "chat" or config.live_check_prompt_format != "qwen3_chat":
+    if config.live_check_request_mode != "chat":
         return None
 
     def factory(request: BenchmarkEngineRequest) -> Sequence[Mapping[str, Any]]:
@@ -2757,7 +2730,6 @@ def _live_check_result_to_measurement(
         "repeat_index": str(repeat_index),
         "prompt_text_mode": result.prompt_text_mode,
         "request_mode": result.request_mode,
-        "prompt_format": result.prompt_format,
     }
     if extraction is not None:
         metadata.update(final_answer_measurement_metadata(extraction))
@@ -3344,7 +3316,6 @@ def run_sglang_quality_canary(
         "request_id": request.request_id,
         "prompt_text_mode": "logical",
         "request_mode": config.live_check_request_mode,
-        "prompt_format": config.live_check_prompt_format,
         "kv_transfer_params_present": False,
         "kv_transfer_param_keys": [],
         "logical_prompt_chars": len(request.logical_prompt_text),
@@ -3741,11 +3712,6 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         "--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical"
     )
     parser.add_argument(
-        "--live-check-prompt-format",
-        choices=("plain", "qwen3_chat"),
-        default=DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
-    )
-    parser.add_argument(
         "--live-check-request-mode",
         choices=("completion", "chat"),
         default=DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
@@ -3877,7 +3843,6 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         dataset_specs=tuple(args.dataset or ()),
         baseline_only=args.baseline_only,
         cache_prompt_text_mode=args.cache_prompt_text_mode,
-        live_check_prompt_format=args.live_check_prompt_format,
         live_check_request_mode=args.live_check_request_mode,
         live_check_temperature=args.live_check_temperature,
         live_check_extra_body=(

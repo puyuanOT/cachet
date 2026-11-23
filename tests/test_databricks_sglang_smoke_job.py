@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.databricks_sglang_smoke_job import (
     DEFAULT_DATABRICKS_SGLANG_SMOKE_PURPOSE,
@@ -21,7 +23,6 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
-    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
@@ -115,8 +116,6 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
             "aws-g6-l4",
             "--cache-prompt-text-mode",
             "logical",
-            "--live-check-prompt-format",
-            DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
             "--live-check-request-mode",
             DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
             "--live-check-temperature",
@@ -807,6 +806,28 @@ def test_write_databricks_sglang_smoke_run_submit_json_writes_payload(tmp_path):
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["tasks"][0]["task_key"] == DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY
+
+
+def test_main_rejects_the_removed_live_check_prompt_format_flag(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "--benchmark-id",
+                "v1-sglang-smoke-001",
+                "--output-dir",
+                "/Volumes/catalog/schema/volume/v1-sglang-smoke",
+                "--runner-python-file",
+                "dbfs:/benchmarks/run_sglang_smoke.py",
+                "--live-check-prompt-format",
+                "plain",
+            ]
+        )
+
+    assert exc.value.code == 2
+    assert (
+        "unrecognized arguments: --live-check-prompt-format plain"
+        in capsys.readouterr().err
+    )
 
 
 def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):

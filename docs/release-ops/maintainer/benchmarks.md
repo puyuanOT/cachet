@@ -99,9 +99,9 @@ to write `document_kv.sglang_hicache_page_keys` into the manifest in the same
 pass. The generator must expose the tokenizer used for the cached prefix. The
 page size must match the KV layout block size, keys are emitted only for full
 payload pages, and they match the Quality v2 cache prefix sent as completion
-text; run the prepared SGLang path with the plain prompt format, or supply
-prompt-format-specific page keys through the manifest template when the
-runtime prompt goes through the server's chat template.
+text; run the prepared SGLang path with `--live-check-request-mode completion`,
+or supply page keys for the chat-template-rendered prefix through the manifest
+template when it uses chat request mode.
 
 When handoff JSON files already exist, build the closed manifest the benchmark
 plan consumes. The template supports `{dataset}` and `{example_id}`, and every

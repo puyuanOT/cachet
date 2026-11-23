@@ -34,7 +34,6 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
-    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
@@ -136,7 +135,6 @@ class DatabricksSGLangSmokeJobConfig:
     dataset_specs: tuple[str, ...] = ()
     baseline_only: bool = False
     cache_prompt_text_mode: str = "logical"
-    live_check_prompt_format: str = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
     live_check_request_mode: str = DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     live_check_temperature: float = DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     live_check_extra_body_json: str | None = None
@@ -262,8 +260,6 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("baseline_only must be a boolean")
         if self.cache_prompt_text_mode not in {"logical", "runtime"}:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
-        if self.live_check_prompt_format not in {"plain", "qwen3_chat"}:
-            raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
         if self.live_check_request_mode not in {"completion", "chat"}:
             raise ValueError("live_check_request_mode must be 'completion' or 'chat'")
         if (
@@ -582,8 +578,6 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         str(config.hardware_target),
         "--cache-prompt-text-mode",
         config.cache_prompt_text_mode,
-        "--live-check-prompt-format",
-        config.live_check_prompt_format,
         "--live-check-request-mode",
         config.live_check_request_mode,
         "--live-check-temperature",
@@ -768,11 +762,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical"
     )
     parser.add_argument(
-        "--live-check-prompt-format",
-        choices=("plain", "qwen3_chat"),
-        default=DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
-    )
-    parser.add_argument(
         "--live-check-request-mode",
         choices=("completion", "chat"),
         default=DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
@@ -903,7 +892,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             dataset_specs=tuple(args.dataset or ()),
             baseline_only=args.baseline_only,
             cache_prompt_text_mode=args.cache_prompt_text_mode,
-            live_check_prompt_format=args.live_check_prompt_format,
             live_check_request_mode=args.live_check_request_mode,
             live_check_temperature=args.live_check_temperature,
             live_check_extra_body_json=args.live_check_extra_body_json,
