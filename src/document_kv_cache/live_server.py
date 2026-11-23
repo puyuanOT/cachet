@@ -45,6 +45,7 @@ from document_kv_cache.quality_v2 import (
     QUALITY_V2_MAX_TOKENS,
     _CHAT_ASSISTANT_OPEN,
     _CHAT_USER_OPEN,
+    extract_first_final_answer,
 )
 from document_kv_cache.workflow import SourceDocument
 
@@ -286,7 +287,9 @@ def run_openai_compatible_live_check(
         generation=generation,
         prompt_text_mode=config.prompt_text_mode,
         request_mode=config.request_mode,
-        answer_found=answer_found(generation.output_text, config.expected_answer),
+        answer_found=_live_check_answer_found(
+            generation.output_text, config.expected_answer
+        ),
     )
 
 
@@ -431,6 +434,19 @@ def _request_id_from_kv_transfer_params(params: Mapping[str, Any]) -> str | None
     if isinstance(request_id, str) and request_id:
         return request_id
     return None
+
+
+def _live_check_answer_found(output_text: str, expected_answer: str | None) -> bool:
+    """Whether the answer the Quality v2 parser extracts contains ``expected_answer``.
+
+    An output the parser rejects never counts, so a model that only echoes the
+    needle from the document text outside a ``<final_answer>`` block fails.
+    """
+
+    if expected_answer is None:
+        return False
+    extraction = extract_first_final_answer(output_text)
+    return extraction.valid and answer_found(extraction.extracted_answer, expected_answer)
 
 
 def _live_check_chat_messages_factory(

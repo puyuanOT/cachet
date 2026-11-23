@@ -9,6 +9,7 @@ from types import ModuleType
 
 import pytest
 
+import document_kv_cache.openai_compatible as openai_compatible_module
 import document_kv_cache.sglang_smoke as public_sglang_smoke
 from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmark_runner import BenchmarkGeneration
@@ -2768,6 +2769,49 @@ def test_prepared_sglang_live_benchmark_rejects_answers_outside_the_final_answer
     assert all(
         issue.endswith("did not return the expected answer") for issue in record["issues"]
     )
+
+
+@pytest.mark.parametrize(
+    ("answer_text", "expected_found"),
+    [
+        ("<final_answer>{answer}</final_answer>", True),
+        ("The documents say {answer}.", False),
+        ("The documents say {answer}. <final_answer>unknown</final_answer>", False),
+    ],
+    ids=("final-answer-block", "echoed-answer-without-block", "echoed-answer-outside-block"),
+)
+def test_prepared_sglang_live_request_judges_the_answer_the_quality_v2_parser_extracts(
+    monkeypatch, tmp_path, answer_text, expected_found
+):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=write_prepared_sglang_v1_datasets(tmp_path / "prepared"),
+        live_benchmark_repeats=1,
+        stream=False,
+    )
+    baseline, _cache = public_sglang_smoke._sglang_live_benchmark_request_pairs(config)[0]
+    content = answer_text.format(answer=baseline.example.expected_answer)
+
+    class _ChatResponse:
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        openai_compatible_module, "_urlopen", lambda request, *, timeout: _ChatResponse()
+    )
+
+    result = public_sglang_smoke._run_sglang_live_benchmark_request(
+        config, request=baseline, use_cache_arm=False
+    )
+
+    assert result.generation.output_text == content
+    assert result.answer_found is expected_found
+    assert result.to_record()["ok"] is expected_found
 
 
 def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(

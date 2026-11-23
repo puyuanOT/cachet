@@ -46,7 +46,8 @@ def render_qwen3_chat_template(messages) -> str:
 
 class FakeEngine:
     def __init__(
-        self, output_text: str = f"The code is {DEFAULT_LIVE_CHECK_ANSWER}."
+        self,
+        output_text: str = f"The code is <final_answer>{DEFAULT_LIVE_CHECK_ANSWER}</final_answer>.",
     ) -> None:
         self.output_text = output_text
         self.requests = []
@@ -293,7 +294,7 @@ def test_run_openai_compatible_live_check_returns_json_ready_record():
         "ttft_seconds": 0.5,
         "time_to_completion_seconds": 1.25,
         "answer_found": True,
-        "output_text": f"The code is {DEFAULT_LIVE_CHECK_ANSWER}.",
+        "output_text": f"The code is <final_answer>{DEFAULT_LIVE_CHECK_ANSWER}</final_answer>.",
         "metadata": {"engine": "fake"},
     }
 
@@ -440,6 +441,44 @@ def test_live_check_reports_failed_quality_when_expected_answer_is_missing():
 
     assert result.ok is False
     assert result.answer_found is False
+
+
+@pytest.mark.parametrize(
+    ("output_text", "expected_found"),
+    [
+        (f"<final_answer>{DEFAULT_LIVE_CHECK_ANSWER}</final_answer>", True),
+        (
+            "<final_answer>...</final_answer> Checking the document. "
+            f"<final_answer>{DEFAULT_LIVE_CHECK_ANSWER}</final_answer>",
+            True,
+        ),
+        (f"The hidden live-check verification code is {DEFAULT_LIVE_CHECK_ANSWER}.", False),
+        (
+            f"The hidden live-check verification code is {DEFAULT_LIVE_CHECK_ANSWER}. "
+            "<final_answer>unknown</final_answer>",
+            False,
+        ),
+        (f"<final_answer>{DEFAULT_LIVE_CHECK_ANSWER}", False),
+    ],
+    ids=(
+        "final-answer-block",
+        "after-echoed-placeholder",
+        "echoed-needle-without-block",
+        "echoed-needle-outside-block",
+        "unclosed-block",
+    ),
+)
+def test_live_check_judges_the_answer_the_quality_v2_parser_extracts(
+    output_text, expected_found
+):
+    result = run_openai_compatible_live_check(
+        LiveServerCheckConfig(base_url="http://localhost:8000"),
+        engine=FakeEngine(output_text=output_text),
+    )
+
+    assert result.answer_found is expected_found
+    assert result.ok is expected_found
+    assert result.to_record()["answer_found"] is expected_found
 
 
 def test_runtime_prompt_mode_requires_cache_arm():

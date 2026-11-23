@@ -71,6 +71,7 @@ from document_kv_cache.engine_probe import (
 from document_kv_cache.live_server import (
     LiveServerCheckConfig,
     LiveServerCheckResult,
+    _live_check_answer_found,
     _live_check_chat_messages,
     _qwen3_chat_user_content,
     build_live_server_check_request,
@@ -2672,7 +2673,9 @@ def _run_sglang_live_benchmark_request(
         generation=generation,
         prompt_text_mode=prompt_text_mode,
         request_mode=config.live_check_request_mode,
-        answer_found=answer_found(generation.output_text, request.example.expected_answer),
+        answer_found=_live_check_answer_found(
+            generation.output_text, request.example.expected_answer
+        ),
     )
 
 
