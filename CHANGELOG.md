@@ -96,6 +96,26 @@
   of both methods. Quality Benchmark v2 is the published answer-quality
   measure. The sealed campaign report is unchanged and still contains the v1
   pass; `verify_sealed_records.py` now checks 11 README regions.
+- Quality v2 is the only answer-quality protocol. The runner, handoff
+  generation, benchmark plans, live checks, both smoke runners, and their
+  Databricks jobs default to its Qwen3 chat prompt (template
+  `v3-qwen3-chat-final-answer`), a 256-token decode at temperature 0, the
+  `cachet.first_final_answer` parser, and `quality_v2_scorer_registry()`. The
+  v1 prompt, scorers, registry, and synthetic NIAH generator are removed, and
+  strict whole-output `<final_answer>` compliance is only a format metric.
+  - Publication-approved scorers must declare a prompt and an answer parser.
+    The publication gate re-runs the declared parser, and release evidence
+    re-scores every measurement with its dataset's Quality v2 scorer.
+  - `cachet.benchmark_dataset_sources` stages NIAH with
+    `build_quality_v2_niah_records` over the HotpotQA and MuSiQue source
+    paragraphs, reproducing the sealed Quality v2 NIAH input. `dataset_prep`
+    no longer generates NIAH, and its haystack and needle flags are removed.
+  - Live checks judge the parsed `<final_answer>` block rather than a substring
+    of the raw output. The live-check prompt-format option
+    (`--prompt-format`, `--live-check-prompt-format`) is removed: completion
+    requests send the chat-framed prompt and chat requests send its user turn.
+  - The new default prompt template version changes artifact ids and cache
+    keys, so handoffs generated under the v1 template must be regenerated.
 
 ## 0.2.0
 
