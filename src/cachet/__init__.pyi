@@ -247,8 +247,6 @@ from document_kv_cache.dependency_freshness import (
 )
 
 from document_kv_cache.dataset_prep import (
-    DEFAULT_NIAH_QUERY as DEFAULT_NIAH_QUERY,
-    build_niah_record as build_niah_record,
     convert_v1_jsonl as convert_v1_jsonl,
     normalize_v1_record as normalize_v1_record,
     write_v1_jsonl as write_v1_jsonl,

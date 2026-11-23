@@ -239,8 +239,6 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'pyproject_direct_dependency_pins',
     'serving_profile_runtime_pins',
     'write_dependency_freshness_json',
-    'DEFAULT_NIAH_QUERY',
-    'build_niah_record',
     'convert_v1_jsonl',
     'normalize_v1_record',
     'write_v1_jsonl',

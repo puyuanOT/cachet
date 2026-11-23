@@ -302,8 +302,6 @@ _DOCUMENT_ROOT_EXPORTS = {
     'pyproject_direct_dependency_pins': ('document_kv_cache.dependency_freshness', 'pyproject_direct_dependency_pins'),
     'serving_profile_runtime_pins': ('document_kv_cache.dependency_freshness', 'serving_profile_runtime_pins'),
     'write_dependency_freshness_json': ('document_kv_cache.dependency_freshness', 'write_dependency_freshness_json'),
-    'DEFAULT_NIAH_QUERY': ('document_kv_cache.dataset_prep', 'DEFAULT_NIAH_QUERY'),
-    'build_niah_record': ('document_kv_cache.dataset_prep', 'build_niah_record'),
     'convert_v1_jsonl': ('document_kv_cache.dataset_prep', 'convert_v1_jsonl'),
     'normalize_v1_record': ('document_kv_cache.dataset_prep', 'normalize_v1_record'),
     'write_v1_jsonl': ('document_kv_cache.dataset_prep', 'write_v1_jsonl'),

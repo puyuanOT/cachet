@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import importlib
 import json
 from pathlib import Path
 import zipfile
@@ -14,10 +15,14 @@ from document_kv_cache.benchmarks import (
     niah_cell_identity,
 )
 from document_kv_cache.dataset_prep import (
-    build_niah_record,
     opaque_biography_example_id,
     redact_biography_document_text,
     write_v1_jsonl,
+)
+from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_NIAH_SEED,
+    build_quality_v2_niah_records,
 )
 
 
@@ -36,6 +41,9 @@ WIKIBIO_SPLIT_NAMES = {
 DEFAULT_NIAH_SAMPLE_COUNT = 1000
 DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS = (8192, 16384, 32768)
 DEFAULT_NIAH_NEEDLE_POSITIONS = (0.1, 0.5, 0.9)
+NIAH_TOKENIZER_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
+NIAH_TOKENIZER_REVISION = "cdbee75f17c01a7cc42f958dc650907174af0554"
+NIAH_HAYSTACK_SOURCE = "hotpotqa+musique context paragraphs"
 DATASET_FILENAMES = {
     "biography": "biography.jsonl",
     "hotpotqa": "hotpotqa.jsonl",
@@ -53,6 +61,8 @@ __all__ = [
     "DEFAULT_NIAH_SAMPLE_COUNT",
     "DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS",
     "DEFAULT_NIAH_NEEDLE_POSITIONS",
+    "NIAH_TOKENIZER_ID",
+    "NIAH_TOKENIZER_REVISION",
     "DatasetSourceStagingConfig",
     "stage_full_benchmark_datasets",
     "stage_hotpotqa_parquet",
@@ -74,7 +84,7 @@ class DatasetSourceStagingConfig:
     niah_sample_count: int = DEFAULT_NIAH_SAMPLE_COUNT
     niah_context_token_targets: tuple[int, ...] = DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS
     niah_needle_positions: tuple[float, ...] = DEFAULT_NIAH_NEEDLE_POSITIONS
-    seed: int = 20260628
+    seed: int = QUALITY_V2_NIAH_SEED
     limit_per_dataset: int | None = None
 
     def __post_init__(self) -> None:
@@ -101,7 +111,18 @@ class DatasetSourceStagingConfig:
             raise ValueError("limit_per_dataset must be positive when provided")
 
 
-def stage_full_benchmark_datasets(config: DatasetSourceStagingConfig) -> dict[str, Any]:
+def stage_full_benchmark_datasets(
+    config: DatasetSourceStagingConfig,
+    *,
+    count_tokens: Callable[[str], int] | None = None,
+) -> dict[str, Any]:
+    """Stage every benchmark dataset as canonical JSONL.
+
+    NIAH haystacks are built from every HotpotQA and MuSiQue source paragraph,
+    regardless of ``limit_per_dataset``. ``count_tokens`` must count tokens of a
+    full chat-framed prompt; it defaults to the pinned Qwen3 tokenizer.
+    """
+
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     hotpotqa_path = config.hotpotqa_parquet or _hf_download(
@@ -139,21 +160,21 @@ def stage_full_benchmark_datasets(config: DatasetSourceStagingConfig) -> dict[st
         ),
         "niah": stage_niah_jsonl(
             output_dir / DATASET_FILENAMES["niah"],
+            paragraphs=_niah_haystack_paragraphs(hotpotqa_path, musique_path),
+            count_tokens=count_tokens or _pinned_niah_token_counter(),
             sample_count=_effective_niah_sample_count(config),
-            context_token_targets=config.niah_context_token_targets,
-            needle_positions=config.niah_needle_positions,
             seed=config.seed,
         ),
     }
     record = {
-        "record_type": "document_kv.full_benchmark_dataset_sources.v2",
+        "record_type": "document_kv.full_benchmark_dataset_sources.v3",
         "datasets": datasets,
         "dataset_specs": [f"{dataset}={output_dir / filename}" for dataset, filename in DATASET_FILENAMES.items()],
         "source_files": {
             "biography": str(wikibio_path),
             "hotpotqa": str(hotpotqa_path),
             "musique": str(musique_path),
-            "niah": "synthetic",
+            "niah": NIAH_HAYSTACK_SOURCE,
         },
         "source_refs": {
             "biography": {
@@ -178,7 +199,14 @@ def stage_full_benchmark_datasets(config: DatasetSourceStagingConfig) -> dict[st
                 "answer_aliases_preserved": True,
             },
             "niah": {
-                "kind": "synthetic_needle_grid",
+                "kind": "quality_v2_needle_grid",
+                "builder": "document_kv_cache.quality_v2:build_quality_v2_niah_records",
+                "haystack_source": NIAH_HAYSTACK_SOURCE,
+                "token_counter": (
+                    f"{NIAH_TOKENIZER_ID}@{NIAH_TOKENIZER_REVISION}"
+                    if count_tokens is None
+                    else "caller-supplied"
+                ),
                 "sample_count": datasets["niah"]["records"],
                 "context_token_targets": list(config.niah_context_token_targets),
                 "needle_positions": list(config.niah_needle_positions),
@@ -307,40 +335,70 @@ def stage_wikibio_zip(
 def stage_niah_jsonl(
     output_path: str | Path,
     *,
+    paragraphs: Iterable[str],
+    count_tokens: Callable[[str], int],
     sample_count: int = DEFAULT_NIAH_SAMPLE_COUNT,
-    context_token_targets: Sequence[int] = DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS,
-    needle_positions: Sequence[float] = DEFAULT_NIAH_NEEDLE_POSITIONS,
-    seed: int = 20260628,
+    seed: int = QUALITY_V2_NIAH_SEED,
 ) -> dict[str, Any]:
+    """Write the Quality v2 NIAH grid built from natural ``paragraphs``."""
+
     if sample_count <= 0:
         raise ValueError("sample_count must be positive")
-    if tuple(context_token_targets) != DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS:
-        raise ValueError(
-            "publication NIAH context targets must be exactly 8192, 16384, and 32768"
-        )
-    if tuple(needle_positions) != DEFAULT_NIAH_NEEDLE_POSITIONS:
-        raise ValueError(
-            "publication NIAH needle positions must be exactly 0.1, 0.5, and 0.9"
-        )
-    records = (
-        _niah_record(
-            index=index,
-            seed=seed,
-            context_token_target=context_token_targets[index % len(context_token_targets)],
-            needle_position=needle_positions[(index // len(context_token_targets)) % len(needle_positions)],
-        )
-        for index in range(sample_count)
+    records = build_quality_v2_niah_records(
+        tuple(paragraphs),
+        count_tokens=count_tokens,
+        item_count=sample_count,
+        seed=seed,
     )
     count = write_v1_jsonl(records, output_path)
     return {
         "dataset": "niah",
         "records": count,
         "path": str(output_path),
-        "kind": "synthetic_needle_grid",
-        "context_token_targets": list(context_token_targets),
-        "needle_positions": list(needle_positions),
+        "kind": "quality_v2_needle_grid",
+        "context_token_targets": list(DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS),
+        "needle_positions": list(DEFAULT_NIAH_NEEDLE_POSITIONS),
         "seed": seed,
     }
+
+
+def _niah_haystack_paragraphs(
+    hotpotqa_parquet: str | Path,
+    musique_jsonl: str | Path,
+) -> Iterable[str]:
+    """Yield every HotpotQA, then every MuSiQue, source paragraph in file order."""
+
+    try:
+        import pyarrow.parquet as pq  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - depends on caller environment.
+        raise RuntimeError("NIAH staging requires pyarrow") from exc
+
+    for row in pq.read_table(hotpotqa_parquet).to_pylist():
+        for sentences in row["context"]["sentences"]:
+            yield " ".join(sentences)
+    for row in _iter_jsonl(musique_jsonl):
+        if row.get("answerable") is False:
+            continue
+        for paragraph in row["paragraphs"]:
+            yield paragraph["paragraph_text"]
+
+
+def _pinned_niah_token_counter() -> Callable[[str], int]:
+    try:
+        transformers = importlib.import_module("transformers")
+    except ImportError as exc:  # pragma: no cover - depends on caller environment.
+        raise RuntimeError("NIAH staging requires Transformers for the pinned Qwen3 tokenizer") from exc
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        NIAH_TOKENIZER_ID,
+        revision=NIAH_TOKENIZER_REVISION,
+        trust_remote_code=False,
+        use_fast=True,
+    )
+
+    def count_tokens(text: str) -> int:
+        return len(tokenizer.encode(text, add_special_tokens=False))
+
+    return count_tokens
 
 
 def _wikibio_records_from_archive(
@@ -396,59 +454,6 @@ def _wikibio_records_from_archive(
                     "answer_surface_in_document_context": "redacted",
                 },
             }
-
-
-def _niah_record(
-    *,
-    index: int,
-    seed: int,
-    context_token_target: int,
-    needle_position: float,
-) -> Mapping[str, Any]:
-    answer = f"cachet-needle-{seed}-{index:05d}"
-    needle = f"The hidden answer is {answer}."
-    haystack = _synthetic_haystack(
-        needle=needle,
-        approx_token_target=context_token_target,
-        needle_position=needle_position,
-    )
-    return build_niah_record(
-        example_id=f"niah-{seed}-{index:05d}",
-        haystack_text=haystack,
-        needle_answer=answer,
-        needle_text=needle,
-        metadata={
-            "source": "synthetic_niah_grid",
-            "context_token_target": str(context_token_target),
-            "needle_position": f"{needle_position:.3f}",
-            "niah_cell_id": niah_cell_identity(
-                context_token_target,
-                needle_position,
-            ),
-            "benchmark_task": "niah_exact_value",
-            "benchmark_task_version": "1",
-            "seed": str(seed),
-        },
-    )
-
-
-def _synthetic_haystack(*, needle: str, approx_token_target: int, needle_position: float) -> str:
-    target_chars = max(512, (approx_token_target - 512) * 4)
-    filler = (
-        "This deterministic filler sentence is irrelevant to the hidden answer. "
-        "It exists only to control the benchmark context length. "
-    )
-    insert_at = int(target_chars * needle_position)
-    before = _repeat_to_length(filler, insert_at)
-    after = _repeat_to_length(filler, max(0, target_chars - insert_at - len(needle)))
-    return before + needle + after
-
-
-def _repeat_to_length(text: str, target_length: int) -> str:
-    if target_length <= 0:
-        return ""
-    repeats = target_length // len(text) + 1
-    return (text * repeats)[:target_length]
 
 
 def _decode_wikibio_title(raw_title: bytes) -> str:
@@ -522,7 +527,7 @@ def parse_args(argv: Sequence[str] | None = None) -> DatasetSourceStagingConfig:
     parser.add_argument("--niah-sample-count", type=int, default=DEFAULT_NIAH_SAMPLE_COUNT)
     parser.add_argument("--niah-context-token-target", action="append", default=None)
     parser.add_argument("--niah-needle-position", action="append", default=None)
-    parser.add_argument("--seed", type=int, default=20260628)
+    parser.add_argument("--seed", type=int, default=QUALITY_V2_NIAH_SEED)
     parser.add_argument(
         "--limit-per-dataset",
         type=int,
